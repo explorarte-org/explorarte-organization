@@ -283,7 +283,7 @@ admission:
 			case ResultBlockedHuman, ResultBlockedSafety:
 				d.resumeBlocked.Add(1)
 				d.mu.Lock()
-				d.backoffs[id] = time.Now().Add(time.Hour)
+				d.backoffs[id] = time.Now().Add(d.cfg.ErrorBackoff)
 				d.mu.Unlock()
 			case ResultRetryLater:
 				d.resumeRetryLater.Add(1)
