@@ -18,6 +18,7 @@ func TestExtractDigitRunsCoreCases(t *testing.T) {
 		{"multiple runs preserve order and duplicates", "code 12 then code 34 then code 12 again", []string{"12", "34", "12"}},
 		{"leading zeros are preserved literally, not numerically normalized", "ticket 007 vs ticket 7", []string{"007", "7"}},
 		{"empty input", "", []string{}},
+		{"digits adjacent to letters", "abc123def45", []string{"123", "45"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
