@@ -1,0 +1,28 @@
+services:
+  integration-test:
+    image: golang:1.25-bookworm
+    working_dir: /src
+    command: ["go", "test", "-count=1", "-tags=integration", "./..."]
+    environment:
+      ORG_TEST_DATABASE_URL: postgres://explorarte_app:integration-app-password@postgres:5432/explorarte_test?sslmode=disable
+      GOCACHE: /cache/go-build
+      GOMODCACHE: /cache/go-mod
+    volumes:
+      - .:/src:ro
+      - integration-go-cache:/cache
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - org-internal
+    profiles: ["integration"]
+
+volumes:
+  postgres-data:
+    name: explorarte-org-integration-postgres-data
+  integration-go-cache:
+    name: explorarte-org-integration-go-cache
+
+networks:
+  org-internal:
+    name: explorarte-org-integration-network

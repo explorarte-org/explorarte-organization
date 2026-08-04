@@ -1,6 +1,29 @@
 name: explorarte-organization
 
 services:
+  postgres:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_USER: ${ORG_POSTGRES_ADMIN_USER:?set ORG_POSTGRES_ADMIN_USER in .env}
+      POSTGRES_PASSWORD: ${ORG_POSTGRES_ADMIN_PASSWORD:?set ORG_POSTGRES_ADMIN_PASSWORD in .env}
+      POSTGRES_DB: ${ORG_POSTGRES_DATABASE:-explorarte_org}
+      ORG_POSTGRES_USER: ${ORG_POSTGRES_USER:-explorarte_app}
+      ORG_POSTGRES_PASSWORD: ${ORG_POSTGRES_PASSWORD:?set ORG_POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./deployments/postgres/init/001-create-app-user.sh:/docker-entrypoint-initdb.d/001-create-app-user.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    shm_size: 128mb
+    restart: unless-stopped
+    stop_grace_period: 30s
+    networks:
+      - org-internal
+
   orgd:
     build:
       context: .
@@ -20,6 +43,24 @@ services:
       ORG_SHUTDOWN_TIMEOUT: ${ORG_SHUTDOWN_TIMEOUT:-15s}
       ORG_LOG_LEVEL: ${ORG_LOG_LEVEL:-info}
       ORG_LOG_FORMAT: ${ORG_LOG_FORMAT:-json}
+      ORG_DATABASE_HOST: postgres
+      ORG_DATABASE_PORT: 5432
+      ORG_DATABASE_NAME: ${ORG_POSTGRES_DATABASE:-explorarte_org}
+      ORG_DATABASE_USER: ${ORG_POSTGRES_USER:-explorarte_app}
+      ORG_DATABASE_PASSWORD: ${ORG_POSTGRES_PASSWORD:?set ORG_POSTGRES_PASSWORD in .env}
+      ORG_DATABASE_SSLMODE: disable
+      ORG_DATABASE_MAX_CONNS: ${ORG_DATABASE_MAX_CONNS:-8}
+      ORG_DATABASE_MIN_CONNS: ${ORG_DATABASE_MIN_CONNS:-1}
+      ORG_DATABASE_MAX_CONN_LIFETIME: ${ORG_DATABASE_MAX_CONN_LIFETIME:-30m}
+      ORG_DATABASE_MAX_CONN_IDLE_TIME: ${ORG_DATABASE_MAX_CONN_IDLE_TIME:-5m}
+      ORG_DATABASE_HEALTH_CHECK_PERIOD: ${ORG_DATABASE_HEALTH_CHECK_PERIOD:-30s}
+      ORG_DATABASE_CONNECT_TIMEOUT: ${ORG_DATABASE_CONNECT_TIMEOUT:-5s}
+      ORG_DATABASE_PING_TIMEOUT: ${ORG_DATABASE_PING_TIMEOUT:-2s}
+      ORG_DATABASE_STATEMENT_TIMEOUT: ${ORG_DATABASE_STATEMENT_TIMEOUT:-30s}
+      ORG_DATABASE_LOCK_TIMEOUT: ${ORG_DATABASE_LOCK_TIMEOUT:-5s}
+      ORG_DATABASE_AUTO_MIGRATE: ${ORG_DATABASE_AUTO_MIGRATE:-true}
+      ORG_DATABASE_MIGRATION_TIMEOUT: ${ORG_DATABASE_MIGRATION_TIMEOUT:-45s}
+      ORG_DATABASE_MIGRATION_RETRY: ${ORG_DATABASE_MIGRATION_RETRY:-5s}
     ports:
       - "127.0.0.1:${ORG_HTTP_PORT:-8080}:8080"
     read_only: true
@@ -31,14 +72,20 @@ services:
       - no-new-privileges:true
     restart: unless-stopped
     stop_grace_period: 20s
+    depends_on:
+      - postgres
     healthcheck:
-      test: ["CMD", "/usr/local/bin/orgctl", "health", "--url", "http://127.0.0.1:8080"]
+      test: ["CMD", "/usr/local/bin/orgctl", "health", "--ready", "--url", "http://127.0.0.1:8080"]
       interval: 10s
       timeout: 3s
-      retries: 3
-      start_period: 5s
+      retries: 5
+      start_period: 15s
     networks:
       - org-internal
+
+volumes:
+  postgres-data:
+    name: explorarte-org-postgres-data
 
 networks:
   org-internal:

@@ -10,17 +10,23 @@ LDFLAGS := -s -w \
 	-X main.commit=$(COMMIT) \
 	-X main.buildTime=$(BUILD_TIME)
 
-.PHONY: help fmt fmt-check vet test test-race build run verify clean docker-build compose-up compose-down compose-logs
+.PHONY: help deps fmt fmt-check vet test test-unit test-race test-integration build run verify verify-all clean docker-build compose-up compose-down compose-logs migrate-up migrate-status
 
 help:
 	@printf '%s\n' \
-	  'make fmt          Format Go files' \
-	  'make verify       Run formatting, vet, tests, and builds' \
-	  'make build        Build orgd and orgctl into bin/' \
-	  'make run          Run orgd locally' \
-	  'make docker-build Build the runtime image' \
-	  'make compose-up   Start the local container' \
-	  'make compose-down Stop the local container'
+	  'make deps             Download and verify Go modules' \
+	  'make fmt              Format Go files' \
+	  'make verify           Run formatting, vet, unit tests, and builds' \
+	  'make verify-all       Run verify plus real PostgreSQL integration tests' \
+	  'make test-integration Run integration tests in isolated Docker Compose' \
+	  'make migrate-up       Apply PostgreSQL migrations with orgctl' \
+	  'make migrate-status   Inspect PostgreSQL migration status' \
+	  'make compose-up       Start orgd and internal PostgreSQL' \
+	  'make compose-down     Stop containers without deleting PostgreSQL data'
+
+deps:
+	$(GO) mod download
+	$(GO) mod verify
 
 fmt:
 	$(GO) fmt ./...
@@ -31,11 +37,16 @@ fmt-check:
 vet:
 	$(GO) vet ./...
 
-test:
-	$(GO) test ./...
+test: test-unit
+
+test-unit:
+	$(GO) test -short ./...
 
 test-race:
-	$(GO) test -race ./...
+	$(GO) test -race -short ./...
+
+test-integration:
+	./scripts/test-integration.sh
 
 build:
 	@mkdir -p $(BINARY_DIR)
@@ -45,7 +56,15 @@ build:
 run:
 	$(GO) run ./cmd/orgd
 
-verify: fmt-check vet test build
+verify: fmt-check vet test-unit build
+
+verify-all: verify test-integration
+
+migrate-up:
+	$(GO) run ./cmd/orgctl migrate up
+
+migrate-status:
+	$(GO) run ./cmd/orgctl migrate status
 
 clean:
 	rm -rf $(BINARY_DIR) dist coverage.out
@@ -58,10 +77,11 @@ docker-build:
 	  -t explorarte-organization:$(VERSION) .
 
 compose-up:
+	@test -f .env || { echo 'ERROR: create .env from .env.example first'; exit 1; }
 	docker compose up --build -d
 
 compose-down:
 	docker compose down --remove-orphans
 
 compose-logs:
-	docker compose logs -f orgd
+	docker compose logs -f orgd postgres

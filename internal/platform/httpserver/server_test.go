@@ -3,9 +3,11 @@ package httpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,20 +16,13 @@ import (
 )
 
 func TestHealthAndReadiness(t *testing.T) {
-	ready := false
-	server := New(
-		config.HTTPConfig{
-			Addr:              "127.0.0.1:0",
-			ReadHeaderTimeout: time.Second,
-			ReadTimeout:       time.Second,
-			WriteTimeout:      time.Second,
-			IdleTimeout:       time.Second,
-		},
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
-		buildinfo.Info{Version: "test"},
-		func() bool { return ready },
-	)
-
+	var ready atomic.Bool
+	server := New(testHTTPConfig(), slog.New(slog.NewTextHandler(io.Discard, nil)), buildinfo.Info{Version: "test"}, func(context.Context) error {
+		if !ready.Load() {
+			return errors.New("postgres unavailable")
+		}
+		return nil
+	})
 	errorsCh, err := server.Start()
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
@@ -38,34 +33,31 @@ func TestHealthAndReadiness(t *testing.T) {
 		_ = server.Shutdown(ctx)
 		<-errorsCh
 	})
-
 	baseURL := "http://" + server.Addr()
-
 	assertStatus(t, baseURL+"/healthz", http.StatusOK, "ok")
 	assertStatus(t, baseURL+"/readyz", http.StatusServiceUnavailable, "not_ready")
-
-	ready = true
+	ready.Store(true)
 	assertStatus(t, baseURL+"/readyz", http.StatusOK, "ready")
 	assertStatus(t, baseURL+"/version", http.StatusOK, "")
 }
 
+func testHTTPConfig() config.HTTPConfig {
+	return config.HTTPConfig{Addr: "127.0.0.1:0", ReadHeaderTimeout: time.Second, ReadTimeout: time.Second, WriteTimeout: time.Second, IdleTimeout: time.Second}
+}
+
 func assertStatus(t *testing.T, url string, wantStatus int, wantState string) {
 	t.Helper()
-
 	response, err := http.Get(url)
 	if err != nil {
 		t.Fatalf("GET %s: %v", url, err)
 	}
 	defer response.Body.Close()
-
 	if response.StatusCode != wantStatus {
 		t.Fatalf("GET %s status = %d, want %d", url, response.StatusCode, wantStatus)
 	}
-
 	if wantState == "" {
 		return
 	}
-
 	var payload struct {
 		Status string `json:"status"`
 	}

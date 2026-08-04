@@ -13,28 +13,54 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
-
+      - name: Verify modules
+        run: go mod verify
       - name: Check formatting
         run: test -z "$(gofmt -l .)"
-
       - name: Vet
         run: go vet ./...
-
-      - name: Test
-        run: go test ./...
-
+      - name: Unit tests
+        run: go test -short ./...
       - name: Build
         run: go build ./...
-
       - name: Build container
         run: docker build -t explorarte-organization:ci .
+
+  postgres-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:17-bookworm
+        env:
+          POSTGRES_USER: explorarte_test
+          POSTGRES_PASSWORD: integration-only-password
+          POSTGRES_DB: explorarte_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U explorarte_test -d explorarte_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      ORG_TEST_DATABASE_URL: postgres://explorarte_test:integration-only-password@127.0.0.1:5432/explorarte_test?sslmode=disable
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Real PostgreSQL integration tests
+        run: go test -count=1 -tags=integration ./...

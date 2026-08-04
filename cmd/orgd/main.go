@@ -20,9 +20,7 @@ var (
 	buildTime = "unknown"
 )
 
-func main() {
-	os.Exit(run())
-}
+func main() { os.Exit(run()) }
 
 func run() int {
 	cfg, err := config.Load()
@@ -30,34 +28,21 @@ func run() int {
 		fmt.Fprintf(os.Stderr, "load configuration: %v\n", err)
 		return 2
 	}
-
 	logger := logging.New(os.Stdout, cfg.Logging.Level, cfg.Logging.Format)
 	slog.SetDefault(logger)
-
-	info := buildinfo.Info{
-		Version:   version,
-		Commit:    commit,
-		BuildTime: buildTime,
-	}
-
+	info := buildinfo.Info{Version: version, Commit: commit, BuildTime: buildTime}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-
-	application := app.New(cfg, logger, info)
-
-	logger.Info(
-		"starting organization kernel",
-		"app", cfg.App.Name,
-		"environment", cfg.App.Environment,
-		"version", info.Version,
-		"commit", info.Commit,
-	)
-
+	application, err := app.New(ctx, cfg, logger, info)
+	if err != nil {
+		logger.Error("initialize organization kernel", "error", err)
+		return 1
+	}
+	logger.Info("starting organization kernel", "app", cfg.App.Name, "environment", cfg.App.Environment, "version", info.Version, "commit", info.Commit)
 	if err := application.Run(ctx); err != nil {
 		logger.Error("organization kernel stopped with error", "error", err)
 		return 1
 	}
-
 	logger.Info("organization kernel stopped")
 	return 0
 }
