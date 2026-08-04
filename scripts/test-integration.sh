@@ -5,8 +5,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 MODE="${1:-all}"
 case "$MODE" in
-  all|tasks) ;;
-  *) echo "usage: $0 [all|tasks]" >&2; exit 2 ;;
+  all|tasks|staging) ;;
+  *) echo "usage: $0 [all|tasks|staging]" >&2; exit 2 ;;
 esac
 
 export ORG_POSTGRES_ADMIN_USER=explorarte_test_admin
@@ -16,19 +16,29 @@ export ORG_POSTGRES_USER=explorarte_app
 export ORG_POSTGRES_PASSWORD=integration-app-password
 
 compose=(docker compose --project-name explorarte-org-integration -f compose.yaml -f compose.integration.yaml --profile integration)
-cleanup(){ "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true; }
+
+cleanup() {
+  "${compose[@]}" down --remove-orphans >/dev/null 2>&1 || true
+  docker volume rm -f explorarte-org-integration-postgres-data >/dev/null 2>&1 || true
+}
+
 trap cleanup EXIT INT TERM
 cleanup
 "${compose[@]}" up -d --wait postgres
 
 if [[ "$MODE" == all ]]; then
-  "${compose[@]}" run --rm integration-test go test -count=1 -tags=integration ./internal/platform/postgres
-  "${compose[@]}" run --rm integration-test go test -count=1 -tags=integration ./internal/organization/registry
+  timeout --foreground --signal=TERM --kill-after=30s 15m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/platform/postgres
+  timeout --foreground --signal=TERM --kill-after=30s 15m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/organization/registry
 fi
-"${compose[@]}" run --rm integration-test go test -count=1 -tags=integration ./internal/tasks/postgres
+if [[ "$MODE" == all || "$MODE" == tasks ]]; then
+  timeout --foreground --signal=TERM --kill-after=30s 15m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/tasks/postgres
+fi
+if [[ "$MODE" == all || "$MODE" == staging ]]; then
+  timeout --foreground --signal=TERM --kill-after=30s 20m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/staging/postgres
+fi
 
 if [[ "$MODE" == all ]]; then
-  "${compose[@]}" run --rm integration-test sh -ec '
+  timeout --foreground --signal=TERM --kill-after=30s 15m "${compose[@]}" run --rm -T integration-test sh -ec '
     export ORG_DATABASE_URL="$ORG_TEST_DATABASE_URL" ORG_CANONICAL_DIR=/src/docs/canonical
     go build -buildvcs=false -trimpath -o /tmp/orgctl ./cmd/orgctl
     /tmp/orgctl migrate up

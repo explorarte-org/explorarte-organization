@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -55,6 +56,17 @@ const (
 	defaultTaskOutboxMaxAttempts           = 10
 	defaultTaskOutboxClaimDuration         = time.Minute
 	defaultTaskCommandTimeout              = 30 * time.Second
+	defaultStagingRepositoriesFile         = "/etc/explorarte/repositories.yaml"
+	defaultStagingWorkspaceRoot            = "/var/lib/explorarte/staging/workspaces"
+	defaultStagingArtifactRoot             = "/var/lib/explorarte/staging/artifacts"
+	defaultStagingQuarantineRoot           = "/var/lib/explorarte/staging/quarantine"
+	defaultStagingCommandTimeout           = 2 * time.Minute
+	defaultStagingMaxArtifactBytes   int64 = 64 << 20
+	defaultStagingMaxChangedFiles          = 500
+	defaultStagingStaleAfter               = 30 * time.Minute
+	defaultStagingReconcileInterval        = 30 * time.Second
+	defaultStagingReconcileBatchSize       = 100
+	defaultStagingGitBinary                = "git"
 )
 
 type Config struct {
@@ -64,6 +76,7 @@ type Config struct {
 	Database DatabaseConfig
 	Registry RegistryConfig
 	Tasks    TaskConfig
+	Staging  StagingConfig
 }
 
 type AppConfig struct {
@@ -127,6 +140,21 @@ type TaskConfig struct {
 	CommandTimeout       time.Duration
 }
 
+type StagingConfig struct {
+	Enabled            bool
+	RepositoriesFile   string
+	WorkspaceRoot      string
+	ArtifactRoot       string
+	QuarantineRoot     string
+	CommandTimeout     time.Duration
+	MaxArtifactBytes   int64
+	MaxChangedFiles    int
+	StaleAfter         time.Duration
+	ReconcileInterval  time.Duration
+	ReconcileBatchSize int
+	GitBinary          string
+}
+
 type LookupEnv func(string) (string, bool)
 
 func Load() (Config, error) {
@@ -178,6 +206,10 @@ func LoadFrom(lookup LookupEnv) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	staging, err := loadStaging(lookup)
+	if err != nil {
+		return Config{}, err
+	}
 
 	cfg := Config{
 		App: AppConfig{
@@ -199,6 +231,7 @@ func LoadFrom(lookup LookupEnv) (Config, error) {
 		Database: database,
 		Registry: RegistryConfig{CanonicalDir: canonicalDir, SyncTimeout: registryTimeout},
 		Tasks:    tasks,
+		Staging:  staging,
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -345,6 +378,51 @@ func loadTasks(lookup LookupEnv) (TaskConfig, error) {
 	}, nil
 }
 
+func loadStaging(lookup LookupEnv) (StagingConfig, error) {
+	enabled, err := boolean(lookup, "ORG_STAGING_ENABLED", false)
+	if err != nil {
+		return StagingConfig{}, err
+	}
+	commandTimeout, err := duration(lookup, "ORG_STAGING_COMMAND_TIMEOUT", defaultStagingCommandTimeout)
+	if err != nil {
+		return StagingConfig{}, err
+	}
+	maxArtifact, err := integer64(lookup, "ORG_STAGING_MAX_ARTIFACT_BYTES", defaultStagingMaxArtifactBytes, 1, 1<<40)
+	if err != nil {
+		return StagingConfig{}, err
+	}
+	maxChanged, err := integer(lookup, "ORG_STAGING_MAX_CHANGED_FILES", defaultStagingMaxChangedFiles, 1, 100000)
+	if err != nil {
+		return StagingConfig{}, err
+	}
+	staleAfter, err := duration(lookup, "ORG_STAGING_STALE_AFTER", defaultStagingStaleAfter)
+	if err != nil {
+		return StagingConfig{}, err
+	}
+	reconcileInterval, err := duration(lookup, "ORG_STAGING_RECONCILE_INTERVAL", defaultStagingReconcileInterval)
+	if err != nil {
+		return StagingConfig{}, err
+	}
+	batch, err := integer(lookup, "ORG_STAGING_RECONCILE_BATCH_SIZE", defaultStagingReconcileBatchSize, 1, 500)
+	if err != nil {
+		return StagingConfig{}, err
+	}
+	return StagingConfig{
+		Enabled:            enabled,
+		RepositoriesFile:   text(lookup, "ORG_STAGING_REPOSITORIES_FILE", defaultStagingRepositoriesFile),
+		WorkspaceRoot:      text(lookup, "ORG_STAGING_WORKSPACE_ROOT", defaultStagingWorkspaceRoot),
+		ArtifactRoot:       text(lookup, "ORG_STAGING_ARTIFACT_ROOT", defaultStagingArtifactRoot),
+		QuarantineRoot:     text(lookup, "ORG_STAGING_QUARANTINE_ROOT", defaultStagingQuarantineRoot),
+		CommandTimeout:     commandTimeout,
+		MaxArtifactBytes:   maxArtifact,
+		MaxChangedFiles:    maxChanged,
+		StaleAfter:         staleAfter,
+		ReconcileInterval:  reconcileInterval,
+		ReconcileBatchSize: batch,
+		GitBinary:          text(lookup, "ORG_STAGING_GIT_BINARY", defaultStagingGitBinary),
+	}, nil
+}
+
 func (cfg Config) Validate() error {
 	if strings.TrimSpace(cfg.App.Name) == "" {
 		return errors.New("ORG_APP_NAME cannot be empty")
@@ -378,6 +456,9 @@ func (cfg Config) Validate() error {
 	if err := cfg.Tasks.Validate(); err != nil {
 		return err
 	}
+	if err := cfg.Staging.Validate(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -402,6 +483,46 @@ func (cfg TaskConfig) Validate() error {
 	}
 	if cfg.OutboxMaxAttempts < 1 || cfg.OutboxMaxAttempts > 100 {
 		return errors.New("ORG_TASK_OUTBOX_MAX_ATTEMPTS must be between 1 and 100")
+	}
+	return nil
+}
+
+func (cfg StagingConfig) Validate() error {
+	if cfg.CommandTimeout <= 0 || cfg.StaleAfter <= 0 || cfg.ReconcileInterval <= 0 {
+		return errors.New("staging durations must be greater than zero")
+	}
+	if cfg.MaxArtifactBytes <= 0 || cfg.MaxChangedFiles <= 0 {
+		return errors.New("staging limits must be positive")
+	}
+	if cfg.ReconcileBatchSize < 1 || cfg.ReconcileBatchSize > 500 {
+		return errors.New("ORG_STAGING_RECONCILE_BATCH_SIZE must be between 1 and 500")
+	}
+	if strings.TrimSpace(cfg.GitBinary) == "" || strings.ContainsAny(cfg.GitBinary, " \t\r\n") {
+		return errors.New("ORG_STAGING_GIT_BINARY must be a binary without embedded arguments")
+	}
+	paths := []struct{ name, value string }{
+		{"ORG_STAGING_REPOSITORIES_FILE", cfg.RepositoriesFile},
+		{"ORG_STAGING_WORKSPACE_ROOT", cfg.WorkspaceRoot},
+		{"ORG_STAGING_ARTIFACT_ROOT", cfg.ArtifactRoot},
+		{"ORG_STAGING_QUARANTINE_ROOT", cfg.QuarantineRoot},
+	}
+	for _, item := range paths {
+		if !filepath.IsAbs(item.value) || filepath.Clean(item.value) != item.value || strings.ContainsRune(item.value, 0) {
+			return fmt.Errorf("%s must be an absolute clean path", item.name)
+		}
+	}
+	roots := []string{cfg.WorkspaceRoot, cfg.ArtifactRoot, cfg.QuarantineRoot}
+	for i := range roots {
+		for j := i + 1; j < len(roots); j++ {
+			rel, err := filepath.Rel(roots[i], roots[j])
+			if err == nil && (rel == "." || rel == ".." || !strings.HasPrefix(rel, ".."+string(filepath.Separator))) {
+				return errors.New("staging roots must not overlap")
+			}
+			rel, err = filepath.Rel(roots[j], roots[i])
+			if err == nil && (rel == "." || rel == ".." || !strings.HasPrefix(rel, ".."+string(filepath.Separator))) {
+				return errors.New("staging roots must not overlap")
+			}
+		}
 	}
 	return nil
 }
@@ -507,6 +628,21 @@ func integer(lookup LookupEnv, key string, fallback, minimum, maximum int) (int,
 		return fallback, nil
 	}
 	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil {
+		return 0, fmt.Errorf("%s: parse integer: %w", key, err)
+	}
+	if parsed < minimum || parsed > maximum {
+		return 0, fmt.Errorf("%s must be between %d and %d", key, minimum, maximum)
+	}
+	return parsed, nil
+}
+
+func integer64(lookup LookupEnv, key string, fallback, minimum, maximum int64) (int64, error) {
+	value, ok := lookup(key)
+	if !ok || strings.TrimSpace(value) == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("%s: parse integer: %w", key, err)
 	}

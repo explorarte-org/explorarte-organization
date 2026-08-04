@@ -63,6 +63,12 @@ func (f *fakePersistence) AddRequirement(context.Context, AddRequirementCommand,
 func (f *fakePersistence) RecordEvidence(context.Context, RecordEvidenceCommand, int) (Evidence, error) {
 	return Evidence{}, nil
 }
+func (f *fakePersistence) RecordRequirementVerification(context.Context, RequirementVerificationCommand, int) (Evidence, error) {
+	return Evidence{}, nil
+}
+func (f *fakePersistence) VerifyActiveExecutionLease(context.Context, VerifyExecutionLeaseCommand) (ExecutionLeaseContext, error) {
+	return ExecutionLeaseContext{}, nil
+}
 func (f *fakePersistence) Finalize(context.Context, FinalizeCommand, int) (Task, error) {
 	return f.created, nil
 }

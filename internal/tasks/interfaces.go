@@ -24,6 +24,7 @@ type TaskService interface {
 	AddDependency(context.Context, AddDependencyCommand) error
 	AddRequirement(context.Context, AddRequirementCommand) (Requirement, error)
 	RecordEvidence(context.Context, RecordEvidenceCommand) (Evidence, error)
+	RecordRequirementVerification(context.Context, RequirementVerificationCommand) (Evidence, error)
 	FinalizeTask(context.Context, FinalizeCommand) (Task, error)
 	BlockTask(context.Context, BlockCommand) (Task, error)
 	UnblockTask(context.Context, UnblockCommand) (Task, error)
@@ -35,6 +36,10 @@ type TaskQueue interface {
 	StartAttempt(context.Context, LeaseCommand) (Task, error)
 	Heartbeat(context.Context, LeaseCommand) (Lease, error)
 	RecordAttemptResult(context.Context, RecordAttemptResultCommand) (Task, error)
+}
+
+type ExecutionLeaseVerifier interface {
+	VerifyActiveExecutionLease(context.Context, VerifyExecutionLeaseCommand) (ExecutionLeaseContext, error)
 }
 
 type TaskReconciler interface {
@@ -55,6 +60,8 @@ type Persistence interface {
 	AddDependency(context.Context, AddDependencyCommand, int) error
 	AddRequirement(context.Context, AddRequirementCommand, int) (Requirement, error)
 	RecordEvidence(context.Context, RecordEvidenceCommand, int) (Evidence, error)
+	RecordRequirementVerification(context.Context, RequirementVerificationCommand, int) (Evidence, error)
+	VerifyActiveExecutionLease(context.Context, VerifyExecutionLeaseCommand) (ExecutionLeaseContext, error)
 	Finalize(context.Context, FinalizeCommand, int) (Task, error)
 	Block(context.Context, BlockCommand, int) (Task, error)
 	Unblock(context.Context, UnblockCommand, AssigneeCheck, int) (Task, error)

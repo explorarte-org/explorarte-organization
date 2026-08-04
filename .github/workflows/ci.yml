@@ -24,8 +24,8 @@ jobs:
           cache: true
       - name: Download and verify modules
         run: go mod download && go mod verify
-      - name: Canonical documents unchanged from Branch 03
-        run: git diff --exit-code a199d1eea1f4f28d1b9f346e9ccbd670d5e8b69a -- docs/canonical
+      - name: Canonical documents unchanged from Branch 04 base
+        run: git diff --exit-code de5ac792cb67489b9f35e3b52cbec9ca8f63c7c7 -- docs/canonical
       - name: Check formatting
         run: test -z "$(gofmt -l .)"
       - name: Vet
@@ -34,6 +34,8 @@ jobs:
         run: go test -short ./...
       - name: Durable task fitness checks
         run: make test-task-fitness
+      - name: Staging security fitness checks
+        run: make test-staging-fitness
       - name: Validate canonical registry
         run: go run ./cmd/orgctl registry validate
       - name: Native build
@@ -90,6 +92,8 @@ jobs:
         run: go test -count=1 -tags=integration ./internal/organization/registry
       - name: Durable task engine integration
         run: go test -count=1 -tags=integration ./internal/tasks/postgres
+      - name: Staging and promotion integration with real Git
+        run: go test -count=1 -tags=integration ./internal/staging/postgres
       - name: Registry and task CLI smoke test
         run: |
           go run ./cmd/orgctl migrate up

@@ -154,3 +154,28 @@ make verify-all
 `make test-integration` levanta PostgreSQL 17 en un proyecto Compose aislado y cubre migraciones, registro, concurrencia de claims, leases, recuperación, terminalidad, dependencias, dead letters, outbox y smoke tests de CLI.
 
 Consulta `docs/implementation/branch-04-durable-task-engine/INTEGRATION.md` para aplicación, rollback y matriz de invariantes.
+
+## Staging seguro y promoción explícita
+
+Rama 05 añade workspaces Git separados, artefactos content-addressed y promoción por compare-and-swap. El módulo permanece deshabilitado por defecto y `orgd` solo puede ejecutar reconciliación segura; no crea worktrees, no ejecuta checks y no promueve refs.
+
+```bash
+orgctl staging repo validate explorarte-organization --json
+printf '%s' "$LEASE_TOKEN" | orgctl staging workspace create \
+  --task TASK_ID --attempt ATTEMPT_ID \
+  --repository explorarte-organization \
+  --base BASE_COMMIT --target-ref refs/heads/integration \
+  --holder code-runner-01 \
+  --actor-role ingenieria_ia/code-runner \
+  --artifact-requirement REQUIREMENT_ID \
+  --lease-token-stdin --json
+```
+
+El flujo posterior exige sellado, resultado exitoso del intento, checks registrados, revisión independiente y `orgctl staging promotion apply`. La promoción actualiza únicamente el ref autorizado mediante `git update-ref <target> <candidate> <expected-base>`; no hace merge, rebase, despliegue ni finaliza automáticamente la tarea.
+
+```bash
+make test-staging-fitness
+make test-staging-integration
+```
+
+Consulta `docs/implementation/branch-05-staging-promotion-engine/INTEGRATION.md` antes de habilitar el módulo o provisionar roots en AWS.

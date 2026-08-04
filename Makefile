@@ -10,7 +10,7 @@ LDFLAGS := -s -w \
 	-X main.commit=$(COMMIT) \
 	-X main.buildTime=$(BUILD_TIME)
 
-.PHONY: help deps fmt fmt-check vet test test-unit test-race test-integration test-task-integration test-task-fitness build build-cross run verify verify-all clean docker-build compose-up compose-down compose-logs migrate-up migrate-status registry-validate registry-diff registry-sync registry-status task-reconcile outbox-status
+.PHONY: help deps fmt fmt-check vet test test-unit test-race test-integration test-task-integration test-task-fitness test-staging-integration test-staging-fitness build build-cross run verify verify-all clean docker-build compose-up compose-down compose-logs migrate-up migrate-status registry-validate registry-diff registry-sync registry-status task-reconcile outbox-status
 
 help:
 	@printf '%s\n' \
@@ -19,6 +19,8 @@ help:
 	  'make build-cross       Build orgd/orgctl for linux/arm64 and linux/amd64' \
 	  'make test-integration  Run isolated PostgreSQL 17 integration and CLI smoke tests' \
 	  'make test-task-fitness Validate durable completion/token/outbox invariants' \
+	  'make test-staging-fitness Validate staging security and immutable-promotion invariants' \
+	  'make test-staging-integration Run PostgreSQL 17 and real Git staging integration tests' \
 	  'make verify-all        Run verify, cross-build, canonical validation, and integration tests' \
 	  'make registry-validate Validate docs/canonical without PostgreSQL writes' \
 	  'make registry-diff     Compare docs/canonical with PostgreSQL' \
@@ -57,6 +59,12 @@ test-task-integration:
 test-task-fitness:
 	./scripts/check-task-fitness.sh
 
+test-staging-fitness:
+	./scripts/check-staging-fitness.sh
+
+test-staging-integration:
+	./scripts/test-integration.sh staging
+
 build:
 	@mkdir -p $(BINARY_DIR)
 	CGO_ENABLED=0 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY_DIR)/orgd ./cmd/orgd
@@ -72,9 +80,9 @@ build-cross:
 run:
 	$(GO) run ./cmd/orgd
 
-verify: fmt-check vet test-unit test-task-fitness build
+verify: fmt-check vet test-unit test-task-fitness test-staging-fitness build
 
-verify-all: verify build-cross registry-validate test-integration
+verify-all: verify build-cross registry-validate test-integration test-staging-integration
 
 migrate-up:
 	$(GO) run ./cmd/orgctl migrate up

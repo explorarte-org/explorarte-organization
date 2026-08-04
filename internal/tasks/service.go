@@ -231,6 +231,28 @@ func (s *Service) RecordEvidence(ctx context.Context, command RecordEvidenceComm
 	return s.persistence.RecordEvidence(ctx, command, s.cfg.OutboxMaxAttempts)
 }
 
+func (s *Service) RecordRequirementVerification(ctx context.Context, command RequirementVerificationCommand) (Evidence, error) {
+	command.Reference = strings.TrimSpace(command.Reference)
+	command.Digest = strings.TrimSpace(command.Digest)
+	command.RecordedBy = strings.TrimSpace(command.RecordedBy)
+	if command.TaskID <= 0 || command.RequirementID <= 0 {
+		return Evidence{}, fmt.Errorf("%w: task and requirement IDs must be positive", ErrInvalidInput)
+	}
+	if command.Result != RequirementVerificationSatisfied && command.Result != RequirementVerificationFailed {
+		return Evidence{}, fmt.Errorf("%w: verification result must be satisfied or failed", ErrInvalidInput)
+	}
+	if command.Reference == "" || len(command.Reference) > 2048 || command.RecordedBy == "" || len(command.RecordedBy) > 200 {
+		return Evidence{}, fmt.Errorf("%w: verification reference and recorded_by are required", ErrInvalidInput)
+	}
+	if command.Digest != "" && !digestPattern.MatchString(command.Digest) {
+		return Evidence{}, fmt.Errorf("%w: verification digest must be lowercase SHA-256", ErrInvalidInput)
+	}
+	if command.Metadata == nil {
+		command.Metadata = map[string]any{}
+	}
+	return s.persistence.RecordRequirementVerification(ctx, command, s.cfg.OutboxMaxAttempts)
+}
+
 func (s *Service) ClaimTasks(ctx context.Context, request ClaimRequest) ([]ClaimedTask, error) {
 	request.OrganizationID = strings.TrimSpace(request.OrganizationID)
 	if request.OrganizationID == "" {

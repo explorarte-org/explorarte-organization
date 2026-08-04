@@ -107,14 +107,18 @@ func (s *Store) RecordEvidence(ctx context.Context, command tasks.RecordEvidence
 		if task.Status.Terminal() {
 			return tasks.Evidence{}, fmt.Errorf("%w: evidence cannot be added to terminal task %s", tasks.ErrInvalidTransition, task.Status)
 		}
+		var requirementStatus tasks.RequirementStatus
 		if command.RequirementID != nil {
 			var requirementTaskID int64
 			var requirementType tasks.RequirementType
-			if err := tx.QueryRow(ctx, `SELECT task_id,requirement_type FROM task_requirements WHERE id=$1 FOR UPDATE`, *command.RequirementID).Scan(&requirementTaskID, &requirementType); err != nil {
+			if err := tx.QueryRow(ctx, `SELECT task_id,requirement_type,status FROM task_requirements WHERE id=$1 FOR UPDATE`, *command.RequirementID).Scan(&requirementTaskID, &requirementType, &requirementStatus); err != nil {
 				return tasks.Evidence{}, mapError(err)
 			}
 			if requirementTaskID != command.TaskID || requirementType != command.Type {
 				return tasks.Evidence{}, fmt.Errorf("%w: evidence does not match requirement", tasks.ErrConflict)
+			}
+			if command.Satisfies && requirementStatus != tasks.RequirementPending {
+				return tasks.Evidence{}, tasks.ErrRequirementResolved
 			}
 		}
 		metadata, err := json.Marshal(command.Metadata)
@@ -133,11 +137,15 @@ func (s *Store) RecordEvidence(ctx context.Context, command tasks.RecordEvidence
 			if command.RequirementID == nil {
 				return tasks.Evidence{}, fmt.Errorf("%w: satisfying evidence requires a requirement ID", tasks.ErrInvalidInput)
 			}
-			if _, err := tx.Exec(ctx, `
+			result, err := tx.Exec(ctx, `
 				UPDATE task_requirements SET status='satisfied',satisfied_at=clock_timestamp(),updated_at=clock_timestamp()
-				WHERE id=$1 AND task_id=$2
-			`, *command.RequirementID, command.TaskID); err != nil {
+				WHERE id=$1 AND task_id=$2 AND status='pending'
+			`, *command.RequirementID, command.TaskID)
+			if err != nil {
 				return tasks.Evidence{}, mapError(err)
+			}
+			if result.RowsAffected() != 1 {
+				return tasks.Evidence{}, tasks.ErrRequirementResolved
 			}
 		}
 		task, err = touchTask(ctx, tx, task)

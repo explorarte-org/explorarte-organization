@@ -5,6 +5,20 @@ services:
     command: ["go", "test", "-count=1", "-tags=integration", "./..."]
     environment:
       ORG_TEST_DATABASE_URL: postgres://explorarte_app:integration-app-password@postgres:5432/explorarte_test?sslmode=disable
+      ORG_DATABASE_URL: postgres://explorarte_app:integration-app-password@postgres:5432/explorarte_test?sslmode=disable
+      ORG_CANONICAL_DIR: /src/docs/canonical
+      ORG_STAGING_ENABLED: "true"
+      ORG_STAGING_REPOSITORIES_FILE: /tmp/explorarte-staging/repositories.yaml
+      ORG_STAGING_WORKSPACE_ROOT: /tmp/explorarte-staging/workspaces
+      ORG_STAGING_ARTIFACT_ROOT: /tmp/explorarte-staging/artifacts
+      ORG_STAGING_QUARANTINE_ROOT: /tmp/explorarte-staging/quarantine
+      ORG_STAGING_COMMAND_TIMEOUT: 90s
+      ORG_STAGING_MAX_ARTIFACT_BYTES: "16777216"
+      ORG_STAGING_MAX_CHANGED_FILES: "100"
+      ORG_STAGING_STALE_AFTER: 2m
+      ORG_STAGING_RECONCILE_INTERVAL: 30s
+      ORG_STAGING_RECONCILE_BATCH_SIZE: "100"
+      ORG_STAGING_GIT_BINARY: git
       GOCACHE: /cache/go-build
       GOMODCACHE: /cache/go-mod
     volumes:

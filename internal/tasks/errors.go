@@ -15,6 +15,7 @@ var (
 	ErrAssigneeUnavailable     = errors.New("task assignee is unavailable")
 	ErrLeaseMismatch           = errors.New("task lease token does not match")
 	ErrLeaseExpired            = errors.New("task lease has expired")
+	ErrRequirementResolved     = errors.New("task requirement is already resolved")
 	ErrActiveLease             = errors.New("task has an active lease")
 	ErrDatabaseUnavailable     = errors.New("task engine database unavailable")
 )

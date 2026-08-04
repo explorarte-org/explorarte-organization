@@ -45,6 +45,13 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 		t.Fatalf("ping PostgreSQL: %v", err)
 	}
 	for _, statement := range []string{
+		`DROP TABLE IF EXISTS staging_events`,
+		`DROP TABLE IF EXISTS staging_reviews`,
+		`DROP TABLE IF EXISTS staging_promotions`,
+		`DROP TABLE IF EXISTS staging_checks`,
+		`DROP TABLE IF EXISTS staging_workspace_artifacts`,
+		`DROP TABLE IF EXISTS staging_artifacts`,
+		`DROP TABLE IF EXISTS staging_workspaces`,
 		`DROP TABLE IF EXISTS outbox_events`,
 		`DROP TABLE IF EXISTS task_dead_letters`,
 		`DROP TABLE IF EXISTS task_events`,
@@ -78,14 +85,14 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("apply migrations: %v", err)
 	}
-	if len(result.Applied) != 3 || result.Current != 3 {
+	if len(result.Applied) != 4 || result.Current != 4 {
 		t.Fatalf("unexpected migration result: %+v", result)
 	}
 	status, err := runner.Status(ctx)
 	if err != nil {
 		t.Fatalf("migration status: %v", err)
 	}
-	if !status.Ready || status.Pending != 0 || status.Applied != 3 {
+	if !status.Ready || status.Pending != 0 || status.Applied != 4 {
 		t.Fatalf("unexpected migration status: %+v", status)
 	}
 	if err := store.UnitOfWork().WithinTransaction(ctx, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
@@ -115,7 +122,7 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("idempotent migration run: %v", err)
 	}
-	if len(second.Applied) != 0 || second.Current != 3 {
+	if len(second.Applied) != 0 || second.Current != 4 {
 		t.Fatalf("second migration result = %+v, want no changes", second)
 	}
 
@@ -123,26 +130,26 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load migrations for down test: %v", err)
 	}
-	if len(loaded) != 3 {
-		t.Fatalf("loaded migrations = %d, want 3", len(loaded))
+	if len(loaded) != 4 {
+		t.Fatalf("loaded migrations = %d, want 4", len(loaded))
 	}
 	if err := store.UnitOfWork().WithinTransaction(ctx, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, loaded[2].DownSQL); err != nil {
+		if _, err := tx.Exec(ctx, loaded[3].DownSQL); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, `DELETE FROM schema_migrations WHERE version = 3`)
+		_, err := tx.Exec(ctx, `DELETE FROM schema_migrations WHERE version = 4`)
 		return err
 	}); err != nil {
-		t.Fatalf("down migration 000003: %v", err)
+		t.Fatalf("down migration 000004: %v", err)
 	}
 	var registryTable *string
-	if err := store.Pool().QueryRow(ctx, `SELECT to_regclass('public.tasks')::text`).Scan(&registryTable); err != nil {
+	if err := store.Pool().QueryRow(ctx, `SELECT to_regclass('public.staging_workspaces')::text`).Scan(&registryTable); err != nil {
 		t.Fatalf("check down migration: %v", err)
 	}
 	if registryTable != nil {
-		t.Fatalf("tasks still exists after down: %v", *registryTable)
+		t.Fatalf("staging_workspaces still exists after down: %v", *registryTable)
 	}
 	if _, err := runner.Up(ctx); err != nil {
-		t.Fatalf("restore migration 000003: %v", err)
+		t.Fatalf("restore migration 000004: %v", err)
 	}
 }

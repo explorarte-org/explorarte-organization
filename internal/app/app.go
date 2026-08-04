@@ -15,6 +15,8 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/platform/httpserver"
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
 	"github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/staging"
+	stagingbootstrap "github.com/Mireuz13/explorarte-organization/internal/staging/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/tasks"
 	taskpostgres "github.com/Mireuz13/explorarte-organization/internal/tasks/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/tasks/registryadapter"
@@ -38,14 +40,16 @@ type Migrator interface {
 }
 
 type App struct {
-	cfg        config.Config
-	logger     *slog.Logger
-	database   Database
-	migrator   Migrator
-	process    atomic.Bool
-	schema     atomic.Bool
-	server     *httpserver.Server
-	reconciler tasks.TaskReconciler
+	cfg               config.Config
+	logger            *slog.Logger
+	database          Database
+	migrator          Migrator
+	process           atomic.Bool
+	schema            atomic.Bool
+	server            *httpserver.Server
+	reconciler        tasks.TaskReconciler
+	stagingReconciler staging.StagingReconciler
+	stagingInitErr    error
 }
 
 func New(ctx context.Context, cfg config.Config, logger *slog.Logger, info buildinfo.Info) (*App, error) {
@@ -94,6 +98,15 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, info build
 	}
 	application := newWithDependencies(cfg, logger, info, store, migrator)
 	application.reconciler = taskService
+	if cfg.Staging.Enabled {
+		runtime, stagingErr := stagingbootstrap.Open(cfg, store)
+		if stagingErr != nil {
+			application.stagingInitErr = stagingErr
+			logger.Error("staging initialization failed; HTTP health remains live but readiness is blocked", "error", stagingErr)
+		} else {
+			application.stagingReconciler = runtime.Service
+		}
+	}
 	return application, nil
 }
 
@@ -125,6 +138,13 @@ func (a *App) Run(ctx context.Context) error {
 		go func() {
 			defer backgroundWG.Done()
 			a.runTaskReconciler(backgroundCtx)
+		}()
+	}
+	if a.cfg.Staging.Enabled && a.stagingReconciler != nil {
+		backgroundWG.Add(1)
+		go func() {
+			defer backgroundWG.Done()
+			a.runStagingReconciler(backgroundCtx)
 		}()
 	}
 
@@ -236,6 +256,39 @@ func (a *App) reconcileTasksOnce(ctx context.Context) {
 	}
 }
 
+func (a *App) runStagingReconciler(ctx context.Context) {
+	ticker := time.NewTicker(a.cfg.Staging.ReconcileInterval)
+	defer ticker.Stop()
+	for {
+		if a.schema.Load() {
+			a.reconcileStagingOnce(ctx)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (a *App) reconcileStagingOnce(ctx context.Context) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			a.logger.Error("staging reconciler panic recovered; next interval remains scheduled", "panic", recovered)
+		}
+	}()
+	reconcileCtx, cancel := context.WithTimeout(ctx, a.cfg.Staging.CommandTimeout)
+	defer cancel()
+	result, err := a.stagingReconciler.Reconcile(reconcileCtx, a.cfg.Staging.ReconcileBatchSize)
+	if err != nil {
+		a.logger.Warn("staging reconciliation failed; process remains live", "error", err)
+		return
+	}
+	if result.RecoveredWorkspaces+result.MissingWorkspaces+result.QuarantinedDirectories+result.RecoveredPromotions+result.ConflictedPromotions+result.RecoveredCleanup > 0 {
+		a.logger.Info("staging reconciliation completed", "recovered_workspaces", result.RecoveredWorkspaces, "missing_workspaces", result.MissingWorkspaces, "quarantined_directories", result.QuarantinedDirectories, "recovered_promotions", result.RecoveredPromotions, "conflicted_promotions", result.ConflictedPromotions, "recovered_cleanup", result.RecoveredCleanup)
+	}
+}
+
 func (a *App) ensureSchema(ctx context.Context) error {
 	if a.database == nil || a.migrator == nil {
 		return errors.New("database dependencies are not configured")
@@ -263,6 +316,9 @@ func (a *App) Ready(ctx context.Context) error {
 	}
 	if !a.schema.Load() {
 		return ErrSchemaNotReady
+	}
+	if a.cfg.Staging.Enabled && a.stagingInitErr != nil {
+		return fmt.Errorf("staging is not ready: %w", a.stagingInitErr)
 	}
 	if a.database == nil || a.migrator == nil {
 		return errors.New("PostgreSQL dependencies are not configured")

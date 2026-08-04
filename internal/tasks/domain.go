@@ -397,6 +397,43 @@ type RecordEvidenceCommand struct {
 	Satisfies     bool
 }
 
+type RequirementVerificationStatus string
+
+const (
+	RequirementVerificationSatisfied RequirementVerificationStatus = "satisfied"
+	RequirementVerificationFailed    RequirementVerificationStatus = "failed"
+)
+
+type RequirementVerificationCommand struct {
+	TaskID        int64
+	RequirementID int64
+	Result        RequirementVerificationStatus
+	Reference     string
+	Digest        string
+	RecordedBy    string
+	Metadata      map[string]any
+}
+
+type VerifyExecutionLeaseCommand struct {
+	TaskID     int64
+	AttemptID  int64
+	HolderID   string
+	LeaseToken string
+}
+
+type ExecutionLeaseContext struct {
+	TaskID                 int64
+	AttemptID              int64
+	OrganizationID         string
+	OrganizationRevisionID int64
+	AssignedRoleID         string
+	AssignedUnitID         string
+	TaskStatus             Status
+	AttemptState           AttemptState
+	HolderID               string
+	ExpiresAt              time.Time
+}
+
 type ReconcileResult struct {
 	ExpiredLeases       int `json:"expired_leases"`
 	RecoveredOutbox     int `json:"recovered_outbox"`
