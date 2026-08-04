@@ -44,7 +44,28 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err := store.Ping(ctx); err != nil {
 		t.Fatalf("ping PostgreSQL: %v", err)
 	}
-	for _, statement := range []string{`DROP TABLE IF EXISTS organization_reporting_lines`, `ALTER TABLE IF EXISTS organizational_units DROP CONSTRAINT IF EXISTS organizational_units_leader_role_fk`, `ALTER TABLE IF EXISTS organizations DROP CONSTRAINT IF EXISTS organizations_ceo_role_fk`, `ALTER TABLE IF EXISTS organizations DROP CONSTRAINT IF EXISTS organizations_owner_role_fk`, `DROP TABLE IF EXISTS organization_roles`, `DROP TABLE IF EXISTS organizational_units`, `DROP TABLE IF EXISTS organizations`, `DROP TABLE IF EXISTS organization_registry_revision_documents`, `DROP TABLE IF EXISTS organization_registry_revisions`, `DROP TABLE IF EXISTS audit_events`, `DROP TABLE IF EXISTS schema_migrations`} {
+	for _, statement := range []string{
+		`DROP TABLE IF EXISTS outbox_events`,
+		`DROP TABLE IF EXISTS task_dead_letters`,
+		`DROP TABLE IF EXISTS task_events`,
+		`DROP TABLE IF EXISTS task_leases`,
+		`DROP TABLE IF EXISTS task_attempts`,
+		`DROP TABLE IF EXISTS task_evidence`,
+		`DROP TABLE IF EXISTS task_requirements`,
+		`DROP TABLE IF EXISTS task_dependencies`,
+		`DROP TABLE IF EXISTS tasks`,
+		`DROP TABLE IF EXISTS organization_reporting_lines`,
+		`ALTER TABLE IF EXISTS organizational_units DROP CONSTRAINT IF EXISTS organizational_units_leader_role_fk`,
+		`ALTER TABLE IF EXISTS organizations DROP CONSTRAINT IF EXISTS organizations_ceo_role_fk`,
+		`ALTER TABLE IF EXISTS organizations DROP CONSTRAINT IF EXISTS organizations_owner_role_fk`,
+		`DROP TABLE IF EXISTS organization_roles`,
+		`DROP TABLE IF EXISTS organizational_units`,
+		`DROP TABLE IF EXISTS organizations`,
+		`DROP TABLE IF EXISTS organization_registry_revision_documents`,
+		`DROP TABLE IF EXISTS organization_registry_revisions`,
+		`DROP TABLE IF EXISTS audit_events`,
+		`DROP TABLE IF EXISTS schema_migrations`,
+	} {
 		if _, err := store.Pool().Exec(ctx, statement); err != nil {
 			t.Fatalf("reset integration schema: %v", err)
 		}
@@ -57,14 +78,14 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("apply migrations: %v", err)
 	}
-	if len(result.Applied) != 2 || result.Current != 2 {
+	if len(result.Applied) != 3 || result.Current != 3 {
 		t.Fatalf("unexpected migration result: %+v", result)
 	}
 	status, err := runner.Status(ctx)
 	if err != nil {
 		t.Fatalf("migration status: %v", err)
 	}
-	if !status.Ready || status.Pending != 0 || status.Applied != 2 {
+	if !status.Ready || status.Pending != 0 || status.Applied != 3 {
 		t.Fatalf("unexpected migration status: %+v", status)
 	}
 	if err := store.UnitOfWork().WithinTransaction(ctx, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
@@ -94,7 +115,7 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("idempotent migration run: %v", err)
 	}
-	if len(second.Applied) != 0 || second.Current != 2 {
+	if len(second.Applied) != 0 || second.Current != 3 {
 		t.Fatalf("second migration result = %+v, want no changes", second)
 	}
 
@@ -102,26 +123,26 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load migrations for down test: %v", err)
 	}
-	if len(loaded) != 2 {
-		t.Fatalf("loaded migrations = %d, want 2", len(loaded))
+	if len(loaded) != 3 {
+		t.Fatalf("loaded migrations = %d, want 3", len(loaded))
 	}
 	if err := store.UnitOfWork().WithinTransaction(ctx, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, loaded[1].DownSQL); err != nil {
+		if _, err := tx.Exec(ctx, loaded[2].DownSQL); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, `DELETE FROM schema_migrations WHERE version = 2`)
+		_, err := tx.Exec(ctx, `DELETE FROM schema_migrations WHERE version = 3`)
 		return err
 	}); err != nil {
-		t.Fatalf("down migration 000002: %v", err)
+		t.Fatalf("down migration 000003: %v", err)
 	}
 	var registryTable *string
-	if err := store.Pool().QueryRow(ctx, `SELECT to_regclass('public.organization_roles')::text`).Scan(&registryTable); err != nil {
+	if err := store.Pool().QueryRow(ctx, `SELECT to_regclass('public.tasks')::text`).Scan(&registryTable); err != nil {
 		t.Fatalf("check down migration: %v", err)
 	}
 	if registryTable != nil {
-		t.Fatalf("organization_roles still exists after down: %v", *registryTable)
+		t.Fatalf("tasks still exists after down: %v", *registryTable)
 	}
 	if _, err := runner.Up(ctx); err != nil {
-		t.Fatalf("restore migration 000002: %v", err)
+		t.Fatalf("restore migration 000003: %v", err)
 	}
 }

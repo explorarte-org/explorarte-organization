@@ -4,30 +4,30 @@ Monolito modular en Go para el plano de control organizacional de Explorarte.
 
 ## Estado de esta rama
 
-La Rama 03 agrega el registro organizacional canónico sobre la persistencia de la
-Rama 02.
+La Rama 04 agrega un motor durable de tareas sobre PostgreSQL a la base validada de la Rama 03.
 
-Incluye:
+La fuente de verdad continúa siendo PostgreSQL. `orgd` reconcilia estados durables, recupera leases y claims del outbox expirados, promueve tareas elegibles y bloquea dependencias o asignaciones inválidas. `orgd` no ejecuta tareas ni contiene un worker autónomo.
 
-- lectura tipada y estricta de los documentos requeridos en `docs/canonical`;
-- validaciones cruzadas del organigrama, líderes, workers, reporting, modelos y
-  clases de autoridad;
-- hash canónico determinista por documento y agregado;
-- materialización versionada en PostgreSQL;
-- diff, dry-run y sincronización administrativa explícita;
-- retiro lógico de roles y unidades;
-- historial de relaciones `reports_to` por revisión;
-- evento genérico `organization.registry_synced`;
-- consultas internas y comandos `orgctl registry`;
-- pruebas unitarias y de integración con PostgreSQL real.
+Componentes principales:
 
-La fuente declarativa sigue siendo Git. PostgreSQL es una representación materializada,
-consultable y auditable. No hay sincronización automática durante el arranque.
+- máquina de estados tipada con terminalidad irreversible;
+- creación JSON estricta e idempotencia explícita;
+- dependencias acíclicas y semántica estricta: solo `completed` satisface;
+- requisitos y evidencia opaca para verificación;
+- intentos separados de leases criptográficos;
+- claims concurrentes con `FOR UPDATE SKIP LOCKED`;
+- reintentos acotados, dead letters formales y redrive no automático;
+- eventos append-only, auditoría mínima y outbox transaccional;
+- reconciliador interno tolerante a indisponibilidad temporal de PostgreSQL;
+- CLI administrativa y de worker mediante `orgctl task` y `orgctl outbox`.
+
+Los documentos de `docs/canonical` no se modifican en esta rama.
 
 ## Requisitos
 
 - Go 1.25 o `GOTOOLCHAIN=auto`;
 - Docker Engine y Docker Compose;
+- PostgreSQL 17 para las pruebas de integración;
 - arquitectura ARM64 o AMD64.
 
 ## Configuración local
@@ -36,7 +36,7 @@ consultable y auditable. No hay sincronización automática durante el arranque.
 cp .env.example .env
 ```
 
-Reemplaza las contraseñas de ejemplo. `.env` está ignorado por Git.
+Reemplaza todos los secretos de ejemplo. `.env` está ignorado por Git. PostgreSQL no publica el puerto 5432 al host.
 
 ## Entorno Docker
 
@@ -47,73 +47,110 @@ curl -fsS http://127.0.0.1:8080/healthz
 curl -fsS http://127.0.0.1:8080/readyz
 ```
 
-PostgreSQL no publica el puerto 5432 al host. `orgd` solo publica HTTP en
-`127.0.0.1`.
+`/healthz` conserva liveness del proceso. `/readyz` sigue dependiendo de PostgreSQL y de que no existan migraciones pendientes. Una caída de PostgreSQL no termina el proceso HTTP; el reconciliador registra el fallo y vuelve a intentarlo.
 
-`/healthz` indica liveness del proceso. `/readyz` conserva la semántica de la Rama
-02: depende de PostgreSQL y de las migraciones, no de que el registro ya haya sido
-sincronizado.
-
-## Migraciones
+## Migraciones y registro
 
 ```bash
-docker compose exec orgd /usr/local/bin/orgctl migrate status
-docker compose exec orgd /usr/local/bin/orgctl migrate up
+docker compose exec -T orgd /usr/local/bin/orgctl migrate status
+docker compose exec -T orgd /usr/local/bin/orgctl migrate up
+docker compose exec -T orgd /usr/local/bin/orgctl registry validate
+docker compose exec -T orgd /usr/local/bin/orgctl registry status --json
 ```
 
-No edites una migración aplicada. `schema_migrations` conserva el SHA-256 del SQL
-ascendente.
+No edites una migración aplicada. `000003_create_durable_task_engine` crea todas las tablas del motor durable y su rollback elimina únicamente esas tablas.
 
-## Registro organizacional
+## Crear una tarea
+
+```json
+{
+  "assigned_role_id": "ingenieria_ia/qa",
+  "idempotency_key": "qa-release-2026-08-04",
+  "title": "Verificar release",
+  "instructions": "Ejecutar las comprobaciones aprobadas y registrar evidencia.",
+  "acceptance_criteria": [
+    "build reproducible",
+    "pruebas aprobadas"
+  ],
+  "max_attempts": 5,
+  "requirements": [
+    {
+      "key": "qa-report",
+      "type": "check",
+      "description": "Informe de QA aprobado"
+    }
+  ]
+}
+```
 
 ```bash
-make registry-validate
-make registry-diff
-make registry-sync
-make registry-status
+docker compose exec -T orgd \
+  /usr/local/bin/orgctl task create \
+  --file /tmp/task.json \
+  --actor-id empresa/human \
+  --json
 ```
 
-Consultas:
+La petición rechaza campos de autoridad, modelo, capacidades, herramientas, perfiles, memoria, shell, contenedores o Kubernetes. La misma clave y el mismo hash devuelven la tarea existente; una petición distinta con la misma clave produce conflicto.
+
+## Ciclo de worker
 
 ```bash
-go run ./cmd/orgctl registry list-units
-go run ./cmd/orgctl registry list-roles --unit ingenieria_ia
-go run ./cmd/orgctl registry list-roles --enabled --json
-go run ./cmd/orgctl registry get-role ingenieria_ia/orquestador
-go run ./cmd/orgctl registry get-leader ingenieria_ia
+# Reclamar. El token aparece una sola vez en la respuesta.
+orgctl task claim --worker worker-01 --role ingenieria_ia/qa --batch 1 --json
+
+# El token nunca se pasa como argumento. Se entrega exclusivamente por stdin.
+printf '%s' "$LEASE_TOKEN" | orgctl task start TASK_ID --attempt ATTEMPT_ID --worker worker-01
+printf '%s' "$LEASE_TOKEN" | orgctl task heartbeat TASK_ID --attempt ATTEMPT_ID --worker worker-01 --extend 2m
+printf '%s' "$LEASE_TOKEN" | orgctl task result TASK_ID --attempt ATTEMPT_ID --worker worker-01 --result-file result.json --json
 ```
 
-`registry diff` y `registry sync` sin `--apply` nunca escriben. La primera
-materialización se aplica mediante:
+Resultado exitoso:
+
+```json
+{"outcome":"succeeded","summary":"ejecución terminada"}
+```
+
+Un resultado exitoso deja la tarea en `awaiting_verification`; nunca la completa. La terminalidad requiere `task finalize` y todos los requisitos obligatorios satisfechos.
+
+## Verificación y terminalidad
 
 ```bash
-go run ./cmd/orgctl registry sync --apply
+orgctl task evidence add TASK_ID \
+  --requirement REQUIREMENT_ID \
+  --type check \
+  --reference artifact://qa/report-42 \
+  --recorded-by ingenieria_ia/qa \
+  --satisfies
+
+orgctl task finalize TASK_ID \
+  --outcome completed \
+  --actor-id ingenieria_ia/qa
 ```
+
+`no_action`, `failed`, `dead_letter`, `rejected` y `cancelled` son terminales, pero no satisfacen dependencias. No existe reapertura silenciosa ni redrive automático de dead letters.
+
+## Outbox
+
+```bash
+orgctl outbox claim --consumer publisher-01 --batch 10 --json
+printf '%s' "$CLAIM_TOKEN" | orgctl outbox ack EVENT_ID --consumer publisher-01
+printf '%s' "$CLAIM_TOKEN" | orgctl outbox nack EVENT_ID --consumer publisher-01 --error 'delivery failed'
+orgctl outbox recover --batch 100 --json
+orgctl outbox status --json
+```
+
+Los payloads del outbox son mínimos y versionados: identificador de tarea, tipo de evento, versión y estados. No contienen instrucciones ni tokens.
 
 ## Verificación
 
 ```bash
 make verify
+make build-cross
 make test-integration
 make verify-all
 ```
 
-El entorno de integración usa proyecto Compose, red y volúmenes aislados. No toca
-el volumen de desarrollo.
+`make test-integration` levanta PostgreSQL 17 en un proyecto Compose aislado y cubre migraciones, registro, concurrencia de claims, leases, recuperación, terminalidad, dependencias, dead letters, outbox y smoke tests de CLI.
 
-## Endpoints
-
-```text
-GET /healthz
-GET /readyz
-GET /version
-```
-
-No se agregan endpoints HTTP del registro en esta rama.
-
-## Límites
-
-Esta rama no implementa proyectos, tareas, mensajes, SKIP LOCKED, leases, outbox,
-dead letter, agentes ejecutables, modelos, skills, memoria, RAG, Prolog ni células.
-
-Consulta `docs/implementation/branch-03-organization-registry/INTEGRATION.md`.
+Consulta `docs/implementation/branch-04-durable-task-engine/INTEGRATION.md` para aplicación, rollback y matriz de invariantes.

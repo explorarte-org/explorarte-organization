@@ -10,10 +10,14 @@ import (
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/config"
+	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	"github.com/Mireuz13/explorarte-organization/internal/platform/buildinfo"
 	"github.com/Mireuz13/explorarte-organization/internal/platform/httpserver"
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
 	"github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/tasks"
+	taskpostgres "github.com/Mireuz13/explorarte-organization/internal/tasks/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/tasks/registryadapter"
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 )
 
@@ -34,13 +38,14 @@ type Migrator interface {
 }
 
 type App struct {
-	cfg      config.Config
-	logger   *slog.Logger
-	database Database
-	migrator Migrator
-	process  atomic.Bool
-	schema   atomic.Bool
-	server   *httpserver.Server
+	cfg        config.Config
+	logger     *slog.Logger
+	database   Database
+	migrator   Migrator
+	process    atomic.Bool
+	schema     atomic.Bool
+	server     *httpserver.Server
+	reconciler tasks.TaskReconciler
 }
 
 func New(ctx context.Context, cfg config.Config, logger *slog.Logger, info buildinfo.Info) (*App, error) {
@@ -56,7 +61,40 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, info build
 		store.Close()
 		return nil, fmt.Errorf("create migration runner: %w", err)
 	}
-	return newWithDependencies(cfg, logger, info, store, migrator), nil
+	registryRepository, err := registry.NewPostgresRepository(store)
+	if err != nil {
+		store.Close()
+		return nil, fmt.Errorf("create registry repository for tasks: %w", err)
+	}
+	catalog, err := registryadapter.New(registryRepository)
+	if err != nil {
+		store.Close()
+		return nil, fmt.Errorf("create task registry adapter: %w", err)
+	}
+	taskStore, err := taskpostgres.New(store)
+	if err != nil {
+		store.Close()
+		return nil, fmt.Errorf("create durable task store: %w", err)
+	}
+	taskService, err := tasks.NewService(taskStore, catalog, tasks.Config{
+		OrganizationID:       cfg.Tasks.OrganizationID,
+		DefaultMaxAttempts:   cfg.Tasks.DefaultMaxAttempts,
+		DefaultLeaseDuration: cfg.Tasks.DefaultLeaseDuration,
+		MaxLeaseDuration:     cfg.Tasks.MaxLeaseDuration,
+		RetryPolicy: tasks.RetryPolicy{
+			BaseDelay: cfg.Tasks.RetryBaseDelay,
+			MaxDelay:  cfg.Tasks.RetryMaxDelay,
+		},
+		OutboxMaxAttempts:   cfg.Tasks.OutboxMaxAttempts,
+		OutboxClaimDuration: cfg.Tasks.OutboxClaimDuration,
+	})
+	if err != nil {
+		store.Close()
+		return nil, fmt.Errorf("create durable task service: %w", err)
+	}
+	application := newWithDependencies(cfg, logger, info, store, migrator)
+	application.reconciler = taskService
+	return application, nil
 }
 
 func newWithDependencies(cfg config.Config, logger *slog.Logger, info buildinfo.Info, database Database, migrator Migrator) *App {
@@ -75,13 +113,20 @@ func (a *App) Run(ctx context.Context) error {
 	}
 	a.process.Store(true)
 	a.logger.Info("organization kernel process is live", "http_addr", a.server.Addr())
-	databaseCtx, cancelDatabase := context.WithCancel(ctx)
-	var databaseWG sync.WaitGroup
-	databaseWG.Add(1)
+	backgroundCtx, cancelBackground := context.WithCancel(ctx)
+	var backgroundWG sync.WaitGroup
+	backgroundWG.Add(1)
 	go func() {
-		defer databaseWG.Done()
-		a.prepareDatabase(databaseCtx)
+		defer backgroundWG.Done()
+		a.prepareDatabase(backgroundCtx)
 	}()
+	if a.cfg.Tasks.ReconcilerEnabled && a.reconciler != nil {
+		backgroundWG.Add(1)
+		go func() {
+			defer backgroundWG.Done()
+			a.runTaskReconciler(backgroundCtx)
+		}()
+	}
 
 	var runErr error
 	select {
@@ -95,8 +140,8 @@ func (a *App) Run(ctx context.Context) error {
 	}
 	a.process.Store(false)
 	a.schema.Store(false)
-	cancelDatabase()
-	databaseWG.Wait()
+	cancelBackground()
+	backgroundWG.Wait()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), a.cfg.App.ShutdownTimeout)
 	defer cancel()
@@ -149,6 +194,45 @@ func (a *App) prepareDatabase(ctx context.Context) {
 			return
 		case <-timer.C:
 		}
+	}
+}
+
+func (a *App) runTaskReconciler(ctx context.Context) {
+	ticker := time.NewTicker(a.cfg.Tasks.ReconcileInterval)
+	defer ticker.Stop()
+	for {
+		if a.schema.Load() {
+			a.reconcileTasksOnce(ctx)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (a *App) reconcileTasksOnce(ctx context.Context) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			a.logger.Error("task reconciler panic recovered; next interval remains scheduled", "panic", recovered)
+		}
+	}()
+	reconcileCtx, cancel := context.WithTimeout(ctx, a.cfg.Tasks.CommandTimeout)
+	defer cancel()
+	result, err := a.reconciler.Reconcile(reconcileCtx, a.cfg.Tasks.ReconcileBatchSize)
+	if err != nil {
+		a.logger.Warn("durable task reconciliation failed; process remains live", "error", err)
+		return
+	}
+	if result.ExpiredLeases+result.RecoveredOutbox+result.PromotedTasks+result.BlockedDependencies+result.BlockedAssignees > 0 {
+		a.logger.Info("durable task reconciliation completed",
+			"expired_leases", result.ExpiredLeases,
+			"recovered_outbox", result.RecoveredOutbox,
+			"promoted_tasks", result.PromotedTasks,
+			"blocked_dependencies", result.BlockedDependencies,
+			"blocked_assignees", result.BlockedAssignees,
+		)
 	}
 }
 

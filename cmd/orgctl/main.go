@@ -52,6 +52,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runMigrate(args[1:], stdout, stderr)
 	case "registry":
 		return runRegistry(args[1:], stdout, stderr)
+	case "task":
+		return runTask(args[1:], stdout, stderr)
+	case "outbox":
+		return runOutbox(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return exitOK
@@ -479,7 +483,7 @@ func runHealth(args []string, stdout, stderr io.Writer) int {
 }
 
 func printUsage(out io.Writer) {
-	fmt.Fprintln(out, "usage: orgctl <command> [options]\ncommands:\n  version\n  health [--ready]\n  migrate <up|status>\n  registry <validate|diff|sync|status|list-units|list-roles|get-role|get-leader>")
+	fmt.Fprintln(out, "usage: orgctl <command> [options]\ncommands:\n  version\n  health [--ready]\n  migrate <up|status>\n  registry <validate|diff|sync|status|list-units|list-roles|get-role|get-leader>\n  task <create|get|list|claim|start|heartbeat|result|finalize|block|unblock|cancel|dependency|requirement|evidence|events|attempts|reconcile|dead-letter>\n  outbox <claim|ack|nack|recover|status>")
 }
 func printRegistryUsage(out io.Writer) {
 	fmt.Fprintln(out, "usage: orgctl registry <command> [options]")

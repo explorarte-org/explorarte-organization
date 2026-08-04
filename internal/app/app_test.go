@@ -13,6 +13,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/config"
 	"github.com/Mireuz13/explorarte-organization/internal/platform/buildinfo"
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
+	"github.com/Mireuz13/explorarte-organization/internal/tasks"
 )
 
 type fakeDatabase struct {
@@ -35,6 +36,85 @@ func (m fakeMigrator) Up(context.Context) (platformmigrations.Result, error) {
 }
 func (m fakeMigrator) Status(context.Context) (platformmigrations.Status, error) {
 	return platformmigrations.Status{Applied: 1, Current: 1, Latest: 1, Ready: m.err == nil}, m.err
+}
+
+type fakeReconciler struct {
+	calls atomic.Int64
+	err   error
+}
+
+func (r *fakeReconciler) Reconcile(context.Context, int) (tasks.ReconcileResult, error) {
+	r.calls.Add(1)
+	return tasks.ReconcileResult{}, r.err
+}
+
+type panicOnceReconciler struct {
+	calls atomic.Int64
+}
+
+func (r *panicOnceReconciler) Reconcile(context.Context, int) (tasks.ReconcileResult, error) {
+	if r.calls.Add(1) == 1 {
+		panic("synthetic reconciler panic")
+	}
+	return tasks.ReconcileResult{}, nil
+}
+
+func TestReconcilerFailureDoesNotKillHTTPProcess(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Database.MigrationRetry = 20 * time.Millisecond
+	cfg.Tasks.ReconcileInterval = 10 * time.Millisecond
+	cfg.Tasks.CommandTimeout = 50 * time.Millisecond
+	database := &fakeDatabase{}
+	database.available.Store(true)
+	reconciler := &fakeReconciler{err: errors.New("reconcile failed")}
+	application := newWithDependencies(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), buildinfo.Info{}, database, fakeMigrator{})
+	application.reconciler = reconciler
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- application.Run(ctx) }()
+	waitForAddress(t, application)
+	waitForStatus(t, "http://"+application.Addr()+"/readyz", http.StatusOK)
+	deadline := time.Now().Add(time.Second)
+	for reconciler.calls.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if reconciler.calls.Load() == 0 {
+		t.Fatal("reconciler was not called")
+	}
+	assertHTTPStatus(t, "http://"+application.Addr()+"/healthz", http.StatusOK)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+}
+
+func TestReconcilerPanicDoesNotStopFutureIntervals(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Database.MigrationRetry = 20 * time.Millisecond
+	cfg.Tasks.ReconcileInterval = 10 * time.Millisecond
+	cfg.Tasks.CommandTimeout = 50 * time.Millisecond
+	database := &fakeDatabase{}
+	database.available.Store(true)
+	reconciler := &panicOnceReconciler{}
+	application := newWithDependencies(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), buildinfo.Info{}, database, fakeMigrator{})
+	application.reconciler = reconciler
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- application.Run(ctx) }()
+	waitForAddress(t, application)
+	waitForStatus(t, "http://"+application.Addr()+"/readyz", http.StatusOK)
+	deadline := time.Now().Add(time.Second)
+	for reconciler.calls.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if reconciler.calls.Load() < 2 {
+		t.Fatalf("reconciler stopped after panic; calls=%d", reconciler.calls.Load())
+	}
+	assertHTTPStatus(t, "http://"+application.Addr()+"/healthz", http.StatusOK)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
 }
 
 func TestProcessStaysLiveWhilePostgresIsUnavailable(t *testing.T) {

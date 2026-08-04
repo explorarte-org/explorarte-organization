@@ -7,10 +7,13 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 )
+
+var organizationIDPattern = regexp.MustCompile(`^[a-z0-9]+(?:[-_][a-z0-9]+)*$`)
 
 const (
 	defaultAppName           = "explorarte-organization"
@@ -41,6 +44,17 @@ const (
 	defaultDatabaseMigrationRetry          = 5 * time.Second
 	defaultCanonicalDir                    = "docs/canonical"
 	defaultRegistrySyncTimeout             = 30 * time.Second
+	defaultTaskOrganizationID              = "explorarte"
+	defaultTaskReconcileInterval           = 5 * time.Second
+	defaultTaskReconcileBatchSize          = 100
+	defaultTaskDefaultMaxAttempts          = 5
+	defaultTaskDefaultLeaseDuration        = 2 * time.Minute
+	defaultTaskMaxLeaseDuration            = 15 * time.Minute
+	defaultTaskRetryBaseDelay              = 5 * time.Second
+	defaultTaskRetryMaxDelay               = 10 * time.Minute
+	defaultTaskOutboxMaxAttempts           = 10
+	defaultTaskOutboxClaimDuration         = time.Minute
+	defaultTaskCommandTimeout              = 30 * time.Second
 )
 
 type Config struct {
@@ -49,6 +63,7 @@ type Config struct {
 	Logging  LoggingConfig
 	Database DatabaseConfig
 	Registry RegistryConfig
+	Tasks    TaskConfig
 }
 
 type AppConfig struct {
@@ -95,6 +110,21 @@ type DatabaseConfig struct {
 type RegistryConfig struct {
 	CanonicalDir string
 	SyncTimeout  time.Duration
+}
+
+type TaskConfig struct {
+	OrganizationID       string
+	ReconcilerEnabled    bool
+	ReconcileInterval    time.Duration
+	ReconcileBatchSize   int
+	DefaultMaxAttempts   int
+	DefaultLeaseDuration time.Duration
+	MaxLeaseDuration     time.Duration
+	RetryBaseDelay       time.Duration
+	RetryMaxDelay        time.Duration
+	OutboxMaxAttempts    int
+	OutboxClaimDuration  time.Duration
+	CommandTimeout       time.Duration
 }
 
 type LookupEnv func(string) (string, bool)
@@ -144,6 +174,10 @@ func LoadFrom(lookup LookupEnv) (Config, error) {
 	if raw, ok := lookup("ORG_CANONICAL_DIR"); ok {
 		canonicalDir = strings.TrimSpace(raw)
 	}
+	tasks, err := loadTasks(lookup)
+	if err != nil {
+		return Config{}, err
+	}
 
 	cfg := Config{
 		App: AppConfig{
@@ -164,6 +198,7 @@ func LoadFrom(lookup LookupEnv) (Config, error) {
 		},
 		Database: database,
 		Registry: RegistryConfig{CanonicalDir: canonicalDir, SyncTimeout: registryTimeout},
+		Tasks:    tasks,
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -249,6 +284,67 @@ func loadDatabase(lookup LookupEnv) (DatabaseConfig, error) {
 	}, nil
 }
 
+func loadTasks(lookup LookupEnv) (TaskConfig, error) {
+	reconcilerEnabled, err := boolean(lookup, "ORG_TASK_RECONCILER_ENABLED", true)
+	if err != nil {
+		return TaskConfig{}, err
+	}
+	reconcileInterval, err := duration(lookup, "ORG_TASK_RECONCILE_INTERVAL", defaultTaskReconcileInterval)
+	if err != nil {
+		return TaskConfig{}, err
+	}
+	reconcileBatch, err := integer(lookup, "ORG_TASK_RECONCILE_BATCH_SIZE", defaultTaskReconcileBatchSize, 1, 1000)
+	if err != nil {
+		return TaskConfig{}, err
+	}
+	maxAttempts, err := integer(lookup, "ORG_TASK_DEFAULT_MAX_ATTEMPTS", defaultTaskDefaultMaxAttempts, 1, 100)
+	if err != nil {
+		return TaskConfig{}, err
+	}
+	leaseDuration, err := duration(lookup, "ORG_TASK_DEFAULT_LEASE_DURATION", defaultTaskDefaultLeaseDuration)
+	if err != nil {
+		return TaskConfig{}, err
+	}
+	maxLeaseDuration, err := duration(lookup, "ORG_TASK_MAX_LEASE_DURATION", defaultTaskMaxLeaseDuration)
+	if err != nil {
+		return TaskConfig{}, err
+	}
+	retryBase, err := duration(lookup, "ORG_TASK_RETRY_BASE_DELAY", defaultTaskRetryBaseDelay)
+	if err != nil {
+		return TaskConfig{}, err
+	}
+	retryMax, err := duration(lookup, "ORG_TASK_RETRY_MAX_DELAY", defaultTaskRetryMaxDelay)
+	if err != nil {
+		return TaskConfig{}, err
+	}
+	outboxAttempts, err := integer(lookup, "ORG_TASK_OUTBOX_MAX_ATTEMPTS", defaultTaskOutboxMaxAttempts, 1, 100)
+	if err != nil {
+		return TaskConfig{}, err
+	}
+	outboxClaim, err := duration(lookup, "ORG_TASK_OUTBOX_CLAIM_DURATION", defaultTaskOutboxClaimDuration)
+	if err != nil {
+		return TaskConfig{}, err
+	}
+	commandTimeout, err := duration(lookup, "ORG_TASK_COMMAND_TIMEOUT", defaultTaskCommandTimeout)
+	if err != nil {
+		return TaskConfig{}, err
+	}
+	return TaskConfig{
+		OrganizationID:       text(lookup, "ORG_TASK_ORGANIZATION_ID", defaultTaskOrganizationID),
+		ReconcilerEnabled:    reconcilerEnabled,
+		ReconcileInterval:    reconcileInterval,
+		ReconcileBatchSize:   reconcileBatch,
+		DefaultMaxAttempts:   maxAttempts,
+		DefaultLeaseDuration: leaseDuration,
+		MaxLeaseDuration:     maxLeaseDuration,
+		RetryBaseDelay:       retryBase,
+		RetryMaxDelay:        retryMax,
+		OutboxMaxAttempts:    outboxAttempts,
+		OutboxClaimDuration:  outboxClaim,
+		CommandTimeout:       commandTimeout,
+	}, nil
+}
+
 func (cfg Config) Validate() error {
 	if strings.TrimSpace(cfg.App.Name) == "" {
 		return errors.New("ORG_APP_NAME cannot be empty")
@@ -278,6 +374,34 @@ func (cfg Config) Validate() error {
 	}
 	if cfg.Registry.SyncTimeout <= 0 {
 		return errors.New("ORG_REGISTRY_SYNC_TIMEOUT must be greater than zero")
+	}
+	if err := cfg.Tasks.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (cfg TaskConfig) Validate() error {
+	if !organizationIDPattern.MatchString(strings.TrimSpace(cfg.OrganizationID)) {
+		return errors.New("ORG_TASK_ORGANIZATION_ID must be a lowercase canonical identifier")
+	}
+	if cfg.ReconcileInterval <= 0 || cfg.DefaultLeaseDuration <= 0 || cfg.MaxLeaseDuration <= 0 || cfg.RetryBaseDelay <= 0 || cfg.RetryMaxDelay <= 0 || cfg.OutboxClaimDuration <= 0 || cfg.CommandTimeout <= 0 {
+		return errors.New("task durations must be greater than zero")
+	}
+	if cfg.DefaultLeaseDuration > cfg.MaxLeaseDuration {
+		return errors.New("ORG_TASK_DEFAULT_LEASE_DURATION cannot exceed ORG_TASK_MAX_LEASE_DURATION")
+	}
+	if cfg.RetryBaseDelay > cfg.RetryMaxDelay {
+		return errors.New("ORG_TASK_RETRY_BASE_DELAY cannot exceed ORG_TASK_RETRY_MAX_DELAY")
+	}
+	if cfg.ReconcileBatchSize < 1 || cfg.ReconcileBatchSize > 1000 {
+		return errors.New("ORG_TASK_RECONCILE_BATCH_SIZE must be between 1 and 1000")
+	}
+	if cfg.DefaultMaxAttempts < 1 || cfg.DefaultMaxAttempts > 100 {
+		return errors.New("ORG_TASK_DEFAULT_MAX_ATTEMPTS must be between 1 and 100")
+	}
+	if cfg.OutboxMaxAttempts < 1 || cfg.OutboxMaxAttempts > 100 {
+		return errors.New("ORG_TASK_OUTBOX_MAX_ATTEMPTS must be between 1 and 100")
 	}
 	return nil
 }

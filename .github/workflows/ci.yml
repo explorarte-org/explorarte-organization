@@ -24,14 +24,16 @@ jobs:
           cache: true
       - name: Download and verify modules
         run: go mod download && go mod verify
-      - name: Canonical documents unchanged from Branch 02
-        run: git diff --exit-code 4c1153d5e78a0eea4df9c96e5872de2ad79e3c80 -- docs/canonical
+      - name: Canonical documents unchanged from Branch 03
+        run: git diff --exit-code a199d1eea1f4f28d1b9f346e9ccbd670d5e8b69a -- docs/canonical
       - name: Check formatting
         run: test -z "$(gofmt -l .)"
       - name: Vet
         run: go vet ./...
       - name: Unit tests
         run: go test -short ./...
+      - name: Durable task fitness checks
+        run: make test-task-fitness
       - name: Validate canonical registry
         run: go run ./cmd/orgctl registry validate
       - name: Native build
@@ -86,7 +88,9 @@ jobs:
         run: go test -count=1 -tags=integration ./internal/platform/postgres
       - name: Organization registry integration
         run: go test -count=1 -tags=integration ./internal/organization/registry
-      - name: Registry CLI smoke test
+      - name: Durable task engine integration
+        run: go test -count=1 -tags=integration ./internal/tasks/postgres
+      - name: Registry and task CLI smoke test
         run: |
           go run ./cmd/orgctl migrate up
           go run ./cmd/orgctl registry validate
@@ -96,6 +100,13 @@ jobs:
           set -e
           go run ./cmd/orgctl registry sync --apply
           go run ./cmd/orgctl registry sync --apply
-          go run ./cmd/orgctl registry status
+          go run ./cmd/orgctl registry status --json
           go run ./cmd/orgctl registry get-role ingenieria_ia/orquestador --json
           go run ./cmd/orgctl registry get-leader ingenieria_ia --json
+          cat > /tmp/task.json <<'JSON'
+          {"assigned_role_id":"ingenieria_ia/qa","idempotency_key":"ci-cli-smoke-1","title":"CI task smoke","instructions":"Validate durable task CLI wiring.","acceptance_criteria":["task persists"]}
+          JSON
+          go run ./cmd/orgctl task create --file /tmp/task.json --actor-id github-actions --json
+          go run ./cmd/orgctl task list --status ready --json
+          go run ./cmd/orgctl task reconcile --batch 100 --json
+          go run ./cmd/orgctl outbox status --json

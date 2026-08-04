@@ -1,0 +1,9 @@
+DROP TABLE IF EXISTS outbox_events;
+DROP TABLE IF EXISTS task_dead_letters;
+DROP TABLE IF EXISTS task_events;
+DROP TABLE IF EXISTS task_leases;
+DROP TABLE IF EXISTS task_attempts;
+DROP TABLE IF EXISTS task_evidence;
+DROP TABLE IF EXISTS task_requirements;
+DROP TABLE IF EXISTS task_dependencies;
+DROP TABLE IF EXISTS tasks;
