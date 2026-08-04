@@ -1,0 +1,47 @@
+schema_version: 0.1.0
+document_status: branch_0_candidate
+policies:
+  executive.ceo:
+    provider: alibaba_token_plan_via_claude_code
+    model: qwen3.6-flash
+    transport: cli_adapter
+    direct_http_forbidden: true
+    source_of_decision: owner_conversation
+    legacy_conflicts:
+    - qwen3.8-max in current AGENT/PERFIL documents
+  executive.observer:
+    provider: alibaba_token_plan_via_claude_code
+    model: qwen3.6-flash
+    transport: cli_adapter
+    direct_http_forbidden: true
+    source_of_decision: provisional_same_family_as_ceo
+    decision_status: owner_confirmation_required
+  department.leader:
+    provider: openai_compatible
+    model: gpt-5.6-luna
+    reasoning_effort: xhigh
+    transport: http_adapter
+    source_of_decision: owner_conversation_and_global_agent
+    legacy_conflicts:
+    - qwen3.8-max in individual leader profiles
+  department.worker:
+    provider: deepseek
+    model: deepseek-v4-flash
+    transport: http_adapter
+    source_of_decision: global_agent_and_owner_description
+  research.audit:
+    provider: alibaba_token_plan_via_claude_code
+    model: qwen3.6-flash
+    transport: cli_adapter
+    direct_http_forbidden: true
+    decision_status: candidate_preserves_high_level_audit_role
+  research.worker:
+    provider: deepseek
+    model: deepseek-v4-flash
+    transport: http_adapter
+    schedule: hourly
+routing_invariants:
+- A role never selects its own model from request JSON.
+- The backend resolves a model from an approved policy and role registration.
+- Fallbacks may reduce availability but never silently elevate authority.
+- All provider calls inherit task deadlines and budget limits.

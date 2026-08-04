@@ -1,0 +1,178 @@
+schema_version: 0.1.0
+document_status: branch_0_candidate
+default_policy: deny
+capabilities:
+- id: organization.read_registry
+  risk: low
+- id: organization.propose_role
+  risk: medium
+  approval: owner
+- id: organization.propose_skill
+  risk: medium
+  approval: owner
+- id: organization.activate_skill
+  risk: high
+  approval: owner
+- id: project.create
+  risk: medium
+- id: project.delegate_department
+  risk: medium
+- id: task.assign_worker
+  risk: medium
+- id: task.execute
+  risk: medium
+- id: task.review
+  risk: medium
+- id: task.approve_terminal
+  risk: high
+- id: rag.read_department
+  risk: medium
+- id: rag.read_own_namespace
+  risk: low
+- id: rag.propose_candidate
+  risk: medium
+- id: rag.publish_approved
+  risk: high
+  approval: policy_or_human
+- id: memory.propose
+  risk: medium
+- id: memory.approve
+  risk: high
+- id: code.stage_write
+  risk: high
+- id: code.run_tests
+  risk: medium
+- id: code.commit
+  risk: high
+- id: deployment.request
+  risk: high
+  approval: owner_or_cell_policy
+- id: audit.read_sanitized_evidence
+  risk: medium
+- id: audit.publish_finding
+  risk: medium
+- id: cell.read_clinical_data
+  risk: forbidden
+- id: cell.direct_database_access
+  risk: forbidden
+grants:
+  owner:
+  - '*'
+  executive:
+  - organization.read_registry
+  - project.create
+  - project.delegate_department
+  - audit.read_sanitized_evidence
+  - audit.publish_finding
+  - deployment.request
+  department_leadership:
+  - organization.read_registry
+  - project.delegate_department
+  - task.assign_worker
+  - task.review
+  - rag.read_department
+  - memory.propose
+  specialist:
+  - organization.read_registry
+  - task.execute
+  - rag.read_own_namespace
+  - memory.propose
+  transversal_audit:
+  - organization.read_registry
+  - audit.read_sanitized_evidence
+  - audit.publish_finding
+  - rag.propose_candidate
+  research_execution:
+  - organization.read_registry
+  - rag.read_own_namespace
+  - rag.propose_candidate
+  execution_service:
+  - code.stage_write
+  - code.run_tests
+  - code.commit
+  assurance:
+  - organization.read_registry
+  - task.review
+  - audit.read_sanitized_evidence
+hard_denies:
+  '*':
+  - cell.read_clinical_data
+  - cell.direct_database_access
+  execution_service:
+  - project.create
+  - project.delegate_department
+  - organization.activate_skill
+  - memory.approve
+  specialist:
+  - project.delegate_department
+  - task.assign_worker
+  - organization.activate_skill
+  transversal_audit:
+  - code.stage_write
+  - code.commit
+  - deployment.request
+skill_lifecycle:
+  states:
+  - draft
+  - human_approved
+  - candidate
+  - active
+  - suspended
+  - retired
+  activation_requires:
+  - owner_approval
+  - schema_validation
+  - capability_review
+  - source_record
+imported_skills:
+- id: crear-perfil-y-buscar-skills
+  owner_role_id: recursos_agenticos/disenador_perfiles
+  memory_domain: recursos_agenticos
+  origin: interno
+  base_protocol: verificacion_estado
+  verifier: null
+  status: imported_draft_requires_owner_approval
+  source_file: SKILL.md
+  source_sha256: ebf7d24b81ea16916b507b5faf72435069c4657b3ef4ac95fba619e9ad1de849
+  description: Crea la ficha de puesto (perfil) de un rol nuevo dentro de la organización, y busca activamente en
+    GitHub skills ya existentes que puedan adaptarse a la función de un rol antes de redactar una desde cero. Úsala
+    siempre que Recursos Agénticos necesite definir un rol nuevo, actualizar la ficha de un rol existente, o cuando
+    cualquier departamento pida una skill nueva — el monitoreo de skills externas es constante, no solo reactivo
+    a un pedido puntual.
+- id: pulir-embeddings-mal-troceados
+  owner_role_id: investigacion/auditor_cerebro_empresa
+  memory_domain: investigacion
+  origin: interno
+  base_protocol: verificacion_estado
+  verifier: null
+  status: imported_draft_requires_owner_approval
+  source_file: SKILL(1).md
+  source_sha256: 5cd8844440d532e3504769c892a74b35002f082639f6ccad97ee284d5b97d168
+  description: Detectar y corregir documentos del RAG embebidos como un solo vector gigante en vez de fragmentos
+    buscables, usando el pipeline de re-embebido masivo por Kaggle GPU.
+- id: revisar-publicacion-cerebro-empresa
+  owner_role_id: ingenieria_ia/orquestador
+  memory_domain: ingenieria_ia
+  origin: interno
+  base_protocol: verificacion_estado
+  verifier: null
+  status: imported_draft_requires_owner_approval
+  source_file: SKILL(2).md
+  source_sha256: 900d23ddf0bdc332d1f65113d55eeb3ed8c3361a19477c85cba9a2c1aa9d4955
+  description: Revisa, sanitiza y aprueba resúmenes que Ingeniería de IA quiere publicar hacia el Cerebro Empresa.
+    Úsala cada vez que el departamento tenga un aprendizaje, decisión técnica o hito de roadmap que valga la pena
+    que el resto de la organización pueda consultar — no cada tarea interna, solo lo que realmente cruza la frontera
+    del departamento.
+- id: auditar-ux-y-accesibilidad
+  owner_role_id: ingenieria_ia/frontend
+  memory_domain: ingenieria_ia
+  origin: interno
+  base_protocol: verificacion_estado
+  verifier: null
+  status: imported_draft_requires_owner_approval
+  source_file: SKILL(3).md
+  source_sha256: 5dc4fd8b94962e41e7d61a214632f48c00c1f2410c24ec4cf862c40e475623ee
+  description: Audita y endurece interfaces de producto (páginas, paneles, dashboards, formularios, wizards y workflows)
+    por UX, accesibilidad y rendimiento antes de darlas por terminadas. Úsala cada vez que el Frontend de Ingeniería
+    de IA deba verificar responsive, teclado, foco, contraste, reducción de movimiento, estados de carga/vacío/error
+    o auditar una superficie operativa — no para campañas de contenido, que son del Frontend Creativo.

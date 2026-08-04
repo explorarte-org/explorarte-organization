@@ -1,0 +1,36 @@
+schema_version: 0.1.0
+document_status: branch_0_candidate
+memory_is_optional_per_role: true
+states:
+- candidate
+- approved
+- deprecated
+- archived
+- rejected
+canonical_write_flow:
+- run_or_review_produces_observation
+- create_memory_candidate_with_evidence
+- check_for_duplicates_and_conflicts
+- review_by_authorized_role_or_owner
+- publish_versioned_entry
+- include_only_relevant_approved_entries_in_context
+required_fields:
+- role_id
+- category
+- problem
+- correction
+- source_run_id
+- evidence_refs
+- status
+- created_at
+invariants:
+- An agent cannot directly edit canonical memory during its own run.
+- Memory cannot grant capabilities or override policy.
+- Every approved entry has provenance and a reviewer.
+- Entries can be deprecated without deleting audit history.
+- Clinical data never enters organizational role memory.
+- Legacy MEMORY.md files are classified before import; they are not copied wholesale.
+legacy_memory_files:
+- empresa/ceo/memoria/MEMORY.md
+- ingenieria_ia/frontend/memoria/MEMORY.md
+- ingenieria_ia/qa/memoria/MEMORY.md
