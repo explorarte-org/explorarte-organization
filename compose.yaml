@@ -1,0 +1,46 @@
+name: explorarte-organization
+
+services:
+  orgd:
+    build:
+      context: .
+      args:
+        VERSION: ${ORG_VERSION:-dev}
+        COMMIT: ${ORG_COMMIT:-local}
+        BUILD_TIME: ${ORG_BUILD_TIME:-unknown}
+    image: explorarte-organization:${ORG_VERSION:-dev}
+    environment:
+      ORG_APP_NAME: ${ORG_APP_NAME:-explorarte-organization}
+      ORG_ENVIRONMENT: ${ORG_ENVIRONMENT:-development}
+      ORG_HTTP_ADDR: :8080
+      ORG_HTTP_READ_HEADER_TIMEOUT: ${ORG_HTTP_READ_HEADER_TIMEOUT:-5s}
+      ORG_HTTP_READ_TIMEOUT: ${ORG_HTTP_READ_TIMEOUT:-15s}
+      ORG_HTTP_WRITE_TIMEOUT: ${ORG_HTTP_WRITE_TIMEOUT:-30s}
+      ORG_HTTP_IDLE_TIMEOUT: ${ORG_HTTP_IDLE_TIMEOUT:-60s}
+      ORG_SHUTDOWN_TIMEOUT: ${ORG_SHUTDOWN_TIMEOUT:-15s}
+      ORG_LOG_LEVEL: ${ORG_LOG_LEVEL:-info}
+      ORG_LOG_FORMAT: ${ORG_LOG_FORMAT:-json}
+    ports:
+      - "127.0.0.1:${ORG_HTTP_PORT:-8080}:8080"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    stop_grace_period: 20s
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/orgctl", "health", "--url", "http://127.0.0.1:8080"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    networks:
+      - org-internal
+
+networks:
+  org-internal:
+    name: explorarte-org-internal
+    driver: bridge

@@ -1,0 +1,21 @@
+# Build outputs
+/bin/
+/dist/
+/coverage.out
+*.test
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Runtime data
+/data/
+/artifacts/
+/backups/
+/tmp/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
