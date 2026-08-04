@@ -28,6 +28,9 @@ func TestLoadFromDefaults(t *testing.T) {
 	if !cfg.Database.AutoMigrate {
 		t.Fatal("Database.AutoMigrate = false, want true")
 	}
+	if cfg.Registry.CanonicalDir != "docs/canonical" || cfg.Registry.SyncTimeout != 30*time.Second {
+		t.Fatalf("unexpected registry defaults: %+v", cfg.Registry)
+	}
 }
 
 func TestLoadFromOverrides(t *testing.T) {
@@ -48,6 +51,8 @@ func TestLoadFromOverrides(t *testing.T) {
 		"ORG_DATABASE_MIN_CONNS":         "0",
 		"ORG_DATABASE_AUTO_MIGRATE":      "false",
 		"ORG_DATABASE_MIGRATION_TIMEOUT": "20s",
+		"ORG_CANONICAL_DIR":              "/opt/explorarte/docs/canonical",
+		"ORG_REGISTRY_SYNC_TIMEOUT":      "17s",
 	}
 	cfg, err := LoadFrom(mapLookup(values))
 	if err != nil {
@@ -64,6 +69,9 @@ func TestLoadFromOverrides(t *testing.T) {
 	}
 	if cfg.Database.AutoMigrate {
 		t.Fatal("Database.AutoMigrate = true, want false")
+	}
+	if cfg.Registry.CanonicalDir != "/opt/explorarte/docs/canonical" || cfg.Registry.SyncTimeout != 17*time.Second {
+		t.Fatalf("unexpected registry config: %+v", cfg.Registry)
 	}
 	parsed, err := url.Parse(cfg.Database.ConnectionString())
 	if err != nil {
@@ -92,17 +100,19 @@ func TestDatabaseURLOverride(t *testing.T) {
 
 func TestLoadFromRejectsInvalidValues(t *testing.T) {
 	tests := map[string]map[string]string{
-		"invalid address":       {"ORG_HTTP_ADDR": "8080"},
-		"invalid duration":      {"ORG_SHUTDOWN_TIMEOUT": "soon"},
-		"zero duration":         {"ORG_HTTP_READ_TIMEOUT": "0s"},
-		"invalid level":         {"ORG_LOG_LEVEL": "verbose"},
-		"invalid format":        {"ORG_LOG_FORMAT": "yaml"},
-		"invalid database port": {"ORG_DATABASE_PORT": "70000"},
-		"invalid max conns":     {"ORG_DATABASE_MAX_CONNS": "0"},
-		"min exceeds max":       {"ORG_DATABASE_MAX_CONNS": "2", "ORG_DATABASE_MIN_CONNS": "3"},
-		"invalid ssl mode":      {"ORG_DATABASE_SSLMODE": "trust-me"},
-		"invalid boolean":       {"ORG_DATABASE_AUTO_MIGRATE": "sometimes"},
-		"invalid database URL":  {"ORG_DATABASE_URL": "mysql://localhost/db"},
+		"invalid address":          {"ORG_HTTP_ADDR": "8080"},
+		"invalid duration":         {"ORG_SHUTDOWN_TIMEOUT": "soon"},
+		"zero duration":            {"ORG_HTTP_READ_TIMEOUT": "0s"},
+		"invalid level":            {"ORG_LOG_LEVEL": "verbose"},
+		"invalid format":           {"ORG_LOG_FORMAT": "yaml"},
+		"invalid database port":    {"ORG_DATABASE_PORT": "70000"},
+		"invalid max conns":        {"ORG_DATABASE_MAX_CONNS": "0"},
+		"min exceeds max":          {"ORG_DATABASE_MAX_CONNS": "2", "ORG_DATABASE_MIN_CONNS": "3"},
+		"invalid ssl mode":         {"ORG_DATABASE_SSLMODE": "trust-me"},
+		"invalid boolean":          {"ORG_DATABASE_AUTO_MIGRATE": "sometimes"},
+		"invalid database URL":     {"ORG_DATABASE_URL": "mysql://localhost/db"},
+		"empty canonical dir":      {"ORG_CANONICAL_DIR": "   "},
+		"invalid registry timeout": {"ORG_REGISTRY_SYNC_TIMEOUT": "0s"},
 	}
 	for name, values := range tests {
 		t.Run(name, func(t *testing.T) {

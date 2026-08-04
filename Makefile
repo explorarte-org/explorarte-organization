@@ -10,19 +10,21 @@ LDFLAGS := -s -w \
 	-X main.commit=$(COMMIT) \
 	-X main.buildTime=$(BUILD_TIME)
 
-.PHONY: help deps fmt fmt-check vet test test-unit test-race test-integration build run verify verify-all clean docker-build compose-up compose-down compose-logs migrate-up migrate-status
+.PHONY: help deps fmt fmt-check vet test test-unit test-race test-integration build build-cross run verify verify-all clean docker-build compose-up compose-down compose-logs migrate-up migrate-status registry-validate registry-diff registry-sync registry-status
 
 help:
 	@printf '%s\n' \
-	  'make deps             Download and verify Go modules' \
-	  'make fmt              Format Go files' \
-	  'make verify           Run formatting, vet, unit tests, and builds' \
-	  'make verify-all       Run verify plus real PostgreSQL integration tests' \
-	  'make test-integration Run integration tests in isolated Docker Compose' \
-	  'make migrate-up       Apply PostgreSQL migrations with orgctl' \
-	  'make migrate-status   Inspect PostgreSQL migration status' \
-	  'make compose-up       Start orgd and internal PostgreSQL' \
-	  'make compose-down     Stop containers without deleting PostgreSQL data'
+	  'make deps              Download and verify Go modules' \
+	  'make verify            Run formatting, vet, unit tests, and native builds' \
+	  'make build-cross       Build orgd/orgctl for linux/arm64 and linux/amd64' \
+	  'make test-integration  Run isolated real-PostgreSQL integration tests' \
+	  'make verify-all        Run verify, cross-build, canonical validation, and integration tests' \
+	  'make registry-validate Validate docs/canonical without PostgreSQL writes' \
+	  'make registry-diff     Compare docs/canonical with PostgreSQL' \
+	  'make registry-sync     Apply an explicit canonical registry revision' \
+	  'make registry-status   Show current materialized registry status' \
+	  'make migrate-up        Apply PostgreSQL migrations with orgctl' \
+	  'make migrate-status    Inspect PostgreSQL migration status'
 
 deps:
 	$(GO) mod download
@@ -53,18 +55,37 @@ build:
 	CGO_ENABLED=0 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY_DIR)/orgd ./cmd/orgd
 	CGO_ENABLED=0 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY_DIR)/orgctl ./cmd/orgctl
 
+build-cross:
+	@mkdir -p $(BINARY_DIR)/linux-arm64 $(BINARY_DIR)/linux-amd64
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY_DIR)/linux-arm64/orgd ./cmd/orgd
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY_DIR)/linux-arm64/orgctl ./cmd/orgctl
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY_DIR)/linux-amd64/orgd ./cmd/orgd
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY_DIR)/linux-amd64/orgctl ./cmd/orgctl
+
 run:
 	$(GO) run ./cmd/orgd
 
 verify: fmt-check vet test-unit build
 
-verify-all: verify test-integration
+verify-all: verify build-cross registry-validate test-integration
 
 migrate-up:
 	$(GO) run ./cmd/orgctl migrate up
 
 migrate-status:
 	$(GO) run ./cmd/orgctl migrate status
+
+registry-validate:
+	$(GO) run ./cmd/orgctl registry validate
+
+registry-diff:
+	$(GO) run ./cmd/orgctl registry diff
+
+registry-sync:
+	$(GO) run ./cmd/orgctl registry sync --apply
+
+registry-status:
+	$(GO) run ./cmd/orgctl registry status
 
 clean:
 	rm -rf $(BINARY_DIR) dist coverage.out

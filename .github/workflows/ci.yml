@@ -2,9 +2,7 @@ name: ci
 
 on:
   push:
-    branches:
-      - main
-      - "feat/**"
+    branches: [main, "feat/**"]
   pull_request:
 
 permissions:
@@ -13,31 +11,48 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
-      - name: Verify modules
-        run: go mod verify
+      - name: Download and verify modules
+        run: go mod download && go mod verify
+      - name: Canonical documents unchanged from Branch 02
+        run: git diff --exit-code 4c1153d5e78a0eea4df9c96e5872de2ad79e3c80 -- docs/canonical
       - name: Check formatting
         run: test -z "$(gofmt -l .)"
       - name: Vet
         run: go vet ./...
       - name: Unit tests
         run: go test -short ./...
-      - name: Build
+      - name: Validate canonical registry
+        run: go run ./cmd/orgctl registry validate
+      - name: Native build
         run: go build ./...
-      - name: Build container
-        run: docker build -t explorarte-organization:ci .
+      - name: Cross builds
+        run: make build-cross
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Multi-architecture Docker build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          outputs: type=cacheonly
 
   postgres-integration:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 18
     services:
       postgres:
         image: postgres:17-bookworm
@@ -45,8 +60,7 @@ jobs:
           POSTGRES_USER: explorarte_test
           POSTGRES_PASSWORD: integration-only-password
           POSTGRES_DB: explorarte_test
-        ports:
-          - 5432:5432
+        ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U explorarte_test -d explorarte_test"
           --health-interval 5s
@@ -54,13 +68,34 @@ jobs:
           --health-retries 10
     env:
       ORG_TEST_DATABASE_URL: postgres://explorarte_test:integration-only-password@127.0.0.1:5432/explorarte_test?sslmode=disable
+      ORG_DATABASE_URL: postgres://explorarte_test:integration-only-password@127.0.0.1:5432/explorarte_test?sslmode=disable
+      ORG_CANONICAL_DIR: docs/canonical
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
-      - name: Real PostgreSQL integration tests
-        run: go test -count=1 -tags=integration ./...
+      - name: Download and verify modules
+        run: go mod download && go mod verify
+      - name: Platform PostgreSQL integration
+        run: go test -count=1 -tags=integration ./internal/platform/postgres
+      - name: Organization registry integration
+        run: go test -count=1 -tags=integration ./internal/organization/registry
+      - name: Registry CLI smoke test
+        run: |
+          go run ./cmd/orgctl migrate up
+          go run ./cmd/orgctl registry validate
+          set +e
+          go run ./cmd/orgctl registry diff
+          test $? -eq 3
+          set -e
+          go run ./cmd/orgctl registry sync --apply
+          go run ./cmd/orgctl registry sync --apply
+          go run ./cmd/orgctl registry status
+          go run ./cmd/orgctl registry get-role ingenieria_ia/orquestador --json
+          go run ./cmd/orgctl registry get-leader ingenieria_ia --json

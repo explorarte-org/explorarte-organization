@@ -4,27 +4,31 @@ Monolito modular en Go para el plano de control organizacional de Explorarte.
 
 ## Estado de esta rama
 
-La Rama 02 incorpora la infraestructura PostgreSQL sin implementar todavía el
-registro organizacional, proyectos, agentes, mensajería ni el motor durable de
-tareas.
+La Rama 03 agrega el registro organizacional canónico sobre la persistencia de la
+Rama 02.
 
 Incluye:
 
-- `orgd`, daemon HTTP privado;
-- `orgctl`, CLI operativa y de migraciones;
-- pool PostgreSQL con `pgx`;
-- migraciones SQL embebidas, versionadas y protegidas por advisory lock;
-- `schema_migrations` con checksum para detectar drift;
-- tabla genérica `audit_events`;
-- `UnitOfWork` para transacciones;
-- PostgreSQL interno en Docker Compose, sin puerto publicado;
-- tests unitarios y tests de integración reales contra PostgreSQL.
+- lectura tipada y estricta de los documentos requeridos en `docs/canonical`;
+- validaciones cruzadas del organigrama, líderes, workers, reporting, modelos y
+  clases de autoridad;
+- hash canónico determinista por documento y agregado;
+- materialización versionada en PostgreSQL;
+- diff, dry-run y sincronización administrativa explícita;
+- retiro lógico de roles y unidades;
+- historial de relaciones `reports_to` por revisión;
+- evento genérico `organization.registry_synced`;
+- consultas internas y comandos `orgctl registry`;
+- pruebas unitarias y de integración con PostgreSQL real.
+
+La fuente declarativa sigue siendo Git. PostgreSQL es una representación materializada,
+consultable y auditable. No hay sincronización automática durante el arranque.
 
 ## Requisitos
 
-- Go 1.25 o `GOTOOLCHAIN=auto`.
-- Docker Engine y Docker Compose para el entorno completo.
-- Arquitectura ARM64 o AMD64.
+- Go 1.25 o `GOTOOLCHAIN=auto`;
+- Docker Engine y Docker Compose;
+- arquitectura ARM64 o AMD64.
 
 ## Configuración local
 
@@ -32,49 +36,59 @@ Incluye:
 cp .env.example .env
 ```
 
-Reemplaza obligatoriamente las dos contraseñas de ejemplo. `.env` está
-ignorado por Git y no debe compartirse.
+Reemplaza las contraseñas de ejemplo. `.env` está ignorado por Git.
 
-```bash
-openssl rand -base64 36
-```
-
-## Levantar el entorno
+## Entorno Docker
 
 ```bash
 make compose-up
-
 docker compose ps
 curl -fsS http://127.0.0.1:8080/healthz
-echo
 curl -fsS http://127.0.0.1:8080/readyz
-echo
 ```
 
-`/healthz` indica que el proceso HTTP está vivo. `/readyz` depende de que
-PostgreSQL responda y de que el esquema esté completamente migrado.
+PostgreSQL no publica el puerto 5432 al host. `orgd` solo publica HTTP en
+`127.0.0.1`.
 
-PostgreSQL no publica `5432` al host. Para ejecutar SQL administrativo usa el
-contenedor PostgreSQL.
+`/healthz` indica liveness del proceso. `/readyz` conserva la semántica de la Rama
+02: depende de PostgreSQL y de las migraciones, no de que el registro ya haya sido
+sincronizado.
 
 ## Migraciones
-
-Automáticas, controladas por `ORG_DATABASE_AUTO_MIGRATE=true`.
 
 ```bash
 docker compose exec orgd /usr/local/bin/orgctl migrate status
 docker compose exec orgd /usr/local/bin/orgctl migrate up
 ```
 
-Las migraciones viven en `migrations/` con el formato:
+No edites una migración aplicada. `schema_migrations` conserva el SHA-256 del SQL
+ascendente.
 
-```text
-NNNNNN_nombre.up.sql
-NNNNNN_nombre.down.sql
+## Registro organizacional
+
+```bash
+make registry-validate
+make registry-diff
+make registry-sync
+make registry-status
 ```
 
-No edites una migración ya aplicada. La tabla `schema_migrations` conserva el
-SHA-256 del SQL ascendente y rechaza drift.
+Consultas:
+
+```bash
+go run ./cmd/orgctl registry list-units
+go run ./cmd/orgctl registry list-roles --unit ingenieria_ia
+go run ./cmd/orgctl registry list-roles --enabled --json
+go run ./cmd/orgctl registry get-role ingenieria_ia/orquestador
+go run ./cmd/orgctl registry get-leader ingenieria_ia
+```
+
+`registry diff` y `registry sync` sin `--apply` nunca escriben. La primera
+materialización se aplica mediante:
+
+```bash
+go run ./cmd/orgctl registry sync --apply
+```
 
 ## Verificación
 
@@ -84,21 +98,22 @@ make test-integration
 make verify-all
 ```
 
-El test de integración usa un proyecto Compose, red y volúmenes aislados; no
-toca el volumen de desarrollo `explorarte-org-postgres-data`.
+El entorno de integración usa proyecto Compose, red y volúmenes aislados. No toca
+el volumen de desarrollo.
 
 ## Endpoints
 
 ```text
-GET /healthz  liveness del proceso; no depende de PostgreSQL
-GET /readyz   readiness de PostgreSQL y esquema
-GET /version  información de build
+GET /healthz
+GET /readyz
+GET /version
 ```
 
-## Límites de esta rama
+No se agregan endpoints HTTP del registro en esta rama.
 
-Esta rama no implementa `SKIP LOCKED`, leases, tareas, outbox, dead letter,
-mensajería, proyectos, agentes ni departamentos. La siguiente migración debe
-comenzar en `000002`.
+## Límites
 
-Consulta `docs/implementation/branch-02-postgres-storage/INTEGRATION.md`.
+Esta rama no implementa proyectos, tareas, mensajes, SKIP LOCKED, leases, outbox,
+dead letter, agentes ejecutables, modelos, skills, memoria, RAG, Prolog ni células.
+
+Consulta `docs/implementation/branch-03-organization-registry/INTEGRATION.md`.

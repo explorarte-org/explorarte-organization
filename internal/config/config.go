@@ -39,6 +39,8 @@ const (
 	defaultDatabaseLockTimeout             = 5 * time.Second
 	defaultDatabaseMigrationTimeout        = 45 * time.Second
 	defaultDatabaseMigrationRetry          = 5 * time.Second
+	defaultCanonicalDir                    = "docs/canonical"
+	defaultRegistrySyncTimeout             = 30 * time.Second
 )
 
 type Config struct {
@@ -46,6 +48,7 @@ type Config struct {
 	HTTP     HTTPConfig
 	Logging  LoggingConfig
 	Database DatabaseConfig
+	Registry RegistryConfig
 }
 
 type AppConfig struct {
@@ -89,6 +92,11 @@ type DatabaseConfig struct {
 	MigrationRetry    time.Duration
 }
 
+type RegistryConfig struct {
+	CanonicalDir string
+	SyncTimeout  time.Duration
+}
+
 type LookupEnv func(string) (string, bool)
 
 func Load() (Config, error) {
@@ -128,6 +136,14 @@ func LoadFrom(lookup LookupEnv) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	registryTimeout, err := duration(lookup, "ORG_REGISTRY_SYNC_TIMEOUT", defaultRegistrySyncTimeout)
+	if err != nil {
+		return Config{}, err
+	}
+	canonicalDir := defaultCanonicalDir
+	if raw, ok := lookup("ORG_CANONICAL_DIR"); ok {
+		canonicalDir = strings.TrimSpace(raw)
+	}
 
 	cfg := Config{
 		App: AppConfig{
@@ -147,6 +163,7 @@ func LoadFrom(lookup LookupEnv) (Config, error) {
 			Format: strings.ToLower(text(lookup, "ORG_LOG_FORMAT", defaultLogFormat)),
 		},
 		Database: database,
+		Registry: RegistryConfig{CanonicalDir: canonicalDir, SyncTimeout: registryTimeout},
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -253,7 +270,16 @@ func (cfg Config) Validate() error {
 	default:
 		return fmt.Errorf("ORG_LOG_FORMAT must be json or text, got %q", cfg.Logging.Format)
 	}
-	return cfg.Database.Validate()
+	if err := cfg.Database.Validate(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(cfg.Registry.CanonicalDir) == "" {
+		return errors.New("ORG_CANONICAL_DIR cannot be empty")
+	}
+	if cfg.Registry.SyncTimeout <= 0 {
+		return errors.New("ORG_REGISTRY_SYNC_TIMEOUT must be greater than zero")
+	}
+	return nil
 }
 
 func (cfg DatabaseConfig) Validate() error {

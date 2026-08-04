@@ -16,6 +16,8 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/orgd /usr/local/bin/orgd
 COPY --from=build /out/orgctl /usr/local/bin/orgctl
+COPY --from=build /src/docs/canonical /opt/explorarte/docs/canonical
+ENV ORG_CANONICAL_DIR=/opt/explorarte/docs/canonical
 USER 65532:65532
 EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=5 CMD ["/usr/local/bin/orgctl", "health", "--ready", "--url", "http://127.0.0.1:8080"]
