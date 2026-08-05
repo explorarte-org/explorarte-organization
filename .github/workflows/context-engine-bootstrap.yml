@@ -1,4 +1,4 @@
-# Transfer runner for Branch 07; it deletes itself before committing implementation.
+# Transfer runner for Branch 07; it retains itself until GitHub-side cleanup.
 name: context-engine-apply
 
 on:
@@ -96,7 +96,6 @@ jobs:
           PY
           rm -f .github/context-engine.patch.xz.b64
           rm -rf .github/context-parts
-          rm -f .github/workflows/context-engine-bootstrap.yml
           gofmt -w cmd/orgctl internal/config internal/contextengine
           git diff --check
           git diff --exit-code "$CONTEXT_BASE_SHA" -- docs/canonical
@@ -114,16 +113,18 @@ jobs:
           make test-context-integration
           make test-authorization-integration
           make test-staging-integration
-      - name: Commit implementation without temporary transfer files
+      - name: Commit implementation without workflow changes
         run: |
           set -euo pipefail
           test ! -e .github/context-engine.patch.xz.b64
           test ! -e .github/context-parts
-          test ! -e .github/workflows/context-engine-bootstrap.yml
+          git checkout HEAD -- .github/workflows/ci.yml .github/workflows/context-engine-bootstrap.yml
           git diff --exit-code "$CONTEXT_BASE_SHA" -- docs/canonical
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add .github/workflows/ci.yml Makefile cmd/orgctl internal/config internal/contextengine migrations scripts docs/implementation/branch-07-context-engine
+          git add Makefile cmd/orgctl internal/config internal/contextengine migrations scripts docs/implementation/branch-07-context-engine
+          git add -u .github
           git diff --cached --name-only | grep '^docs/canonical/' && exit 1 || true
-          git commit -m "feat(context): implement deterministic context engine (WIP)"
+          git diff --cached --name-only | grep '^.github/workflows/' && exit 1 || true
+          git commit -m "feat(context): add deterministic durable context engine"
           git push origin HEAD:feat/07-context-engine
