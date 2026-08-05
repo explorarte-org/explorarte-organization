@@ -12,7 +12,7 @@ permissions:
 jobs:
   preconditions-and-export:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     services:
       postgres:
         image: postgres:17-bookworm
@@ -82,9 +82,24 @@ jobs:
           cp /tmp/test-authorization-integration.log /tmp/context-engine-base/AUTHORIZATION_INTEGRATION.log
           cp /tmp/test-staging-integration.log /tmp/context-engine-base/STAGING_INTEGRATION.log
           tar -C /tmp -czf /tmp/context-engine-base.tar.gz context-engine-base
+      - name: Package Go toolchain and module cache
+        run: |
+          set -euo pipefail
+          goroot="$(go env GOROOT)"
+          gomodcache="$(go env GOMODCACHE)"
+          tar -C "$(dirname "$goroot")" -czf /tmp/context-go-toolchain.tar.gz "$(basename "$goroot")"
+          tar -C "$(dirname "$gomodcache")" -czf /tmp/context-go-modcache.tar.gz "$(basename "$gomodcache")"
       - name: Upload validated base
         uses: actions/upload-artifact@v4
         with:
           name: context-engine-base
           path: /tmp/context-engine-base.tar.gz
           retention-days: 3
+      - name: Upload Go development environment
+        uses: actions/upload-artifact@v4
+        with:
+          name: context-go-dev-env
+          path: |
+            /tmp/context-go-toolchain.tar.gz
+            /tmp/context-go-modcache.tar.gz
+          retention-days: 1
