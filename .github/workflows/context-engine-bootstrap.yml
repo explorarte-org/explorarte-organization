@@ -4,6 +4,8 @@ name: context-engine-apply
 on:
   push:
     branches: ["feat/07-context-engine"]
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: write
