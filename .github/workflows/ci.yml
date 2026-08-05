@@ -43,6 +43,8 @@ jobs:
         run: make test-staging-fitness
       - name: Authorization policy fitness checks
         run: make test-authorization-fitness
+      - name: Context policy and determinism fitness checks
+        run: make test-context-fitness
       - name: Validate canonical registry
         run: go run ./cmd/orgctl registry validate
       - name: Native build
@@ -103,6 +105,8 @@ jobs:
         run: go test -count=1 -tags=integration ./internal/staging/postgres
       - name: Capability authorization integration
         run: go test -count=1 -tags=integration ./internal/authorization/postgres
+      - name: Deterministic context engine integration
+        run: go test -count=1 -tags=integration ./internal/contextengine/postgres
       - name: Registry, task, and authorization CLI smoke test
         run: |
           go run ./cmd/orgctl migrate up
@@ -129,6 +133,37 @@ jobs:
           request_id="$(grep -m1 '"id"' /tmp/authorization-request.json | tr -cd '0-9')"
           go run ./cmd/orgctl authorization decide "$request_id" --decision approve --actor-role empresa/human --reason "CI owner approval" --json
           go run ./cmd/orgctl authorization consume "$request_id" --actor-role creativo/copywriter --action-digest "$action_digest" --json
+          mkdir -p /tmp/context-source/ingenieria_ia/qa
+          cat > /tmp/context-source/AGENT.md <<'EOF'
+          # Organization Agent
+          Follow canonical organizational policies.
+          EOF
+          cat > /tmp/context-source/ingenieria_ia/AGENT.md <<'EOF'
+          # Engineering Agent
+          Follow the department scope.
+          EOF
+          cat > /tmp/context-source/ingenieria_ia/qa/PERFIL.md <<'EOF'
+          ---
+          departamento: ingenieria_ia
+          rol: qa
+          dominio_memoria: ingenieria_ia
+          agente_base: true
+          ---
+          # QA profile
+          Verify artifacts and evidence.
+          EOF
+          export ORG_CONTEXT_SOURCE_ROOT=/tmp/context-source
+          go run ./cmd/orgctl context build --actor-role ingenieria_ia/qa --purpose "CI context smoke" --idempotency-key github-actions-context-smoke --json >/tmp/context-created.json
+          context_id="$(grep -m1 '"id"' /tmp/context-created.json | tr -cd '0-9')"
+          go run ./cmd/orgctl context get "$context_id" --json >/tmp/context-get.json
+          go run ./cmd/orgctl context validate "$context_id" --json >/tmp/context-validation.json
+          go run ./cmd/orgctl context render "$context_id" --output /tmp/context-render.json
+          go run ./cmd/orgctl context invalidate "$context_id" --actor-role ingenieria_ia/qa --reason "CI terminal transition" --json >/tmp/context-invalidated.json
+          set +e
+          go run ./cmd/orgctl context validate "$context_id" --json
+          context_code=$?
+          set -e
+          test "$context_code" -eq 1 || test "$context_code" -eq 9
 
   apply-context-engine:
     if: ${{ github.actor != 'github-actions[bot]' && ((github.event_name == 'push' && github.ref_name == 'feat/07-context-engine') || (github.event_name == 'pull_request' && github.head_ref == 'feat/07-context-engine')) }}
@@ -168,12 +203,15 @@ jobs:
       - name: Apply transfer payload
         run: |
           set -euo pipefail
-          test -f .github/context-engine.patch.xz.b64
-          base64 -d .github/context-engine.patch.xz.b64 | xz -d > /tmp/context-engine.patch
+          test "$(find .github/context-parts -maxdepth 1 -type f -name '*.b64' | wc -l)" -eq 8
+          cat .github/context-parts/*.b64 > /tmp/context-engine.patch.xz.b64
+          test "$(sha256sum /tmp/context-engine.patch.xz.b64 | cut -d' ' -f1)" = "84b20205725996004ad33dc212acd1da776ad1ec53e329f8dba50ddaab964a68"
+          base64 -d /tmp/context-engine.patch.xz.b64 | xz -d > /tmp/context-engine.patch
           test "$(sha256sum /tmp/context-engine.patch | cut -d' ' -f1)" = "855c6ecc23cd5f941349b2bb4b41ea6b651d073f9fb4b54817fca5a9fccbb296"
           git apply --check /tmp/context-engine.patch
           git apply /tmp/context-engine.patch
-          rm .github/context-engine.patch.xz.b64
+          rm -f .github/context-engine.patch.xz.b64
+          rm -rf .github/context-parts
           rm -f .github/workflows/context-engine-bootstrap.yml
           gofmt -w cmd/orgctl internal/config internal/contextengine
           git diff --check
