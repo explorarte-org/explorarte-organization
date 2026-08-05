@@ -35,6 +35,8 @@ const (
 	exitDatabase         = 5
 	exitDenied           = 6
 	exitApprovalRequired = 7
+	exitContextRejected  = 8
+	exitContextStale     = 9
 )
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
@@ -62,6 +64,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runStaging(args[1:], stdout, stderr)
 	case "authorization":
 		return runAuthorization(args[1:], stdout, stderr)
+	case "context":
+		return runContext(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return exitOK
@@ -498,7 +502,19 @@ commands:
   task <create|get|list|claim|start|heartbeat|result|finalize|block|unblock|cancel|dependency|requirement|evidence|events|attempts|reconcile|dead-letter>
   outbox <claim|ack|nack|recover|status>
   staging <repo|workspace|check|promotion|reconcile>
-  authorization <evaluate|request|get|list|decide|consume|cancel|expire>`)
+  authorization <evaluate|request|get|list|decide|consume|cancel|expire>
+  context <validate-source|build|get|list|render|validate|invalidate>
+exit codes:
+  0 success
+  1 internal or operational failure
+  2 usage error
+  3 drift
+  4 not found or invalid resource
+  5 database unavailable
+  6 capability denied
+  7 approval required
+  8 context rejected by validation or policy
+  9 context stale or invalidated`)
 }
 func printRegistryUsage(out io.Writer) {
 	fmt.Fprintln(out, "usage: orgctl registry <command> [options]")

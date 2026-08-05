@@ -11,7 +11,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -26,29 +26,20 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ripgrep
-
       - name: Download and verify modules
         run: go mod download && go mod verify
-      - name: Canonical documents unchanged from Branch 04 base
-        run: git diff --exit-code de5ac792cb67489b9f35e3b52cbec9ca8f63c7c7 -- docs/canonical
-      - name: Check formatting
-        run: test -z "$(gofmt -l .)"
-      - name: Vet
-        run: go vet ./...
-      - name: Unit tests
-        run: go test -short ./...
-      - name: Durable task fitness checks
-        run: make test-task-fitness
-      - name: Staging security fitness checks
-        run: make test-staging-fitness
-      - name: Authorization policy fitness checks
-        run: make test-authorization-fitness
-      - name: Validate canonical registry
-        run: go run ./cmd/orgctl registry validate
-      - name: Native build
-        run: go build ./...
+      - name: Canonical documents unchanged from Branch 07 base
+        run: git diff --exit-code bfe21f34d1da3f2d51eb520c4deef635c7f49cab -- docs/canonical
+      - name: Git whitespace validation
+        run: git diff --check bfe21f34d1da3f2d51eb520c4deef635c7f49cab...HEAD
+      - name: Full non-integration verification
+        run: make verify
+      - name: Context engine race tests
+        run: go test -race -short ./internal/contextengine/...
       - name: Cross builds
         run: make build-cross
+      - name: Validate canonical registry
+        run: make registry-validate
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
       - name: Set up Docker Buildx
@@ -61,26 +52,9 @@ jobs:
           push: false
           outputs: type=cacheonly
 
-  postgres-integration:
+  postgres-final-validation:
     runs-on: ubuntu-latest
-    timeout-minutes: 18
-    services:
-      postgres:
-        image: postgres:17-bookworm
-        env:
-          POSTGRES_USER: explorarte_test
-          POSTGRES_PASSWORD: integration-only-password
-          POSTGRES_DB: explorarte_test
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U explorarte_test -d explorarte_test"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
-    env:
-      ORG_TEST_DATABASE_URL: postgres://explorarte_test:integration-only-password@127.0.0.1:5432/explorarte_test?sslmode=disable
-      ORG_DATABASE_URL: postgres://explorarte_test:integration-only-password@127.0.0.1:5432/explorarte_test?sslmode=disable
-      ORG_CANONICAL_DIR: docs/canonical
+    timeout-minutes: 55
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -91,41 +65,21 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Install CI tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep
       - name: Download and verify modules
         run: go mod download && go mod verify
-      - name: Platform PostgreSQL integration
-        run: go test -count=1 -tags=integration ./internal/platform/postgres
-      - name: Organization registry integration
-        run: go test -count=1 -tags=integration ./internal/organization/registry
-      - name: Durable task engine integration
-        run: go test -count=1 -tags=integration ./internal/tasks/postgres
-      - name: Staging and promotion integration with real Git
-        run: go test -count=1 -tags=integration ./internal/staging/postgres
-      - name: Capability authorization integration
-        run: go test -count=1 -tags=integration ./internal/authorization/postgres
-      - name: Registry, task, and authorization CLI smoke test
-        run: |
-          go run ./cmd/orgctl migrate up
-          go run ./cmd/orgctl registry validate
-          set +e
-          go run ./cmd/orgctl registry diff
-          test $? -eq 3
-          set -e
-          go run ./cmd/orgctl registry sync --apply
-          go run ./cmd/orgctl registry sync --apply
-          go run ./cmd/orgctl registry status --json
-          go run ./cmd/orgctl registry get-role ingenieria_ia/orquestador --json
-          go run ./cmd/orgctl registry get-leader ingenieria_ia --json
-          cat > /tmp/task.json <<'JSON'
-          {"assigned_role_id":"ingenieria_ia/qa","idempotency_key":"ci-cli-smoke-1","title":"CI task smoke","instructions":"Validate durable task CLI wiring.","acceptance_criteria":["task persists"]}
-          JSON
-          go run ./cmd/orgctl task create --file /tmp/task.json --actor-id github-actions --json
-          go run ./cmd/orgctl task list --status ready --json
-          go run ./cmd/orgctl task reconcile --batch 100 --json
-          go run ./cmd/orgctl outbox status --json
-          action_digest="$(printf %s authorization-ci-smoke | sha256sum | cut -d' ' -f1)"
-          go run ./cmd/orgctl authorization evaluate --actor-role ingenieria_ia/code-runner --capability code.commit --resource-type code --resource-id ci-smoke --action-digest "$action_digest" --json
-          go run ./cmd/orgctl authorization request --actor-role creativo/copywriter --capability rag.publish_approved --resource-type rag_candidate --resource-id ci-smoke --action-digest "$action_digest" --idempotency-key github-actions-authorization-smoke --reason "CI one-time approval" --json >/tmp/authorization-request.json
-          request_id="$(grep -m1 '"id"' /tmp/authorization-request.json | tr -cd '0-9')"
-          go run ./cmd/orgctl authorization decide "$request_id" --decision approve --actor-role empresa/human --reason "CI owner approval" --json
-          go run ./cmd/orgctl authorization consume "$request_id" --actor-role creativo/copywriter --action-digest "$action_digest" --json
+      - name: Canonical documents unchanged from Branch 07 base
+        run: git diff --exit-code bfe21f34d1da3f2d51eb520c4deef635c7f49cab -- docs/canonical
+      - name: PostgreSQL 17 complete integration suite and CLI smoke tests
+        run: make test-integration
+      - name: Context engine PostgreSQL 17 integration
+        run: make test-context-integration
+      - name: Authorization PostgreSQL 17 integration
+        run: make test-authorization-integration
+      - name: Staging PostgreSQL 17 and real Git integration
+        run: make test-staging-integration
+      - name: Exact aggregate verification
+        run: make verify-all

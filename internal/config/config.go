@@ -60,6 +60,14 @@ const (
 	defaultAuthorizationMaxTTL                = 24 * time.Hour
 	defaultAuthorizationCommandTimeout        = 30 * time.Second
 	defaultAuthorizationExpireBatchSize       = 100
+	defaultContextSourceRoot                  = "/opt/explorarte/organization"
+	defaultContextCommandTimeout              = 30 * time.Second
+	defaultContextMaxTotalBytes               = 524288
+	defaultContextMaxSegmentBytes             = 65536
+	defaultContextMaxSegments                 = 128
+	defaultContextMaxSkills                   = 16
+	defaultContextMaxMemorySegments           = 32
+	defaultContextMaxRAGSegments              = 20
 	defaultStagingRepositoriesFile            = "/etc/explorarte/repositories.yaml"
 	defaultStagingWorkspaceRoot               = "/var/lib/explorarte/staging/workspaces"
 	defaultStagingArtifactRoot                = "/var/lib/explorarte/staging/artifacts"
@@ -81,6 +89,7 @@ type Config struct {
 	Registry      RegistryConfig
 	Tasks         TaskConfig
 	Authorization AuthorizationConfig
+	Context       ContextConfig
 	Staging       StagingConfig
 }
 
@@ -150,6 +159,17 @@ type AuthorizationConfig struct {
 	MaxTTL          time.Duration
 	CommandTimeout  time.Duration
 	ExpireBatchSize int
+}
+
+type ContextConfig struct {
+	SourceRoot        string
+	CommandTimeout    time.Duration
+	MaxTotalBytes     int
+	MaxSegmentBytes   int
+	MaxSegments       int
+	MaxSkills         int
+	MaxMemorySegments int
+	MaxRAGSegments    int
 }
 
 type StagingConfig struct {
@@ -222,6 +242,10 @@ func LoadFrom(lookup LookupEnv) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	contextConfig, err := loadContext(lookup)
+	if err != nil {
+		return Config{}, err
+	}
 	staging, err := loadStaging(lookup)
 	if err != nil {
 		return Config{}, err
@@ -248,6 +272,7 @@ func LoadFrom(lookup LookupEnv) (Config, error) {
 		Registry:      RegistryConfig{CanonicalDir: canonicalDir, SyncTimeout: registryTimeout},
 		Tasks:         tasks,
 		Authorization: authorization,
+		Context:       contextConfig,
 		Staging:       staging,
 	}
 
@@ -415,6 +440,46 @@ func loadAuthorization(lookup LookupEnv) (AuthorizationConfig, error) {
 	return AuthorizationConfig{DefaultTTL: defaultTTL, MaxTTL: maxTTL, CommandTimeout: commandTimeout, ExpireBatchSize: batch}, nil
 }
 
+func loadContext(lookup LookupEnv) (ContextConfig, error) {
+	timeout, err := duration(lookup, "ORG_CONTEXT_COMMAND_TIMEOUT", defaultContextCommandTimeout)
+	if err != nil {
+		return ContextConfig{}, err
+	}
+	maxTotal, err := integer(lookup, "ORG_CONTEXT_MAX_TOTAL_BYTES", defaultContextMaxTotalBytes, 64<<10, 4<<20)
+	if err != nil {
+		return ContextConfig{}, err
+	}
+	maxSegment, err := integer(lookup, "ORG_CONTEXT_MAX_SEGMENT_BYTES", defaultContextMaxSegmentBytes, 1<<10, maxTotal)
+	if err != nil {
+		return ContextConfig{}, err
+	}
+	maxSegments, err := integer(lookup, "ORG_CONTEXT_MAX_SEGMENTS", defaultContextMaxSegments, 1, 1000)
+	if err != nil {
+		return ContextConfig{}, err
+	}
+	maxSkills, err := integer(lookup, "ORG_CONTEXT_MAX_SKILLS", defaultContextMaxSkills, 0, 100)
+	if err != nil {
+		return ContextConfig{}, err
+	}
+	maxMemory, err := integer(lookup, "ORG_CONTEXT_MAX_MEMORY_SEGMENTS", defaultContextMaxMemorySegments, 0, 500)
+	if err != nil {
+		return ContextConfig{}, err
+	}
+	maxRAG, err := integer(lookup, "ORG_CONTEXT_MAX_RAG_SEGMENTS", defaultContextMaxRAGSegments, 0, 500)
+	if err != nil {
+		return ContextConfig{}, err
+	}
+	root := text(lookup, "ORG_CONTEXT_SOURCE_ROOT", defaultContextSourceRoot)
+	if !filepath.IsAbs(root) {
+		absolute, absErr := filepath.Abs(root)
+		if absErr != nil {
+			return ContextConfig{}, fmt.Errorf("ORG_CONTEXT_SOURCE_ROOT: %w", absErr)
+		}
+		root = absolute
+	}
+	return ContextConfig{SourceRoot: filepath.Clean(root), CommandTimeout: timeout, MaxTotalBytes: maxTotal, MaxSegmentBytes: maxSegment, MaxSegments: maxSegments, MaxSkills: maxSkills, MaxMemorySegments: maxMemory, MaxRAGSegments: maxRAG}, nil
+}
+
 func loadStaging(lookup LookupEnv) (StagingConfig, error) {
 	enabled, err := boolean(lookup, "ORG_STAGING_ENABLED", false)
 	if err != nil {
@@ -496,6 +561,9 @@ func (cfg Config) Validate() error {
 	if err := cfg.Authorization.Validate(); err != nil {
 		return err
 	}
+	if err := cfg.Context.Validate(); err != nil {
+		return err
+	}
 	if err := cfg.Staging.Validate(); err != nil {
 		return err
 	}
@@ -539,6 +607,34 @@ func (cfg AuthorizationConfig) Validate() error {
 	}
 	if cfg.ExpireBatchSize < 1 || cfg.ExpireBatchSize > 1000 {
 		return errors.New("ORG_AUTHORIZATION_EXPIRE_BATCH_SIZE must be between 1 and 1000")
+	}
+	return nil
+}
+
+func (cfg ContextConfig) Validate() error {
+	if strings.TrimSpace(cfg.SourceRoot) == "" || !filepath.IsAbs(cfg.SourceRoot) || filepath.Clean(cfg.SourceRoot) != cfg.SourceRoot || strings.ContainsRune(cfg.SourceRoot, 0) {
+		return errors.New("ORG_CONTEXT_SOURCE_ROOT must be a non-empty absolute clean path")
+	}
+	if cfg.CommandTimeout <= 0 {
+		return errors.New("ORG_CONTEXT_COMMAND_TIMEOUT must be greater than zero")
+	}
+	if cfg.MaxTotalBytes < 64<<10 || cfg.MaxTotalBytes > 4<<20 {
+		return errors.New("ORG_CONTEXT_MAX_TOTAL_BYTES must be between 65536 and 4194304")
+	}
+	if cfg.MaxSegmentBytes < 1<<10 || cfg.MaxSegmentBytes > cfg.MaxTotalBytes {
+		return errors.New("ORG_CONTEXT_MAX_SEGMENT_BYTES must be between 1024 and max total bytes")
+	}
+	if cfg.MaxSegments < 1 || cfg.MaxSegments > 1000 {
+		return errors.New("ORG_CONTEXT_MAX_SEGMENTS must be between 1 and 1000")
+	}
+	if cfg.MaxSkills < 0 || cfg.MaxSkills > 100 {
+		return errors.New("ORG_CONTEXT_MAX_SKILLS must be between 0 and 100")
+	}
+	if cfg.MaxMemorySegments < 0 || cfg.MaxMemorySegments > 500 {
+		return errors.New("ORG_CONTEXT_MAX_MEMORY_SEGMENTS must be between 0 and 500")
+	}
+	if cfg.MaxRAGSegments < 0 || cfg.MaxRAGSegments > 500 {
+		return errors.New("ORG_CONTEXT_MAX_RAG_SEGMENTS must be between 0 and 500")
 	}
 	return nil
 }

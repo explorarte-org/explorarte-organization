@@ -45,6 +45,9 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 		t.Fatalf("ping PostgreSQL: %v", err)
 	}
 	for _, statement := range []string{
+		`DROP TABLE IF EXISTS context_segments`,
+		`DROP TABLE IF EXISTS context_snapshots`,
+		`DROP FUNCTION IF EXISTS reject_context_segment_mutation()`,
 		`DROP TABLE IF EXISTS authorization_uses`,
 		`DROP TABLE IF EXISTS authorization_decisions`,
 		`DROP TABLE IF EXISTS authorization_requests`,
@@ -88,14 +91,14 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("apply migrations: %v", err)
 	}
-	if len(result.Applied) != 5 || result.Current != 5 {
+	if len(result.Applied) != 6 || result.Current != 6 {
 		t.Fatalf("unexpected migration result: %+v", result)
 	}
 	status, err := runner.Status(ctx)
 	if err != nil {
 		t.Fatalf("migration status: %v", err)
 	}
-	if !status.Ready || status.Pending != 0 || status.Applied != 5 {
+	if !status.Ready || status.Pending != 0 || status.Applied != 6 {
 		t.Fatalf("unexpected migration status: %+v", status)
 	}
 	if err := store.UnitOfWork().WithinTransaction(ctx, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
@@ -125,7 +128,7 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("idempotent migration run: %v", err)
 	}
-	if len(second.Applied) != 0 || second.Current != 5 {
+	if len(second.Applied) != 0 || second.Current != 6 {
 		t.Fatalf("second migration result = %+v, want no changes", second)
 	}
 
@@ -133,26 +136,26 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load migrations for down test: %v", err)
 	}
-	if len(loaded) != 5 {
-		t.Fatalf("loaded migrations = %d, want 5", len(loaded))
+	if len(loaded) != 6 {
+		t.Fatalf("loaded migrations = %d, want 6", len(loaded))
 	}
 	if err := store.UnitOfWork().WithinTransaction(ctx, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, loaded[4].DownSQL); err != nil {
+		if _, err := tx.Exec(ctx, loaded[5].DownSQL); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, `DELETE FROM schema_migrations WHERE version = 5`)
+		_, err := tx.Exec(ctx, `DELETE FROM schema_migrations WHERE version = 6`)
 		return err
 	}); err != nil {
-		t.Fatalf("down migration 000005: %v", err)
+		t.Fatalf("down migration 000006: %v", err)
 	}
-	var registryTable *string
-	if err := store.Pool().QueryRow(ctx, `SELECT to_regclass('public.authorization_requests')::text`).Scan(&registryTable); err != nil {
+	var contextTable *string
+	if err := store.Pool().QueryRow(ctx, `SELECT to_regclass('public.context_snapshots')::text`).Scan(&contextTable); err != nil {
 		t.Fatalf("check down migration: %v", err)
 	}
-	if registryTable != nil {
-		t.Fatalf("authorization_requests still exists after down: %v", *registryTable)
+	if contextTable != nil {
+		t.Fatalf("context_snapshots still exists after down: %v", *contextTable)
 	}
 	if _, err := runner.Up(ctx); err != nil {
-		t.Fatalf("restore migration 000005: %v", err)
+		t.Fatalf("restore migration 000006: %v", err)
 	}
 }

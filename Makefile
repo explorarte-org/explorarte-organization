@@ -10,7 +10,7 @@ LDFLAGS := -s -w \
 	-X main.commit=$(COMMIT) \
 	-X main.buildTime=$(BUILD_TIME)
 
-.PHONY: help deps fmt fmt-check vet test test-unit test-race test-integration test-task-integration test-task-fitness test-staging-integration test-staging-fitness test-authorization-integration test-authorization-fitness build build-cross run verify verify-all clean docker-build compose-up compose-down compose-logs migrate-up migrate-status registry-validate registry-diff registry-sync registry-status task-reconcile outbox-status
+.PHONY: help deps fmt fmt-check vet test test-unit test-race test-integration test-task-integration test-task-fitness test-staging-integration test-staging-fitness test-authorization-integration test-authorization-fitness test-context-integration test-context-fitness build build-cross run verify verify-all clean docker-build compose-up compose-down compose-logs migrate-up migrate-status registry-validate registry-diff registry-sync registry-status task-reconcile outbox-status
 
 help:
 	@printf '%s\n' \
@@ -22,6 +22,8 @@ help:
 	  'make test-staging-fitness Validate staging security and immutable-promotion invariants' \
 	  'make test-authorization-fitness Validate capability policy and durable approval invariants' \
 	  'make test-authorization-integration Run PostgreSQL 17 authorization integration tests' \
+	  'make test-context-fitness Validate deterministic context, policy, and provenance invariants' \
+	  'make test-context-integration Run PostgreSQL 17 context-engine integration tests' \
 	  'make test-staging-integration Run PostgreSQL 17 and real Git staging integration tests' \
 	  'make verify-all        Run verify, cross-build, canonical validation, and integration tests' \
 	  'make registry-validate Validate docs/canonical without PostgreSQL writes' \
@@ -73,6 +75,12 @@ test-authorization-fitness:
 test-authorization-integration:
 	./scripts/test-integration.sh authorization
 
+test-context-fitness:
+	./scripts/check-context-fitness.sh
+
+test-context-integration:
+	./scripts/test-integration.sh context
+
 build:
 	@mkdir -p $(BINARY_DIR)
 	CGO_ENABLED=0 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY_DIR)/orgd ./cmd/orgd
@@ -88,9 +96,9 @@ build-cross:
 run:
 	$(GO) run ./cmd/orgd
 
-verify: fmt-check vet test-unit test-task-fitness test-staging-fitness test-authorization-fitness build
+verify: fmt-check vet test-unit test-task-fitness test-staging-fitness test-authorization-fitness test-context-fitness build
 
-verify-all: verify build-cross registry-validate test-integration test-authorization-integration test-staging-integration
+verify-all: verify build-cross registry-validate test-integration test-context-integration test-authorization-integration test-staging-integration
 
 migrate-up:
 	$(GO) run ./cmd/orgctl migrate up
