@@ -27,56 +27,61 @@ const (
 	defaultShutdownTimeout   = 15 * time.Second
 	defaultLogFormat         = "json"
 
-	defaultDatabaseHost                    = "127.0.0.1"
-	defaultDatabasePort                    = 5432
-	defaultDatabaseName                    = "explorarte_org"
-	defaultDatabaseUser                    = "explorarte_app"
-	defaultDatabaseSSLMode                 = "disable"
-	defaultDatabaseMaxConns          int32 = 8
-	defaultDatabaseMinConns          int32 = 1
-	defaultDatabaseMaxConnLifetime         = 30 * time.Minute
-	defaultDatabaseMaxConnIdleTime         = 5 * time.Minute
-	defaultDatabaseHealthCheckPeriod       = 30 * time.Second
-	defaultDatabaseConnectTimeout          = 5 * time.Second
-	defaultDatabasePingTimeout             = 2 * time.Second
-	defaultDatabaseStatementTimeout        = 30 * time.Second
-	defaultDatabaseLockTimeout             = 5 * time.Second
-	defaultDatabaseMigrationTimeout        = 45 * time.Second
-	defaultDatabaseMigrationRetry          = 5 * time.Second
-	defaultCanonicalDir                    = "docs/canonical"
-	defaultRegistrySyncTimeout             = 30 * time.Second
-	defaultTaskOrganizationID              = "explorarte"
-	defaultTaskReconcileInterval           = 5 * time.Second
-	defaultTaskReconcileBatchSize          = 100
-	defaultTaskDefaultMaxAttempts          = 5
-	defaultTaskDefaultLeaseDuration        = 2 * time.Minute
-	defaultTaskMaxLeaseDuration            = 15 * time.Minute
-	defaultTaskRetryBaseDelay              = 5 * time.Second
-	defaultTaskRetryMaxDelay               = 10 * time.Minute
-	defaultTaskOutboxMaxAttempts           = 10
-	defaultTaskOutboxClaimDuration         = time.Minute
-	defaultTaskCommandTimeout              = 30 * time.Second
-	defaultStagingRepositoriesFile         = "/etc/explorarte/repositories.yaml"
-	defaultStagingWorkspaceRoot            = "/var/lib/explorarte/staging/workspaces"
-	defaultStagingArtifactRoot             = "/var/lib/explorarte/staging/artifacts"
-	defaultStagingQuarantineRoot           = "/var/lib/explorarte/staging/quarantine"
-	defaultStagingCommandTimeout           = 2 * time.Minute
-	defaultStagingMaxArtifactBytes   int64 = 64 << 20
-	defaultStagingMaxChangedFiles          = 500
-	defaultStagingStaleAfter               = 30 * time.Minute
-	defaultStagingReconcileInterval        = 30 * time.Second
-	defaultStagingReconcileBatchSize       = 100
-	defaultStagingGitBinary                = "git"
+	defaultDatabaseHost                       = "127.0.0.1"
+	defaultDatabasePort                       = 5432
+	defaultDatabaseName                       = "explorarte_org"
+	defaultDatabaseUser                       = "explorarte_app"
+	defaultDatabaseSSLMode                    = "disable"
+	defaultDatabaseMaxConns             int32 = 8
+	defaultDatabaseMinConns             int32 = 1
+	defaultDatabaseMaxConnLifetime            = 30 * time.Minute
+	defaultDatabaseMaxConnIdleTime            = 5 * time.Minute
+	defaultDatabaseHealthCheckPeriod          = 30 * time.Second
+	defaultDatabaseConnectTimeout             = 5 * time.Second
+	defaultDatabasePingTimeout                = 2 * time.Second
+	defaultDatabaseStatementTimeout           = 30 * time.Second
+	defaultDatabaseLockTimeout                = 5 * time.Second
+	defaultDatabaseMigrationTimeout           = 45 * time.Second
+	defaultDatabaseMigrationRetry             = 5 * time.Second
+	defaultCanonicalDir                       = "docs/canonical"
+	defaultRegistrySyncTimeout                = 30 * time.Second
+	defaultTaskOrganizationID                 = "explorarte"
+	defaultTaskReconcileInterval              = 5 * time.Second
+	defaultTaskReconcileBatchSize             = 100
+	defaultTaskDefaultMaxAttempts             = 5
+	defaultTaskDefaultLeaseDuration           = 2 * time.Minute
+	defaultTaskMaxLeaseDuration               = 15 * time.Minute
+	defaultTaskRetryBaseDelay                 = 5 * time.Second
+	defaultTaskRetryMaxDelay                  = 10 * time.Minute
+	defaultTaskOutboxMaxAttempts              = 10
+	defaultTaskOutboxClaimDuration            = time.Minute
+	defaultTaskCommandTimeout                 = 30 * time.Second
+	defaultAuthorizationDefaultTTL            = 30 * time.Minute
+	defaultAuthorizationMaxTTL                = 24 * time.Hour
+	defaultAuthorizationCommandTimeout        = 30 * time.Second
+	defaultAuthorizationExpireBatchSize       = 100
+	defaultStagingRepositoriesFile            = "/etc/explorarte/repositories.yaml"
+	defaultStagingWorkspaceRoot               = "/var/lib/explorarte/staging/workspaces"
+	defaultStagingArtifactRoot                = "/var/lib/explorarte/staging/artifacts"
+	defaultStagingQuarantineRoot              = "/var/lib/explorarte/staging/quarantine"
+	defaultStagingCommandTimeout              = 2 * time.Minute
+	defaultStagingMaxArtifactBytes      int64 = 64 << 20
+	defaultStagingMaxChangedFiles             = 500
+	defaultStagingStaleAfter                  = 30 * time.Minute
+	defaultStagingReconcileInterval           = 30 * time.Second
+	defaultStagingReconcileBatchSize          = 100
+	defaultStagingGitBinary                   = "git"
 )
 
 type Config struct {
-	App      AppConfig
-	HTTP     HTTPConfig
-	Logging  LoggingConfig
-	Database DatabaseConfig
-	Registry RegistryConfig
-	Tasks    TaskConfig
-	Staging  StagingConfig
+	App           AppConfig
+	HTTP          HTTPConfig
+	Logging       LoggingConfig
+	Database      DatabaseConfig
+	Registry      RegistryConfig
+	Tasks         TaskConfig
+	Authorization AuthorizationConfig
+	Staging       StagingConfig
 }
 
 type AppConfig struct {
@@ -138,6 +143,13 @@ type TaskConfig struct {
 	OutboxMaxAttempts    int
 	OutboxClaimDuration  time.Duration
 	CommandTimeout       time.Duration
+}
+
+type AuthorizationConfig struct {
+	DefaultTTL      time.Duration
+	MaxTTL          time.Duration
+	CommandTimeout  time.Duration
+	ExpireBatchSize int
 }
 
 type StagingConfig struct {
@@ -206,6 +218,10 @@ func LoadFrom(lookup LookupEnv) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	authorization, err := loadAuthorization(lookup)
+	if err != nil {
+		return Config{}, err
+	}
 	staging, err := loadStaging(lookup)
 	if err != nil {
 		return Config{}, err
@@ -228,10 +244,11 @@ func LoadFrom(lookup LookupEnv) (Config, error) {
 			Level:  level,
 			Format: strings.ToLower(text(lookup, "ORG_LOG_FORMAT", defaultLogFormat)),
 		},
-		Database: database,
-		Registry: RegistryConfig{CanonicalDir: canonicalDir, SyncTimeout: registryTimeout},
-		Tasks:    tasks,
-		Staging:  staging,
+		Database:      database,
+		Registry:      RegistryConfig{CanonicalDir: canonicalDir, SyncTimeout: registryTimeout},
+		Tasks:         tasks,
+		Authorization: authorization,
+		Staging:       staging,
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -378,6 +395,26 @@ func loadTasks(lookup LookupEnv) (TaskConfig, error) {
 	}, nil
 }
 
+func loadAuthorization(lookup LookupEnv) (AuthorizationConfig, error) {
+	defaultTTL, err := duration(lookup, "ORG_AUTHORIZATION_DEFAULT_TTL", defaultAuthorizationDefaultTTL)
+	if err != nil {
+		return AuthorizationConfig{}, err
+	}
+	maxTTL, err := duration(lookup, "ORG_AUTHORIZATION_MAX_TTL", defaultAuthorizationMaxTTL)
+	if err != nil {
+		return AuthorizationConfig{}, err
+	}
+	commandTimeout, err := duration(lookup, "ORG_AUTHORIZATION_COMMAND_TIMEOUT", defaultAuthorizationCommandTimeout)
+	if err != nil {
+		return AuthorizationConfig{}, err
+	}
+	batch, err := integer(lookup, "ORG_AUTHORIZATION_EXPIRE_BATCH_SIZE", defaultAuthorizationExpireBatchSize, 1, 1000)
+	if err != nil {
+		return AuthorizationConfig{}, err
+	}
+	return AuthorizationConfig{DefaultTTL: defaultTTL, MaxTTL: maxTTL, CommandTimeout: commandTimeout, ExpireBatchSize: batch}, nil
+}
+
 func loadStaging(lookup LookupEnv) (StagingConfig, error) {
 	enabled, err := boolean(lookup, "ORG_STAGING_ENABLED", false)
 	if err != nil {
@@ -456,6 +493,9 @@ func (cfg Config) Validate() error {
 	if err := cfg.Tasks.Validate(); err != nil {
 		return err
 	}
+	if err := cfg.Authorization.Validate(); err != nil {
+		return err
+	}
 	if err := cfg.Staging.Validate(); err != nil {
 		return err
 	}
@@ -483,6 +523,22 @@ func (cfg TaskConfig) Validate() error {
 	}
 	if cfg.OutboxMaxAttempts < 1 || cfg.OutboxMaxAttempts > 100 {
 		return errors.New("ORG_TASK_OUTBOX_MAX_ATTEMPTS must be between 1 and 100")
+	}
+	return nil
+}
+
+func (cfg AuthorizationConfig) Validate() error {
+	if cfg.DefaultTTL <= 0 {
+		return errors.New("ORG_AUTHORIZATION_DEFAULT_TTL must be greater than zero")
+	}
+	if cfg.MaxTTL < cfg.DefaultTTL {
+		return errors.New("ORG_AUTHORIZATION_MAX_TTL cannot be less than ORG_AUTHORIZATION_DEFAULT_TTL")
+	}
+	if cfg.CommandTimeout <= 0 {
+		return errors.New("ORG_AUTHORIZATION_COMMAND_TIMEOUT must be greater than zero")
+	}
+	if cfg.ExpireBatchSize < 1 || cfg.ExpireBatchSize > 1000 {
+		return errors.New("ORG_AUTHORIZATION_EXPIRE_BATCH_SIZE must be between 1 and 1000")
 	}
 	return nil
 }

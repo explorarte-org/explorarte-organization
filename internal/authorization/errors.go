@@ -1,0 +1,30 @@
+package authorization
+
+import "errors"
+
+var (
+	ErrInvalidInput           = errors.New("invalid authorization input")
+	ErrCapabilityDenied       = errors.New("authorization capability denied")
+	ErrApprovalRequired       = errors.New("authorization approval required")
+	ErrUnknownCapability      = errors.New("unknown capability")
+	ErrUnknownAuthorityClass  = errors.New("unknown authority class")
+	ErrPolicyRevisionMismatch = errors.New("authorization policy revision mismatch")
+	ErrOrganizationMismatch   = errors.New("authorization organization mismatch")
+	ErrRoleNotFound           = errors.New("authorization role not found")
+	ErrRoleDisabled           = errors.New("authorization role disabled")
+	ErrRoleRetired            = errors.New("authorization role retired")
+	ErrRoleNotExecutable      = errors.New("authorization role not executable")
+	ErrRequestNotFound        = errors.New("authorization request not found")
+	ErrIdempotencyConflict    = errors.New("authorization idempotency conflict")
+	ErrInvalidTransition      = errors.New("invalid authorization transition")
+	ErrApproverNotOwner       = errors.New("authorization approver is not organization owner")
+	ErrApprovalNotRequired    = errors.New("capability does not require approval")
+	ErrApprovalPending        = errors.New("authorization approval pending")
+	ErrApprovalRejected       = errors.New("authorization approval rejected")
+	ErrApprovalExpired        = errors.New("authorization approval expired")
+	ErrApprovalConsumed       = errors.New("authorization approval consumed")
+	ErrApprovalCancelled      = errors.New("authorization approval cancelled")
+	ErrApprovalScopeMismatch  = errors.New("authorization approval scope mismatch")
+	ErrApprovalPolicyDrift    = errors.New("authorization approval policy drift")
+	ErrDatabaseUnavailable    = errors.New("authorization database unavailable")
+)

@@ -41,6 +41,8 @@ jobs:
         run: make test-task-fitness
       - name: Staging security fitness checks
         run: make test-staging-fitness
+      - name: Authorization policy fitness checks
+        run: make test-authorization-fitness
       - name: Validate canonical registry
         run: go run ./cmd/orgctl registry validate
       - name: Native build
@@ -99,7 +101,9 @@ jobs:
         run: go test -count=1 -tags=integration ./internal/tasks/postgres
       - name: Staging and promotion integration with real Git
         run: go test -count=1 -tags=integration ./internal/staging/postgres
-      - name: Registry and task CLI smoke test
+      - name: Capability authorization integration
+        run: go test -count=1 -tags=integration ./internal/authorization/postgres
+      - name: Registry, task, and authorization CLI smoke test
         run: |
           go run ./cmd/orgctl migrate up
           go run ./cmd/orgctl registry validate
@@ -119,3 +123,9 @@ jobs:
           go run ./cmd/orgctl task list --status ready --json
           go run ./cmd/orgctl task reconcile --batch 100 --json
           go run ./cmd/orgctl outbox status --json
+          action_digest="$(printf %s authorization-ci-smoke | sha256sum | cut -d' ' -f1)"
+          go run ./cmd/orgctl authorization evaluate --actor-role ingenieria_ia/code-runner --capability code.commit --resource-type code --resource-id ci-smoke --action-digest "$action_digest" --json
+          go run ./cmd/orgctl authorization request --actor-role creativo/copywriter --capability rag.publish_approved --resource-type rag_candidate --resource-id ci-smoke --action-digest "$action_digest" --idempotency-key github-actions-authorization-smoke --reason "CI one-time approval" --json >/tmp/authorization-request.json
+          request_id="$(grep -m1 '"id"' /tmp/authorization-request.json | tr -cd '0-9')"
+          go run ./cmd/orgctl authorization decide "$request_id" --decision approve --actor-role empresa/human --reason "CI owner approval" --json
+          go run ./cmd/orgctl authorization consume "$request_id" --actor-role creativo/copywriter --action-digest "$action_digest" --json
