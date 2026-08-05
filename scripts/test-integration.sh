@@ -5,8 +5,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 MODE="${1:-all}"
 case "$MODE" in
-  all|tasks|staging|authorization) ;;
-  *) echo "usage: $0 [all|tasks|staging|authorization]" >&2; exit 2 ;;
+  all|tasks|staging|authorization|context) ;;
+  *) echo "usage: $0 [all|tasks|staging|authorization|context]" >&2; exit 2 ;;
 esac
 
 export ORG_POSTGRES_ADMIN_USER=explorarte_test_admin
@@ -38,6 +38,9 @@ if [[ "$MODE" == all || "$MODE" == staging ]]; then
 fi
 if [[ "$MODE" == all || "$MODE" == authorization ]]; then
   timeout --foreground --signal=TERM --kill-after=30s 20m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/authorization/postgres
+fi
+if [[ "$MODE" == all || "$MODE" == context ]]; then
+  timeout --foreground --signal=TERM --kill-after=30s 25m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/contextengine/postgres
 fi
 
 if [[ "$MODE" == all ]]; then
@@ -74,5 +77,30 @@ JSON
     /tmp/orgctl authorization consume "$request_id" --actor-role creativo/copywriter --action-digest "$action_digest" --json >/tmp/authorization-consume.json
     grep -Fq "\"status\": \"ready\"" /tmp/task-created.json
     grep -Fq "\"pending\"" /tmp/outbox.json
+    mkdir -p /tmp/context-source/ingenieria_ia/qa
+    cat >/tmp/context-source/AGENT.md <<EOF
+# Organization Agent
+Follow canonical organizational policies.
+EOF
+    cat >/tmp/context-source/ingenieria_ia/AGENT.md <<EOF
+# Engineering Agent
+Follow department scope.
+EOF
+    cat >/tmp/context-source/ingenieria_ia/qa/PERFIL.md <<EOF
+---
+departamento: ingenieria_ia
+rol: qa
+dominio_memoria: ingenieria_ia
+agente_base: true
+---
+# QA profile
+Verify artifacts and evidence.
+EOF
+    export ORG_CONTEXT_SOURCE_ROOT=/tmp/context-source
+    /tmp/orgctl context build --actor-role ingenieria_ia/qa --purpose "CLI context smoke" --idempotency-key cli-context-smoke --json >/tmp/context-created.json
+    context_id="$(grep -m1 '"id"' /tmp/context-created.json | tr -cd '0-9')"
+    /tmp/orgctl context get "$context_id" --json >/tmp/context-get.json
+    /tmp/orgctl context validate "$context_id" --json >/tmp/context-validation.json
+    /tmp/orgctl context render "$context_id" --output /tmp/context-render.json
   '
 fi

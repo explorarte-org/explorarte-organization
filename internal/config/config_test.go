@@ -37,6 +37,9 @@ func TestLoadFromDefaults(t *testing.T) {
 	if cfg.Tasks.DefaultMaxAttempts != 5 || cfg.Tasks.DefaultLeaseDuration != 2*time.Minute || cfg.Tasks.MaxLeaseDuration != 15*time.Minute {
 		t.Fatalf("unexpected task retry/lease defaults: %+v", cfg.Tasks)
 	}
+	if cfg.Context.SourceRoot != "/opt/explorarte/organization" || cfg.Context.CommandTimeout != 30*time.Second || cfg.Context.MaxTotalBytes != 524288 || cfg.Context.MaxSegmentBytes != 65536 || cfg.Context.MaxSegments != 128 || cfg.Context.MaxSkills != 16 || cfg.Context.MaxMemorySegments != 32 || cfg.Context.MaxRAGSegments != 20 {
+		t.Fatalf("unexpected context defaults: %+v", cfg.Context)
+	}
 	if cfg.Staging.Enabled || cfg.Staging.ReconcileBatchSize != 100 || cfg.Staging.MaxArtifactBytes != 64<<20 || cfg.Staging.GitBinary != "git" {
 		t.Fatalf("unexpected staging defaults: %+v", cfg.Staging)
 	}
@@ -78,6 +81,14 @@ func TestLoadFromOverrides(t *testing.T) {
 		"ORG_AUTHORIZATION_MAX_TTL":           "12h",
 		"ORG_AUTHORIZATION_COMMAND_TIMEOUT":   "25s",
 		"ORG_AUTHORIZATION_EXPIRE_BATCH_SIZE": "77",
+		"ORG_CONTEXT_SOURCE_ROOT":             "/tmp/explorarte/organization",
+		"ORG_CONTEXT_COMMAND_TIMEOUT":         "22s",
+		"ORG_CONTEXT_MAX_TOTAL_BYTES":         "262144",
+		"ORG_CONTEXT_MAX_SEGMENT_BYTES":       "32768",
+		"ORG_CONTEXT_MAX_SEGMENTS":            "99",
+		"ORG_CONTEXT_MAX_SKILLS":              "8",
+		"ORG_CONTEXT_MAX_MEMORY_SEGMENTS":     "12",
+		"ORG_CONTEXT_MAX_RAG_SEGMENTS":        "11",
 		"ORG_STAGING_ENABLED":                 "true",
 		"ORG_STAGING_REPOSITORIES_FILE":       "/tmp/explorarte/repos.yaml",
 		"ORG_STAGING_WORKSPACE_ROOT":          "/tmp/explorarte/workspaces",
@@ -118,6 +129,9 @@ func TestLoadFromOverrides(t *testing.T) {
 	}
 	if cfg.Authorization.DefaultTTL != 45*time.Minute || cfg.Authorization.MaxTTL != 12*time.Hour || cfg.Authorization.CommandTimeout != 25*time.Second || cfg.Authorization.ExpireBatchSize != 77 {
 		t.Fatalf("unexpected authorization config: %+v", cfg.Authorization)
+	}
+	if cfg.Context.SourceRoot != "/tmp/explorarte/organization" || cfg.Context.CommandTimeout != 22*time.Second || cfg.Context.MaxTotalBytes != 262144 || cfg.Context.MaxSegmentBytes != 32768 || cfg.Context.MaxSegments != 99 || cfg.Context.MaxSkills != 8 || cfg.Context.MaxMemorySegments != 12 || cfg.Context.MaxRAGSegments != 11 {
+		t.Fatalf("unexpected context config: %+v", cfg.Context)
 	}
 	if !cfg.Staging.Enabled || cfg.Staging.CommandTimeout != 45*time.Second || cfg.Staging.MaxArtifactBytes != 1048576 || cfg.Staging.MaxChangedFiles != 25 || cfg.Staging.ReconcileBatchSize != 21 || cfg.Staging.GitBinary != "/usr/bin/git" {
 		t.Fatalf("unexpected staging config: %+v", cfg.Staging)
@@ -172,6 +186,13 @@ func TestLoadFromRejectsInvalidValues(t *testing.T) {
 		"invalid authorization max ttl":     {"ORG_AUTHORIZATION_DEFAULT_TTL": "2h", "ORG_AUTHORIZATION_MAX_TTL": "1h"},
 		"invalid authorization timeout":     {"ORG_AUTHORIZATION_COMMAND_TIMEOUT": "0s"},
 		"invalid authorization batch":       {"ORG_AUTHORIZATION_EXPIRE_BATCH_SIZE": "1001"},
+		"invalid context timeout":           {"ORG_CONTEXT_COMMAND_TIMEOUT": "0s"},
+		"invalid context total":             {"ORG_CONTEXT_MAX_TOTAL_BYTES": "1024"},
+		"invalid context segment":           {"ORG_CONTEXT_MAX_TOTAL_BYTES": "65536", "ORG_CONTEXT_MAX_SEGMENT_BYTES": "65537"},
+		"invalid context segment count":     {"ORG_CONTEXT_MAX_SEGMENTS": "0"},
+		"invalid context skill count":       {"ORG_CONTEXT_MAX_SKILLS": "101"},
+		"invalid context memory count":      {"ORG_CONTEXT_MAX_MEMORY_SEGMENTS": "501"},
+		"invalid context rag count":         {"ORG_CONTEXT_MAX_RAG_SEGMENTS": "501"},
 		"invalid staging flag":              {"ORG_STAGING_ENABLED": "sometimes"},
 		"relative staging root":             {"ORG_STAGING_WORKSPACE_ROOT": "relative/path"},
 		"overlapping staging roots":         {"ORG_STAGING_WORKSPACE_ROOT": "/tmp/staging", "ORG_STAGING_ARTIFACT_ROOT": "/tmp/staging/artifacts"},
