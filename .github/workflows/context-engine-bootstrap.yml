@@ -10,10 +10,6 @@ on:
 permissions:
   contents: write
 
-concurrency:
-  group: context-engine-apply
-  cancel-in-progress: false
-
 jobs:
   apply-validate-commit:
     if: ${{ github.actor != 'github-actions[bot]' }}
