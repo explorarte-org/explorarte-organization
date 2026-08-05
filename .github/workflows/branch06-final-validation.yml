@@ -1,0 +1,57 @@
+name: branch06-final-validation
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  required-sequence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/06-capability-policy-engine
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install required tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep
+          go mod download
+          go mod verify
+
+      - name: Execute exact Branch 06 validation sequence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t changed_go < <(git diff --name-only fb30a4352697ed9cf1f7ef183285954450d1e71d -- '*.go')
+          if ((${#changed_go[@]})); then
+            gofmt -w "${changed_go[@]}"
+          fi
+          git diff --exit-code
+          git diff --check
+          go test -short ./...
+          go test -race -short ./internal/authorization/...
+          make test-authorization-fitness
+          make test-task-fitness
+          make test-staging-fitness
+          make verify
+          make build-cross
+          make registry-validate
+          make test-integration
+          make test-authorization-integration
+          make test-staging-integration
+          make verify-all
+          git diff --exit-code fb30a4352697ed9cf1f7ef183285954450d1e71d -- docs/canonical
