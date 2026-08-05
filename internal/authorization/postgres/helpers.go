@@ -31,6 +31,13 @@ func scanUse(row scanner) (authorization.ApprovalUse, error) {
 	return value, mapError(err)
 }
 
+func transitionUpdateError(err error) error {
+	if errors.Is(err, authorization.ErrRequestNotFound) {
+		return authorization.ErrInvalidTransition
+	}
+	return err
+}
+
 func rollback(tx pgx.Tx) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

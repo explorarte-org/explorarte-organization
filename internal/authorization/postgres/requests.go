@@ -206,7 +206,7 @@ func (s *Store) DecideRequest(ctx context.Context, command authorization.DecideR
 	}
 	request, err = scanRequest(tx.QueryRow(ctx, `UPDATE authorization_requests SET status=$2::text,version=version+1,updated_at=$3::timestamptz,approved_at=CASE WHEN $2::text='approved' THEN $3::timestamptz ELSE NULL::timestamptz END,rejected_at=CASE WHEN $2::text='rejected' THEN $3::timestamptz ELSE NULL::timestamptz END WHERE id=$1 AND status='pending' RETURNING `+requestColumns, request.ID, status, now))
 	if err != nil {
-		return result, authorization.ErrInvalidTransition
+		return result, transitionUpdateError(err)
 	}
 	if err = appendEvent(ctx, tx, request, eventType, map[authorization.RequestStatus]authorization.Effect{authorization.RequestApproved: authorization.EffectAllow, authorization.RequestRejected: authorization.EffectDeny}[status], status, reasonCode, command.ActorRoleID, outboxMax); err != nil {
 		return result, err
@@ -223,7 +223,7 @@ func transitionExpired(ctx context.Context, tx pgx.Tx, request authorization.App
 	}
 	updated, err := scanRequest(tx.QueryRow(ctx, `UPDATE authorization_requests SET status='expired',version=version+1,updated_at=$2,expired_at=$2 WHERE id=$1 AND status=$3 RETURNING `+requestColumns, request.ID, now, request.Status))
 	if err != nil {
-		return authorization.ApprovalRequest{}, authorization.ErrInvalidTransition
+		return authorization.ApprovalRequest{}, transitionUpdateError(err)
 	}
 	if err = appendEvent(ctx, tx, updated, "authorization.request_expired", authorization.EffectDeny, updated.Status, authorization.ReasonApprovalExpired, "", outboxMax); err != nil {
 		return authorization.ApprovalRequest{}, err

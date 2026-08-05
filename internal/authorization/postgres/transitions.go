@@ -121,7 +121,7 @@ func (s *Store) ConsumeApproval(ctx context.Context, command authorization.Consu
 	}
 	request, err = scanRequest(tx.QueryRow(ctx, `UPDATE authorization_requests SET status='consumed',version=version+1,updated_at=$2,consumed_at=$2 WHERE id=$1 AND status='approved' RETURNING `+requestColumns, request.ID, now))
 	if err != nil {
-		return result, authorization.ErrInvalidTransition
+		return result, transitionUpdateError(err)
 	}
 	eventRequest := withEventCorrelation(request, command.CorrelationID, command.CausationID)
 	if err = appendEvent(ctx, tx, eventRequest, "authorization.approval_consumed", authorization.EffectAllow, request.Status, authorization.ReasonAllowedByApproval, command.ActorRoleID, outboxMax); err != nil {
@@ -173,7 +173,7 @@ func (s *Store) CancelRequest(ctx context.Context, command authorization.CancelR
 	}
 	request, err = scanRequest(tx.QueryRow(ctx, `UPDATE authorization_requests SET status='cancelled',version=version+1,updated_at=$2,cancelled_at=$2 WHERE id=$1 AND status IN ('pending','approved') RETURNING `+requestColumns, request.ID, now))
 	if err != nil {
-		return result, authorization.ErrInvalidTransition
+		return result, transitionUpdateError(err)
 	}
 	if err = appendEvent(ctx, tx, request, "authorization.request_cancelled", authorization.EffectDeny, request.Status, authorization.ReasonApprovalCancelled, command.ActorRoleID, outboxMax); err != nil {
 		return result, err
