@@ -179,3 +179,28 @@ make test-staging-integration
 ```
 
 Consulta `docs/implementation/branch-05-staging-promotion-engine/INTEGRATION.md` antes de habilitar el módulo o provisionar roots en AWS.
+
+## Model Runtime Gateway (Rama 08)
+
+Rama 08 materializa `docs/canonical/model-routing.yaml` en PostgreSQL y agrega
+invocaciones durables con dispatch one-shot mediante `orgctl`. Los providers
+reales permanecen `unavailable` y `dispatch_enabled=false`; la única ejecución
+implementada es `test.fake` bajo una ruta canónica aislada de pruebas.
+
+```bash
+orgctl model registry validate --json
+orgctl model registry diff --json
+orgctl model registry sync --apply --json
+orgctl model registry status --json
+
+orgctl model invocation create --file invocation.json --json
+orgctl model invocation dispatch INVOCATION_ID --claimed-by orgctl --json
+orgctl model invocation reconcile --json
+```
+
+`orgd` no importa adapters ni ejecuta invocaciones. El resultado de un modelo no
+completa tareas, no ejecuta tool intents y no adquiere autoridad del rol
+representado. Antes de habilitar providers reales deben existir una capability
+de infraestructura y una política canónica de egress.
+
+Consulta `docs/implementation/branch-08-model-runtime-gateway/INTEGRATION.md`.

@@ -1,0 +1,36 @@
+schema_version: 0.1.0
+document_status: integration_fixture
+policies:
+  executive.ceo:
+    provider: alibaba_token_plan_via_claude_code
+    model: qwen3.6-flash
+    transport: cli_adapter
+    direct_http_forbidden: true
+  executive.observer:
+    provider: alibaba_token_plan_via_claude_code
+    model: qwen3.6-flash
+    transport: cli_adapter
+    direct_http_forbidden: true
+    decision_status: owner_confirmation_required
+  department.leader:
+    provider: openai_compatible
+    model: gpt-5.6-luna
+    transport: http_adapter
+  department.worker:
+    provider: test.fake
+    model: deterministic-v1
+    transport: fake_adapter
+    capabilities:
+    - structured.output
+  research.audit:
+    provider: alibaba_token_plan_via_claude_code
+    model: qwen3.6-flash
+    transport: cli_adapter
+    direct_http_forbidden: true
+  research.worker:
+    provider: deepseek
+    model: deepseek-v4-flash
+    transport: http_adapter
+routing_invariants:
+- A role never selects its own model from request JSON.
+- Test fake dispatch remains isolated from production canonical routing.
