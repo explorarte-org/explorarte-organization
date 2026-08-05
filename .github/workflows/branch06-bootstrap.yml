@@ -44,6 +44,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          bootstrap_head="$(git rev-parse HEAD)"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git fetch /tmp/branch06.bundle \
@@ -51,9 +52,10 @@ jobs:
           test "$(git rev-parse refs/remotes/branch06-bundle/implementation^)" = 'fb30a4352697ed9cf1f7ef183285954450d1e71d'
           git cherry-pick refs/remotes/branch06-bundle/implementation
           git diff --exit-code fb30a4352697ed9cf1f7ef183285954450d1e71d -- docs/canonical
+          git checkout "$bootstrap_head" -- .github/workflows/ci.yml
           git rm -r .branch06
-          git rm .github/workflows/branch06-bootstrap.yml
           git commit --amend --no-edit
+          test -z "$(git diff --name-only "$bootstrap_head" HEAD -- .github/workflows)"
 
       - name: Push implementation commit
         shell: bash
