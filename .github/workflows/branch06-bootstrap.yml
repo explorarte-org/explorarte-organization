@@ -7,6 +7,9 @@ on:
     paths:
       - '.branch06/**'
       - '.github/workflows/branch06-bootstrap.yml'
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
