@@ -164,7 +164,9 @@ func TestDurableCapabilityPolicyEngine(t *testing.T) {
 			t.Fatal(err)
 		}
 		digest := authorization.DigestAction([]byte("expire action"))
-		created, err := clockService.RequestApproval(ctx, requestCommand("request-expire", "candidate-expire", digest))
+		command := requestCommand("request-expire", "candidate-expire", digest)
+		command.TTL = 0 // Exercise the service default TTL of one minute.
+		created, err := clockService.RequestApproval(ctx, command)
 		if err != nil {
 			t.Fatal(err)
 		}

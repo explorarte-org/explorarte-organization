@@ -57,6 +57,11 @@ func (s *Service) Evaluate(ctx context.Context, request EvaluationRequest) (Eval
 		ActionDigest:           request.ActionDigest,
 	})
 	if err != nil {
+		if errors.Is(err, ErrRequestNotFound) {
+			base.Effect = EffectApprovalRequired
+			base.ReasonCode = ReasonApprovalMissing
+			return base, nil
+		}
 		if errors.Is(err, ErrApprovalPending) || errors.Is(err, ErrApprovalRejected) || errors.Is(err, ErrApprovalExpired) || errors.Is(err, ErrApprovalConsumed) || errors.Is(err, ErrApprovalCancelled) || errors.Is(err, ErrApprovalScopeMismatch) || errors.Is(err, ErrApprovalPolicyDrift) || errors.Is(err, ErrCapabilityDenied) || errors.Is(err, ErrRoleNotFound) || errors.Is(err, ErrRoleDisabled) || errors.Is(err, ErrRoleRetired) || errors.Is(err, ErrRoleNotExecutable) {
 			base.ReasonCode = result.ReasonCode
 			if base.ReasonCode == "" {

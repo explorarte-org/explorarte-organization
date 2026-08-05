@@ -108,6 +108,28 @@ func TestRequestApprovalRejectsNonApprovalAndInvalidTTL(t *testing.T) {
 	}
 }
 
+func TestEvaluateMissingApprovalRequestRemainsApprovalRequired(t *testing.T) {
+	service, store, _ := testService(t)
+	store.consumeErr = ErrRequestNotFound
+	id := int64(999)
+	got, err := service.Evaluate(context.Background(), EvaluationRequest{
+		OrganizationID:         "explorarte",
+		OrganizationRevisionID: 7,
+		ActorRoleID:            "empresa/human",
+		CapabilityID:           "organization.activate_skill",
+		ResourceType:           "skill",
+		ResourceID:             "x",
+		ActionDigest:           DigestAction([]byte("activate skill x")),
+		ApprovalRequestID:      &id,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Effect != EffectApprovalRequired || got.ReasonCode != ReasonApprovalMissing {
+		t.Fatalf("evaluation=%+v", got)
+	}
+}
+
 func TestEvaluateConsumesValidApprovalBeforeAllow(t *testing.T) {
 	service, store, now := testService(t)
 	digest := DigestAction([]byte("activate skill x"))
