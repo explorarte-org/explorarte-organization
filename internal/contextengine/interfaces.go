@@ -137,6 +137,10 @@ type ValidationEventRecorder interface {
 	RecordValidationFailure(context.Context, Snapshot, SnapshotValidation, time.Time) error
 }
 
+type ForbiddenSourceEventRecorder interface {
+	RecordForbiddenSourceRejection(context.Context, BuildRequest, ReasonCode, time.Time) error
+}
+
 type Service interface {
 	Build(context.Context, BuildRequest) (BuildResult, error)
 	Get(context.Context, int64, bool) (Snapshot, error)

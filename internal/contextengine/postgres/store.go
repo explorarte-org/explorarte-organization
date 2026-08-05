@@ -194,6 +194,58 @@ RETURNING `+snapshotColumns, command.SnapshotID, now, strings.TrimSpace(command.
 	return updated, false, nil
 }
 
+func (s *Store) RecordForbiddenSourceRejection(ctx context.Context, request contextengine.BuildRequest, reason contextengine.ReasonCode, now time.Time) (err error) {
+	keyPayload, err := json.Marshal(struct {
+		OrganizationID string                   `json:"organization_id"`
+		IdempotencyKey string                   `json:"idempotency_key"`
+		Reason         contextengine.ReasonCode `json:"reason"`
+	}{request.OrganizationID, request.IdempotencyKey, reason})
+	if err != nil {
+		return fmt.Errorf("encode forbidden source rejection key: %w", err)
+	}
+	rejectionHash := contextengine.DigestCanonicalBytes(keyPayload)
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return mapError(err)
+	}
+	defer func() {
+		if err != nil {
+			rollback(tx)
+		}
+	}()
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, rejectionHash); err != nil {
+		return mapError(err)
+	}
+	var existing string
+	err = tx.QueryRow(ctx, `SELECT aggregate_id FROM outbox_events WHERE aggregate_type='context_snapshot' AND event_type='context.forbidden_source_rejected' AND payload->>'organization_id'=$1 AND payload->>'request_hash'=$2 LIMIT 1`, request.OrganizationID, rejectionHash).Scan(&existing)
+	if err == nil {
+		if err = tx.Commit(ctx); err != nil {
+			return mapError(err)
+		}
+		return nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return mapError(err)
+	}
+	var id int64
+	if err = tx.QueryRow(ctx, `SELECT nextval(pg_get_serial_sequence('context_snapshots','id'))`).Scan(&id); err != nil {
+		return mapError(err)
+	}
+	attempt := contextengine.Snapshot{
+		ID: id, OrganizationID: request.OrganizationID, OrganizationRevisionID: request.OrganizationRevisionID,
+		ActorRoleID: request.ActorRoleID, Purpose: request.Purpose, ProjectRef: request.ProjectRef, TaskRef: request.TaskRef,
+		Status: contextengine.SnapshotStatus("rejected"), RequestHash: rejectionHash,
+		CorrelationID: request.CorrelationID, CausationID: request.CausationID, CreatedAt: now,
+	}
+	if err = appendAuditAndOutbox(ctx, tx, attempt, "context.forbidden_source_rejected", "system", "orgd", reason); err != nil {
+		return err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return mapError(err)
+	}
+	return nil
+}
+
 func (s *Store) RecordValidationFailure(ctx context.Context, snapshot contextengine.Snapshot, validation contextengine.SnapshotValidation, now time.Time) (err error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
@@ -379,6 +431,9 @@ func eventPayload(snapshot contextengine.Snapshot, reason contextengine.ReasonCo
 		"segment_count":            snapshot.SegmentCount,
 		"included_segment_count":   snapshot.IncludedSegmentCount,
 		"omitted_segment_count":    snapshot.OmittedSegmentCount,
+	}
+	if snapshot.RequestHash != "" {
+		value["request_hash"] = snapshot.RequestHash
 	}
 	if reason != "" {
 		value["reason_code"] = reason

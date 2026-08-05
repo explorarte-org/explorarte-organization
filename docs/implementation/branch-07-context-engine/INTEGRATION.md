@@ -174,3 +174,7 @@ For production, keep the source root read-only, synchronize the canonical regist
 - No memory approval, skill activation, semantic RAG retrieval or model execution.
 - Dynamic providers must classify and sanitize content correctly.
 - Filesystem checks reduce path/symlink races; complete cross-platform TOCTOU elimination would require platform-specific `openat2` handling.
+
+## Rejected forbidden-source attempts
+
+A source rejected as `secret`, `clinical`, forbidden, path-escaping, symlink-escaping, or capability-granting from an unsafe tier never creates a `context_snapshots` row. PostgreSQL allocates an attempt identifier from the same snapshot sequence only for audit correlation and emits one idempotent `context.forbidden_source_rejected` audit/outbox pair per organization, idempotency key, and reason. The payload contains bounded metadata and hashes, never source content. This preserves the no-partial-snapshot invariant while satisfying rejection traceability.

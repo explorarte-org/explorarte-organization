@@ -26,6 +26,7 @@ require 'audit_events' internal/contextengine/postgres/store.go 'context audit i
 require 'outbox_events' internal/contextengine/postgres/store.go 'context outbox integration missing'
 require 'context.snapshot_validation_failed' internal/contextengine/postgres/store.go 'validation failure event missing'
 require 'context.policy_drift_rejected' internal/contextengine/postgres/store.go 'policy drift event missing'
+require 'context.forbidden_source_rejected' internal/contextengine/postgres/store.go 'forbidden source event missing'
 require 'TestLoaderRejectsPathTraversal' internal/contextengine/document/loader_test.go 'path traversal test missing'
 require 'TestLoaderRejectsSymlinkEscape' internal/contextengine/document/loader_test.go 'symlink escape test missing'
 require 'TestDigestBuildRequestIsDeterministic' internal/contextengine/hashing_test.go 'deterministic hash test missing'

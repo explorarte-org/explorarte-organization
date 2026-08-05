@@ -74,7 +74,7 @@ func (s *contextService) Build(ctx context.Context, request BuildRequest) (Build
 	}
 	organization, revision, role, unit, bundle, sources, resolvedSkills, err := s.resolve(ctx, request)
 	if err != nil {
-		return BuildResult{}, err
+		return s.rejectBuild(ctx, request, err)
 	}
 	_ = organization
 	_ = unit
@@ -85,7 +85,7 @@ func (s *contextService) Build(ctx context.Context, request BuildRequest) (Build
 		MaxRAGSegments: s.config.MaxRAGSegments,
 	})
 	if err != nil {
-		return BuildResult{}, err
+		return s.rejectBuild(ctx, request, err)
 	}
 	requestHash := DigestBuildRequest(CanonicalBuildRequest{
 		Request: request, PrecedenceHash: bundle.PrecedenceHash, CanonicalBundleHash: bundle.BundleHash, Sources: sources,
@@ -104,7 +104,7 @@ func (s *contextService) Build(ctx context.Context, request BuildRequest) (Build
 		return BuildResult{}, getErr
 	}
 	if err = s.revalidateResolved(ctx, request, revision.ID, bundle, role, sources, resolvedSkills); err != nil {
-		return BuildResult{}, err
+		return s.rejectBuild(ctx, request, err)
 	}
 	id, err := s.store.AllocateID(ctx)
 	if err != nil {
@@ -138,6 +138,31 @@ func (s *contextService) Build(ctx context.Context, request BuildRequest) (Build
 		}
 	}
 	return result, nil
+}
+
+func (s *contextService) rejectBuild(ctx context.Context, request BuildRequest, cause error) (BuildResult, error) {
+	reason := ReasonOf(cause)
+	if !isForbiddenSourceReason(reason) {
+		return BuildResult{}, cause
+	}
+	recorder, ok := s.store.(ForbiddenSourceEventRecorder)
+	if !ok {
+		return BuildResult{}, cause
+	}
+	if err := recorder.RecordForbiddenSourceRejection(ctx, request, reason, s.clock.Now().UTC()); err != nil {
+		return BuildResult{}, errors.Join(cause, fmt.Errorf("record forbidden source rejection: %w", err))
+	}
+	return BuildResult{}, cause
+}
+
+func isForbiddenSourceReason(reason ReasonCode) bool {
+	switch reason {
+	case ReasonForbiddenDataClass, ReasonSecretDataRejected, ReasonClinicalDataRejected,
+		ReasonUnsafeInstructionSource, ReasonSourcePathEscape, ReasonSourceSymlinkEscape:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *contextService) resolve(ctx context.Context, request BuildRequest) (registry.Organization, *registry.Revision, registry.Role, registry.Unit, CanonicalBundle, []SourceRecord, []SkillRecord, error) {
