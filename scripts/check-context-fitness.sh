@@ -24,6 +24,8 @@ require 'context_segments_snapshot_fk' migrations/000006_create_context_engine.u
 require "data_class IN \('public','organizational','sanitized'\)" migrations/000006_create_context_engine.up.sql 'data class constraint missing'
 require 'audit_events' internal/contextengine/postgres/store.go 'context audit integration missing'
 require 'outbox_events' internal/contextengine/postgres/store.go 'context outbox integration missing'
+require 'context.snapshot_validation_failed' internal/contextengine/postgres/store.go 'validation failure event missing'
+require 'context.policy_drift_rejected' internal/contextengine/postgres/store.go 'policy drift event missing'
 require 'TestLoaderRejectsPathTraversal' internal/contextengine/document/loader_test.go 'path traversal test missing'
 require 'TestLoaderRejectsSymlinkEscape' internal/contextengine/document/loader_test.go 'symlink escape test missing'
 require 'TestDigestBuildRequestIsDeterministic' internal/contextengine/hashing_test.go 'deterministic hash test missing'

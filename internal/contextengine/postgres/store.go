@@ -194,6 +194,50 @@ RETURNING `+snapshotColumns, command.SnapshotID, now, strings.TrimSpace(command.
 	return updated, false, nil
 }
 
+func (s *Store) RecordValidationFailure(ctx context.Context, snapshot contextengine.Snapshot, validation contextengine.SnapshotValidation, now time.Time) (err error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return mapError(err)
+	}
+	defer func() {
+		if err != nil {
+			rollback(tx)
+		}
+	}()
+	current, err := getSnapshot(ctx, tx, snapshot.ID, true)
+	if err != nil {
+		return err
+	}
+	if current.Status != contextengine.SnapshotReady {
+		return contextengine.ErrSnapshotInvalidated
+	}
+	eventSnapshot := current
+	eventSnapshot.CreatedAt = now
+	if err = appendAuditAndOutbox(ctx, tx, eventSnapshot, "context.snapshot_validation_failed", "system", "orgd", contextengine.ReasonSnapshotStale); err != nil {
+		return err
+	}
+	if reason := policyDriftReason(validation); reason != "" {
+		if err = appendAuditAndOutbox(ctx, tx, eventSnapshot, "context.policy_drift_rejected", "system", "orgd", reason); err != nil {
+			return err
+		}
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return mapError(err)
+	}
+	return nil
+}
+
+func policyDriftReason(validation contextengine.SnapshotValidation) contextengine.ReasonCode {
+	for _, finding := range validation.Drift {
+		reason := contextengine.ReasonCode(finding.ReasonCode)
+		switch reason {
+		case contextengine.ReasonRevisionMismatch, contextengine.ReasonPrecedenceHashMismatch, contextengine.ReasonCanonicalBundleDrift:
+			return reason
+		}
+	}
+	return ""
+}
+
 const snapshotColumns = `id,organization_id,organization_revision_id,actor_role_id,purpose,project_ref,task_ref,idempotency_key,request_hash,precedence_hash,canonical_bundle_hash,rendered_hash,status,version,segment_count,included_segment_count,omitted_segment_count,total_bytes,correlation_id,causation_id,created_at,invalidated_at,invalidation_reason`
 
 type scanner interface{ Scan(...any) error }

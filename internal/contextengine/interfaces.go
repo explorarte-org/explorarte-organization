@@ -133,6 +133,10 @@ type SnapshotStore interface {
 	Invalidate(context.Context, InvalidateCommand, time.Time) (Snapshot, bool, error)
 }
 
+type ValidationEventRecorder interface {
+	RecordValidationFailure(context.Context, Snapshot, SnapshotValidation, time.Time) error
+}
+
 type Service interface {
 	Build(context.Context, BuildRequest) (BuildResult, error)
 	Get(context.Context, int64, bool) (Snapshot, error)

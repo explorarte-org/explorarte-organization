@@ -510,7 +510,13 @@ func (s *contextService) Validate(ctx context.Context, id int64) (SnapshotValida
 		drift = append(drift, DriftFinding{ReasonCode: string(ReasonRenderedHashMismatch), Expected: snapshot.RenderedHash})
 	}
 	if len(drift) > 0 {
-		return SnapshotValidation{Valid: false, ReasonCode: string(ReasonSnapshotStale), Drift: drift}, nil
+		validation := SnapshotValidation{Valid: false, ReasonCode: string(ReasonSnapshotStale), Drift: drift}
+		if recorder, ok := s.store.(ValidationEventRecorder); ok {
+			if recordErr := recorder.RecordValidationFailure(ctx, snapshot, validation, s.clock.Now().UTC()); recordErr != nil {
+				return SnapshotValidation{}, fmt.Errorf("record snapshot validation failure: %w", recordErr)
+			}
+		}
+		return validation, nil
 	}
 	return SnapshotValidation{Valid: true}, nil
 }
