@@ -5,8 +5,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 MODE="${1:-all}"
 case "$MODE" in
-  all|tasks|staging) ;;
-  *) echo "usage: $0 [all|tasks|staging]" >&2; exit 2 ;;
+  all|tasks|staging|authorization) ;;
+  *) echo "usage: $0 [all|tasks|staging|authorization]" >&2; exit 2 ;;
 esac
 
 export ORG_POSTGRES_ADMIN_USER=explorarte_test_admin
@@ -36,6 +36,9 @@ fi
 if [[ "$MODE" == all || "$MODE" == staging ]]; then
   timeout --foreground --signal=TERM --kill-after=30s 20m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/staging/postgres
 fi
+if [[ "$MODE" == all || "$MODE" == authorization ]]; then
+  timeout --foreground --signal=TERM --kill-after=30s 20m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/authorization/postgres
+fi
 
 if [[ "$MODE" == all ]]; then
   timeout --foreground --signal=TERM --kill-after=30s 15m "${compose[@]}" run --rm -T integration-test sh -ec '
@@ -63,6 +66,12 @@ JSON
     /tmp/orgctl task list --status ready --json >/tmp/tasks.json
     /tmp/orgctl task reconcile --batch 100 --json >/tmp/reconcile.json
     /tmp/orgctl outbox status --json >/tmp/outbox.json
+    action_digest="$(printf %s authorization-cli-smoke | sha256sum | cut -d" " -f1)"
+    /tmp/orgctl authorization evaluate --actor-role ingenieria_ia/code-runner --capability code.commit --resource-type code --resource-id cli-smoke --action-digest "$action_digest" --json >/tmp/authorization-evaluate.json
+    /tmp/orgctl authorization request --actor-role creativo/copywriter --capability rag.publish_approved --resource-type rag_candidate --resource-id cli-smoke --action-digest "$action_digest" --idempotency-key cli-authorization-smoke --reason "CI one-time approval" --json >/tmp/authorization-request.json
+    request_id="$(grep -m1 '"id"' /tmp/authorization-request.json | tr -cd '0-9')"
+    /tmp/orgctl authorization decide "$request_id" --decision approve --actor-role empresa/human --reason "CI owner approval" --json >/tmp/authorization-decision.json
+    /tmp/orgctl authorization consume "$request_id" --actor-role creativo/copywriter --action-digest "$action_digest" --json >/tmp/authorization-consume.json
     grep -Fq "\"status\": \"ready\"" /tmp/task-created.json
     grep -Fq "\"pending\"" /tmp/outbox.json
   '

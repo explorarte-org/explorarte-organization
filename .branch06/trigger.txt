@@ -1,1 +1,0 @@
-Trigger the temporary branch06 bootstrap workflow from the draft pull request.

@@ -27,12 +27,14 @@ var (
 )
 
 const (
-	exitOK       = 0
-	exitInternal = 1
-	exitUsage    = 2
-	exitDrift    = 3
-	exitInvalid  = 4
-	exitDatabase = 5
+	exitOK               = 0
+	exitInternal         = 1
+	exitUsage            = 2
+	exitDrift            = 3
+	exitInvalid          = 4
+	exitDatabase         = 5
+	exitDenied           = 6
+	exitApprovalRequired = 7
 )
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
@@ -58,6 +60,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runOutbox(args[1:], stdout, stderr)
 	case "staging":
 		return runStaging(args[1:], stdout, stderr)
+	case "authorization":
+		return runAuthorization(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return exitOK
@@ -493,7 +497,8 @@ commands:
   registry <validate|diff|sync|status|list-units|list-roles|get-role|get-leader>
   task <create|get|list|claim|start|heartbeat|result|finalize|block|unblock|cancel|dependency|requirement|evidence|events|attempts|reconcile|dead-letter>
   outbox <claim|ack|nack|recover|status>
-  staging <repo|workspace|check|promotion|reconcile>`)
+  staging <repo|workspace|check|promotion|reconcile>
+  authorization <evaluate|request|get|list|decide|consume|cancel|expire>`)
 }
 func printRegistryUsage(out io.Writer) {
 	fmt.Fprintln(out, "usage: orgctl registry <command> [options]")

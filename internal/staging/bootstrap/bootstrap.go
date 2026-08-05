@@ -1,10 +1,12 @@
 package bootstrap
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
 	"github.com/Mireuz13/explorarte-organization/internal/authorization"
+	authorizationpostgres "github.com/Mireuz13/explorarte-organization/internal/authorization/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/config"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
@@ -42,7 +44,11 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create registry repository: %w", err)
 	}
-	authorizer, err := authorization.New(registryRepository, cfg.Tasks.OrganizationID, cfg.Registry.CanonicalDir)
+	authorizationPolicyReader, err := authorizationpostgres.New(store)
+	if err != nil {
+		return nil, fmt.Errorf("create authorization policy reader: %w", err)
+	}
+	staticAuthorizer, err := authorization.NewWithPolicyReader(authorizationPolicyReader, cfg.Tasks.OrganizationID, cfg.Registry.CanonicalDir)
 	if err != nil {
 		return nil, fmt.Errorf("create capability authorizer: %w", err)
 	}
@@ -65,9 +71,29 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 		MaxArtifactBytes: cfg.Staging.MaxArtifactBytes,
 		MaxChangedFiles:  cfg.Staging.MaxChangedFiles,
 		StaleAfter:       cfg.Staging.StaleAfter,
-	}, stagingStore, taskStore, catalog, authorizer, registryRepository, artifactStore, gitBackend)
+	}, stagingStore, taskStore, catalog, stagingAuthorizationAdapter{inner: staticAuthorizer}, registryRepository, artifactStore, gitBackend)
 	if err != nil {
 		return nil, fmt.Errorf("create staging service: %w", err)
 	}
 	return &Runtime{Service: service, Catalog: catalog}, nil
+}
+
+// stagingAuthorizationAdapter translates authorization-domain decisions at the
+// staging boundary. Authorization deliberately does not import staging.
+type stagingAuthorizationAdapter struct {
+	inner authorization.CapabilityAuthorizer
+}
+
+func (a stagingAuthorizationAdapter) Authorize(ctx context.Context, organizationID string, revisionID int64, roleID, capability string) error {
+	err := a.inner.Authorize(ctx, organizationID, revisionID, roleID, capability)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, authorization.ErrPolicyRevisionMismatch):
+		return fmt.Errorf("%w: %v", staging.ErrPolicyRevisionMismatch, err)
+	case errors.Is(err, authorization.ErrCapabilityDenied), errors.Is(err, authorization.ErrApprovalRequired), errors.Is(err, authorization.ErrUnknownCapability), errors.Is(err, authorization.ErrUnknownAuthorityClass):
+		return fmt.Errorf("%w: %v", staging.ErrCapabilityDenied, err)
+	default:
+		return err
+	}
 }

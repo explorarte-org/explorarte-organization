@@ -10,20 +10,8 @@ import (
 	"strings"
 
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
-	"github.com/Mireuz13/explorarte-organization/internal/staging"
 	"gopkg.in/yaml.v3"
 )
-
-var (
-	ErrCapabilityDenied       = staging.ErrCapabilityDenied
-	ErrUnknownCapability      = errors.New("unknown capability")
-	ErrUnknownAuthorityClass  = errors.New("unknown authority class")
-	ErrPolicyRevisionMismatch = staging.ErrPolicyRevisionMismatch
-)
-
-type CapabilityAuthorizer interface {
-	Authorize(context.Context, string, int64, string, string) error
-}
 
 type Matrix struct {
 	SchemaVersion  string              `yaml:"schema_version"`
@@ -42,18 +30,37 @@ type Capability struct {
 	Approval string `yaml:"approval,omitempty"`
 }
 
+type registryPolicyReader struct{ reader registry.Reader }
+
+func (r registryPolicyReader) GetOrganization(ctx context.Context, id string) (registry.Organization, error) {
+	return r.reader.GetOrganization(ctx, id)
+}
+func (r registryPolicyReader) GetCurrentRevision(ctx context.Context, id string) (*registry.Revision, error) {
+	return r.reader.GetCurrentRevision(ctx, id)
+}
+func (r registryPolicyReader) GetAuthorizationRole(ctx context.Context, organizationID, roleID string) (registry.Role, error) {
+	return r.reader.GetRole(ctx, organizationID, roleID)
+}
+
 type Authorizer struct {
-	reader       registry.Reader
+	reader       PolicyReader
 	organization string
 	matrix       Matrix
 	matrixHash   string
-	known        map[string]struct{}
+	capabilities map[string]Capability
 	authorities  map[string]struct{}
 }
 
 func New(reader registry.Reader, organizationID, canonicalDir string) (*Authorizer, error) {
 	if reader == nil {
 		return nil, errors.New("capability authorizer requires registry reader")
+	}
+	return NewWithPolicyReader(registryPolicyReader{reader: reader}, organizationID, canonicalDir)
+}
+
+func NewWithPolicyReader(reader PolicyReader, organizationID, canonicalDir string) (*Authorizer, error) {
+	if reader == nil {
+		return nil, errors.New("capability authorizer requires policy reader")
 	}
 	organizationID = strings.TrimSpace(organizationID)
 	if organizationID == "" {
@@ -90,20 +97,30 @@ func New(reader registry.Reader, organizationID, canonicalDir string) (*Authoriz
 	return newAuthorizer(reader, organizationID, matrix, matrixHash)
 }
 
-func newAuthorizer(reader registry.Reader, organizationID string, matrix Matrix, matrixHash string) (*Authorizer, error) {
+func newAuthorizer(reader PolicyReader, organizationID string, matrix Matrix, matrixHash string) (*Authorizer, error) {
 	if matrix.DefaultPolicy != "deny" {
 		return nil, errors.New("capability matrix must use default deny")
 	}
-	known := make(map[string]struct{}, len(matrix.Capabilities))
+	if !sha256Pattern.MatchString(matrixHash) {
+		return nil, errors.New("capability matrix semantic hash must be lowercase SHA-256")
+	}
+	capabilities := make(map[string]Capability, len(matrix.Capabilities))
 	for _, capability := range matrix.Capabilities {
-		id := strings.TrimSpace(capability.ID)
-		if id == "" {
-			return nil, errors.New("capability matrix contains empty capability")
+		capability.ID = strings.TrimSpace(capability.ID)
+		capability.Risk = strings.TrimSpace(capability.Risk)
+		capability.Approval = strings.TrimSpace(capability.Approval)
+		if capability.ID == "" || capability.Risk == "" {
+			return nil, errors.New("capability matrix contains incomplete capability")
 		}
-		if _, exists := known[id]; exists {
-			return nil, fmt.Errorf("duplicate capability %q", id)
+		if _, exists := capabilities[capability.ID]; exists {
+			return nil, fmt.Errorf("duplicate capability %q", capability.ID)
 		}
-		known[id] = struct{}{}
+		switch capability.Approval {
+		case "", "owner", "policy_or_human", "owner_or_cell_policy":
+		default:
+			return nil, fmt.Errorf("capability %q uses unsupported approval mode %q", capability.ID, capability.Approval)
+		}
+		capabilities[capability.ID] = capability
 	}
 	authorities := make(map[string]struct{}, len(matrix.Grants))
 	for authority, grants := range matrix.Grants {
@@ -114,7 +131,7 @@ func newAuthorizer(reader registry.Reader, organizationID string, matrix Matrix,
 		authorities[authority] = struct{}{}
 		for _, grant := range grants {
 			if grant != "*" {
-				if _, ok := known[grant]; !ok {
+				if _, ok := capabilities[grant]; !ok {
 					return nil, fmt.Errorf("authority %q grants unknown capability %q", authority, grant)
 				}
 			}
@@ -127,65 +144,177 @@ func newAuthorizer(reader registry.Reader, organizationID string, matrix Matrix,
 			}
 		}
 		for _, capability := range denied {
-			if _, ok := known[capability]; !ok {
+			if _, ok := capabilities[capability]; !ok {
 				return nil, fmt.Errorf("hard deny references unknown capability %q", capability)
 			}
 		}
 	}
-	return &Authorizer{reader: reader, organization: organizationID, matrix: matrix, matrixHash: matrixHash, known: known, authorities: authorities}, nil
+	return &Authorizer{reader: reader, organization: organizationID, matrix: matrix, matrixHash: matrixHash, capabilities: capabilities, authorities: authorities}, nil
+}
+
+func (a *Authorizer) Evaluate(ctx context.Context, request EvaluationRequest) (Evaluation, error) {
+	if a == nil || a.reader == nil {
+		return Evaluation{}, errors.New("authorization evaluator is unavailable")
+	}
+	if err := validateEvaluationRequest(request); err != nil {
+		return Evaluation{}, err
+	}
+	return a.evaluate(ctx, request)
+}
+
+func (a *Authorizer) evaluate(ctx context.Context, request EvaluationRequest) (Evaluation, error) {
+	result := Evaluation{CapabilityID: request.CapabilityID, MatrixHash: a.matrixHash, ApprovalRequestID: request.ApprovalRequestID}
+	if request.OrganizationID != a.organization {
+		result.Effect, result.ReasonCode = EffectDeny, ReasonOrganizationMismatch
+		return result, nil
+	}
+	organization, err := a.reader.GetOrganization(ctx, request.OrganizationID)
+	if err != nil {
+		if errors.Is(err, registry.ErrNotFound) || errors.Is(err, ErrRequestNotFound) {
+			result.Effect, result.ReasonCode = EffectDeny, ReasonOrganizationMismatch
+			return result, nil
+		}
+		return Evaluation{}, fmt.Errorf("read organization: %w", err)
+	}
+	if organization.ID != request.OrganizationID || organization.RetiredAt != nil {
+		result.Effect, result.ReasonCode = EffectDeny, ReasonOrganizationMismatch
+		return result, nil
+	}
+	revision, err := a.reader.GetCurrentRevision(ctx, request.OrganizationID)
+	if err != nil {
+		return Evaluation{}, fmt.Errorf("read organization revision: %w", err)
+	}
+	if revision == nil || organization.CurrentRevision != request.OrganizationRevisionID || revision.ID != request.OrganizationRevisionID {
+		result.Effect, result.ReasonCode = EffectDeny, ReasonRevisionMismatch
+		return result, nil
+	}
+	if revision.DocumentHashes["capability-matrix.yaml"] != a.matrixHash {
+		result.Effect, result.ReasonCode = EffectDeny, ReasonMatrixHashMismatch
+		return result, nil
+	}
+	capability, ok := a.capabilities[request.CapabilityID]
+	if !ok {
+		result.Effect, result.ReasonCode = EffectDeny, ReasonUnknownCapability
+		return result, nil
+	}
+	result.Risk, result.ApprovalMode = capability.Risk, capability.Approval
+	role, err := a.reader.GetAuthorizationRole(ctx, request.OrganizationID, request.ActorRoleID)
+	if err != nil {
+		if errors.Is(err, registry.ErrNotFound) || errors.Is(err, ErrRoleNotFound) {
+			result.Effect, result.ReasonCode = EffectDeny, ReasonRoleNotFound
+			return result, nil
+		}
+		return Evaluation{}, fmt.Errorf("read authorization role: %w", err)
+	}
+	if role.OrganizationID != "" && role.OrganizationID != request.OrganizationID {
+		result.Effect, result.ReasonCode = EffectDeny, ReasonOrganizationMismatch
+		return result, nil
+	}
+	if role.RetiredAt != nil {
+		result.Effect, result.ReasonCode = EffectDeny, ReasonRoleRetired
+		return result, nil
+	}
+	if !role.Enabled {
+		result.Effect, result.ReasonCode = EffectDeny, ReasonRoleDisabled
+		return result, nil
+	}
+	if !role.Executable && role.ID != organization.OwnerRoleID {
+		result.Effect, result.ReasonCode = EffectDeny, ReasonRoleNotExecutable
+		return result, nil
+	}
+	authority := strings.TrimSpace(role.AuthorityClass)
+	result.AuthorityClass = authority
+	if _, ok := a.authorities[authority]; !ok {
+		result.Effect, result.ReasonCode = EffectDeny, ReasonUnknownAuthorityClass
+		return result, nil
+	}
+	if a.globalHardDenied(request.CapabilityID) {
+		result.Effect, result.ReasonCode = EffectDeny, ReasonHardDeny
+		return result, nil
+	}
+	if a.authorityHardDenied(authority, request.CapabilityID) {
+		result.Effect, result.ReasonCode = EffectDeny, ReasonHardDeny
+		return result, nil
+	}
+	granted := contains(a.matrix.Grants[authority], "*") || contains(a.matrix.Grants[authority], request.CapabilityID)
+	if capability.Approval != "" {
+		result.Effect, result.ReasonCode = EffectApprovalRequired, ReasonApprovalMissing
+		return result, nil
+	}
+	if granted {
+		result.Effect, result.ReasonCode = EffectAllow, ReasonAllowedByGrant
+		return result, nil
+	}
+	result.Effect, result.ReasonCode = EffectDeny, ReasonGrantMissing
+	return result, nil
 }
 
 func (a *Authorizer) Authorize(ctx context.Context, organizationID string, revisionID int64, roleID, capability string) error {
-	if a == nil || a.reader == nil {
-		return fmt.Errorf("%w: authorizer unavailable", ErrCapabilityDenied)
-	}
-	if strings.TrimSpace(organizationID) == "" || organizationID != a.organization || revisionID <= 0 {
-		return fmt.Errorf("%w: invalid organization or revision", ErrCapabilityDenied)
-	}
-	capability = strings.TrimSpace(capability)
-	if _, ok := a.known[capability]; !ok {
-		return fmt.Errorf("%w: %s", ErrUnknownCapability, capability)
-	}
-	revision, err := a.reader.GetCurrentRevision(ctx, organizationID)
+	canonical := []byte(strings.Join([]string{"legacy", organizationID, fmt.Sprint(revisionID), roleID, capability}, "\x00"))
+	result, err := a.Evaluate(ctx, EvaluationRequest{
+		OrganizationID: organizationID, OrganizationRevisionID: revisionID, ActorRoleID: roleID,
+		CapabilityID: capability, ResourceType: "legacy", ResourceID: roleID + ":" + capability,
+		ActionDigest: DigestAction(canonical),
+	})
 	if err != nil {
-		return fmt.Errorf("read organization revision: %w", err)
+		return err
 	}
-	if revision == nil || revision.ID != revisionID || revision.DocumentHashes["capability-matrix.yaml"] != a.matrixHash {
-		return ErrPolicyRevisionMismatch
-	}
-	role, err := a.reader.GetRole(ctx, organizationID, strings.TrimSpace(roleID))
-	if err != nil {
-		return fmt.Errorf("%w: role lookup failed: %v", ErrCapabilityDenied, err)
-	}
-	if !role.Enabled || role.RetiredAt != nil {
-		return fmt.Errorf("%w: role is not enabled", ErrCapabilityDenied)
-	}
-	authority := strings.TrimSpace(role.AuthorityClass)
-	if !role.Executable && authority != "owner" {
-		return fmt.Errorf("%w: non-owner role is not executable", ErrCapabilityDenied)
-	}
-	if _, ok := a.authorities[authority]; !ok {
-		return fmt.Errorf("%w: %s", ErrUnknownAuthorityClass, authority)
-	}
-	if contains(a.matrix.HardDenies["*"], capability) || contains(a.matrix.HardDenies[authority], capability) {
-		return fmt.Errorf("%w: hard deny for %s", ErrCapabilityDenied, capability)
-	}
-	grants := a.matrix.Grants[authority]
-	if contains(grants, "*") || contains(grants, capability) {
+	return legacyEvaluationError(result)
+}
+
+func legacyEvaluationError(result Evaluation) error {
+	switch result.Effect {
+	case EffectAllow:
 		return nil
+	case EffectApprovalRequired:
+		return fmt.Errorf("%w: %s", ErrApprovalRequired, result.ReasonCode)
+	case EffectDeny:
+		switch result.ReasonCode {
+		case ReasonUnknownCapability:
+			return fmt.Errorf("%w: %s", ErrUnknownCapability, result.CapabilityID)
+		case ReasonUnknownAuthorityClass:
+			return fmt.Errorf("%w: %s", ErrUnknownAuthorityClass, result.AuthorityClass)
+		case ReasonRevisionMismatch, ReasonMatrixHashMismatch:
+			return fmt.Errorf("%w: %s", ErrPolicyRevisionMismatch, result.ReasonCode)
+		default:
+			return fmt.Errorf("%w: %s", ErrCapabilityDenied, result.ReasonCode)
+		}
+	default:
+		return errors.New("authorization returned an invalid effect")
 	}
-	return fmt.Errorf("%w: %s lacks %s", ErrCapabilityDenied, roleID, capability)
 }
 
 func (a *Authorizer) MatrixHash() string { return a.matrixHash }
 
 func (a *Authorizer) KnownCapabilities() []string {
-	result := make([]string, 0, len(a.known))
-	for capability := range a.known {
+	result := make([]string, 0, len(a.capabilities))
+	for capability := range a.capabilities {
 		result = append(result, capability)
 	}
 	sort.Strings(result)
 	return result
+}
+
+func (a *Authorizer) Capability(id string) (Capability, bool) {
+	value, ok := a.capabilities[id]
+	return value, ok
+}
+
+func (a *Authorizer) globalHardDenied(capability string) bool {
+	return contains(a.matrix.HardDenies["*"], capability)
+}
+
+func (a *Authorizer) authorityHardDenied(authority, capability string) bool {
+	return contains(a.matrix.HardDenies[authority], capability)
+}
+
+func (a *Authorizer) authorityKnown(authority string) bool {
+	_, ok := a.authorities[authority]
+	return ok
+}
+
+func (a *Authorizer) hardDenied(authority, capability string) bool {
+	return a.globalHardDenied(capability) || a.authorityHardDenied(authority, capability)
 }
 
 func contains(values []string, target string) bool {
