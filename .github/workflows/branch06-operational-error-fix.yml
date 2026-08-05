@@ -1,0 +1,102 @@
+name: branch06-operational-error-fix
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/06-capability-policy-engine
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Preserve operational transition errors
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('internal/authorization/postgres/helpers.go')
+          text = path.read_text()
+          anchor = 'func rollback(tx pgx.Tx) {\n'
+          addition = '''func transitionUpdateError(err error) error {
+          \tif errors.Is(err, authorization.ErrRequestNotFound) {
+          \t\treturn authorization.ErrInvalidTransition
+          \t}
+          \treturn err
+          }
+
+          '''
+          if addition not in text:
+              if anchor not in text:
+                  raise SystemExit('helpers anchor not found')
+              path.write_text(text.replace(anchor, addition + anchor, 1))
+
+          replacements = {
+              'internal/authorization/postgres/requests.go': [
+                  ('return result, authorization.ErrInvalidTransition\n\t}\n\tif err = appendEvent(ctx, tx, request, eventType,', 'return result, transitionUpdateError(err)\n\t}\n\tif err = appendEvent(ctx, tx, request, eventType,'),
+                  ('return authorization.ApprovalRequest{}, authorization.ErrInvalidTransition\n\t}\n\tif err = appendEvent(ctx, tx, updated,', 'return authorization.ApprovalRequest{}, transitionUpdateError(err)\n\t}\n\tif err = appendEvent(ctx, tx, updated,'),
+              ],
+              'internal/authorization/postgres/transitions.go': [
+                  ('return result, authorization.ErrInvalidTransition\n\t}\n\teventRequest := withEventCorrelation(request, command.CorrelationID, command.CausationID)', 'return result, transitionUpdateError(err)\n\t}\n\teventRequest := withEventCorrelation(request, command.CorrelationID, command.CausationID)'),
+                  ('return result, authorization.ErrInvalidTransition\n\t}\n\tif err = appendEvent(ctx, tx, request, "authorization.request_cancelled"', 'return result, transitionUpdateError(err)\n\t}\n\tif err = appendEvent(ctx, tx, request, "authorization.request_cancelled"'),
+              ],
+          }
+          for filename, pairs in replacements.items():
+              path = Path(filename)
+              text = path.read_text()
+              for old, new in pairs:
+                  if old not in text:
+                      raise SystemExit(f'replacement anchor not found in {filename}')
+                  text = text.replace(old, new, 1)
+              path.write_text(text)
+
+          Path('internal/authorization/postgres/helpers_test.go').write_text('''package postgres
+
+          import (
+          \t"errors"
+          \t"testing"
+
+          \t"github.com/Mireuz13/explorarte-organization/internal/authorization"
+          )
+
+          func TestTransitionUpdateErrorPreservesOperationalFailures(t *testing.T) {
+          \toperational := errors.New("postgres read failure")
+          \tif got := transitionUpdateError(operational); !errors.Is(got, operational) {
+          \t\tt.Fatalf("operational error = %v, want original failure", got)
+          \t}
+          \tif got := transitionUpdateError(authorization.ErrRequestNotFound); !errors.Is(got, authorization.ErrInvalidTransition) {
+          \t\tt.Fatalf("no-row error = %v, want invalid transition", got)
+          \t}
+          }
+          ''')
+          PY
+          gofmt -w \
+            internal/authorization/postgres/helpers.go \
+            internal/authorization/postgres/helpers_test.go \
+            internal/authorization/postgres/requests.go \
+            internal/authorization/postgres/transitions.go
+          git diff --check
+          git diff --exit-code fb30a4352697ed9cf1f7ef183285954450d1e71d -- docs/canonical
+
+      - name: Commit operational error fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add internal/authorization/postgres
+          git commit -m 'fix(authorization): preserve operational transition errors'
+          git push origin HEAD:feat/06-capability-policy-engine
