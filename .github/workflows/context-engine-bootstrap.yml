@@ -1,3 +1,4 @@
+# Transfer runner for Branch 07; it deletes itself before committing implementation.
 name: context-engine-apply
 
 on:
