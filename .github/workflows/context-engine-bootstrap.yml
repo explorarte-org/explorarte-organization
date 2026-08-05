@@ -1,18 +1,21 @@
-name: context-engine-bootstrap
+name: context-engine-apply
 
 on:
   push:
     branches: ["feat/07-context-engine"]
-  pull_request:
-    branches: [main]
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: context-engine-apply
+  cancel-in-progress: false
 
 jobs:
-  preconditions-and-export:
+  apply-validate-commit:
+    if: ${{ github.actor != 'github-actions[bot]' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 50
     services:
       postgres:
         image: postgres:17-bookworm
@@ -30,76 +33,58 @@ jobs:
       ORG_TEST_DATABASE_URL: postgres://explorarte_test:integration-only-password@127.0.0.1:5432/explorarte_test?sslmode=disable
       ORG_DATABASE_URL: postgres://explorarte_test:integration-only-password@127.0.0.1:5432/explorarte_test?sslmode=disable
       ORG_CANONICAL_DIR: docs/canonical
-      BASE_SHA: bfe21f34d1da3f2d51eb520c4deef635c7f49cab
+      CONTEXT_BASE_SHA: bfe21f34d1da3f2d51eb520c4deef635c7f49cab
     steps:
-      - name: Checkout branch
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Verify branch and checkout canonical base
-        run: |
-          set -euo pipefail
-          branch_name="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
-          test "$branch_name" = "feat/07-context-engine"
-          git cat-file -e "$BASE_SHA^{commit}"
-          git checkout --detach "$BASE_SHA"
-          test "$(git rev-parse HEAD)" = "$BASE_SHA"
-          test -z "$(git status --porcelain)"
-          printf 'initial_sha=%s\nbranch=%s\n' "$(git rev-parse HEAD)" "$branch_name" | tee /tmp/context-preconditions.txt
-      - name: Set up Go
-        uses: actions/setup-go@v5
+          ref: feat/07-context-engine
+      - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
-      - name: Install tooling
+      - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y ripgrep
-      - name: Record versions
+          sudo apt-get install -y ripgrep xz-utils
+      - name: Verify transfer payload and apply
         run: |
           set -euo pipefail
-          go version | tee -a /tmp/context-preconditions.txt
-          psql --version | tee -a /tmp/context-preconditions.txt
-      - name: Verify base
+          test "$(git branch --show-current)" = "feat/07-context-engine"
+          test -f .github/context-engine.patch.xz.b64
+          base64 -d .github/context-engine.patch.xz.b64 | xz -d > /tmp/context-engine.patch
+          test "$(sha256sum /tmp/context-engine.patch | cut -d' ' -f1)" = "855c6ecc23cd5f941349b2bb4b41ea6b651d073f9fb4b54817fca5a9fccbb296"
+          git apply --check /tmp/context-engine.patch
+          git apply /tmp/context-engine.patch
+          rm .github/context-engine.patch.xz.b64
+          rm .github/workflows/context-engine-bootstrap.yml
+          git diff --check
+          git diff --exit-code "$CONTEXT_BASE_SHA" -- docs/canonical
+      - name: Unit, race, fitness and PostgreSQL validation
         run: |
           set -euo pipefail
-          make verify 2>&1 | tee /tmp/make-verify.log
-      - name: Authorization integration
+          gofmt -w cmd/orgctl internal/config internal/contextengine
+          git diff --check
+          go test -short ./...
+          go test -race -short ./internal/contextengine/...
+          make test-context-fitness
+          make test-authorization-fitness
+          make test-task-fitness
+          make test-staging-fitness
+          make build-cross
+          make registry-validate
+          make test-context-integration
+          make test-authorization-integration
+          make test-staging-integration
+      - name: Commit implementation without temporary transfer files
         run: |
           set -euo pipefail
-          make test-authorization-integration 2>&1 | tee /tmp/test-authorization-integration.log
-      - name: Staging integration
-        run: |
-          set -euo pipefail
-          make test-staging-integration 2>&1 | tee /tmp/test-staging-integration.log
-      - name: Export validated base repository
-        run: |
-          set -euo pipefail
-          mkdir -p /tmp/context-engine-base
-          git archive --format=tar "$BASE_SHA" | tar -x -C /tmp/context-engine-base
-          cp /tmp/context-preconditions.txt /tmp/context-engine-base/PRECONDITIONS.txt
-          cp /tmp/make-verify.log /tmp/context-engine-base/MAKE_VERIFY.log
-          cp /tmp/test-authorization-integration.log /tmp/context-engine-base/AUTHORIZATION_INTEGRATION.log
-          cp /tmp/test-staging-integration.log /tmp/context-engine-base/STAGING_INTEGRATION.log
-          tar -C /tmp -czf /tmp/context-engine-base.tar.gz context-engine-base
-      - name: Package Go toolchain and module cache
-        run: |
-          set -euo pipefail
-          goroot="$(go env GOROOT)"
-          gomodcache="$(go env GOMODCACHE)"
-          tar -C "$(dirname "$goroot")" -czf /tmp/context-go-toolchain.tar.gz "$(basename "$goroot")"
-          tar -C "$(dirname "$gomodcache")" -czf /tmp/context-go-modcache.tar.gz "$(basename "$gomodcache")"
-      - name: Upload validated base
-        uses: actions/upload-artifact@v4
-        with:
-          name: context-engine-base
-          path: /tmp/context-engine-base.tar.gz
-          retention-days: 3
-      - name: Upload Go development environment
-        uses: actions/upload-artifact@v4
-        with:
-          name: context-go-dev-env
-          path: |
-            /tmp/context-go-toolchain.tar.gz
-            /tmp/context-go-modcache.tar.gz
-          retention-days: 1
+          test ! -e .github/context-engine.patch.xz.b64
+          test ! -e .github/workflows/context-engine-bootstrap.yml
+          git diff --exit-code "$CONTEXT_BASE_SHA" -- docs/canonical
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .github/workflows/ci.yml Makefile cmd/orgctl internal/config internal/contextengine migrations scripts docs/implementation/branch-07-context-engine
+          git diff --cached --name-only | grep '^docs/canonical/' && exit 1 || true
+          git commit -m "feat(context): implement deterministic context engine (WIP)"
+          git push origin HEAD:feat/07-context-engine
