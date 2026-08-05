@@ -50,24 +50,27 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ripgrep xz-utils
-      - name: Verify transfer payload and apply
+      - name: Verify multipart payload and apply
         run: |
           set -euo pipefail
           test "$(git branch --show-current)" = "feat/07-context-engine"
-          test -f .github/context-engine.patch.xz.b64
-          base64 -d .github/context-engine.patch.xz.b64 | xz -d > /tmp/context-engine.patch
+          test "$(find .github/context-parts -maxdepth 1 -type f -name '*.b64' | wc -l)" -eq 8
+          cat .github/context-parts/*.b64 > /tmp/context-engine.patch.xz.b64
+          test "$(sha256sum /tmp/context-engine.patch.xz.b64 | cut -d' ' -f1)" = "84b20205725996004ad33dc212acd1da776ad1ec53e329f8dba50ddaab964a68"
+          base64 -d /tmp/context-engine.patch.xz.b64 | xz -d > /tmp/context-engine.patch
           test "$(sha256sum /tmp/context-engine.patch | cut -d' ' -f1)" = "855c6ecc23cd5f941349b2bb4b41ea6b651d073f9fb4b54817fca5a9fccbb296"
+          git checkout "$CONTEXT_BASE_SHA" -- .github/workflows/ci.yml
           git apply --check /tmp/context-engine.patch
           git apply /tmp/context-engine.patch
-          rm .github/context-engine.patch.xz.b64
-          rm .github/workflows/context-engine-bootstrap.yml
+          rm -f .github/context-engine.patch.xz.b64
+          rm -rf .github/context-parts
+          rm -f .github/workflows/context-engine-bootstrap.yml
+          gofmt -w cmd/orgctl internal/config internal/contextengine
           git diff --check
           git diff --exit-code "$CONTEXT_BASE_SHA" -- docs/canonical
       - name: Unit, race, fitness and PostgreSQL validation
         run: |
           set -euo pipefail
-          gofmt -w cmd/orgctl internal/config internal/contextengine
-          git diff --check
           go test -short ./...
           go test -race -short ./internal/contextengine/...
           make test-context-fitness
@@ -83,6 +86,7 @@ jobs:
         run: |
           set -euo pipefail
           test ! -e .github/context-engine.patch.xz.b64
+          test ! -e .github/context-parts
           test ! -e .github/workflows/context-engine-bootstrap.yml
           git diff --exit-code "$CONTEXT_BASE_SHA" -- docs/canonical
           git config user.name github-actions[bot]
