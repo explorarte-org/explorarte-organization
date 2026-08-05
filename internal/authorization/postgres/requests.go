@@ -204,7 +204,7 @@ func (s *Store) DecideRequest(ctx context.Context, command authorization.DecideR
 	if _, err = tx.Exec(ctx, `INSERT INTO authorization_decisions(request_id,organization_id,decision,decided_by_role_id,reason,reference,digest,created_at) VALUES($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''),$8)`, request.ID, request.OrganizationID, command.Decision, command.ActorRoleID, strings.TrimSpace(command.Reason), strings.TrimSpace(command.Reference), strings.TrimSpace(command.Digest), now); err != nil {
 		return result, mapError(err)
 	}
-	request, err = scanRequest(tx.QueryRow(ctx, `UPDATE authorization_requests SET status=$2,version=version+1,updated_at=$3,approved_at=CASE WHEN $2='approved' THEN $3 ELSE NULL END,rejected_at=CASE WHEN $2='rejected' THEN $3 ELSE NULL END WHERE id=$1 AND status='pending' RETURNING `+requestColumns, request.ID, status, now))
+	request, err = scanRequest(tx.QueryRow(ctx, `UPDATE authorization_requests SET status=$2::text,version=version+1,updated_at=$3::timestamptz,approved_at=CASE WHEN $2::text='approved' THEN $3::timestamptz ELSE NULL::timestamptz END,rejected_at=CASE WHEN $2::text='rejected' THEN $3::timestamptz ELSE NULL::timestamptz END WHERE id=$1 AND status='pending' RETURNING `+requestColumns, request.ID, status, now))
 	if err != nil {
 		return result, authorization.ErrInvalidTransition
 	}
