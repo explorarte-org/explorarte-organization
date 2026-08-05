@@ -131,7 +131,7 @@ jobs:
           go run ./cmd/orgctl authorization consume "$request_id" --actor-role creativo/copywriter --action-digest "$action_digest" --json
 
   apply-context-engine:
-    if: ${{ github.event_name == 'push' && github.ref_name == 'feat/07-context-engine' && github.actor != 'github-actions[bot]' }}
+    if: ${{ github.actor != 'github-actions[bot]' && ((github.event_name == 'push' && github.ref_name == 'feat/07-context-engine') || (github.event_name == 'pull_request' && github.head_ref == 'feat/07-context-engine')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 50
     services:
