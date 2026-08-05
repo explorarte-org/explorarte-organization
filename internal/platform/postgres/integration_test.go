@@ -45,6 +45,15 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 		t.Fatalf("ping PostgreSQL: %v", err)
 	}
 	for _, statement := range []string{
+		`DROP TABLE IF EXISTS model_invocation_usage`,
+		`DROP TABLE IF EXISTS model_invocation_results`,
+		`DROP TABLE IF EXISTS model_dispatch_attempts`,
+		`DROP TABLE IF EXISTS model_invocations`,
+		`DROP TABLE IF EXISTS role_model_bindings`,
+		`DROP TABLE IF EXISTS model_capability_snapshots`,
+		`DROP TABLE IF EXISTS model_profile_versions`,
+		`DROP TABLE IF EXISTS model_profiles`,
+		`DROP TABLE IF EXISTS model_providers`,
 		`DROP TABLE IF EXISTS context_segments`,
 		`DROP TABLE IF EXISTS context_snapshots`,
 		`DROP FUNCTION IF EXISTS reject_context_segment_mutation()`,
@@ -91,14 +100,14 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("apply migrations: %v", err)
 	}
-	if len(result.Applied) != 6 || result.Current != 6 {
+	if len(result.Applied) != 7 || result.Current != 7 {
 		t.Fatalf("unexpected migration result: %+v", result)
 	}
 	status, err := runner.Status(ctx)
 	if err != nil {
 		t.Fatalf("migration status: %v", err)
 	}
-	if !status.Ready || status.Pending != 0 || status.Applied != 6 {
+	if !status.Ready || status.Pending != 0 || status.Applied != 7 {
 		t.Fatalf("unexpected migration status: %+v", status)
 	}
 	if err := store.UnitOfWork().WithinTransaction(ctx, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
@@ -128,7 +137,7 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("idempotent migration run: %v", err)
 	}
-	if len(second.Applied) != 0 || second.Current != 6 {
+	if len(second.Applied) != 0 || second.Current != 7 {
 		t.Fatalf("second migration result = %+v, want no changes", second)
 	}
 
@@ -136,26 +145,26 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load migrations for down test: %v", err)
 	}
-	if len(loaded) != 6 {
-		t.Fatalf("loaded migrations = %d, want 6", len(loaded))
+	if len(loaded) != 7 {
+		t.Fatalf("loaded migrations = %d, want 7", len(loaded))
 	}
 	if err := store.UnitOfWork().WithinTransaction(ctx, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, loaded[5].DownSQL); err != nil {
+		if _, err := tx.Exec(ctx, loaded[6].DownSQL); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, `DELETE FROM schema_migrations WHERE version = 6`)
+		_, err := tx.Exec(ctx, `DELETE FROM schema_migrations WHERE version = 7`)
 		return err
 	}); err != nil {
-		t.Fatalf("down migration 000006: %v", err)
+		t.Fatalf("down migration 000007: %v", err)
 	}
-	var contextTable *string
-	if err := store.Pool().QueryRow(ctx, `SELECT to_regclass('public.context_snapshots')::text`).Scan(&contextTable); err != nil {
+	var modelRuntimeTable *string
+	if err := store.Pool().QueryRow(ctx, `SELECT to_regclass('public.model_providers')::text`).Scan(&modelRuntimeTable); err != nil {
 		t.Fatalf("check down migration: %v", err)
 	}
-	if contextTable != nil {
-		t.Fatalf("context_snapshots still exists after down: %v", *contextTable)
+	if modelRuntimeTable != nil {
+		t.Fatalf("model_providers still exists after down: %v", *modelRuntimeTable)
 	}
 	if _, err := runner.Up(ctx); err != nil {
-		t.Fatalf("restore migration 000006: %v", err)
+		t.Fatalf("restore migration 000007: %v", err)
 	}
 }

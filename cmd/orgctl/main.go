@@ -66,6 +66,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runAuthorization(args[1:], stdout, stderr)
 	case "context":
 		return runContext(args[1:], stdout, stderr)
+	case "model":
+		return runModel(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return exitOK
@@ -504,6 +506,7 @@ commands:
   staging <repo|workspace|check|promotion|reconcile>
   authorization <evaluate|request|get|list|decide|consume|cancel|expire>
   context <validate-source|build|get|list|render|validate|invalidate>
+  model <registry|invocation>
 exit codes:
   0 success
   1 internal or operational failure

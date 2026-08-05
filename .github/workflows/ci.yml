@@ -28,14 +28,16 @@ jobs:
           sudo apt-get install -y ripgrep
       - name: Download and verify modules
         run: go mod download && go mod verify
-      - name: Canonical documents unchanged from Branch 07 base
-        run: git diff --exit-code bfe21f34d1da3f2d51eb520c4deef635c7f49cab -- docs/canonical
+      - name: Canonical documents unchanged from Branch 08 base
+        run: git diff --exit-code 6d7b71acdeba7a70d552764c1d96f7bf9d907e6d -- docs/canonical
       - name: Git whitespace validation
-        run: git diff --check bfe21f34d1da3f2d51eb520c4deef635c7f49cab...HEAD
+        run: git diff --check 6d7b71acdeba7a70d552764c1d96f7bf9d907e6d...HEAD
       - name: Full non-integration verification
         run: make verify
       - name: Context engine race tests
         run: go test -race -short ./internal/contextengine/...
+      - name: Model runtime race tests
+        run: go test -race -short ./internal/modelruntime/...
       - name: Cross builds
         run: make build-cross
       - name: Validate canonical registry
@@ -71,8 +73,8 @@ jobs:
           sudo apt-get install -y ripgrep
       - name: Download and verify modules
         run: go mod download && go mod verify
-      - name: Canonical documents unchanged from Branch 07 base
-        run: git diff --exit-code bfe21f34d1da3f2d51eb520c4deef635c7f49cab -- docs/canonical
+      - name: Canonical documents unchanged from Branch 08 base
+        run: git diff --exit-code 6d7b71acdeba7a70d552764c1d96f7bf9d907e6d -- docs/canonical
       - name: PostgreSQL 17 complete integration suite and CLI smoke tests
         run: make test-integration
       - name: Context engine PostgreSQL 17 integration

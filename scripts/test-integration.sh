@@ -5,8 +5,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 MODE="${1:-all}"
 case "$MODE" in
-  all|tasks|staging|authorization|context) ;;
-  *) echo "usage: $0 [all|tasks|staging|authorization|context]" >&2; exit 2 ;;
+  all|tasks|staging|authorization|context|model) ;;
+  *) echo "usage: $0 [all|tasks|staging|authorization|context|model]" >&2; exit 2 ;;
 esac
 
 export ORG_POSTGRES_ADMIN_USER=explorarte_test_admin
@@ -42,6 +42,9 @@ fi
 if [[ "$MODE" == all || "$MODE" == context ]]; then
   timeout --foreground --signal=TERM --kill-after=30s 25m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/contextengine/postgres
 fi
+if [[ "$MODE" == all || "$MODE" == model ]]; then
+  timeout --foreground --signal=TERM --kill-after=30s 30m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/modelruntime/postgres
+fi
 
 if [[ "$MODE" == all ]]; then
   timeout --foreground --signal=TERM --kill-after=30s 15m "${compose[@]}" run --rm -T integration-test sh -ec '
@@ -60,6 +63,18 @@ if [[ "$MODE" == all ]]; then
     fi
     /tmp/orgctl registry sync --apply
     /tmp/orgctl registry status --json >/tmp/registry-status.json
+    /tmp/orgctl model registry validate --json >/tmp/model-registry-validate.json
+    set +e
+    /tmp/orgctl model registry diff --json >/tmp/model-registry-diff.json
+    model_code=$?
+    set -e
+    if [ "$model_code" -eq 3 ]; then
+      /tmp/orgctl model registry sync --apply --json >/tmp/model-registry-sync.json
+    else
+      test "$model_code" -eq 0
+    fi
+    /tmp/orgctl model registry sync --apply --json >/tmp/model-registry-sync-noop.json
+    /tmp/orgctl model registry status --json >/tmp/model-registry-status.json
     /tmp/orgctl registry get-role ingenieria_ia/orquestador --json >/tmp/role.json
     /tmp/orgctl registry get-leader ingenieria_ia --json >/tmp/leader.json
     cat >/tmp/task.json <<JSON

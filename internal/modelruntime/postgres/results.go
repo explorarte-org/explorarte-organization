@@ -1,0 +1,312 @@
+package postgres
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
+	"github.com/jackc/pgx/v5"
+)
+
+func (s *Store) MarkResponseReceived(ctx context.Context, invocationID, attemptID int64, token, providerRequestID string) (modelruntime.Invocation, error) {
+	return withTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) (modelruntime.Invocation, error) {
+		if err := lockInvocation(ctx, tx, invocationID); err != nil {
+			return modelruntime.Invocation{}, err
+		}
+		attempt, err := verifyToken(ctx, tx, attemptID, token)
+		if err != nil {
+			return modelruntime.Invocation{}, err
+		}
+		if attempt.InvocationID != invocationID || attempt.Status != modelruntime.DispatchSendStarted {
+			return modelruntime.Invocation{}, modelruntime.ErrConflict
+		}
+		if _, err = tx.Exec(ctx, `
+UPDATE model_dispatch_attempts
+SET status='response_received',
+    response_received_at=clock_timestamp(),
+    provider_request_id=NULLIF($2,''),
+    retry_safety='not_retryable'
+WHERE id=$1`, attemptID, providerRequestID); err != nil {
+			return modelruntime.Invocation{}, mapError(err)
+		}
+		invocation, err := scanInvocation(tx.QueryRow(ctx, `
+UPDATE model_invocations
+SET status='response_received',updated_at=clock_timestamp()
+WHERE id=$1 AND status='send_started'
+RETURNING `+invocationColumns, invocationID))
+		if err != nil {
+			return modelruntime.Invocation{}, err
+		}
+		return invocation, nil
+	})
+}
+
+func (s *Store) CompleteInvocation(ctx context.Context, command modelruntime.CompletionCommand, outboxMax int) (modelruntime.DispatchResult, error) {
+	if command.Response.Result.InvocationID != command.InvocationID ||
+		command.Response.Result.DispatchAttemptID != command.DispatchAttemptID ||
+		command.Response.Usage.InvocationID != command.InvocationID ||
+		command.Response.Usage.DispatchAttemptID != command.DispatchAttemptID {
+		return modelruntime.DispatchResult{}, fmt.Errorf("%w: normalized result scope mismatch", modelruntime.ErrInvalidRequest)
+	}
+	return withTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) (modelruntime.DispatchResult, error) {
+		if err := lockInvocation(ctx, tx, command.InvocationID); err != nil {
+			return modelruntime.DispatchResult{}, err
+		}
+		attempt, err := verifyToken(ctx, tx, command.DispatchAttemptID, command.ClaimToken)
+		if err != nil {
+			return modelruntime.DispatchResult{}, err
+		}
+		if attempt.InvocationID != command.InvocationID || attempt.Status != modelruntime.DispatchResponseReceived {
+			return modelruntime.DispatchResult{}, modelruntime.ErrConflict
+		}
+		invocation, err := scanInvocation(tx.QueryRow(ctx, `SELECT `+invocationColumns+` FROM model_invocations WHERE id=$1 FOR UPDATE`, command.InvocationID))
+		if err != nil {
+			return modelruntime.DispatchResult{}, err
+		}
+		if invocation.Status != modelruntime.InvocationResponseReceived {
+			return modelruntime.DispatchResult{}, modelruntime.ErrConflict
+		}
+		if command.Response.Result.OutputMode != invocation.OutputMode {
+			return modelruntime.DispatchResult{}, fmt.Errorf("%w: normalized output mode mismatch", modelruntime.ErrInvalidRequest)
+		}
+
+		toolBody, err := json.Marshal(command.Response.Result.ToolIntents)
+		if err != nil {
+			return modelruntime.DispatchResult{}, err
+		}
+		var textOutput any
+		var jsonOutput any
+		if command.Response.Result.OutputMode == modelruntime.OutputText {
+			textOutput = command.Response.Result.TextOutput
+		} else {
+			jsonOutput = string(command.Response.Result.JSONOutput)
+		}
+		var resultID int64
+		var createdAt time.Time
+		if err = tx.QueryRow(ctx, `
+INSERT INTO model_invocation_results(
+    invocation_id,dispatch_attempt_id,output_mode,text_output,json_output,
+    tool_intents,response_hash,response_bytes
+) VALUES($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8)
+RETURNING id,created_at`,
+			invocation.ID,
+			attempt.ID,
+			command.Response.Result.OutputMode,
+			textOutput,
+			jsonOutput,
+			toolBody,
+			command.Response.Result.ResponseHash,
+			command.Response.Result.ResponseBytes,
+		).Scan(&resultID, &createdAt); err != nil {
+			return modelruntime.DispatchResult{}, mapError(err)
+		}
+		if _, err = tx.Exec(ctx, `
+INSERT INTO model_invocation_usage(
+    invocation_id,dispatch_attempt_id,input_tokens,output_tokens,total_tokens,provider_reported
+) VALUES($1,$2,$3,$4,$5,$6)`,
+			invocation.ID,
+			attempt.ID,
+			command.Response.Usage.InputTokens,
+			command.Response.Usage.OutputTokens,
+			command.Response.Usage.TotalTokens,
+			command.Response.Usage.ProviderReported,
+		); err != nil {
+			return modelruntime.DispatchResult{}, mapError(err)
+		}
+		if _, err = tx.Exec(ctx, `
+UPDATE model_dispatch_attempts
+SET status='completed',retry_safety='not_retryable',
+    outcome_classification='succeeded',finished_at=clock_timestamp()
+WHERE id=$1`, attempt.ID); err != nil {
+			return modelruntime.DispatchResult{}, mapError(err)
+		}
+		invocation, err = scanInvocation(tx.QueryRow(ctx, `
+UPDATE model_invocations
+SET status='succeeded',error_code=NULL,updated_at=clock_timestamp(),terminal_at=clock_timestamp()
+WHERE id=$1
+RETURNING `+invocationColumns, invocation.ID))
+		if err != nil {
+			return modelruntime.DispatchResult{}, err
+		}
+		if err = appendInvocationEvent(ctx, tx, invocation, modelruntime.AuditInvocationSucceeded, "service", attempt.ClaimedBy, true, outboxMax, map[string]any{
+			"dispatch_attempt_id": attempt.ID,
+			"response_hash":       command.Response.Result.ResponseHash,
+			"response_bytes":      command.Response.Result.ResponseBytes,
+			"tool_intent_count":   len(command.Response.Result.ToolIntents),
+		}); err != nil {
+			return modelruntime.DispatchResult{}, err
+		}
+		result := command.Response.Result
+		result.ID = resultID
+		result.CreatedAt = createdAt
+		usage := command.Response.Usage
+		return modelruntime.DispatchResult{Invocation: invocation, Result: &result, Usage: &usage}, nil
+	})
+}
+
+func (s *Store) FailBeforeSend(ctx context.Context, command modelruntime.FailureCommand, outboxMax int) (modelruntime.Invocation, error) {
+	eventType := command.EventType
+	if eventType == "" {
+		eventType = modelruntime.AuditInvocationFailed
+	}
+	if eventType != modelruntime.AuditInvocationFailed && eventType != modelruntime.AuditInvocationTimedOut {
+		return modelruntime.Invocation{}, fmt.Errorf("%w: invalid pre-send failure event", modelruntime.ErrInvalidRequest)
+	}
+	return withTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) (modelruntime.Invocation, error) {
+		if err := lockInvocation(ctx, tx, command.InvocationID); err != nil {
+			return modelruntime.Invocation{}, err
+		}
+		attempt, err := verifyToken(ctx, tx, command.DispatchAttemptID, command.ClaimToken)
+		if err != nil {
+			return modelruntime.Invocation{}, err
+		}
+		if attempt.InvocationID != command.InvocationID || attempt.Status != modelruntime.DispatchClaimed {
+			return modelruntime.Invocation{}, modelruntime.ErrConflict
+		}
+		if _, err = tx.Exec(ctx, `
+UPDATE model_dispatch_attempts
+SET status='failed_before_send',retry_safety='safe_before_send',
+    outcome_classification=NULLIF($2,''),error_code=NULLIF($3,''),finished_at=clock_timestamp()
+WHERE id=$1`, attempt.ID, command.OutcomeClassification, command.ErrorCode); err != nil {
+			return modelruntime.Invocation{}, mapError(err)
+		}
+		invocation, err := scanInvocation(tx.QueryRow(ctx, `
+UPDATE model_invocations
+SET status='failed',error_code=NULLIF($2,''),updated_at=clock_timestamp(),terminal_at=clock_timestamp()
+WHERE id=$1
+RETURNING `+invocationColumns, command.InvocationID, command.ErrorCode))
+		if err != nil {
+			return modelruntime.Invocation{}, err
+		}
+		if err = appendInvocationEvent(ctx, tx, invocation, eventType, "service", attempt.ClaimedBy, true, outboxMax, map[string]any{
+			"dispatch_attempt_id":    attempt.ID,
+			"outcome_classification": command.OutcomeClassification,
+		}); err != nil {
+			return modelruntime.Invocation{}, err
+		}
+		return invocation, nil
+	})
+}
+
+func (s *Store) FailAfterResponse(ctx context.Context, command modelruntime.FailureCommand, outboxMax int) (modelruntime.Invocation, error) {
+	return withTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) (modelruntime.Invocation, error) {
+		if err := lockInvocation(ctx, tx, command.InvocationID); err != nil {
+			return modelruntime.Invocation{}, err
+		}
+		attempt, err := verifyToken(ctx, tx, command.DispatchAttemptID, command.ClaimToken)
+		if err != nil {
+			return modelruntime.Invocation{}, err
+		}
+		if attempt.InvocationID != command.InvocationID || attempt.Status != modelruntime.DispatchResponseReceived {
+			return modelruntime.Invocation{}, modelruntime.ErrConflict
+		}
+		if _, err = tx.Exec(ctx, `
+UPDATE model_dispatch_attempts
+SET status='completed',retry_safety='not_retryable',
+    outcome_classification=NULLIF($2,''),error_code=NULLIF($3,''),finished_at=clock_timestamp()
+WHERE id=$1`, attempt.ID, command.OutcomeClassification, command.ErrorCode); err != nil {
+			return modelruntime.Invocation{}, mapError(err)
+		}
+		invocation, err := scanInvocation(tx.QueryRow(ctx, `
+UPDATE model_invocations
+SET status='failed',error_code=NULLIF($2,''),updated_at=clock_timestamp(),terminal_at=clock_timestamp()
+WHERE id=$1 AND status='response_received'
+RETURNING `+invocationColumns, command.InvocationID, command.ErrorCode))
+		if err != nil {
+			return modelruntime.Invocation{}, err
+		}
+		if err = appendInvocationEvent(ctx, tx, invocation, modelruntime.AuditInvocationFailed, "service", attempt.ClaimedBy, true, outboxMax, map[string]any{
+			"dispatch_attempt_id":    attempt.ID,
+			"outcome_classification": command.OutcomeClassification,
+		}); err != nil {
+			return modelruntime.Invocation{}, err
+		}
+		return invocation, nil
+	})
+}
+
+func (s *Store) MarkAmbiguous(ctx context.Context, command modelruntime.FailureCommand, eventType string, outboxMax int) (modelruntime.Invocation, error) {
+	if eventType != modelruntime.AuditInvocationAmbiguous && eventType != modelruntime.AuditInvocationTimedOut {
+		return modelruntime.Invocation{}, fmt.Errorf("%w: invalid ambiguity event", modelruntime.ErrInvalidRequest)
+	}
+	return withTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) (modelruntime.Invocation, error) {
+		if err := lockInvocation(ctx, tx, command.InvocationID); err != nil {
+			return modelruntime.Invocation{}, err
+		}
+		attempt, err := verifyToken(ctx, tx, command.DispatchAttemptID, command.ClaimToken)
+		if err != nil {
+			return modelruntime.Invocation{}, err
+		}
+		if attempt.InvocationID != command.InvocationID || attempt.Status != modelruntime.DispatchSendStarted {
+			return modelruntime.Invocation{}, modelruntime.ErrConflict
+		}
+		if _, err = tx.Exec(ctx, `
+UPDATE model_dispatch_attempts
+SET status='ambiguous',retry_safety='not_retryable',
+    outcome_classification=NULLIF($2,''),error_code=NULLIF($3,''),finished_at=clock_timestamp()
+WHERE id=$1`, attempt.ID, command.OutcomeClassification, command.ErrorCode); err != nil {
+			return modelruntime.Invocation{}, mapError(err)
+		}
+		invocation, err := scanInvocation(tx.QueryRow(ctx, `
+UPDATE model_invocations
+SET status='ambiguous',error_code=NULLIF($2,''),updated_at=clock_timestamp(),terminal_at=clock_timestamp()
+WHERE id=$1 AND status='send_started'
+RETURNING `+invocationColumns, command.InvocationID, command.ErrorCode))
+		if err != nil {
+			return modelruntime.Invocation{}, err
+		}
+		if err = appendInvocationEvent(ctx, tx, invocation, eventType, "service", attempt.ClaimedBy, true, outboxMax, map[string]any{
+			"dispatch_attempt_id":    attempt.ID,
+			"outcome_classification": command.OutcomeClassification,
+		}); err != nil {
+			return modelruntime.Invocation{}, err
+		}
+		return invocation, nil
+	})
+}
+
+func (s *Store) MarkCancelled(ctx context.Context, command modelruntime.FailureCommand, outboxMax int) (modelruntime.Invocation, error) {
+	return withTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) (modelruntime.Invocation, error) {
+		if err := lockInvocation(ctx, tx, command.InvocationID); err != nil {
+			return modelruntime.Invocation{}, err
+		}
+		attempt, err := verifyToken(ctx, tx, command.DispatchAttemptID, command.ClaimToken)
+		if err != nil {
+			return modelruntime.Invocation{}, err
+		}
+		if attempt.InvocationID != command.InvocationID || (attempt.Status != modelruntime.DispatchSendStarted && attempt.Status != modelruntime.DispatchResponseReceived) {
+			return modelruntime.Invocation{}, modelruntime.ErrConflict
+		}
+		var cancellationRequested bool
+		if err = tx.QueryRow(ctx, `SELECT cancel_requested_at IS NOT NULL FROM model_invocations WHERE id=$1 FOR UPDATE`, command.InvocationID).Scan(&cancellationRequested); err != nil {
+			return modelruntime.Invocation{}, mapError(err)
+		}
+		if !cancellationRequested {
+			return modelruntime.Invocation{}, fmt.Errorf("%w: no durable cancellation request", modelruntime.ErrConflict)
+		}
+		if _, err = tx.Exec(ctx, `
+UPDATE model_dispatch_attempts
+SET status='completed',retry_safety='not_retryable',
+    outcome_classification='cancelled_confirmed',error_code=NULLIF($2,''),finished_at=clock_timestamp()
+WHERE id=$1`, attempt.ID, command.ErrorCode); err != nil {
+			return modelruntime.Invocation{}, mapError(err)
+		}
+		invocation, err := scanInvocation(tx.QueryRow(ctx, `
+UPDATE model_invocations
+SET status='cancelled',error_code=NULLIF($2,''),updated_at=clock_timestamp(),terminal_at=clock_timestamp()
+WHERE id=$1
+RETURNING `+invocationColumns, command.InvocationID, command.ErrorCode))
+		if err != nil {
+			return modelruntime.Invocation{}, err
+		}
+		if err = appendInvocationEvent(ctx, tx, invocation, modelruntime.AuditInvocationCancelled, "service", attempt.ClaimedBy, true, outboxMax, map[string]any{
+			"dispatch_attempt_id":    attempt.ID,
+			"outcome_classification": "cancelled_confirmed",
+		}); err != nil {
+			return modelruntime.Invocation{}, err
+		}
+		return invocation, nil
+	})
+}

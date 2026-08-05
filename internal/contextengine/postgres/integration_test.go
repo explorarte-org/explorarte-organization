@@ -272,22 +272,66 @@ func TestContextEnginePostgreSQL17(t *testing.T) {
 	})
 
 	t.Run("down migration and reapply in disposable integration database", func(t *testing.T) {
-		down, err := rootmigrations.Files.ReadFile("000006_create_context_engine.down.sql")
+		modelRuntimeDown, err := rootmigrations.Files.ReadFile("000007_create_model_runtime_gateway.down.sql")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err = platform.Pool().Exec(ctx, string(down)); err != nil {
-			t.Fatalf("down migration: %v", err)
-		}
-		if _, err = platform.Pool().Exec(ctx, `DELETE FROM schema_migrations WHERE version=6`); err != nil {
+		contextDown, err := rootmigrations.Files.ReadFile("000006_create_context_engine.down.sql")
+		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err = runner.Up(ctx); err != nil {
-			t.Fatalf("reapply migration: %v", err)
+		tx, err := platform.Pool().Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
 		}
-		var exists bool
-		if err = platform.Pool().QueryRow(ctx, `SELECT to_regclass('public.context_snapshots') IS NOT NULL AND to_regclass('public.context_segments') IS NOT NULL`).Scan(&exists); err != nil || !exists {
-			t.Fatalf("reapply exists=%v err=%v", exists, err)
+		defer func() { _ = tx.Rollback(ctx) }()
+		if _, err = tx.Exec(ctx, string(modelRuntimeDown)); err != nil {
+			t.Fatalf("down migration 000007: %v", err)
+		}
+		if _, err = tx.Exec(ctx, `DELETE FROM schema_migrations WHERE version=7`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = tx.Exec(ctx, string(contextDown)); err != nil {
+			t.Fatalf("down migration 000006: %v", err)
+		}
+		if _, err = tx.Exec(ctx, `DELETE FROM schema_migrations WHERE version=6`); err != nil {
+			t.Fatal(err)
+		}
+		if err = tx.Commit(ctx); err != nil {
+			t.Fatalf("commit down migrations: %v", err)
+		}
+
+		var contextMissing, modelRuntimeMissing bool
+		if err = platform.Pool().QueryRow(ctx, `
+			SELECT
+				to_regclass('public.context_snapshots') IS NULL
+				AND to_regclass('public.context_segments') IS NULL,
+				to_regclass('public.model_providers') IS NULL
+		`).Scan(&contextMissing, &modelRuntimeMissing); err != nil {
+			t.Fatal(err)
+		}
+		if !contextMissing || !modelRuntimeMissing {
+			t.Fatalf("after down context_missing=%t model_runtime_missing=%t", contextMissing, modelRuntimeMissing)
+		}
+
+		result, err := runner.Up(ctx)
+		if err != nil {
+			t.Fatalf("reapply migrations: %v", err)
+		}
+		if len(result.Applied) != 2 || result.Current != 7 {
+			t.Fatalf("reapply result=%+v, want migrations 000006 and 000007", result)
+		}
+		var contextExists, modelRuntimeExists bool
+		if err = platform.Pool().QueryRow(ctx, `
+			SELECT
+				to_regclass('public.context_snapshots') IS NOT NULL
+				AND to_regclass('public.context_segments') IS NOT NULL,
+				to_regclass('public.model_providers') IS NOT NULL
+		`).Scan(&contextExists, &modelRuntimeExists); err != nil {
+			t.Fatal(err)
+		}
+		if !contextExists || !modelRuntimeExists {
+			t.Fatalf("after reapply context_exists=%t model_runtime_exists=%t", contextExists, modelRuntimeExists)
 		}
 	})
 }

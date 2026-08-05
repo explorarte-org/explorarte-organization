@@ -1,0 +1,9 @@
+DROP TABLE IF EXISTS model_invocation_usage;
+DROP TABLE IF EXISTS model_invocation_results;
+DROP TABLE IF EXISTS model_dispatch_attempts;
+DROP TABLE IF EXISTS model_invocations;
+DROP TABLE IF EXISTS role_model_bindings;
+DROP TABLE IF EXISTS model_capability_snapshots;
+DROP TABLE IF EXISTS model_profile_versions;
+DROP TABLE IF EXISTS model_profiles;
+DROP TABLE IF EXISTS model_providers;
