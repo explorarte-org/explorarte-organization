@@ -58,16 +58,48 @@ jobs:
           git checkout "$CONTEXT_BASE_SHA" -- .github/workflows/ci.yml
           git apply --check /tmp/context-engine.patch
           git apply /tmp/context-engine.patch
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("internal/contextengine/postgres/integration_test.go")
+          text = path.read_text()
+          old_insert = '''\t\t_, err = platform.Pool().Exec(ctx, `INSERT INTO organization_registry_revisions(id,canonical_hash,status,schema_versions,document_hashes,counts,diff,applied_at) OVERRIDING SYSTEM VALUE VALUES($1,$2,'applied','{}','{}','{}','{}',NOW()); UPDATE organizations SET current_revision_id=$1 WHERE id=$3`, newRevisionID, contextengine.DigestMarkdown([]byte("new revision")), integrationOrganization)
+          \t\tif err != nil {
+          \t\t\tt.Fatal(err)
+          \t\t}
+          '''
+          new_insert = '''\t\t_, err = platform.Pool().Exec(ctx, `INSERT INTO organization_registry_revisions(id,canonical_hash,status,schema_versions,document_hashes,counts,diff,applied_at) OVERRIDING SYSTEM VALUE VALUES($1,$2,'applied','{}','{}','{}','{}',NOW())`, newRevisionID, contextengine.DigestMarkdown([]byte("new revision")))
+          \t\tif err != nil {
+          \t\t\tt.Fatal(err)
+          \t\t}
+          \t\t_, err = platform.Pool().Exec(ctx, `UPDATE organizations SET current_revision_id=$1 WHERE id=$2`, newRevisionID, integrationOrganization)
+          \t\tif err != nil {
+          \t\t\tt.Fatal(err)
+          \t\t}
+          '''
+          old_cleanup = '''\t\t_, err = platform.Pool().Exec(ctx, `UPDATE organizations SET current_revision_id=$1 WHERE id=$2; DELETE FROM organization_registry_revisions WHERE id=$3`, revision.ID, integrationOrganization, newRevisionID)
+          \t\tif err != nil {
+          \t\t\tt.Fatal(err)
+          \t\t}
+          '''
+          new_cleanup = '''\t\t_, err = platform.Pool().Exec(ctx, `UPDATE organizations SET current_revision_id=$1 WHERE id=$2`, revision.ID, integrationOrganization)
+          \t\tif err != nil {
+          \t\t\tt.Fatal(err)
+          \t\t}
+          \t\t_, err = platform.Pool().Exec(ctx, `DELETE FROM organization_registry_revisions WHERE id=$1`, newRevisionID)
+          \t\tif err != nil {
+          \t\t\tt.Fatal(err)
+          \t\t}
+          '''
+          if old_insert not in text or old_cleanup not in text:
+              raise SystemExit("expected PostgreSQL drift fixture blocks not found")
+          path.write_text(text.replace(old_insert, new_insert).replace(old_cleanup, new_cleanup))
+          PY
           rm -f .github/context-engine.patch.xz.b64
           rm -rf .github/context-parts
           rm -f .github/workflows/context-engine-bootstrap.yml
           gofmt -w cmd/orgctl internal/config internal/contextengine
           git diff --check
           git diff --exit-code "$CONTEXT_BASE_SHA" -- docs/canonical
-      - name: Diagnose current integration fixture
-        run: |
-          set -euo pipefail
-          nl -ba internal/contextengine/postgres/integration_test.go | sed -n '235,265p'
       - name: Unit, race, fitness and PostgreSQL validation
         run: |
           set -euo pipefail
