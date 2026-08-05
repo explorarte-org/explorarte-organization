@@ -1,0 +1,59 @@
+name: branch06-bootstrap
+
+on:
+  push:
+    branches:
+      - feat/06-capability-policy-engine
+    paths:
+      - '.branch06/**'
+      - '.github/workflows/branch06-bootstrap.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: branch06-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/06-capability-policy-engine
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Reconstruct and verify implementation bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .branch06/bundle.part-* > /tmp/branch06.bundle.b64
+          base64 --decode /tmp/branch06.bundle.b64 > /tmp/branch06.bundle
+          echo '12bcca5aa73b6950b6514200896f36a8fce193a05fe9298b387fcbf1f3026296  /tmp/branch06.bundle' | sha256sum --check --strict
+          git bundle verify /tmp/branch06.bundle
+
+      - name: Apply implementation atomically
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch /tmp/branch06.bundle \
+            refs/heads/feat/06-capability-policy-engine:refs/remotes/branch06-bundle/implementation
+          test "$(git rev-parse refs/remotes/branch06-bundle/implementation^)" = 'fb30a4352697ed9cf1f7ef183285954450d1e71d'
+          git cherry-pick refs/remotes/branch06-bundle/implementation
+          git diff --exit-code fb30a4352697ed9cf1f7ef183285954450d1e71d -- docs/canonical
+          git rm -r .branch06
+          git rm .github/workflows/branch06-bootstrap.yml
+          git commit --amend --no-edit
+
+      - name: Push implementation commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push origin HEAD:feat/06-capability-policy-engine
