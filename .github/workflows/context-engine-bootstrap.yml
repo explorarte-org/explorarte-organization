@@ -68,6 +68,10 @@ jobs:
           gofmt -w cmd/orgctl internal/config internal/contextengine
           git diff --check
           git diff --exit-code "$CONTEXT_BASE_SHA" -- docs/canonical
+      - name: Diagnose current integration fixture
+        run: |
+          set -euo pipefail
+          nl -ba internal/contextengine/postgres/integration_test.go | sed -n '235,265p'
       - name: Unit, race, fitness and PostgreSQL validation
         run: |
           set -euo pipefail
