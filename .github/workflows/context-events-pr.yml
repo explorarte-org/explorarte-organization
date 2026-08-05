@@ -46,6 +46,22 @@ jobs:
         run: |
           set -euo pipefail
           python3 .github/context-events.py
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("internal/contextengine/postgres/validation_events_integration_test.go")
+          text = path.read_text()
+          old = '''\tfor _, eventType := range []string{"context.snapshot_validation_failed", "context.policy_drift_rejected"} {
+          \t\tassertCount(t, ctx, platform, `SELECT count(*) FROM audit_events WHERE subject_type='context_snapshot' AND subject_id=$1 AND event_type=$2`, fmt.Sprint(snapshot.ID), eventType, 1)
+          \t\tassertCount(t, ctx, platform, `SELECT count(*) FROM outbox_events WHERE aggregate_type='context_snapshot' AND aggregate_id=$1 AND event_type=$2`, fmt.Sprint(snapshot.ID), eventType, 1)
+          \t}
+          '''
+          new = '''\tassertCount(t, ctx, platform, `SELECT count(*) FROM audit_events WHERE subject_type='context_snapshot' AND subject_id=$1 AND event_type IN ('context.snapshot_validation_failed','context.policy_drift_rejected')`, fmt.Sprint(snapshot.ID), 2)
+          \tassertCount(t, ctx, platform, `SELECT count(*) FROM outbox_events WHERE aggregate_type='context_snapshot' AND aggregate_id=$1 AND event_type IN ('context.snapshot_validation_failed','context.policy_drift_rejected')`, fmt.Sprint(snapshot.ID), 2)
+          '''
+          if old not in text:
+              raise SystemExit("expected validation event assertions not found")
+          path.write_text(text.replace(old, new, 1))
+          PY
           gofmt -w internal/contextengine
           git diff --check
           git diff --exit-code bfe21f34d1da3f2d51eb520c4deef635c7f49cab -- docs/canonical
