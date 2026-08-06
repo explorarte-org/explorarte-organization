@@ -38,7 +38,6 @@ git diff --exit-code "$BASE_SHA" -- migrations/000001\* migrations/000002\* migr
   migrations/000008\* migrations/000009\* migrations/000010\* >/dev/null \
   || fail "migration 000001-000010 changed"
 git diff --exit-code "$BASE_SHA" -- cmd/orgd internal/app >/dev/null || fail "orgd or application composition changed"
-test ! -d internal/cellworker || fail "persistent worker code belongs to Rama 13"
 
 if find internal/modelruntime/adapter -mindepth 1 -maxdepth 1 -type d ! -name openaicompat -print | grep -q .; then
   fail "more than one real provider adapter was introduced"

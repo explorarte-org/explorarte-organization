@@ -28,9 +28,9 @@ jobs:
           sudo apt-get install -y ripgrep
       - name: Download and verify modules
         run: go mod download && go mod verify
-      - name: Branch 12 canonical allowlist
+      - name: Branch 13 canonical allowlist
         run: |
-          base=c34e0f489ee84de99ba61fb89a75062752c4f065
+          base=73b2b612e002b90f04ef3c4230a22560d65ef0ca
           mapfile -t changed < <(git diff --name-only "$base"...HEAD -- docs/canonical | sort -u)
           for path in "${changed[@]}"; do
             case "$path" in
@@ -39,7 +39,7 @@ jobs:
             esac
           done
       - name: Git whitespace validation
-        run: git diff --check c34e0f489ee84de99ba61fb89a75062752c4f065...HEAD
+        run: git diff --check 73b2b612e002b90f04ef3c4230a22560d65ef0ca...HEAD
       - name: Full non-integration verification
         run: make verify
       - name: Context engine race tests
@@ -54,6 +54,8 @@ jobs:
         run: go test -race -short ./internal/modelidentity/... ./internal/secrets/...
       - name: OpenAI-compatible provider race tests
         run: go test -race -short ./internal/modelruntime/adapter/openaicompat/... ./internal/secrets/...
+      - name: Persistent cell worker race tests
+        run: go test -race -short ./internal/cellworker/...
       - name: Cross builds
         run: make build-cross
       - name: Validate canonical registry
@@ -89,9 +91,9 @@ jobs:
           sudo apt-get install -y ripgrep
       - name: Download and verify modules
         run: go mod download && go mod verify
-      - name: Branch 12 canonical allowlist
+      - name: Branch 13 canonical allowlist
         run: |
-          base=c34e0f489ee84de99ba61fb89a75062752c4f065
+          base=73b2b612e002b90f04ef3c4230a22560d65ef0ca
           mapfile -t changed < <(git diff --name-only "$base"...HEAD -- docs/canonical | sort -u)
           for path in "${changed[@]}"; do
             case "$path" in
@@ -113,6 +115,8 @@ jobs:
         run: make test-context-integration
       - name: Authorization PostgreSQL 17 integration
         run: make test-authorization-integration
+      - name: Persistent cell worker PostgreSQL 17 integration
+        run: make test-cellworker-integration
       - name: Staging PostgreSQL 17 and real Git integration
         run: make test-staging-integration
       - name: Exact aggregate verification
