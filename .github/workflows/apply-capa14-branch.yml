@@ -1,0 +1,57 @@
+name: Apply Capa 14 durable branch transitions
+
+on:
+  push:
+    branches: [feat/14-durable-decision-graph]
+    paths:
+      - ".rama14-branch/**"
+      - ".github/workflows/apply-capa14-branch.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-capa14-durable-branch-transitions
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Apply deterministic source transformation
+        run: |
+          set -euo pipefail
+          python3 .rama14-branch/apply.py
+          rm -rf .rama14-branch
+          gofmt -w internal/decisiongraph/records.go internal/decisiongraph/ports.go internal/decisiongraph/service.go internal/decisiongraph/service_test.go internal/decisiongraph/postgres/store.go internal/decisiongraph/postgres/integration_test.go
+          git diff --check
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Focused verification
+        run: |
+          go mod download
+          go mod verify
+          go test -race -short ./internal/decisiongraph/...
+          ./scripts/check-decisiongraph-fitness.sh
+
+      - name: Commit durable branch transition support
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "feat(decisiongraph): add durable branch transitions"
+          git push origin HEAD:feat/14-durable-decision-graph
