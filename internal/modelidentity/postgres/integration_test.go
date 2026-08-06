@@ -38,8 +38,8 @@ func TestModelExecutionIdentityPostgreSQL17(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Current != 12 {
-		t.Fatalf("current migration=%d want=12", result.Current)
+	if result.Current != 13 {
+		t.Fatalf("current migration=%d want=13", result.Current)
 	}
 	resetIdentitySchema(t, ctx, platform)
 	syncIdentityCanonical(t, ctx, platform)

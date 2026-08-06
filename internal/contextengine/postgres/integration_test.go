@@ -375,8 +375,8 @@ func TestContextEnginePostgreSQL17(t *testing.T) {
 		if err != nil {
 			t.Fatalf("reapply migrations: %v", err)
 		}
-		if len(result.Applied) != 7 || result.Current != 12 {
-			t.Fatalf("reapply result=%+v, want migrations 000006 through 000012", result)
+		if len(result.Applied) != 7 || result.Current != 13 {
+			t.Fatalf("reapply result=%+v, want migrations 000006 through 000012 reapplied with 000013 (never torn down) still current", result)
 		}
 		var contextExists, modelRuntimeExists, egressExists, dispatchExists, identityExists, providerExists bool
 		if err = platform.Pool().QueryRow(ctx, `
