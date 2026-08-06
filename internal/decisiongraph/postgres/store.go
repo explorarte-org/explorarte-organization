@@ -106,12 +106,12 @@ VALUES ($1,$2,$3)`, run.ID, s.organizationID, now); err != nil {
 	return run, nil
 }
 
-func (s *Store) AppendGraph(ctx context.Context, request decisiongraph.AppendGraphRequest) (decisiongraph.GraphVersion, error) {
+func (s *Store) AppendGraph(ctx context.Context, request decisiongraph.AppendGraphRequest, now time.Time) (decisiongraph.GraphVersion, error) {
 	graph, snapshotHash, maxDepth, err := request.Validate()
 	if err != nil {
 		return decisiongraph.GraphVersion{}, err
 	}
-	now := time.Now().UTC()
+	now = now.UTC()
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
 		return decisiongraph.GraphVersion{}, fmt.Errorf("begin append graph: %w", err)

@@ -39,7 +39,7 @@ func (s *Service) AppendGraph(ctx context.Context, request AppendGraphRequest) (
 	if _, _, _, err := request.Validate(); err != nil {
 		return GraphVersion{}, err
 	}
-	version, err := s.ledger.AppendGraph(ctx, request)
+	version, err := s.ledger.AppendGraph(ctx, request, s.clock.Now().UTC())
 	if err != nil {
 		return GraphVersion{}, fmt.Errorf("append decision graph: %w", err)
 	}

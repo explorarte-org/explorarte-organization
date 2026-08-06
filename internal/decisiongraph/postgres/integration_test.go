@@ -379,7 +379,10 @@ WHERE run_id=$1 AND status IN ('claimed','running','waiting_verification')`, cla
 		if claimErr != nil {
 			t.Fatal(claimErr)
 		}
-		clock.Set(now.Add(2 * time.Second))
+		// Advance relative to the clock's current value, not the test's
+		// original now: earlier subtests already moved it forward, and this
+		// claim's lease was computed from that already-advanced time.
+		clock.Set(clock.Now().Add(2 * time.Second))
 		recovered, recoverErr := service.RecoverExpiredExecutions(ctx, 32)
 		if recoverErr != nil {
 			t.Fatal(recoverErr)
