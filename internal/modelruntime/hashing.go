@@ -142,33 +142,35 @@ func canonicalNumberJSON(v any) ([]byte, error) {
 	}
 }
 
-func invocationRequestHash(c CreateInvocationCommand, revision int64, binding ResolvedBinding, caps []ModelCapability, schema []byte, policyVersionID int64, policyHash string, assignment modeldispatch.ResolvedAssignment) (string, error) {
+func invocationRequestHash(c CreateInvocationCommand, revision int64, binding ResolvedBinding, caps []ModelCapability, schema []byte, policyVersionID int64, policyHash string, identityPolicyVersionID int64, identityPolicyHash string, assignment modeldispatch.ResolvedAssignment) (string, error) {
 	value := map[string]any{
-		"organization_id":                c.OrganizationID,
-		"organization_revision_id":       revision,
-		"task_id":                        c.TaskID,
-		"attempt_id":                     c.AttemptID,
-		"dispatcher_assignment_id":       assignment.Assignment.ID,
-		"dispatcher_assignment_hash":     assignment.Assignment.AssignmentHash,
-		"execution_principal_id":         assignment.Principal.ID,
-		"execution_principal_key":        assignment.Principal.PrincipalKey,
-		"dispatch_actor_role_id":         assignment.Principal.DispatchActorRoleID,
-		"subject_role_id":                c.SubjectRoleID,
-		"context_snapshot_id":            c.ContextSnapshotID,
-		"purpose":                        strings.TrimSpace(c.Purpose),
-		"profile_id":                     binding.Profile.ID,
-		"profile_version_id":             binding.Version.ID,
-		"provider_id":                    binding.Version.ProviderID,
-		"provider_model_id":              binding.Version.ProviderModelID,
-		"required_capabilities":          caps,
-		"output_mode":                    c.OutputMode,
-		"output_schema":                  json.RawMessage(schema),
-		"max_output_tokens":              c.MaxOutputTokens,
-		"temperature":                    c.Temperature,
-		"thinking_mode":                  c.ThinkingMode,
-		"deadline":                       c.Deadline.UTC().Format(time.RFC3339Nano),
-		"model_egress_policy_version_id": policyVersionID,
-		"model_egress_policy_hash":       policyHash,
+		"organization_id":                      c.OrganizationID,
+		"organization_revision_id":             revision,
+		"task_id":                              c.TaskID,
+		"attempt_id":                           c.AttemptID,
+		"dispatcher_assignment_id":             assignment.Assignment.ID,
+		"dispatcher_assignment_hash":           assignment.Assignment.AssignmentHash,
+		"execution_principal_id":               assignment.Principal.ID,
+		"execution_principal_key":              assignment.Principal.PrincipalKey,
+		"dispatch_actor_role_id":               assignment.Principal.DispatchActorRoleID,
+		"subject_role_id":                      c.SubjectRoleID,
+		"context_snapshot_id":                  c.ContextSnapshotID,
+		"purpose":                              strings.TrimSpace(c.Purpose),
+		"profile_id":                           binding.Profile.ID,
+		"profile_version_id":                   binding.Version.ID,
+		"provider_id":                          binding.Version.ProviderID,
+		"provider_model_id":                    binding.Version.ProviderModelID,
+		"required_capabilities":                caps,
+		"output_mode":                          c.OutputMode,
+		"output_schema":                        json.RawMessage(schema),
+		"max_output_tokens":                    c.MaxOutputTokens,
+		"temperature":                          c.Temperature,
+		"thinking_mode":                        c.ThinkingMode,
+		"deadline":                             c.Deadline.UTC().Format(time.RFC3339Nano),
+		"model_egress_policy_version_id":       policyVersionID,
+		"model_egress_policy_hash":             policyHash,
+		"execution_identity_policy_version_id": identityPolicyVersionID,
+		"execution_identity_policy_hash":       identityPolicyHash,
 	}
 	body, err := CanonicalJSON(value)
 	if err != nil {
@@ -185,17 +187,22 @@ func ActionDigest(inv Invocation) (string, error) {
 	if inv.ModelEgressPolicyVersionID == nil {
 		return "", ErrEgressPolicyUnpinned
 	}
+	if inv.ExecutionIdentityPolicyVersionID == nil || inv.ExecutionIdentityPolicyHash == "" {
+		return "", ErrExecutionIdentityUnpinned
+	}
 	if inv.DispatcherAssignmentID == nil || inv.ExecutionPrincipalID == nil {
 		return "", ErrDispatcherAssignmentUnpinned
 	}
 	value := struct {
-		InvocationID           int64  `json:"invocation_id"`
-		RequestHash            string `json:"request_hash"`
-		DispatcherAssignmentID int64  `json:"dispatcher_assignment_id"`
-		ExecutionPrincipalID   int64  `json:"execution_principal_id"`
-		PolicyVersionID        int64  `json:"model_egress_policy_version_id"`
-		PolicyHash             string `json:"model_egress_policy_hash"`
-	}{inv.ID, inv.RequestHash, *inv.DispatcherAssignmentID, *inv.ExecutionPrincipalID, *inv.ModelEgressPolicyVersionID, inv.ModelEgressPolicyHash}
+		InvocationID            int64  `json:"invocation_id"`
+		RequestHash             string `json:"request_hash"`
+		DispatcherAssignmentID  int64  `json:"dispatcher_assignment_id"`
+		ExecutionPrincipalID    int64  `json:"execution_principal_id"`
+		PolicyVersionID         int64  `json:"model_egress_policy_version_id"`
+		PolicyHash              string `json:"model_egress_policy_hash"`
+		IdentityPolicyVersionID int64  `json:"execution_identity_policy_version_id"`
+		IdentityPolicyHash      string `json:"execution_identity_policy_hash"`
+	}{inv.ID, inv.RequestHash, *inv.DispatcherAssignmentID, *inv.ExecutionPrincipalID, *inv.ModelEgressPolicyVersionID, inv.ModelEgressPolicyHash, *inv.ExecutionIdentityPolicyVersionID, inv.ExecutionIdentityPolicyHash}
 	body, err := json.Marshal(value)
 	if err != nil {
 		return "", err

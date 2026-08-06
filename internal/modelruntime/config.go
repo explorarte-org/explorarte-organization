@@ -19,15 +19,17 @@ const (
 )
 
 type RuntimeConfig struct {
-	Enabled               bool
-	CommandTimeout        time.Duration
-	GlobalConcurrency     int
-	MaxResponseBytes      int
-	MaxToolIntents        int
-	ClaimTTL              time.Duration
-	ReconcileBatchSize    int
-	OutboxMaxAttempts     int
-	ExecutionPrincipalKey string
+	Enabled                  bool
+	CommandTimeout           time.Duration
+	GlobalConcurrency        int
+	MaxResponseBytes         int
+	MaxToolIntents           int
+	ClaimTTL                 time.Duration
+	ReconcileBatchSize       int
+	OutboxMaxAttempts        int
+	ExecutionPrincipalKey    string
+	ExecutionIdentityEnabled bool
+	ExecutionIdentityKeyFile string
 }
 
 type LookupEnv func(string) (string, bool)
@@ -58,6 +60,12 @@ func LoadRuntimeConfig(lookup LookupEnv, outboxMaxAttempts int) (RuntimeConfig, 
 	}
 	if cfg.ReconcileBatchSize, err = envInt(lookup, "ORG_MODEL_RUNTIME_RECONCILE_BATCH_SIZE", defaultReconcileBatchSize); err != nil {
 		return RuntimeConfig{}, err
+	}
+	if cfg.ExecutionIdentityEnabled, err = envBool(lookup, "ORG_MODEL_EXECUTION_IDENTITY_ENABLED", false); err != nil {
+		return RuntimeConfig{}, err
+	}
+	if raw, ok := lookup("ORG_MODEL_EXECUTION_IDENTITY_KEY_FILE"); ok {
+		cfg.ExecutionIdentityKeyFile = strings.TrimSpace(raw)
 	}
 	if raw, ok := lookup("ORG_MODEL_EXECUTION_PRINCIPAL_KEY"); ok {
 		cfg.ExecutionPrincipalKey = strings.TrimSpace(raw)

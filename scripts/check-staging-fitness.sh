@@ -3,6 +3,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+
+fail() { echo "ERROR: $*" >&2; exit 1; }
 BASE_COMMIT="${STAGING_ENGINE_BASE_COMMIT:-de5ac792cb67489b9f35e3b52cbec9ca8f63c7c7}"
 
 if git cat-file -e "${BASE_COMMIT}^{commit}" 2>/dev/null; then
@@ -12,7 +14,7 @@ if git cat-file -e "${BASE_COMMIT}^{commit}" 2>/dev/null; then
   } | sort -u)
   for path in "${canonical_changes[@]}"; do
     case "$path" in
-      docs/canonical/capability-matrix.yaml|docs/canonical/model-egress-policy.yaml) ;;
+      docs/canonical/capability-matrix.yaml|docs/canonical/model-egress-policy.yaml|docs/canonical/model-execution-identity-policy.yaml) ;;
       *) fail "unauthorized canonical change: $path" ;;
     esac
   done

@@ -272,9 +272,12 @@ func TestContextEnginePostgreSQL17(t *testing.T) {
 	})
 
 	t.Run("down migration and reapply in disposable integration database", func(t *testing.T) {
-		// Branch 10's migration 000009 adds FKs from model_dispatcher_assignment_uses
-		// into model_invocations/model_dispatch_attempts, so it must come down
-		// before 000007's tables can be dropped.
+		// Branch 11 identity tables reference runtime and dispatcher tables, so
+		// 000010 must come down before 000009 and the earlier model migrations.
+		identityDown, err := rootmigrations.Files.ReadFile("000010_create_model_execution_identity.down.sql")
+		if err != nil {
+			t.Fatal(err)
+		}
 		dispatchDown, err := rootmigrations.Files.ReadFile("000009_create_model_dispatcher_assignments.down.sql")
 		if err != nil {
 			t.Fatal(err)
@@ -296,6 +299,12 @@ func TestContextEnginePostgreSQL17(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer func() { _ = tx.Rollback(ctx) }()
+		if _, err = tx.Exec(ctx, string(identityDown)); err != nil {
+			t.Fatalf("down migration 000010: %v", err)
+		}
+		if _, err = tx.Exec(ctx, `DELETE FROM schema_migrations WHERE version=10`); err != nil {
+			t.Fatal(err)
+		}
 		if _, err = tx.Exec(ctx, string(dispatchDown)); err != nil {
 			t.Fatalf("down migration 000009: %v", err)
 		}
@@ -324,41 +333,43 @@ func TestContextEnginePostgreSQL17(t *testing.T) {
 			t.Fatalf("commit down migrations: %v", err)
 		}
 
-		var contextMissing, modelRuntimeMissing, egressMissing, dispatchMissing bool
+		var contextMissing, modelRuntimeMissing, egressMissing, dispatchMissing, identityMissing bool
 		if err = platform.Pool().QueryRow(ctx, `
 			SELECT
 				to_regclass('public.context_snapshots') IS NULL
 				AND to_regclass('public.context_segments') IS NULL,
 				to_regclass('public.model_providers') IS NULL,
 				to_regclass('public.model_egress_policy_versions') IS NULL,
-				to_regclass('public.model_dispatcher_assignments') IS NULL
-		`).Scan(&contextMissing, &modelRuntimeMissing, &egressMissing, &dispatchMissing); err != nil {
+				to_regclass('public.model_dispatcher_assignments') IS NULL,
+				to_regclass('public.model_execution_identity_policy_versions') IS NULL
+		`).Scan(&contextMissing, &modelRuntimeMissing, &egressMissing, &dispatchMissing, &identityMissing); err != nil {
 			t.Fatal(err)
 		}
-		if !contextMissing || !modelRuntimeMissing || !egressMissing || !dispatchMissing {
-			t.Fatalf("after down context_missing=%t model_runtime_missing=%t egress_missing=%t dispatch_missing=%t", contextMissing, modelRuntimeMissing, egressMissing, dispatchMissing)
+		if !contextMissing || !modelRuntimeMissing || !egressMissing || !dispatchMissing || !identityMissing {
+			t.Fatalf("after down context_missing=%t model_runtime_missing=%t egress_missing=%t dispatch_missing=%t identity_missing=%t", contextMissing, modelRuntimeMissing, egressMissing, dispatchMissing, identityMissing)
 		}
 
 		result, err := runner.Up(ctx)
 		if err != nil {
 			t.Fatalf("reapply migrations: %v", err)
 		}
-		if len(result.Applied) != 4 || result.Current != 9 {
-			t.Fatalf("reapply result=%+v, want migrations 000006, 000007, 000008 and 000009", result)
+		if len(result.Applied) != 5 || result.Current != 10 {
+			t.Fatalf("reapply result=%+v, want migrations 000006 through 000010", result)
 		}
-		var contextExists, modelRuntimeExists, egressExists, dispatchExists bool
+		var contextExists, modelRuntimeExists, egressExists, dispatchExists, identityExists bool
 		if err = platform.Pool().QueryRow(ctx, `
 			SELECT
 				to_regclass('public.context_snapshots') IS NOT NULL
 				AND to_regclass('public.context_segments') IS NOT NULL,
 				to_regclass('public.model_providers') IS NOT NULL,
 				to_regclass('public.model_egress_policy_versions') IS NOT NULL,
-				to_regclass('public.model_dispatcher_assignments') IS NOT NULL
-		`).Scan(&contextExists, &modelRuntimeExists, &egressExists, &dispatchExists); err != nil {
+				to_regclass('public.model_dispatcher_assignments') IS NOT NULL,
+				to_regclass('public.model_execution_identity_policy_versions') IS NOT NULL
+		`).Scan(&contextExists, &modelRuntimeExists, &egressExists, &dispatchExists, &identityExists); err != nil {
 			t.Fatal(err)
 		}
-		if !contextExists || !modelRuntimeExists || !egressExists || !dispatchExists {
-			t.Fatalf("after reapply context_exists=%t model_runtime_exists=%t egress_exists=%t dispatch_exists=%t", contextExists, modelRuntimeExists, egressExists, dispatchExists)
+		if !contextExists || !modelRuntimeExists || !egressExists || !dispatchExists || !identityExists {
+			t.Fatalf("after reapply context_exists=%t model_runtime_exists=%t egress_exists=%t dispatch_exists=%t identity_exists=%t", contextExists, modelRuntimeExists, egressExists, dispatchExists, identityExists)
 		}
 	})
 }

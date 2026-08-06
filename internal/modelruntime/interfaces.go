@@ -2,10 +2,12 @@ package modelruntime
 
 import (
 	"context"
+	"crypto/ed25519"
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/modeldispatch"
 	"github.com/Mireuz13/explorarte-organization/internal/modelegress"
+	"github.com/Mireuz13/explorarte-organization/internal/modelidentity"
 )
 
 type OrganizationRef struct {
@@ -69,6 +71,23 @@ type CapabilityEvaluator interface {
 	EvaluateDispatch(context.Context, string, int64, string, string, string) (AuthorizationDecision, error)
 }
 
+type ExecutionIdentityPolicyCatalog interface {
+	ResolveActive(context.Context, string) (modelidentity.ResolvedPolicy, error)
+	ResolveByID(context.Context, string, int64) (modelidentity.ResolvedPolicy, error)
+}
+
+type ExecutionPrivateKeyLoader interface {
+	LoadExecutionPrivateKey(string) (ed25519.PrivateKey, error)
+}
+
+type ExecutionIdentityService interface {
+	ResolvePolicy(context.Context, string) (modelidentity.ResolvedPolicy, error)
+	ResolvePolicyByID(context.Context, string, int64) (modelidentity.ResolvedPolicy, error)
+	ResolveActiveKeyByFingerprint(context.Context, string, int64, string) (modelidentity.ExecutionIdentityKey, error)
+	Issue(context.Context, modelidentity.ChallengeScope, modelidentity.ResolvedPolicy) (modelidentity.IssuedChallenge, error)
+	Verify(modelidentity.ExecutionIdentityKey, modelidentity.IssuedChallenge, []byte, modelidentity.ResolvedPolicy) (modelidentity.VerifiedAssertion, error)
+}
+
 type EgressPolicyCatalog interface {
 	ResolveForRevision(context.Context, string, int64) (modelegress.ResolvedPolicy, error)
 }
@@ -102,6 +121,7 @@ type InvocationStore interface {
 	GetInvocation(context.Context, int64) (Invocation, error)
 	ListInvocations(context.Context, string, int) ([]Invocation, error)
 	ClaimInvocation(context.Context, ClaimCommand, RuntimeConfig) (ClaimedInvocation, error)
+	ClaimInvocationAuthenticated(context.Context, AuthenticatedClaimCommand, RuntimeConfig) (ClaimedInvocation, error)
 	MarkResponseReceived(context.Context, int64, int64, string, string) (Invocation, error)
 	CompleteInvocation(context.Context, CompletionCommand, int) (DispatchResult, error)
 	FailBeforeSend(context.Context, FailureCommand, int) (Invocation, error)
@@ -127,6 +147,7 @@ type PreparedInvocation struct {
 	RequiredCapabilities   []ModelCapability
 	OutputSchema           []byte
 	EgressPolicy           modelegress.ResolvedPolicy
+	IdentityPolicy         modelidentity.ResolvedPolicy
 	Assignment             modeldispatch.ResolvedAssignment
 }
 type ClaimCommand struct {
@@ -134,6 +155,16 @@ type ClaimCommand struct {
 	ClaimedBy            string
 	ExecutionPrincipalID int64
 }
+type AuthenticatedClaimCommand struct {
+	InvocationID         int64
+	ClaimedBy            string
+	ExecutionPrincipalID int64
+	IdentityKeyID        int64
+	ChallengeID          int64
+	ChallengeNonce       string
+	Signature            []byte
+}
+
 type CompletionCommand struct {
 	InvocationID      int64
 	DispatchAttemptID int64

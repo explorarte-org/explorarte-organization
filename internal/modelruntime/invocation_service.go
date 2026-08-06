@@ -16,19 +16,20 @@ type InvocationService struct {
 	contexts          ContextReader
 	store             Store
 	egress            EgressPolicyCatalog
+	identity          ExecutionIdentityPolicyCatalog
 	assignments       modeldispatch.AssignmentResolver
 	clock             Clock
 	outboxMaxAttempts int
 }
 
-func NewInvocationService(organizationID string, catalog OrganizationCatalog, tasks TaskAttemptReader, contexts ContextReader, store Store, egress EgressPolicyCatalog, assignments modeldispatch.AssignmentResolver, clock Clock, outboxMaxAttempts int) (*InvocationService, error) {
-	if catalog == nil || tasks == nil || contexts == nil || store == nil || egress == nil || assignments == nil {
+func NewInvocationService(organizationID string, catalog OrganizationCatalog, tasks TaskAttemptReader, contexts ContextReader, store Store, egress EgressPolicyCatalog, identity ExecutionIdentityPolicyCatalog, assignments modeldispatch.AssignmentResolver, clock Clock, outboxMaxAttempts int) (*InvocationService, error) {
+	if catalog == nil || tasks == nil || contexts == nil || store == nil || egress == nil || identity == nil || assignments == nil {
 		return nil, fmt.Errorf("invocation service dependencies are incomplete")
 	}
 	if clock == nil {
 		clock = ClockFunc(time.Now)
 	}
-	return &InvocationService{organizationID: organizationID, catalog: catalog, tasks: tasks, contexts: contexts, store: store, egress: egress, assignments: assignments, clock: clock, outboxMaxAttempts: outboxMaxAttempts}, nil
+	return &InvocationService{organizationID: organizationID, catalog: catalog, tasks: tasks, contexts: contexts, store: store, egress: egress, identity: identity, assignments: assignments, clock: clock, outboxMaxAttempts: outboxMaxAttempts}, nil
 }
 func (s *InvocationService) Create(ctx context.Context, command CreateInvocationCommand) (CreateInvocationResult, error) {
 	if command.OrganizationID == "" {
@@ -97,11 +98,18 @@ func (s *InvocationService) Create(ctx context.Context, command CreateInvocation
 	if err = validateResolvedEgressPolicy(policy, org); err != nil {
 		return CreateInvocationResult{}, err
 	}
-	hash, err := invocationRequestHash(prepared, org.RevisionID, binding, caps, schema, policy.Version.ID, policy.CanonicalHash, resolved)
+	identityPolicy, err := s.identity.ResolveActive(ctx, prepared.OrganizationID)
 	if err != nil {
 		return CreateInvocationResult{}, err
 	}
-	return s.store.CreateInvocation(ctx, PreparedInvocation{Command: prepared, OrganizationRevisionID: org.RevisionID, Binding: binding, RequestHash: hash, RequiredCapabilities: caps, OutputSchema: schema, EgressPolicy: policy, Assignment: resolved}, s.outboxMaxAttempts)
+	if identityPolicy.Version.Status != "active" {
+		return CreateInvocationResult{}, ErrExecutionIdentityUnpinned
+	}
+	hash, err := invocationRequestHash(prepared, org.RevisionID, binding, caps, schema, policy.Version.ID, policy.CanonicalHash, identityPolicy.Version.ID, identityPolicy.Version.CanonicalHash, resolved)
+	if err != nil {
+		return CreateInvocationResult{}, err
+	}
+	return s.store.CreateInvocation(ctx, PreparedInvocation{Command: prepared, OrganizationRevisionID: org.RevisionID, Binding: binding, RequestHash: hash, RequiredCapabilities: caps, OutputSchema: schema, EgressPolicy: policy, IdentityPolicy: identityPolicy, Assignment: resolved}, s.outboxMaxAttempts)
 }
 func (s *InvocationService) Get(ctx context.Context, id int64) (Invocation, error) {
 	if id <= 0 {

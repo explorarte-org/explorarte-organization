@@ -212,3 +212,28 @@ orgctl model assignment expire --json
 `ORG_MODEL_EXECUTION_PRINCIPAL_KEY` identifica localmente qué principal ejecuta `dispatch`; no es un secreto ni autenticación remota. `--claimed-by`, `--principal` y `--assignment` no existen en el comando de dispatch. Aunque `ORG_MODEL_RUNTIME_ENABLED=true`, un dispatch requiere simultáneamente task assignment, attempt y lease activos, una dispatcher assignment vigente con cuota, `model.invoke` sobre el dispatch actor, egress explícitamente permitido y un adapter registrado. La configuración productiva actual no reúne esa combinación. El resultado de un modelo no completa tareas ni ejecuta tool intents.
 
 Consulta `docs/implementation/branch-08-model-runtime-gateway/INTEGRATION.md`, `docs/implementation/branch-09-model-egress-authorization/INTEGRATION.md` y `docs/implementation/branch-10-model-dispatcher-assignments/INTEGRATION.md`.
+
+### Cryptographic model execution identity
+
+Model dispatch uses durable execution principals and dispatcher assignments,
+but a principal label alone is not authentication. New invocations also pin a
+version of `docs/canonical/model-execution-identity-policy.yaml`. Dispatch
+requires a one-use Ed25519 challenge signed with a private key held outside
+PostgreSQL; the claim transaction independently verifies the signature and
+binds the resulting assertion to the dispatch attempt. Private keys, raw nonces
+and raw signatures are never persisted.
+
+Operational variables:
+
+```text
+ORG_MODEL_EXECUTION_PRINCIPAL_KEY=oracle-01/model-runtime-01
+ORG_MODEL_EXECUTION_IDENTITY_ENABLED=false
+ORG_MODEL_EXECUTION_IDENTITY_KEY_FILE=/run/explorarte/model-execution-identity.pem
+```
+
+The principal key is a non-secret locator. The key file must contain one
+Ed25519 PKCS#8 `PRIVATE KEY` PEM block and should be mode `0600`. Identity
+disabled means dispatch denied; there is no fallback to label-only dispatch.
+Administrative policy and public-key commands are available under
+`orgctl model identity`. This does not enable a real provider: `FakeAdapter`
+remains the only executable adapter.

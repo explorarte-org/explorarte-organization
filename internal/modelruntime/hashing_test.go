@@ -40,22 +40,23 @@ func TestInvocationRequestHashPinsEgressPolicy(t *testing.T) {
 		Version: ProfileVersion{ID: 6, ProviderID: "test.fake", ProviderModelID: "v1"},
 	}
 	policyHash := SHA256Bytes([]byte("policy"))
+	identityPolicyHash := SHA256Bytes([]byte("identity-policy"))
 	assignment := fixtureResolvedAssignment()
-	first, err := invocationRequestHash(command, 7, binding, []ModelCapability{"structured.output"}, []byte(`{"type":"object"}`), 17, policyHash, assignment)
+	first, err := invocationRequestHash(command, 7, binding, []ModelCapability{"structured.output"}, []byte(`{"type":"object"}`), 17, policyHash, 27, identityPolicyHash, assignment)
 	if err != nil {
 		t.Fatal(err)
 	}
-	changedVersion, err := invocationRequestHash(command, 7, binding, []ModelCapability{"structured.output"}, []byte(`{"type":"object"}`), 18, policyHash, assignment)
+	changedVersion, err := invocationRequestHash(command, 7, binding, []ModelCapability{"structured.output"}, []byte(`{"type":"object"}`), 18, policyHash, 27, identityPolicyHash, assignment)
 	if err != nil {
 		t.Fatal(err)
 	}
-	changedHash, err := invocationRequestHash(command, 7, binding, []ModelCapability{"structured.output"}, []byte(`{"type":"object"}`), 17, SHA256Bytes([]byte("other-policy")), assignment)
+	changedHash, err := invocationRequestHash(command, 7, binding, []ModelCapability{"structured.output"}, []byte(`{"type":"object"}`), 17, SHA256Bytes([]byte("other-policy")), 27, identityPolicyHash, assignment)
 	if err != nil {
 		t.Fatal(err)
 	}
 	changedAssignment := assignment
 	changedAssignment.Assignment.ID = 999
-	changedAssignmentHash, err := invocationRequestHash(command, 7, binding, []ModelCapability{"structured.output"}, []byte(`{"type":"object"}`), 17, policyHash, changedAssignment)
+	changedAssignmentHash, err := invocationRequestHash(command, 7, binding, []ModelCapability{"structured.output"}, []byte(`{"type":"object"}`), 17, policyHash, 27, identityPolicyHash, changedAssignment)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +66,7 @@ func TestInvocationRequestHashPinsEgressPolicy(t *testing.T) {
 }
 
 func TestActionDigestDeterministic(t *testing.T) {
-	inv := Invocation{ID: 1, OrganizationID: "explorarte", OrganizationRevisionID: 2, TaskID: 3, AttemptID: 4, DispatchActorRoleID: "x/y", SubjectRoleID: "x/y", DispatcherAssignmentID: int64Pointer(9), ExecutionPrincipalID: int64Pointer(11), ContextSnapshotID: 5, ModelProfileID: "worker-default", ModelProfileVersionID: 6, ProviderID: "test.fake", ProviderModelID: "v1", ModelEgressPolicyVersionID: int64Pointer(17), ModelEgressPolicyHash: SHA256Bytes([]byte("policy")), RequestHash: SHA256Bytes([]byte("request")), RequiredCapabilities: []ModelCapability{"b", "a"}, OutputMode: OutputJSON, OutputSchema: json.RawMessage(`{"type":"object"}`), MaxOutputTokens: 100, ThinkingMode: ThinkingDisabled, Deadline: time.Unix(1000, 0).UTC()}
+	inv := Invocation{ID: 1, OrganizationID: "explorarte", OrganizationRevisionID: 2, TaskID: 3, AttemptID: 4, DispatchActorRoleID: "x/y", SubjectRoleID: "x/y", DispatcherAssignmentID: int64Pointer(9), ExecutionPrincipalID: int64Pointer(11), ContextSnapshotID: 5, ModelProfileID: "worker-default", ModelProfileVersionID: 6, ProviderID: "test.fake", ProviderModelID: "v1", ModelEgressPolicyVersionID: int64Pointer(17), ModelEgressPolicyHash: SHA256Bytes([]byte("policy")), ExecutionIdentityPolicyVersionID: int64Pointer(27), ExecutionIdentityPolicyHash: SHA256Bytes([]byte("identity-policy")), RequestHash: SHA256Bytes([]byte("request")), RequiredCapabilities: []ModelCapability{"b", "a"}, OutputMode: OutputJSON, OutputSchema: json.RawMessage(`{"type":"object"}`), MaxOutputTokens: 100, ThinkingMode: ThinkingDisabled, Deadline: time.Unix(1000, 0).UTC()}
 	a, err := ActionDigest(inv)
 	if err != nil {
 		t.Fatal(err)
@@ -84,18 +85,20 @@ func TestActionDigestRequiresDispatcherAssignmentPin(t *testing.T) {
 }
 
 func TestActionDigestChangesWithPinnedScope(t *testing.T) {
-	base := Invocation{ID: 1, RequestHash: SHA256Bytes([]byte("request")), DispatcherAssignmentID: int64Pointer(9), ExecutionPrincipalID: int64Pointer(11), ModelEgressPolicyVersionID: int64Pointer(17), ModelEgressPolicyHash: SHA256Bytes([]byte("policy"))}
+	base := Invocation{ID: 1, RequestHash: SHA256Bytes([]byte("request")), DispatcherAssignmentID: int64Pointer(9), ExecutionPrincipalID: int64Pointer(11), ModelEgressPolicyVersionID: int64Pointer(17), ModelEgressPolicyHash: SHA256Bytes([]byte("policy")), ExecutionIdentityPolicyVersionID: int64Pointer(27), ExecutionIdentityPolicyHash: SHA256Bytes([]byte("identity-policy"))}
 	first, err := ActionDigest(base)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cases := []Invocation{base, base, base, base, base, base}
+	cases := []Invocation{base, base, base, base, base, base, base, base}
 	cases[0].ID++
 	cases[1].RequestHash = SHA256Bytes([]byte("other-request"))
 	cases[2].ModelEgressPolicyVersionID = int64Pointer(18)
 	cases[3].ModelEgressPolicyHash = SHA256Bytes([]byte("other-policy"))
 	cases[4].DispatcherAssignmentID = int64Pointer(999)
 	cases[5].ExecutionPrincipalID = int64Pointer(999)
+	cases[6].ExecutionIdentityPolicyVersionID = int64Pointer(28)
+	cases[7].ExecutionIdentityPolicyHash = SHA256Bytes([]byte("other-identity-policy"))
 	for index, candidate := range cases {
 		digest, digestErr := ActionDigest(candidate)
 		if digestErr != nil {

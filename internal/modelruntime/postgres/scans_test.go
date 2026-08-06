@@ -60,7 +60,7 @@ func TestScanInvocationAcceptsNullableTextColumns(t *testing.T) {
 		int64(1), "explorarte", int64(7), int64(2), int64(3),
 		"ingenieria_ia/qa", "ingenieria_ia/qa", nil, nil, int64(4), "test",
 		"worker-default", int64(5), "test.fake", "deterministic-v1",
-		int64(17), hash, []byte(`[]`), modelruntime.OutputText, nil, 128, nil,
+		int64(17), hash, int64(23), hash, []byte(`[]`), modelruntime.OutputText, nil, 128, nil,
 		modelruntime.ThinkingDisabled, "idempotency", hash,
 		modelruntime.InvocationRequested, nil, nil, now, nil, nil, now, now, nil,
 	}})
@@ -75,7 +75,7 @@ func TestScanInvocationAcceptsNullableTextColumns(t *testing.T) {
 func TestScanAttemptAcceptsNullableTextColumns(t *testing.T) {
 	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
 	value, err := scanAttempt(strictNullScanner{values: []any{
-		int64(1), int64(2), 1, modelruntime.DispatchClaimed, "worker-1", nil,
+		int64(1), int64(2), 1, modelruntime.DispatchClaimed, "worker-1", nil, nil, nil, nil,
 		now, now.Add(time.Minute), nil, nil, nil,
 		modelruntime.RetrySafeBeforeSend, nil, nil, now, nil,
 	}})

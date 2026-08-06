@@ -28,18 +28,18 @@ jobs:
           sudo apt-get install -y ripgrep
       - name: Download and verify modules
         run: go mod download && go mod verify
-      - name: Branch 10 canonical allowlist
+      - name: Branch 11 canonical allowlist
         run: |
-          base=822010fa7426150e624beb0d10bfaf520b66ca8f
+          base=f1a9ffacd8b3401ed56fd4e95ba95520b28b025a
           mapfile -t changed < <(git diff --name-only "$base"...HEAD -- docs/canonical | sort -u)
           for path in "${changed[@]}"; do
             case "$path" in
-              docs/canonical/capability-matrix.yaml) ;;
+              docs/canonical/capability-matrix.yaml|docs/canonical/model-execution-identity-policy.yaml) ;;
               *) echo "unauthorized canonical change: $path" >&2; exit 1 ;;
             esac
           done
       - name: Git whitespace validation
-        run: git diff --check 822010fa7426150e624beb0d10bfaf520b66ca8f...HEAD
+        run: git diff --check f1a9ffacd8b3401ed56fd4e95ba95520b28b025a...HEAD
       - name: Full non-integration verification
         run: make verify
       - name: Context engine race tests
@@ -50,6 +50,8 @@ jobs:
         run: go test -race -short ./internal/modelegress/...
       - name: Model dispatch race tests
         run: go test -race -short ./internal/modeldispatch/...
+      - name: Model identity race tests
+        run: go test -race -short ./internal/modelidentity/... ./internal/secrets/...
       - name: Cross builds
         run: make build-cross
       - name: Validate canonical registry
@@ -85,13 +87,13 @@ jobs:
           sudo apt-get install -y ripgrep
       - name: Download and verify modules
         run: go mod download && go mod verify
-      - name: Branch 10 canonical allowlist
+      - name: Branch 11 canonical allowlist
         run: |
-          base=822010fa7426150e624beb0d10bfaf520b66ca8f
+          base=f1a9ffacd8b3401ed56fd4e95ba95520b28b025a
           mapfile -t changed < <(git diff --name-only "$base"...HEAD -- docs/canonical | sort -u)
           for path in "${changed[@]}"; do
             case "$path" in
-              docs/canonical/capability-matrix.yaml) ;;
+              docs/canonical/capability-matrix.yaml|docs/canonical/model-execution-identity-policy.yaml) ;;
               *) echo "unauthorized canonical change: $path" >&2; exit 1 ;;
             esac
           done
@@ -103,6 +105,8 @@ jobs:
         run: make test-model-runtime-integration
       - name: Model dispatch PostgreSQL 17 integration
         run: make test-model-dispatch-integration
+      - name: Model identity PostgreSQL 17 integration
+        run: make test-model-identity-integration
       - name: Context engine PostgreSQL 17 integration
         run: make test-context-integration
       - name: Authorization PostgreSQL 17 integration

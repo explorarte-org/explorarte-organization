@@ -2,6 +2,7 @@ package modelruntime
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/Mireuz13/explorarte-organization/internal/modeldispatch"
 	"github.com/Mireuz13/explorarte-organization/internal/modelegress"
+	"github.com/Mireuz13/explorarte-organization/internal/modelidentity"
 )
 
 type fakeAssignmentResolver struct {
@@ -122,20 +124,23 @@ func (d *deterministicAdapter) Dispatch(_ context.Context, request CanonicalRequ
 }
 
 type fakeStore struct {
-	binding         ResolvedBinding
-	invocation      Invocation
-	claimed         ClaimedInvocation
-	result          DispatchResult
-	failed          bool
-	ambiguous       bool
-	completed       bool
-	created         bool
-	cancelled       bool
-	prepared        PreparedInvocation
-	allowEvaluation *modelegress.PreSendEvaluation
-	denyEvaluation  *modelegress.PreSendEvaluation
-	egressPolicy    *modelegress.ResolvedPolicy
-	egressPolicyErr error
+	binding            ResolvedBinding
+	invocation         Invocation
+	claimed            ClaimedInvocation
+	result             DispatchResult
+	failed             bool
+	ambiguous          bool
+	completed          bool
+	created            bool
+	cancelled          bool
+	prepared           PreparedInvocation
+	allowEvaluation    *modelegress.PreSendEvaluation
+	denyEvaluation     *modelegress.PreSendEvaluation
+	egressPolicy       *modelegress.ResolvedPolicy
+	egressPolicyErr    error
+	identityPolicy     modelidentity.ResolvedPolicy
+	identityKey        modelidentity.ExecutionIdentityKey
+	identityPrivateKey ed25519.PrivateKey
 }
 
 func (f *fakeStore) RecordRegistryValidated(context.Context, string, string) error { return nil }
@@ -174,6 +179,42 @@ func (f *fakeStore) PersistPreSendDenyAndFail(_ context.Context, command modeleg
 	f.invocation.ErrorCode = command.ErrorCode
 	return nil
 }
+func (f *fakeStore) ResolveActive(context.Context, string) (modelidentity.ResolvedPolicy, error) {
+	return f.identityPolicy, nil
+}
+func (f *fakeStore) ResolveByID(context.Context, string, int64) (modelidentity.ResolvedPolicy, error) {
+	return f.identityPolicy, nil
+}
+func (f *fakeStore) ResolvePolicy(context.Context, string) (modelidentity.ResolvedPolicy, error) {
+	return f.identityPolicy, nil
+}
+func (f *fakeStore) ResolvePolicyByID(context.Context, string, int64) (modelidentity.ResolvedPolicy, error) {
+	return f.identityPolicy, nil
+}
+func (f *fakeStore) ResolveActiveKeyByFingerprint(_ context.Context, _ string, _ int64, fingerprint string) (modelidentity.ExecutionIdentityKey, error) {
+	if fingerprint != f.identityKey.PublicKeyFingerprint {
+		return modelidentity.ExecutionIdentityKey{}, modelidentity.ErrKeyNotFound
+	}
+	return f.identityKey, nil
+}
+func (f *fakeStore) Issue(_ context.Context, scope modelidentity.ChallengeScope, policy modelidentity.ResolvedPolicy) (modelidentity.IssuedChallenge, error) {
+	now := mustTime("2026-01-01T00:00:00Z")
+	nonce := "unit-test-nonce"
+	_, payload, err := modelidentity.BuildAssertionPayload(scope, 61, nonce, now, now.Add(time.Minute))
+	if err != nil {
+		return modelidentity.IssuedChallenge{}, err
+	}
+	challenge := modelidentity.Challenge{ID: 61, OrganizationID: scope.OrganizationID, OrganizationRevisionID: scope.OrganizationRevisionID, InvocationID: scope.InvocationID, DispatcherAssignmentID: scope.DispatcherAssignmentID, ExecutionPrincipalID: scope.ExecutionPrincipalID, ExecutionIdentityPolicyVersionID: scope.ExecutionIdentityPolicyVersionID, ExecutionIdentityPolicyHash: scope.ExecutionIdentityPolicyHash, ExecutionIdentityKeyID: scope.ExecutionIdentityKeyID, NonceHash: modelidentity.SHA256Bytes([]byte(nonce)), PayloadHash: modelidentity.SHA256Bytes(payload), ActionDigest: scope.ActionDigest, RequestHash: scope.RequestHash, IssuedAt: now, ExpiresAt: now.Add(time.Minute), CreatedAt: now}
+	_ = policy
+	return modelidentity.IssuedChallenge{Challenge: challenge, Nonce: nonce, Payload: payload}, nil
+}
+func (f *fakeStore) Verify(key modelidentity.ExecutionIdentityKey, issued modelidentity.IssuedChallenge, signature []byte, policy modelidentity.ResolvedPolicy) (modelidentity.VerifiedAssertion, error) {
+	return modelidentity.VerifyAssertion(key, issued, signature, issued.Challenge.IssuedAt.Add(time.Second), time.Duration(policy.Version.ClockSkewSeconds)*time.Second)
+}
+func (f *fakeStore) LoadExecutionPrivateKey(string) (ed25519.PrivateKey, error) {
+	return append(ed25519.PrivateKey(nil), f.identityPrivateKey...), nil
+}
+
 func (f *fakeStore) CreateInvocation(_ context.Context, p PreparedInvocation, _ int) (CreateInvocationResult, error) {
 	f.created = true
 	f.prepared = p
@@ -189,6 +230,21 @@ func (f *fakeStore) ListInvocations(context.Context, string, int) ([]Invocation,
 }
 func (f *fakeStore) ClaimInvocation(context.Context, ClaimCommand, RuntimeConfig) (ClaimedInvocation, error) {
 	return f.claimed, nil
+}
+func (f *fakeStore) ClaimInvocationAuthenticated(_ context.Context, command AuthenticatedClaimCommand, _ RuntimeConfig) (ClaimedInvocation, error) {
+	if command.ChallengeID != 61 || command.ChallengeNonce != "unit-test-nonce" || len(command.Signature) != ed25519.SignatureSize {
+		return ClaimedInvocation{}, modelidentity.ErrAssertionInvalid
+	}
+	claimed := f.claimed
+	claimed.Invocation = f.invocation
+	claimed.DispatchAttempt.ExecutionPrincipalID = int64Pointer(command.ExecutionPrincipalID)
+	claimed.DispatchAttempt.ExecutionIdentityKeyID = int64Pointer(command.IdentityKeyID)
+	assertionID := int64(71)
+	verifiedAt := mustTime("2026-01-01T00:00:01Z")
+	claimed.DispatchAttempt.IdentityAssertionID = &assertionID
+	claimed.DispatchAttempt.IdentityVerifiedAt = &verifiedAt
+	f.claimed = claimed
+	return claimed, nil
 }
 func (f *fakeStore) MarkResponseReceived(context.Context, int64, int64, string, string) (Invocation, error) {
 	v := f.invocation
@@ -257,8 +313,13 @@ func serviceFixture() (*fakeStore, fakeCatalog, fakeTaskReader, *fakeContextRead
 	assignment := fixtureAssignment(now)
 	resolved := modeldispatch.ResolvedAssignment{Assignment: assignment, Principal: principal}
 	binding := ResolvedBinding{Binding: RoleBinding{Active: true}, Profile: Profile{ID: "worker-default", PolicyID: "department.worker"}, Version: ProfileVersion{ID: 9, ProfileID: "worker-default", ProviderID: "test.fake", ProviderModelID: "v1", Transport: TransportFake, AdapterStatus: AdapterAvailable, DispatchEnabled: true}, Provider: Provider{ID: "test.fake", AdapterStatus: AdapterAvailable, DispatchEnabled: true}, Capabilities: CapabilitySnapshot{Capabilities: []ModelCapability{"structured.output"}}}
-	inv := Invocation{ID: 11, OrganizationID: "explorarte", OrganizationRevisionID: 7, TaskID: 3, AttemptID: 4, DispatchActorRoleID: "ingenieria_ia/code-runner", SubjectRoleID: "ingenieria_ia/code-runner", DispatcherAssignmentID: int64Pointer(31), ExecutionPrincipalID: int64Pointer(21), ContextSnapshotID: 5, Purpose: "test", ModelProfileID: "worker-default", ModelProfileVersionID: 9, ProviderID: "test.fake", ProviderModelID: "v1", RequiredCapabilities: []ModelCapability{"structured.output"}, OutputMode: OutputJSON, OutputSchema: json.RawMessage(`{"type":"object","required":["ok"],"properties":{"ok":{"type":"boolean"}},"additionalProperties":false}`), MaxOutputTokens: 100, ThinkingMode: ThinkingDisabled, Deadline: now.Add(time.Hour), ModelEgressPolicyVersionID: int64Pointer(17), ModelEgressPolicyHash: SHA256Bytes([]byte("egress")), RequestHash: SHA256Bytes([]byte("request")), Status: InvocationRequested}
-	store := &fakeStore{binding: binding, invocation: inv, claimed: ClaimedInvocation{Invocation: inv, DispatchAttempt: DispatchAttempt{ID: 13, InvocationID: 11, Status: DispatchClaimed, ClaimedBy: principal.PrincipalKey, ExecutionPrincipalID: int64Pointer(21)}, ClaimToken: "raw-token"}}
+	identityPrivateKey := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
+	identityPublicKey := identityPrivateKey.Public().(ed25519.PublicKey)
+	identityPolicyHash := SHA256Bytes([]byte("identity-policy"))
+	identityPolicy := modelidentity.ResolvedPolicy{Version: modelidentity.PolicyVersion{ID: 41, OrganizationID: "explorarte", PolicyID: "model-execution-identity", PolicyVersion: 1, CanonicalHash: identityPolicyHash, Algorithm: modelidentity.AlgorithmEd25519, ChallengeTTLSeconds: 60, ClockSkewSeconds: 15, Status: modelidentity.PolicyActive}}
+	identityKey := modelidentity.ExecutionIdentityKey{ID: 51, OrganizationID: "explorarte", ExecutionPrincipalID: 21, KeyVersion: 1, Algorithm: modelidentity.AlgorithmEd25519, PublicKey: identityPublicKey, PublicKeyFingerprint: modelidentity.PublicKeyFingerprint(identityPublicKey), Status: modelidentity.KeyActive, ValidFrom: now.Add(-time.Hour)}
+	inv := Invocation{ID: 11, OrganizationID: "explorarte", OrganizationRevisionID: 7, TaskID: 3, AttemptID: 4, DispatchActorRoleID: "ingenieria_ia/code-runner", SubjectRoleID: "ingenieria_ia/code-runner", DispatcherAssignmentID: int64Pointer(31), ExecutionPrincipalID: int64Pointer(21), ContextSnapshotID: 5, Purpose: "test", ModelProfileID: "worker-default", ModelProfileVersionID: 9, ProviderID: "test.fake", ProviderModelID: "v1", RequiredCapabilities: []ModelCapability{"structured.output"}, OutputMode: OutputJSON, OutputSchema: json.RawMessage(`{"type":"object","required":["ok"],"properties":{"ok":{"type":"boolean"}},"additionalProperties":false}`), MaxOutputTokens: 100, ThinkingMode: ThinkingDisabled, Deadline: now.Add(time.Hour), ModelEgressPolicyVersionID: int64Pointer(17), ModelEgressPolicyHash: SHA256Bytes([]byte("egress")), ExecutionIdentityPolicyVersionID: int64Pointer(41), ExecutionIdentityPolicyHash: identityPolicyHash, RequestHash: SHA256Bytes([]byte("request")), Status: InvocationRequested}
+	store := &fakeStore{binding: binding, invocation: inv, identityPolicy: identityPolicy, identityKey: identityKey, identityPrivateKey: identityPrivateKey, claimed: ClaimedInvocation{Invocation: inv, DispatchAttempt: DispatchAttempt{ID: 13, InvocationID: 11, Status: DispatchClaimed, ClaimedBy: principal.PrincipalKey, ExecutionPrincipalID: int64Pointer(21)}, ClaimToken: "raw-token"}}
 	catalog := fakeCatalog{org: OrganizationRef{ID: "explorarte", RevisionID: 7, ModelEgressPolicyHash: SHA256Bytes([]byte("egress")), CapabilityMatrixHash: SHA256Bytes([]byte("matrix"))}, role: RoleRef{ID: "ingenieria_ia/code-runner", ModelPolicy: "department.worker", Enabled: true, Executable: true, AuthorityClass: "execution_service"}}
 	task := fakeTaskReader{ref: TaskAttemptRef{TaskID: 3, AttemptID: 4, OrganizationID: "explorarte", OrganizationRevisionID: 7, AssignedRoleID: "ingenieria_ia/code-runner", TaskStatus: "running", AttemptStatus: "running", LeaseHolderID: "test-worker", LeaseExpiresAt: now.Add(time.Hour)}}
 	contexts := &fakeContextReader{ref: ContextSnapshotRef{ID: 5, OrganizationID: "explorarte", OrganizationRevisionID: 7, ActorRoleID: "ingenieria_ia/code-runner", TaskRef: "3", Status: "ready", RenderedHash: SHA256Bytes(rendered), DataClasses: []string{"organizational"}}, rendered: rendered}
@@ -269,7 +330,7 @@ func serviceFixture() (*fakeStore, fakeCatalog, fakeTaskReader, *fakeContextRead
 
 func TestInvocationServiceCreatesFrozenInvocation(t *testing.T) {
 	store, catalog, task, contexts, assignments, _, now := serviceFixture()
-	service, err := NewInvocationService("explorarte", catalog, task, contexts, store, store, assignments, ClockFunc(func() time.Time { return now }), 10)
+	service, err := NewInvocationService("explorarte", catalog, task, contexts, store, store, store, assignments, ClockFunc(func() time.Time { return now }), 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,7 +364,7 @@ func TestInvocationServiceRejectsMalformedEgressPolicyMaterialization(t *testing
 			policy := fixtureEgressPolicy()
 			test.mutate(&policy)
 			store.egressPolicy = &policy
-			service, err := NewInvocationService("explorarte", catalog, task, contexts, store, store, assignments, ClockFunc(func() time.Time { return now }), 10)
+			service, err := NewInvocationService("explorarte", catalog, task, contexts, store, store, store, assignments, ClockFunc(func() time.Time { return now }), 10)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -320,9 +381,9 @@ func TestInvocationServiceRejectsMalformedEgressPolicyMaterialization(t *testing
 
 func TestDispatchFakeSuccessDoesNotCompleteTask(t *testing.T) {
 	store, catalog, task, contexts, assignments, principals, now := serviceFixture()
-	cfg := RuntimeConfig{Enabled: true, CommandTimeout: time.Minute, GlobalConcurrency: 1, MaxResponseBytes: 1024, MaxToolIntents: 2, ClaimTTL: time.Minute, ReconcileBatchSize: 10, OutboxMaxAttempts: 10, ExecutionPrincipalKey: "test-principal"}
+	cfg := RuntimeConfig{Enabled: true, CommandTimeout: time.Minute, GlobalConcurrency: 1, MaxResponseBytes: 1024, MaxToolIntents: 2, ClaimTTL: time.Minute, ReconcileBatchSize: 10, OutboxMaxAttempts: 10, ExecutionPrincipalKey: "test-principal", ExecutionIdentityEnabled: true, ExecutionIdentityKeyFile: "test://identity"}
 	providerAdapter := &deterministicAdapter{}
-	service, err := NewDispatchService("explorarte", cfg, catalog, task, contexts, fakeEvaluator{allow: true}, store, modelegress.NewEvaluator(), store, principals, assignments, store, fakeAdapterRegistry{value: providerAdapter}, ClockFunc(func() time.Time { return now }))
+	service, err := NewDispatchService("explorarte", cfg, catalog, task, contexts, fakeEvaluator{allow: true}, store, modelegress.NewEvaluator(), store, principals, assignments, store, store, fakeAdapterRegistry{value: providerAdapter}, ClockFunc(func() time.Time { return now }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,8 +404,8 @@ func TestDispatchFakeSuccessDoesNotCompleteTask(t *testing.T) {
 }
 func TestDispatchAuthorizationDenyFailsBeforeSend(t *testing.T) {
 	store, catalog, task, contexts, assignments, principals, now := serviceFixture()
-	cfg := RuntimeConfig{Enabled: true, CommandTimeout: time.Minute, GlobalConcurrency: 1, MaxResponseBytes: 1024, MaxToolIntents: 2, ClaimTTL: time.Minute, ReconcileBatchSize: 10, OutboxMaxAttempts: 10, ExecutionPrincipalKey: "test-principal"}
-	service, _ := NewDispatchService("explorarte", cfg, catalog, task, contexts, fakeEvaluator{allow: false}, store, modelegress.NewEvaluator(), store, principals, assignments, store, fakeAdapterRegistry{value: &deterministicAdapter{}}, ClockFunc(func() time.Time { return now }))
+	cfg := RuntimeConfig{Enabled: true, CommandTimeout: time.Minute, GlobalConcurrency: 1, MaxResponseBytes: 1024, MaxToolIntents: 2, ClaimTTL: time.Minute, ReconcileBatchSize: 10, OutboxMaxAttempts: 10, ExecutionPrincipalKey: "test-principal", ExecutionIdentityEnabled: true, ExecutionIdentityKeyFile: "test://identity"}
+	service, _ := NewDispatchService("explorarte", cfg, catalog, task, contexts, fakeEvaluator{allow: false}, store, modelegress.NewEvaluator(), store, principals, assignments, store, store, fakeAdapterRegistry{value: &deterministicAdapter{}}, ClockFunc(func() time.Time { return now }))
 	_, err := service.Dispatch(context.Background(), 11)
 	if !errors.Is(err, ErrAuthorizationDenied) || !store.failed || contexts.renderCalls != 0 {
 		t.Fatalf("expected denied pre-send failure without render, err=%v render_calls=%d", err, contexts.renderCalls)
@@ -355,8 +416,8 @@ func TestDispatchAuthorizationDenyFailsBeforeSend(t *testing.T) {
 }
 func TestDispatchAdapterFailureIsAmbiguous(t *testing.T) {
 	store, catalog, task, contexts, assignments, principals, now := serviceFixture()
-	cfg := RuntimeConfig{Enabled: true, CommandTimeout: time.Minute, GlobalConcurrency: 1, MaxResponseBytes: 1024, MaxToolIntents: 2, ClaimTTL: time.Minute, ReconcileBatchSize: 10, OutboxMaxAttempts: 10, ExecutionPrincipalKey: "test-principal"}
-	service, _ := NewDispatchService("explorarte", cfg, catalog, task, contexts, fakeEvaluator{allow: true}, store, modelegress.NewEvaluator(), store, principals, assignments, store, fakeAdapterRegistry{value: &deterministicAdapter{err: errors.New("unknown after send")}}, ClockFunc(func() time.Time { return now }))
+	cfg := RuntimeConfig{Enabled: true, CommandTimeout: time.Minute, GlobalConcurrency: 1, MaxResponseBytes: 1024, MaxToolIntents: 2, ClaimTTL: time.Minute, ReconcileBatchSize: 10, OutboxMaxAttempts: 10, ExecutionPrincipalKey: "test-principal", ExecutionIdentityEnabled: true, ExecutionIdentityKeyFile: "test://identity"}
+	service, _ := NewDispatchService("explorarte", cfg, catalog, task, contexts, fakeEvaluator{allow: true}, store, modelegress.NewEvaluator(), store, principals, assignments, store, store, fakeAdapterRegistry{value: &deterministicAdapter{err: errors.New("unknown after send")}}, ClockFunc(func() time.Time { return now }))
 	_, err := service.Dispatch(context.Background(), 11)
 	if !errors.Is(err, ErrAmbiguousOutcome) || !store.ambiguous {
 		t.Fatalf("expected ambiguous outcome, got %v", err)
@@ -364,8 +425,8 @@ func TestDispatchAdapterFailureIsAmbiguous(t *testing.T) {
 }
 func TestDispatchAuthorizationOperationalErrorDoesNotBecomePolicyDeny(t *testing.T) {
 	store, catalog, task, contexts, assignments, principals, now := serviceFixture()
-	cfg := RuntimeConfig{Enabled: true, CommandTimeout: time.Minute, GlobalConcurrency: 1, MaxResponseBytes: 1024, MaxToolIntents: 2, ClaimTTL: time.Minute, ReconcileBatchSize: 10, OutboxMaxAttempts: 10, ExecutionPrincipalKey: "test-principal"}
-	service, _ := NewDispatchService("explorarte", cfg, catalog, task, contexts, fakeEvaluator{err: context.DeadlineExceeded}, store, modelegress.NewEvaluator(), store, principals, assignments, store, fakeAdapterRegistry{value: &deterministicAdapter{}}, ClockFunc(func() time.Time { return now }))
+	cfg := RuntimeConfig{Enabled: true, CommandTimeout: time.Minute, GlobalConcurrency: 1, MaxResponseBytes: 1024, MaxToolIntents: 2, ClaimTTL: time.Minute, ReconcileBatchSize: 10, OutboxMaxAttempts: 10, ExecutionPrincipalKey: "test-principal", ExecutionIdentityEnabled: true, ExecutionIdentityKeyFile: "test://identity"}
+	service, _ := NewDispatchService("explorarte", cfg, catalog, task, contexts, fakeEvaluator{err: context.DeadlineExceeded}, store, modelegress.NewEvaluator(), store, principals, assignments, store, store, fakeAdapterRegistry{value: &deterministicAdapter{}}, ClockFunc(func() time.Time { return now }))
 	_, err := service.Dispatch(context.Background(), 11)
 	if !errors.Is(err, context.DeadlineExceeded) || contexts.renderCalls != 0 || store.denyEvaluation == nil {
 		t.Fatalf("operational error handling err=%v render_calls=%d evaluation=%#v", err, contexts.renderCalls, store.denyEvaluation)
@@ -378,8 +439,8 @@ func TestDispatchAuthorizationOperationalErrorDoesNotBecomePolicyDeny(t *testing
 func TestDispatchEgressOperationalErrorIsDurableAndDoesNotRender(t *testing.T) {
 	store, catalog, task, contexts, assignments, principals, now := serviceFixture()
 	providerAdapter := &deterministicAdapter{}
-	cfg := RuntimeConfig{Enabled: true, CommandTimeout: time.Minute, GlobalConcurrency: 1, MaxResponseBytes: 1024, MaxToolIntents: 2, ClaimTTL: time.Minute, ReconcileBatchSize: 10, OutboxMaxAttempts: 10, ExecutionPrincipalKey: "test-principal"}
-	service, err := NewDispatchService("explorarte", cfg, catalog, task, contexts, fakeEvaluator{allow: true}, store, failingEgressEvaluator{err: errors.New("egress store unavailable")}, store, principals, assignments, store, fakeAdapterRegistry{value: providerAdapter}, ClockFunc(func() time.Time { return now }))
+	cfg := RuntimeConfig{Enabled: true, CommandTimeout: time.Minute, GlobalConcurrency: 1, MaxResponseBytes: 1024, MaxToolIntents: 2, ClaimTTL: time.Minute, ReconcileBatchSize: 10, OutboxMaxAttempts: 10, ExecutionPrincipalKey: "test-principal", ExecutionIdentityEnabled: true, ExecutionIdentityKeyFile: "test://identity"}
+	service, err := NewDispatchService("explorarte", cfg, catalog, task, contexts, fakeEvaluator{allow: true}, store, failingEgressEvaluator{err: errors.New("egress store unavailable")}, store, principals, assignments, store, store, fakeAdapterRegistry{value: providerAdapter}, ClockFunc(func() time.Time { return now }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -396,8 +457,8 @@ func TestDispatchEgressDenyDoesNotRenderOrCallAdapter(t *testing.T) {
 	store, catalog, task, contexts, assignments, principals, now := serviceFixture()
 	contexts.ref.DataClasses = []string{"public", "clinical"}
 	providerAdapter := &deterministicAdapter{}
-	cfg := RuntimeConfig{Enabled: true, CommandTimeout: time.Minute, GlobalConcurrency: 1, MaxResponseBytes: 1024, MaxToolIntents: 2, ClaimTTL: time.Minute, ReconcileBatchSize: 10, OutboxMaxAttempts: 10, ExecutionPrincipalKey: "test-principal"}
-	service, _ := NewDispatchService("explorarte", cfg, catalog, task, contexts, fakeEvaluator{allow: true}, store, modelegress.NewEvaluator(), store, principals, assignments, store, fakeAdapterRegistry{value: providerAdapter}, ClockFunc(func() time.Time { return now }))
+	cfg := RuntimeConfig{Enabled: true, CommandTimeout: time.Minute, GlobalConcurrency: 1, MaxResponseBytes: 1024, MaxToolIntents: 2, ClaimTTL: time.Minute, ReconcileBatchSize: 10, OutboxMaxAttempts: 10, ExecutionPrincipalKey: "test-principal", ExecutionIdentityEnabled: true, ExecutionIdentityKeyFile: "test://identity"}
+	service, _ := NewDispatchService("explorarte", cfg, catalog, task, contexts, fakeEvaluator{allow: true}, store, modelegress.NewEvaluator(), store, principals, assignments, store, store, fakeAdapterRegistry{value: providerAdapter}, ClockFunc(func() time.Time { return now }))
 	_, err := service.Dispatch(context.Background(), 11)
 	if !errors.Is(err, ErrEgressDenied) || contexts.renderCalls != 0 || providerAdapter.calls != 0 {
 		t.Fatalf("egress denial leaked to render/adapter: err=%v render=%d calls=%d", err, contexts.renderCalls, providerAdapter.calls)
@@ -409,8 +470,8 @@ func TestDispatchEgressDenyDoesNotRenderOrCallAdapter(t *testing.T) {
 
 func TestDispatchAdapterUnavailableDoesNotRender(t *testing.T) {
 	store, catalog, task, contexts, assignments, principals, now := serviceFixture()
-	cfg := RuntimeConfig{Enabled: true, CommandTimeout: time.Minute, GlobalConcurrency: 1, MaxResponseBytes: 1024, MaxToolIntents: 2, ClaimTTL: time.Minute, ReconcileBatchSize: 10, OutboxMaxAttempts: 10, ExecutionPrincipalKey: "test-principal"}
-	service, _ := NewDispatchService("explorarte", cfg, catalog, task, contexts, fakeEvaluator{allow: true}, store, modelegress.NewEvaluator(), store, principals, assignments, store, fakeAdapterRegistry{}, ClockFunc(func() time.Time { return now }))
+	cfg := RuntimeConfig{Enabled: true, CommandTimeout: time.Minute, GlobalConcurrency: 1, MaxResponseBytes: 1024, MaxToolIntents: 2, ClaimTTL: time.Minute, ReconcileBatchSize: 10, OutboxMaxAttempts: 10, ExecutionPrincipalKey: "test-principal", ExecutionIdentityEnabled: true, ExecutionIdentityKeyFile: "test://identity"}
+	service, _ := NewDispatchService("explorarte", cfg, catalog, task, contexts, fakeEvaluator{allow: true}, store, modelegress.NewEvaluator(), store, principals, assignments, store, store, fakeAdapterRegistry{}, ClockFunc(func() time.Time { return now }))
 	_, err := service.Dispatch(context.Background(), 11)
 	if !errors.Is(err, ErrProviderUnavailable) || contexts.renderCalls != 0 {
 		t.Fatalf("adapter unavailable rendered context: err=%v render=%d", err, contexts.renderCalls)
@@ -424,8 +485,8 @@ func TestDispatchRenderFailureOccursAfterInMemoryDecisionsAndBeforeAdapter(t *te
 	store, catalog, task, contexts, assignments, principals, now := serviceFixture()
 	contexts.renderErr = errors.New("render unavailable")
 	provider := &deterministicAdapter{}
-	cfg := RuntimeConfig{Enabled: true, CommandTimeout: time.Minute, GlobalConcurrency: 1, MaxResponseBytes: 1024, MaxToolIntents: 2, ClaimTTL: time.Minute, ReconcileBatchSize: 10, OutboxMaxAttempts: 10, ExecutionPrincipalKey: "test-principal"}
-	service, _ := NewDispatchService("explorarte", cfg, catalog, task, contexts, fakeEvaluator{allow: true}, store, modelegress.NewEvaluator(), store, principals, assignments, store, fakeAdapterRegistry{value: provider}, ClockFunc(func() time.Time { return now }))
+	cfg := RuntimeConfig{Enabled: true, CommandTimeout: time.Minute, GlobalConcurrency: 1, MaxResponseBytes: 1024, MaxToolIntents: 2, ClaimTTL: time.Minute, ReconcileBatchSize: 10, OutboxMaxAttempts: 10, ExecutionPrincipalKey: "test-principal", ExecutionIdentityEnabled: true, ExecutionIdentityKeyFile: "test://identity"}
+	service, _ := NewDispatchService("explorarte", cfg, catalog, task, contexts, fakeEvaluator{allow: true}, store, modelegress.NewEvaluator(), store, principals, assignments, store, store, fakeAdapterRegistry{value: provider}, ClockFunc(func() time.Time { return now }))
 	_, err := service.Dispatch(context.Background(), 11)
 	if err == nil || contexts.renderCalls != 1 || provider.calls != 0 || !store.failed {
 		t.Fatalf("render failure err=%v render=%d adapter=%d failed=%v", err, contexts.renderCalls, provider.calls, store.failed)
@@ -439,10 +500,15 @@ func TestDispatchLegacyUnpinnedDoesNotRenderOrCallAdapter(t *testing.T) {
 	store, catalog, task, contexts, assignments, principals, now := serviceFixture()
 	store.invocation.ModelEgressPolicyVersionID = nil
 	store.invocation.ModelEgressPolicyHash = ""
+	// A genuine pre-Branch-11 row has no execution-identity policy pin. Keep
+	// the fixture internally consistent so the legacy terminalization path does
+	// not exercise the authenticated-claim boundary.
+	store.invocation.ExecutionIdentityPolicyVersionID = nil
+	store.invocation.ExecutionIdentityPolicyHash = ""
 	store.claimed.Invocation = store.invocation
 	providerAdapter := &deterministicAdapter{}
-	cfg := RuntimeConfig{Enabled: true, CommandTimeout: time.Minute, GlobalConcurrency: 1, MaxResponseBytes: 1024, MaxToolIntents: 2, ClaimTTL: time.Minute, ReconcileBatchSize: 10, OutboxMaxAttempts: 10, ExecutionPrincipalKey: "test-principal"}
-	service, _ := NewDispatchService("explorarte", cfg, catalog, task, contexts, fakeEvaluator{allow: true}, store, modelegress.NewEvaluator(), store, principals, assignments, store, fakeAdapterRegistry{value: providerAdapter}, ClockFunc(func() time.Time { return now }))
+	cfg := RuntimeConfig{Enabled: true, CommandTimeout: time.Minute, GlobalConcurrency: 1, MaxResponseBytes: 1024, MaxToolIntents: 2, ClaimTTL: time.Minute, ReconcileBatchSize: 10, OutboxMaxAttempts: 10, ExecutionPrincipalKey: "test-principal", ExecutionIdentityEnabled: true, ExecutionIdentityKeyFile: "test://identity"}
+	service, _ := NewDispatchService("explorarte", cfg, catalog, task, contexts, fakeEvaluator{allow: true}, store, modelegress.NewEvaluator(), store, principals, assignments, store, store, fakeAdapterRegistry{value: providerAdapter}, ClockFunc(func() time.Time { return now }))
 	_, err := service.Dispatch(context.Background(), 11)
 	if !errors.Is(err, ErrEgressPolicyUnpinned) || contexts.renderCalls != 0 || providerAdapter.calls != 0 || !store.failed {
 		t.Fatalf("legacy unpinned dispatch was not blocked: err=%v render=%d calls=%d failed=%v", err, contexts.renderCalls, providerAdapter.calls, store.failed)
@@ -462,8 +528,8 @@ func TestDispatchStillRequiresAssignmentAndActiveLease(t *testing.T) {
 			store, catalog, task, contexts, assignments, principals, now := serviceFixture()
 			tc.mutate(&task, now)
 			adapter := &deterministicAdapter{}
-			cfg := RuntimeConfig{Enabled: true, CommandTimeout: time.Minute, GlobalConcurrency: 1, MaxResponseBytes: 1024, MaxToolIntents: 2, ClaimTTL: time.Minute, ReconcileBatchSize: 10, OutboxMaxAttempts: 10, ExecutionPrincipalKey: "test-principal"}
-			service, _ := NewDispatchService("explorarte", cfg, catalog, task, contexts, fakeEvaluator{allow: true}, store, modelegress.NewEvaluator(), store, principals, assignments, store, fakeAdapterRegistry{value: adapter}, ClockFunc(func() time.Time { return now }))
+			cfg := RuntimeConfig{Enabled: true, CommandTimeout: time.Minute, GlobalConcurrency: 1, MaxResponseBytes: 1024, MaxToolIntents: 2, ClaimTTL: time.Minute, ReconcileBatchSize: 10, OutboxMaxAttempts: 10, ExecutionPrincipalKey: "test-principal", ExecutionIdentityEnabled: true, ExecutionIdentityKeyFile: "test://identity"}
+			service, _ := NewDispatchService("explorarte", cfg, catalog, task, contexts, fakeEvaluator{allow: true}, store, modelegress.NewEvaluator(), store, principals, assignments, store, store, fakeAdapterRegistry{value: adapter}, ClockFunc(func() time.Time { return now }))
 			_, err := service.Dispatch(context.Background(), 11)
 			if !errors.Is(err, ErrTaskAttemptRejected) || contexts.renderCalls != 0 || adapter.calls != 0 {
 				t.Fatalf("task invariant failure err=%v render=%d adapter=%d", err, contexts.renderCalls, adapter.calls)
@@ -490,9 +556,9 @@ func bytesContains(body, needle []byte) bool {
 
 func TestDispatchMalformedResponseFailsAfterKnownResponse(t *testing.T) {
 	store, catalog, task, contexts, assignments, principals, now := serviceFixture()
-	cfg := RuntimeConfig{Enabled: true, CommandTimeout: time.Minute, GlobalConcurrency: 1, MaxResponseBytes: 1024, MaxToolIntents: 2, ClaimTTL: time.Minute, ReconcileBatchSize: 10, OutboxMaxAttempts: 10, ExecutionPrincipalKey: "test-principal"}
+	cfg := RuntimeConfig{Enabled: true, CommandTimeout: time.Minute, GlobalConcurrency: 1, MaxResponseBytes: 1024, MaxToolIntents: 2, ClaimTTL: time.Minute, ReconcileBatchSize: 10, OutboxMaxAttempts: 10, ExecutionPrincipalKey: "test-principal", ExecutionIdentityEnabled: true, ExecutionIdentityKeyFile: "test://identity"}
 	response := RawResponse{Content: []byte(`{"ok":"wrong"}`), ProviderRequestID: "fake-bad"}
-	service, _ := NewDispatchService("explorarte", cfg, catalog, task, contexts, fakeEvaluator{allow: true}, store, modelegress.NewEvaluator(), store, principals, assignments, store, fakeAdapterRegistry{value: &deterministicAdapter{response: &response}}, ClockFunc(func() time.Time { return now }))
+	service, _ := NewDispatchService("explorarte", cfg, catalog, task, contexts, fakeEvaluator{allow: true}, store, modelegress.NewEvaluator(), store, principals, assignments, store, store, fakeAdapterRegistry{value: &deterministicAdapter{response: &response}}, ClockFunc(func() time.Time { return now }))
 	_, err := service.Dispatch(context.Background(), 11)
 	if !errors.Is(err, ErrResponseRejected) || !store.failed || store.ambiguous {
 		t.Fatalf("expected terminal known-response failure, got err=%v failed=%v ambiguous=%v", err, store.failed, store.ambiguous)
@@ -501,9 +567,9 @@ func TestDispatchMalformedResponseFailsAfterKnownResponse(t *testing.T) {
 
 func TestDispatchCancellationRequiresDurableRequest(t *testing.T) {
 	store, catalog, task, contexts, assignments, principals, now := serviceFixture()
-	cfg := RuntimeConfig{Enabled: true, CommandTimeout: time.Minute, GlobalConcurrency: 1, MaxResponseBytes: 1024, MaxToolIntents: 2, ClaimTTL: time.Minute, ReconcileBatchSize: 10, OutboxMaxAttempts: 10, ExecutionPrincipalKey: "test-principal"}
+	cfg := RuntimeConfig{Enabled: true, CommandTimeout: time.Minute, GlobalConcurrency: 1, MaxResponseBytes: 1024, MaxToolIntents: 2, ClaimTTL: time.Minute, ReconcileBatchSize: 10, OutboxMaxAttempts: 10, ExecutionPrincipalKey: "test-principal", ExecutionIdentityEnabled: true, ExecutionIdentityKeyFile: "test://identity"}
 	response := RawResponse{CancellationConfirmed: true}
-	service, _ := NewDispatchService("explorarte", cfg, catalog, task, contexts, fakeEvaluator{allow: true}, store, modelegress.NewEvaluator(), store, principals, assignments, store, fakeAdapterRegistry{value: &deterministicAdapter{response: &response, err: context.Canceled}}, ClockFunc(func() time.Time { return now }))
+	service, _ := NewDispatchService("explorarte", cfg, catalog, task, contexts, fakeEvaluator{allow: true}, store, modelegress.NewEvaluator(), store, principals, assignments, store, store, fakeAdapterRegistry{value: &deterministicAdapter{response: &response, err: context.Canceled}}, ClockFunc(func() time.Time { return now }))
 	_, err := service.Dispatch(context.Background(), 11)
 	if !errors.Is(err, ErrAmbiguousOutcome) || store.cancelled {
 		t.Fatalf("cancellation without durable request was accepted: err=%v", err)
@@ -513,7 +579,7 @@ func TestDispatchCancellationRequiresDurableRequest(t *testing.T) {
 	store, catalog, task, contexts, assignments, principals, now = serviceFixture()
 	store.invocation.CancelRequestedAt = &requestedAt
 	store.claimed.Invocation.CancelRequestedAt = &requestedAt
-	service, _ = NewDispatchService("explorarte", cfg, catalog, task, contexts, fakeEvaluator{allow: true}, store, modelegress.NewEvaluator(), store, principals, assignments, store, fakeAdapterRegistry{value: &deterministicAdapter{response: &response, err: context.Canceled}}, ClockFunc(func() time.Time { return now }))
+	service, _ = NewDispatchService("explorarte", cfg, catalog, task, contexts, fakeEvaluator{allow: true}, store, modelegress.NewEvaluator(), store, principals, assignments, store, store, fakeAdapterRegistry{value: &deterministicAdapter{response: &response, err: context.Canceled}}, ClockFunc(func() time.Time { return now }))
 	_, err = service.Dispatch(context.Background(), 11)
 	if !errors.Is(err, ErrCancellationRequested) || !store.cancelled {
 		t.Fatalf("durable confirmed cancellation not persisted: err=%v", err)
@@ -522,7 +588,7 @@ func TestDispatchCancellationRequiresDurableRequest(t *testing.T) {
 
 func TestInvocationCancellationRejectsDifferentActor(t *testing.T) {
 	store, catalog, task, contexts, assignments, _, now := serviceFixture()
-	service, err := NewInvocationService("explorarte", catalog, task, contexts, store, store, assignments, ClockFunc(func() time.Time { return now }), 10)
+	service, err := NewInvocationService("explorarte", catalog, task, contexts, store, store, store, assignments, ClockFunc(func() time.Time { return now }), 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -533,8 +599,8 @@ func TestInvocationCancellationRejectsDifferentActor(t *testing.T) {
 
 func TestDispatchDisabledDoesNotClaim(t *testing.T) {
 	store, catalog, task, contexts, assignments, principals, now := serviceFixture()
-	cfg := RuntimeConfig{Enabled: false, CommandTimeout: time.Minute, GlobalConcurrency: 1, MaxResponseBytes: 1024, MaxToolIntents: 2, ClaimTTL: time.Minute, ReconcileBatchSize: 10, OutboxMaxAttempts: 10, ExecutionPrincipalKey: "test-principal"}
-	service, err := NewDispatchService("explorarte", cfg, catalog, task, contexts, fakeEvaluator{allow: true}, store, modelegress.NewEvaluator(), store, principals, assignments, store, fakeAdapterRegistry{value: &deterministicAdapter{}}, ClockFunc(func() time.Time { return now }))
+	cfg := RuntimeConfig{Enabled: false, CommandTimeout: time.Minute, GlobalConcurrency: 1, MaxResponseBytes: 1024, MaxToolIntents: 2, ClaimTTL: time.Minute, ReconcileBatchSize: 10, OutboxMaxAttempts: 10, ExecutionPrincipalKey: "test-principal", ExecutionIdentityEnabled: true, ExecutionIdentityKeyFile: "test://identity"}
+	service, err := NewDispatchService("explorarte", cfg, catalog, task, contexts, fakeEvaluator{allow: true}, store, modelegress.NewEvaluator(), store, principals, assignments, store, store, fakeAdapterRegistry{value: &deterministicAdapter{}}, ClockFunc(func() time.Time { return now }))
 	if err != nil {
 		t.Fatal(err)
 	}
