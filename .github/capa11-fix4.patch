@@ -1,0 +1,25 @@
+diff --git a/migrations/000010_create_model_execution_identity.down.sql b/migrations/000010_create_model_execution_identity.down.sql
+index 6dbc6e8..cbf070f 100644
+--- a/migrations/000010_create_model_execution_identity.down.sql
++++ b/migrations/000010_create_model_execution_identity.down.sql
+@@ -10,6 +10,7 @@ DROP FUNCTION reject_model_execution_identity_assertion_mutation();
+ DROP TABLE model_execution_identity_challenges;
+ DROP FUNCTION protect_model_execution_identity_challenges();
+ ALTER TABLE model_invocations DROP CONSTRAINT model_invocations_identity_policy_fk;
++ALTER TABLE model_invocations DROP CONSTRAINT model_invocations_id_organization_principal_unique;
+ ALTER TABLE model_invocations DROP CONSTRAINT model_invocations_identity_policy_hash_check;
+ ALTER TABLE model_invocations DROP CONSTRAINT model_invocations_identity_policy_pair_check;
+ ALTER TABLE model_invocations DROP COLUMN execution_identity_policy_hash;
+diff --git a/migrations/000010_create_model_execution_identity.up.sql b/migrations/000010_create_model_execution_identity.up.sql
+index b1d42ce..ade3e44 100644
+--- a/migrations/000010_create_model_execution_identity.up.sql
++++ b/migrations/000010_create_model_execution_identity.up.sql
+@@ -126,6 +126,8 @@ ALTER TABLE model_invocations
+     ADD COLUMN execution_identity_policy_hash TEXT;
+ 
+ ALTER TABLE model_invocations
++    ADD CONSTRAINT model_invocations_id_organization_principal_unique
++        UNIQUE (id, organization_id, execution_principal_id),
+     ADD CONSTRAINT model_invocations_identity_policy_pair_check
+         CHECK (
+             (execution_identity_policy_version_id IS NULL AND execution_identity_policy_hash IS NULL)
