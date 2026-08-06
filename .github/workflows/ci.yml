@@ -11,7 +11,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -28,18 +28,16 @@ jobs:
           sudo apt-get install -y ripgrep
       - name: Download and verify modules
         run: go mod download && go mod verify
-      - name: Branch 13 canonical allowlist
+      - name: Branch 14 canonical immutability
         run: |
-          base=73b2b612e002b90f04ef3c4230a22560d65ef0ca
+          base=3584d9e7a2e44bbe9d953556704df5e84afd8cf3
           mapfile -t changed < <(git diff --name-only "$base"...HEAD -- docs/canonical | sort -u)
-          for path in "${changed[@]}"; do
-            case "$path" in
-              docs/canonical/model-routing.yaml|docs/canonical/model-egress-policy.yaml) ;;
-              *) echo "unauthorized canonical change: $path" >&2; exit 1 ;;
-            esac
-          done
+          if [[ ${#changed[@]} -gt 0 ]]; then
+            printf 'unauthorized canonical change: %s\n' "${changed[@]}" >&2
+            exit 1
+          fi
       - name: Git whitespace validation
-        run: git diff --check 73b2b612e002b90f04ef3c4230a22560d65ef0ca...HEAD
+        run: git diff --check 3584d9e7a2e44bbe9d953556704df5e84afd8cf3...HEAD
       - name: Full non-integration verification
         run: make verify
       - name: Context engine race tests
@@ -56,6 +54,8 @@ jobs:
         run: go test -race -short ./internal/modelruntime/adapter/openaicompat/... ./internal/secrets/...
       - name: Persistent cell worker race tests
         run: go test -race -short ./internal/cellworker/...
+      - name: Durable decision graph race tests
+        run: go test -race -short ./internal/decisiongraph/...
       - name: Cross builds
         run: make build-cross
       - name: Validate canonical registry
@@ -74,7 +74,7 @@ jobs:
 
   postgres-final-validation:
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    timeout-minutes: 65
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -91,16 +91,14 @@ jobs:
           sudo apt-get install -y ripgrep
       - name: Download and verify modules
         run: go mod download && go mod verify
-      - name: Branch 13 canonical allowlist
+      - name: Branch 14 canonical immutability
         run: |
-          base=73b2b612e002b90f04ef3c4230a22560d65ef0ca
+          base=3584d9e7a2e44bbe9d953556704df5e84afd8cf3
           mapfile -t changed < <(git diff --name-only "$base"...HEAD -- docs/canonical | sort -u)
-          for path in "${changed[@]}"; do
-            case "$path" in
-              docs/canonical/model-routing.yaml|docs/canonical/model-egress-policy.yaml) ;;
-              *) echo "unauthorized canonical change: $path" >&2; exit 1 ;;
-            esac
-          done
+          if [[ ${#changed[@]} -gt 0 ]]; then
+            printf 'unauthorized canonical change: %s\n' "${changed[@]}" >&2
+            exit 1
+          fi
       - name: PostgreSQL 17 complete integration suite and CLI smoke tests
         run: make test-integration
       - name: Model egress PostgreSQL 17 integration
@@ -117,6 +115,8 @@ jobs:
         run: make test-authorization-integration
       - name: Persistent cell worker PostgreSQL 17 integration
         run: make test-cellworker-integration
+      - name: Durable decision graph PostgreSQL 17 integration
+        run: make test-decisiongraph-integration
       - name: Staging PostgreSQL 17 and real Git integration
         run: make test-staging-integration
       - name: Exact aggregate verification
