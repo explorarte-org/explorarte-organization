@@ -80,7 +80,9 @@ pollLoop:
 		}
 
 		ids, err := w.work.ListEligible(ctx, w.cfg.PrincipalKey, w.cfg.BatchSize)
-		if err != nil {
+		if err != nil && ctx.Err() == nil {
+			// A cancellation-induced error during shutdown is expected,
+			// not an operational failure worth surfacing as one.
 			w.observer.OnListError(err)
 		}
 		if err != nil || len(ids) == 0 {
@@ -90,29 +92,8 @@ pollLoop:
 			continue
 		}
 
-		// Skip IDs a prior, still-running dispatch already claimed: the
-		// underlying Dispatch claim is safe to retry concurrently (it wins
-		// or loses atomically server-side), but retrying it from here just
-		// wastes a round trip while WorkSource hasn't yet observed the
-		// in-flight attempt's status change.
-		inFlightMu.Lock()
-		fresh := ids[:0]
+		dispatchedAny := false
 		for _, id := range ids {
-			if _, busy := inFlight[id]; !busy {
-				fresh = append(fresh, id)
-			}
-		}
-		inFlightMu.Unlock()
-
-		if len(fresh) == 0 {
-			if !w.clock.Sleep(ctx, b.Next()) {
-				break pollLoop
-			}
-			continue
-		}
-		b.Reset()
-
-		for _, id := range fresh {
 			select {
 			case <-ctx.Done():
 				break pollLoop
@@ -125,11 +106,35 @@ pollLoop:
 				<-sem
 				break pollLoop
 			}
+			// Check-and-set, one id at a time: skips an id a prior,
+			// still-running dispatch already claimed (the underlying
+			// Dispatch claim is safe to retry concurrently — it wins or
+			// loses atomically server-side — but retrying from here just
+			// wastes a round trip), and also catches a duplicate id
+			// appearing twice within this same batch.
 			inFlightMu.Lock()
+			if _, busy := inFlight[id]; busy {
+				inFlightMu.Unlock()
+				<-sem
+				continue
+			}
 			inFlight[id] = struct{}{}
 			inFlightMu.Unlock()
+			dispatchedAny = true
 			wg.Add(1)
 			go dispatchOne(id)
+		}
+
+		if dispatchedAny {
+			b.Reset()
+			continue
+		}
+		// Every id this poll returned was already in flight: real work
+		// exists, it is just busy, which is not the "no work" condition
+		// backoff exists for. Pause briefly without advancing b, so a
+		// genuine no-work streak elsewhere keeps escalating undisturbed.
+		if !w.clock.Sleep(ctx, w.cfg.MinBackoff) {
+			break pollLoop
 		}
 	}
 

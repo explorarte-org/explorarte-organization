@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	"github.com/Mireuz13/explorarte-organization/internal/cellworker"
@@ -54,7 +55,7 @@ func runModelWorker(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "open worker work source: %v\n", err)
 		return exitInternal
 	}
-	worker, err := cellworker.New(workerCfg, workSource, runtime.Dispatch, nil, stderrObserver{stderr})
+	worker, err := cellworker.New(workerCfg, workSource, runtime.Dispatch, nil, &stderrObserver{w: stderr})
 	if err != nil {
 		fmt.Fprintf(stderr, "construct worker: %v\n", err)
 		return exitUsage
@@ -74,14 +75,24 @@ func runModelWorker(args []string, stdout, stderr io.Writer) int {
 
 // stderrObserver is the production cellworker.Observer: it makes list and
 // dispatch failures visible on the process's own stderr, since durable
-// state alone gives an operator watching this process no signal.
-type stderrObserver struct{ w io.Writer }
+// state alone gives an operator watching this process no signal. OnListError
+// runs from the poll loop and OnDispatchError from concurrent dispatch
+// goroutines, so writes are serialized: the underlying io.Writer is not
+// guaranteed thread-safe on its own.
+type stderrObserver struct {
+	mu sync.Mutex
+	w  io.Writer
+}
 
-func (o stderrObserver) OnListError(err error) {
+func (o *stderrObserver) OnListError(err error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	fmt.Fprintf(o.w, "model worker: list eligible invocations failed: %v\n", err)
 }
 
-func (o stderrObserver) OnDispatchError(invocationID int64, err error) {
+func (o *stderrObserver) OnDispatchError(invocationID int64, err error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	fmt.Fprintf(o.w, "model worker: dispatch invocation %d failed: %v\n", invocationID, err)
 }
 

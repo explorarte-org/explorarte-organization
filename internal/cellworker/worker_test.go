@@ -271,6 +271,7 @@ func TestWorkerDispatchCancelledAfterShutdownGrace(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel() // in case a waitFor/assertion below fails first: gate is never closed
 	done := make(chan error, 1)
 	go func() { done <- w.Run(ctx) }()
 
@@ -292,6 +293,68 @@ func TestWorkerDispatchCancelledAfterShutdownGrace(t *testing.T) {
 	}
 
 	waitFor(t, time.Second, func() bool { return observer.dispatchErrorCount(5) > 0 })
+}
+
+// TestWorkerDedupesDuplicateIDsWithinSameBatch proves a single ListEligible
+// response containing the same id twice does not cause it to be dispatched
+// twice: the in-flight check-and-set happens synchronously per id, so the
+// second occurrence within the same batch sees the first's bookkeeping.
+func TestWorkerDedupesDuplicateIDsWithinSameBatch(t *testing.T) {
+	ws := &fakeWorkSource{pages: []workPage{{ids: []int64{8, 8}}}}
+	d := &fakeDispatcher{}
+	w, err := New(testConfig(), ws, d, &fakeClock{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- w.Run(ctx) }()
+
+	waitFor(t, time.Second, func() bool { return len(d.dispatchedIDs()) >= 1 })
+	time.Sleep(10 * time.Millisecond) // let a would-be second dispatch show up
+	cancel()
+	<-done
+
+	if got := d.dispatchedIDs(); len(got) != 1 || got[0] != 8 {
+		t.Fatalf("expected invocation 8 dispatched exactly once despite appearing twice in one batch, got %v", got)
+	}
+}
+
+// TestWorkerDoesNotRedispatchWhileInFlight proves that when WorkSource keeps
+// returning an id whose earlier dispatch is still running (its durable
+// status has not yet caught up), the worker does not hand it to Dispatch a
+// second time, even across many poll iterations.
+func TestWorkerDoesNotRedispatchWhileInFlight(t *testing.T) {
+	gate := make(chan struct{})
+	d := &fakeDispatcher{gate: gate}
+	ws := &repeatingWorkSource{ids: []int64{3}}
+	w, err := New(testConfig(), ws, d, &fakeClock{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- w.Run(ctx) }()
+
+	waitFor(t, time.Second, func() bool { return atomic.LoadInt32(&d.inFlight) == 1 })
+	waitFor(t, time.Second, func() bool { return ws.callCount() >= 5 })
+	if got := atomic.LoadInt32(&d.inFlight); got != 1 {
+		t.Fatalf("expected exactly 1 in flight despite %d repeated polls, got %d", ws.callCount(), got)
+	}
+
+	// Once the gate opens, each prior attempt completes and invocation 3
+	// legitimately becomes eligible again — it is correct for it to be
+	// re-dispatched sequentially many times before cancel takes effect.
+	// What matters is that no two of those attempts were ever concurrent.
+	close(gate)
+	cancel()
+	<-done
+
+	if max := atomic.LoadInt32(&d.maxInFlight); max > 1 {
+		t.Fatalf("invocation 3 was dispatched concurrently: max in flight was %d, want at most 1", max)
+	}
 }
 
 func TestWorkerRecoveryAfterRestartIsStateless(t *testing.T) {

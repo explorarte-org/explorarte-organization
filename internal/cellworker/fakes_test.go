@@ -44,6 +44,30 @@ func (f *fakeWorkSource) callCount() int {
 	return f.calls
 }
 
+// repeatingWorkSource always returns the same fixed ids, mirroring a
+// WorkSource whose durable state has not yet reflected an in-flight
+// dispatch attempt (e.g. status still 'requested'/'claimed').
+type repeatingWorkSource struct {
+	mu    sync.Mutex
+	ids   []int64
+	calls int
+}
+
+func (f *repeatingWorkSource) ListEligible(_ context.Context, _ string, _ int) ([]int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	out := make([]int64, len(f.ids))
+	copy(out, f.ids)
+	return out, nil
+}
+
+func (f *repeatingWorkSource) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
 // fakeDispatcher records every invocationID it is called with. If gate is
 // non-nil, each call blocks on it before returning, which lets tests hold a
 // dispatch "in flight" to exercise concurrency limits and graceful shutdown.
