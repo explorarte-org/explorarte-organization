@@ -15,7 +15,7 @@ test -f migrations/000007_create_model_runtime_gateway.down.sql || fail "migrati
 if rg -n --glob '*.go' '("net/http"|"os/exec"|exec\.Command|syscall\.|/bin/(ba)?sh|sh -c)' internal/modelruntime; then
   fail "network or subprocess execution found in model runtime"
 fi
-if rg -n --glob '*.go' '(modeld|pollModel|polling|ReconcileInterval|ORG_MODEL_RUNTIME_RECONCILE_INTERVAL)' internal/modelruntime cmd/orgctl/models.go; then
+if rg -n --glob '*.go' '(\bmodeld\b|pollModel|polling|ReconcileInterval|ORG_MODEL_RUNTIME_RECONCILE_INTERVAL)' internal/modelruntime cmd/orgctl/models.go; then
   fail "persistent worker or reconcile interval found"
 fi
 if find internal/modelruntime/adapter -maxdepth 1 -type f -name '*.go' ! -name 'fake.go' ! -name 'fake_test.go' ! -name 'registry.go' -print | grep -q .; then
@@ -28,7 +28,10 @@ if rg -n 'internal/modelruntime|modelruntime' cmd/orgd internal/app; then
 fi
 
 # Real provider secrets and endpoints are intentionally outside Branch 08.
-if rg -n --glob '!**/*_test.go' '(API[_-]?KEY|ACCESS[_-]?TOKEN|PROVIDER[_-]?TOKEN|BASE[_-]?URL|Authorization: Bearer|ORG_MODEL_.*(KEY|TOKEN|URL))' internal/modelruntime cmd/orgctl/models.go .env.example; then
+# ORG_MODEL_EXECUTION_PRINCIPAL_KEY (branch 10) is excluded: per spec it names a
+# non-secret local process identity, not a credential.
+if rg -n --glob '!**/*_test.go' '(API[_-]?KEY|ACCESS[_-]?TOKEN|PROVIDER[_-]?TOKEN|BASE[_-]?URL|Authorization: Bearer|ORG_MODEL_.*(KEY|TOKEN|URL))' internal/modelruntime cmd/orgctl/models.go .env.example \
+  | rg -v 'ORG_MODEL_EXECUTION_PRINCIPAL_KEY' | rg -q .; then
   fail "provider credential or endpoint configuration found"
 fi
 

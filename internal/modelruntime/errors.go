@@ -23,4 +23,12 @@ var (
 	ErrResponseRejected      = errors.New("model response rejected")
 	ErrCancellationRequested = errors.New("model invocation cancellation requested")
 	ErrDatabaseUnavailable   = errors.New("model runtime database unavailable")
+
+	ErrAssignmentUnavailable        = errors.New("model dispatcher assignment unavailable")
+	ErrAssignmentRevisionDrift      = errors.New("model dispatcher assignment organization revision drift")
+	ErrAssignmentVigencyExpired     = errors.New("model dispatcher assignment vigency expired")
+	ErrAssignmentQuotaExhausted     = errors.New("model dispatcher assignment quota exhausted")
+	ErrExecutionPrincipalDisabled   = errors.New("model execution principal disabled")
+	ErrExecutionPrincipalMismatch   = errors.New("model execution principal mismatch")
+	ErrDispatcherAssignmentUnpinned = errors.New("model invocation has no pinned dispatcher assignment")
 )

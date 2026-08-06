@@ -8,10 +8,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Mireuz13/explorarte-organization/internal/modeldispatch"
 	"github.com/Mireuz13/explorarte-organization/internal/modelegress"
 )
 
 type DispatchService struct {
+	organizationID  string
 	config          RuntimeConfig
 	catalog         OrganizationCatalog
 	tasks           TaskAttemptReader
@@ -20,40 +22,55 @@ type DispatchService struct {
 	policyCatalog   EgressPolicyCatalog
 	egressEvaluator EgressDecisionEvaluator
 	egressStore     EgressEvaluationStore
+	principals      modeldispatch.ExecutionPrincipalResolver
+	assignments     modeldispatch.AssignmentResolver
 	store           Store
 	adapters        AdapterRegistry
 	normalizer      Normalizer
 	clock           Clock
 }
 
-func NewDispatchService(config RuntimeConfig, catalog OrganizationCatalog, tasks TaskAttemptReader, contexts ContextReader, evaluator CapabilityEvaluator, policyCatalog EgressPolicyCatalog, egressEvaluator EgressDecisionEvaluator, egressStore EgressEvaluationStore, store Store, adapters AdapterRegistry, clock Clock) (*DispatchService, error) {
+func NewDispatchService(organizationID string, config RuntimeConfig, catalog OrganizationCatalog, tasks TaskAttemptReader, contexts ContextReader, evaluator CapabilityEvaluator, policyCatalog EgressPolicyCatalog, egressEvaluator EgressDecisionEvaluator, egressStore EgressEvaluationStore, principals modeldispatch.ExecutionPrincipalResolver, assignments modeldispatch.AssignmentResolver, store Store, adapters AdapterRegistry, clock Clock) (*DispatchService, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
-	if catalog == nil || tasks == nil || contexts == nil || evaluator == nil || policyCatalog == nil || egressEvaluator == nil || egressStore == nil || store == nil || adapters == nil {
+	if catalog == nil || tasks == nil || contexts == nil || evaluator == nil || policyCatalog == nil || egressEvaluator == nil || egressStore == nil || principals == nil || assignments == nil || store == nil || adapters == nil {
 		return nil, fmt.Errorf("dispatch service dependencies are incomplete")
 	}
 	if clock == nil {
 		clock = ClockFunc(time.Now)
 	}
 	return &DispatchService{
-		config: config, catalog: catalog, tasks: tasks, contexts: contexts,
+		organizationID: organizationID,
+		config:         config, catalog: catalog, tasks: tasks, contexts: contexts,
 		evaluator: evaluator, policyCatalog: policyCatalog, egressEvaluator: egressEvaluator,
-		egressStore: egressStore, store: store, adapters: adapters,
+		egressStore: egressStore, principals: principals, assignments: assignments,
+		store: store, adapters: adapters,
 		normalizer: Normalizer{MaxResponseBytes: config.MaxResponseBytes, MaxToolIntents: config.MaxToolIntents},
 		clock:      clock,
 	}, nil
 }
 
-func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64, claimedBy string) (DispatchResult, error) {
+func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64) (DispatchResult, error) {
 	if !s.config.Enabled {
 		return DispatchResult{}, ErrDisabled
 	}
-	claimedBy = strings.TrimSpace(claimedBy)
-	if invocationID <= 0 || claimedBy == "" || len(claimedBy) > 200 {
-		return DispatchResult{}, fmt.Errorf("%w: invocation ID and claimant are required", ErrInvalidRequest)
+	if invocationID <= 0 {
+		return DispatchResult{}, fmt.Errorf("%w: invocation ID is required", ErrInvalidRequest)
 	}
-	claimed, err := s.store.ClaimInvocation(ctx, ClaimCommand{InvocationID: invocationID, ClaimedBy: claimedBy}, s.config)
+	principalKey := strings.TrimSpace(s.config.ExecutionPrincipalKey)
+	if principalKey == "" {
+		return DispatchResult{}, fmt.Errorf("%w: ORG_MODEL_EXECUTION_PRINCIPAL_KEY is not configured", ErrInvalidRequest)
+	}
+	principal, err := s.principals.ResolveByKey(ctx, s.organizationID, principalKey)
+	if err != nil {
+		return DispatchResult{}, err
+	}
+	if principal.Status != modeldispatch.PrincipalActive {
+		return DispatchResult{}, ErrExecutionPrincipalDisabled
+	}
+
+	claimed, err := s.store.ClaimInvocation(ctx, ClaimCommand{InvocationID: invocationID, ClaimedBy: principal.PrincipalKey, ExecutionPrincipalID: principal.ID}, s.config)
 	if err != nil {
 		return DispatchResult{}, err
 	}
@@ -74,6 +91,13 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64, clai
 		return DispatchResult{Invocation: failed}, cause
 	}
 
+	// A legacy (pre branch-10) invocation was never pinned to an assignment or
+	// principal. It can never call an adapter: there is no dispatcher_assignment
+	// to authorize model.invoke against, and inventing one retroactively is
+	// explicitly out of scope.
+	if invocation.DispatcherAssignmentID == nil || invocation.ExecutionPrincipalID == nil {
+		return failBeforeSend("dispatcher_assignment_unpinned", ErrDispatcherAssignmentUnpinned, AuditInvocationFailed)
+	}
 	if !invocation.Deadline.After(s.clock.Now()) {
 		return failBeforeSend("deadline_elapsed", context.DeadlineExceeded, AuditInvocationTimedOut)
 	}
@@ -83,8 +107,7 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64, clai
 	}
 	commandScope := CreateInvocationCommand{
 		OrganizationID: invocation.OrganizationID, TaskID: invocation.TaskID,
-		AttemptID: invocation.AttemptID, DispatchActorRoleID: invocation.DispatchActorRoleID,
-		SubjectRoleID: invocation.SubjectRoleID, ContextSnapshotID: invocation.ContextSnapshotID,
+		AttemptID: invocation.AttemptID, SubjectRoleID: invocation.SubjectRoleID, ContextSnapshotID: invocation.ContextSnapshotID,
 	}
 	if err = validateTaskAttempt(taskAttempt, commandScope, s.clock.Now()); err != nil {
 		return failBeforeSend("task_attempt_rejected", err, AuditInvocationFailed)
@@ -98,6 +121,39 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64, clai
 	}
 	if organization.RevisionID != invocation.OrganizationRevisionID {
 		return failBeforeSend("organization_revision_drift", ErrTaskAttemptRejected, AuditInvocationFailed)
+	}
+
+	resolvedAssignment, err := s.assignments.GetByID(ctx, invocation.OrganizationID, *invocation.DispatcherAssignmentID)
+	if err != nil {
+		return failBeforeSend("dispatcher_assignment_unavailable", err, AuditInvocationFailed)
+	}
+	if resolvedAssignment.Principal.ID != *invocation.ExecutionPrincipalID || resolvedAssignment.Principal.ID != principal.ID {
+		return failBeforeSend("dispatcher_principal_mismatch", ErrExecutionPrincipalMismatch, AuditInvocationFailed)
+	}
+	if resolvedAssignment.Principal.Status != modeldispatch.PrincipalActive {
+		return failBeforeSend("dispatcher_principal_disabled", ErrExecutionPrincipalDisabled, AuditInvocationFailed)
+	}
+	assignment := resolvedAssignment.Assignment
+	switch assignment.Status {
+	case modeldispatch.AssignmentActive:
+	case modeldispatch.AssignmentRevoked:
+		return failBeforeSend("dispatcher_assignment_revoked", ErrAssignmentUnavailable, AuditInvocationFailed)
+	case modeldispatch.AssignmentExhausted:
+		return failBeforeSend("dispatcher_assignment_exhausted", ErrAssignmentQuotaExhausted, AuditInvocationFailed)
+	case modeldispatch.AssignmentExpired:
+		return failBeforeSend("dispatcher_assignment_expired", ErrAssignmentVigencyExpired, AuditInvocationFailed)
+	default:
+		return failBeforeSend("dispatcher_assignment_unavailable", ErrAssignmentUnavailable, AuditInvocationFailed)
+	}
+	now := s.clock.Now()
+	if now.Before(assignment.ValidFrom) || !now.Before(assignment.ValidUntil) {
+		return failBeforeSend("dispatcher_assignment_expired", ErrAssignmentVigencyExpired, AuditInvocationFailed)
+	}
+	if assignment.UsedInvocations >= assignment.MaxInvocations {
+		return failBeforeSend("dispatcher_assignment_exhausted", ErrAssignmentQuotaExhausted, AuditInvocationFailed)
+	}
+	if assignment.OrganizationRevisionID != invocation.OrganizationRevisionID || assignment.SubjectRoleID != invocation.SubjectRoleID || assignment.DispatchActorRoleID != invocation.DispatchActorRoleID {
+		return failBeforeSend("dispatcher_assignment_drift", ErrAssignmentRevisionDrift, AuditInvocationFailed)
 	}
 
 	binding, err := s.store.GetBinding(ctx, invocation.OrganizationID, invocation.OrganizationRevisionID, invocation.SubjectRoleID)

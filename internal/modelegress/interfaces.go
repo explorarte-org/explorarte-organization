@@ -27,7 +27,8 @@ type PolicyCatalog interface {
 	ResolveForRevision(context.Context, string, int64) (ResolvedPolicy, error)
 }
 
-type EvaluationStore interface {
-	PersistPreSendAllowAndMarkSendStarted(context.Context, PersistAllowCommand) error
-	PersistPreSendDenyAndFail(context.Context, PersistDenyCommand) error
-}
+// PersistAllowCommand and PersistDenyCommand (see domain.go) are carried by
+// modelruntime's own EgressEvaluationStore interface. The pre-send transaction
+// that consumes them now lives in internal/modelruntime/postgres, because it
+// must also write model_dispatcher_assignment_uses in the same atomic
+// transaction — a single implementation, not one per module (branch 10).

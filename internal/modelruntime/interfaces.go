@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/Mireuz13/explorarte-organization/internal/modeldispatch"
 	"github.com/Mireuz13/explorarte-organization/internal/modelegress"
 )
 
@@ -126,10 +127,12 @@ type PreparedInvocation struct {
 	RequiredCapabilities   []ModelCapability
 	OutputSchema           []byte
 	EgressPolicy           modelegress.ResolvedPolicy
+	Assignment             modeldispatch.ResolvedAssignment
 }
 type ClaimCommand struct {
-	InvocationID int64
-	ClaimedBy    string
+	InvocationID         int64
+	ClaimedBy            string
+	ExecutionPrincipalID int64
 }
 type CompletionCommand struct {
 	InvocationID      int64

@@ -4,7 +4,16 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/Mireuz13/explorarte-organization/internal/modeldispatch"
 )
+
+func fixtureResolvedAssignment() modeldispatch.ResolvedAssignment {
+	return modeldispatch.ResolvedAssignment{
+		Assignment: modeldispatch.DispatcherAssignment{ID: 9, AssignmentHash: SHA256Bytes([]byte("assignment"))},
+		Principal:  modeldispatch.ExecutionPrincipal{ID: 11, PrincipalKey: "oracle-01/model-runtime-01", DispatchActorRoleID: "ingenieria_ia/code-runner"},
+	}
+}
 
 func TestCanonicalizeRawJSON(t *testing.T) {
 	got, err := CanonicalizeRawJSON(json.RawMessage(`{"z":1,"a":{"b":2}}`))
@@ -22,7 +31,7 @@ func TestInvocationRequestHashPinsEgressPolicy(t *testing.T) {
 	deadline := time.Unix(2000, 0).UTC()
 	command := CreateInvocationCommand{
 		OrganizationID: "explorarte", TaskID: 3, AttemptID: 4,
-		DispatchActorRoleID: "ingenieria_ia/code-runner", SubjectRoleID: "ingenieria_ia/code-runner",
+		SubjectRoleID:     "ingenieria_ia/code-runner",
 		ContextSnapshotID: 5, Purpose: "fixture", OutputMode: OutputJSON,
 		MaxOutputTokens: 100, ThinkingMode: ThinkingDisabled, Deadline: deadline,
 	}
@@ -31,25 +40,32 @@ func TestInvocationRequestHashPinsEgressPolicy(t *testing.T) {
 		Version: ProfileVersion{ID: 6, ProviderID: "test.fake", ProviderModelID: "v1"},
 	}
 	policyHash := SHA256Bytes([]byte("policy"))
-	first, err := invocationRequestHash(command, 7, binding, []ModelCapability{"structured.output"}, []byte(`{"type":"object"}`), 17, policyHash)
+	assignment := fixtureResolvedAssignment()
+	first, err := invocationRequestHash(command, 7, binding, []ModelCapability{"structured.output"}, []byte(`{"type":"object"}`), 17, policyHash, assignment)
 	if err != nil {
 		t.Fatal(err)
 	}
-	changedVersion, err := invocationRequestHash(command, 7, binding, []ModelCapability{"structured.output"}, []byte(`{"type":"object"}`), 18, policyHash)
+	changedVersion, err := invocationRequestHash(command, 7, binding, []ModelCapability{"structured.output"}, []byte(`{"type":"object"}`), 18, policyHash, assignment)
 	if err != nil {
 		t.Fatal(err)
 	}
-	changedHash, err := invocationRequestHash(command, 7, binding, []ModelCapability{"structured.output"}, []byte(`{"type":"object"}`), 17, SHA256Bytes([]byte("other-policy")))
+	changedHash, err := invocationRequestHash(command, 7, binding, []ModelCapability{"structured.output"}, []byte(`{"type":"object"}`), 17, SHA256Bytes([]byte("other-policy")), assignment)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first == changedVersion || first == changedHash || changedVersion == changedHash {
-		t.Fatalf("egress policy was not pinned in request hash: %s %s %s", first, changedVersion, changedHash)
+	changedAssignment := assignment
+	changedAssignment.Assignment.ID = 999
+	changedAssignmentHash, err := invocationRequestHash(command, 7, binding, []ModelCapability{"structured.output"}, []byte(`{"type":"object"}`), 17, policyHash, changedAssignment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == changedVersion || first == changedHash || changedVersion == changedHash || first == changedAssignmentHash {
+		t.Fatalf("egress policy or assignment was not pinned in request hash: %s %s %s %s", first, changedVersion, changedHash, changedAssignmentHash)
 	}
 }
 
 func TestActionDigestDeterministic(t *testing.T) {
-	inv := Invocation{ID: 1, OrganizationID: "explorarte", OrganizationRevisionID: 2, TaskID: 3, AttemptID: 4, DispatchActorRoleID: "x/y", SubjectRoleID: "x/y", ContextSnapshotID: 5, ModelProfileID: "worker-default", ModelProfileVersionID: 6, ProviderID: "test.fake", ProviderModelID: "v1", ModelEgressPolicyVersionID: int64Pointer(17), ModelEgressPolicyHash: SHA256Bytes([]byte("policy")), RequestHash: SHA256Bytes([]byte("request")), RequiredCapabilities: []ModelCapability{"b", "a"}, OutputMode: OutputJSON, OutputSchema: json.RawMessage(`{"type":"object"}`), MaxOutputTokens: 100, ThinkingMode: ThinkingDisabled, Deadline: time.Unix(1000, 0).UTC()}
+	inv := Invocation{ID: 1, OrganizationID: "explorarte", OrganizationRevisionID: 2, TaskID: 3, AttemptID: 4, DispatchActorRoleID: "x/y", SubjectRoleID: "x/y", DispatcherAssignmentID: int64Pointer(9), ExecutionPrincipalID: int64Pointer(11), ContextSnapshotID: 5, ModelProfileID: "worker-default", ModelProfileVersionID: 6, ProviderID: "test.fake", ProviderModelID: "v1", ModelEgressPolicyVersionID: int64Pointer(17), ModelEgressPolicyHash: SHA256Bytes([]byte("policy")), RequestHash: SHA256Bytes([]byte("request")), RequiredCapabilities: []ModelCapability{"b", "a"}, OutputMode: OutputJSON, OutputSchema: json.RawMessage(`{"type":"object"}`), MaxOutputTokens: 100, ThinkingMode: ThinkingDisabled, Deadline: time.Unix(1000, 0).UTC()}
 	a, err := ActionDigest(inv)
 	if err != nil {
 		t.Fatal(err)
@@ -60,20 +76,26 @@ func TestActionDigestDeterministic(t *testing.T) {
 	}
 }
 
+func TestActionDigestRequiresDispatcherAssignmentPin(t *testing.T) {
+	inv := Invocation{ID: 1, RequestHash: SHA256Bytes([]byte("request")), ModelEgressPolicyVersionID: int64Pointer(17), ModelEgressPolicyHash: SHA256Bytes([]byte("policy"))}
+	if _, err := ActionDigest(inv); err == nil {
+		t.Fatal("expected legacy unpinned invocation to reject action digest computation")
+	}
+}
+
 func TestActionDigestChangesWithPinnedScope(t *testing.T) {
-	base := Invocation{ID: 1, RequestHash: SHA256Bytes([]byte("request")), ModelEgressPolicyVersionID: int64Pointer(17), ModelEgressPolicyHash: SHA256Bytes([]byte("policy"))}
+	base := Invocation{ID: 1, RequestHash: SHA256Bytes([]byte("request")), DispatcherAssignmentID: int64Pointer(9), ExecutionPrincipalID: int64Pointer(11), ModelEgressPolicyVersionID: int64Pointer(17), ModelEgressPolicyHash: SHA256Bytes([]byte("policy"))}
 	first, err := ActionDigest(base)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cases := []Invocation{base, base, base, base}
-	cases[0].ModelEgressPolicyVersionID = int64Pointer(17)
-	cases[1].ModelEgressPolicyVersionID = int64Pointer(17)
-	cases[2].ModelEgressPolicyVersionID = int64Pointer(18)
-	cases[3].ModelEgressPolicyVersionID = int64Pointer(17)
+	cases := []Invocation{base, base, base, base, base, base}
 	cases[0].ID++
 	cases[1].RequestHash = SHA256Bytes([]byte("other-request"))
+	cases[2].ModelEgressPolicyVersionID = int64Pointer(18)
 	cases[3].ModelEgressPolicyHash = SHA256Bytes([]byte("other-policy"))
+	cases[4].DispatcherAssignmentID = int64Pointer(999)
+	cases[5].ExecutionPrincipalID = int64Pointer(999)
 	for index, candidate := range cases {
 		digest, digestErr := ActionDigest(candidate)
 		if digestErr != nil {

@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Mireuz13/explorarte-organization/internal/modelegress"
+	"github.com/Mireuz13/explorarte-organization/internal/modeldispatch"
 )
 
 func SHA256Bytes(body []byte) string { sum := sha256.Sum256(body); return hex.EncodeToString(sum[:]) }
@@ -142,13 +142,17 @@ func canonicalNumberJSON(v any) ([]byte, error) {
 	}
 }
 
-func invocationRequestHash(c CreateInvocationCommand, revision int64, binding ResolvedBinding, caps []ModelCapability, schema []byte, policyVersionID int64, policyHash string) (string, error) {
+func invocationRequestHash(c CreateInvocationCommand, revision int64, binding ResolvedBinding, caps []ModelCapability, schema []byte, policyVersionID int64, policyHash string, assignment modeldispatch.ResolvedAssignment) (string, error) {
 	value := map[string]any{
 		"organization_id":                c.OrganizationID,
 		"organization_revision_id":       revision,
 		"task_id":                        c.TaskID,
 		"attempt_id":                     c.AttemptID,
-		"dispatch_actor_role_id":         c.DispatchActorRoleID,
+		"dispatcher_assignment_id":       assignment.Assignment.ID,
+		"dispatcher_assignment_hash":     assignment.Assignment.AssignmentHash,
+		"execution_principal_id":         assignment.Principal.ID,
+		"execution_principal_key":        assignment.Principal.PrincipalKey,
+		"dispatch_actor_role_id":         assignment.Principal.DispatchActorRoleID,
 		"subject_role_id":                c.SubjectRoleID,
 		"context_snapshot_id":            c.ContextSnapshotID,
 		"purpose":                        strings.TrimSpace(c.Purpose),
@@ -173,13 +177,28 @@ func invocationRequestHash(c CreateInvocationCommand, revision int64, binding Re
 	return SHA256Bytes(body), nil
 }
 
+// ActionDigest binds authorization and egress evaluation to the invocation's
+// full pinned identity: its request (which already covers the dispatcher
+// assignment and execution principal), and its egress policy pin. Changing
+// any of those changes the digest.
 func ActionDigest(inv Invocation) (string, error) {
 	if inv.ModelEgressPolicyVersionID == nil {
 		return "", ErrEgressPolicyUnpinned
 	}
-	digest, err := modelegress.InvocationActionDigest(inv.ID, inv.RequestHash, *inv.ModelEgressPolicyVersionID, inv.ModelEgressPolicyHash)
-	if err != nil {
-		return "", ErrEgressPolicyUnpinned
+	if inv.DispatcherAssignmentID == nil || inv.ExecutionPrincipalID == nil {
+		return "", ErrDispatcherAssignmentUnpinned
 	}
-	return digest, nil
+	value := struct {
+		InvocationID           int64  `json:"invocation_id"`
+		RequestHash            string `json:"request_hash"`
+		DispatcherAssignmentID int64  `json:"dispatcher_assignment_id"`
+		ExecutionPrincipalID   int64  `json:"execution_principal_id"`
+		PolicyVersionID        int64  `json:"model_egress_policy_version_id"`
+		PolicyHash             string `json:"model_egress_policy_hash"`
+	}{inv.ID, inv.RequestHash, *inv.DispatcherAssignmentID, *inv.ExecutionPrincipalID, *inv.ModelEgressPolicyVersionID, inv.ModelEgressPolicyHash}
+	body, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	return SHA256Bytes(body), nil
 }

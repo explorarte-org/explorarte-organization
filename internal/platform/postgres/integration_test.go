@@ -110,14 +110,14 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("apply migrations: %v", err)
 	}
-	if len(result.Applied) != 8 || result.Current != 8 {
+	if len(result.Applied) != 9 || result.Current != 9 {
 		t.Fatalf("unexpected migration result: %+v", result)
 	}
 	status, err := runner.Status(ctx)
 	if err != nil {
 		t.Fatalf("migration status: %v", err)
 	}
-	if !status.Ready || status.Pending != 0 || status.Applied != 8 {
+	if !status.Ready || status.Pending != 0 || status.Applied != 9 {
 		t.Fatalf("unexpected migration status: %+v", status)
 	}
 	if err := store.UnitOfWork().WithinTransaction(ctx, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
@@ -147,7 +147,7 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("idempotent migration run: %v", err)
 	}
-	if len(second.Applied) != 0 || second.Current != 8 {
+	if len(second.Applied) != 0 || second.Current != 9 {
 		t.Fatalf("second migration result = %+v, want no changes", second)
 	}
 
@@ -155,37 +155,37 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load migrations for down test: %v", err)
 	}
-	if len(loaded) != 8 {
-		t.Fatalf("loaded migrations = %d, want 8", len(loaded))
+	if len(loaded) != 9 {
+		t.Fatalf("loaded migrations = %d, want 9", len(loaded))
 	}
 	if err := store.UnitOfWork().WithinTransaction(ctx, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, loaded[7].DownSQL); err != nil {
+		if _, err := tx.Exec(ctx, loaded[8].DownSQL); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, `DELETE FROM schema_migrations WHERE version = 8`)
+		_, err := tx.Exec(ctx, `DELETE FROM schema_migrations WHERE version = 9`)
 		return err
 	}); err != nil {
-		t.Fatalf("down migration 000008: %v", err)
+		t.Fatalf("down migration 000009: %v", err)
 	}
-	var egressTable *string
-	if err := store.Pool().QueryRow(ctx, `SELECT to_regclass('public.model_egress_policy_versions')::text`).Scan(&egressTable); err != nil {
+	var assignmentTable *string
+	if err := store.Pool().QueryRow(ctx, `SELECT to_regclass('public.model_dispatcher_assignments')::text`).Scan(&assignmentTable); err != nil {
 		t.Fatalf("check down migration: %v", err)
 	}
-	if egressTable != nil {
-		t.Fatalf("model_egress_policy_versions still exists after down: %v", *egressTable)
+	if assignmentTable != nil {
+		t.Fatalf("model_dispatcher_assignments still exists after down: %v", *assignmentTable)
 	}
-	var policyColumnCount int
-	if err := store.Pool().QueryRow(ctx, `SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='model_invocations' AND column_name IN ('model_egress_policy_version_id','model_egress_policy_hash')`).Scan(&policyColumnCount); err != nil {
-		t.Fatalf("check invocation policy columns after down: %v", err)
+	var dispatcherColumnCount int
+	if err := store.Pool().QueryRow(ctx, `SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='model_invocations' AND column_name IN ('dispatcher_assignment_id','execution_principal_id')`).Scan(&dispatcherColumnCount); err != nil {
+		t.Fatalf("check invocation dispatcher columns after down: %v", err)
 	}
-	if policyColumnCount != 0 {
-		t.Fatalf("invocation policy columns remain after down: %d", policyColumnCount)
+	if dispatcherColumnCount != 0 {
+		t.Fatalf("invocation dispatcher columns remain after down: %d", dispatcherColumnCount)
 	}
 	restored, err := runner.Up(ctx)
 	if err != nil {
-		t.Fatalf("restore migration 000008: %v", err)
+		t.Fatalf("restore migration 000009: %v", err)
 	}
-	if len(restored.Applied) != 1 || restored.Current != 8 {
-		t.Fatalf("restore migration result = %+v, want only 000008", restored)
+	if len(restored.Applied) != 1 || restored.Current != 9 {
+		t.Fatalf("restore migration result = %+v, want only 000009", restored)
 	}
 }

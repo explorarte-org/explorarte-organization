@@ -100,9 +100,12 @@ for line in "$auth_line" "$egress_line" "$adapter_line" "$render_line" "$persist
 done
 (( auth_line < egress_line && egress_line < adapter_line && adapter_line < render_line && render_line < persist_line ))   || fail "dispatch order must be authorization -> egress -> adapter -> render -> durable allow/send_started"
 
-rg -q 'PersistPreSendAllowAndMarkSendStarted' internal/modelegress/postgres/store.go || fail "atomic allow transition is missing"
-rg -q "INSERT INTO model_egress_evaluations" internal/modelegress/postgres/store.go || fail "durable pre-send evaluation is missing"
-rg -q "SET status='send_started'" internal/modelegress/postgres/store.go || fail "atomic send_started transition is missing"
+# Branch 10 moved this transaction into internal/modelruntime/postgres so it can
+# also consume a model_dispatcher_assignment atomically (a single shared
+# implementation, not one per module — see modeldispatch fitness for the rest).
+rg -q 'PersistPreSendAllowAndMarkSendStarted' internal/modelruntime/postgres/presend.go || fail "atomic allow transition is missing"
+rg -q "INSERT INTO model_egress_evaluations" internal/modelruntime/postgres/presend.go || fail "durable pre-send evaluation is missing"
+rg -q "SET status='send_started'" internal/modelruntime/postgres/presend.go || fail "atomic send_started transition is missing"
 rg -q 'UNIQUE \(dispatch_attempt_id\)' migrations/000008_create_model_egress_authorization.up.sql || fail "one-evaluation-per-attempt constraint is missing"
 rg -q 'model_egress_policy_version_id IS NULL AND model_egress_policy_hash IS NULL' migrations/000008_create_model_egress_authorization.up.sql || fail "legacy null/null policy pin is not preserved"
 rg -q 'egress_policy_unpinned' internal/modelruntime/dispatch_service.go || fail "legacy unpinned dispatch guard is missing"

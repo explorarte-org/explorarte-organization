@@ -4,18 +4,18 @@ Monolito modular en Go para el plano de control organizacional de Explorarte.
 
 ## Estado de esta rama
 
-La Rama 09 agrega autorización específica para invocaciones de modelos y una política canónica de egress de contexto, manteniendo el runtime productivo cerrado por defecto.
+La Rama 10 separa la identidad del *subject role* (cognitiva) de la del *dispatch actor* (infraestructura), mediante execution principals y dispatcher assignments durables y acotados, manteniendo el runtime productivo cerrado por defecto.
 
 La fuente de verdad se divide de forma explícita:
 
-- `docs/canonical/capability-matrix.yaml` define `model.invoke`, concedida únicamente a `execution_service`, con hard deny para `owner`;
+- `docs/canonical/capability-matrix.yaml` define `model.invoke` (Rama 09) y las capabilities administrativas `model.execution_principal.register/disable` y `model.dispatch_assignment.create/revoke` (Rama 10), owner-only vía wildcard, con hard deny explícito para `execution_service`;
 - `docs/canonical/model-routing.yaml` continúa siendo la única autoridad para provider, modelo y transporte;
 - `docs/canonical/model-egress-policy.yaml` define qué clasificaciones pueden salir y comienza sin ninguna regla `allow`;
-- PostgreSQL materializa versiones inmutables, bindings por revisión y decisiones pre-send sin almacenar contenido.
+- PostgreSQL materializa versiones inmutables, bindings por revisión, execution principals, dispatcher assignments y decisiones pre-send sin almacenar contenido.
 
-Toda invocación nueva fija la versión y el hash de la política de egress. Las invocaciones anteriores permanecen `legacy_unpinned` (`NULL/NULL`) y no pueden despacharse. El orden pre-send es: validar task/attempt/lease y bindings, autorizar `model.invoke`, evaluar egress, comprobar adapter, renderizar y persistir atómicamente `allow + send_started`.
+Toda invocación nueva fija la versión y el hash de la política de egress, además del ID de la dispatcher assignment y del execution principal. Las invocaciones anteriores a Rama 09 permanecen `legacy_unpinned` (egress `NULL/NULL`); las anteriores a Rama 10 permanecen sin assignment/principal (`NULL/NULL`) y nunca llaman al adapter. El orden pre-send es: resolver el principal local y vincular el claim, validar task/attempt/lease y la dispatcher assignment (activa, vigente, con cuota), autorizar `model.invoke` sobre el dispatch actor, evaluar egress, comprobar adapter, renderizar y persistir atómicamente `allow + assignment_use + send_started`.
 
-Los providers reales continúan `adapter_status=unavailable` y `dispatch_enabled=false`. `orgd` no registra adapters ni ejecuta invocaciones. `test.fake` existe únicamente en fixtures aisladas. No hay HTTP a providers, shell, credenciales ni dispatcher productivo.
+Los providers reales continúan `adapter_status=unavailable` y `dispatch_enabled=false`. `orgd` no registra adapters ni ejecuta invocaciones. `test.fake` existe únicamente en fixtures aisladas. No hay HTTP a providers, shell, credenciales, worker persistente ni dispatcher productivo: ningún rol combina `model.invoke` + model policy + task assignment + binding + adapter ejecutable fuera de fixtures.
 
 ## Requisitos
 
@@ -196,10 +196,19 @@ La CLI no permite seleccionar provider, policy, versión, transporte, clasificac
 
 ```bash
 orgctl model invocation create --file invocation.json --json
-orgctl model invocation dispatch INVOCATION_ID --claimed-by orgctl --json
+orgctl model invocation dispatch INVOCATION_ID --json
 orgctl model invocation reconcile --json
+
+orgctl model principal register --file principal.json --actor-role empresa/human --json
+orgctl model principal disable PRINCIPAL_ID --actor-role empresa/human --reason retired --json
+
+orgctl model assignment create --task-id T --attempt-id A --subject-role ROLE \
+  --principal-key oracle-01/model-runtime-01 --max-invocations 1 --ttl 15m \
+  --idempotency-key KEY --actor-role empresa/human --json
+orgctl model assignment revoke ASSIGNMENT_ID --actor-role empresa/human --reason superseded --json
+orgctl model assignment expire --json
 ```
 
-Aunque `ORG_MODEL_RUNTIME_ENABLED=true`, un dispatch requiere simultáneamente task assignment, attempt y lease activos, `model.invoke`, egress explícitamente permitido y un adapter registrado. La configuración productiva actual no reúne esa combinación. El resultado de un modelo no completa tareas ni ejecuta tool intents.
+`ORG_MODEL_EXECUTION_PRINCIPAL_KEY` identifica localmente qué principal ejecuta `dispatch`; no es un secreto ni autenticación remota. `--claimed-by`, `--principal` y `--assignment` no existen en el comando de dispatch. Aunque `ORG_MODEL_RUNTIME_ENABLED=true`, un dispatch requiere simultáneamente task assignment, attempt y lease activos, una dispatcher assignment vigente con cuota, `model.invoke` sobre el dispatch actor, egress explícitamente permitido y un adapter registrado. La configuración productiva actual no reúne esa combinación. El resultado de un modelo no completa tareas ni ejecuta tool intents.
 
-Consulta `docs/implementation/branch-08-model-runtime-gateway/INTEGRATION.md` y `docs/implementation/branch-09-model-egress-authorization/INTEGRATION.md`.
+Consulta `docs/implementation/branch-08-model-runtime-gateway/INTEGRATION.md`, `docs/implementation/branch-09-model-egress-authorization/INTEGRATION.md` y `docs/implementation/branch-10-model-dispatcher-assignments/INTEGRATION.md`.

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/Mireuz13/explorarte-organization/internal/modeldispatch"
 )
 
 type InvocationService struct {
@@ -14,18 +16,19 @@ type InvocationService struct {
 	contexts          ContextReader
 	store             Store
 	egress            EgressPolicyCatalog
+	assignments       modeldispatch.AssignmentResolver
 	clock             Clock
 	outboxMaxAttempts int
 }
 
-func NewInvocationService(organizationID string, catalog OrganizationCatalog, tasks TaskAttemptReader, contexts ContextReader, store Store, egress EgressPolicyCatalog, clock Clock, outboxMaxAttempts int) (*InvocationService, error) {
-	if catalog == nil || tasks == nil || contexts == nil || store == nil || egress == nil {
+func NewInvocationService(organizationID string, catalog OrganizationCatalog, tasks TaskAttemptReader, contexts ContextReader, store Store, egress EgressPolicyCatalog, assignments modeldispatch.AssignmentResolver, clock Clock, outboxMaxAttempts int) (*InvocationService, error) {
+	if catalog == nil || tasks == nil || contexts == nil || store == nil || egress == nil || assignments == nil {
 		return nil, fmt.Errorf("invocation service dependencies are incomplete")
 	}
 	if clock == nil {
 		clock = ClockFunc(time.Now)
 	}
-	return &InvocationService{organizationID: organizationID, catalog: catalog, tasks: tasks, contexts: contexts, store: store, egress: egress, clock: clock, outboxMaxAttempts: outboxMaxAttempts}, nil
+	return &InvocationService{organizationID: organizationID, catalog: catalog, tasks: tasks, contexts: contexts, store: store, egress: egress, assignments: assignments, clock: clock, outboxMaxAttempts: outboxMaxAttempts}, nil
 }
 func (s *InvocationService) Create(ctx context.Context, command CreateInvocationCommand) (CreateInvocationResult, error) {
 	if command.OrganizationID == "" {
@@ -48,6 +51,20 @@ func (s *InvocationService) Create(ctx context.Context, command CreateInvocation
 	}
 	if task.OrganizationRevisionID != org.RevisionID {
 		return CreateInvocationResult{}, fmt.Errorf("%w: task organization revision drift", ErrTaskAttemptRejected)
+	}
+	resolved, err := s.assignments.ResolveActive(ctx, prepared.OrganizationID, prepared.TaskID, prepared.AttemptID, prepared.SubjectRoleID)
+	if err != nil {
+		return CreateInvocationResult{}, err
+	}
+	if err = validateAssignmentForCreation(resolved, org.RevisionID, s.clock.Now()); err != nil {
+		return CreateInvocationResult{}, err
+	}
+	dispatchActorRole, err := s.catalog.GetRole(ctx, prepared.OrganizationID, resolved.Principal.DispatchActorRoleID)
+	if err != nil {
+		return CreateInvocationResult{}, err
+	}
+	if !dispatchActorRole.Enabled || !dispatchActorRole.Executable || dispatchActorRole.AuthorityClass != "execution_service" {
+		return CreateInvocationResult{}, fmt.Errorf("%w: dispatch actor role is not an eligible execution service", ErrTaskAttemptRejected)
 	}
 	subject, err := s.catalog.GetRole(ctx, prepared.OrganizationID, prepared.SubjectRoleID)
 	if err != nil {
@@ -80,11 +97,11 @@ func (s *InvocationService) Create(ctx context.Context, command CreateInvocation
 	if err = validateResolvedEgressPolicy(policy, org); err != nil {
 		return CreateInvocationResult{}, err
 	}
-	hash, err := invocationRequestHash(prepared, org.RevisionID, binding, caps, schema, policy.Version.ID, policy.CanonicalHash)
+	hash, err := invocationRequestHash(prepared, org.RevisionID, binding, caps, schema, policy.Version.ID, policy.CanonicalHash, resolved)
 	if err != nil {
 		return CreateInvocationResult{}, err
 	}
-	return s.store.CreateInvocation(ctx, PreparedInvocation{Command: prepared, OrganizationRevisionID: org.RevisionID, Binding: binding, RequestHash: hash, RequiredCapabilities: caps, OutputSchema: schema, EgressPolicy: policy}, s.outboxMaxAttempts)
+	return s.store.CreateInvocation(ctx, PreparedInvocation{Command: prepared, OrganizationRevisionID: org.RevisionID, Binding: binding, RequestHash: hash, RequiredCapabilities: caps, OutputSchema: schema, EgressPolicy: policy, Assignment: resolved}, s.outboxMaxAttempts)
 }
 func (s *InvocationService) Get(ctx context.Context, id int64) (Invocation, error) {
 	if id <= 0 {

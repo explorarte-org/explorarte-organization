@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/Mireuz13/explorarte-organization/internal/config"
+	"github.com/Mireuz13/explorarte-organization/internal/modeldispatch"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
 	modelbootstrap "github.com/Mireuz13/explorarte-organization/internal/modelruntime/bootstrap"
 )
@@ -49,6 +50,24 @@ func runModel(args []string, stdout, stderr io.Writer) int {
 		ctx, cancel := context.WithTimeout(context.Background(), runtime.Config.CommandTimeout)
 		defer cancel()
 		return modelInvocation(ctx, runtime, args[1:], stdout, stderr)
+	case "principal":
+		_, runtime, cleanup, code := openModelRuntime(stderr)
+		if code != exitOK {
+			return code
+		}
+		defer cleanup()
+		ctx, cancel := context.WithTimeout(context.Background(), runtime.Config.CommandTimeout)
+		defer cancel()
+		return modelPrincipal(ctx, runtime.Dispatcher, args[1:], stdout, stderr)
+	case "assignment":
+		_, runtime, cleanup, code := openModelRuntime(stderr)
+		if code != exitOK {
+			return code
+		}
+		defer cleanup()
+		ctx, cancel := context.WithTimeout(context.Background(), runtime.Config.CommandTimeout)
+		defer cancel()
+		return modelAssignment(ctx, runtime.Dispatcher, args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown model command %q\n", args[0])
 		printModelUsage(stderr)
@@ -251,9 +270,19 @@ func modelInvocation(ctx context.Context, runtime *modelbootstrap.Runtime, args 
 		writeValue(stdout, *jsonOutput, value)
 		return exitOK
 	case "dispatch":
+		// Branch 10: the dispatching identity is resolved from
+		// ORG_MODEL_EXECUTION_PRINCIPAL_KEY, not a CLI-supplied claimant. No flag
+		// may select who is dispatching or which principal/assignment to use.
+		for _, forbidden := range []string{"--claimed-by", "--principal", "--assignment"} {
+			for _, arg := range args[1:] {
+				if arg == forbidden || strings.HasPrefix(arg, forbidden+"=") {
+					fmt.Fprintf(stderr, "unsupported flag %q: dispatcher identity is resolved from ORG_MODEL_EXECUTION_PRINCIPAL_KEY\n", forbidden)
+					return exitUsage
+				}
+			}
+		}
 		flags := flag.NewFlagSet("model invocation dispatch", flag.ContinueOnError)
 		flags.SetOutput(stderr)
-		claimant := flags.String("claimed-by", "orgctl", "claimant identifier")
 		jsonOutput := flags.Bool("json", false, "emit JSON")
 		if parseInterspersed(flags, args[1:]) != nil || flags.NArg() != 1 {
 			return exitUsage
@@ -262,7 +291,7 @@ func modelInvocation(ctx context.Context, runtime *modelbootstrap.Runtime, args 
 		if err != nil {
 			return exitUsage
 		}
-		value, err := runtime.Dispatch.Dispatch(ctx, id, strings.TrimSpace(*claimant))
+		value, err := runtime.Dispatch.Dispatch(ctx, id)
 		if err != nil {
 			if value.Invocation.ID > 0 {
 				writeValue(stdout, *jsonOutput, value)
@@ -331,11 +360,11 @@ func modelError(stderr io.Writer, err error) int {
 	switch {
 	case errors.Is(err, modelruntime.ErrContextRejected):
 		return exitContextRejected
-	case errors.Is(err, modelruntime.ErrDisabled), errors.Is(err, modelruntime.ErrAuthorizationDenied), errors.Is(err, modelruntime.ErrProviderUnavailable):
+	case errors.Is(err, modelruntime.ErrDisabled), errors.Is(err, modelruntime.ErrAuthorizationDenied), errors.Is(err, modelruntime.ErrProviderUnavailable), errors.Is(err, modelruntime.ErrExecutionPrincipalDisabled), errors.Is(err, modelruntime.ErrExecutionPrincipalMismatch), errors.Is(err, modeldispatch.ErrAuthorizationDenied), errors.Is(err, modeldispatch.ErrPrincipalDisabled), errors.Is(err, modeldispatch.ErrPrincipalMismatch):
 		return exitDenied
-	case errors.Is(err, modelruntime.ErrInvalidRequest), errors.Is(err, modelruntime.ErrTaskAttemptRejected), errors.Is(err, modelruntime.ErrCapabilityMismatch), errors.Is(err, modelruntime.ErrNotFound), errors.Is(err, modelruntime.ErrBindingNotFound), errors.Is(err, modelruntime.ErrConflict), errors.Is(err, modelruntime.ErrClaimUnavailable), errors.Is(err, modelruntime.ErrConcurrencyLimit), errors.Is(err, modelruntime.ErrClaimTokenMismatch), errors.Is(err, modelruntime.ErrResponseRejected), errors.Is(err, modelruntime.ErrCancellationRequested):
+	case errors.Is(err, modelruntime.ErrInvalidRequest), errors.Is(err, modelruntime.ErrTaskAttemptRejected), errors.Is(err, modelruntime.ErrCapabilityMismatch), errors.Is(err, modelruntime.ErrNotFound), errors.Is(err, modelruntime.ErrBindingNotFound), errors.Is(err, modelruntime.ErrConflict), errors.Is(err, modelruntime.ErrClaimUnavailable), errors.Is(err, modelruntime.ErrConcurrencyLimit), errors.Is(err, modelruntime.ErrClaimTokenMismatch), errors.Is(err, modelruntime.ErrResponseRejected), errors.Is(err, modelruntime.ErrCancellationRequested), errors.Is(err, modelruntime.ErrAssignmentUnavailable), errors.Is(err, modelruntime.ErrAssignmentRevisionDrift), errors.Is(err, modelruntime.ErrAssignmentVigencyExpired), errors.Is(err, modelruntime.ErrAssignmentQuotaExhausted), errors.Is(err, modelruntime.ErrDispatcherAssignmentUnpinned), errors.Is(err, modeldispatch.ErrInvalidRequest), errors.Is(err, modeldispatch.ErrNotFound), errors.Is(err, modeldispatch.ErrConflict), errors.Is(err, modeldispatch.ErrRoleNotEligible), errors.Is(err, modeldispatch.ErrAssignmentNotFound), errors.Is(err, modeldispatch.ErrAssignmentInactive), errors.Is(err, modeldispatch.ErrAssignmentExpired), errors.Is(err, modeldispatch.ErrAssignmentExhausted), errors.Is(err, modeldispatch.ErrAssignmentRevoked), errors.Is(err, modeldispatch.ErrAssignmentConflict), errors.Is(err, modeldispatch.ErrRevisionDrift), errors.Is(err, modeldispatch.ErrTaskAttemptRejected):
 		return exitInvalid
-	case errors.Is(err, modelruntime.ErrDatabaseUnavailable):
+	case errors.Is(err, modelruntime.ErrDatabaseUnavailable), errors.Is(err, modeldispatch.ErrDatabaseUnavailable):
 		return exitDatabase
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded), errors.Is(err, modelruntime.ErrAmbiguousOutcome):
 		return exitInternal
@@ -344,8 +373,10 @@ func modelError(stderr io.Writer, err error) int {
 	}
 }
 func printModelUsage(out io.Writer) {
-	fmt.Fprintln(out, "usage: orgctl model <registry|egress|invocation> ...")
+	fmt.Fprintln(out, "usage: orgctl model <registry|egress|invocation|principal|assignment> ...")
 	fmt.Fprintln(out, "  orgctl model registry <validate|diff|sync|status> [--json] [--apply]")
 	fmt.Fprintln(out, "  orgctl model egress <validate|diff|sync|status> [--json] [--apply]")
 	fmt.Fprintln(out, "  orgctl model invocation <create|get|list|dispatch|cancel|reconcile> ...")
+	fmt.Fprintln(out, "  orgctl model principal <register|get|list|disable> ...")
+	fmt.Fprintln(out, "  orgctl model assignment <create|get|list|revoke|expire> ...")
 }
