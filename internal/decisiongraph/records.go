@@ -103,7 +103,7 @@ func (r AppendGraphRequest) Validate() (*Graph, string, int, error) {
 	if len(r.Depths) != len(r.Nodes) {
 		return nil, "", 0, fmt.Errorf("%w: depth map contains unknown nodes", ErrInvalidGraph)
 	}
-	hash, err := HashGraph(graph)
+	hash, err := graph.CanonicalHash()
 	if err != nil {
 		return nil, "", 0, err
 	}
