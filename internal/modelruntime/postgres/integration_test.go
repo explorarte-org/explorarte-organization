@@ -4,7 +4,11 @@ package postgres_test
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"os"
@@ -21,6 +25,8 @@ import (
 	dispatchpostgres "github.com/Mireuz13/explorarte-organization/internal/modeldispatch/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/modelegress"
 	egresspostgres "github.com/Mireuz13/explorarte-organization/internal/modelegress/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/modelidentity"
+	identitypostgres "github.com/Mireuz13/explorarte-organization/internal/modelidentity/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter"
 	modelpostgres "github.com/Mireuz13/explorarte-organization/internal/modelruntime/postgres"
@@ -42,7 +48,7 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err = runner.Up(ctx); err != nil {
-		t.Fatalf("migrations through 000009: %v", err)
+		t.Fatalf("migrations through 000010: %v", err)
 	}
 	resetModelSchema(t, ctx, platform)
 	syncModelCanonical(t, ctx, platform)
@@ -51,6 +57,10 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		t.Fatal(err)
 	}
 	dispatchStore, err := dispatchpostgres.New(platform)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identityStore, err := identitypostgres.New(platform)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +121,29 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 	tasks := staticTaskReader{ref: taskRef}
 	principal, assignment := fixturePrincipalAndAssignment(t, ctx, dispatchStore, taskRef, "ingenieria_ia/code-runner", "ingenieria_ia/code-runner", "code-runner-fixture")
 	principals, assignments := dispatchStore, dispatchStore
-	invocations, err := modelruntime.NewInvocationService(modelIntegrationOrganization, fakeCatalog, tasks, contexts, store, egressStore, assignments, modelruntime.ClockFunc(time.Now), 10)
+	identityCanonical, err := modelidentity.LoadCanonicalPolicy(filepath.Join("..", "..", "..", "docs", "canonical"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	identitySync, err := identityStore.Apply(ctx, modelIntegrationOrganization, identityCanonical)
+	if err != nil || (!identitySync.Applied && !identitySync.NoOp) {
+		t.Fatalf("identity policy sync=%+v err=%v", identitySync, err)
+	}
+	identityPrivateKey, identityKeyFile := writeExecutionIdentityKeyFile(t)
+	identityPublicKey := identityPrivateKey.Public().(ed25519.PublicKey)
+	preparedIdentityKey := modelidentity.PreparedKey{OrganizationID: modelIntegrationOrganization, ExecutionPrincipalID: principal.ID, PublicKey: identityPublicKey, PublicKeyFingerprint: modelidentity.PublicKeyFingerprint(identityPublicKey), SecretRef: "file://model-execution/integration/key-1", IdempotencyKey: "runtime-integration-identity-key", CreatedByRoleID: "empresa/human"}
+	preparedIdentityKey.RequestHash, err = modelidentity.KeyRequestHash(preparedIdentityKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = identityStore.RegisterKey(ctx, preparedIdentityKey); err != nil {
+		t.Fatal(err)
+	}
+	identityService, err := modelidentity.NewChallengeService(identityStore, modelidentity.ClockFunc(time.Now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocations, err := modelruntime.NewInvocationService(modelIntegrationOrganization, fakeCatalog, tasks, contexts, store, egressStore, identityStore, assignments, modelruntime.ClockFunc(time.Now), 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,13 +173,13 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 			t.Fatalf("fully synchronized creation=%+v err=%v", created, createErr)
 		}
 	})
-	cfg := modelruntime.RuntimeConfig{Enabled: true, CommandTimeout: 30 * time.Second, GlobalConcurrency: 4, MaxResponseBytes: 1 << 20, MaxToolIntents: 8, ClaimTTL: time.Minute, ReconcileBatchSize: 100, OutboxMaxAttempts: 10, ExecutionPrincipalKey: principal.PrincipalKey}
+	cfg := modelruntime.RuntimeConfig{Enabled: true, CommandTimeout: 30 * time.Second, GlobalConcurrency: 4, MaxResponseBytes: 1 << 20, MaxToolIntents: 8, ClaimTTL: time.Minute, ReconcileBatchSize: 100, OutboxMaxAttempts: 10, ExecutionPrincipalKey: principal.PrincipalKey, ExecutionIdentityEnabled: true, ExecutionIdentityKeyFile: identityKeyFile}
 	authorizer, err := authorization.New(repo, modelIntegrationOrganization, filepath.Join("..", "..", "..", "docs", "canonical"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	capabilityEvaluator := authorizationDispatchAdapter{evaluator: authorizer}
-	dispatch, err := modelruntime.NewDispatchService(modelIntegrationOrganization, cfg, fakeCatalog, tasks, contexts, capabilityEvaluator, egressStore, modelegress.NewEvaluator(), store, principals, assignments, store, adapter.NewRegistry(adapter.NewFake()), modelruntime.ClockFunc(time.Now))
+	dispatch, err := modelruntime.NewDispatchService(modelIntegrationOrganization, cfg, fakeCatalog, tasks, contexts, capabilityEvaluator, egressStore, modelegress.NewEvaluator(), store, principals, assignments, identityService, store, adapter.NewRegistry(adapter.NewFake()), modelruntime.ClockFunc(time.Now))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,6 +214,15 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 
 		// Branch 10: the dispatcher assignment's quota must have been consumed
 		// exactly once, atomically with send_started, via a durable use record.
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_execution_identity_assertions WHERE invocation_id=$1 AND verification_effect='allow'`, created.Invocation.ID, 1)
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_execution_identity_challenges WHERE invocation_id=$1 AND consumed_at IS NOT NULL AND invalidated_at IS NULL`, created.Invocation.ID, 1)
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_dispatch_attempts WHERE invocation_id=$1 AND execution_identity_key_id IS NOT NULL AND identity_assertion_id IS NOT NULL AND identity_verified_at IS NOT NULL`, created.Invocation.ID, 1)
+		if _, mutationErr := platform.Pool().Exec(ctx, `UPDATE model_execution_identity_assertions SET verification_reason_code='mutated' WHERE invocation_id=$1`, created.Invocation.ID); mutationErr == nil {
+			t.Fatal("identity assertion ledger accepted mutation")
+		}
+		if _, mutationErr := platform.Pool().Exec(ctx, `UPDATE model_execution_identity_challenges SET payload_hash=$2 WHERE invocation_id=$1`, created.Invocation.ID, modelidentity.SHA256Bytes([]byte("mutated-challenge"))); mutationErr == nil {
+			t.Fatal("identity challenge immutable scope accepted mutation")
+		}
 		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_dispatcher_assignment_uses WHERE invocation_id=$1`, created.Invocation.ID, 1)
 		assertModelCount(t, ctx, platform, `SELECT count(*) FROM audit_events WHERE subject_type='model_dispatcher_assignment' AND subject_id=$1 AND event_type='model.dispatch_assignment_consumed'`, strconv.FormatInt(assignment.ID, 10), 1)
 		var usedInvocations int
@@ -193,7 +234,7 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		}
 
 		var leaked int
-		if err := platform.Pool().QueryRow(ctx, `SELECT count(*) FROM audit_events WHERE subject_type='model_invocation' AND subject_id=$1 AND payload::text ~* '(safe integration context|hidden fake reasoning|rendered_context|claim_token)'`, strconv.FormatInt(created.Invocation.ID, 10)).Scan(&leaked); err != nil {
+		if err := platform.Pool().QueryRow(ctx, `SELECT count(*) FROM audit_events WHERE subject_type='model_invocation' AND subject_id=$1 AND payload::text ~* '(safe integration context|hidden fake reasoning|rendered_context|claim_token|challenge_nonce|raw_nonce|raw_signature|private_key)'`, strconv.FormatInt(created.Invocation.ID, 10)).Scan(&leaked); err != nil {
 			t.Fatal(err)
 		}
 		if leaked != 0 {
@@ -210,7 +251,7 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 	t.Run("authorization deny is durable and never renders or calls adapter", func(t *testing.T) {
 		created := createModelInvocation(t, ctx, invocations, validInvocationCommand(taskRef, snapshotRef, "ingenieria_ia/code-runner", "authorization-deny"))
 		provider := &countingAdapter{}
-		deniedDispatch, newErr := modelruntime.NewDispatchService(modelIntegrationOrganization, cfg, fakeCatalog, tasks, contexts, denyEvaluator{matrixHash: fakeCapabilityHash}, egressStore, modelegress.NewEvaluator(), store, principals, assignments, store, adapter.NewRegistry(provider), modelruntime.ClockFunc(time.Now))
+		deniedDispatch, newErr := modelruntime.NewDispatchService(modelIntegrationOrganization, cfg, fakeCatalog, tasks, contexts, denyEvaluator{matrixHash: fakeCapabilityHash}, egressStore, modelegress.NewEvaluator(), store, principals, assignments, identityService, store, adapter.NewRegistry(provider), modelruntime.ClockFunc(time.Now))
 		if newErr != nil {
 			t.Fatal(newErr)
 		}
@@ -267,7 +308,7 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		defer func() { contexts.ref.DataClasses = originalClasses }()
 		created := createModelInvocation(t, ctx, invocations, validInvocationCommand(taskRef, snapshotRef, "ingenieria_ia/code-runner", "egress-deny"))
 		provider := &countingAdapter{}
-		deniedDispatch, newErr := modelruntime.NewDispatchService(modelIntegrationOrganization, cfg, fakeCatalog, tasks, contexts, allowEvaluator{matrixHash: fakeCapabilityHash}, egressStore, modelegress.NewEvaluator(), store, principals, assignments, store, adapter.NewRegistry(provider), modelruntime.ClockFunc(time.Now))
+		deniedDispatch, newErr := modelruntime.NewDispatchService(modelIntegrationOrganization, cfg, fakeCatalog, tasks, contexts, allowEvaluator{matrixHash: fakeCapabilityHash}, egressStore, modelegress.NewEvaluator(), store, principals, assignments, identityService, store, adapter.NewRegistry(provider), modelruntime.ClockFunc(time.Now))
 		if newErr != nil {
 			t.Fatal(newErr)
 		}
@@ -281,7 +322,7 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 
 	t.Run("adapter unavailable blocks before render", func(t *testing.T) {
 		created := createModelInvocation(t, ctx, invocations, validInvocationCommand(taskRef, snapshotRef, "ingenieria_ia/code-runner", "adapter-unavailable"))
-		blockedDispatch, newErr := modelruntime.NewDispatchService(modelIntegrationOrganization, cfg, fakeCatalog, tasks, contexts, allowEvaluator{matrixHash: fakeCapabilityHash}, egressStore, modelegress.NewEvaluator(), store, principals, assignments, store, adapter.NewRegistry(), modelruntime.ClockFunc(time.Now))
+		blockedDispatch, newErr := modelruntime.NewDispatchService(modelIntegrationOrganization, cfg, fakeCatalog, tasks, contexts, allowEvaluator{matrixHash: fakeCapabilityHash}, egressStore, modelegress.NewEvaluator(), store, principals, assignments, identityService, store, adapter.NewRegistry(), modelruntime.ClockFunc(time.Now))
 		if newErr != nil {
 			t.Fatal(newErr)
 		}
@@ -295,11 +336,11 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 
 	t.Run("legacy unpinned invocation blocks before render", func(t *testing.T) {
 		created := createModelInvocation(t, ctx, invocations, validInvocationCommand(taskRef, snapshotRef, "ingenieria_ia/code-runner", "legacy-unpinned-dispatch"))
-		if _, updateErr := platform.Pool().Exec(ctx, `UPDATE model_invocations SET model_egress_policy_version_id=NULL,model_egress_policy_hash=NULL WHERE id=$1`, created.ID); updateErr != nil {
+		if _, updateErr := platform.Pool().Exec(ctx, `UPDATE model_invocations SET model_egress_policy_version_id=NULL,model_egress_policy_hash=NULL,execution_identity_policy_version_id=NULL,execution_identity_policy_hash=NULL WHERE id=$1`, created.ID); updateErr != nil {
 			t.Fatal(updateErr)
 		}
 		provider := &countingAdapter{}
-		legacyDispatch, newErr := modelruntime.NewDispatchService(modelIntegrationOrganization, cfg, fakeCatalog, tasks, contexts, allowEvaluator{matrixHash: fakeCapabilityHash}, egressStore, modelegress.NewEvaluator(), store, principals, assignments, store, adapter.NewRegistry(provider), modelruntime.ClockFunc(time.Now))
+		legacyDispatch, newErr := modelruntime.NewDispatchService(modelIntegrationOrganization, cfg, fakeCatalog, tasks, contexts, allowEvaluator{matrixHash: fakeCapabilityHash}, egressStore, modelegress.NewEvaluator(), store, principals, assignments, identityService, store, adapter.NewRegistry(provider), modelruntime.ClockFunc(time.Now))
 		if newErr != nil {
 			t.Fatal(newErr)
 		}
@@ -313,11 +354,11 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 
 	t.Run("dispatcher-unpinned legacy invocation fails before claim mutation and never renders", func(t *testing.T) {
 		created := createModelInvocation(t, ctx, invocations, validInvocationCommand(taskRef, snapshotRef, "ingenieria_ia/code-runner", "dispatcher-unpinned-dispatch"))
-		if _, updateErr := platform.Pool().Exec(ctx, `UPDATE model_invocations SET dispatcher_assignment_id=NULL,execution_principal_id=NULL WHERE id=$1`, created.ID); updateErr != nil {
+		if _, updateErr := platform.Pool().Exec(ctx, `UPDATE model_invocations SET dispatcher_assignment_id=NULL,execution_principal_id=NULL,execution_identity_policy_version_id=NULL,execution_identity_policy_hash=NULL WHERE id=$1`, created.ID); updateErr != nil {
 			t.Fatal(updateErr)
 		}
 		provider := &countingAdapter{}
-		legacyDispatch, newErr := modelruntime.NewDispatchService(modelIntegrationOrganization, cfg, fakeCatalog, tasks, contexts, allowEvaluator{matrixHash: fakeCapabilityHash}, egressStore, modelegress.NewEvaluator(), store, principals, assignments, store, adapter.NewRegistry(provider), modelruntime.ClockFunc(time.Now))
+		legacyDispatch, newErr := modelruntime.NewDispatchService(modelIntegrationOrganization, cfg, fakeCatalog, tasks, contexts, allowEvaluator{matrixHash: fakeCapabilityHash}, egressStore, modelegress.NewEvaluator(), store, principals, assignments, identityService, store, adapter.NewRegistry(provider), modelruntime.ClockFunc(time.Now))
 		if newErr != nil {
 			t.Fatal(newErr)
 		}
@@ -328,6 +369,76 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		}
 		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_egress_evaluations WHERE invocation_id=$1`, created.ID, 0)
 		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_dispatcher_assignment_uses WHERE invocation_id=$1`, created.ID, 0)
+	})
+
+	t.Run("identity-unpinned legacy invocation fails before render and adapter", func(t *testing.T) {
+		created := createModelInvocation(t, ctx, invocations, validInvocationCommand(taskRef, snapshotRef, "ingenieria_ia/code-runner", "identity-unpinned-dispatch"))
+		if _, updateErr := platform.Pool().Exec(ctx, `UPDATE model_invocations SET execution_identity_policy_version_id=NULL,execution_identity_policy_hash=NULL WHERE id=$1`, created.ID); updateErr != nil {
+			t.Fatal(updateErr)
+		}
+		provider := &countingAdapter{}
+		legacyDispatch, newErr := modelruntime.NewDispatchService(modelIntegrationOrganization, cfg, fakeCatalog, tasks, contexts, allowEvaluator{matrixHash: fakeCapabilityHash}, egressStore, modelegress.NewEvaluator(), store, principals, assignments, identityService, store, adapter.NewRegistry(provider), modelruntime.ClockFunc(time.Now))
+		if newErr != nil {
+			t.Fatal(newErr)
+		}
+		beforeRender := contexts.renderCalls
+		result, dispatchErr := legacyDispatch.Dispatch(ctx, created.ID)
+		if !errors.Is(dispatchErr, modelruntime.ErrExecutionIdentityUnpinned) || result.Invocation.Status != modelruntime.InvocationFailed || contexts.renderCalls != beforeRender || provider.calls != 0 {
+			t.Fatalf("result=%+v err=%v render=%d/%d adapter_calls=%d", result, dispatchErr, beforeRender, contexts.renderCalls, provider.calls)
+		}
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_execution_identity_challenges WHERE invocation_id=$1`, created.ID, 0)
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_execution_identity_assertions WHERE invocation_id=$1`, created.ID, 0)
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_dispatcher_assignment_uses WHERE invocation_id=$1`, created.ID, 0)
+	})
+
+	t.Run("tampered identity signature is denied without claim mutation", func(t *testing.T) {
+		created := createModelInvocation(t, ctx, invocations, validInvocationCommand(taskRef, snapshotRef, "ingenieria_ia/code-runner", "identity-tampered-signature"))
+		command, commandErr := authenticatedClaimCommand(ctx, store, identityService, identityPrivateKey, created.ID, "tampered-signer", principal.ID)
+		if commandErr != nil {
+			t.Fatal(commandErr)
+		}
+		command.Signature = append([]byte(nil), command.Signature...)
+		command.Signature[0] ^= 0xff
+		if _, claimErr := store.ClaimInvocationAuthenticated(ctx, command, cfg); !errors.Is(claimErr, modelidentity.ErrAssertionInvalid) {
+			t.Fatalf("tampered signature error=%v", claimErr)
+		}
+		loaded, loadErr := invocations.Get(ctx, created.ID)
+		if loadErr != nil || loaded.Status != modelruntime.InvocationRequested {
+			t.Fatalf("tampered assertion mutated invocation: %+v err=%v", loaded, loadErr)
+		}
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_dispatch_attempts WHERE invocation_id=$1`, created.ID, 0)
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_execution_identity_challenges WHERE id=$1 AND consumed_at IS NULL`, command.ChallengeID, 1)
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM audit_events WHERE event_type='model.execution_identity_denied' AND subject_type='model_invocation' AND subject_id=$1`, strconv.FormatInt(created.ID, 10), 1)
+	})
+
+	t.Run("consumed identity challenge cannot be replayed", func(t *testing.T) {
+		created := createModelInvocation(t, ctx, invocations, validInvocationCommand(taskRef, snapshotRef, "ingenieria_ia/code-runner", "identity-replay"))
+		command, commandErr := authenticatedClaimCommand(ctx, store, identityService, identityPrivateKey, created.ID, "replay-signer", principal.ID)
+		if commandErr != nil {
+			t.Fatal(commandErr)
+		}
+		first, claimErr := store.ClaimInvocationAuthenticated(ctx, command, cfg)
+		if claimErr != nil {
+			t.Fatal(claimErr)
+		}
+		// Re-open only the invocation status to exercise the durable one-time
+		// challenge guard. The original attempt and assertion remain immutable.
+		if _, updateErr := platform.Pool().Exec(ctx, `UPDATE model_invocations SET status='requested',updated_at=clock_timestamp() WHERE id=$1`, created.ID); updateErr != nil {
+			t.Fatal(updateErr)
+		}
+		if _, replayErr := store.ClaimInvocationAuthenticated(ctx, command, cfg); !errors.Is(replayErr, modelidentity.ErrReplayDenied) {
+			t.Fatalf("replay error=%v", replayErr)
+		}
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_dispatch_attempts WHERE invocation_id=$1`, created.ID, 1)
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_execution_identity_assertions WHERE invocation_id=$1`, created.ID, 1)
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM audit_events WHERE event_type='model.execution_identity_replay_denied' AND subject_type='model_invocation' AND subject_id=$1`, strconv.FormatInt(created.ID, 10), 1)
+		if _, updateErr := platform.Pool().Exec(ctx, `UPDATE model_invocations SET status='claimed',updated_at=clock_timestamp() WHERE id=$1`, created.ID); updateErr != nil {
+			t.Fatal(updateErr)
+		}
+		if _, cleanupErr := invocations.Cancel(ctx, created.ID, "ingenieria_ia/code-runner", "identity replay integration cleanup"); cleanupErr != nil {
+			t.Fatal(cleanupErr)
+		}
+		_ = first
 	})
 
 	t.Run("execution principal mismatch denies claim without mutating the invocation", func(t *testing.T) {
@@ -351,7 +462,7 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		mismatchedCfg := cfg
 		mismatchedCfg.ExecutionPrincipalKey = otherRegistered.Principal.PrincipalKey
 		provider := &countingAdapter{}
-		mismatchedDispatch, newErr := modelruntime.NewDispatchService(modelIntegrationOrganization, mismatchedCfg, fakeCatalog, tasks, contexts, allowEvaluator{matrixHash: fakeCapabilityHash}, egressStore, modelegress.NewEvaluator(), store, principals, assignments, store, adapter.NewRegistry(provider), modelruntime.ClockFunc(time.Now))
+		mismatchedDispatch, newErr := modelruntime.NewDispatchService(modelIntegrationOrganization, mismatchedCfg, fakeCatalog, tasks, contexts, allowEvaluator{matrixHash: fakeCapabilityHash}, egressStore, modelegress.NewEvaluator(), store, principals, assignments, identityService, store, adapter.NewRegistry(provider), modelruntime.ClockFunc(time.Now))
 		if newErr != nil {
 			t.Fatal(newErr)
 		}
@@ -377,7 +488,7 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 			wg.Add(1)
 			go func(index int) {
 				defer wg.Done()
-				claimed, claimErr := store.ClaimInvocation(ctx, modelruntime.ClaimCommand{InvocationID: created.ID, ClaimedBy: fmt.Sprintf("claimer-%d", index), ExecutionPrincipalID: principal.ID}, cfg)
+				claimed, claimErr := claimInvocationWithIdentity(ctx, store, identityService, identityPrivateKey, created.ID, fmt.Sprintf("claimer-%d", index), principal.ID, cfg)
 				if claimErr != nil {
 					errs <- claimErr
 					return
@@ -400,7 +511,7 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		}
 		losers := 0
 		for claimErr := range errs {
-			if !errors.Is(claimErr, modelruntime.ErrClaimUnavailable) && !errors.Is(claimErr, modelruntime.ErrConflict) {
+			if !errors.Is(claimErr, modelruntime.ErrClaimUnavailable) && !errors.Is(claimErr, modelruntime.ErrConflict) && !errors.Is(claimErr, modelidentity.ErrReplayDenied) {
 				t.Fatalf("unexpected loser error: %v", claimErr)
 			}
 			losers++
@@ -432,11 +543,11 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		limited.GlobalConcurrency = 1
 		first := createModelInvocation(t, ctx, invocations, validInvocationCommand(taskRef, snapshotRef, "ingenieria_ia/code-runner", "concurrency-first"))
 		second := createModelInvocation(t, ctx, invocations, validInvocationCommand(taskRef, snapshotRef, "ingenieria_ia/code-runner", "concurrency-second"))
-		claim, claimErr := store.ClaimInvocation(ctx, modelruntime.ClaimCommand{InvocationID: first.ID, ClaimedBy: "one", ExecutionPrincipalID: principal.ID}, limited)
+		claim, claimErr := claimInvocationWithIdentity(ctx, store, identityService, identityPrivateKey, first.ID, "one", principal.ID, limited)
 		if claimErr != nil {
 			t.Fatal(claimErr)
 		}
-		if _, claimErr = store.ClaimInvocation(ctx, modelruntime.ClaimCommand{InvocationID: second.ID, ClaimedBy: "two", ExecutionPrincipalID: principal.ID}, limited); !errors.Is(claimErr, modelruntime.ErrConcurrencyLimit) {
+		if _, claimErr = claimInvocationWithIdentity(ctx, store, identityService, identityPrivateKey, second.ID, "two", principal.ID, limited); !errors.Is(claimErr, modelruntime.ErrConcurrencyLimit) {
 			t.Fatalf("expected global concurrency limit, got %v", claimErr)
 		}
 		if _, err := platform.Pool().Exec(ctx, `UPDATE model_dispatch_attempts SET claimed_at=clock_timestamp()-interval '2 minutes',claim_expires_at=clock_timestamp()-interval '1 minute' WHERE id=$1`, claim.DispatchAttempt.ID); err != nil {
@@ -453,10 +564,10 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 	})
 
 	t.Run("down migration and reapply in disposable integration database", func(t *testing.T) {
-		for _, version := range []int{9, 8, 7} {
-			name := fmt.Sprintf("00000%d_", version)
+		for _, version := range []int{10, 9, 8, 7} {
+			name := fmt.Sprintf("%06d_", version)
 			var downName string
-			for _, candidate := range []string{"000009_create_model_dispatcher_assignments.down.sql", "000008_create_model_egress_authorization.down.sql", "000007_create_model_runtime_gateway.down.sql"} {
+			for _, candidate := range []string{"000010_create_model_execution_identity.down.sql", "000009_create_model_dispatcher_assignments.down.sql", "000008_create_model_egress_authorization.down.sql", "000007_create_model_runtime_gateway.down.sql"} {
 				if strings.HasPrefix(candidate, name) {
 					downName = candidate
 					break
@@ -474,14 +585,76 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 			}
 		}
 		reapplied, upErr := runner.Up(ctx)
-		if upErr != nil || len(reapplied.Applied) != 3 || reapplied.Current != 9 {
+		if upErr != nil || len(reapplied.Applied) != 4 || reapplied.Current != 10 {
 			t.Fatalf("reapply=%+v err=%v", reapplied, upErr)
 		}
 		var exists bool
-		if err = platform.Pool().QueryRow(ctx, `SELECT to_regclass('public.model_invocations') IS NOT NULL AND to_regclass('public.model_dispatch_attempts') IS NOT NULL AND to_regclass('public.model_egress_policy_versions') IS NOT NULL AND to_regclass('public.model_dispatcher_assignments') IS NOT NULL AND to_regclass('public.model_execution_principals') IS NOT NULL`).Scan(&exists); err != nil || !exists {
+		if err = platform.Pool().QueryRow(ctx, `SELECT to_regclass('public.model_invocations') IS NOT NULL AND to_regclass('public.model_dispatch_attempts') IS NOT NULL AND to_regclass('public.model_egress_policy_versions') IS NOT NULL AND to_regclass('public.model_dispatcher_assignments') IS NOT NULL AND to_regclass('public.model_execution_principals') IS NOT NULL AND to_regclass('public.model_execution_identity_policy_versions') IS NOT NULL`).Scan(&exists); err != nil || !exists {
 			t.Fatalf("reapply exists=%v err=%v", exists, err)
 		}
 	})
+}
+
+func writeExecutionIdentityKeyFile(t *testing.T) (ed25519.PrivateKey, string) {
+	t.Helper()
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "execution-identity.pem")
+	if err = os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return privateKey, path
+}
+
+func claimInvocationWithIdentity(ctx context.Context, store *modelpostgres.Store, identity *modelidentity.ChallengeService, privateKey ed25519.PrivateKey, invocationID int64, claimedBy string, principalID int64, cfg modelruntime.RuntimeConfig) (modelruntime.ClaimedInvocation, error) {
+	command, err := authenticatedClaimCommand(ctx, store, identity, privateKey, invocationID, claimedBy, principalID)
+	if err != nil {
+		return modelruntime.ClaimedInvocation{}, err
+	}
+	return store.ClaimInvocationAuthenticated(ctx, command, cfg)
+}
+
+func authenticatedClaimCommand(ctx context.Context, store *modelpostgres.Store, identity *modelidentity.ChallengeService, privateKey ed25519.PrivateKey, invocationID int64, claimedBy string, principalID int64) (modelruntime.AuthenticatedClaimCommand, error) {
+	invocation, err := store.GetInvocation(ctx, invocationID)
+	if err != nil {
+		return modelruntime.AuthenticatedClaimCommand{}, err
+	}
+	if invocation.ExecutionIdentityPolicyVersionID == nil || invocation.DispatcherAssignmentID == nil {
+		return modelruntime.AuthenticatedClaimCommand{}, modelruntime.ErrExecutionIdentityUnpinned
+	}
+	publicKey := privateKey.Public().(ed25519.PublicKey)
+	key, err := identity.ResolveActiveKeyByFingerprint(ctx, invocation.OrganizationID, principalID, modelidentity.PublicKeyFingerprint(publicKey))
+	if err != nil {
+		return modelruntime.AuthenticatedClaimCommand{}, err
+	}
+	policy, err := identity.ResolvePolicyByID(ctx, invocation.OrganizationID, *invocation.ExecutionIdentityPolicyVersionID)
+	if err != nil {
+		return modelruntime.AuthenticatedClaimCommand{}, err
+	}
+	digest, err := modelruntime.ActionDigest(invocation)
+	if err != nil {
+		return modelruntime.AuthenticatedClaimCommand{}, err
+	}
+	issued, err := identity.Issue(ctx, modelidentity.ChallengeScope{OrganizationID: invocation.OrganizationID, OrganizationRevisionID: invocation.OrganizationRevisionID, InvocationID: invocation.ID, DispatcherAssignmentID: *invocation.DispatcherAssignmentID, ExecutionPrincipalID: principalID, ExecutionIdentityPolicyVersionID: *invocation.ExecutionIdentityPolicyVersionID, ExecutionIdentityPolicyHash: invocation.ExecutionIdentityPolicyHash, ExecutionIdentityKeyID: key.ID, ActionDigest: digest, RequestHash: invocation.RequestHash}, policy)
+	if err != nil {
+		return modelruntime.AuthenticatedClaimCommand{}, err
+	}
+	signature := ed25519.Sign(privateKey, issued.Payload)
+	if _, err = identity.Verify(key, issued, signature, policy); err != nil {
+		return modelruntime.AuthenticatedClaimCommand{}, err
+	}
+	return modelruntime.AuthenticatedClaimCommand{
+		InvocationID: invocation.ID, ClaimedBy: claimedBy,
+		ExecutionPrincipalID: principalID, IdentityKeyID: key.ID,
+		ChallengeID: issued.Challenge.ID, ChallengeNonce: issued.Nonce,
+		Signature: signature,
+	}, nil
 }
 
 type catalogFixture struct {

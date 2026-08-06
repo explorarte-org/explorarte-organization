@@ -2,6 +2,7 @@ package modelruntime
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"strconv"
@@ -10,41 +11,55 @@ import (
 
 	"github.com/Mireuz13/explorarte-organization/internal/modeldispatch"
 	"github.com/Mireuz13/explorarte-organization/internal/modelegress"
+	"github.com/Mireuz13/explorarte-organization/internal/modelidentity"
+	"github.com/Mireuz13/explorarte-organization/internal/secrets"
 )
 
 type DispatchService struct {
-	organizationID  string
-	config          RuntimeConfig
-	catalog         OrganizationCatalog
-	tasks           TaskAttemptReader
-	contexts        ContextReader
-	evaluator       CapabilityEvaluator
-	policyCatalog   EgressPolicyCatalog
-	egressEvaluator EgressDecisionEvaluator
-	egressStore     EgressEvaluationStore
-	principals      modeldispatch.ExecutionPrincipalResolver
-	assignments     modeldispatch.AssignmentResolver
-	store           Store
-	adapters        AdapterRegistry
-	normalizer      Normalizer
-	clock           Clock
+	organizationID   string
+	config           RuntimeConfig
+	catalog          OrganizationCatalog
+	tasks            TaskAttemptReader
+	contexts         ContextReader
+	evaluator        CapabilityEvaluator
+	policyCatalog    EgressPolicyCatalog
+	egressEvaluator  EgressDecisionEvaluator
+	egressStore      EgressEvaluationStore
+	principals       modeldispatch.ExecutionPrincipalResolver
+	assignments      modeldispatch.AssignmentResolver
+	identity         ExecutionIdentityService
+	privateKeyLoader ExecutionPrivateKeyLoader
+	store            Store
+	adapters         AdapterRegistry
+	normalizer       Normalizer
+	clock            Clock
 }
 
-func NewDispatchService(organizationID string, config RuntimeConfig, catalog OrganizationCatalog, tasks TaskAttemptReader, contexts ContextReader, evaluator CapabilityEvaluator, policyCatalog EgressPolicyCatalog, egressEvaluator EgressDecisionEvaluator, egressStore EgressEvaluationStore, principals modeldispatch.ExecutionPrincipalResolver, assignments modeldispatch.AssignmentResolver, store Store, adapters AdapterRegistry, clock Clock) (*DispatchService, error) {
+type fileExecutionPrivateKeyLoader struct{}
+
+func (fileExecutionPrivateKeyLoader) LoadExecutionPrivateKey(path string) (ed25519.PrivateKey, error) {
+	return secrets.LoadEd25519PrivateKey(path)
+}
+
+func NewDispatchService(organizationID string, config RuntimeConfig, catalog OrganizationCatalog, tasks TaskAttemptReader, contexts ContextReader, evaluator CapabilityEvaluator, policyCatalog EgressPolicyCatalog, egressEvaluator EgressDecisionEvaluator, egressStore EgressEvaluationStore, principals modeldispatch.ExecutionPrincipalResolver, assignments modeldispatch.AssignmentResolver, identity ExecutionIdentityService, store Store, adapters AdapterRegistry, clock Clock) (*DispatchService, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
-	if catalog == nil || tasks == nil || contexts == nil || evaluator == nil || policyCatalog == nil || egressEvaluator == nil || egressStore == nil || principals == nil || assignments == nil || store == nil || adapters == nil {
+	if catalog == nil || tasks == nil || contexts == nil || evaluator == nil || policyCatalog == nil || egressEvaluator == nil || egressStore == nil || principals == nil || assignments == nil || identity == nil || store == nil || adapters == nil {
 		return nil, fmt.Errorf("dispatch service dependencies are incomplete")
 	}
 	if clock == nil {
 		clock = ClockFunc(time.Now)
 	}
+	privateKeyLoader := ExecutionPrivateKeyLoader(fileExecutionPrivateKeyLoader{})
+	if injected, ok := identity.(ExecutionPrivateKeyLoader); ok {
+		privateKeyLoader = injected
+	}
 	return &DispatchService{
 		organizationID: organizationID,
 		config:         config, catalog: catalog, tasks: tasks, contexts: contexts,
 		evaluator: evaluator, policyCatalog: policyCatalog, egressEvaluator: egressEvaluator,
-		egressStore: egressStore, principals: principals, assignments: assignments,
+		egressStore: egressStore, principals: principals, assignments: assignments, identity: identity, privateKeyLoader: privateKeyLoader,
 		store: store, adapters: adapters,
 		normalizer: Normalizer{MaxResponseBytes: config.MaxResponseBytes, MaxToolIntents: config.MaxToolIntents},
 		clock:      clock,
@@ -70,11 +85,130 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64) (Dis
 		return DispatchResult{}, ErrExecutionPrincipalDisabled
 	}
 
-	claimed, err := s.store.ClaimInvocation(ctx, ClaimCommand{InvocationID: invocationID, ClaimedBy: principal.PrincipalKey, ExecutionPrincipalID: principal.ID}, s.config)
+	invocation, err := s.store.GetInvocation(ctx, invocationID)
 	if err != nil {
 		return DispatchResult{}, err
 	}
-	invocation := claimed.Invocation
+	// Expand-and-contract legacy rows are allowed to claim only so that the
+	// system can persist a terminal failed-before-send record. This is not a
+	// fallback identity path: no challenge, render, egress evaluation or adapter
+	// call is possible.
+	if invocation.DispatcherAssignmentID == nil || invocation.ExecutionPrincipalID == nil {
+		claimed, claimErr := s.store.ClaimInvocation(ctx, ClaimCommand{InvocationID: invocationID, ClaimedBy: principal.PrincipalKey, ExecutionPrincipalID: principal.ID}, s.config)
+		if claimErr != nil {
+			return DispatchResult{}, claimErr
+		}
+		persistCtx, cancelPersist := context.WithTimeout(context.WithoutCancel(ctx), s.config.CommandTimeout)
+		defer cancelPersist()
+		failed, persistErr := s.store.FailBeforeSend(persistCtx, FailureCommand{
+			InvocationID: claimed.Invocation.ID, DispatchAttemptID: claimed.DispatchAttempt.ID,
+			ClaimToken: claimed.ClaimToken, ErrorCode: "dispatcher_assignment_unpinned",
+			OutcomeClassification: "failed_before_send", EventType: AuditInvocationFailed,
+		}, s.config.OutboxMaxAttempts)
+		if persistErr != nil {
+			return DispatchResult{}, errors.Join(ErrDispatcherAssignmentUnpinned, persistErr)
+		}
+		return DispatchResult{Invocation: failed}, ErrDispatcherAssignmentUnpinned
+	}
+	if *invocation.ExecutionPrincipalID != principal.ID {
+		return DispatchResult{}, ErrExecutionPrincipalMismatch
+	}
+	// Branch 09 legacy rows may have a dispatcher assignment and execution
+	// principal pinned while still lacking the model egress policy pin. They
+	// cannot produce an ActionDigest and therefore cannot enter the execution
+	// identity challenge flow. Claim only to persist the terminal
+	// failed-before-send result; this is an expand-and-contract cleanup path,
+	// never an identity bypass and never reaches render, egress evaluation or an
+	// adapter.
+	if invocation.ModelEgressPolicyVersionID == nil || invocation.ModelEgressPolicyHash == "" {
+		claimed, claimErr := s.store.ClaimInvocation(ctx, ClaimCommand{InvocationID: invocationID, ClaimedBy: principal.PrincipalKey, ExecutionPrincipalID: principal.ID}, s.config)
+		if claimErr != nil {
+			return DispatchResult{}, claimErr
+		}
+		persistCtx, cancelPersist := context.WithTimeout(context.WithoutCancel(ctx), s.config.CommandTimeout)
+		defer cancelPersist()
+		failed, persistErr := s.store.FailBeforeSend(persistCtx, FailureCommand{
+			InvocationID: claimed.Invocation.ID, DispatchAttemptID: claimed.DispatchAttempt.ID,
+			ClaimToken: claimed.ClaimToken, ErrorCode: "egress_policy_unpinned",
+			OutcomeClassification: "failed_before_send", EventType: AuditInvocationFailed,
+		}, s.config.OutboxMaxAttempts)
+		if persistErr != nil {
+			return DispatchResult{}, errors.Join(ErrEgressPolicyUnpinned, persistErr)
+		}
+		return DispatchResult{Invocation: failed}, ErrEgressPolicyUnpinned
+	}
+	if invocation.ExecutionIdentityPolicyVersionID == nil || invocation.ExecutionIdentityPolicyHash == "" {
+		claimed, claimErr := s.store.ClaimInvocation(ctx, ClaimCommand{InvocationID: invocationID, ClaimedBy: principal.PrincipalKey, ExecutionPrincipalID: principal.ID}, s.config)
+		if claimErr != nil {
+			return DispatchResult{}, claimErr
+		}
+		persistCtx, cancelPersist := context.WithTimeout(context.WithoutCancel(ctx), s.config.CommandTimeout)
+		defer cancelPersist()
+		failed, persistErr := s.store.FailBeforeSend(persistCtx, FailureCommand{
+			InvocationID: claimed.Invocation.ID, DispatchAttemptID: claimed.DispatchAttempt.ID,
+			ClaimToken: claimed.ClaimToken, ErrorCode: "execution_identity_unpinned",
+			OutcomeClassification: "failed_before_send", EventType: AuditInvocationFailed,
+		}, s.config.OutboxMaxAttempts)
+		if persistErr != nil {
+			return DispatchResult{}, errors.Join(ErrExecutionIdentityUnpinned, persistErr)
+		}
+		return DispatchResult{Invocation: failed}, ErrExecutionIdentityUnpinned
+	}
+	if !s.config.ExecutionIdentityEnabled {
+		return DispatchResult{}, fmt.Errorf("%w: ORG_MODEL_EXECUTION_IDENTITY_ENABLED is false", ErrExecutionIdentityDenied)
+	}
+	if strings.TrimSpace(s.config.ExecutionIdentityKeyFile) == "" {
+		return DispatchResult{}, fmt.Errorf("%w: ORG_MODEL_EXECUTION_IDENTITY_KEY_FILE is not configured", ErrInvalidRequest)
+	}
+	privateKey, err := s.privateKeyLoader.LoadExecutionPrivateKey(s.config.ExecutionIdentityKeyFile)
+	if err != nil {
+		return DispatchResult{}, fmt.Errorf("%w: %v", ErrExecutionIdentityDenied, err)
+	}
+	publicKey, ok := privateKey.Public().(ed25519.PublicKey)
+	if !ok {
+		return DispatchResult{}, ErrExecutionIdentityDenied
+	}
+	fingerprint := modelidentity.PublicKeyFingerprint(publicKey)
+	identityKey, err := s.identity.ResolveActiveKeyByFingerprint(ctx, invocation.OrganizationID, principal.ID, fingerprint)
+	if err != nil {
+		return DispatchResult{}, err
+	}
+	identityPolicy, err := s.identity.ResolvePolicyByID(ctx, invocation.OrganizationID, *invocation.ExecutionIdentityPolicyVersionID)
+	if err != nil {
+		return DispatchResult{}, err
+	}
+	if identityPolicy.Version.CanonicalHash != invocation.ExecutionIdentityPolicyHash {
+		return DispatchResult{}, ErrExecutionIdentityDenied
+	}
+	actionDigest, err := ActionDigest(invocation)
+	if err != nil {
+		return DispatchResult{}, err
+	}
+	issued, err := s.identity.Issue(ctx, modelidentity.ChallengeScope{
+		OrganizationID: invocation.OrganizationID, OrganizationRevisionID: invocation.OrganizationRevisionID,
+		InvocationID: invocation.ID, DispatcherAssignmentID: *invocation.DispatcherAssignmentID,
+		ExecutionPrincipalID: principal.ID, ExecutionIdentityPolicyVersionID: *invocation.ExecutionIdentityPolicyVersionID,
+		ExecutionIdentityPolicyHash: invocation.ExecutionIdentityPolicyHash, ExecutionIdentityKeyID: identityKey.ID,
+		ActionDigest: actionDigest, RequestHash: invocation.RequestHash,
+	}, identityPolicy)
+	if err != nil {
+		return DispatchResult{}, err
+	}
+	signature := ed25519.Sign(privateKey, issued.Payload)
+	_, err = s.identity.Verify(identityKey, issued, signature, identityPolicy)
+	if err != nil {
+		return DispatchResult{}, err
+	}
+	claimed, err := s.store.ClaimInvocationAuthenticated(ctx, AuthenticatedClaimCommand{
+		InvocationID: invocationID, ClaimedBy: principal.PrincipalKey,
+		ExecutionPrincipalID: principal.ID, IdentityKeyID: identityKey.ID,
+		ChallengeID: issued.Challenge.ID, ChallengeNonce: issued.Nonce,
+		Signature: append([]byte(nil), signature...),
+	}, s.config)
+	if err != nil {
+		return DispatchResult{}, err
+	}
+	invocation = claimed.Invocation
 	dispatchAttemptID := claimed.DispatchAttempt.ID
 	persistCtx, cancelPersist := context.WithTimeout(context.WithoutCancel(ctx), s.config.CommandTimeout)
 	defer cancelPersist()
@@ -91,13 +225,6 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64) (Dis
 		return DispatchResult{Invocation: failed}, cause
 	}
 
-	// A legacy (pre branch-10) invocation was never pinned to an assignment or
-	// principal. It can never call an adapter: there is no dispatcher_assignment
-	// to authorize model.invoke against, and inventing one retroactively is
-	// explicitly out of scope.
-	if invocation.DispatcherAssignmentID == nil || invocation.ExecutionPrincipalID == nil {
-		return failBeforeSend("dispatcher_assignment_unpinned", ErrDispatcherAssignmentUnpinned, AuditInvocationFailed)
-	}
 	if !invocation.Deadline.After(s.clock.Now()) {
 		return failBeforeSend("deadline_elapsed", context.DeadlineExceeded, AuditInvocationTimedOut)
 	}
@@ -188,7 +315,7 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64) (Dis
 		return failBeforeSend("context_drift", fmt.Errorf("%w: %v", ErrContextRejected, err), AuditInvocationFailed)
 	}
 	classifications, classificationsHash := modelegress.NormalizeClassifications(snapshot.DataClasses)
-	actionDigest, err := ActionDigest(invocation)
+	actionDigest, err = ActionDigest(invocation)
 	if err != nil {
 		return failBeforeSend("action_digest_failed", err, AuditInvocationFailed)
 	}

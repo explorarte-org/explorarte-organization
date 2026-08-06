@@ -34,7 +34,7 @@ func TestModelDispatcherAssignmentsPostgreSQL17(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err = runner.Up(ctx); err != nil {
-		t.Fatalf("migrations through 000009: %v", err)
+		t.Fatalf("migrations through 000010: %v", err)
 	}
 	resetDispatchSchema(t, ctx, platform)
 	syncDispatchCanonical(t, ctx, platform)

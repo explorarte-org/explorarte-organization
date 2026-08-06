@@ -15,6 +15,9 @@ func TestLoadRuntimeConfigDefaultsAndOverrides(t *testing.T) {
 			"ORG_MODEL_RUNTIME_MAX_TOOL_INTENTS":     "3",
 			"ORG_MODEL_RUNTIME_CLAIM_TTL":            "90s",
 			"ORG_MODEL_RUNTIME_RECONCILE_BATCH_SIZE": "23",
+			"ORG_MODEL_EXECUTION_PRINCIPAL_KEY":      "oracle-01/model-runtime-01",
+			"ORG_MODEL_EXECUTION_IDENTITY_ENABLED":   "true",
+			"ORG_MODEL_EXECUTION_IDENTITY_KEY_FILE":  "/run/explorarte/model-identity.pem",
 		}
 		value, ok := values[key]
 		return value, ok
@@ -23,7 +26,7 @@ func TestLoadRuntimeConfigDefaultsAndOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.Enabled || cfg.CommandTimeout != 45*time.Second || cfg.GlobalConcurrency != 7 || cfg.MaxResponseBytes != 2<<20 || cfg.MaxToolIntents != 3 || cfg.ClaimTTL != 90*time.Second || cfg.ReconcileBatchSize != 23 || cfg.OutboxMaxAttempts != 11 {
+	if !cfg.Enabled || cfg.CommandTimeout != 45*time.Second || cfg.GlobalConcurrency != 7 || cfg.MaxResponseBytes != 2<<20 || cfg.MaxToolIntents != 3 || cfg.ClaimTTL != 90*time.Second || cfg.ReconcileBatchSize != 23 || cfg.OutboxMaxAttempts != 11 || !cfg.ExecutionIdentityEnabled || cfg.ExecutionPrincipalKey != "oracle-01/model-runtime-01" || cfg.ExecutionIdentityKeyFile != "/run/explorarte/model-identity.pem" {
 		t.Fatalf("unexpected config: %+v", cfg)
 	}
 }

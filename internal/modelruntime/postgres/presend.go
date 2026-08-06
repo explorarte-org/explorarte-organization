@@ -11,6 +11,7 @@ import (
 
 	"github.com/Mireuz13/explorarte-organization/internal/modeldispatch"
 	"github.com/Mireuz13/explorarte-organization/internal/modelegress"
+	"github.com/Mireuz13/explorarte-organization/internal/modelidentity"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -26,8 +27,12 @@ import (
 // in internal/modelegress/postgres.
 
 type pinnedInvocationRef struct {
-	dispatcherAssignmentID *int64
-	executionPrincipalID   *int64
+	dispatcherAssignmentID           *int64
+	executionPrincipalID             *int64
+	executionIdentityPolicyVersionID *int64
+	executionIdentityPolicyHash      *string
+	executionIdentityKeyID           *int64
+	identityAssertionID              *int64
 }
 
 func verifyClaim(ctx context.Context, tx pgx.Tx, evaluation modelegress.PreSendEvaluation, rawToken string) (pinnedInvocationRef, error) {
@@ -41,7 +46,9 @@ func verifyClaim(ctx context.Context, tx pgx.Tx, evaluation modelegress.PreSendE
 	var organizationID, dispatchActorRoleID, subjectRoleID, providerID, providerTransport, requestHash string
 	var organizationRevisionID, modelProfileVersionID int64
 	var capabilityMatrixHash *string
-	var claimActive, policyBound, evaluationExists bool
+	var identityVerifiedAt *time.Time
+	var identityEffect, keyStatus string
+	var claimActive, policyBound, evaluationExists, identityBindingValid, keyUsable bool
 	err := tx.QueryRow(ctx, `
 SELECT i.status,a.status,a.claim_token_hash,a.invocation_id,
        i.model_egress_policy_version_id,i.model_egress_policy_hash,
@@ -49,6 +56,9 @@ SELECT i.status,a.status,a.claim_token_hash,a.invocation_id,
        i.subject_role_id,i.model_profile_version_id,i.provider_id,v.transport,i.request_hash,
        r.document_hashes->>'capability-matrix.yaml',
        i.dispatcher_assignment_id,i.execution_principal_id,
+       i.execution_identity_policy_version_id,i.execution_identity_policy_hash,
+       a.execution_identity_key_id,a.identity_assertion_id,a.identity_verified_at,
+       ia.verification_effect,ik.status,
        a.claim_expires_at > clock_timestamp(),
        EXISTS (
            SELECT 1
@@ -62,7 +72,28 @@ SELECT i.status,a.status,a.claim_token_hash,a.invocation_id,
            SELECT 1
            FROM model_egress_evaluations e
            WHERE e.dispatch_attempt_id=a.id
-       )
+       ),
+       ia.invocation_id=i.id
+         AND ia.dispatch_attempt_id=a.id
+         AND ia.execution_principal_id=i.execution_principal_id
+         AND ia.execution_identity_key_id=a.execution_identity_key_id
+         AND ia.payload_hash IN (
+             SELECT c.payload_hash
+             FROM model_execution_identity_challenges c
+             WHERE c.id=ia.challenge_id
+               AND c.invocation_id=i.id
+               AND c.execution_principal_id=i.execution_principal_id
+               AND c.execution_identity_key_id=a.execution_identity_key_id
+               AND c.execution_identity_policy_version_id=i.execution_identity_policy_version_id
+               AND c.execution_identity_policy_hash=i.execution_identity_policy_hash
+               AND c.action_digest=$3
+               AND c.request_hash=i.request_hash
+               AND c.consumed_at IS NOT NULL
+               AND c.invalidated_at IS NULL
+         ),
+       ik.status IN ('active','retiring')
+         AND ik.valid_from <= clock_timestamp()
+         AND (ik.valid_until IS NULL OR clock_timestamp() < ik.valid_until)
 FROM model_invocations i
 JOIN model_dispatch_attempts a ON a.id=$2 AND a.invocation_id=i.id
 JOIN model_profile_versions v
@@ -72,14 +103,24 @@ JOIN model_profile_versions v
  AND v.provider_id=i.provider_id
  AND v.provider_model_id=i.provider_model_id
 JOIN organization_registry_revisions r ON r.id=i.organization_revision_id
+JOIN model_execution_identity_assertions ia
+  ON ia.id=a.identity_assertion_id
+ AND ia.organization_id=i.organization_id
+JOIN model_execution_identity_keys ik
+  ON ik.id=a.execution_identity_key_id
+ AND ik.organization_id=i.organization_id
+ AND ik.execution_principal_id=i.execution_principal_id
 WHERE i.id=$1
-FOR UPDATE OF i,a`, evaluation.InvocationID, evaluation.DispatchAttemptID).Scan(
+FOR UPDATE OF i,a,ia,ik`, evaluation.InvocationID, evaluation.DispatchAttemptID, evaluation.ActionDigest).Scan(
 		&invocationStatus, &attemptStatus, &storedToken, &attemptInvocationID,
 		&invocationPolicyID, &policyHash, &organizationID, &organizationRevisionID,
 		&dispatchActorRoleID, &subjectRoleID, &modelProfileVersionID, &providerID,
 		&providerTransport, &requestHash, &capabilityMatrixHash,
 		&ref.dispatcherAssignmentID, &ref.executionPrincipalID,
-		&claimActive, &policyBound, &evaluationExists,
+		&ref.executionIdentityPolicyVersionID, &ref.executionIdentityPolicyHash,
+		&ref.executionIdentityKeyID, &ref.identityAssertionID, &identityVerifiedAt,
+		&identityEffect, &keyStatus,
+		&claimActive, &policyBound, &evaluationExists, &identityBindingValid, &keyUsable,
 	)
 	if err != nil {
 		return ref, mapError(err)
@@ -96,10 +137,19 @@ FOR UPDATE OF i,a`, evaluation.InvocationID, evaluation.DispatchAttemptID).Scan(
 	if ref.dispatcherAssignmentID == nil || ref.executionPrincipalID == nil {
 		return ref, modelruntime.ErrDispatcherAssignmentUnpinned
 	}
+	if ref.executionIdentityPolicyVersionID == nil || ref.executionIdentityPolicyHash == nil ||
+		ref.executionIdentityKeyID == nil || ref.identityAssertionID == nil || identityVerifiedAt == nil {
+		return ref, modelruntime.ErrExecutionIdentityUnpinned
+	}
+	if identityEffect != "allow" || !identityBindingValid || !keyUsable || (keyStatus != string(modelidentity.KeyActive) && keyStatus != string(modelidentity.KeyRetiring)) {
+		return ref, modelruntime.ErrExecutionIdentityDenied
+	}
 	expectedActionDigest, digestErr := modelruntime.ActionDigest(modelruntime.Invocation{
 		ID: evaluation.InvocationID, RequestHash: requestHash,
 		DispatcherAssignmentID: ref.dispatcherAssignmentID, ExecutionPrincipalID: ref.executionPrincipalID,
 		ModelEgressPolicyVersionID: &evaluation.PolicyVersionID, ModelEgressPolicyHash: evaluation.PolicyHash,
+		ExecutionIdentityPolicyVersionID: ref.executionIdentityPolicyVersionID,
+		ExecutionIdentityPolicyHash:      *ref.executionIdentityPolicyHash,
 	})
 	if digestErr != nil || expectedActionDigest != evaluation.ActionDigest {
 		return ref, modelegress.ErrEvaluationConflict

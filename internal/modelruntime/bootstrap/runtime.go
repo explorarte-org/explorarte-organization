@@ -15,6 +15,7 @@ import (
 	dispatchbootstrap "github.com/Mireuz13/explorarte-organization/internal/modeldispatch/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/modelegress"
 	egressbootstrap "github.com/Mireuz13/explorarte-organization/internal/modelegress/bootstrap"
+	identitybootstrap "github.com/Mireuz13/explorarte-organization/internal/modelidentity/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter"
 	modelpostgres "github.com/Mireuz13/explorarte-organization/internal/modelruntime/postgres"
@@ -61,6 +62,7 @@ type Runtime struct {
 	Dispatch    *modelruntime.DispatchService
 	Store       *modelpostgres.Store
 	Dispatcher  *dispatchbootstrap.Runtime
+	Identity    *identitybootstrap.Runtime
 }
 
 func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, error) {
@@ -99,6 +101,10 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	if err != nil {
 		return nil, fmt.Errorf("open model dispatch runtime: %w", err)
 	}
+	identityRuntime, err := identitybootstrap.Open(cfg, platformStore)
+	if err != nil {
+		return nil, fmt.Errorf("open model execution identity runtime: %w", err)
+	}
 	catalog := catalogAdapter{reader: registryRepo}
 	tasksAdapter := taskAdapter{reader: taskStore}
 	contexts := contextAdapter{service: contextRuntime.Service}
@@ -107,16 +113,16 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	if err != nil {
 		return nil, err
 	}
-	invocationService, err := modelruntime.NewInvocationService(cfg.Tasks.OrganizationID, catalog, tasksAdapter, contexts, modelStore, egressRuntime.Store, dispatchRuntime.Store, modelruntime.ClockFunc(time.Now), cfg.Tasks.OutboxMaxAttempts)
+	invocationService, err := modelruntime.NewInvocationService(cfg.Tasks.OrganizationID, catalog, tasksAdapter, contexts, modelStore, egressRuntime.Store, identityRuntime.Store, dispatchRuntime.Store, modelruntime.ClockFunc(time.Now), cfg.Tasks.OutboxMaxAttempts)
 	if err != nil {
 		return nil, err
 	}
 	adapters := adapter.NewRegistry()
-	dispatchService, err := modelruntime.NewDispatchService(cfg.Tasks.OrganizationID, runtimeCfg, catalog, tasksAdapter, contexts, evaluator, egressRuntime.Store, egressRuntime.Evaluator, modelStore, dispatchRuntime.Store, dispatchRuntime.Store, modelStore, adapters, modelruntime.ClockFunc(time.Now))
+	dispatchService, err := modelruntime.NewDispatchService(cfg.Tasks.OrganizationID, runtimeCfg, catalog, tasksAdapter, contexts, evaluator, egressRuntime.Store, egressRuntime.Evaluator, modelStore, dispatchRuntime.Store, dispatchRuntime.Store, identityRuntime.Challenges, modelStore, adapters, modelruntime.ClockFunc(time.Now))
 	if err != nil {
 		return nil, err
 	}
-	return &Runtime{Config: runtimeCfg, Registry: registryService, Invocations: invocationService, Dispatch: dispatchService, Store: modelStore, Dispatcher: dispatchRuntime}, nil
+	return &Runtime{Config: runtimeCfg, Registry: registryService, Invocations: invocationService, Dispatch: dispatchService, Store: modelStore, Dispatcher: dispatchRuntime, Identity: identityRuntime}, nil
 }
 
 type catalogAdapter struct{ reader registry.Reader }

@@ -28,10 +28,11 @@ if rg -n 'internal/modelruntime|modelruntime' cmd/orgd internal/app; then
 fi
 
 # Real provider secrets and endpoints are intentionally outside Branch 08.
-# ORG_MODEL_EXECUTION_PRINCIPAL_KEY (branch 10) is excluded: per spec it names a
-# non-secret local process identity, not a credential.
+# The branch 10 principal key is a non-secret local identity label. The branch
+# 11 identity key-file variable is only a filesystem reference; raw private-key
+# values remain forbidden by the model-identity fitness checks.
 if rg -n --glob '!**/*_test.go' '(API[_-]?KEY|ACCESS[_-]?TOKEN|PROVIDER[_-]?TOKEN|BASE[_-]?URL|Authorization: Bearer|ORG_MODEL_.*(KEY|TOKEN|URL))' internal/modelruntime cmd/orgctl/models.go .env.example \
-  | rg -v 'ORG_MODEL_EXECUTION_PRINCIPAL_KEY' | rg -q .; then
+  | rg -v 'ORG_MODEL_EXECUTION_(PRINCIPAL_KEY|IDENTITY_KEY_FILE)' | rg -q .; then
   fail "provider credential or endpoint configuration found"
 fi
 
@@ -107,7 +108,7 @@ mapfile -t canonical_changes < <({
 } | sort -u)
 for path in "${canonical_changes[@]}"; do
   case "$path" in
-    docs/canonical/capability-matrix.yaml|docs/canonical/model-egress-policy.yaml) ;;
+    docs/canonical/capability-matrix.yaml|docs/canonical/model-egress-policy.yaml|docs/canonical/model-execution-identity-policy.yaml) ;;
     *) fail "unauthorized canonical change: $path" ;;
   esac
 done

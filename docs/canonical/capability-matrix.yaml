@@ -31,6 +31,14 @@ capabilities:
   risk: high
 - id: model.dispatch_assignment.revoke
   risk: high
+- id: model.execution_identity_key.register
+  risk: high
+- id: model.execution_identity_key.rotate
+  risk: high
+- id: model.execution_identity_key.retire
+  risk: high
+- id: model.execution_identity_key.revoke
+  risk: high
 - id: task.review
   risk: medium
 - id: task.approve_terminal
@@ -120,6 +128,10 @@ hard_denies:
   - model.execution_principal.disable
   - model.dispatch_assignment.create
   - model.dispatch_assignment.revoke
+  - model.execution_identity_key.register
+  - model.execution_identity_key.rotate
+  - model.execution_identity_key.retire
+  - model.execution_identity_key.revoke
   specialist:
   - project.delegate_department
   - task.assign_worker

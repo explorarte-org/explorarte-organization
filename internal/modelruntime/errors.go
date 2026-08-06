@@ -31,4 +31,6 @@ var (
 	ErrExecutionPrincipalDisabled   = errors.New("model execution principal disabled")
 	ErrExecutionPrincipalMismatch   = errors.New("model execution principal mismatch")
 	ErrDispatcherAssignmentUnpinned = errors.New("model invocation has no pinned dispatcher assignment")
+	ErrExecutionIdentityUnpinned    = errors.New("execution identity policy is not pinned")
+	ErrExecutionIdentityDenied      = errors.New("execution identity assertion denied")
 )

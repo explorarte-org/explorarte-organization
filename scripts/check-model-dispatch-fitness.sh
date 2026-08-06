@@ -22,7 +22,7 @@ mapfile -t canonical_changes < <({
 } | sort -u)
 for path in "${canonical_changes[@]}"; do
   case "$path" in
-    docs/canonical/capability-matrix.yaml) ;;
+    docs/canonical/capability-matrix.yaml|docs/canonical/model-execution-identity-policy.yaml) ;;
     *) fail "unauthorized canonical change: $path" ;;
   esac
 done
