@@ -41,6 +41,12 @@ func validateEvaluationRequest(request EvaluationRequest) error {
 	if len(request.ResourceType) > 80 || !identifierPattern.MatchString(request.ResourceType) {
 		return fmt.Errorf("%w: resource type is invalid", ErrInvalidInput)
 	}
+	if request.CapabilityID == "model.invoke" && request.ResourceType != "model_invocation" {
+		return fmt.Errorf("%w: model.invoke is restricted to model_invocation resources", ErrInvalidInput)
+	}
+	if request.CapabilityID == "task.execute" && request.ResourceType == "model_invocation" {
+		return fmt.Errorf("%w: task.execute cannot authorize model dispatch", ErrInvalidInput)
+	}
 	if request.ResourceID != strings.TrimSpace(request.ResourceID) || request.ResourceID == "" || len(request.ResourceID) > 240 || strings.ContainsRune(request.ResourceID, 0) {
 		return fmt.Errorf("%w: resource ID is invalid", ErrInvalidInput)
 	}

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/Mireuz13/explorarte-organization/internal/modelegress"
 	"gopkg.in/yaml.v3"
 )
 
@@ -30,6 +31,20 @@ func TestLoadCurrentCanonicalDocuments(t *testing.T) {
 	}
 	if snapshot.Counts.Roles != 48 || snapshot.Counts.ImportedRoles != 45 || snapshot.Counts.ProposedRoles != 3 {
 		t.Fatalf("role counts=%+v", snapshot.Counts)
+	}
+	documentHashes := make(map[string]string, len(snapshot.Documents))
+	for _, document := range snapshot.Documents {
+		documentHashes[document.Path] = document.SemanticHash
+	}
+	if documentHashes["model-egress-policy.yaml"] == "" || documentHashes["capability-matrix.yaml"] == "" {
+		t.Fatalf("missing branch 09 document hashes: %+v", documentHashes)
+	}
+	egress, err := modelegress.LoadCanonicalPolicy(canonicalDirForTest(t), modelegress.LoadOptions{KnownProviders: []string{"alibaba_token_plan_via_claude_code", "deepseek", "openai_compatible"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if documentHashes[modelegress.PolicyFileName] != egress.CanonicalHash {
+		t.Fatalf("registry/model-egress semantic hash mismatch: %s != %s", documentHashes[modelegress.PolicyFileName], egress.CanonicalHash)
 	}
 	for _, id := range []string{"empresa/ceo_observer", "investigacion/research_worker_hourly", "ingenieria_ia/razonamiento_logico"} {
 		role := findRole(snapshot, id)

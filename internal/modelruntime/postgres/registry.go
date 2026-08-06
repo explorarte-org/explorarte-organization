@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -272,7 +273,11 @@ WHERE b.organization_id=$1 AND b.organization_revision_id=$2 AND b.role_id=$3 AN
 		&out.Capabilities.ID, &out.Capabilities.OrganizationID, &out.Capabilities.ModelProfileVersionID, &caps, &out.Capabilities.CapabilityHash, &out.Capabilities.CreatedAt,
 		&out.Provider.OrganizationID, &out.Provider.ID, &out.Provider.Transport, &out.Provider.AdapterStatus, &out.Provider.DispatchEnabled, &out.Provider.DirectHTTPForbidden, &out.Provider.CanonicalHash, &out.Provider.OrganizationRevisionID, &out.Provider.CreatedAt)
 	if err != nil {
-		return out, mapError(err)
+		mapped := mapError(err)
+		if errors.Is(mapped, modelruntime.ErrNotFound) {
+			return out, modelruntime.ErrBindingNotFound
+		}
+		return out, mapped
 	}
 	if err = json.Unmarshal(caps, &out.Capabilities.Capabilities); err != nil {
 		return out, err

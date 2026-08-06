@@ -28,6 +28,7 @@ var requiredCanonicalFiles = []string{
 	"role-catalog.yaml",
 	"leader-worker-map.yaml",
 	"model-routing.yaml",
+	"model-egress-policy.yaml",
 	"capability-matrix.yaml",
 	"instruction-precedence.yaml",
 	"decisions-required.yaml",
@@ -89,6 +90,9 @@ func (l *Loader) readDocuments() (parsedDocuments, []DocumentDigest, error) {
 		}},
 		{"model-routing.yaml", &documents.ModelRouting, func() (string, string) {
 			return documents.ModelRouting.SchemaVersion, documents.ModelRouting.DocumentStatus
+		}},
+		{"model-egress-policy.yaml", &documents.ModelEgress, func() (string, string) {
+			return documents.ModelEgress.SchemaVersion, documents.ModelEgress.DocumentStatus
 		}},
 		{"capability-matrix.yaml", &documents.Capabilities, func() (string, string) {
 			return documents.Capabilities.SchemaVersion, documents.Capabilities.DocumentStatus
@@ -186,10 +190,19 @@ func validateYAMLNode(node *yaml.Node, depth int, count *int) error {
 		return fmt.Errorf("YAML tag %q is not allowed", node.Tag)
 	}
 	if node.Kind == yaml.MappingNode {
+		seen := make(map[string]struct{}, len(node.Content)/2)
 		for index := 0; index < len(node.Content); index += 2 {
-			if index < len(node.Content) && node.Content[index].Value == "<<" {
+			if index+1 >= len(node.Content) {
+				return errors.New("invalid YAML mapping")
+			}
+			key := node.Content[index].Value
+			if key == "<<" {
 				return errors.New("YAML merge keys are not allowed")
 			}
+			if _, exists := seen[key]; exists {
+				return fmt.Errorf("duplicate YAML key %q", key)
+			}
+			seen[key] = struct{}{}
 		}
 	}
 	for _, child := range node.Content {
@@ -230,6 +243,30 @@ func normalizeDocuments(documents *parsedDocuments) {
 		documents.ModelRouting.Policies[key] = policy
 	}
 	sort.Strings(documents.ModelRouting.RoutingInvariants)
+	documents.ModelEgress.SchemaVersion = strings.TrimSpace(documents.ModelEgress.SchemaVersion)
+	documents.ModelEgress.DocumentStatus = strings.TrimSpace(documents.ModelEgress.DocumentStatus)
+	documents.ModelEgress.PolicyID = strings.TrimSpace(documents.ModelEgress.PolicyID)
+	documents.ModelEgress.DefaultAction = strings.TrimSpace(documents.ModelEgress.DefaultAction)
+	for index := range documents.ModelEgress.HardDenies {
+		documents.ModelEgress.HardDenies[index].DataClassification = strings.TrimSpace(documents.ModelEgress.HardDenies[index].DataClassification)
+		documents.ModelEgress.HardDenies[index].ReasonCode = strings.TrimSpace(documents.ModelEgress.HardDenies[index].ReasonCode)
+	}
+	for index := range documents.ModelEgress.Rules {
+		documents.ModelEgress.Rules[index].ProviderID = strings.TrimSpace(documents.ModelEgress.Rules[index].ProviderID)
+		documents.ModelEgress.Rules[index].DataClassification = strings.TrimSpace(documents.ModelEgress.Rules[index].DataClassification)
+		documents.ModelEgress.Rules[index].Effect = strings.TrimSpace(documents.ModelEgress.Rules[index].Effect)
+		documents.ModelEgress.Rules[index].ReasonCode = strings.TrimSpace(documents.ModelEgress.Rules[index].ReasonCode)
+	}
+	sort.Slice(documents.ModelEgress.HardDenies, func(i, j int) bool {
+		left := documents.ModelEgress.HardDenies[i].DataClassification + "\x00" + documents.ModelEgress.HardDenies[i].ReasonCode
+		right := documents.ModelEgress.HardDenies[j].DataClassification + "\x00" + documents.ModelEgress.HardDenies[j].ReasonCode
+		return left < right
+	})
+	sort.Slice(documents.ModelEgress.Rules, func(i, j int) bool {
+		left := documents.ModelEgress.Rules[i].ProviderID + "\x00" + documents.ModelEgress.Rules[i].DataClassification + "\x00" + documents.ModelEgress.Rules[i].Effect + "\x00" + documents.ModelEgress.Rules[i].ReasonCode
+		right := documents.ModelEgress.Rules[j].ProviderID + "\x00" + documents.ModelEgress.Rules[j].DataClassification + "\x00" + documents.ModelEgress.Rules[j].Effect + "\x00" + documents.ModelEgress.Rules[j].ReasonCode
+		return left < right
+	})
 	sort.Slice(documents.Capabilities.Capabilities, func(i, j int) bool {
 		return documents.Capabilities.Capabilities[i].ID < documents.Capabilities.Capabilities[j].ID
 	})

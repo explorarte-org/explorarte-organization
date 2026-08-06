@@ -21,6 +21,8 @@ capabilities:
   risk: medium
 - id: task.execute
   risk: medium
+- id: model.invoke
+  risk: high
 - id: task.review
   risk: medium
 - id: task.approve_terminal
@@ -87,6 +89,7 @@ grants:
   - rag.read_own_namespace
   - rag.propose_candidate
   execution_service:
+  - model.invoke
   - code.stage_write
   - code.run_tests
   - code.commit
@@ -95,6 +98,8 @@ grants:
   - task.review
   - audit.read_sanitized_evidence
 hard_denies:
+  owner:
+  - model.invoke
   '*':
   - cell.read_clinical_data
   - cell.direct_database_access

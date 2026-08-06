@@ -7,7 +7,10 @@ import (
 	"strings"
 )
 
-var sha256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+var (
+	sha256Pattern     = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	reasonCodePattern = regexp.MustCompile(`^[a-z0-9]+([._-][a-z0-9]+)*$`)
+)
 
 func validateDocuments(documents parsedDocuments, snapshot Snapshot) ValidationReport {
 	validator := validator{documents: documents, snapshot: snapshot}
@@ -29,6 +32,8 @@ func (v *validator) run() {
 	v.validateLeaderWorkerMap()
 	v.validateReportingGraph()
 	v.validateModelsAndAuthorities()
+	v.validateModelEgressPolicy()
+	v.validateModelInvokeCapability()
 	v.validateCounts()
 	v.validateProposedRoles()
 	v.validateSourceManifest()
@@ -48,6 +53,7 @@ func (v *validator) validateDocumentMetadata() {
 		{"role-catalog.yaml", v.documents.Roles.SchemaVersion, v.documents.Roles.DocumentStatus},
 		{"leader-worker-map.yaml", v.documents.LeaderWorker.SchemaVersion, v.documents.LeaderWorker.DocumentStatus},
 		{"model-routing.yaml", v.documents.ModelRouting.SchemaVersion, v.documents.ModelRouting.DocumentStatus},
+		{"model-egress-policy.yaml", v.documents.ModelEgress.SchemaVersion, v.documents.ModelEgress.DocumentStatus},
 		{"capability-matrix.yaml", v.documents.Capabilities.SchemaVersion, v.documents.Capabilities.DocumentStatus},
 		{"instruction-precedence.yaml", v.documents.InstructionPrecedence.SchemaVersion, v.documents.InstructionPrecedence.DocumentStatus},
 	}
@@ -344,4 +350,107 @@ func (v *validator) validateSourceManifest() {
 		}
 		seen[key] = struct{}{}
 	}
+}
+
+func (v *validator) validateModelEgressPolicy() {
+	document := v.documents.ModelEgress
+	if strings.TrimSpace(document.PolicyID) == "" {
+		v.addError("model_egress.policy_id_missing", "model-egress-policy.yaml:policy_id", "model egress policy_id is required")
+	}
+	if document.PolicyVersion <= 0 {
+		v.addError("model_egress.policy_version_invalid", "model-egress-policy.yaml:policy_version", "model egress policy_version must be positive")
+	}
+	if document.DefaultAction != "deny" {
+		v.addError("model_egress.default_action_invalid", "model-egress-policy.yaml:default_action", "model egress default_action must be deny")
+	}
+	providers := make(map[string]struct{})
+	for _, policy := range v.documents.ModelRouting.Policies {
+		providers[policy.Provider] = struct{}{}
+	}
+	hard := make(map[string]struct{})
+	for index, deny := range document.HardDenies {
+		path := fmt.Sprintf("model-egress-policy.yaml:hard_denies[%d]", index)
+		if deny.DataClassification != "secret" && deny.DataClassification != "clinical" {
+			v.addError("model_egress.hard_deny_invalid", path, "only secret and clinical may be global hard denies")
+		}
+		if !reasonCodePattern.MatchString(deny.ReasonCode) || len(deny.ReasonCode) > 120 {
+			v.addError("model_egress.reason_code_invalid", path, "hard deny reason_code must be a bounded lowercase code")
+		}
+		if _, exists := hard[deny.DataClassification]; exists {
+			v.addError("model_egress.hard_deny_duplicate", path, "duplicate hard deny %q", deny.DataClassification)
+		}
+		hard[deny.DataClassification] = struct{}{}
+	}
+	for _, required := range []string{"secret", "clinical"} {
+		if _, exists := hard[required]; !exists {
+			v.addError("model_egress.hard_deny_missing", "model-egress-policy.yaml:hard_denies", "%s must be a hard deny", required)
+		}
+	}
+	seen := make(map[string]struct{})
+	for index, rule := range document.Rules {
+		path := fmt.Sprintf("model-egress-policy.yaml:rules[%d]", index)
+		if _, exists := providers[rule.ProviderID]; !exists {
+			v.addError("model_egress.provider_unknown", path, "provider %q does not exist in model-routing.yaml", rule.ProviderID)
+		}
+		switch rule.DataClassification {
+		case "public", "sanitized", "organizational":
+		case "secret", "clinical":
+			v.addError("model_egress.hard_deny_rule_conflict", path, "%s is governed exclusively by hard_denies", rule.DataClassification)
+		default:
+			v.addError("model_egress.classification_unknown", path, "classification %q is unknown", rule.DataClassification)
+		}
+		if rule.Effect != "deny" {
+			v.addError("model_egress.productive_allow_forbidden", path, "productive model egress policy may only contain deny rules in branch 09")
+		}
+		if !reasonCodePattern.MatchString(rule.ReasonCode) || len(rule.ReasonCode) > 120 {
+			v.addError("model_egress.reason_code_invalid", path, "rule reason_code must be a bounded lowercase code")
+		}
+		key := rule.ProviderID + "\x00" + rule.DataClassification
+		if _, exists := seen[key]; exists {
+			v.addError("model_egress.rule_duplicate", path, "duplicate provider/classification rule")
+		}
+		seen[key] = struct{}{}
+	}
+}
+
+func (v *validator) validateModelInvokeCapability() {
+	capabilities := make(map[string]capabilityDefinition)
+	for _, capability := range v.documents.Capabilities.Capabilities {
+		capabilities[capability.ID] = capability
+	}
+	capability, exists := capabilities["model.invoke"]
+	if !exists {
+		v.addError("capability.model_invoke_missing", "capability-matrix.yaml", "model.invoke capability is required")
+		return
+	}
+	if capability.Risk != "high" || capability.Approval != "" {
+		v.addError("capability.model_invoke_invalid", "capability-matrix.yaml", "model.invoke must have high risk and no approval mode")
+	}
+	for authority, grants := range v.documents.Capabilities.Grants {
+		has := false
+		for _, grant := range grants {
+			if grant == "model.invoke" {
+				has = true
+				break
+			}
+		}
+		if has && authority != "execution_service" {
+			v.addError("capability.model_invoke_grant_invalid", "capability-matrix.yaml:grants", "model.invoke may only be granted to execution_service, found %q", authority)
+		}
+	}
+	if !containsString(v.documents.Capabilities.Grants["execution_service"], "model.invoke") {
+		v.addError("capability.model_invoke_execution_service_missing", "capability-matrix.yaml:grants.execution_service", "execution_service must receive model.invoke")
+	}
+	if !containsString(v.documents.Capabilities.HardDenies["owner"], "model.invoke") {
+		v.addError("capability.model_invoke_owner_deny_missing", "capability-matrix.yaml:hard_denies.owner", "owner must have hard deny for model.invoke")
+	}
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }

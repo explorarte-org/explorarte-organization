@@ -5,8 +5,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 MODE="${1:-all}"
 case "$MODE" in
-  all|tasks|staging|authorization|context|model) ;;
-  *) echo "usage: $0 [all|tasks|staging|authorization|context|model]" >&2; exit 2 ;;
+  all|tasks|staging|authorization|context|model|egress) ;;
+  *) echo "usage: $0 [all|tasks|staging|authorization|context|model|egress]" >&2; exit 2 ;;
 esac
 
 export ORG_POSTGRES_ADMIN_USER=explorarte_test_admin
@@ -42,6 +42,9 @@ fi
 if [[ "$MODE" == all || "$MODE" == context ]]; then
   timeout --foreground --signal=TERM --kill-after=30s 25m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/contextengine/postgres
 fi
+if [[ "$MODE" == all || "$MODE" == egress ]]; then
+  timeout --foreground --signal=TERM --kill-after=30s 30m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/modelegress/postgres
+fi
 if [[ "$MODE" == all || "$MODE" == model ]]; then
   timeout --foreground --signal=TERM --kill-after=30s 30m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/modelruntime/postgres
 fi
@@ -75,6 +78,26 @@ if [[ "$MODE" == all ]]; then
     fi
     /tmp/orgctl model registry sync --apply --json >/tmp/model-registry-sync-noop.json
     /tmp/orgctl model registry status --json >/tmp/model-registry-status.json
+    /tmp/orgctl model egress validate --json >/tmp/model-egress-validate.json
+    set +e
+    /tmp/orgctl model egress diff --json >/tmp/model-egress-diff.json
+    egress_code=$?
+    set -e
+    if [ "$egress_code" -eq 3 ]; then
+      /tmp/orgctl model egress sync --apply --json >/tmp/model-egress-sync.json
+    else
+      test "$egress_code" -eq 0
+    fi
+    /tmp/orgctl model egress sync --apply --json >/tmp/model-egress-sync-noop.json
+    /tmp/orgctl model egress status --json >/tmp/model-egress-status.json
+    grep -Fq "\"synchronized\": true" /tmp/model-egress-status.json
+    for forbidden in provider policy policy-id policy-version transport classifications effect url api-key; do
+      set +e
+      /tmp/orgctl model egress validate --"$forbidden" forbidden >/tmp/model-egress-forbidden.out 2>/tmp/model-egress-forbidden.err
+      forbidden_code=$?
+      set -e
+      test "$forbidden_code" -eq 2
+    done
     /tmp/orgctl registry get-role ingenieria_ia/orquestador --json >/tmp/role.json
     /tmp/orgctl registry get-leader ingenieria_ia --json >/tmp/leader.json
     cat >/tmp/task.json <<JSON
@@ -87,7 +110,7 @@ JSON
     action_digest="$(printf %s authorization-cli-smoke | sha256sum | cut -d" " -f1)"
     /tmp/orgctl authorization evaluate --actor-role ingenieria_ia/code-runner --capability code.commit --resource-type code --resource-id cli-smoke --action-digest "$action_digest" --json >/tmp/authorization-evaluate.json
     /tmp/orgctl authorization request --actor-role creativo/copywriter --capability rag.publish_approved --resource-type rag_candidate --resource-id cli-smoke --action-digest "$action_digest" --idempotency-key cli-authorization-smoke --reason "CI one-time approval" --json >/tmp/authorization-request.json
-    request_id="$(grep -m1 '"id"' /tmp/authorization-request.json | tr -cd '0-9')"
+    request_id="$(grep -m1 "\"id\"" /tmp/authorization-request.json | tr -cd "0-9")"
     /tmp/orgctl authorization decide "$request_id" --decision approve --actor-role empresa/human --reason "CI owner approval" --json >/tmp/authorization-decision.json
     /tmp/orgctl authorization consume "$request_id" --actor-role creativo/copywriter --action-digest "$action_digest" --json >/tmp/authorization-consume.json
     grep -Fq "\"status\": \"ready\"" /tmp/task-created.json
@@ -113,7 +136,7 @@ Verify artifacts and evidence.
 EOF
     export ORG_CONTEXT_SOURCE_ROOT=/tmp/context-source
     /tmp/orgctl context build --actor-role ingenieria_ia/qa --purpose "CLI context smoke" --idempotency-key cli-context-smoke --json >/tmp/context-created.json
-    context_id="$(grep -m1 '"id"' /tmp/context-created.json | tr -cd '0-9')"
+    context_id="$(grep -m1 "\"id\"" /tmp/context-created.json | tr -cd "0-9")"
     /tmp/orgctl context get "$context_id" --json >/tmp/context-get.json
     /tmp/orgctl context validate "$context_id" --json >/tmp/context-validation.json
     /tmp/orgctl context render "$context_id" --output /tmp/context-render.json

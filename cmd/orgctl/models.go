@@ -22,6 +22,15 @@ func runModel(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 	switch args[0] {
+	case "egress":
+		runtime, runtimeConfig, cleanup, code := openModelEgressRuntime(stderr)
+		if code != exitOK {
+			return code
+		}
+		defer cleanup()
+		ctx, cancel := context.WithTimeout(context.Background(), runtimeConfig.CommandTimeout)
+		defer cancel()
+		return modelEgress(ctx, runtime, args[1:], stdout, stderr)
 	case "registry":
 		cfg, runtime, cleanup, code := openModelRegistryRuntime(stderr)
 		if code != exitOK {
@@ -335,7 +344,8 @@ func modelError(stderr io.Writer, err error) int {
 	}
 }
 func printModelUsage(out io.Writer) {
-	fmt.Fprintln(out, "usage: orgctl model <registry|invocation> ...")
+	fmt.Fprintln(out, "usage: orgctl model <registry|egress|invocation> ...")
 	fmt.Fprintln(out, "  orgctl model registry <validate|diff|sync|status> [--json] [--apply]")
+	fmt.Fprintln(out, "  orgctl model egress <validate|diff|sync|status> [--json] [--apply]")
 	fmt.Fprintln(out, "  orgctl model invocation <create|get|list|dispatch|cancel|reconcile> ...")
 }

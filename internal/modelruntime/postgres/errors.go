@@ -32,6 +32,8 @@ func mapError(err error) error {
 			return fmt.Errorf("%w: PostgreSQL unique constraint", modelruntime.ErrConflict)
 		case "23503", "23514", "22P02":
 			return fmt.Errorf("%w: PostgreSQL constraint %s", modelruntime.ErrInvalidRequest, pgErr.Code)
+		case "40001", "40P01":
+			return fmt.Errorf("%w: PostgreSQL %s", modelruntime.ErrConflict, pgErr.Code)
 		}
 		return fmt.Errorf("PostgreSQL %s: %w", pgErr.Code, err)
 	}

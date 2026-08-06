@@ -15,7 +15,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Mireuz13/explorarte-organization/internal/authorization"
 	"github.com/Mireuz13/explorarte-organization/internal/config"
+	"github.com/Mireuz13/explorarte-organization/internal/modelegress"
+	egresspostgres "github.com/Mireuz13/explorarte-organization/internal/modelegress/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter"
 	modelpostgres "github.com/Mireuz13/explorarte-organization/internal/modelruntime/postgres"
@@ -37,7 +40,7 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err = runner.Up(ctx); err != nil {
-		t.Fatalf("migration 000007: %v", err)
+		t.Fatalf("migrations through 000008: %v", err)
 	}
 	resetModelSchema(t, ctx, platform)
 	syncModelCanonical(t, ctx, platform)
@@ -58,7 +61,7 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	baseCatalog := catalogFixture{organization: modelruntime.OrganizationRef{ID: modelIntegrationOrganization, RevisionID: revision.ID, ModelRoutingHash: revision.DocumentHashes["model-routing.yaml"]}, roles: convertRoles(roles)}
+	baseCatalog := catalogFixture{organization: modelruntime.OrganizationRef{ID: modelIntegrationOrganization, RevisionID: revision.ID, ModelRoutingHash: revision.DocumentHashes["model-routing.yaml"], ModelEgressPolicyHash: revision.DocumentHashes["model-egress-policy.yaml"], CapabilityMatrixHash: revision.DocumentHashes["capability-matrix.yaml"]}, roles: convertRoles(roles)}
 
 	t.Run("canonical real providers materialize unavailable and sync is idempotent", func(t *testing.T) {
 		service, newErr := modelruntime.NewRegistryService(filepath.Join("..", "..", "..", "docs", "canonical"), modelIntegrationOrganization, baseCatalog, store)
@@ -83,33 +86,66 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 	})
 
 	fakeRoutingHash := modelruntime.SHA256Bytes([]byte("test.fake canonical routing fixture v1"))
-	fakeRevisionID := insertFakeRoutingRevision(t, ctx, platform, fakeRoutingHash)
+	fakeEgressHash := modelruntime.SHA256Bytes([]byte("test.fake egress fixture v1"))
+	fakeCapabilityHash := revision.DocumentHashes["capability-matrix.yaml"]
+	fakeRevisionID := insertFakeRoutingRevision(t, ctx, platform, fakeRoutingHash, fakeEgressHash, fakeCapabilityHash)
 	fakeCatalog := catalogFixture{
-		organization: modelruntime.OrganizationRef{ID: modelIntegrationOrganization, RevisionID: fakeRevisionID, ModelRoutingHash: fakeRoutingHash},
+		organization: modelruntime.OrganizationRef{ID: modelIntegrationOrganization, RevisionID: fakeRevisionID, ModelRoutingHash: fakeRoutingHash, ModelEgressPolicyHash: fakeEgressHash, CapabilityMatrixHash: fakeCapabilityHash},
 		roles: map[string]modelruntime.RoleRef{
-			"ingenieria_ia/qa": {ID: "ingenieria_ia/qa", ModelPolicy: "department.worker", Enabled: true, Executable: true, AuthorityClass: "specialist", UnitID: "ingenieria_ia"},
+			"ingenieria_ia/code-runner": {ID: "ingenieria_ia/code-runner", ModelPolicy: "department.worker", Enabled: true, Executable: true, AuthorityClass: "execution_service", UnitID: "ingenieria_ia"},
+			"ingenieria_ia/frontend":    {ID: "ingenieria_ia/frontend", ModelPolicy: "department.worker", Enabled: true, Executable: true, AuthorityClass: "specialist", UnitID: "ingenieria_ia"},
 		},
 	}
-	fakeSync, err := store.ApplyRegistry(ctx, fakeRegistryPlan(fakeRevisionID, fakeRoutingHash), 10)
-	if err != nil || !fakeSync.Applied {
-		t.Fatalf("fake sync=%+v err=%v", fakeSync, err)
-	}
-
-	taskRef, snapshotRef := insertModelExecutionFixture(t, ctx, platform, fakeRevisionID)
-	contexts := staticContextReader{ref: snapshotRef, rendered: []byte("safe integration context")}
-	tasks := staticTaskReader{ref: taskRef}
-	invocations, err := modelruntime.NewInvocationService(modelIntegrationOrganization, fakeCatalog, tasks, contexts, store, modelruntime.ClockFunc(time.Now), 10)
+	egressStore, err := egresspostgres.New(platform)
 	if err != nil {
 		t.Fatal(err)
 	}
+	taskRef, snapshotRef := insertModelExecutionFixture(t, ctx, platform, fakeRevisionID, "ingenieria_ia/code-runner", "code-runner")
+	contexts := &staticContextReader{ref: snapshotRef, rendered: []byte("safe integration context")}
+	tasks := staticTaskReader{ref: taskRef}
+	invocations, err := modelruntime.NewInvocationService(modelIntegrationOrganization, fakeCatalog, tasks, contexts, store, egressStore, modelruntime.ClockFunc(time.Now), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("organization, model and egress registries must synchronize in order", func(t *testing.T) {
+		command := validInvocationCommand(taskRef, snapshotRef, "ingenieria_ia/code-runner", "registry-sync-order-before-model")
+		if _, createErr := invocations.Create(ctx, command); !errors.Is(createErr, modelruntime.ErrBindingNotFound) {
+			t.Fatalf("model registry stale error=%v", createErr)
+		}
+
+		fakeSync, syncErr := store.ApplyRegistry(ctx, fakeRegistryPlan(fakeRevisionID, fakeRoutingHash), 10)
+		if syncErr != nil || !fakeSync.Applied {
+			t.Fatalf("fake model sync=%+v err=%v", fakeSync, syncErr)
+		}
+		command.IdempotencyKey = "registry-sync-order-before-egress"
+		if _, createErr := invocations.Create(ctx, command); !errors.Is(createErr, modelegress.ErrPolicyNotFound) {
+			t.Fatalf("egress registry stale error=%v", createErr)
+		}
+
+		egressSync, syncErr := egressStore.Apply(ctx, fakeEgressPlan(fakeRevisionID, fakeEgressHash))
+		if syncErr != nil || !egressSync.Applied {
+			t.Fatalf("fake egress sync=%+v err=%v", egressSync, syncErr)
+		}
+		command.IdempotencyKey = "registry-sync-order-ready"
+		created, createErr := invocations.Create(ctx, command)
+		if createErr != nil || created.Invocation.ModelEgressPolicyVersionID == nil || created.Invocation.ModelEgressPolicyHash != fakeEgressHash {
+			t.Fatalf("fully synchronized creation=%+v err=%v", created, createErr)
+		}
+	})
 	cfg := modelruntime.RuntimeConfig{Enabled: true, CommandTimeout: 30 * time.Second, GlobalConcurrency: 4, MaxResponseBytes: 1 << 20, MaxToolIntents: 8, ClaimTTL: time.Minute, ReconcileBatchSize: 100, OutboxMaxAttempts: 10}
-	dispatch, err := modelruntime.NewDispatchService(cfg, fakeCatalog, tasks, contexts, allowEvaluator{}, store, adapter.NewRegistry(adapter.NewFake()), modelruntime.ClockFunc(time.Now))
+	authorizer, err := authorization.New(repo, modelIntegrationOrganization, filepath.Join("..", "..", "..", "docs", "canonical"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilityEvaluator := authorizationDispatchAdapter{evaluator: authorizer}
+	dispatch, err := modelruntime.NewDispatchService(cfg, fakeCatalog, tasks, contexts, capabilityEvaluator, egressStore, modelegress.NewEvaluator(), egressStore, store, adapter.NewRegistry(adapter.NewFake()), modelruntime.ClockFunc(time.Now))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	t.Run("create reuse conflict and fake one-shot dispatch are durable", func(t *testing.T) {
-		command := validInvocationCommand(taskRef, snapshotRef, "pg-fake-dispatch")
+		command := validInvocationCommand(taskRef, snapshotRef, "ingenieria_ia/code-runner", "pg-fake-dispatch")
 		created, createErr := invocations.Create(ctx, command)
 		if createErr != nil || created.Reused {
 			t.Fatalf("created=%+v err=%v", created, createErr)
@@ -151,8 +187,98 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		}
 	})
 
+	t.Run("authorization deny is durable and never renders or calls adapter", func(t *testing.T) {
+		created := createModelInvocation(t, ctx, invocations, validInvocationCommand(taskRef, snapshotRef, "ingenieria_ia/code-runner", "authorization-deny"))
+		provider := &countingAdapter{}
+		deniedDispatch, newErr := modelruntime.NewDispatchService(cfg, fakeCatalog, tasks, contexts, denyEvaluator{matrixHash: fakeCapabilityHash}, egressStore, modelegress.NewEvaluator(), egressStore, store, adapter.NewRegistry(provider), modelruntime.ClockFunc(time.Now))
+		if newErr != nil {
+			t.Fatal(newErr)
+		}
+		beforeRender := contexts.renderCalls
+		result, dispatchErr := deniedDispatch.Dispatch(ctx, created.ID, "authorization-deny")
+		if !errors.Is(dispatchErr, modelruntime.ErrAuthorizationDenied) || result.Invocation.Status != modelruntime.InvocationFailed || contexts.renderCalls != beforeRender || provider.calls != 0 {
+			t.Fatalf("result=%+v err=%v render=%d/%d adapter_calls=%d", result, dispatchErr, beforeRender, contexts.renderCalls, provider.calls)
+		}
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_egress_evaluations WHERE invocation_id=$1 AND authorization_effect='deny' AND egress_effect='not_evaluated'`, created.ID, 1)
+	})
+
+	t.Run("task.execute without model.invoke cannot dispatch", func(t *testing.T) {
+		frontendTask, frontendSnapshot := insertModelExecutionFixture(t, ctx, platform, fakeRevisionID, "ingenieria_ia/frontend", "frontend-no-model-invoke")
+		frontendContexts := &staticContextReader{ref: frontendSnapshot, rendered: []byte("safe integration context")}
+		frontendTasks := staticTaskReader{ref: frontendTask}
+		frontendInvocations, newErr := modelruntime.NewInvocationService(modelIntegrationOrganization, fakeCatalog, frontendTasks, frontendContexts, store, egressStore, modelruntime.ClockFunc(time.Now), 10)
+		if newErr != nil {
+			t.Fatal(newErr)
+		}
+		created := createModelInvocation(t, ctx, frontendInvocations, validInvocationCommand(frontendTask, frontendSnapshot, "ingenieria_ia/frontend", "task-execute-without-model-invoke"))
+		provider := &countingAdapter{}
+		frontendDispatch, newErr := modelruntime.NewDispatchService(cfg, fakeCatalog, frontendTasks, frontendContexts, capabilityEvaluator, egressStore, modelegress.NewEvaluator(), egressStore, store, adapter.NewRegistry(provider), modelruntime.ClockFunc(time.Now))
+		if newErr != nil {
+			t.Fatal(newErr)
+		}
+		taskDecision, evalErr := authorizer.Evaluate(ctx, authorization.EvaluationRequest{OrganizationID: modelIntegrationOrganization, OrganizationRevisionID: fakeRevisionID, ActorRoleID: "ingenieria_ia/frontend", CapabilityID: "task.execute", ResourceType: "task", ResourceID: strconv.FormatInt(frontendTask.TaskID, 10), ActionDigest: authorization.DigestAction([]byte("task-execute-fixture"))})
+		if evalErr != nil || taskDecision.Effect != authorization.EffectAllow {
+			t.Fatalf("fixture specialist must retain task.execute: decision=%+v err=%v", taskDecision, evalErr)
+		}
+		result, dispatchErr := frontendDispatch.Dispatch(ctx, created.ID, "frontend-model-invoke-deny")
+		if !errors.Is(dispatchErr, modelruntime.ErrAuthorizationDenied) || result.Invocation.Status != modelruntime.InvocationFailed || frontendContexts.renderCalls != 0 || provider.calls != 0 {
+			t.Fatalf("result=%+v err=%v render=%d adapter_calls=%d", result, dispatchErr, frontendContexts.renderCalls, provider.calls)
+		}
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_egress_evaluations WHERE invocation_id=$1 AND authorization_effect='deny' AND egress_effect='not_evaluated'`, created.ID, 1)
+	})
+
+	t.Run("egress deny is durable and never renders or calls adapter", func(t *testing.T) {
+		originalClasses := append([]string(nil), contexts.ref.DataClasses...)
+		contexts.ref.DataClasses = []string{"public", "clinical"}
+		defer func() { contexts.ref.DataClasses = originalClasses }()
+		created := createModelInvocation(t, ctx, invocations, validInvocationCommand(taskRef, snapshotRef, "ingenieria_ia/code-runner", "egress-deny"))
+		provider := &countingAdapter{}
+		deniedDispatch, newErr := modelruntime.NewDispatchService(cfg, fakeCatalog, tasks, contexts, allowEvaluator{matrixHash: fakeCapabilityHash}, egressStore, modelegress.NewEvaluator(), egressStore, store, adapter.NewRegistry(provider), modelruntime.ClockFunc(time.Now))
+		if newErr != nil {
+			t.Fatal(newErr)
+		}
+		beforeRender := contexts.renderCalls
+		result, dispatchErr := deniedDispatch.Dispatch(ctx, created.ID, "egress-deny")
+		if !errors.Is(dispatchErr, modelruntime.ErrEgressDenied) || result.Invocation.Status != modelruntime.InvocationFailed || contexts.renderCalls != beforeRender || provider.calls != 0 {
+			t.Fatalf("result=%+v err=%v render=%d/%d adapter_calls=%d", result, dispatchErr, beforeRender, contexts.renderCalls, provider.calls)
+		}
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_egress_evaluations WHERE invocation_id=$1 AND authorization_effect='allow' AND egress_effect='deny'`, created.ID, 1)
+	})
+
+	t.Run("adapter unavailable blocks before render", func(t *testing.T) {
+		created := createModelInvocation(t, ctx, invocations, validInvocationCommand(taskRef, snapshotRef, "ingenieria_ia/code-runner", "adapter-unavailable"))
+		blockedDispatch, newErr := modelruntime.NewDispatchService(cfg, fakeCatalog, tasks, contexts, allowEvaluator{matrixHash: fakeCapabilityHash}, egressStore, modelegress.NewEvaluator(), egressStore, store, adapter.NewRegistry(), modelruntime.ClockFunc(time.Now))
+		if newErr != nil {
+			t.Fatal(newErr)
+		}
+		beforeRender := contexts.renderCalls
+		result, dispatchErr := blockedDispatch.Dispatch(ctx, created.ID, "adapter-unavailable")
+		if !errors.Is(dispatchErr, modelruntime.ErrProviderUnavailable) || result.Invocation.Status != modelruntime.InvocationFailed || contexts.renderCalls != beforeRender {
+			t.Fatalf("result=%+v err=%v render=%d/%d", result, dispatchErr, beforeRender, contexts.renderCalls)
+		}
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_egress_evaluations WHERE invocation_id=$1`, created.ID, 0)
+	})
+
+	t.Run("legacy unpinned invocation blocks before render", func(t *testing.T) {
+		created := createModelInvocation(t, ctx, invocations, validInvocationCommand(taskRef, snapshotRef, "ingenieria_ia/code-runner", "legacy-unpinned-dispatch"))
+		if _, updateErr := platform.Pool().Exec(ctx, `UPDATE model_invocations SET model_egress_policy_version_id=NULL,model_egress_policy_hash=NULL WHERE id=$1`, created.ID); updateErr != nil {
+			t.Fatal(updateErr)
+		}
+		provider := &countingAdapter{}
+		legacyDispatch, newErr := modelruntime.NewDispatchService(cfg, fakeCatalog, tasks, contexts, allowEvaluator{matrixHash: fakeCapabilityHash}, egressStore, modelegress.NewEvaluator(), egressStore, store, adapter.NewRegistry(provider), modelruntime.ClockFunc(time.Now))
+		if newErr != nil {
+			t.Fatal(newErr)
+		}
+		beforeRender := contexts.renderCalls
+		result, dispatchErr := legacyDispatch.Dispatch(ctx, created.ID, "legacy-unpinned")
+		if !errors.Is(dispatchErr, modelruntime.ErrEgressPolicyUnpinned) || result.Invocation.Status != modelruntime.InvocationFailed || contexts.renderCalls != beforeRender || provider.calls != 0 {
+			t.Fatalf("result=%+v err=%v render=%d/%d adapter_calls=%d", result, dispatchErr, beforeRender, contexts.renderCalls, provider.calls)
+		}
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_egress_evaluations WHERE invocation_id=$1`, created.ID, 0)
+	})
+
 	t.Run("claim token is hashed and concurrent claim has one winner", func(t *testing.T) {
-		created := createModelInvocation(t, ctx, invocations, validInvocationCommand(taskRef, snapshotRef, "claim-race"))
+		created := createModelInvocation(t, ctx, invocations, validInvocationCommand(taskRef, snapshotRef, "ingenieria_ia/code-runner", "claim-race"))
 		const contenders = 2
 		results := make(chan modelruntime.ClaimedInvocation, contenders)
 		errs := make(chan error, contenders)
@@ -206,7 +332,7 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		if leaked != 0 {
 			t.Fatal("raw claim token leaked to event payload")
 		}
-		if _, err := invocations.Cancel(ctx, created.ID, "ingenieria_ia/qa", "integration cleanup"); err != nil {
+		if _, err := invocations.Cancel(ctx, created.ID, "ingenieria_ia/code-runner", "integration cleanup"); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -214,8 +340,8 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 	t.Run("global concurrency and safe reconcile never redispatch", func(t *testing.T) {
 		limited := cfg
 		limited.GlobalConcurrency = 1
-		first := createModelInvocation(t, ctx, invocations, validInvocationCommand(taskRef, snapshotRef, "concurrency-first"))
-		second := createModelInvocation(t, ctx, invocations, validInvocationCommand(taskRef, snapshotRef, "concurrency-second"))
+		first := createModelInvocation(t, ctx, invocations, validInvocationCommand(taskRef, snapshotRef, "ingenieria_ia/code-runner", "concurrency-first"))
+		second := createModelInvocation(t, ctx, invocations, validInvocationCommand(taskRef, snapshotRef, "ingenieria_ia/code-runner", "concurrency-second"))
 		claim, claimErr := store.ClaimInvocation(ctx, modelruntime.ClaimCommand{InvocationID: first.ID, ClaimedBy: "one"}, limited)
 		if claimErr != nil {
 			t.Fatal(claimErr)
@@ -237,21 +363,32 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 	})
 
 	t.Run("down migration and reapply in disposable integration database", func(t *testing.T) {
-		down, readErr := rootmigrations.Files.ReadFile("000007_create_model_runtime_gateway.down.sql")
-		if readErr != nil {
-			t.Fatal(readErr)
+		for _, version := range []int{8, 7} {
+			name := fmt.Sprintf("00000%d_", version)
+			var downName string
+			for _, candidate := range []string{"000008_create_model_egress_authorization.down.sql", "000007_create_model_runtime_gateway.down.sql"} {
+				if strings.HasPrefix(candidate, name) {
+					downName = candidate
+					break
+				}
+			}
+			down, readErr := rootmigrations.Files.ReadFile(downName)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if _, execErr := platform.Pool().Exec(ctx, string(down)); execErr != nil {
+				t.Fatalf("down migration %d: %v", version, execErr)
+			}
+			if _, execErr := platform.Pool().Exec(ctx, `DELETE FROM schema_migrations WHERE version=$1`, version); execErr != nil {
+				t.Fatal(execErr)
+			}
 		}
-		if _, err := platform.Pool().Exec(ctx, string(down)); err != nil {
-			t.Fatalf("down migration: %v", err)
-		}
-		if _, err := platform.Pool().Exec(ctx, `DELETE FROM schema_migrations WHERE version=7`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err = runner.Up(ctx); err != nil {
-			t.Fatalf("reapply migration: %v", err)
+		reapplied, upErr := runner.Up(ctx)
+		if upErr != nil || len(reapplied.Applied) != 2 || reapplied.Current != 8 {
+			t.Fatalf("reapply=%+v err=%v", reapplied, upErr)
 		}
 		var exists bool
-		if err = platform.Pool().QueryRow(ctx, `SELECT to_regclass('public.model_invocations') IS NOT NULL AND to_regclass('public.model_dispatch_attempts') IS NOT NULL AND to_regclass('public.model_invocation_results') IS NOT NULL`).Scan(&exists); err != nil || !exists {
+		if err = platform.Pool().QueryRow(ctx, `SELECT to_regclass('public.model_invocations') IS NOT NULL AND to_regclass('public.model_dispatch_attempts') IS NOT NULL AND to_regclass('public.model_egress_policy_versions') IS NOT NULL`).Scan(&exists); err != nil || !exists {
 			t.Fatalf("reapply exists=%v err=%v", exists, err)
 		}
 	})
@@ -287,22 +424,56 @@ func (r staticTaskReader) GetTaskAttempt(context.Context, int64, int64) (modelru
 }
 
 type staticContextReader struct {
-	ref      modelruntime.ContextSnapshotRef
-	rendered []byte
+	ref         modelruntime.ContextSnapshotRef
+	rendered    []byte
+	renderErr   error
+	renderCalls int
 }
 
-func (r staticContextReader) GetContextSnapshot(context.Context, int64) (modelruntime.ContextSnapshotRef, error) {
+func (r *staticContextReader) GetContextSnapshot(context.Context, int64) (modelruntime.ContextSnapshotRef, error) {
 	return r.ref, nil
 }
-func (r staticContextReader) ValidateContextSnapshot(context.Context, int64) error { return nil }
-func (r staticContextReader) RenderContextSnapshot(context.Context, int64) ([]byte, error) {
+func (r *staticContextReader) ValidateContextSnapshot(context.Context, int64) error { return nil }
+func (r *staticContextReader) RenderContextSnapshot(context.Context, int64) ([]byte, error) {
+	r.renderCalls++
+	if r.renderErr != nil {
+		return nil, r.renderErr
+	}
 	return append([]byte(nil), r.rendered...), nil
 }
 
-type allowEvaluator struct{}
+type authorizationDispatchAdapter struct{ evaluator authorization.Evaluator }
 
-func (allowEvaluator) EvaluateDispatch(context.Context, string, int64, string, string, string) (modelruntime.AuthorizationDecision, error) {
-	return modelruntime.AuthorizationDecision{Allowed: true, ReasonCode: "allowed_by_grant"}, nil
+func (a authorizationDispatchAdapter) EvaluateDispatch(ctx context.Context, organizationID string, revisionID int64, actorRoleID, resourceID, actionDigest string) (modelruntime.AuthorizationDecision, error) {
+	result, err := a.evaluator.Evaluate(ctx, authorization.EvaluationRequest{OrganizationID: organizationID, OrganizationRevisionID: revisionID, ActorRoleID: actorRoleID, CapabilityID: "model.invoke", ResourceType: "model_invocation", ResourceID: resourceID, ActionDigest: actionDigest})
+	if err != nil {
+		return modelruntime.AuthorizationDecision{}, err
+	}
+	effect := modelegress.AuthorizationDeny
+	if result.Effect == authorization.EffectAllow {
+		effect = modelegress.AuthorizationAllow
+	}
+	return modelruntime.AuthorizationDecision{Effect: effect, Allowed: result.Effect == authorization.EffectAllow, ReasonCode: string(result.ReasonCode), MatrixHash: result.MatrixHash}, nil
+}
+
+type allowEvaluator struct{ matrixHash string }
+
+func (a allowEvaluator) EvaluateDispatch(context.Context, string, int64, string, string, string) (modelruntime.AuthorizationDecision, error) {
+	return modelruntime.AuthorizationDecision{Effect: modelegress.AuthorizationAllow, Allowed: true, ReasonCode: "allowed_by_grant", MatrixHash: a.matrixHash}, nil
+}
+
+type denyEvaluator struct{ matrixHash string }
+
+func (d denyEvaluator) EvaluateDispatch(context.Context, string, int64, string, string, string) (modelruntime.AuthorizationDecision, error) {
+	return modelruntime.AuthorizationDecision{Effect: modelegress.AuthorizationDeny, Allowed: false, ReasonCode: "grant_missing", MatrixHash: d.matrixHash}, nil
+}
+
+type countingAdapter struct{ calls int }
+
+func (a *countingAdapter) ProviderID() string { return "test.fake" }
+func (a *countingAdapter) Dispatch(context.Context, modelruntime.CanonicalRequest) (modelruntime.RawResponse, error) {
+	a.calls++
+	return modelruntime.RawResponse{Content: []byte(`{"provider":"test.fake"}`), ProviderRequestID: "counting"}, nil
 }
 
 func openModelStore(t *testing.T, ctx context.Context) *platformpostgres.Store {
@@ -321,7 +492,7 @@ func openModelStore(t *testing.T, ctx context.Context) *platformpostgres.Store {
 
 func resetModelSchema(t *testing.T, ctx context.Context, store *platformpostgres.Store) {
 	t.Helper()
-	_, err := store.Pool().Exec(ctx, `TRUNCATE model_invocation_usage,model_invocation_results,model_dispatch_attempts,model_invocations,role_model_bindings,model_capability_snapshots,model_profile_versions,model_profiles,model_providers,context_segments,context_snapshots,authorization_uses,authorization_decisions,authorization_requests,staging_events,staging_reviews,staging_promotions,staging_checks,staging_workspace_artifacts,staging_artifacts,staging_workspaces,outbox_events,task_dead_letters,task_events,task_leases,task_attempts,task_evidence,task_requirements,task_dependencies,tasks,organization_reporting_lines,organization_registry_revision_documents,organization_roles,organizational_units,organizations,organization_registry_revisions,audit_events RESTART IDENTITY CASCADE`)
+	_, err := store.Pool().Exec(ctx, `TRUNCATE model_egress_evaluations,model_invocation_usage,model_invocation_results,model_dispatch_attempts,model_invocations,model_egress_revision_bindings,model_egress_rules,model_egress_policy_versions,role_model_bindings,model_capability_snapshots,model_profile_versions,model_profiles,model_providers,context_segments,context_snapshots,authorization_uses,authorization_decisions,authorization_requests,staging_events,staging_reviews,staging_promotions,staging_checks,staging_workspace_artifacts,staging_artifacts,staging_workspaces,outbox_events,task_dead_letters,task_events,task_leases,task_attempts,task_evidence,task_requirements,task_dependencies,tasks,organization_reporting_lines,organization_registry_revision_documents,organization_roles,organizational_units,organizations,organization_registry_revisions,audit_events RESTART IDENTITY CASCADE`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -361,7 +532,7 @@ func convertRoles(values []registry.Role) map[string]modelruntime.RoleRef {
 
 func fakeRegistryPlan(revisionID int64, routingHash string) modelruntime.RegistryPlan {
 	const (
-		roleID    = "ingenieria_ia/qa"
+		roleID    = "ingenieria_ia/code-runner"
 		policyID  = "department.worker"
 		profileID = "worker-default"
 		provider  = "test.fake"
@@ -404,21 +575,35 @@ func fakeRegistryPlan(revisionID int64, routingHash string) modelruntime.Registr
 			Capabilities:   capabilities,
 			CapabilityHash: modelruntime.SHA256Bytes([]byte("structured.output")),
 		}},
-		Bindings: []modelruntime.RoleBinding{{
-			OrganizationID:         modelIntegrationOrganization,
-			OrganizationRevisionID: revisionID,
-			RoleID:                 roleID,
-			PolicyID:               policyID,
-			ProfileID:              profileID,
-			BindingHash:            modelruntime.SHA256Bytes([]byte("fake-binding-" + routingHash)),
-			Active:                 true,
-		}},
+		Bindings: []modelruntime.RoleBinding{
+			{OrganizationID: modelIntegrationOrganization, OrganizationRevisionID: revisionID, RoleID: roleID, PolicyID: policyID, ProfileID: profileID, BindingHash: modelruntime.SHA256Bytes([]byte("fake-binding-code-runner-" + routingHash)), Active: true},
+			{OrganizationID: modelIntegrationOrganization, OrganizationRevisionID: revisionID, RoleID: "ingenieria_ia/frontend", PolicyID: policyID, ProfileID: profileID, BindingHash: modelruntime.SHA256Bytes([]byte("fake-binding-frontend-" + routingHash)), Active: true},
+		},
 	}
 }
 
-func insertFakeRoutingRevision(t *testing.T, ctx context.Context, store *platformpostgres.Store, routingHash string) int64 {
+func fakeEgressPlan(revisionID int64, canonicalHash string) modelegress.RegistryPlan {
+	return modelegress.RegistryPlan{
+		OrganizationID: modelIntegrationOrganization, OrganizationRevisionID: revisionID, CanonicalHash: canonicalHash,
+		Policy: modelegress.CanonicalPolicy{
+			SchemaVersion: "0.1.0", DocumentStatus: "test_fixture", PolicyID: "model-egress", PolicyVersion: 1,
+			DefaultAction: modelegress.EffectDeny, CanonicalHash: canonicalHash,
+			HardDenies: []modelegress.HardDeny{
+				{DataClassification: modelegress.ClassificationSecret, ReasonCode: "secret_egress_forbidden"},
+				{DataClassification: modelegress.ClassificationClinical, ReasonCode: "clinical_egress_forbidden"},
+			},
+			Rules: []modelegress.Rule{
+				{ProviderID: "test.fake", DataClassification: modelegress.ClassificationPublic, Effect: modelegress.EffectAllow, ReasonCode: "fixture_public_allow"},
+				{ProviderID: "test.fake", DataClassification: modelegress.ClassificationSanitized, Effect: modelegress.EffectAllow, ReasonCode: "fixture_sanitized_allow"},
+				{ProviderID: "test.fake", DataClassification: modelegress.ClassificationOrganizational, Effect: modelegress.EffectAllow, ReasonCode: "fixture_organizational_allow"},
+			},
+		},
+	}
+}
+
+func insertFakeRoutingRevision(t *testing.T, ctx context.Context, store *platformpostgres.Store, routingHash, egressHash, capabilityHash string) int64 {
 	t.Helper()
-	documentHashes, err := json.Marshal(map[string]string{"model-routing.yaml": routingHash})
+	documentHashes, err := json.Marshal(map[string]string{"model-routing.yaml": routingHash, "model-egress-policy.yaml": egressHash, "capability-matrix.yaml": capabilityHash})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,11 +617,11 @@ func insertFakeRoutingRevision(t *testing.T, ctx context.Context, store *platfor
 	return id
 }
 
-func insertModelExecutionFixture(t *testing.T, ctx context.Context, store *platformpostgres.Store, revisionID int64) (modelruntime.TaskAttemptRef, modelruntime.ContextSnapshotRef) {
+func insertModelExecutionFixture(t *testing.T, ctx context.Context, store *platformpostgres.Store, revisionID int64, roleID, suffix string) (modelruntime.TaskAttemptRef, modelruntime.ContextSnapshotRef) {
 	t.Helper()
 	now := time.Now().UTC()
 	var taskID int64
-	if err := store.Pool().QueryRow(ctx, `INSERT INTO tasks(organization_id,organization_revision_id,assigned_role_id,assigned_unit_id,idempotency_key,request_hash,title,instructions,acceptance_criteria,status,priority,available_at,max_attempts,attempt_count,version) VALUES($1,$2,'ingenieria_ia/qa','ingenieria_ia','model-runtime-integration-task',$3,'Model runtime integration','Exercise fake one-shot dispatch.','[]','running',0,$4,5,1,1) RETURNING id`, modelIntegrationOrganization, revisionID, modelruntime.SHA256Bytes([]byte("task")), now).Scan(&taskID); err != nil {
+	if err := store.Pool().QueryRow(ctx, `INSERT INTO tasks(organization_id,organization_revision_id,assigned_role_id,assigned_unit_id,idempotency_key,request_hash,title,instructions,acceptance_criteria,status,priority,available_at,max_attempts,attempt_count,version) VALUES($1,$2,$3,'ingenieria_ia',$4,$5,'Model runtime integration','Exercise fake one-shot dispatch.','[]','running',0,$6,5,1,1) RETURNING id`, modelIntegrationOrganization, revisionID, roleID, "model-runtime-integration-task-"+suffix, modelruntime.SHA256Bytes([]byte("task-"+suffix)), now).Scan(&taskID); err != nil {
 		t.Fatal(err)
 	}
 	var attemptID int64
@@ -449,14 +634,14 @@ func insertModelExecutionFixture(t *testing.T, ctx context.Context, store *platf
 	}
 	rendered := []byte("safe integration context")
 	var snapshotID int64
-	if err := store.Pool().QueryRow(ctx, `INSERT INTO context_snapshots(organization_id,organization_revision_id,actor_role_id,purpose,task_ref,idempotency_key,request_hash,precedence_hash,canonical_bundle_hash,rendered_hash,status,version,segment_count,included_segment_count,omitted_segment_count,total_bytes,created_at) VALUES($1,$2,'ingenieria_ia/qa','model invocation',$3,'model-runtime-integration-context',$4,$5,$6,$7,'ready',1,0,0,0,0,$8) RETURNING id`, modelIntegrationOrganization, revisionID, strconv.FormatInt(taskID, 10), modelruntime.SHA256Bytes([]byte("context-request")), modelruntime.SHA256Bytes([]byte("precedence")), modelruntime.SHA256Bytes([]byte("bundle")), modelruntime.SHA256Bytes(rendered), now).Scan(&snapshotID); err != nil {
+	if err := store.Pool().QueryRow(ctx, `INSERT INTO context_snapshots(organization_id,organization_revision_id,actor_role_id,purpose,task_ref,idempotency_key,request_hash,precedence_hash,canonical_bundle_hash,rendered_hash,status,version,segment_count,included_segment_count,omitted_segment_count,total_bytes,created_at) VALUES($1,$2,$3,'model invocation',$4,$5,$6,$7,$8,$9,'ready',1,0,0,0,0,$10) RETURNING id`, modelIntegrationOrganization, revisionID, roleID, strconv.FormatInt(taskID, 10), "model-runtime-integration-context-"+suffix, modelruntime.SHA256Bytes([]byte("context-request-"+suffix)), modelruntime.SHA256Bytes([]byte("precedence")), modelruntime.SHA256Bytes([]byte("bundle")), modelruntime.SHA256Bytes(rendered), now).Scan(&snapshotID); err != nil {
 		t.Fatal(err)
 	}
-	return modelruntime.TaskAttemptRef{TaskID: taskID, AttemptID: attemptID, OrganizationID: modelIntegrationOrganization, OrganizationRevisionID: revisionID, AssignedRoleID: "ingenieria_ia/qa", TaskStatus: "running", AttemptStatus: "running", LeaseHolderID: "integration-worker", LeaseExpiresAt: leaseExpiry}, modelruntime.ContextSnapshotRef{ID: snapshotID, OrganizationID: modelIntegrationOrganization, OrganizationRevisionID: revisionID, ActorRoleID: "ingenieria_ia/qa", TaskRef: strconv.FormatInt(taskID, 10), Status: "ready", RenderedHash: modelruntime.SHA256Bytes(rendered), DataClasses: []string{"organizational"}}
+	return modelruntime.TaskAttemptRef{TaskID: taskID, AttemptID: attemptID, OrganizationID: modelIntegrationOrganization, OrganizationRevisionID: revisionID, AssignedRoleID: roleID, TaskStatus: "running", AttemptStatus: "running", LeaseHolderID: "integration-worker", LeaseExpiresAt: leaseExpiry}, modelruntime.ContextSnapshotRef{ID: snapshotID, OrganizationID: modelIntegrationOrganization, OrganizationRevisionID: revisionID, ActorRoleID: roleID, TaskRef: strconv.FormatInt(taskID, 10), Status: "ready", RenderedHash: modelruntime.SHA256Bytes(rendered), DataClasses: []string{"organizational"}}
 }
 
-func validInvocationCommand(task modelruntime.TaskAttemptRef, snapshot modelruntime.ContextSnapshotRef, key string) modelruntime.CreateInvocationCommand {
-	return modelruntime.CreateInvocationCommand{OrganizationID: modelIntegrationOrganization, TaskID: task.TaskID, AttemptID: task.AttemptID, DispatchActorRoleID: "ingenieria_ia/qa", SubjectRoleID: "ingenieria_ia/qa", ContextSnapshotID: snapshot.ID, Purpose: "PostgreSQL fake adapter integration", RequiredCapabilities: []modelruntime.ModelCapability{"structured.output"}, OutputMode: modelruntime.OutputJSON, OutputSchema: json.RawMessage(`{"type":"object","required":["provider"],"properties":{"provider":{"type":"string"}}}`), MaxOutputTokens: 256, ThinkingMode: modelruntime.ThinkingDisabled, IdempotencyKey: key, CorrelationID: "model-integration", CausationID: "branch-08", Deadline: time.Now().UTC().Add(20 * time.Minute)}
+func validInvocationCommand(task modelruntime.TaskAttemptRef, snapshot modelruntime.ContextSnapshotRef, roleID, key string) modelruntime.CreateInvocationCommand {
+	return modelruntime.CreateInvocationCommand{OrganizationID: modelIntegrationOrganization, TaskID: task.TaskID, AttemptID: task.AttemptID, DispatchActorRoleID: roleID, SubjectRoleID: roleID, ContextSnapshotID: snapshot.ID, Purpose: "PostgreSQL fake adapter integration", RequiredCapabilities: []modelruntime.ModelCapability{"structured.output"}, OutputMode: modelruntime.OutputJSON, OutputSchema: json.RawMessage(`{"type":"object","required":["provider"],"properties":{"provider":{"type":"string"}}}`), MaxOutputTokens: 256, ThinkingMode: modelruntime.ThinkingDisabled, IdempotencyKey: key, CorrelationID: "model-integration", CausationID: "branch-09", Deadline: time.Now().UTC().Add(20 * time.Minute)}
 }
 
 func createModelInvocation(t *testing.T, ctx context.Context, service *modelruntime.InvocationService, command modelruntime.CreateInvocationCommand) modelruntime.Invocation {

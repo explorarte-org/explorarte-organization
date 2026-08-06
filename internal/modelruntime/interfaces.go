@@ -3,12 +3,16 @@ package modelruntime
 import (
 	"context"
 	"time"
+
+	"github.com/Mireuz13/explorarte-organization/internal/modelegress"
 )
 
 type OrganizationRef struct {
-	ID               string
-	RevisionID       int64
-	ModelRoutingHash string
+	ID                    string
+	RevisionID            int64
+	ModelRoutingHash      string
+	ModelEgressPolicyHash string
+	CapabilityMatrixHash  string
 }
 type RoleRef struct {
 	ID             string
@@ -40,8 +44,10 @@ type ContextSnapshotRef struct {
 	DataClasses            []string
 }
 type AuthorizationDecision struct {
+	Effect     modelegress.AuthorizationEffect
 	Allowed    bool
 	ReasonCode string
+	MatrixHash string
 }
 
 type OrganizationCatalog interface {
@@ -60,6 +66,19 @@ type ContextReader interface {
 }
 type CapabilityEvaluator interface {
 	EvaluateDispatch(context.Context, string, int64, string, string, string) (AuthorizationDecision, error)
+}
+
+type EgressPolicyCatalog interface {
+	ResolveForRevision(context.Context, string, int64) (modelegress.ResolvedPolicy, error)
+}
+
+type EgressDecisionEvaluator interface {
+	Evaluate(modelegress.EvaluationRequest) (modelegress.Decision, error)
+}
+
+type EgressEvaluationStore interface {
+	PersistPreSendAllowAndMarkSendStarted(context.Context, modelegress.PersistAllowCommand) error
+	PersistPreSendDenyAndFail(context.Context, modelegress.PersistDenyCommand) error
 }
 
 type ProviderAdapter interface {
@@ -82,7 +101,6 @@ type InvocationStore interface {
 	GetInvocation(context.Context, int64) (Invocation, error)
 	ListInvocations(context.Context, string, int) ([]Invocation, error)
 	ClaimInvocation(context.Context, ClaimCommand, RuntimeConfig) (ClaimedInvocation, error)
-	MarkSendStarted(context.Context, int64, int64, string, string) (Invocation, error)
 	MarkResponseReceived(context.Context, int64, int64, string, string) (Invocation, error)
 	CompleteInvocation(context.Context, CompletionCommand, int) (DispatchResult, error)
 	FailBeforeSend(context.Context, FailureCommand, int) (Invocation, error)
@@ -107,6 +125,7 @@ type PreparedInvocation struct {
 	RequestHash            string
 	RequiredCapabilities   []ModelCapability
 	OutputSchema           []byte
+	EgressPolicy           modelegress.ResolvedPolicy
 }
 type ClaimCommand struct {
 	InvocationID int64

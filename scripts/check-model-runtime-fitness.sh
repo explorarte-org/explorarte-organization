@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-BASE_COMMIT="6d7b71acdeba7a70d552764c1d96f7bf9d907e6d"
+BASE_COMMIT="07cc8eac1330816ee755366f61be15991f7de4b6"
 fail() { printf 'model-runtime fitness: %s\n' "$*" >&2; exit 1; }
 
 command -v rg >/dev/null 2>&1 || fail "ripgrep is required"
@@ -96,9 +96,18 @@ if required not in routing:
     sys.exit(1)
 PY
 
-# Canonical policy and all previous migrations are immutable in this branch.
+# Canonical changes are restricted by Branch 09 and all previous migrations are immutable.
 git cat-file -e "${BASE_COMMIT}^{commit}" 2>/dev/null || fail "required base commit is unavailable"
-git diff --exit-code "$BASE_COMMIT" -- docs/canonical >/dev/null || fail "docs/canonical changed"
+mapfile -t canonical_changes < <({
+  git diff --name-only "$BASE_COMMIT" -- docs/canonical
+  git ls-files --others --exclude-standard -- docs/canonical
+} | sort -u)
+for path in "${canonical_changes[@]}"; do
+  case "$path" in
+    docs/canonical/capability-matrix.yaml|docs/canonical/model-egress-policy.yaml) ;;
+    *) fail "unauthorized canonical change: $path" ;;
+  esac
+done
 git diff --exit-code "$BASE_COMMIT" -- \
   migrations/000001_create_audit_events.up.sql \
   migrations/000001_create_audit_events.down.sql \
@@ -111,7 +120,9 @@ git diff --exit-code "$BASE_COMMIT" -- \
   migrations/000005_create_capability_policy_engine.up.sql \
   migrations/000005_create_capability_policy_engine.down.sql \
   migrations/000006_create_context_engine.up.sql \
-  migrations/000006_create_context_engine.down.sql >/dev/null || fail "a previous migration changed"
+  migrations/000006_create_context_engine.down.sql \
+  migrations/000007_create_model_runtime_gateway.up.sql \
+  migrations/000007_create_model_runtime_gateway.down.sql >/dev/null || fail "a previous migration changed"
 git diff --exit-code "$BASE_COMMIT" -- cmd/orgd internal/app >/dev/null || fail "orgd or app changed"
 
 printf 'model-runtime fitness: OK\n'

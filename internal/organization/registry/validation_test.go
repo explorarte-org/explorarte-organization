@@ -35,6 +35,14 @@ func TestCrossValidationFailures(t *testing.T) {
 		{"unknown model", "role.model_policy_unknown", func(d *parsedDocuments) { value := "missing.policy"; d.Roles.Roles[0].ModelPolicy = &value }},
 		{"unknown authority", "role.authority_class_unknown", func(d *parsedDocuments) { d.Roles.Roles[0].AuthorityClass = "missing" }},
 		{"counts", "counts.imported_profiles", func(d *parsedDocuments) { d.Organization.Counts.ImportedProfiles++ }},
+		{"model egress unknown provider", "model_egress.provider_unknown", func(d *parsedDocuments) { d.ModelEgress.Rules[0].ProviderID = "missing" }},
+		{"model egress productive allow", "model_egress.productive_allow_forbidden", func(d *parsedDocuments) { d.ModelEgress.Rules[0].Effect = "allow" }},
+		{"model egress hard deny duplicated as rule", "model_egress.hard_deny_rule_conflict", func(d *parsedDocuments) { d.ModelEgress.Rules[0].DataClassification = "secret" }},
+		{"model egress missing clinical hard deny", "model_egress.hard_deny_missing", func(d *parsedDocuments) { d.ModelEgress.HardDenies = d.ModelEgress.HardDenies[1:] }},
+		{"model invoke wrong grant", "capability.model_invoke_grant_invalid", func(d *parsedDocuments) {
+			d.Capabilities.Grants["specialist"] = append(d.Capabilities.Grants["specialist"], "model.invoke")
+		}},
+		{"model invoke owner deny missing", "capability.model_invoke_owner_deny_missing", func(d *parsedDocuments) { d.Capabilities.HardDenies["owner"] = nil }},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

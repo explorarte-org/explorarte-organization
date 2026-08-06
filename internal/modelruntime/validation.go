@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Mireuz13/explorarte-organization/internal/modelegress"
 )
 
 var roleIDPattern = regexp.MustCompile(`^[a-z0-9]+(?:[._/-][a-z0-9]+)*$`)
@@ -30,7 +32,7 @@ func PrepareCreateCommand(c CreateInvocationCommand, now time.Time) (CreateInvoc
 		return c, nil, nil, fmt.Errorf("%w: invalid role identifier", ErrInvalidRequest)
 	}
 	if c.DispatchActorRoleID != c.SubjectRoleID {
-		return c, nil, nil, fmt.Errorf("%w: cross-role dispatch is not available in branch 08", ErrTaskAttemptRejected)
+		return c, nil, nil, fmt.Errorf("%w: cross-role dispatch is not available in branch 09", ErrTaskAttemptRejected)
 	}
 	if len(c.Purpose) < 1 || len(c.Purpose) > 4000 {
 		return c, nil, nil, fmt.Errorf("%w: purpose outside allowed length", ErrInvalidRequest)
@@ -108,6 +110,9 @@ func validateTaskAttempt(ref TaskAttemptRef, c CreateInvocationCommand, now time
 	if ref.TaskStatus != "running" || ref.AttemptStatus != "running" {
 		return fmt.Errorf("%w: task and attempt must be running", ErrTaskAttemptRejected)
 	}
+	if strings.TrimSpace(ref.LeaseHolderID) == "" {
+		return fmt.Errorf("%w: active lease holder is required", ErrTaskAttemptRejected)
+	}
 	if !ref.LeaseExpiresAt.After(now) {
 		return fmt.Errorf("%w: task lease expired", ErrTaskAttemptRejected)
 	}
@@ -126,13 +131,19 @@ func validateContext(ref ContextSnapshotRef, c CreateInvocationCommand, revision
 	if ref.TaskRef != strconv.FormatInt(c.TaskID, 10) {
 		return fmt.Errorf("%w: context task scope mismatch", ErrContextRejected)
 	}
-	for _, class := range ref.DataClasses {
-		if class == "secret" || class == "clinical" {
-			return fmt.Errorf("%w: forbidden context data class %s", ErrContextRejected, class)
-		}
+	return nil
+}
+func validateResolvedEgressPolicy(policy modelegress.ResolvedPolicy, organization OrganizationRef) error {
+	if policy.Version.ID <= 0 || policy.Version.PolicyVersion <= 0 ||
+		policy.Version.Status != "materialized" || policy.Version.OrganizationID != organization.ID ||
+		policy.OrganizationRevisionID != organization.RevisionID || policy.DefaultAction != modelegress.EffectDeny ||
+		policy.CanonicalHash == "" || policy.Version.CanonicalHash != policy.CanonicalHash ||
+		policy.CanonicalHash != organization.ModelEgressPolicyHash {
+		return fmt.Errorf("%w: egress policy revision drift", ErrEgressPolicyUnpinned)
 	}
 	return nil
 }
+
 func capabilitiesSatisfy(available, required []ModelCapability) bool {
 	set := map[ModelCapability]struct{}{}
 	for _, v := range available {

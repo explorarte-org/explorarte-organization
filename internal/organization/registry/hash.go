@@ -15,6 +15,7 @@ func hashDocuments(documents parsedDocuments) (map[string]string, string, error)
 		"role-catalog.yaml":           documents.Roles,
 		"leader-worker-map.yaml":      documents.LeaderWorker,
 		"model-routing.yaml":          documents.ModelRouting,
+		"model-egress-policy.yaml":    documents.ModelEgress,
 		"capability-matrix.yaml":      documents.Capabilities,
 		"instruction-precedence.yaml": documents.InstructionPrecedence,
 		"decisions-required.yaml":     documents.Decisions,

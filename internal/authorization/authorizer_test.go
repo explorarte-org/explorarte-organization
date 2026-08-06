@@ -45,6 +45,8 @@ func testMatrix() Matrix {
 		DefaultPolicy: "deny",
 		Capabilities: []Capability{
 			{ID: "code.commit", Risk: "high"},
+			{ID: "model.invoke", Risk: "high"},
+			{ID: "task.execute", Risk: "medium"},
 			{ID: "project.create", Risk: "medium"},
 			{ID: "organization.activate_skill", Risk: "high", Approval: "owner"},
 			{ID: "rag.publish_approved", Risk: "high", Approval: "policy_or_human"},
@@ -52,10 +54,17 @@ func testMatrix() Matrix {
 			{ID: "cell.read_clinical_data", Risk: "forbidden"},
 		},
 		Grants: map[string][]string{
-			"owner": {"*"}, "execution_service": {"code.commit"}, "specialist": {"project.create"},
+			"owner":                 {"*"},
+			"executive":             {},
+			"department_leadership": {},
+			"specialist":            {"project.create", "task.execute"},
+			"transversal_audit":     {},
+			"research_execution":    {},
+			"execution_service":     {"code.commit", "model.invoke"},
+			"assurance":             {},
 		},
 		HardDenies: map[string][]string{
-			"*": {"cell.read_clinical_data"}, "specialist": {"project.create"},
+			"*": {"cell.read_clinical_data"}, "owner": {"model.invoke"}, "specialist": {"project.create"},
 		},
 	}
 }
@@ -67,9 +76,14 @@ func testAuthorizer(t *testing.T) (*Authorizer, *fakePolicyReader) {
 		organization: registry.Organization{ID: "explorarte", OwnerRoleID: "empresa/human", CurrentRevision: 7},
 		revision:     &registry.Revision{ID: 7, DocumentHashes: map[string]string{"capability-matrix.yaml": hash}},
 		roles: map[string]registry.Role{
-			"empresa/human":             {OrganizationID: "explorarte", ID: "empresa/human", AuthorityClass: "owner", Enabled: true, Executable: false},
-			"ingenieria_ia/code-runner": {OrganizationID: "explorarte", ID: "ingenieria_ia/code-runner", AuthorityClass: "execution_service", Enabled: true, Executable: true},
-			"creativo/copywriter":       {OrganizationID: "explorarte", ID: "creativo/copywriter", AuthorityClass: "specialist", Enabled: true, Executable: true},
+			"empresa/human":                         {OrganizationID: "explorarte", ID: "empresa/human", AuthorityClass: "owner", Enabled: true, Executable: false},
+			"empresa/ceo":                           {OrganizationID: "explorarte", ID: "empresa/ceo", AuthorityClass: "executive", Enabled: true, Executable: true},
+			"comunicaciones/editor_contenido_marca": {OrganizationID: "explorarte", ID: "comunicaciones/editor_contenido_marca", AuthorityClass: "department_leadership", Enabled: true, Executable: true},
+			"ingenieria_ia/code-runner":             {OrganizationID: "explorarte", ID: "ingenieria_ia/code-runner", AuthorityClass: "execution_service", Enabled: true, Executable: true},
+			"creativo/copywriter":                   {OrganizationID: "explorarte", ID: "creativo/copywriter", AuthorityClass: "specialist", Enabled: true, Executable: true},
+			"investigacion/auditor_cerebro_empresa": {OrganizationID: "explorarte", ID: "investigacion/auditor_cerebro_empresa", AuthorityClass: "transversal_audit", Enabled: true, Executable: true},
+			"investigacion/investigador_programado": {OrganizationID: "explorarte", ID: "investigacion/investigador_programado", AuthorityClass: "research_execution", Enabled: true, Executable: true},
+			"ingenieria_ia/qa":                      {OrganizationID: "explorarte", ID: "ingenieria_ia/qa", AuthorityClass: "assurance", Enabled: true, Executable: true},
 		},
 	}
 	a, err := newAuthorizer(reader, "explorarte", testMatrix(), hash)
@@ -80,7 +94,11 @@ func testAuthorizer(t *testing.T) (*Authorizer, *fakePolicyReader) {
 }
 
 func evalRequest(role, capability string) EvaluationRequest {
-	return EvaluationRequest{OrganizationID: "explorarte", OrganizationRevisionID: 7, ActorRoleID: role, CapabilityID: capability, ResourceType: "task", ResourceID: "42", ActionDigest: DigestAction([]byte("task:42"))}
+	resourceType := "task"
+	if capability == "model.invoke" {
+		resourceType = "model_invocation"
+	}
+	return EvaluationRequest{OrganizationID: "explorarte", OrganizationRevisionID: 7, ActorRoleID: role, CapabilityID: capability, ResourceType: resourceType, ResourceID: "42", ActionDigest: DigestAction([]byte(resourceType + ":42"))}
 }
 
 func TestPolicyDefaultDenyOwnerWildcardAndHardDenies(t *testing.T) {
@@ -107,6 +125,67 @@ func TestPolicyDefaultDenyOwnerWildcardAndHardDenies(t *testing.T) {
 				t.Fatalf("got %+v", got)
 			}
 		})
+	}
+}
+
+func TestModelInvokeIsInfrastructureOnlyAndOwnerHardDenied(t *testing.T) {
+	a, _ := testAuthorizer(t)
+	cases := []struct {
+		role   string
+		effect Effect
+		reason ReasonCode
+	}{
+		{"ingenieria_ia/code-runner", EffectAllow, ReasonAllowedByGrant},
+		{"empresa/human", EffectDeny, ReasonHardDeny},
+		{"empresa/ceo", EffectDeny, ReasonGrantMissing},
+		{"comunicaciones/editor_contenido_marca", EffectDeny, ReasonGrantMissing},
+		{"creativo/copywriter", EffectDeny, ReasonGrantMissing},
+		{"investigacion/auditor_cerebro_empresa", EffectDeny, ReasonGrantMissing},
+		{"investigacion/investigador_programado", EffectDeny, ReasonGrantMissing},
+		{"ingenieria_ia/qa", EffectDeny, ReasonGrantMissing},
+	}
+	for _, tc := range cases {
+		t.Run(tc.role, func(t *testing.T) {
+			result, err := a.Evaluate(context.Background(), evalRequest(tc.role, "model.invoke"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Effect != tc.effect || result.ReasonCode != tc.reason || result.Risk != "high" || result.ApprovalMode != "" {
+				t.Fatalf("result=%+v", result)
+			}
+		})
+	}
+}
+
+func TestTaskExecuteDoesNotAuthorizeModelInvocation(t *testing.T) {
+	a, _ := testAuthorizer(t)
+	taskDecision, err := a.Evaluate(context.Background(), evalRequest("creativo/copywriter", "task.execute"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if taskDecision.Effect != EffectAllow {
+		t.Fatalf("fixture specialist should retain task.execute: %+v", taskDecision)
+	}
+	modelDecision, err := a.Evaluate(context.Background(), evalRequest("creativo/copywriter", "model.invoke"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if modelDecision.Effect != EffectDeny || modelDecision.ReasonCode != ReasonGrantMissing {
+		t.Fatalf("task.execute leaked into model dispatch: %+v", modelDecision)
+	}
+}
+
+func TestModelInvokeAndTaskExecuteResourceScopesAreDisjoint(t *testing.T) {
+	a, _ := testAuthorizer(t)
+	wrongModelScope := evalRequest("ingenieria_ia/code-runner", "model.invoke")
+	wrongModelScope.ResourceType = "task"
+	if _, err := a.Evaluate(context.Background(), wrongModelScope); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("model.invoke task scope error=%v", err)
+	}
+	wrongTaskScope := evalRequest("creativo/copywriter", "task.execute")
+	wrongTaskScope.ResourceType = "model_invocation"
+	if _, err := a.Evaluate(context.Background(), wrongTaskScope); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("task.execute model invocation scope error=%v", err)
 	}
 }
 

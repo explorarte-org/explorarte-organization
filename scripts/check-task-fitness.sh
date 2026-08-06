@@ -11,7 +11,16 @@ cd "$ROOT"
 BASE_COMMIT="${TASK_ENGINE_BASE_COMMIT:-a199d1eea1f4f28d1b9f346e9ccbd670d5e8b69a}"
 
 if git cat-file -e "${BASE_COMMIT}^{commit}" 2>/dev/null; then
-  git diff --exit-code "$BASE_COMMIT" -- docs/canonical
+  mapfile -t canonical_changes < <({
+    git diff --name-only "${BASE_COMMIT}" -- docs/canonical
+    git ls-files --others --exclude-standard -- docs/canonical
+  } | sort -u)
+  for path in "${canonical_changes[@]}"; do
+    case "$path" in
+      docs/canonical/capability-matrix.yaml|docs/canonical/model-egress-policy.yaml) ;;
+      *) fail "unauthorized canonical change: $path" ;;
+    esac
+  done
   git diff --exit-code "$BASE_COMMIT" -- \
     migrations/000001_create_audit_events.up.sql \
     migrations/000001_create_audit_events.down.sql \

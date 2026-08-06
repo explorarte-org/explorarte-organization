@@ -13,18 +13,19 @@ type InvocationService struct {
 	tasks             TaskAttemptReader
 	contexts          ContextReader
 	store             Store
+	egress            EgressPolicyCatalog
 	clock             Clock
 	outboxMaxAttempts int
 }
 
-func NewInvocationService(organizationID string, catalog OrganizationCatalog, tasks TaskAttemptReader, contexts ContextReader, store Store, clock Clock, outboxMaxAttempts int) (*InvocationService, error) {
-	if catalog == nil || tasks == nil || contexts == nil || store == nil {
+func NewInvocationService(organizationID string, catalog OrganizationCatalog, tasks TaskAttemptReader, contexts ContextReader, store Store, egress EgressPolicyCatalog, clock Clock, outboxMaxAttempts int) (*InvocationService, error) {
+	if catalog == nil || tasks == nil || contexts == nil || store == nil || egress == nil {
 		return nil, fmt.Errorf("invocation service dependencies are incomplete")
 	}
 	if clock == nil {
 		clock = ClockFunc(time.Now)
 	}
-	return &InvocationService{organizationID: organizationID, catalog: catalog, tasks: tasks, contexts: contexts, store: store, clock: clock, outboxMaxAttempts: outboxMaxAttempts}, nil
+	return &InvocationService{organizationID: organizationID, catalog: catalog, tasks: tasks, contexts: contexts, store: store, egress: egress, clock: clock, outboxMaxAttempts: outboxMaxAttempts}, nil
 }
 func (s *InvocationService) Create(ctx context.Context, command CreateInvocationCommand) (CreateInvocationResult, error) {
 	if command.OrganizationID == "" {
@@ -72,11 +73,18 @@ func (s *InvocationService) Create(ctx context.Context, command CreateInvocation
 	if !capabilitiesSatisfy(binding.Capabilities.Capabilities, caps) {
 		return CreateInvocationResult{}, fmt.Errorf("%w: profile lacks requested capabilities", ErrCapabilityMismatch)
 	}
-	hash, err := invocationRequestHash(prepared, org.RevisionID, binding, caps, schema)
+	policy, err := s.egress.ResolveForRevision(ctx, prepared.OrganizationID, org.RevisionID)
 	if err != nil {
 		return CreateInvocationResult{}, err
 	}
-	return s.store.CreateInvocation(ctx, PreparedInvocation{Command: prepared, OrganizationRevisionID: org.RevisionID, Binding: binding, RequestHash: hash, RequiredCapabilities: caps, OutputSchema: schema}, s.outboxMaxAttempts)
+	if err = validateResolvedEgressPolicy(policy, org); err != nil {
+		return CreateInvocationResult{}, err
+	}
+	hash, err := invocationRequestHash(prepared, org.RevisionID, binding, caps, schema, policy.Version.ID, policy.CanonicalHash)
+	if err != nil {
+		return CreateInvocationResult{}, err
+	}
+	return s.store.CreateInvocation(ctx, PreparedInvocation{Command: prepared, OrganizationRevisionID: org.RevisionID, Binding: binding, RequestHash: hash, RequiredCapabilities: caps, OutputSchema: schema, EgressPolicy: policy}, s.outboxMaxAttempts)
 }
 func (s *InvocationService) Get(ctx context.Context, id int64) (Invocation, error) {
 	if id <= 0 {

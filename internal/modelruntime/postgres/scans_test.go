@@ -60,7 +60,7 @@ func TestScanInvocationAcceptsNullableTextColumns(t *testing.T) {
 		int64(1), "explorarte", int64(7), int64(2), int64(3),
 		"ingenieria_ia/qa", "ingenieria_ia/qa", int64(4), "test",
 		"worker-default", int64(5), "test.fake", "deterministic-v1",
-		[]byte(`[]`), modelruntime.OutputText, nil, 128, nil,
+		int64(17), hash, []byte(`[]`), modelruntime.OutputText, nil, 128, nil,
 		modelruntime.ThinkingDisabled, "idempotency", hash,
 		modelruntime.InvocationRequested, nil, nil, now, nil, nil, now, now, nil,
 	}})

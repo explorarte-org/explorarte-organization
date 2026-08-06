@@ -45,6 +45,7 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 		t.Fatalf("ping PostgreSQL: %v", err)
 	}
 	for _, statement := range []string{
+		`DROP TABLE IF EXISTS model_egress_evaluations`,
 		`DROP TABLE IF EXISTS model_invocation_usage`,
 		`DROP TABLE IF EXISTS model_invocation_results`,
 		`DROP TABLE IF EXISTS model_dispatch_attempts`,
@@ -54,6 +55,15 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 		`DROP TABLE IF EXISTS model_profile_versions`,
 		`DROP TABLE IF EXISTS model_profiles`,
 		`DROP TABLE IF EXISTS model_providers`,
+		`DROP TABLE IF EXISTS model_egress_revision_bindings`,
+		`DROP TABLE IF EXISTS model_egress_rules`,
+		`DROP TABLE IF EXISTS model_egress_policy_versions`,
+		`DROP FUNCTION IF EXISTS model_egress_revision_belongs_to_organization(TEXT,BIGINT)`,
+		`DROP FUNCTION IF EXISTS model_egress_normalized_reason_codes(JSONB)`,
+		`DROP FUNCTION IF EXISTS model_egress_normalized_classifications(JSONB)`,
+		`DROP FUNCTION IF EXISTS reject_model_egress_immutable_mutation()`,
+		`DROP FUNCTION IF EXISTS enforce_model_egress_rule_insert_window()`,
+		`DROP FUNCTION IF EXISTS enforce_model_egress_policy_version_immutability()`,
 		`DROP TABLE IF EXISTS context_segments`,
 		`DROP TABLE IF EXISTS context_snapshots`,
 		`DROP FUNCTION IF EXISTS reject_context_segment_mutation()`,
@@ -100,14 +110,14 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("apply migrations: %v", err)
 	}
-	if len(result.Applied) != 7 || result.Current != 7 {
+	if len(result.Applied) != 8 || result.Current != 8 {
 		t.Fatalf("unexpected migration result: %+v", result)
 	}
 	status, err := runner.Status(ctx)
 	if err != nil {
 		t.Fatalf("migration status: %v", err)
 	}
-	if !status.Ready || status.Pending != 0 || status.Applied != 7 {
+	if !status.Ready || status.Pending != 0 || status.Applied != 8 {
 		t.Fatalf("unexpected migration status: %+v", status)
 	}
 	if err := store.UnitOfWork().WithinTransaction(ctx, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
@@ -137,7 +147,7 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("idempotent migration run: %v", err)
 	}
-	if len(second.Applied) != 0 || second.Current != 7 {
+	if len(second.Applied) != 0 || second.Current != 8 {
 		t.Fatalf("second migration result = %+v, want no changes", second)
 	}
 
@@ -145,26 +155,37 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load migrations for down test: %v", err)
 	}
-	if len(loaded) != 7 {
-		t.Fatalf("loaded migrations = %d, want 7", len(loaded))
+	if len(loaded) != 8 {
+		t.Fatalf("loaded migrations = %d, want 8", len(loaded))
 	}
 	if err := store.UnitOfWork().WithinTransaction(ctx, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, loaded[6].DownSQL); err != nil {
+		if _, err := tx.Exec(ctx, loaded[7].DownSQL); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, `DELETE FROM schema_migrations WHERE version = 7`)
+		_, err := tx.Exec(ctx, `DELETE FROM schema_migrations WHERE version = 8`)
 		return err
 	}); err != nil {
-		t.Fatalf("down migration 000007: %v", err)
+		t.Fatalf("down migration 000008: %v", err)
 	}
-	var modelRuntimeTable *string
-	if err := store.Pool().QueryRow(ctx, `SELECT to_regclass('public.model_providers')::text`).Scan(&modelRuntimeTable); err != nil {
+	var egressTable *string
+	if err := store.Pool().QueryRow(ctx, `SELECT to_regclass('public.model_egress_policy_versions')::text`).Scan(&egressTable); err != nil {
 		t.Fatalf("check down migration: %v", err)
 	}
-	if modelRuntimeTable != nil {
-		t.Fatalf("model_providers still exists after down: %v", *modelRuntimeTable)
+	if egressTable != nil {
+		t.Fatalf("model_egress_policy_versions still exists after down: %v", *egressTable)
 	}
-	if _, err := runner.Up(ctx); err != nil {
-		t.Fatalf("restore migration 000007: %v", err)
+	var policyColumnCount int
+	if err := store.Pool().QueryRow(ctx, `SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='model_invocations' AND column_name IN ('model_egress_policy_version_id','model_egress_policy_hash')`).Scan(&policyColumnCount); err != nil {
+		t.Fatalf("check invocation policy columns after down: %v", err)
+	}
+	if policyColumnCount != 0 {
+		t.Fatalf("invocation policy columns remain after down: %d", policyColumnCount)
+	}
+	restored, err := runner.Up(ctx)
+	if err != nil {
+		t.Fatalf("restore migration 000008: %v", err)
+	}
+	if len(restored.Applied) != 1 || restored.Current != 8 {
+		t.Fatalf("restore migration result = %+v, want only 000008", restored)
 	}
 }

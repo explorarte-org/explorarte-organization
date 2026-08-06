@@ -1,0 +1,47 @@
+schema_version: 0.1.0
+document_status: branch_09_candidate
+policy_id: model-egress
+policy_version: 1
+default_action: deny
+hard_denies:
+- data_classification: clinical
+  reason_code: clinical_egress_forbidden
+- data_classification: secret
+  reason_code: secret_egress_forbidden
+rules:
+- provider_id: alibaba_token_plan_via_claude_code
+  data_classification: organizational
+  effect: deny
+  reason_code: organizational_egress_not_approved
+- provider_id: alibaba_token_plan_via_claude_code
+  data_classification: public
+  effect: deny
+  reason_code: public_egress_not_approved
+- provider_id: alibaba_token_plan_via_claude_code
+  data_classification: sanitized
+  effect: deny
+  reason_code: sanitized_egress_not_approved
+- provider_id: deepseek
+  data_classification: organizational
+  effect: deny
+  reason_code: organizational_egress_not_approved
+- provider_id: deepseek
+  data_classification: public
+  effect: deny
+  reason_code: public_egress_not_approved
+- provider_id: deepseek
+  data_classification: sanitized
+  effect: deny
+  reason_code: sanitized_egress_not_approved
+- provider_id: openai_compatible
+  data_classification: organizational
+  effect: deny
+  reason_code: organizational_egress_not_approved
+- provider_id: openai_compatible
+  data_classification: public
+  effect: deny
+  reason_code: public_egress_not_approved
+- provider_id: openai_compatible
+  data_classification: sanitized
+  effect: deny
+  reason_code: sanitized_egress_not_approved

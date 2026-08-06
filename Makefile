@@ -10,7 +10,7 @@ LDFLAGS := -s -w \
 	-X main.commit=$(COMMIT) \
 	-X main.buildTime=$(BUILD_TIME)
 
-.PHONY: help deps fmt fmt-check vet test test-unit test-race test-integration test-task-integration test-task-fitness test-staging-integration test-staging-fitness test-authorization-integration test-authorization-fitness test-context-integration test-context-fitness test-model-runtime-integration test-model-runtime-fitness build build-cross run verify verify-all clean docker-build compose-up compose-down compose-logs migrate-up migrate-status registry-validate registry-diff registry-sync registry-status task-reconcile outbox-status
+.PHONY: help deps fmt fmt-check vet test test-unit test-race test-integration test-task-integration test-task-fitness test-staging-integration test-staging-fitness test-authorization-integration test-authorization-fitness test-context-integration test-context-fitness test-model-runtime-integration test-model-runtime-fitness test-model-egress-integration test-model-egress-fitness build build-cross run verify verify-all clean docker-build compose-up compose-down compose-logs migrate-up migrate-status registry-validate registry-diff registry-sync registry-status task-reconcile outbox-status
 
 help:
 	@printf '%s\n' \
@@ -26,6 +26,8 @@ help:
 	  'make test-context-integration Run PostgreSQL 17 context-engine integration tests' \
 	  'make test-model-runtime-fitness Validate model routing, privacy, and one-shot invariants' \
 	  'make test-model-runtime-integration Run PostgreSQL 17 model-runtime integration tests' \
+	  'make test-model-egress-fitness Validate default-deny model egress and pre-send invariants' \
+	  'make test-model-egress-integration Run PostgreSQL 17 model-egress integration tests' \
 	  'make test-staging-integration Run PostgreSQL 17 and real Git staging integration tests' \
 	  'make verify-all        Run verify, cross-build, canonical validation, and integration tests' \
 	  'make registry-validate Validate docs/canonical without PostgreSQL writes' \
@@ -89,6 +91,12 @@ test-model-runtime-fitness:
 test-model-runtime-integration:
 	./scripts/test-integration.sh model
 
+test-model-egress-fitness:
+	./scripts/check-model-egress-fitness.sh
+
+test-model-egress-integration:
+	./scripts/test-integration.sh egress
+
 build:
 	@mkdir -p $(BINARY_DIR)
 	CGO_ENABLED=0 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY_DIR)/orgd ./cmd/orgd
@@ -104,9 +112,9 @@ build-cross:
 run:
 	$(GO) run ./cmd/orgd
 
-verify: fmt-check vet test-unit test-task-fitness test-staging-fitness test-authorization-fitness test-context-fitness test-model-runtime-fitness build
+verify: fmt-check vet test-unit test-task-fitness test-staging-fitness test-authorization-fitness test-context-fitness test-model-runtime-fitness test-model-egress-fitness build
 
-verify-all: verify build-cross registry-validate test-integration test-context-integration test-model-runtime-integration test-authorization-integration test-staging-integration
+verify-all: verify build-cross registry-validate test-integration test-context-integration test-model-runtime-integration test-model-egress-integration test-authorization-integration test-staging-integration
 
 migrate-up:
 	$(GO) run ./cmd/orgctl migrate up

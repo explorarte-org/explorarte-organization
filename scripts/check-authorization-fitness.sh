@@ -65,8 +65,15 @@ rg -q 'concurrent consumption creates exactly one use' internal/authorization/po
 rg -q 'revision and matrix policy drift' internal/authorization/postgres/integration_test.go || fail "missing policy drift integration test"
 rg -q 'rollback.*audit|audit.*roll back' internal/authorization/postgres/integration_test.go || fail "missing transactional rollback integration test"
 
-if ! git diff --exit-code "$BASE_SHA" -- docs/canonical >/dev/null; then
-  fail "docs/canonical changed from the Branch 06 base"
-fi
+mapfile -t canonical_changes < <({
+  git diff --name-only "${BASE_SHA}" -- docs/canonical
+  git ls-files --others --exclude-standard -- docs/canonical
+} | sort -u)
+for path in "${canonical_changes[@]}"; do
+  case "$path" in
+    docs/canonical/capability-matrix.yaml|docs/canonical/model-egress-policy.yaml) ;;
+    *) fail "unauthorized canonical change: $path" ;;
+  esac
+done
 
 echo "authorization fitness checks passed"

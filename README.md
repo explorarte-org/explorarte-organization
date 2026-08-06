@@ -4,24 +4,18 @@ Monolito modular en Go para el plano de control organizacional de Explorarte.
 
 ## Estado de esta rama
 
-La Rama 04 agrega un motor durable de tareas sobre PostgreSQL a la base validada de la Rama 03.
+La Rama 09 agrega autorización específica para invocaciones de modelos y una política canónica de egress de contexto, manteniendo el runtime productivo cerrado por defecto.
 
-La fuente de verdad continúa siendo PostgreSQL. `orgd` reconcilia estados durables, recupera leases y claims del outbox expirados, promueve tareas elegibles y bloquea dependencias o asignaciones inválidas. `orgd` no ejecuta tareas ni contiene un worker autónomo.
+La fuente de verdad se divide de forma explícita:
 
-Componentes principales:
+- `docs/canonical/capability-matrix.yaml` define `model.invoke`, concedida únicamente a `execution_service`, con hard deny para `owner`;
+- `docs/canonical/model-routing.yaml` continúa siendo la única autoridad para provider, modelo y transporte;
+- `docs/canonical/model-egress-policy.yaml` define qué clasificaciones pueden salir y comienza sin ninguna regla `allow`;
+- PostgreSQL materializa versiones inmutables, bindings por revisión y decisiones pre-send sin almacenar contenido.
 
-- máquina de estados tipada con terminalidad irreversible;
-- creación JSON estricta e idempotencia explícita;
-- dependencias acíclicas y semántica estricta: solo `completed` satisface;
-- requisitos y evidencia opaca para verificación;
-- intentos separados de leases criptográficos;
-- claims concurrentes con `FOR UPDATE SKIP LOCKED`;
-- reintentos acotados, dead letters formales y redrive no automático;
-- eventos append-only, auditoría mínima y outbox transaccional;
-- reconciliador interno tolerante a indisponibilidad temporal de PostgreSQL;
-- CLI administrativa y de worker mediante `orgctl task` y `orgctl outbox`.
+Toda invocación nueva fija la versión y el hash de la política de egress. Las invocaciones anteriores permanecen `legacy_unpinned` (`NULL/NULL`) y no pueden despacharse. El orden pre-send es: validar task/attempt/lease y bindings, autorizar `model.invoke`, evaluar egress, comprobar adapter, renderizar y persistir atómicamente `allow + send_started`.
 
-Los documentos de `docs/canonical` no se modifican en esta rama.
+Los providers reales continúan `adapter_status=unavailable` y `dispatch_enabled=false`. `orgd` no registra adapters ni ejecuta invocaciones. `test.fake` existe únicamente en fixtures aisladas. No hay HTTP a providers, shell, credenciales ni dispatcher productivo.
 
 ## Requisitos
 
@@ -180,27 +174,32 @@ make test-staging-integration
 
 Consulta `docs/implementation/branch-05-staging-promotion-engine/INTEGRATION.md` antes de habilitar el módulo o provisionar roots en AWS.
 
-## Model Runtime Gateway (Rama 08)
+## Model Runtime y egress (Ramas 08–09)
 
-Rama 08 materializa `docs/canonical/model-routing.yaml` en PostgreSQL y agrega
-invocaciones durables con dispatch one-shot mediante `orgctl`. Los providers
-reales permanecen `unavailable` y `dispatch_enabled=false`; la única ejecución
-implementada es `test.fake` bajo una ruta canónica aislada de pruebas.
+La sincronización debe respetar este orden para la revisión organizacional actual:
 
 ```bash
-orgctl model registry validate --json
+orgctl registry validate
+orgctl registry diff
+orgctl registry sync --apply
+
 orgctl model registry diff --json
 orgctl model registry sync --apply --json
-orgctl model registry status --json
 
+orgctl model egress validate --json
+orgctl model egress diff --json
+orgctl model egress sync --apply --json
+orgctl model egress status --json
+```
+
+La CLI no permite seleccionar provider, policy, versión, transporte, clasificaciones ni reglas. Esos valores se resuelven desde las fuentes canónicas y quedan fijados en la invocación. Con la política productiva inicial, `public`, `sanitized` y `organizational` se deniegan para todos los providers reales; `secret` y `clinical` son hard deny; `unknown` y el conjunto vacío se deniegan por defecto.
+
+```bash
 orgctl model invocation create --file invocation.json --json
 orgctl model invocation dispatch INVOCATION_ID --claimed-by orgctl --json
 orgctl model invocation reconcile --json
 ```
 
-`orgd` no importa adapters ni ejecuta invocaciones. El resultado de un modelo no
-completa tareas, no ejecuta tool intents y no adquiere autoridad del rol
-representado. Antes de habilitar providers reales deben existir una capability
-de infraestructura y una política canónica de egress.
+Aunque `ORG_MODEL_RUNTIME_ENABLED=true`, un dispatch requiere simultáneamente task assignment, attempt y lease activos, `model.invoke`, egress explícitamente permitido y un adapter registrado. La configuración productiva actual no reúne esa combinación. El resultado de un modelo no completa tareas ni ejecuta tool intents.
 
-Consulta `docs/implementation/branch-08-model-runtime-gateway/INTEGRATION.md`.
+Consulta `docs/implementation/branch-08-model-runtime-gateway/INTEGRATION.md` y `docs/implementation/branch-09-model-egress-authorization/INTEGRATION.md`.

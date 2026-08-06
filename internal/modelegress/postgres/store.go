@@ -1,0 +1,621 @@
+package postgres
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"sort"
+
+	"github.com/Mireuz13/explorarte-organization/internal/modelegress"
+	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+type Store struct{ pool *pgxpool.Pool }
+
+type ruleQuerier interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
+
+func expectedMaterializedRules(policy modelegress.CanonicalPolicy) []modelegress.Rule {
+	rules := make([]modelegress.Rule, 0, len(policy.HardDenies)+len(policy.Rules))
+	for _, deny := range policy.HardDenies {
+		rules = append(rules, modelegress.Rule{
+			ProviderID: "*", DataClassification: deny.DataClassification, Effect: modelegress.EffectDeny,
+			ReasonCode: deny.ReasonCode, HardDeny: true,
+		})
+	}
+	rules = append(rules, policy.Rules...)
+	sort.Slice(rules, func(i, j int) bool {
+		left := rules[i].ProviderID + "\x00" + string(rules[i].DataClassification)
+		right := rules[j].ProviderID + "\x00" + string(rules[j].DataClassification)
+		return left < right
+	})
+	return rules
+}
+
+func materializedRules(ctx context.Context, queryer ruleQuerier, policyVersionID int64) ([]modelegress.Rule, error) {
+	rows, err := queryer.Query(ctx, `
+SELECT provider_id,data_classification,effect,reason_code,hard_deny
+FROM model_egress_rules
+WHERE policy_version_id=$1
+ORDER BY provider_id,data_classification`, policyVersionID)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	var rules []modelegress.Rule
+	for rows.Next() {
+		var rule modelegress.Rule
+		if err = rows.Scan(&rule.ProviderID, &rule.DataClassification, &rule.Effect, &rule.ReasonCode, &rule.HardDeny); err != nil {
+			return nil, mapError(err)
+		}
+		rules = append(rules, rule)
+	}
+	return rules, mapError(rows.Err())
+}
+
+func equalRules(left, right []modelegress.Rule) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func New(store *platformpostgres.Store) (*Store, error) {
+	if store == nil || store.Pool() == nil {
+		return nil, errors.New("model egress store requires initialized PostgreSQL")
+	}
+	return &Store{pool: store.Pool()}, nil
+}
+
+func mapError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return modelegress.ErrPolicyNotFound
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	var networkError net.Error
+	if errors.As(err, &networkError) {
+		return err
+	}
+	var postgresError *pgconn.PgError
+	if errors.As(err, &postgresError) {
+		switch postgresError.Code {
+		case "23505":
+			return fmt.Errorf("%w: PostgreSQL %s", modelegress.ErrPolicyConflict, postgresError.Code)
+		case "23503", "23514", "22P02":
+			return fmt.Errorf("%w: PostgreSQL %s", modelegress.ErrInvalidPolicy, postgresError.Code)
+		}
+	}
+	return err
+}
+
+func withTx[T any](ctx context.Context, pool *pgxpool.Pool, options pgx.TxOptions, fn func(pgx.Tx) (T, error)) (T, error) {
+	var zero T
+	tx, err := pool.BeginTx(ctx, options)
+	if err != nil {
+		return zero, mapError(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	value, err := fn(tx)
+	if err != nil {
+		return zero, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return zero, mapError(err)
+	}
+	return value, nil
+}
+
+func (s *Store) RecordValidated(ctx context.Context, organizationID string, revisionID int64, canonicalHash string) error {
+	payload, _ := json.Marshal(map[string]any{"organization_revision_id": revisionID, "canonical_hash": canonicalHash})
+	_, err := s.pool.Exec(ctx, `
+INSERT INTO audit_events(event_type,actor_type,actor_id,subject_type,subject_id,payload)
+VALUES('model.egress_registry_validated','system','orgctl','model_egress_registry',$1,$2::jsonb)`, organizationID, payload)
+	return mapError(err)
+}
+
+func (s *Store) Status(ctx context.Context, plan modelegress.RegistryPlan) (modelegress.RegistryStatus, error) {
+	if err := modelegress.ValidateRegistryPlan(plan); err != nil {
+		return modelegress.RegistryStatus{}, err
+	}
+	status := modelegress.RegistryStatus{
+		OrganizationID: plan.OrganizationID, OrganizationRevisionID: plan.OrganizationRevisionID,
+		PolicyID: plan.Policy.PolicyID, PolicyVersion: plan.Policy.PolicyVersion,
+		CanonicalHash: plan.CanonicalHash,
+	}
+	var versionID int64
+	var materializedHash, materializedPolicyID string
+	var materializedPolicyVersion, ruleCount int
+	err := s.pool.QueryRow(ctx, `
+SELECT b.policy_version_id,b.canonical_hash,v.policy_id,v.policy_version,COUNT(r.id)
+FROM model_egress_revision_bindings b
+JOIN model_egress_policy_versions v
+  ON v.id=b.policy_version_id AND v.organization_id=b.organization_id AND v.canonical_hash=b.canonical_hash
+LEFT JOIN model_egress_rules r ON r.policy_version_id=v.id
+WHERE b.organization_id=$1 AND b.organization_revision_id=$2
+GROUP BY b.policy_version_id,b.canonical_hash,v.policy_id,v.policy_version`, plan.OrganizationID, plan.OrganizationRevisionID).Scan(&versionID, &materializedHash, &materializedPolicyID, &materializedPolicyVersion, &ruleCount)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return status, nil
+	}
+	if err != nil {
+		return status, mapError(err)
+	}
+	status.PolicyVersionID = versionID
+	status.MaterializedHash = materializedHash
+	status.Rules = ruleCount
+	rules, rulesErr := materializedRules(ctx, s.pool, versionID)
+	if rulesErr != nil {
+		return status, rulesErr
+	}
+	status.Synchronized = materializedHash == plan.CanonicalHash &&
+		materializedPolicyID == plan.Policy.PolicyID &&
+		materializedPolicyVersion == plan.Policy.PolicyVersion &&
+		equalRules(rules, expectedMaterializedRules(plan.Policy))
+	return status, nil
+}
+
+func (s *Store) Apply(ctx context.Context, plan modelegress.RegistryPlan) (modelegress.RegistrySyncResult, error) {
+	if err := modelegress.ValidateRegistryPlan(plan); err != nil {
+		return modelegress.RegistrySyncResult{}, err
+	}
+	return withTx(ctx, s.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) (modelegress.RegistrySyncResult, error) {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "model-egress:"+plan.OrganizationID); err != nil {
+			return modelegress.RegistrySyncResult{}, mapError(err)
+		}
+		var currentRevision int64
+		var currentHash string
+		if err := tx.QueryRow(ctx, `
+SELECT o.current_revision_id, r.document_hashes->>'model-egress-policy.yaml'
+FROM organizations o
+JOIN organization_registry_revisions r ON r.id=o.current_revision_id
+WHERE o.id=$1
+FOR UPDATE OF o`, plan.OrganizationID).Scan(&currentRevision, &currentHash); err != nil {
+			return modelegress.RegistrySyncResult{}, mapError(err)
+		}
+		if currentRevision != plan.OrganizationRevisionID || currentHash != plan.CanonicalHash {
+			return modelegress.RegistrySyncResult{}, modelegress.ErrPolicyStale
+		}
+
+		var policyVersionID int64
+		var existingHash, existingStatus string
+		err := tx.QueryRow(ctx, `
+SELECT id,canonical_hash,status
+FROM model_egress_policy_versions
+WHERE organization_id=$1 AND policy_id=$2 AND policy_version=$3`, plan.OrganizationID, plan.Policy.PolicyID, plan.Policy.PolicyVersion).Scan(&policyVersionID, &existingHash, &existingStatus)
+		switch {
+		case err == nil:
+			if existingStatus != "materialized" {
+				return modelegress.RegistrySyncResult{}, fmt.Errorf("%w: policy version is not materialized", modelegress.ErrPolicyConflict)
+			}
+			if existingHash != plan.CanonicalHash {
+				return modelegress.RegistrySyncResult{}, fmt.Errorf("%w: policy version already exists with different hash", modelegress.ErrPolicyConflict)
+			}
+		case errors.Is(err, pgx.ErrNoRows):
+			var existingVersion int
+			err = tx.QueryRow(ctx, `
+SELECT policy_version
+FROM model_egress_policy_versions
+WHERE organization_id=$1 AND policy_id=$2 AND canonical_hash=$3`, plan.OrganizationID, plan.Policy.PolicyID, plan.CanonicalHash).Scan(&existingVersion)
+			if err == nil {
+				return modelegress.RegistrySyncResult{}, fmt.Errorf("%w: policy hash already exists as version %d", modelegress.ErrPolicyConflict, existingVersion)
+			}
+			if !errors.Is(err, pgx.ErrNoRows) {
+				return modelegress.RegistrySyncResult{}, mapError(err)
+			}
+			if err = tx.QueryRow(ctx, `
+INSERT INTO model_egress_policy_versions(
+    organization_id,policy_id,policy_version,canonical_hash,
+    introduced_by_organization_revision_id,status
+) VALUES($1,$2,$3,$4,$5,'materializing')
+RETURNING id`, plan.OrganizationID, plan.Policy.PolicyID, plan.Policy.PolicyVersion, plan.CanonicalHash, plan.OrganizationRevisionID).Scan(&policyVersionID); err != nil {
+				return modelegress.RegistrySyncResult{}, mapError(err)
+			}
+			for _, deny := range plan.Policy.HardDenies {
+				if _, err = tx.Exec(ctx, `
+INSERT INTO model_egress_rules(
+    policy_version_id,organization_id,provider_id,data_classification,effect,reason_code,hard_deny
+) VALUES($1,$2,'*',$3,'deny',$4,TRUE)`, policyVersionID, plan.OrganizationID, deny.DataClassification, deny.ReasonCode); err != nil {
+					return modelegress.RegistrySyncResult{}, mapError(err)
+				}
+			}
+			for _, rule := range plan.Policy.Rules {
+				if _, err = tx.Exec(ctx, `
+INSERT INTO model_egress_rules(
+    policy_version_id,organization_id,provider_id,data_classification,effect,reason_code,hard_deny
+) VALUES($1,$2,$3,$4,$5,$6,FALSE)`, policyVersionID, plan.OrganizationID, rule.ProviderID, rule.DataClassification, rule.Effect, rule.ReasonCode); err != nil {
+					return modelegress.RegistrySyncResult{}, mapError(err)
+				}
+			}
+			finalized, finalizeErr := tx.Exec(ctx, `
+UPDATE model_egress_policy_versions
+SET status='materialized'
+WHERE id=$1 AND organization_id=$2 AND status='materializing'`, policyVersionID, plan.OrganizationID)
+			if finalizeErr != nil {
+				return modelegress.RegistrySyncResult{}, mapError(finalizeErr)
+			}
+			if finalized.RowsAffected() != 1 {
+				return modelegress.RegistrySyncResult{}, modelegress.ErrPolicyConflict
+			}
+		default:
+			return modelegress.RegistrySyncResult{}, mapError(err)
+		}
+
+		actualRules, rulesErr := materializedRules(ctx, tx, policyVersionID)
+		if rulesErr != nil {
+			return modelegress.RegistrySyncResult{}, rulesErr
+		}
+		if !equalRules(actualRules, expectedMaterializedRules(plan.Policy)) {
+			return modelegress.RegistrySyncResult{}, fmt.Errorf("%w: materialized rules differ from canonical policy", modelegress.ErrPolicyConflict)
+		}
+
+		var existingPolicyID int64
+		var bindingHash string
+		err = tx.QueryRow(ctx, `
+SELECT policy_version_id,canonical_hash
+FROM model_egress_revision_bindings
+WHERE organization_id=$1 AND organization_revision_id=$2`, plan.OrganizationID, plan.OrganizationRevisionID).Scan(&existingPolicyID, &bindingHash)
+		if err == nil {
+			if existingPolicyID != policyVersionID || bindingHash != plan.CanonicalHash {
+				return modelegress.RegistrySyncResult{}, fmt.Errorf("%w: organization revision already bound to another policy", modelegress.ErrPolicyConflict)
+			}
+			return modelegress.RegistrySyncResult{
+				NoOp: true, OrganizationRevisionID: plan.OrganizationRevisionID, PolicyVersionID: policyVersionID,
+				PolicyID: plan.Policy.PolicyID, PolicyVersion: plan.Policy.PolicyVersion,
+				CanonicalHash: plan.CanonicalHash, Rules: len(plan.Policy.Rules) + len(plan.Policy.HardDenies),
+			}, nil
+		} else if errors.Is(err, pgx.ErrNoRows) {
+			if _, err = tx.Exec(ctx, `
+INSERT INTO model_egress_revision_bindings(
+    organization_id,organization_revision_id,policy_version_id,canonical_hash
+) VALUES($1,$2,$3,$4)`, plan.OrganizationID, plan.OrganizationRevisionID, policyVersionID, plan.CanonicalHash); err != nil {
+				return modelegress.RegistrySyncResult{}, mapError(err)
+			}
+		} else {
+			return modelegress.RegistrySyncResult{}, mapError(err)
+		}
+
+		payload, _ := json.Marshal(map[string]any{
+			"organization_revision_id": plan.OrganizationRevisionID,
+			"policy_version_id":        policyVersionID,
+			"policy_id":                plan.Policy.PolicyID,
+			"policy_version":           plan.Policy.PolicyVersion,
+			"canonical_hash":           plan.CanonicalHash,
+			"rules":                    len(plan.Policy.Rules) + len(plan.Policy.HardDenies),
+		})
+		if _, err = tx.Exec(ctx, `
+INSERT INTO audit_events(event_type,actor_type,actor_id,subject_type,subject_id,payload)
+VALUES('model.egress_registry_synced','system','orgctl','model_egress_registry',$1,$2::jsonb)`, plan.OrganizationID, payload); err != nil {
+			return modelegress.RegistrySyncResult{}, mapError(err)
+		}
+		return modelegress.RegistrySyncResult{Applied: true, OrganizationRevisionID: plan.OrganizationRevisionID, PolicyVersionID: policyVersionID, PolicyID: plan.Policy.PolicyID, PolicyVersion: plan.Policy.PolicyVersion, CanonicalHash: plan.CanonicalHash, Rules: len(plan.Policy.Rules) + len(plan.Policy.HardDenies)}, nil
+	})
+}
+
+func (s *Store) ResolveForRevision(ctx context.Context, organizationID string, revisionID int64) (modelegress.ResolvedPolicy, error) {
+	var resolved modelegress.ResolvedPolicy
+	err := s.pool.QueryRow(ctx, `
+SELECT v.id,v.organization_id,v.policy_id,v.policy_version,v.canonical_hash,
+       v.introduced_by_organization_revision_id,v.status,v.created_at,
+       b.organization_revision_id,b.canonical_hash
+FROM model_egress_revision_bindings b
+JOIN model_egress_policy_versions v
+  ON v.id=b.policy_version_id AND v.organization_id=b.organization_id AND v.canonical_hash=b.canonical_hash
+WHERE b.organization_id=$1 AND b.organization_revision_id=$2`, organizationID, revisionID).Scan(
+		&resolved.Version.ID, &resolved.Version.OrganizationID, &resolved.Version.PolicyID,
+		&resolved.Version.PolicyVersion, &resolved.Version.CanonicalHash,
+		&resolved.Version.IntroducedByOrganizationRevisionID, &resolved.Version.Status,
+		&resolved.Version.CreatedAt, &resolved.OrganizationRevisionID, &resolved.CanonicalHash,
+	)
+	if err != nil {
+		return resolved, mapError(err)
+	}
+	resolved.DefaultAction = modelegress.EffectDeny
+	rows, err := s.pool.Query(ctx, `
+SELECT provider_id,data_classification,effect,reason_code,hard_deny
+FROM model_egress_rules
+WHERE policy_version_id=$1
+ORDER BY provider_id,data_classification`, resolved.Version.ID)
+	if err != nil {
+		return resolved, mapError(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var rule modelegress.Rule
+		if err = rows.Scan(&rule.ProviderID, &rule.DataClassification, &rule.Effect, &rule.ReasonCode, &rule.HardDeny); err != nil {
+			return resolved, mapError(err)
+		}
+		resolved.Rules = append(resolved.Rules, rule)
+	}
+	return resolved, mapError(rows.Err())
+}
+
+func verifyClaim(ctx context.Context, tx pgx.Tx, evaluation modelegress.PreSendEvaluation, rawToken string) error {
+	digest := sha256.Sum256([]byte(rawToken))
+	tokenHash := hex.EncodeToString(digest[:])
+	var invocationStatus, attemptStatus, storedToken string
+	var invocationPolicyID *int64
+	var policyHash *string
+	var attemptInvocationID int64
+	var organizationID, dispatchActorRoleID, subjectRoleID, providerID, providerTransport, requestHash string
+	var organizationRevisionID, modelProfileVersionID int64
+	var capabilityMatrixHash *string
+	var claimActive, policyBound, evaluationExists bool
+	err := tx.QueryRow(ctx, `
+SELECT i.status,a.status,a.claim_token_hash,a.invocation_id,
+       i.model_egress_policy_version_id,i.model_egress_policy_hash,
+       i.organization_id,i.organization_revision_id,i.dispatch_actor_role_id,
+       i.subject_role_id,i.model_profile_version_id,i.provider_id,v.transport,i.request_hash,
+       r.document_hashes->>'capability-matrix.yaml',
+       a.claim_expires_at > clock_timestamp(),
+       EXISTS (
+           SELECT 1
+           FROM model_egress_revision_bindings b
+           WHERE b.organization_id=i.organization_id
+             AND b.organization_revision_id=i.organization_revision_id
+             AND b.policy_version_id=i.model_egress_policy_version_id
+             AND b.canonical_hash=i.model_egress_policy_hash
+       ),
+       EXISTS (
+           SELECT 1
+           FROM model_egress_evaluations e
+           WHERE e.dispatch_attempt_id=a.id
+       )
+FROM model_invocations i
+JOIN model_dispatch_attempts a ON a.id=$2 AND a.invocation_id=i.id
+JOIN model_profile_versions v
+  ON v.id=i.model_profile_version_id
+ AND v.organization_id=i.organization_id
+ AND v.profile_id=i.model_profile_id
+ AND v.provider_id=i.provider_id
+ AND v.provider_model_id=i.provider_model_id
+JOIN organization_registry_revisions r ON r.id=i.organization_revision_id
+WHERE i.id=$1
+FOR UPDATE OF i,a`, evaluation.InvocationID, evaluation.DispatchAttemptID).Scan(
+		&invocationStatus, &attemptStatus, &storedToken, &attemptInvocationID,
+		&invocationPolicyID, &policyHash, &organizationID, &organizationRevisionID,
+		&dispatchActorRoleID, &subjectRoleID, &modelProfileVersionID, &providerID,
+		&providerTransport, &requestHash, &capabilityMatrixHash, &claimActive, &policyBound,
+		&evaluationExists,
+	)
+	if err != nil {
+		return mapError(err)
+	}
+	if invocationStatus != "claimed" || attemptStatus != "claimed" || attemptInvocationID != evaluation.InvocationID || !claimActive || evaluationExists {
+		return modelegress.ErrEvaluationConflict
+	}
+	if storedToken != tokenHash {
+		return modelegress.ErrClaimMismatch
+	}
+	if invocationPolicyID == nil || policyHash == nil || *invocationPolicyID != evaluation.PolicyVersionID || *policyHash != evaluation.PolicyHash || !policyBound {
+		return modelegress.ErrPolicyUnpinned
+	}
+	expectedActionDigest, digestErr := modelegress.InvocationActionDigest(evaluation.InvocationID, requestHash, evaluation.PolicyVersionID, evaluation.PolicyHash)
+	if digestErr != nil || expectedActionDigest != evaluation.ActionDigest {
+		return modelegress.ErrEvaluationConflict
+	}
+	if organizationID != evaluation.OrganizationID || organizationRevisionID != evaluation.OrganizationRevisionID ||
+		dispatchActorRoleID != evaluation.DispatchActorRoleID || subjectRoleID != evaluation.SubjectRoleID ||
+		modelProfileVersionID != evaluation.ModelProfileVersionID || providerID != evaluation.ProviderID ||
+		providerTransport != evaluation.ProviderTransport || capabilityMatrixHash == nil || *capabilityMatrixHash != evaluation.CapabilityMatrixHash {
+		return modelegress.ErrEvaluationConflict
+	}
+	return nil
+}
+
+func insertEvaluation(ctx context.Context, tx pgx.Tx, evaluation modelegress.PreSendEvaluation) error {
+	if err := modelegress.ValidatePreSendEvaluation(evaluation); err != nil {
+		return err
+	}
+	classifications, classHash := modelegress.NormalizeClassifications(evaluation.ContextClassifications)
+	reasons := modelegress.NormalizeReasonCodes(evaluation.EgressReasonCodes)
+	if evaluation.ContextClassificationsHash != classHash {
+		return modelegress.ErrEvaluationConflict
+	}
+	if evaluation.DecisionHash == "" || evaluation.DecisionHash != modelegress.DecisionHash(evaluation) {
+		return modelegress.ErrEvaluationConflict
+	}
+	classJSON, _ := json.Marshal(classifications)
+	reasonJSON, _ := json.Marshal(reasons)
+	_, err := tx.Exec(ctx, `
+INSERT INTO model_egress_evaluations(
+    invocation_id,dispatch_attempt_id,policy_version_id,organization_id,
+    organization_revision_id,model_profile_version_id,provider_id,provider_transport,
+    action_digest,capability_matrix_hash,context_classifications,
+    context_classifications_hash,authorization_effect,authorization_reason_code,
+    egress_effect,egress_reason_codes,decision_hash
+) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14,$15,$16::jsonb,$17)`,
+		evaluation.InvocationID, evaluation.DispatchAttemptID, evaluation.PolicyVersionID,
+		evaluation.OrganizationID, evaluation.OrganizationRevisionID,
+		evaluation.ModelProfileVersionID, evaluation.ProviderID, evaluation.ProviderTransport,
+		evaluation.ActionDigest, evaluation.CapabilityMatrixHash, classJSON, classHash,
+		evaluation.AuthorizationEffect, evaluation.AuthorizationReasonCode,
+		evaluation.EgressEffect, reasonJSON, evaluation.DecisionHash)
+	if err != nil {
+		var postgresError *pgconn.PgError
+		if errors.As(err, &postgresError) && postgresError.Code == "23505" {
+			return modelegress.ErrEvaluationConflict
+		}
+	}
+	return mapError(err)
+}
+
+func requireOneRow(tag pgconn.CommandTag) error {
+	if tag.RowsAffected() != 1 {
+		return modelegress.ErrEvaluationConflict
+	}
+	return nil
+}
+
+func auditPayload(evaluation modelegress.PreSendEvaluation) []byte {
+	classes, _ := modelegress.NormalizeClassifications(evaluation.ContextClassifications)
+	reasons := modelegress.NormalizeReasonCodes(evaluation.EgressReasonCodes)
+	payload, _ := json.Marshal(map[string]any{
+		"invocation_id":                evaluation.InvocationID,
+		"dispatch_attempt_id":          evaluation.DispatchAttemptID,
+		"organization_revision_id":     evaluation.OrganizationRevisionID,
+		"dispatch_actor_role_id":       evaluation.DispatchActorRoleID,
+		"subject_role_id":              evaluation.SubjectRoleID,
+		"model_profile_version_id":     evaluation.ModelProfileVersionID,
+		"policy_version_id":            evaluation.PolicyVersionID,
+		"provider_id":                  evaluation.ProviderID,
+		"provider_transport":           evaluation.ProviderTransport,
+		"context_classifications":      classes,
+		"context_classifications_hash": evaluation.ContextClassificationsHash,
+		"capability_matrix_hash":       evaluation.CapabilityMatrixHash,
+		"authorization_effect":         evaluation.AuthorizationEffect,
+		"authorization_reason_code":    evaluation.AuthorizationReasonCode,
+		"egress_effect":                evaluation.EgressEffect,
+		"egress_reason_codes":          reasons,
+		"action_digest":                evaluation.ActionDigest,
+		"decision_hash":                evaluation.DecisionHash,
+	})
+	return payload
+}
+
+func insertAudit(ctx context.Context, tx pgx.Tx, eventType string, evaluation modelegress.PreSendEvaluation) error {
+	_, err := tx.Exec(ctx, `
+INSERT INTO audit_events(
+    event_type,actor_type,actor_id,subject_type,subject_id,
+    correlation_id,causation_id,payload
+) VALUES($1,'service',$2,'model_invocation',$3,NULLIF($4,''),NULLIF($5,''),$6::jsonb)`,
+		eventType, evaluation.DispatchActorRoleID, fmt.Sprint(evaluation.InvocationID),
+		evaluation.CorrelationID, evaluation.CausationID, auditPayload(evaluation))
+	return mapError(err)
+}
+
+func (s *Store) PersistPreSendAllowAndMarkSendStarted(ctx context.Context, command modelegress.PersistAllowCommand) error {
+	if err := modelegress.ValidatePersistAllowCommand(command); err != nil {
+		return err
+	}
+	_, err := withTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) (struct{}, error) {
+		if err := verifyClaim(ctx, tx, command.Evaluation, command.ClaimToken); err != nil {
+			return struct{}{}, err
+		}
+		if err := insertEvaluation(ctx, tx, command.Evaluation); err != nil {
+			return struct{}{}, err
+		}
+		if err := insertAudit(ctx, tx, modelegress.AuditInvocationAuthorized, command.Evaluation); err != nil {
+			return struct{}{}, err
+		}
+		if err := insertAudit(ctx, tx, modelegress.AuditEgressAllowed, command.Evaluation); err != nil {
+			return struct{}{}, err
+		}
+		tag, err := tx.Exec(ctx, `
+UPDATE model_dispatch_attempts
+SET status='send_started',send_started_at=clock_timestamp(),retry_safety='unsafe_after_send',
+    provider_idempotency_key_hash=$2,claim_expires_at=GREATEST(claim_expires_at,$3)
+WHERE id=$1 AND status='claimed'`, command.Evaluation.DispatchAttemptID, command.ProviderIdempotencyKeyHash, command.Deadline)
+		if err != nil {
+			return struct{}{}, mapError(err)
+		}
+		if err = requireOneRow(tag); err != nil {
+			return struct{}{}, err
+		}
+		tag, err = tx.Exec(ctx, `
+UPDATE model_invocations
+SET status='send_started',updated_at=clock_timestamp()
+WHERE id=$1 AND status='claimed' AND cancel_requested_at IS NULL`, command.Evaluation.InvocationID)
+		if err != nil {
+			return struct{}{}, mapError(err)
+		}
+		if err = requireOneRow(tag); err != nil {
+			return struct{}{}, err
+		}
+		if err := insertAudit(ctx, tx, "model.invocation_dispatched", command.Evaluation); err != nil {
+			return struct{}{}, err
+		}
+		return struct{}{}, nil
+	})
+	return err
+}
+
+func (s *Store) PersistPreSendDenyAndFail(ctx context.Context, command modelegress.PersistDenyCommand) error {
+	if err := modelegress.ValidatePersistFailureCommand(command); err != nil {
+		return err
+	}
+	_, err := withTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) (struct{}, error) {
+		if err := verifyClaim(ctx, tx, command.Evaluation, command.ClaimToken); err != nil {
+			return struct{}{}, err
+		}
+		if err := insertEvaluation(ctx, tx, command.Evaluation); err != nil {
+			return struct{}{}, err
+		}
+		if command.Evaluation.AuthorizationEffect == modelegress.AuthorizationAllow {
+			if err := insertAudit(ctx, tx, modelegress.AuditInvocationAuthorized, command.Evaluation); err != nil {
+				return struct{}{}, err
+			}
+			eventType := modelegress.AuditEgressDenied
+			if command.Evaluation.EgressEffect == modelegress.EffectError {
+				eventType = modelegress.AuditEgressError
+			}
+			if err := insertAudit(ctx, tx, eventType, command.Evaluation); err != nil {
+				return struct{}{}, err
+			}
+		} else {
+			eventType := modelegress.AuditInvocationAuthorizationDenied
+			if command.Evaluation.AuthorizationEffect == modelegress.AuthorizationError {
+				eventType = modelegress.AuditInvocationAuthorizationError
+			}
+			if err := insertAudit(ctx, tx, eventType, command.Evaluation); err != nil {
+				return struct{}{}, err
+			}
+		}
+		tag, err := tx.Exec(ctx, `
+UPDATE model_dispatch_attempts
+SET status='failed_before_send',retry_safety='not_retryable',
+    outcome_classification='failed_before_send',error_code=$2,finished_at=clock_timestamp()
+WHERE id=$1 AND status='claimed'`, command.Evaluation.DispatchAttemptID, command.ErrorCode)
+		if err != nil {
+			return struct{}{}, mapError(err)
+		}
+		if err = requireOneRow(tag); err != nil {
+			return struct{}{}, err
+		}
+		tag, err = tx.Exec(ctx, `
+UPDATE model_invocations
+SET status='failed',error_code=$2,updated_at=clock_timestamp(),terminal_at=clock_timestamp()
+WHERE id=$1 AND status='claimed'`, command.Evaluation.InvocationID, command.ErrorCode)
+		if err != nil {
+			return struct{}{}, mapError(err)
+		}
+		if err = requireOneRow(tag); err != nil {
+			return struct{}{}, err
+		}
+		if err := insertAudit(ctx, tx, "model.invocation_failed", command.Evaluation); err != nil {
+			return struct{}{}, err
+		}
+		minimal, _ := json.Marshal(map[string]any{
+			"schema_version": 1,
+			"invocation_id":  command.Evaluation.InvocationID,
+			"event_type":     "model.invocation_failed",
+			"status":         "failed",
+			"error_code":     command.ErrorCode,
+		})
+		if _, err := tx.Exec(ctx, `
+INSERT INTO outbox_events(
+    aggregate_type,aggregate_id,event_type,schema_version,payload,max_attempts
+) VALUES('model_invocation',$1,'model.invocation_failed',1,$2::jsonb,$3)`,
+			fmt.Sprint(command.Evaluation.InvocationID), minimal, command.OutboxMaxAttempts); err != nil {
+			return struct{}{}, mapError(err)
+		}
+		return struct{}{}, nil
+	})
+	return err
+}

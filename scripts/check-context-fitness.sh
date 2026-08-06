@@ -38,7 +38,16 @@ require 'TestServiceValidateDetectsProfileAndCanonicalDrift' internal/contexteng
 require 'source_kind NOT IN.*approved_memory' migrations/000006_create_context_engine.up.sql 'memory/RAG/task capability constraint missing'
 
 if git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
-  git diff --exit-code "$BASE_SHA" -- docs/canonical >/dev/null || fail 'docs/canonical changed from Branch 07 base'
+  mapfile -t canonical_changes < <({
+    git diff --name-only "${BASE_SHA}" -- docs/canonical
+    git ls-files --others --exclude-standard -- docs/canonical
+  } | sort -u)
+  for path in "${canonical_changes[@]}"; do
+    case "$path" in
+      docs/canonical/capability-matrix.yaml|docs/canonical/model-egress-policy.yaml) ;;
+      *) fail "unauthorized canonical change: $path" ;;
+    esac
+  done
 elif [[ "${CONTEXT_ALLOW_MISSING_BASE:-0}" != "1" ]]; then
   fail "canonical base commit $BASE_SHA is unavailable"
 fi

@@ -125,6 +125,28 @@ type modelPolicyDoc struct {
 	Schedule            string   `yaml:"schedule" json:"schedule,omitempty"`
 }
 
+type modelEgressPolicyDocument struct {
+	SchemaVersion  string                   `yaml:"schema_version" json:"schema_version"`
+	DocumentStatus string                   `yaml:"document_status" json:"document_status"`
+	PolicyID       string                   `yaml:"policy_id" json:"policy_id"`
+	PolicyVersion  int                      `yaml:"policy_version" json:"policy_version"`
+	DefaultAction  string                   `yaml:"default_action" json:"default_action"`
+	HardDenies     []modelEgressHardDenyDoc `yaml:"hard_denies" json:"hard_denies"`
+	Rules          []modelEgressRuleDoc     `yaml:"rules" json:"rules"`
+}
+
+type modelEgressHardDenyDoc struct {
+	DataClassification string `yaml:"data_classification" json:"data_classification"`
+	ReasonCode         string `yaml:"reason_code" json:"reason_code"`
+}
+
+type modelEgressRuleDoc struct {
+	ProviderID         string `yaml:"provider_id" json:"provider_id"`
+	DataClassification string `yaml:"data_classification" json:"data_classification"`
+	Effect             string `yaml:"effect" json:"effect"`
+	ReasonCode         string `yaml:"reason_code" json:"reason_code"`
+}
+
 type capabilityMatrixDocument struct {
 	SchemaVersion  string                    `yaml:"schema_version" json:"schema_version"`
 	DocumentStatus string                    `yaml:"document_status" json:"document_status"`
@@ -206,6 +228,7 @@ type parsedDocuments struct {
 	Roles                 roleCatalogDocument
 	LeaderWorker          leaderWorkerDocument
 	ModelRouting          modelRoutingDocument
+	ModelEgress           modelEgressPolicyDocument
 	Capabilities          capabilityMatrixDocument
 	InstructionPrecedence instructionPrecedenceDocument
 	Decisions             decisionsRequiredDocument

@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Mireuz13/explorarte-organization/internal/modelegress"
 )
 
 func SHA256Bytes(body []byte) string { sum := sha256.Sum256(body); return hex.EncodeToString(sum[:]) }
@@ -140,19 +142,44 @@ func canonicalNumberJSON(v any) ([]byte, error) {
 	}
 }
 
-func invocationRequestHash(c CreateInvocationCommand, revision int64, binding ResolvedBinding, caps []ModelCapability, schema []byte) (string, error) {
-	value := map[string]any{"organization_id": c.OrganizationID, "organization_revision_id": revision, "task_id": c.TaskID, "attempt_id": c.AttemptID, "dispatch_actor_role_id": c.DispatchActorRoleID, "subject_role_id": c.SubjectRoleID, "context_snapshot_id": c.ContextSnapshotID, "purpose": strings.TrimSpace(c.Purpose), "profile_id": binding.Profile.ID, "profile_version_id": binding.Version.ID, "provider_id": binding.Version.ProviderID, "provider_model_id": binding.Version.ProviderModelID, "required_capabilities": caps, "output_mode": c.OutputMode, "output_schema": json.RawMessage(schema), "max_output_tokens": c.MaxOutputTokens, "temperature": c.Temperature, "thinking_mode": c.ThinkingMode, "deadline": c.Deadline.UTC().Format(time.RFC3339Nano)}
+func invocationRequestHash(c CreateInvocationCommand, revision int64, binding ResolvedBinding, caps []ModelCapability, schema []byte, policyVersionID int64, policyHash string) (string, error) {
+	value := map[string]any{
+		"organization_id":                c.OrganizationID,
+		"organization_revision_id":       revision,
+		"task_id":                        c.TaskID,
+		"attempt_id":                     c.AttemptID,
+		"dispatch_actor_role_id":         c.DispatchActorRoleID,
+		"subject_role_id":                c.SubjectRoleID,
+		"context_snapshot_id":            c.ContextSnapshotID,
+		"purpose":                        strings.TrimSpace(c.Purpose),
+		"profile_id":                     binding.Profile.ID,
+		"profile_version_id":             binding.Version.ID,
+		"provider_id":                    binding.Version.ProviderID,
+		"provider_model_id":              binding.Version.ProviderModelID,
+		"required_capabilities":          caps,
+		"output_mode":                    c.OutputMode,
+		"output_schema":                  json.RawMessage(schema),
+		"max_output_tokens":              c.MaxOutputTokens,
+		"temperature":                    c.Temperature,
+		"thinking_mode":                  c.ThinkingMode,
+		"deadline":                       c.Deadline.UTC().Format(time.RFC3339Nano),
+		"model_egress_policy_version_id": policyVersionID,
+		"model_egress_policy_hash":       policyHash,
+	}
 	body, err := CanonicalJSON(value)
 	if err != nil {
 		return "", err
 	}
 	return SHA256Bytes(body), nil
 }
+
 func ActionDigest(inv Invocation) (string, error) {
-	value := map[string]any{"invocation_id": inv.ID, "organization_id": inv.OrganizationID, "organization_revision_id": inv.OrganizationRevisionID, "task_id": inv.TaskID, "attempt_id": inv.AttemptID, "dispatch_actor_role_id": inv.DispatchActorRoleID, "subject_role_id": inv.SubjectRoleID, "context_snapshot_id": inv.ContextSnapshotID, "model_profile_id": inv.ModelProfileID, "model_profile_version_id": inv.ModelProfileVersionID, "provider_id": inv.ProviderID, "provider_model_id": inv.ProviderModelID, "required_capabilities": inv.RequiredCapabilities, "output_mode": inv.OutputMode, "output_schema": inv.OutputSchema, "max_output_tokens": inv.MaxOutputTokens, "temperature": inv.Temperature, "thinking_mode": inv.ThinkingMode, "deadline": inv.Deadline.UTC().Format(time.RFC3339Nano)}
-	body, err := CanonicalJSON(value)
-	if err != nil {
-		return "", err
+	if inv.ModelEgressPolicyVersionID == nil {
+		return "", ErrEgressPolicyUnpinned
 	}
-	return SHA256Bytes(body), nil
+	digest, err := modelegress.InvocationActionDigest(inv.ID, inv.RequestHash, *inv.ModelEgressPolicyVersionID, inv.ModelEgressPolicyHash)
+	if err != nil {
+		return "", ErrEgressPolicyUnpinned
+	}
+	return digest, nil
 }

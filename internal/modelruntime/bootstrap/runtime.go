@@ -12,6 +12,8 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/config"
 	"github.com/Mireuz13/explorarte-organization/internal/contextengine"
 	contextbootstrap "github.com/Mireuz13/explorarte-organization/internal/contextengine/bootstrap"
+	"github.com/Mireuz13/explorarte-organization/internal/modelegress"
+	egressbootstrap "github.com/Mireuz13/explorarte-organization/internal/modelegress/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter"
 	modelpostgres "github.com/Mireuz13/explorarte-organization/internal/modelruntime/postgres"
@@ -87,6 +89,10 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	if err != nil {
 		return nil, fmt.Errorf("open authorization runtime for models: %w", err)
 	}
+	egressRuntime, err := egressbootstrap.Open(cfg, platformStore)
+	if err != nil {
+		return nil, fmt.Errorf("open model egress runtime: %w", err)
+	}
 	catalog := catalogAdapter{reader: registryRepo}
 	tasksAdapter := taskAdapter{reader: taskStore}
 	contexts := contextAdapter{service: contextRuntime.Service}
@@ -95,12 +101,12 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	if err != nil {
 		return nil, err
 	}
-	invocationService, err := modelruntime.NewInvocationService(cfg.Tasks.OrganizationID, catalog, tasksAdapter, contexts, modelStore, modelruntime.ClockFunc(time.Now), cfg.Tasks.OutboxMaxAttempts)
+	invocationService, err := modelruntime.NewInvocationService(cfg.Tasks.OrganizationID, catalog, tasksAdapter, contexts, modelStore, egressRuntime.Store, modelruntime.ClockFunc(time.Now), cfg.Tasks.OutboxMaxAttempts)
 	if err != nil {
 		return nil, err
 	}
-	adapters := adapter.NewRegistry(adapter.NewFake())
-	dispatchService, err := modelruntime.NewDispatchService(runtimeCfg, catalog, tasksAdapter, contexts, evaluator, modelStore, adapters, modelruntime.ClockFunc(time.Now))
+	adapters := adapter.NewRegistry()
+	dispatchService, err := modelruntime.NewDispatchService(runtimeCfg, catalog, tasksAdapter, contexts, evaluator, egressRuntime.Store, egressRuntime.Evaluator, egressRuntime.Store, modelStore, adapters, modelruntime.ClockFunc(time.Now))
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +127,7 @@ func (a catalogAdapter) CurrentOrganization(ctx context.Context, id string) (mod
 	if rev == nil {
 		return modelruntime.OrganizationRef{}, registry.ErrNotFound
 	}
-	return modelruntime.OrganizationRef{ID: org.ID, RevisionID: rev.ID, ModelRoutingHash: rev.DocumentHashes["model-routing.yaml"]}, nil
+	return modelruntime.OrganizationRef{ID: org.ID, RevisionID: rev.ID, ModelRoutingHash: rev.DocumentHashes["model-routing.yaml"], ModelEgressPolicyHash: rev.DocumentHashes["model-egress-policy.yaml"], CapabilityMatrixHash: rev.DocumentHashes["capability-matrix.yaml"]}, nil
 }
 func (a catalogAdapter) GetRole(ctx context.Context, org, id string) (modelruntime.RoleRef, error) {
 	r, err := a.reader.GetRole(ctx, org, id)
@@ -211,9 +217,13 @@ func (a contextAdapter) RenderContextSnapshot(ctx context.Context, id int64) ([]
 type authorizationAdapter struct{ evaluator authorization.Evaluator }
 
 func (a authorizationAdapter) EvaluateDispatch(ctx context.Context, org string, revision int64, actor, resourceID, digest string) (modelruntime.AuthorizationDecision, error) {
-	result, err := a.evaluator.Evaluate(ctx, authorization.EvaluationRequest{OrganizationID: org, OrganizationRevisionID: revision, ActorRoleID: actor, CapabilityID: "task.execute", ResourceType: "model_invocation", ResourceID: resourceID, ActionDigest: digest})
+	result, err := a.evaluator.Evaluate(ctx, authorization.EvaluationRequest{OrganizationID: org, OrganizationRevisionID: revision, ActorRoleID: actor, CapabilityID: "model.invoke", ResourceType: "model_invocation", ResourceID: resourceID, ActionDigest: digest})
 	if err != nil {
 		return modelruntime.AuthorizationDecision{}, err
 	}
-	return modelruntime.AuthorizationDecision{Allowed: result.Effect == authorization.EffectAllow, ReasonCode: string(result.ReasonCode)}, nil
+	effect := modelegress.AuthorizationDeny
+	if result.Effect == authorization.EffectAllow {
+		effect = modelegress.AuthorizationAllow
+	}
+	return modelruntime.AuthorizationDecision{Effect: effect, Allowed: result.Effect == authorization.EffectAllow, ReasonCode: string(result.ReasonCode), MatrixHash: result.MatrixHash}, nil
 }

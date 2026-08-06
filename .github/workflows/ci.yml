@@ -28,16 +28,26 @@ jobs:
           sudo apt-get install -y ripgrep
       - name: Download and verify modules
         run: go mod download && go mod verify
-      - name: Canonical documents unchanged from Branch 08 base
-        run: git diff --exit-code 6d7b71acdeba7a70d552764c1d96f7bf9d907e6d -- docs/canonical
+      - name: Branch 09 canonical allowlist
+        run: |
+          base=07cc8eac1330816ee755366f61be15991f7de4b6
+          mapfile -t changed < <(git diff --name-only "$base"...HEAD -- docs/canonical | sort -u)
+          for path in "${changed[@]}"; do
+            case "$path" in
+              docs/canonical/capability-matrix.yaml|docs/canonical/model-egress-policy.yaml) ;;
+              *) echo "unauthorized canonical change: $path" >&2; exit 1 ;;
+            esac
+          done
       - name: Git whitespace validation
-        run: git diff --check 6d7b71acdeba7a70d552764c1d96f7bf9d907e6d...HEAD
+        run: git diff --check 07cc8eac1330816ee755366f61be15991f7de4b6...HEAD
       - name: Full non-integration verification
         run: make verify
       - name: Context engine race tests
         run: go test -race -short ./internal/contextengine/...
       - name: Model runtime race tests
         run: go test -race -short ./internal/modelruntime/...
+      - name: Model egress race tests
+        run: go test -race -short ./internal/modelegress/...
       - name: Cross builds
         run: make build-cross
       - name: Validate canonical registry
@@ -73,10 +83,22 @@ jobs:
           sudo apt-get install -y ripgrep
       - name: Download and verify modules
         run: go mod download && go mod verify
-      - name: Canonical documents unchanged from Branch 08 base
-        run: git diff --exit-code 6d7b71acdeba7a70d552764c1d96f7bf9d907e6d -- docs/canonical
+      - name: Branch 09 canonical allowlist
+        run: |
+          base=07cc8eac1330816ee755366f61be15991f7de4b6
+          mapfile -t changed < <(git diff --name-only "$base"...HEAD -- docs/canonical | sort -u)
+          for path in "${changed[@]}"; do
+            case "$path" in
+              docs/canonical/capability-matrix.yaml|docs/canonical/model-egress-policy.yaml) ;;
+              *) echo "unauthorized canonical change: $path" >&2; exit 1 ;;
+            esac
+          done
       - name: PostgreSQL 17 complete integration suite and CLI smoke tests
         run: make test-integration
+      - name: Model egress PostgreSQL 17 integration
+        run: make test-model-egress-integration
+      - name: Model runtime PostgreSQL 17 integration
+        run: make test-model-runtime-integration
       - name: Context engine PostgreSQL 17 integration
         run: make test-context-integration
       - name: Authorization PostgreSQL 17 integration
