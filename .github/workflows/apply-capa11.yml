@@ -59,7 +59,12 @@ jobs:
           echo "ac5204bac92b8096569c43073a7818447efd3da0d03e270aeb1bf1be419521f1  .github/capa11-fix6.patch" | sha256sum --check -
           git apply --check .github/capa11-fix6.patch
           git apply .github/capa11-fix6.patch
-          rm -rf .github/capa11-patch .github/capa11-fix.patch .github/capa11-fix2.patch .github/capa11-fix3.patch .github/capa11-fix4.patch .github/capa11-fix5.patch .github/capa11-fix6.patch .github/workflows/apply-capa11.yml
+          echo "2c77cafc0ac21d1028d1074ff587de6860e677055051fb9876191e62881dfab3  .github/capa11-fix7.patch.b64" | sha256sum --check -
+          base64 --decode .github/capa11-fix7.patch.b64 > /tmp/capa11-fix7.patch
+          echo "c6a56414460bb7d37f930d6132f34d117142751ae10f0e293ddafacf98d23596  /tmp/capa11-fix7.patch" | sha256sum --check -
+          git apply --check /tmp/capa11-fix7.patch
+          git apply /tmp/capa11-fix7.patch
+          rm -rf .github/capa11-patch .github/capa11-fix.patch .github/capa11-fix2.patch .github/capa11-fix3.patch .github/capa11-fix4.patch .github/capa11-fix5.patch .github/capa11-fix6.patch .github/capa11-fix7.patch.b64 .github/workflows/apply-capa11.yml
           git diff --check
 
       - name: Download and verify modules
