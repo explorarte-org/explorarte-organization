@@ -27,7 +27,9 @@ func TestCellWorkerPostgresWorkSource(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	platform := openCellWorkerStore(t, ctx)
-	defer platform.Close()
+	// Registered before the cleanup below, so LIFO order runs the reset
+	// first and closes the pool last.
+	t.Cleanup(platform.Close)
 	runner, err := platformmigrations.New(platform.Pool(), rootmigrations.Files)
 	if err != nil {
 		t.Fatal(err)
@@ -36,6 +38,11 @@ func TestCellWorkerPostgresWorkSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	resetCellWorkerSchema(t, ctx, platform)
+	// This suite inserts model_providers/model_profile_versions fixtures to
+	// satisfy model_invocations' FKs — tables the shared model registry sync
+	// (exercised later by the CLI smoke test in the same "all" run) also
+	// reads. Leave no trace regardless of run order or pass/fail.
+	t.Cleanup(func() { resetCellWorkerSchema(t, context.Background(), platform) })
 	revision := syncCellWorkerCanonical(t, ctx, platform)
 
 	store, err := cellworkerpostgres.New(platform, cellworkerIntegrationOrganization)
