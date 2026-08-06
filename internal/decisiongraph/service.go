@@ -56,6 +56,16 @@ func (s *Service) StartRun(ctx context.Context, runID int64) error {
 	return nil
 }
 
+func (s *Service) TransitionBranch(ctx context.Context, request BranchTransitionRequest) error {
+	if err := request.Validate(); err != nil {
+		return err
+	}
+	if err := s.ledger.TransitionBranch(ctx, request, postgresTimestamp(s.clock.Now())); err != nil {
+		return fmt.Errorf("transition decision branch: %w", err)
+	}
+	return nil
+}
+
 func (s *Service) ClaimReadyNode(ctx context.Context, request ClaimNodeRequest) (NodeClaim, error) {
 	if err := request.Validate(); err != nil {
 		return NodeClaim{}, err

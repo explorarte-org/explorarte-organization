@@ -256,6 +256,68 @@ WHERE r.id=$1 AND r.organization_id=$2
 	return decisiongraph.ErrRunNotMutable
 }
 
+func (s *Store) TransitionBranch(ctx context.Context, request decisiongraph.BranchTransitionRequest, now time.Time) error {
+	if err := request.Validate(); err != nil {
+		return err
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return fmt.Errorf("begin branch transition: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var runStatus decisiongraph.RunStatus
+	var graphVersionID int64
+	var current decisiongraph.BranchState
+	if err := tx.QueryRow(ctx, `
+SELECT r.status, n.graph_version_id, n.branch_state
+FROM decision_graph_runs r
+JOIN decision_graph_nodes n
+  ON n.run_id=r.id AND n.organization_id=r.organization_id
+WHERE r.id=$1 AND r.organization_id=$2 AND n.id=$3
+  AND n.graph_version_id=(
+      SELECT id FROM decision_graph_versions
+      WHERE run_id=r.id AND organization_id=r.organization_id
+      ORDER BY version_number DESC LIMIT 1
+  )
+FOR UPDATE OF r,n`, request.RunID, s.organizationID, request.NodeID).Scan(&runStatus, &graphVersionID, &current); err != nil {
+		return mapNotFound("branch node", err)
+	}
+	if runStatus != decisiongraph.RunRunning && runStatus != decisiongraph.RunWaiting {
+		return decisiongraph.ErrRunNotActive
+	}
+	reopened := request.ToState == decisiongraph.BranchActive
+	if err := decisiongraph.ValidateBranchTransition(current, request.ToState, reopened); err != nil {
+		return err
+	}
+
+	eventHash := eventDigest("branch_transitioned", request.RunID, request.NodeID, current, request.ToState, request.EvidenceHash, request.ReasonCode, request.Actor)
+	if _, err := tx.Exec(ctx, `
+INSERT INTO decision_branch_events(
+    organization_id,run_id,graph_version_id,node_id,from_branch_state,to_branch_state,
+    evidence_hash,reason_code,actor,event_hash,created_at
+) VALUES($1,$2,$3,$4,$5,$6,NULLIF($7,''),NULLIF($8,''),$9,$10,$11)`,
+		s.organizationID, request.RunID, graphVersionID, request.NodeID, current, request.ToState,
+		request.EvidenceHash, request.ReasonCode, request.Actor, eventHash, now); err != nil {
+		return fmt.Errorf("insert branch transition event: %w", err)
+	}
+	command, err := tx.Exec(ctx, `
+UPDATE decision_graph_nodes
+SET branch_state=$4, updated_at=$5
+WHERE id=$1 AND run_id=$2 AND organization_id=$3 AND branch_state=$6`,
+		request.NodeID, request.RunID, s.organizationID, request.ToState, now, current)
+	if err != nil {
+		return fmt.Errorf("update branch state: %w", err)
+	}
+	if command.RowsAffected() != 1 {
+		return decisiongraph.ErrConflict
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit branch transition: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) ClaimReadyNode(ctx context.Context, request decisiongraph.ClaimNodeRequest, now time.Time) (decisiongraph.NodeClaim, error) {
 	if err := request.Validate(); err != nil {
 		return decisiongraph.NodeClaim{}, err
@@ -735,6 +797,15 @@ INSERT INTO decision_records (
 		request.SelectedCandidateNodeID, request.EvidenceSetHash, request.VerificationSetHash,
 		request.DecisionHash, request.VerificationLabel, request.CreatedBy, now); err != nil {
 		return fmt.Errorf("insert terminal decision: %w", err)
+	}
+	decisionBranchEventHash := eventDigest("branch_transitioned", request.RunID, request.DecisionNodeID, decisiongraph.BranchActive, decisiongraph.BranchSelected, "", "terminal_decision_recorded", request.CreatedBy)
+	if _, err := tx.Exec(ctx, `
+INSERT INTO decision_branch_events(
+    organization_id,run_id,graph_version_id,node_id,from_branch_state,to_branch_state,
+    reason_code,actor,event_hash,created_at
+) VALUES($1,$2,$3,$4,'active','selected','terminal_decision_recorded',$5,$6,$7)`,
+		s.organizationID, request.RunID, graphVersionID, request.DecisionNodeID, request.CreatedBy, decisionBranchEventHash, now); err != nil {
+		return fmt.Errorf("record terminal decision branch transition: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
 UPDATE decision_graph_nodes

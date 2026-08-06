@@ -264,6 +264,34 @@ func (r TerminalDecisionRequest) Validate() error {
 	return nil
 }
 
+type BranchTransitionRequest struct {
+	RunID        int64
+	NodeID       int64
+	ToState      BranchState
+	EvidenceHash string
+	ReasonCode   string
+	Actor        string
+}
+
+func (r BranchTransitionRequest) Validate() error {
+	if r.RunID <= 0 || r.NodeID <= 0 || !r.ToState.Valid() {
+		return fmt.Errorf("%w: invalid branch transition identity", ErrInvalidTransition)
+	}
+	if r.ToState == BranchActive && !sha256HexPattern.MatchString(r.EvidenceHash) {
+		return fmt.Errorf("%w: reopening requires an evidence hash", ErrInvalidTransition)
+	}
+	if r.EvidenceHash != "" && !sha256HexPattern.MatchString(r.EvidenceHash) {
+		return fmt.Errorf("%w: invalid evidence hash", ErrInvalidTransition)
+	}
+	if r.ReasonCode != "" && !regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,119}$`).MatchString(r.ReasonCode) {
+		return fmt.Errorf("%w: invalid branch reason code", ErrInvalidTransition)
+	}
+	if strings.TrimSpace(r.Actor) == "" || len(r.Actor) > 200 {
+		return fmt.Errorf("%w: invalid branch actor", ErrInvalidTransition)
+	}
+	return nil
+}
+
 type TraceRef struct {
 	OrganizationID string
 	RunID          int64

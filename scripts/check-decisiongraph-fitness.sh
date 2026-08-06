@@ -67,6 +67,8 @@ for literal in depends_on supports contradicts satisfies prunes selected_from; d
 done
 rg -q 'if g\.hasDependencyCycle\(\)' internal/decisiongraph/graph.go || fail "dependency cycle validation missing"
 rg -q 'decision_graph_edges_cycle_guard' migrations/000012_create_durable_decision_graph.up.sql || fail "database cycle guard missing"
+rg -q 'TransitionBranch' internal/decisiongraph/ports.go internal/decisiongraph/service.go internal/decisiongraph/postgres/store.go || fail "durable branch transition port missing"
+rg -q 'decision_branch_events' migrations/000012_create_durable_decision_graph.up.sql internal/decisiongraph/postgres/store.go || fail "branch transition ledger missing"
 
 # Claims and budgets are durable, concurrency-safe, and consumed before work.
 store=internal/decisiongraph/postgres/store.go

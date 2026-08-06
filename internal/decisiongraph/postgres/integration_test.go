@@ -187,11 +187,28 @@ func TestDecisionGraphPostgresLedger(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := service.TransitionBranch(ctx, decisiongraph.BranchTransitionRequest{
+		RunID: run.ID, NodeID: candidate.NodeID,
+		ToState:    decisiongraph.BranchRejectedByEvidence,
+		ReasonCode: "candidate_temporarily_rejected", Actor: "integration/verifier",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := platform.Pool().Exec(ctx, `
-UPDATE decision_graph_nodes
-SET branch_state='selected', updated_at=$2
-WHERE id=$1`, candidate.NodeID, clock.Now()); err != nil {
-		t.Fatalf("select candidate branch: %v", err)
+UPDATE decision_graph_nodes SET branch_state='active', updated_at=$2 WHERE id=$1`, candidate.NodeID, clock.Now()); err == nil {
+		t.Fatal("expected direct evidence-less branch reopen to fail")
+	}
+	if err := service.TransitionBranch(ctx, decisiongraph.BranchTransitionRequest{
+		RunID: run.ID, NodeID: candidate.NodeID, ToState: decisiongraph.BranchActive,
+		EvidenceHash: digest("new-candidate-evidence"), ReasonCode: "new_evidence", Actor: "integration/verifier",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.TransitionBranch(ctx, decisiongraph.BranchTransitionRequest{
+		RunID: run.ID, NodeID: candidate.NodeID, ToState: decisiongraph.BranchSelected,
+		ReasonCode: "candidate_selected", Actor: "integration/decider",
+	}); err != nil {
+		t.Fatal(err)
 	}
 
 	verification, err := service.ClaimReadyNode(ctx, decisiongraph.ClaimNodeRequest{

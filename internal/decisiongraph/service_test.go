@@ -31,6 +31,9 @@ func (f *fakeLedger) AppendGraph(context.Context, AppendGraphRequest) (GraphVers
 	return GraphVersion{ID: 1, RunID: 1, VersionNumber: 1}, nil
 }
 func (*fakeLedger) StartRun(context.Context, int64, time.Time) error { return nil }
+func (*fakeLedger) TransitionBranch(context.Context, BranchTransitionRequest, time.Time) error {
+	return nil
+}
 func (*fakeLedger) ClaimReadyNode(context.Context, ClaimNodeRequest, time.Time) (NodeClaim, error) {
 	return NodeClaim{ExecutionID: 1}, nil
 }
@@ -97,6 +100,20 @@ func TestServiceRejectsTerminalUnknownDecision(t *testing.T) {
 	}
 	if err := service.RecordTerminalDecision(context.Background(), request); !errors.Is(err, ErrInvalidDecision) {
 		t.Fatalf("expected invalid decision, got %v", err)
+	}
+}
+
+func TestServiceRejectsReopenWithoutEvidence(t *testing.T) {
+	ledger := &fakeLedger{}
+	service, err := NewService(ledger, fixedClock{now: time.Unix(1000, 0).UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = service.TransitionBranch(context.Background(), BranchTransitionRequest{
+		RunID: 1, NodeID: 2, ToState: BranchActive, Actor: "planner",
+	})
+	if !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("expected invalid evidence-less reopen, got %v", err)
 	}
 }
 

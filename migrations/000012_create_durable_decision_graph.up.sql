@@ -127,6 +127,33 @@ CREATE INDEX decision_graph_edges_dependency_idx
     ON decision_graph_edges (graph_version_id, from_node_id, to_node_id)
     WHERE edge_type = 'depends_on';
 
+CREATE TABLE decision_branch_events (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    organization_id TEXT NOT NULL,
+    run_id BIGINT NOT NULL,
+    graph_version_id BIGINT NOT NULL,
+    node_id BIGINT NOT NULL,
+    from_branch_state TEXT NOT NULL CHECK (from_branch_state IN ('active','selected','rejected_by_evidence','rejected_by_policy','rejected_by_capability','rejected_by_dependency','rejected_by_budget','superseded','inconclusive')),
+    to_branch_state TEXT NOT NULL CHECK (to_branch_state IN ('active','selected','rejected_by_evidence','rejected_by_policy','rejected_by_capability','rejected_by_dependency','rejected_by_budget','superseded','inconclusive')),
+    evidence_hash TEXT CHECK (evidence_hash IS NULL OR evidence_hash ~ '^[0-9a-f]{64}$'),
+    reason_code TEXT,
+    actor TEXT NOT NULL,
+    event_hash TEXT NOT NULL CHECK (event_hash ~ '^[0-9a-f]{64}$'),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT decision_branch_events_node_fk
+        FOREIGN KEY (node_id, graph_version_id, run_id, organization_id)
+        REFERENCES decision_graph_nodes(id, graph_version_id, run_id, organization_id)
+        ON DELETE RESTRICT,
+    UNIQUE (run_id, event_hash),
+    CHECK (from_branch_state <> to_branch_state),
+    CHECK (reason_code IS NULL OR length(trim(reason_code)) BETWEEN 1 AND 120),
+    CHECK (length(trim(actor)) BETWEEN 1 AND 200),
+    CHECK (to_branch_state <> 'active' OR evidence_hash IS NOT NULL)
+);
+
+CREATE INDEX decision_branch_events_node_idx
+    ON decision_branch_events (run_id, node_id, created_at, id);
+
 CREATE TABLE decision_graph_budgets (
     run_id BIGINT PRIMARY KEY,
     organization_id TEXT NOT NULL,
@@ -351,8 +378,26 @@ BEGIN
     END IF;
 
     IF NEW.branch_state <> OLD.branch_state AND NOT (
-        OLD.branch_state = 'active'
-        AND NEW.branch_state IN ('selected','rejected_by_evidence','rejected_by_policy','rejected_by_capability','rejected_by_dependency','rejected_by_budget','superseded','inconclusive')
+        (
+            OLD.branch_state = 'active'
+            AND NEW.branch_state IN ('selected','rejected_by_evidence','rejected_by_policy','rejected_by_capability','rejected_by_dependency','rejected_by_budget','superseded','inconclusive')
+        )
+        OR (
+            OLD.branch_state IN ('rejected_by_evidence','rejected_by_policy','rejected_by_capability','rejected_by_dependency','rejected_by_budget','inconclusive')
+            AND NEW.branch_state = 'active'
+            AND EXISTS (
+                SELECT 1
+                FROM decision_branch_events event
+                WHERE event.node_id = OLD.id
+                  AND event.run_id = OLD.run_id
+                  AND event.organization_id = OLD.organization_id
+                  AND event.graph_version_id = OLD.graph_version_id
+                  AND event.from_branch_state = OLD.branch_state
+                  AND event.to_branch_state = NEW.branch_state
+                  AND event.evidence_hash IS NOT NULL
+                  AND event.created_at = NEW.updated_at
+            )
+        )
     ) THEN
         RAISE EXCEPTION 'invalid decision branch transition: % -> %', OLD.branch_state, NEW.branch_state USING ERRCODE = '23514';
     END IF;
@@ -410,6 +455,9 @@ BEGIN
 END;
 $$;
 
+CREATE TRIGGER decision_branch_events_immutable
+BEFORE UPDATE OR DELETE ON decision_branch_events
+FOR EACH ROW EXECUTE FUNCTION decision_graph_immutable_row();
 CREATE TRIGGER decision_graph_versions_immutable
 BEFORE UPDATE OR DELETE ON decision_graph_versions
 FOR EACH ROW EXECUTE FUNCTION decision_graph_immutable_row();

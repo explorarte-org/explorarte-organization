@@ -9,6 +9,7 @@ type Ledger interface {
 	CreateRun(context.Context, CreateRunRequest, time.Time) (Run, error)
 	AppendGraph(context.Context, AppendGraphRequest) (GraphVersion, error)
 	StartRun(context.Context, int64, time.Time) error
+	TransitionBranch(context.Context, BranchTransitionRequest, time.Time) error
 	ClaimReadyNode(context.Context, ClaimNodeRequest, time.Time) (NodeClaim, error)
 	FinishExecution(context.Context, FinishExecutionRequest, time.Time) error
 	RecordObservation(context.Context, ObservationRecord, time.Time) error
