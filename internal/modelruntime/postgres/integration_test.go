@@ -610,12 +610,12 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 	})
 
 	t.Run("down migration and reapply in disposable integration database", func(t *testing.T) {
-		// Branch 12 provider tables reference identity assertions, so 000011
-		// must come down before 000010 and the earlier model migrations.
-		for _, version := range []int{11, 10, 9, 8, 7} {
+		// Capa 14 references model invocations and dispatch attempts, so 000012
+		// must come down before 000011 and the earlier model migrations.
+		for _, version := range []int{12, 11, 10, 9, 8, 7} {
 			name := fmt.Sprintf("%06d_", version)
 			var downName string
-			for _, candidate := range []string{"000011_create_model_provider_adapter.down.sql", "000010_create_model_execution_identity.down.sql", "000009_create_model_dispatcher_assignments.down.sql", "000008_create_model_egress_authorization.down.sql", "000007_create_model_runtime_gateway.down.sql"} {
+			for _, candidate := range []string{"000012_create_durable_decision_graph.down.sql", "000011_create_model_provider_adapter.down.sql", "000010_create_model_execution_identity.down.sql", "000009_create_model_dispatcher_assignments.down.sql", "000008_create_model_egress_authorization.down.sql", "000007_create_model_runtime_gateway.down.sql"} {
 				if strings.HasPrefix(candidate, name) {
 					downName = candidate
 					break
@@ -633,7 +633,7 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 			}
 		}
 		reapplied, upErr := runner.Up(ctx)
-		if upErr != nil || len(reapplied.Applied) != 5 || reapplied.Current != 11 {
+		if upErr != nil || len(reapplied.Applied) != 6 || reapplied.Current != 12 {
 			t.Fatalf("reapply=%+v err=%v", reapplied, upErr)
 		}
 		var exists bool

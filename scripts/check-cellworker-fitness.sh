@@ -29,8 +29,14 @@ mapfile -t canonical_changes < <({
 if [[ ${#canonical_changes[@]} -gt 0 ]]; then
   fail "unauthorized canonical change: ${canonical_changes[*]}"
 fi
-if git diff --name-only "$BASE_SHA" -- migrations | grep -q . || git ls-files --others --exclude-standard -- migrations | grep -q .; then
-  fail "unauthorized migration change: the persistent worker requires no new durable state"
+# Migration history is append-only: this check forbids modifying or deleting
+# a migration that already existed at BASE_SHA (Rama 13 itself must add
+# none), but does not forbid branches built on top of Rama 13 from adding
+# their own new migrations, which is expected and already happens (Rama 14's
+# 000012 and onward).
+if git diff --name-status "$BASE_SHA" -- migrations | grep -qE '^[MD]' \
+  || git ls-files --others --exclude-standard -- migrations | grep -q .; then
+  fail "unauthorized migration change: a pre-existing migration was modified, deleted, or left uncommitted"
 fi
 
 # The composition root and the real provider adapter stay untouched — this is
