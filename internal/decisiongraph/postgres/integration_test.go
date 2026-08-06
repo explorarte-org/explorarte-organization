@@ -288,6 +288,26 @@ UPDATE decision_graph_nodes SET branch_state='active', updated_at=$2 WHERE id=$1
 	if trace.OrganizationID != decisionGraphOrganization || trace.RunID != run.ID || trace.SchemaVersion != "decision-trace/v1" || len(trace.TraceHash) != 64 {
 		t.Fatalf("trace=%+v", trace)
 	}
+	if err := service.RecordObservation(ctx, decisiongraph.ObservationRecord{
+		ExecutionID: decision.ExecutionID, SchemaVersion: "observation/v1",
+		ObservationHash: digest("late-observation"), SourceKind: "model_result",
+	}); !errors.Is(err, decisiongraph.ErrRunNotActive) {
+		t.Fatalf("late observation error=%v, want run not active", err)
+	}
+	if err := service.RecordVerification(ctx, decisiongraph.VerificationRecord{
+		RunID: run.ID, NodeID: candidate.NodeID, Label: decisiongraph.VerificationVerified,
+		VerifierRef: "integration/late-verifier", VerifierVersion: "v1",
+		EvidenceSetHash: digest("late-evidence"),
+	}); !errors.Is(err, decisiongraph.ErrRunNotActive) {
+		t.Fatalf("late verification error=%v, want run not active", err)
+	}
+	stableTrace, err := service.TraceRef(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stableTrace.TraceHash != trace.TraceHash {
+		t.Fatalf("terminal trace mutated: %s != %s", stableTrace.TraceHash, trace.TraceHash)
+	}
 	assertTerminalDecisionImmutable(t, ctx, platform, run.ID)
 
 	t.Run("wall-time budget fails the run atomically", func(t *testing.T) {

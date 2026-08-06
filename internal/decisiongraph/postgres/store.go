@@ -609,20 +609,37 @@ func (s *Store) RecordObservation(ctx context.Context, record decisiongraph.Obse
 	if err := record.Validate(); err != nil {
 		return err
 	}
-	command, err := s.pool.Exec(ctx, `
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return fmt.Errorf("begin record observation: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var runID, nodeID int64
+	var runStatus decisiongraph.RunStatus
+	if err := tx.QueryRow(ctx, `
+SELECT x.run_id, x.node_id, r.status
+FROM decision_node_executions x
+JOIN decision_graph_runs r
+  ON r.id=x.run_id AND r.organization_id=x.organization_id
+WHERE x.id=$1 AND x.organization_id=$2
+FOR UPDATE OF x,r`, record.ExecutionID, s.organizationID).Scan(&runID, &nodeID, &runStatus); err != nil {
+		return mapNotFound("observation execution", err)
+	}
+	if runStatus != decisiongraph.RunRunning && runStatus != decisiongraph.RunWaiting {
+		return decisiongraph.ErrRunNotActive
+	}
+	if _, err := tx.Exec(ctx, `
 INSERT INTO decision_observations (
     organization_id, run_id, node_id, execution_id, schema_version,
     observation_hash, source_kind, source_reference_hash, created_at
-)
-SELECT $1, x.run_id, x.node_id, x.id, $3, $4, $5, NULLIF($6,''), $7
-FROM decision_node_executions x
-WHERE x.id=$2 AND x.organization_id=$1`, s.organizationID, record.ExecutionID, record.SchemaVersion,
-		record.ObservationHash, record.SourceKind, record.SourceReferenceHash, now)
-	if err != nil {
+) VALUES($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),$9)`,
+		s.organizationID, runID, nodeID, record.ExecutionID, record.SchemaVersion,
+		record.ObservationHash, record.SourceKind, record.SourceReferenceHash, now); err != nil {
 		return fmt.Errorf("insert observation: %w", err)
 	}
-	if command.RowsAffected() != 1 {
-		return decisiongraph.ErrNotFound
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit observation: %w", err)
 	}
 	return nil
 }
@@ -641,15 +658,19 @@ func (s *Store) RecordVerification(ctx context.Context, record decisiongraph.Ver
 	}
 	defer tx.Rollback(ctx)
 
+	var runStatus decisiongraph.RunStatus
 	var maxVerifications, usedVerifications int64
 	if err := tx.QueryRow(ctx, `
-SELECT r.max_verifications, b.used_verifications
+SELECT r.status, r.max_verifications, b.used_verifications
 FROM decision_graph_runs r
 JOIN decision_graph_budgets b
   ON b.run_id=r.id AND b.organization_id=r.organization_id
 WHERE r.id=$1 AND r.organization_id=$2
-FOR UPDATE OF r,b`, record.RunID, s.organizationID).Scan(&maxVerifications, &usedVerifications); err != nil {
+FOR UPDATE OF r,b`, record.RunID, s.organizationID).Scan(&runStatus, &maxVerifications, &usedVerifications); err != nil {
 		return mapNotFound("run", err)
+	}
+	if runStatus != decisiongraph.RunRunning && runStatus != decisiongraph.RunWaiting {
+		return decisiongraph.ErrRunNotActive
 	}
 	if usedVerifications >= maxVerifications {
 		return decisiongraph.ErrBudgetExceeded
@@ -802,6 +823,17 @@ WHERE run_id=$1 AND organization_id=$2
 	}
 	if supportingVerifications == 0 {
 		return decisiongraph.ErrInvalidDecision
+	}
+	var activeExecutions int
+	if err := tx.QueryRow(ctx, `
+SELECT COUNT(*)
+FROM decision_node_executions
+WHERE run_id=$1 AND organization_id=$2
+  AND status IN ('claimed','running','waiting_verification')`, request.RunID, s.organizationID).Scan(&activeExecutions); err != nil {
+		return fmt.Errorf("count active decision executions: %w", err)
+	}
+	if activeExecutions != 0 {
+		return decisiongraph.ErrRunNotMutable
 	}
 	if _, err := tx.Exec(ctx, `
 INSERT INTO decision_records (
@@ -1003,17 +1035,64 @@ INSERT INTO decision_budget_events (
 
 func (s *Store) TraceRef(ctx context.Context, runID int64) (decisiongraph.TraceRef, error) {
 	var policyHash, graphHash, decisionHash string
+	var executionTrace, observationTrace, verificationTrace, branchTrace, budgetTrace string
 	if err := s.pool.QueryRow(ctx, `
-SELECT r.reasoning_policy_hash, v.snapshot_hash, d.decision_hash
+SELECT
+    r.reasoning_policy_hash,
+    v.snapshot_hash,
+    d.decision_hash,
+    COALESCE((
+        SELECT string_agg(
+            concat_ws(':', x.id, x.node_id, x.attempt_number, x.status,
+                COALESCE(x.outcome_hash,''), COALESCE(x.reason_code,''),
+                x.input_tokens, x.output_tokens,
+                COALESCE(x.model_invocation_id::text,''), COALESCE(x.dispatch_attempt_id::text,'')),
+            '|' ORDER BY x.id)
+        FROM decision_node_executions x
+        WHERE x.run_id=r.id AND x.organization_id=r.organization_id
+    ),''),
+    COALESCE((
+        SELECT string_agg(
+            concat_ws(':', o.id, o.execution_id, o.schema_version,
+                o.observation_hash, o.source_kind, COALESCE(o.source_reference_hash,'')),
+            '|' ORDER BY o.id)
+        FROM decision_observations o
+        WHERE o.run_id=r.id AND o.organization_id=r.organization_id
+    ),''),
+    COALESCE((
+        SELECT string_agg(
+            concat_ws(':', q.id, q.node_id, COALESCE(q.execution_id::text,''),
+                q.label, q.verifier_ref, q.verifier_version,
+                q.evidence_set_hash, q.reason_codes::text),
+            '|' ORDER BY q.id)
+        FROM decision_verifications q
+        WHERE q.run_id=r.id AND q.organization_id=r.organization_id
+    ),''),
+    COALESCE((
+        SELECT string_agg(e.event_hash, '|' ORDER BY e.id)
+        FROM decision_branch_events e
+        WHERE e.run_id=r.id AND e.organization_id=r.organization_id
+    ),''),
+    COALESCE((
+        SELECT string_agg(e.event_hash, '|' ORDER BY e.id)
+        FROM decision_budget_events e
+        WHERE e.run_id=r.id AND e.organization_id=r.organization_id
+    ),'')
 FROM decision_graph_runs r
-JOIN decision_graph_versions v ON v.run_id=r.id
-JOIN decision_records d ON d.run_id=r.id AND d.graph_version_id=v.id
-WHERE r.id=$1 AND r.organization_id=$2
+JOIN decision_graph_versions v ON v.run_id=r.id AND v.organization_id=r.organization_id
+JOIN decision_records d ON d.run_id=r.id AND d.graph_version_id=v.id AND d.organization_id=r.organization_id
+WHERE r.id=$1 AND r.organization_id=$2 AND r.status='succeeded'
 ORDER BY v.version_number DESC
-LIMIT 1`, runID, s.organizationID).Scan(&policyHash, &graphHash, &decisionHash); err != nil {
+LIMIT 1`, runID, s.organizationID).Scan(
+		&policyHash, &graphHash, &decisionHash,
+		&executionTrace, &observationTrace, &verificationTrace, &branchTrace, &budgetTrace,
+	); err != nil {
 		return decisiongraph.TraceRef{}, mapNotFound("trace", err)
 	}
-	traceHash := eventDigest("decision-trace/v1", runID, policyHash, graphHash, decisionHash)
+	traceHash := eventDigest(
+		"decision-trace/v1", runID, policyHash, graphHash, decisionHash,
+		executionTrace, observationTrace, verificationTrace, branchTrace, budgetTrace,
+	)
 	return decisiongraph.TraceRef{
 		OrganizationID: s.organizationID,
 		RunID:          runID,

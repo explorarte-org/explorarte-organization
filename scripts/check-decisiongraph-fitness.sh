@@ -70,6 +70,8 @@ rg -q 'if g\.hasDependencyCycle\(\)' internal/decisiongraph/graph.go || fail "de
 rg -q 'decision_graph_edges_cycle_guard' migrations/000012_create_durable_decision_graph.up.sql || fail "database cycle guard missing"
 rg -q 'TransitionBranch' internal/decisiongraph/ports.go internal/decisiongraph/service.go internal/decisiongraph/postgres/store.go || fail "durable branch transition port missing"
 rg -q 'decision_branch_events' migrations/000012_create_durable_decision_graph.up.sql internal/decisiongraph/postgres/store.go || fail "branch transition ledger missing"
+rg -q 'string_agg' internal/decisiongraph/postgres/store.go || fail "TraceRef does not commit to the structured trace ledger"
+rg -q "r.status='succeeded'" internal/decisiongraph/postgres/store.go || fail "TraceRef is not restricted to terminal successful runs"
 
 # Claims and budgets are durable, concurrency-safe, and consumed before work.
 store=internal/decisiongraph/postgres/store.go
