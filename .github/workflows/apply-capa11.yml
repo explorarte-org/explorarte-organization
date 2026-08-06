@@ -1,0 +1,40 @@
+name: Apply Capa 11 snapshot
+
+on:
+  push:
+    branches:
+      - feat/11-model-execution-identity
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Reconstruct verified patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .github/capa11-patch/part-* > /tmp/capa11.patch.gz.b64
+          base64 --decode /tmp/capa11.patch.gz.b64 > /tmp/capa11.patch.gz
+          echo "e009645bddab1875a19736f3f6c47a8ff829532533b275b7218e369473d50872  /tmp/capa11.patch.gz" | sha256sum --check -
+          gzip --decompress --stdout /tmp/capa11.patch.gz > /tmp/capa11.patch
+          echo "3252fc78b9e461a4b2d39fdf03c4161218967f7d2957fa15cef722df60dac9a8  /tmp/capa11.patch" | sha256sum --check -
+          git apply --check /tmp/capa11.patch
+          git apply /tmp/capa11.patch
+      - name: Commit implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .github/capa11-patch .github/workflows/apply-capa11.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "feat(models): add cryptographic execution identity"
+          git push origin HEAD:feat/11-model-execution-identity
