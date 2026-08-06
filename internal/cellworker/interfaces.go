@@ -45,7 +45,10 @@ func (systemClock) Sleep(ctx context.Context, d time.Duration) bool {
 	defer timer.Stop()
 	select {
 	case <-timer.C:
-		return true
+		// timer.C and ctx.Done() can both be ready at once; select picks
+		// pseudo-randomly, so confirm ctx wasn't also cancelled instead of
+		// trusting that this branch means "ran to completion".
+		return ctx.Err() == nil
 	case <-ctx.Done():
 		return false
 	}

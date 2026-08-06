@@ -44,6 +44,30 @@ func (f *fakeWorkSource) callCount() int {
 	return f.calls
 }
 
+// repeatingWorkSource always returns the same fixed ids, mirroring a
+// WorkSource whose durable state has not yet reflected an in-flight
+// dispatch attempt (e.g. status still 'requested'/'claimed').
+type repeatingWorkSource struct {
+	mu    sync.Mutex
+	ids   []int64
+	calls int
+}
+
+func (f *repeatingWorkSource) ListEligible(_ context.Context, _ string, _ int) ([]int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	out := make([]int64, len(f.ids))
+	copy(out, f.ids)
+	return out, nil
+}
+
+func (f *repeatingWorkSource) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
 // fakeDispatcher records every invocationID it is called with. If gate is
 // non-nil, each call blocks on it before returning, which lets tests hold a
 // dispatch "in flight" to exercise concurrency limits and graceful shutdown.
@@ -70,6 +94,10 @@ func (f *fakeDispatcher) Dispatch(ctx context.Context, invocationID int64) (mode
 		select {
 		case <-f.gate:
 		case <-ctx.Done():
+			// A real Dispatcher must not report a cancelled call as a
+			// completed dispatch: return promptly with ctx's error instead
+			// of falling through to record success below.
+			return modelruntime.DispatchResult{}, ctx.Err()
 		}
 	}
 
@@ -114,4 +142,40 @@ func (f *fakeClock) sleepCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.sleeps)
+}
+
+// fakeObserver records every OnListError/OnDispatchError call so tests can
+// assert that failures are surfaced rather than silently discarded.
+type fakeObserver struct {
+	mu             sync.Mutex
+	listErrors     []error
+	dispatchErrors map[int64][]error
+}
+
+func newFakeObserver() *fakeObserver {
+	return &fakeObserver{dispatchErrors: make(map[int64][]error)}
+}
+
+func (f *fakeObserver) OnListError(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.listErrors = append(f.listErrors, err)
+}
+
+func (f *fakeObserver) OnDispatchError(invocationID int64, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.dispatchErrors[invocationID] = append(f.dispatchErrors[invocationID], err)
+}
+
+func (f *fakeObserver) listErrorCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.listErrors)
+}
+
+func (f *fakeObserver) dispatchErrorCount(invocationID int64) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.dispatchErrors[invocationID])
 }
