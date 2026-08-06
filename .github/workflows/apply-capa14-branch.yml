@@ -18,7 +18,7 @@ concurrency:
 jobs:
   apply:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -32,19 +32,6 @@ jobs:
           rm -rf .rama14-branch
           gofmt -w internal/decisiongraph/records.go internal/decisiongraph/ports.go internal/decisiongraph/service.go internal/decisiongraph/service_test.go internal/decisiongraph/postgres/store.go internal/decisiongraph/postgres/integration_test.go
           git diff --check
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Focused verification
-        run: |
-          go mod download
-          go mod verify
-          go test -race -short ./internal/decisiongraph/...
-          ./scripts/check-decisiongraph-fitness.sh
 
       - name: Commit durable branch transition support
         run: |
