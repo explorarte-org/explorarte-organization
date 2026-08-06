@@ -6,6 +6,7 @@ on:
     paths:
       - ".rama14-finalize/**"
       - ".github/workflows/finalize-capa14.yml"
+      - "scripts/check-decisiongraph-fitness.sh"
   workflow_dispatch:
 
 permissions:
