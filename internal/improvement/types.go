@@ -150,6 +150,9 @@ func (c Candidate) Validate() error {
 			return fmt.Errorf("%w: candidate %s: %v", ErrInvalidCandidate, c.ID, err)
 		}
 	}
+	if c.State == StateRolledBack && c.RollbackTarget == nil {
+		return fmt.Errorf("%w: candidate %s: rolled_back state requires a rollback target", ErrInvalidCandidate, c.ID)
+	}
 	return nil
 }
 

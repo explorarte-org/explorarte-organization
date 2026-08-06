@@ -31,6 +31,21 @@ func TestArtifactRefValidate(t *testing.T) {
 	}
 }
 
+func TestCandidateValidateRolledBackRequiresTarget(t *testing.T) {
+	now := time.Now().UTC()
+	c := Candidate{
+		ID: "cand-nil-target", Artifact: validArtifact("art-1"), Lineage: Lineage{},
+		State: StateRolledBack, ProposedAt: now, UpdatedAt: now, RollbackTarget: nil,
+	}
+	if err := c.Validate(); !errors.Is(err, ErrInvalidCandidate) {
+		t.Fatalf("expected ErrInvalidCandidate for rolled_back without a target, got %v", err)
+	}
+	c.RollbackTarget = &RollbackTarget{CandidateID: "prev", ArtifactHash: "h", FromState: StateActive}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("expected valid candidate once rollback target is set, got %v", err)
+	}
+}
+
 func TestLineageValidate(t *testing.T) {
 	if err := (Lineage{}).Validate(); err != nil {
 		t.Fatalf("empty root lineage should be valid: %v", err)

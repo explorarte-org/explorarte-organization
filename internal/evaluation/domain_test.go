@@ -169,6 +169,60 @@ func TestCompareResultsOverallVerdict(t *testing.T) {
 	}
 }
 
+func TestCompareSuiteWeightedPassRatio(t *testing.T) {
+	ref1, _ := mustTrace(1, []byte("payload-1"))
+	ref2, _ := mustTrace(2, []byte("payload-2"))
+	suite := EvaluationSuite{
+		ID: "suite-w", Name: "weighted", SchemaVersion: "v1",
+		Cases: []EvaluationCase{
+			{ID: "heavy", Trace: ref1, Weight: 3, ExpectedOutcome: "x"},
+			{ID: "light", Trace: ref2, Weight: 1, ExpectedOutcome: "y"},
+		},
+	}
+	if err := suite.Validate(); err != nil {
+		t.Fatalf("suite must be valid: %v", err)
+	}
+	build := func(caseID string, role EvaluationRole, ref TraceRef, verdict Verdict) EvaluationResult {
+		return EvaluationResult{
+			CaseID: caseID, Role: role, TraceRef: ref,
+			Metrics: []Metric{{Name: "m", Value: 1, Unit: "u"}}, Verdict: verdict, EvaluatedAt: time.Now().UTC(),
+		}
+	}
+	baseline := []EvaluationResult{
+		build("heavy", RoleBaseline, ref1, VerdictPass),
+		build("light", RoleBaseline, ref2, VerdictPass),
+	}
+	candidate := []EvaluationResult{
+		build("heavy", RoleCandidate, ref1, VerdictPass),
+		build("light", RoleCandidate, ref2, VerdictFail),
+	}
+	result, err := CompareSuite(suite, baseline, candidate)
+	if err != nil {
+		t.Fatalf("CompareSuite: %v", err)
+	}
+	// heavy (weight 3) passes, light (weight 1) fails: 3/4 = 0.75.
+	if got, want := result.WeightedPassRatio, 0.75; got != want {
+		t.Fatalf("WeightedPassRatio = %v, want %v", got, want)
+	}
+	// A single failing case still poisons the safety-gating verdict,
+	// regardless of how small its weight is.
+	if result.OverallVerdict != VerdictFail {
+		t.Fatalf("OverallVerdict = %s, want fail despite high weighted pass ratio", result.OverallVerdict)
+	}
+	for _, cr := range result.CaseResults {
+		var wantWeight float64
+		switch cr.CaseID {
+		case "heavy":
+			wantWeight = 3
+		case "light":
+			wantWeight = 1
+		}
+		if cr.Weight != wantWeight {
+			t.Fatalf("case %s: Weight = %v, want %v", cr.CaseID, cr.Weight, wantWeight)
+		}
+	}
+}
+
 func TestCompareSuiteMissingResult(t *testing.T) {
 	ref, _ := mustTrace(1, []byte("payload"))
 	suite := mustSuite(t, ref)

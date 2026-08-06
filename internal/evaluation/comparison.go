@@ -16,6 +16,7 @@ type MetricDelta struct {
 // against its candidate result.
 type ComparisonResult struct {
 	CaseID           string
+	Weight           float64
 	BaselineVerdict  Verdict
 	CandidateVerdict Verdict
 	Deltas           []MetricDelta
@@ -92,9 +93,16 @@ func overallVerdict(baseline, candidate Verdict) Verdict {
 
 // SuiteComparisonResult aggregates per-case comparisons across a whole suite.
 type SuiteComparisonResult struct {
-	SuiteID        string
-	CaseResults    []ComparisonResult
+	SuiteID     string
+	CaseResults []ComparisonResult
+	// OverallVerdict is the safety-gating verdict: a single failing or
+	// inconclusive case poisons it, regardless of case weight. It is what
+	// improvement.Service.RecordEvaluationVerdict acts on.
 	OverallVerdict Verdict
+	// WeightedPassRatio is the fraction of total case weight that passed,
+	// in [0, 1]. It is informational context for reviewers and an
+	// ApprovalGate; it never overrides OverallVerdict.
+	WeightedPassRatio float64
 }
 
 // CompareSuite compares every case in a suite between baseline and candidate
@@ -118,6 +126,7 @@ func CompareSuite(suite EvaluationSuite, baselineResults, candidateResults []Eva
 
 	caseResults := make([]ComparisonResult, 0, len(suite.Cases))
 	overall := VerdictPass
+	var totalWeight, passedWeight float64
 	for _, c := range suite.Cases {
 		b, ok := baselineByCase[c.ID]
 		if !ok {
@@ -131,14 +140,20 @@ func CompareSuite(suite EvaluationSuite, baselineResults, candidateResults []Eva
 		if err != nil {
 			return SuiteComparisonResult{}, err
 		}
+		cr.Weight = c.Weight
 		caseResults = append(caseResults, cr)
 		overall = worseVerdict(overall, cr.OverallVerdict)
+		totalWeight += c.Weight
+		if cr.OverallVerdict == VerdictPass {
+			passedWeight += c.Weight
+		}
 	}
 
 	return SuiteComparisonResult{
-		SuiteID:        suite.ID,
-		CaseResults:    caseResults,
-		OverallVerdict: overall,
+		SuiteID:           suite.ID,
+		CaseResults:       caseResults,
+		OverallVerdict:    overall,
+		WeightedPassRatio: passedWeight / totalWeight,
 	}, nil
 }
 
