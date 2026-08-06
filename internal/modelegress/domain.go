@@ -146,10 +146,23 @@ type PreSendEvaluation struct {
 	CausationID                string
 }
 
+type ProviderRequestEvidence struct {
+	ModelProfileID        string
+	ProviderModelID       string
+	AdapterID             string
+	AdapterVersion        int
+	RequestSchemaVersion  string
+	ResponseSchemaVersion string
+	RequestHash           string
+	EndpointFingerprint   string
+	CredentialRefHash     string
+}
+
 type PersistAllowCommand struct {
 	Evaluation                 PreSendEvaluation
 	ClaimToken                 string
 	ProviderIdempotencyKeyHash string
+	ProviderRequest            ProviderRequestEvidence
 	Deadline                   time.Time
 }
 

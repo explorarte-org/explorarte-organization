@@ -13,6 +13,24 @@ type Fake struct{}
 
 func NewFake() *Fake             { return &Fake{} }
 func (*Fake) ProviderID() string { return "test.fake" }
+func (*Fake) Descriptor() modelruntime.AdapterDescriptor {
+	return modelruntime.AdapterDescriptor{
+		ProviderID: "test.fake", AdapterID: "fake", AdapterVersion: 1,
+		Transport: modelruntime.TransportFake, RequestSchemaVersion: "test.fake.request.v1",
+		ResponseSchemaVersion: "test.fake.response.v1",
+		EndpointFingerprint:   modelruntime.SHA256Bytes([]byte("test.fake:endpoint")),
+		CredentialRefHash:     modelruntime.SHA256Bytes([]byte("test.fake:credential")),
+	}
+}
+func (*Fake) Preflight(ctx context.Context, request modelruntime.ProviderPreflightRequest) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if request.ProviderID != "test.fake" || request.ProviderModelID == "" || request.Deadline.IsZero() {
+		return modelruntime.ErrInvalidRequest
+	}
+	return nil
+}
 func (*Fake) Dispatch(ctx context.Context, req modelruntime.CanonicalRequest) (modelruntime.RawResponse, error) {
 	if strings.Contains(string(req.RenderedContext), "[fake-block]") || strings.Contains(req.ProviderModelID, "fake-block") {
 		<-ctx.Done()
@@ -28,6 +46,12 @@ func (*Fake) Dispatch(ctx context.Context, req modelruntime.CanonicalRequest) (m
 	}
 	if strings.Contains(string(req.RenderedContext), "[fake-tool-intent]") {
 		response.ToolIntents = []modelruntime.RawToolIntent{{Name: "fake.inspect", Arguments: []byte(`{"read_only":true}`)}}
+	}
+	response.ProviderOutcome = modelruntime.ProviderOutcome{
+		OutcomeClassification: modelruntime.ProviderOutcomeResponseReceived,
+		ProviderRequestID:     response.ProviderRequestID, HTTPStatus: 200,
+		ResponseHash:          modelruntime.SHA256Bytes(response.Content),
+		ResponseSchemaVersion: "test.fake.response.v1",
 	}
 	return response, nil
 }

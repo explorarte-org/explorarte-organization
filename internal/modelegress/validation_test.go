@@ -54,9 +54,18 @@ func TestValidatePreSendAllowRejectsEmptyUnknownAndHardDeniedClassifications(t *
 	}
 }
 
+func validProviderRequestEvidence() ProviderRequestEvidence {
+	return ProviderRequestEvidence{
+		ModelProfileID: "profile-v1", ProviderModelID: "model-v1", AdapterID: "adapter-v1", AdapterVersion: 1,
+		RequestSchemaVersion: "request.v1", ResponseSchemaVersion: "response.v1",
+		RequestHash: SHA256Bytes([]byte("request")), EndpointFingerprint: SHA256Bytes([]byte("endpoint")),
+		CredentialRefHash: SHA256Bytes([]byte("credential-ref")),
+	}
+}
+
 func TestValidatePersistCommands(t *testing.T) {
 	value := validPreSendEvaluation()
-	allow := PersistAllowCommand{Evaluation: value, ClaimToken: "claim", ProviderIdempotencyKeyHash: SHA256Bytes([]byte("provider")), Deadline: time.Now().Add(time.Hour)}
+	allow := PersistAllowCommand{Evaluation: value, ClaimToken: "claim", ProviderIdempotencyKeyHash: SHA256Bytes([]byte("provider")), ProviderRequest: validProviderRequestEvidence(), Deadline: time.Now().Add(time.Hour)}
 	if err := ValidatePersistAllowCommand(allow); err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +83,7 @@ func TestValidatePersistCommands(t *testing.T) {
 	if err := ValidatePersistFailureCommand(PersistDenyCommand{Evaluation: deny, ClaimToken: "claim", ErrorCode: "authorization_denied", OutboxMaxAttempts: 10}); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidatePersistAllowCommand(PersistAllowCommand{Evaluation: deny, ClaimToken: "claim", ProviderIdempotencyKeyHash: SHA256Bytes([]byte("provider")), Deadline: time.Now().Add(time.Hour)}); err == nil {
+	if err := ValidatePersistAllowCommand(PersistAllowCommand{Evaluation: deny, ClaimToken: "claim", ProviderIdempotencyKeyHash: SHA256Bytes([]byte("provider")), ProviderRequest: validProviderRequestEvidence(), Deadline: time.Now().Add(time.Hour)}); err == nil {
 		t.Fatal("authorization deny was accepted as pre-send allow")
 	}
 }

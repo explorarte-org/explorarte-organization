@@ -106,12 +106,34 @@ func (f fakeAdapterRegistry) Get(id string) (ProviderAdapter, bool) {
 }
 
 type deterministicAdapter struct {
-	err      error
-	response *RawResponse
-	calls    int
+	preflightErr error
+	err          error
+	response     *RawResponse
+	calls        int
 }
 
 func (d *deterministicAdapter) ProviderID() string { return "test.fake" }
+func (d *deterministicAdapter) Descriptor() AdapterDescriptor {
+	return AdapterDescriptor{
+		ProviderID: "test.fake", AdapterID: "deterministic-test", AdapterVersion: 1,
+		Transport: TransportFake, RequestSchemaVersion: "test.fake.request.v1",
+		ResponseSchemaVersion: "test.fake.response.v1",
+		EndpointFingerprint:   SHA256Bytes([]byte("test.fake:endpoint")),
+		CredentialRefHash:     SHA256Bytes([]byte("test.fake:credential")),
+	}
+}
+func (d *deterministicAdapter) Preflight(ctx context.Context, request ProviderPreflightRequest) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if d.preflightErr != nil {
+		return d.preflightErr
+	}
+	if request.ProviderID != "test.fake" || request.ProviderModelID == "" || request.Deadline.IsZero() {
+		return ErrInvalidRequest
+	}
+	return nil
+}
 func (d *deterministicAdapter) Dispatch(_ context.Context, request CanonicalRequest) (RawResponse, error) {
 	d.calls++
 	if d.response != nil {
@@ -129,6 +151,8 @@ type fakeStore struct {
 	claimed            ClaimedInvocation
 	result             DispatchResult
 	failed             bool
+	providerRejected   bool
+	providerNotSent    bool
 	ambiguous          bool
 	completed          bool
 	created            bool
@@ -246,9 +270,25 @@ func (f *fakeStore) ClaimInvocationAuthenticated(_ context.Context, command Auth
 	f.claimed = claimed
 	return claimed, nil
 }
-func (f *fakeStore) MarkResponseReceived(context.Context, int64, int64, string, string) (Invocation, error) {
+func (f *fakeStore) MarkResponseReceived(context.Context, int64, int64, string, ProviderOutcome) (Invocation, error) {
 	v := f.invocation
 	v.Status = InvocationResponseReceived
+	f.invocation = v
+	return v, nil
+}
+func (f *fakeStore) RejectProviderResponse(context.Context, FailureCommand, ProviderOutcome, int) (Invocation, error) {
+	f.failed = true
+	f.providerRejected = true
+	v := f.invocation
+	v.Status = InvocationFailed
+	f.invocation = v
+	return v, nil
+}
+func (f *fakeStore) FailCommittedBeforeRequest(context.Context, FailureCommand, ProviderOutcome, int) (Invocation, error) {
+	f.failed = true
+	f.providerNotSent = true
+	v := f.invocation
+	v.Status = InvocationFailed
 	f.invocation = v
 	return v, nil
 }
@@ -423,6 +463,49 @@ func TestDispatchAdapterFailureIsAmbiguous(t *testing.T) {
 		t.Fatalf("expected ambiguous outcome, got %v", err)
 	}
 }
+
+func TestDispatchAdapterPreflightFailureDoesNotRenderOrCommitSend(t *testing.T) {
+	store, catalog, task, contexts, assignments, principals, now := serviceFixture()
+	outcome := ProviderOutcome{OutcomeClassification: ProviderOutcomeNotSent, ErrorClass: "circuit_breaker", ErrorCode: "circuit_open", ResponseSchemaVersion: "test.fake.response.v1"}
+	provider := &deterministicAdapter{preflightErr: &AdapterError{Phase: AdapterFailureBeforeRequest, Outcome: outcome, Cause: ErrProviderUnavailable}}
+	cfg := RuntimeConfig{Enabled: true, CommandTimeout: time.Minute, GlobalConcurrency: 1, MaxResponseBytes: 1024, MaxToolIntents: 2, ClaimTTL: time.Minute, ReconcileBatchSize: 10, OutboxMaxAttempts: 10, ExecutionPrincipalKey: "test-principal", ExecutionIdentityEnabled: true, ExecutionIdentityKeyFile: "test://identity"}
+	service, _ := NewDispatchService("explorarte", cfg, catalog, task, contexts, fakeEvaluator{allow: true}, store, modelegress.NewEvaluator(), store, principals, assignments, store, store, fakeAdapterRegistry{value: provider}, ClockFunc(func() time.Time { return now }))
+	_, err := service.Dispatch(context.Background(), 11)
+	if !errors.Is(err, ErrProviderUnavailable) || contexts.renderCalls != 0 || provider.calls != 0 || !store.failed || store.allowEvaluation != nil {
+		t.Fatalf("preflight failure err=%v render=%d calls=%d failed=%v allow=%+v", err, contexts.renderCalls, provider.calls, store.failed, store.allowEvaluation)
+	}
+}
+
+func TestDispatchClassifiedProviderFailuresUseKnownTerminalPaths(t *testing.T) {
+	cases := []struct {
+		name          string
+		adapterError  *AdapterError
+		wantRejected  bool
+		wantNotSent   bool
+		wantAmbiguous bool
+		wantError     error
+	}{
+		{name: "request not sent", adapterError: &AdapterError{Phase: AdapterFailureBeforeRequest, Outcome: ProviderOutcome{OutcomeClassification: ProviderOutcomeNotSent, ErrorClass: "credential", ErrorCode: "credential_unavailable", ResponseSchemaVersion: "test.fake.response.v1"}, Cause: errors.New("credential unavailable")}, wantNotSent: true},
+		{name: "provider rejection", adapterError: &AdapterError{Phase: AdapterFailureResponseReceived, Outcome: ProviderOutcome{OutcomeClassification: ProviderOutcomeRejected, ProviderRequestID: "provider-1", HTTPStatus: 429, ErrorClass: "rate_limit", ErrorCode: "rate_limited", Retryable: true, ResponseHash: SHA256Bytes([]byte("rejection")), ResponseSchemaVersion: "test.fake.response.v1"}, Cause: ErrResponseRejected}, wantRejected: true, wantError: ErrResponseRejected},
+		{name: "ambiguous transport", adapterError: &AdapterError{Phase: AdapterFailureAmbiguous, Outcome: ProviderOutcome{OutcomeClassification: ProviderOutcomeAmbiguous, ErrorClass: "transport", ErrorCode: "transport_timeout", Retryable: true, ResponseSchemaVersion: "test.fake.response.v1"}, Cause: context.DeadlineExceeded}, wantAmbiguous: true, wantError: ErrAmbiguousOutcome},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			store, catalog, task, contexts, assignments, principals, now := serviceFixture()
+			provider := &deterministicAdapter{err: test.adapterError}
+			cfg := RuntimeConfig{Enabled: true, CommandTimeout: time.Minute, GlobalConcurrency: 1, MaxResponseBytes: 1024, MaxToolIntents: 2, ClaimTTL: time.Minute, ReconcileBatchSize: 10, OutboxMaxAttempts: 10, ExecutionPrincipalKey: "test-principal", ExecutionIdentityEnabled: true, ExecutionIdentityKeyFile: "test://identity"}
+			service, _ := NewDispatchService("explorarte", cfg, catalog, task, contexts, fakeEvaluator{allow: true}, store, modelegress.NewEvaluator(), store, principals, assignments, store, store, fakeAdapterRegistry{value: provider}, ClockFunc(func() time.Time { return now }))
+			_, err := service.Dispatch(context.Background(), 11)
+			if test.wantError != nil && !errors.Is(err, test.wantError) {
+				t.Fatalf("error=%v want=%v", err, test.wantError)
+			}
+			if provider.calls != 1 || store.allowEvaluation == nil || store.providerRejected != test.wantRejected || store.providerNotSent != test.wantNotSent || store.ambiguous != test.wantAmbiguous {
+				t.Fatalf("calls=%d allow=%+v rejected=%v not_sent=%v ambiguous=%v err=%v", provider.calls, store.allowEvaluation, store.providerRejected, store.providerNotSent, store.ambiguous, err)
+			}
+		})
+	}
+}
+
 func TestDispatchAuthorizationOperationalErrorDoesNotBecomePolicyDeny(t *testing.T) {
 	store, catalog, task, contexts, assignments, principals, now := serviceFixture()
 	cfg := RuntimeConfig{Enabled: true, CommandTimeout: time.Minute, GlobalConcurrency: 1, MaxResponseBytes: 1024, MaxToolIntents: 2, ClaimTTL: time.Minute, ReconcileBatchSize: 10, OutboxMaxAttempts: 10, ExecutionPrincipalKey: "test-principal", ExecutionIdentityEnabled: true, ExecutionIdentityKeyFile: "test://identity"}

@@ -159,7 +159,7 @@ JSON build output redacts content; `get` includes content only with `--include-s
 
 ## Provider integration
 
-Branch 07 bootstraps no-op owner constraints and explicit unavailable memory, project, task and RAG providers. Basic organization/department/profile snapshots work. Explicit project/task refs fail while providers are unavailable rather than inventing content. Branch 11 and 12 providers must return classified, versioned, hashed records and implement validation without importing their stores into contextengine.
+Branch 07 bootstraps no-op owner constraints and explicit unavailable memory, project, task and RAG providers. Basic organization/department/profile snapshots work. Explicit project/task refs fail while providers are unavailable rather than inventing content. Future memory and RAG provider branches must return classified, versioned, hashed records and implement validation without importing their stores into contextengine. Their branch numbers are intentionally not fixed here.
 
 ## Rollback and safe operation
 

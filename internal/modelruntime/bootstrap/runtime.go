@@ -18,6 +18,7 @@ import (
 	identitybootstrap "github.com/Mireuz13/explorarte-organization/internal/modelidentity/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter"
+	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/openaicompat"
 	modelpostgres "github.com/Mireuz13/explorarte-organization/internal/modelruntime/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
@@ -117,7 +118,19 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	if err != nil {
 		return nil, err
 	}
-	adapters := adapter.NewRegistry()
+	providerConfig, err := openaicompat.LoadConfig(os.LookupEnv, runtimeCfg.MaxResponseBytes)
+	if err != nil {
+		return nil, fmt.Errorf("load openai-compatible provider config: %w", err)
+	}
+	registeredAdapters := make([]modelruntime.ProviderAdapter, 0, 1)
+	if providerConfig.Enabled {
+		providerAdapter, providerErr := openaicompat.New(providerConfig)
+		if providerErr != nil {
+			return nil, fmt.Errorf("open openai-compatible provider adapter: %w", providerErr)
+		}
+		registeredAdapters = append(registeredAdapters, providerAdapter)
+	}
+	adapters := adapter.NewRegistry(registeredAdapters...)
 	dispatchService, err := modelruntime.NewDispatchService(cfg.Tasks.OrganizationID, runtimeCfg, catalog, tasksAdapter, contexts, evaluator, egressRuntime.Store, egressRuntime.Evaluator, modelStore, dispatchRuntime.Store, dispatchRuntime.Store, identityRuntime.Challenges, modelStore, adapters, modelruntime.ClockFunc(time.Now))
 	if err != nil {
 		return nil, err

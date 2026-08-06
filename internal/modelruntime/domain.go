@@ -241,6 +241,7 @@ type Usage struct {
 
 type CanonicalRequest struct {
 	InvocationID           int64
+	DispatchAttemptID      int64
 	OrganizationID         string
 	OrganizationRevisionID int64
 	TaskID                 int64
@@ -251,6 +252,8 @@ type CanonicalRequest struct {
 	ModelProfileVersionID  int64
 	ProviderID             string
 	ProviderModelID        string
+	ProviderIdempotencyKey string
+	ReasoningEffort        string
 	ContextSnapshotID      int64
 	ContextRenderedHash    string
 	RenderedContext        []byte
@@ -276,6 +279,7 @@ type RawResponse struct {
 	OutputTokens          int64
 	ProviderReported      bool
 	CancellationConfirmed bool
+	ProviderOutcome       ProviderOutcome
 }
 type NormalizedResponse struct {
 	Result                InvocationResult

@@ -10,7 +10,24 @@ import (
 var (
 	sha256Pattern     = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	reasonCodePattern = regexp.MustCompile(`^[a-z0-9]+([._-][a-z0-9]+)*$`)
+
+	// productiveEgressAllowRules mirrors internal/modelegress.ProductiveLoadOptions:
+	// the only provider/classification pairs Rama 12 compiled an adapter for.
+	// Any other allow rule in the productive policy is still rejected. Keep
+	// these two allowlists in sync when a future branch adds a provider.
+	productiveEgressAllowRules = map[string]map[string]struct{}{
+		"openai_compatible": {"public": {}, "sanitized": {}},
+	}
 )
+
+func productiveEgressAllowApproved(providerID, classification string) bool {
+	classifications, ok := productiveEgressAllowRules[providerID]
+	if !ok {
+		return false
+	}
+	_, ok = classifications[classification]
+	return ok
+}
 
 func validateDocuments(documents parsedDocuments, snapshot Snapshot) ValidationReport {
 	validator := validator{documents: documents, snapshot: snapshot}
@@ -399,8 +416,8 @@ func (v *validator) validateModelEgressPolicy() {
 		default:
 			v.addError("model_egress.classification_unknown", path, "classification %q is unknown", rule.DataClassification)
 		}
-		if rule.Effect != "deny" {
-			v.addError("model_egress.productive_allow_forbidden", path, "productive model egress policy may only contain deny rules in branch 09")
+		if rule.Effect != "deny" && !productiveEgressAllowApproved(rule.ProviderID, rule.DataClassification) {
+			v.addError("model_egress.productive_allow_forbidden", path, "productive model egress policy allow rule %s/%s is not compiled into this adapter release", rule.ProviderID, rule.DataClassification)
 		}
 		if !reasonCodePattern.MatchString(rule.ReasonCode) || len(rule.ReasonCode) > 120 {
 			v.addError("model_egress.reason_code_invalid", path, "rule reason_code must be a bounded lowercase code")

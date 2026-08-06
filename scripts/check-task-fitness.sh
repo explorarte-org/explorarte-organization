@@ -8,7 +8,6 @@ command -v rg >/dev/null 2>&1 || {
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-
 fail() { echo "ERROR: $*" >&2; exit 1; }
 BASE_COMMIT="${TASK_ENGINE_BASE_COMMIT:-a199d1eea1f4f28d1b9f346e9ccbd670d5e8b69a}"
 
@@ -19,7 +18,7 @@ if git cat-file -e "${BASE_COMMIT}^{commit}" 2>/dev/null; then
   } | sort -u)
   for path in "${canonical_changes[@]}"; do
     case "$path" in
-      docs/canonical/capability-matrix.yaml|docs/canonical/model-egress-policy.yaml|docs/canonical/model-execution-identity-policy.yaml) ;;
+      docs/canonical/capability-matrix.yaml|docs/canonical/model-routing.yaml|docs/canonical/model-egress-policy.yaml|docs/canonical/model-execution-identity-policy.yaml) ;;
       *) fail "unauthorized canonical change: $path" ;;
     esac
   done

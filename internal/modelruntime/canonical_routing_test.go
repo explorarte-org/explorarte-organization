@@ -25,8 +25,14 @@ func TestLoadCanonicalRoutingAndPlan(t *testing.T) {
 		t.Fatalf("unexpected plan sizes: %#v", plan)
 	}
 	for _, version := range plan.Versions {
+		if version.ProviderID == "openai_compatible" {
+			if !version.DispatchEnabled || version.AdapterStatus != AdapterAvailable || version.Transport != TransportHTTP {
+				t.Fatalf("compiled openai-compatible adapter was not materialized: %#v", version)
+			}
+			continue
+		}
 		if version.DispatchEnabled || version.AdapterStatus != AdapterUnavailable {
-			t.Fatalf("real provider unexpectedly enabled: %#v", version)
+			t.Fatalf("unimplemented provider unexpectedly enabled: %#v", version)
 		}
 	}
 }

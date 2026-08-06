@@ -163,40 +163,63 @@ FOR UPDATE OF i,a,ia,ik`, evaluation.InvocationID, evaluation.DispatchAttemptID,
 	return ref, nil
 }
 
-func insertEvaluation(ctx context.Context, tx pgx.Tx, evaluation modelegress.PreSendEvaluation) error {
+func insertEvaluation(ctx context.Context, tx pgx.Tx, evaluation modelegress.PreSendEvaluation) (int64, error) {
 	if err := modelegress.ValidatePreSendEvaluation(evaluation); err != nil {
-		return err
+		return 0, err
 	}
 	classifications, classHash := modelegress.NormalizeClassifications(evaluation.ContextClassifications)
 	reasons := modelegress.NormalizeReasonCodes(evaluation.EgressReasonCodes)
 	if evaluation.ContextClassificationsHash != classHash {
-		return modelegress.ErrEvaluationConflict
+		return 0, modelegress.ErrEvaluationConflict
 	}
 	if evaluation.DecisionHash == "" || evaluation.DecisionHash != modelegress.DecisionHash(evaluation) {
-		return modelegress.ErrEvaluationConflict
+		return 0, modelegress.ErrEvaluationConflict
 	}
 	classJSON, _ := json.Marshal(classifications)
 	reasonJSON, _ := json.Marshal(reasons)
-	_, err := tx.Exec(ctx, `
+	var id int64
+	err := tx.QueryRow(ctx, `
 INSERT INTO model_egress_evaluations(
     invocation_id,dispatch_attempt_id,policy_version_id,organization_id,
     organization_revision_id,model_profile_version_id,provider_id,provider_transport,
     action_digest,capability_matrix_hash,context_classifications,
     context_classifications_hash,authorization_effect,authorization_reason_code,
     egress_effect,egress_reason_codes,decision_hash
-) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14,$15,$16::jsonb,$17)`,
+) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14,$15,$16::jsonb,$17)
+RETURNING id`,
 		evaluation.InvocationID, evaluation.DispatchAttemptID, evaluation.PolicyVersionID,
 		evaluation.OrganizationID, evaluation.OrganizationRevisionID,
 		evaluation.ModelProfileVersionID, evaluation.ProviderID, evaluation.ProviderTransport,
 		evaluation.ActionDigest, evaluation.CapabilityMatrixHash, classJSON, classHash,
 		evaluation.AuthorizationEffect, evaluation.AuthorizationReasonCode,
-		evaluation.EgressEffect, reasonJSON, evaluation.DecisionHash)
+		evaluation.EgressEffect, reasonJSON, evaluation.DecisionHash).Scan(&id)
 	if err != nil {
 		var postgresError *pgconn.PgError
 		if errors.As(err, &postgresError) && postgresError.Code == "23505" {
-			return modelegress.ErrEvaluationConflict
+			return 0, modelegress.ErrEvaluationConflict
 		}
 	}
+	return id, mapError(err)
+}
+
+func insertProviderRequest(ctx context.Context, tx pgx.Tx, command modelegress.PersistAllowCommand, evaluationID, assignmentUseID, identityAssertionID int64) error {
+	request := command.ProviderRequest
+	_, err := tx.Exec(ctx, `
+INSERT INTO model_provider_requests(
+    organization_id,organization_revision_id,invocation_id,dispatch_attempt_id,
+    egress_evaluation_id,dispatcher_assignment_use_id,identity_assertion_id,
+    model_profile_id,model_profile_version_id,provider_id,provider_model_id,adapter_id,adapter_version,
+    request_schema_version,response_schema_version,request_hash,endpoint_fingerprint,
+    credential_ref_hash,idempotency_key_hash,deadline
+) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
+		command.Evaluation.OrganizationID, command.Evaluation.OrganizationRevisionID,
+		command.Evaluation.InvocationID, command.Evaluation.DispatchAttemptID,
+		evaluationID, assignmentUseID, identityAssertionID,
+		request.ModelProfileID, command.Evaluation.ModelProfileVersionID, command.Evaluation.ProviderID,
+		request.ProviderModelID, request.AdapterID, request.AdapterVersion,
+		request.RequestSchemaVersion, request.ResponseSchemaVersion, request.RequestHash,
+		request.EndpointFingerprint, request.CredentialRefHash,
+		command.ProviderIdempotencyKeyHash, command.Deadline)
 	return mapError(err)
 }
 
@@ -292,7 +315,8 @@ func (s *Store) PersistPreSendAllowAndMarkSendStarted(ctx context.Context, comma
 		if usedInvocations >= maxInvocations {
 			return struct{}{}, modeldispatch.ErrAssignmentExhausted
 		}
-		if err := insertEvaluation(ctx, tx, command.Evaluation); err != nil {
+		evaluationID, err := insertEvaluation(ctx, tx, command.Evaluation)
+		if err != nil {
 			return struct{}{}, err
 		}
 		if err := insertAudit(ctx, tx, modelegress.AuditInvocationAuthorized, command.Evaluation); err != nil {
@@ -307,12 +331,14 @@ func (s *Store) PersistPreSendAllowAndMarkSendStarted(ctx context.Context, comma
 		if hashErr != nil {
 			return struct{}{}, hashErr
 		}
-		if _, err = tx.Exec(ctx, `
+		var assignmentUseID int64
+		if err = tx.QueryRow(ctx, `
 INSERT INTO model_dispatcher_assignment_uses(
     organization_id,assignment_id,invocation_id,dispatch_attempt_id,execution_principal_id,used_at,usage_hash
-) VALUES($1,$2,$3,$4,$5,$6,$7)`,
+) VALUES($1,$2,$3,$4,$5,$6,$7)
+RETURNING id`,
 			command.Evaluation.OrganizationID, *ref.dispatcherAssignmentID, command.Evaluation.InvocationID,
-			command.Evaluation.DispatchAttemptID, *ref.executionPrincipalID, usedAt, usageHash); err != nil {
+			command.Evaluation.DispatchAttemptID, *ref.executionPrincipalID, usedAt, usageHash).Scan(&assignmentUseID); err != nil {
 			return struct{}{}, mapError(err)
 		}
 		newUsed := usedInvocations + 1
@@ -341,6 +367,13 @@ WHERE id=$1 AND status='active' AND used_invocations=$4`,
 			if err = insertAssignmentConsumedAudit(ctx, tx, modeldispatch.AuditAssignmentExhausted, *ref.dispatcherAssignmentID, command.Evaluation.InvocationID, command.Evaluation.DispatchAttemptID, *ref.executionPrincipalID, newUsed, maxInvocations, newStatus); err != nil {
 				return struct{}{}, err
 			}
+		}
+
+		if ref.identityAssertionID == nil {
+			return struct{}{}, modelruntime.ErrExecutionIdentityUnpinned
+		}
+		if err = insertProviderRequest(ctx, tx, command, evaluationID, assignmentUseID, *ref.identityAssertionID); err != nil {
+			return struct{}{}, err
 		}
 
 		tag, err = tx.Exec(ctx, `
@@ -380,7 +413,7 @@ func (s *Store) PersistPreSendDenyAndFail(ctx context.Context, command modelegre
 		if _, err := verifyClaim(ctx, tx, command.Evaluation, command.ClaimToken); err != nil {
 			return struct{}{}, err
 		}
-		if err := insertEvaluation(ctx, tx, command.Evaluation); err != nil {
+		if _, err := insertEvaluation(ctx, tx, command.Evaluation); err != nil {
 			return struct{}{}, err
 		}
 		if command.Evaluation.AuthorizationEffect == modelegress.AuthorizationAllow {

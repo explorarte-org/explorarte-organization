@@ -398,12 +398,6 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64) (Dis
 	allowEvaluation.EgressEffect = modelegress.EffectAllow
 	allowEvaluation.EgressReasonCodes = egressDecision.ReasonCodes
 
-	providerAdapter, ok := s.adapters.Get(invocation.ProviderID)
-	if !binding.Version.DispatchEnabled || binding.Version.AdapterStatus != AdapterAvailable || !binding.Provider.DispatchEnabled || binding.Provider.AdapterStatus != AdapterAvailable || !ok || providerAdapter == nil || providerAdapter.ProviderID() != invocation.ProviderID {
-		// An allow decision becomes durable only together with send_started. The
-		// adapter gate is still before rendering and before that atomic barrier.
-		return failBeforeSend("adapter_unavailable", ErrProviderUnavailable, AuditInvocationFailed)
-	}
 	for _, classification := range classifications {
 		if classification == string(modelegress.ClassificationSecret) || classification == string(modelegress.ClassificationClinical) {
 			// The evaluator must already have denied these classifications. If a
@@ -415,6 +409,26 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64) (Dis
 			return persistDecisionFailure(evaluation, "egress_guard_rejected", ErrEgressDenied)
 		}
 	}
+
+	providerAdapter, ok := s.adapters.Get(invocation.ProviderID)
+	if !binding.Version.DispatchEnabled || binding.Version.AdapterStatus != AdapterAvailable || !binding.Provider.DispatchEnabled || binding.Provider.AdapterStatus != AdapterAvailable || !ok || providerAdapter == nil || providerAdapter.ProviderID() != invocation.ProviderID {
+		// An allow decision becomes durable only together with send_started. The
+		// adapter gate is still before rendering and before that atomic barrier.
+		return failBeforeSend("adapter_unavailable", ErrProviderUnavailable, AuditInvocationFailed)
+	}
+	descriptor := providerAdapter.Descriptor()
+	if err = descriptor.Validate(); err != nil || descriptor.ProviderID != invocation.ProviderID || descriptor.Transport != binding.Version.Transport {
+		return failBeforeSend("adapter_descriptor_invalid", ErrProviderUnavailable, AuditInvocationFailed)
+	}
+	if err = providerAdapter.Preflight(ctx, ProviderPreflightRequest{
+		ProviderID: invocation.ProviderID, ProviderModelID: invocation.ProviderModelID, Deadline: invocation.Deadline,
+	}); err != nil {
+		code := "adapter_preflight_failed"
+		if classified, ok := AsAdapterError(err); ok && classified.Outcome.ErrorCode != "" {
+			code = classified.Outcome.ErrorCode
+		}
+		return failBeforeSend(code, errors.Join(ErrProviderUnavailable, err), AuditInvocationFailed)
+	}
 	renderedContext, err := s.contexts.RenderContextSnapshot(ctx, invocation.ContextSnapshotID)
 	if err != nil {
 		return failBeforeSend("context_render_failed", err, AuditInvocationFailed)
@@ -425,9 +439,40 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64) (Dis
 	}
 	allowEvaluation.DecisionHash = modelegress.DecisionHash(allowEvaluation)
 	providerIdempotencyKeyHash := SHA256Bytes([]byte(fmt.Sprintf("%s:%d:%d", invocation.OrganizationID, invocation.ID, dispatchAttemptID)))
+	canonicalRequest := CanonicalRequest{
+		InvocationID:           invocation.ID,
+		DispatchAttemptID:      dispatchAttemptID,
+		OrganizationID:         invocation.OrganizationID,
+		OrganizationRevisionID: invocation.OrganizationRevisionID,
+		TaskID:                 invocation.TaskID,
+		AttemptID:              invocation.AttemptID,
+		DispatchActorRoleID:    invocation.DispatchActorRoleID,
+		SubjectRoleID:          invocation.SubjectRoleID,
+		ModelProfileID:         invocation.ModelProfileID,
+		ModelProfileVersionID:  invocation.ModelProfileVersionID,
+		ProviderID:             invocation.ProviderID,
+		ProviderModelID:        invocation.ProviderModelID,
+		ProviderIdempotencyKey: providerIdempotencyKeyHash,
+		ReasoningEffort:        binding.Version.ReasoningEffort,
+		ContextSnapshotID:      invocation.ContextSnapshotID,
+		ContextRenderedHash:    renderedHash,
+		RenderedContext:        renderedContext,
+		RequiredCapabilities:   invocation.RequiredCapabilities,
+		OutputMode:             invocation.OutputMode,
+		OutputSchema:           invocation.OutputSchema,
+		MaxOutputTokens:        invocation.MaxOutputTokens,
+		Temperature:            invocation.Temperature,
+		ThinkingMode:           invocation.ThinkingMode,
+		Deadline:               invocation.Deadline,
+	}
+	providerRequest, err := BuildProviderRequestEvidence(canonicalRequest, descriptor)
+	if err != nil {
+		return failBeforeSend("provider_request_evidence_invalid", err, AuditInvocationFailed)
+	}
 	if err = s.egressStore.PersistPreSendAllowAndMarkSendStarted(persistCtx, modelegress.PersistAllowCommand{
 		Evaluation: allowEvaluation, ClaimToken: claimed.ClaimToken,
-		ProviderIdempotencyKeyHash: providerIdempotencyKeyHash, Deadline: invocation.Deadline,
+		ProviderIdempotencyKeyHash: providerIdempotencyKeyHash, ProviderRequest: providerRequest,
+		Deadline: invocation.Deadline,
 	}); err != nil {
 		return DispatchResult{}, err
 	}
@@ -444,33 +489,43 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64) (Dis
 			cancelDispatch()
 		}
 	}()
-	rawResponse, adapterErr := providerAdapter.Dispatch(dispatchCtx, CanonicalRequest{
-		InvocationID:           invocation.ID,
-		OrganizationID:         invocation.OrganizationID,
-		OrganizationRevisionID: invocation.OrganizationRevisionID,
-		TaskID:                 invocation.TaskID,
-		AttemptID:              invocation.AttemptID,
-		DispatchActorRoleID:    invocation.DispatchActorRoleID,
-		SubjectRoleID:          invocation.SubjectRoleID,
-		ModelProfileID:         invocation.ModelProfileID,
-		ModelProfileVersionID:  invocation.ModelProfileVersionID,
-		ProviderID:             invocation.ProviderID,
-		ProviderModelID:        invocation.ProviderModelID,
-		ContextSnapshotID:      invocation.ContextSnapshotID,
-		ContextRenderedHash:    renderedHash,
-		RenderedContext:        renderedContext,
-		RequiredCapabilities:   invocation.RequiredCapabilities,
-		OutputMode:             invocation.OutputMode,
-		OutputSchema:           invocation.OutputSchema,
-		MaxOutputTokens:        invocation.MaxOutputTokens,
-		Temperature:            invocation.Temperature,
-		ThinkingMode:           invocation.ThinkingMode,
-		Deadline:               invocation.Deadline,
-	})
+	rawResponse, adapterErr := providerAdapter.Dispatch(dispatchCtx, canonicalRequest)
 	cancelDispatch()
 	<-watchDone
 
 	if adapterErr != nil {
+		if classified, ok := AsAdapterError(adapterErr); ok {
+			command := FailureCommand{
+				InvocationID: invocation.ID, DispatchAttemptID: dispatchAttemptID,
+				ClaimToken: claimed.ClaimToken, ErrorCode: classified.Outcome.ErrorCode,
+				OutcomeClassification: classified.Outcome.OutcomeClassification,
+				ProviderOutcome:       &classified.Outcome,
+			}
+			switch classified.Phase {
+			case AdapterFailureBeforeRequest:
+				failed, persistErr := s.store.FailCommittedBeforeRequest(persistCtx, command, classified.Outcome, s.config.OutboxMaxAttempts)
+				if persistErr != nil {
+					return DispatchResult{}, errors.Join(adapterErr, persistErr)
+				}
+				return DispatchResult{Invocation: failed}, adapterErr
+			case AdapterFailureResponseReceived:
+				failed, persistErr := s.store.RejectProviderResponse(persistCtx, command, classified.Outcome, s.config.OutboxMaxAttempts)
+				if persistErr != nil {
+					return DispatchResult{}, errors.Join(adapterErr, persistErr)
+				}
+				return DispatchResult{Invocation: failed}, adapterErr
+			case AdapterFailureAmbiguous:
+				eventType := AuditInvocationAmbiguous
+				if errors.Is(adapterErr, context.DeadlineExceeded) {
+					eventType = AuditInvocationTimedOut
+				}
+				ambiguous, persistErr := s.store.MarkAmbiguous(persistCtx, command, eventType, s.config.OutboxMaxAttempts)
+				if persistErr != nil {
+					return DispatchResult{}, errors.Join(adapterErr, persistErr)
+				}
+				return DispatchResult{Invocation: ambiguous}, fmt.Errorf("%w: %v", ErrAmbiguousOutcome, adapterErr)
+			}
+		}
 		if errors.Is(adapterErr, context.Canceled) && rawResponse.CancellationConfirmed {
 			requested, requestErr := s.store.CancellationRequested(persistCtx, invocation.ID)
 			if requestErr != nil {
@@ -483,6 +538,13 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64) (Dis
 					ClaimToken:            claimed.ClaimToken,
 					ErrorCode:             "adapter_cancelled",
 					OutcomeClassification: "cancelled_confirmed",
+					ProviderOutcome: &ProviderOutcome{
+						OutcomeClassification: ProviderOutcomeCancelled,
+						ProviderRequestID:     rawResponse.ProviderRequestID,
+						ResponseHash:          SHA256Bytes(rawResponse.Content),
+						ResponseSchemaVersion: descriptor.ResponseSchemaVersion,
+						CancellationConfirmed: true,
+					},
 				}, s.config.OutboxMaxAttempts)
 				if persistErr != nil {
 					return DispatchResult{}, errors.Join(adapterErr, persistErr)
@@ -496,12 +558,18 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64) (Dis
 			errorCode = "provider_timeout_after_send"
 			eventType = AuditInvocationTimedOut
 		}
+		outcome := ProviderOutcome{
+			OutcomeClassification: ProviderOutcomeAmbiguous,
+			ErrorClass:            "adapter", ErrorCode: errorCode, Retryable: true,
+			ResponseSchemaVersion: descriptor.ResponseSchemaVersion,
+		}
 		ambiguous, persistErr := s.store.MarkAmbiguous(persistCtx, FailureCommand{
 			InvocationID:          invocation.ID,
 			DispatchAttemptID:     dispatchAttemptID,
 			ClaimToken:            claimed.ClaimToken,
 			ErrorCode:             errorCode,
 			OutcomeClassification: "ambiguous_external_outcome",
+			ProviderOutcome:       &outcome,
 		}, eventType, s.config.OutboxMaxAttempts)
 		if persistErr != nil {
 			return DispatchResult{}, errors.Join(adapterErr, persistErr)
@@ -509,7 +577,15 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64) (Dis
 		return DispatchResult{Invocation: ambiguous}, fmt.Errorf("%w: %v", ErrAmbiguousOutcome, adapterErr)
 	}
 
-	invocation, err = s.store.MarkResponseReceived(persistCtx, invocation.ID, dispatchAttemptID, claimed.ClaimToken, rawResponse.ProviderRequestID)
+	providerOutcome := rawResponse.ProviderOutcome
+	if providerOutcome.OutcomeClassification == "" {
+		providerOutcome = ProviderOutcome{
+			OutcomeClassification: ProviderOutcomeResponseReceived,
+			ProviderRequestID:     rawResponse.ProviderRequestID, HTTPStatus: 200,
+			ResponseHash: SHA256Bytes(rawResponse.Content), ResponseSchemaVersion: descriptor.ResponseSchemaVersion,
+		}
+	}
+	invocation, err = s.store.MarkResponseReceived(persistCtx, invocation.ID, dispatchAttemptID, claimed.ClaimToken, providerOutcome)
 	if err != nil {
 		// The provider returned, so this process must never issue another call. A later
 		// reconcile classifies the durable send_started state without dispatching.
@@ -535,6 +611,10 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64) (Dis
 			return DispatchResult{}, requestErr
 		}
 		if requested {
+			// MarkResponseReceived already persisted the single immutable provider
+			// outcome for this attempt. Cancellation now changes only the runtime
+			// terminal state; inserting a second outcome would violate the one-call,
+			// one-outcome invariant.
 			cancelled, persistErr := s.store.MarkCancelled(persistCtx, FailureCommand{
 				InvocationID:          invocation.ID,
 				DispatchAttemptID:     dispatchAttemptID,

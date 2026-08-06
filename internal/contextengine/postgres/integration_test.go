@@ -272,8 +272,13 @@ func TestContextEnginePostgreSQL17(t *testing.T) {
 	})
 
 	t.Run("down migration and reapply in disposable integration database", func(t *testing.T) {
-		// Branch 11 identity tables reference runtime and dispatcher tables, so
-		// 000010 must come down before 000009 and the earlier model migrations.
+		// Branch 12 provider tables reference identity assertions, so 000011
+		// must come down before 000010; 000010 must in turn come down before
+		// 000009 and the earlier model migrations.
+		providerDown, err := rootmigrations.Files.ReadFile("000011_create_model_provider_adapter.down.sql")
+		if err != nil {
+			t.Fatal(err)
+		}
 		identityDown, err := rootmigrations.Files.ReadFile("000010_create_model_execution_identity.down.sql")
 		if err != nil {
 			t.Fatal(err)
@@ -299,6 +304,12 @@ func TestContextEnginePostgreSQL17(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer func() { _ = tx.Rollback(ctx) }()
+		if _, err = tx.Exec(ctx, string(providerDown)); err != nil {
+			t.Fatalf("down migration 000011: %v", err)
+		}
+		if _, err = tx.Exec(ctx, `DELETE FROM schema_migrations WHERE version=11`); err != nil {
+			t.Fatal(err)
+		}
 		if _, err = tx.Exec(ctx, string(identityDown)); err != nil {
 			t.Fatalf("down migration 000010: %v", err)
 		}
@@ -333,7 +344,7 @@ func TestContextEnginePostgreSQL17(t *testing.T) {
 			t.Fatalf("commit down migrations: %v", err)
 		}
 
-		var contextMissing, modelRuntimeMissing, egressMissing, dispatchMissing, identityMissing bool
+		var contextMissing, modelRuntimeMissing, egressMissing, dispatchMissing, identityMissing, providerMissing bool
 		if err = platform.Pool().QueryRow(ctx, `
 			SELECT
 				to_regclass('public.context_snapshots') IS NULL
@@ -341,22 +352,24 @@ func TestContextEnginePostgreSQL17(t *testing.T) {
 				to_regclass('public.model_providers') IS NULL,
 				to_regclass('public.model_egress_policy_versions') IS NULL,
 				to_regclass('public.model_dispatcher_assignments') IS NULL,
-				to_regclass('public.model_execution_identity_policy_versions') IS NULL
-		`).Scan(&contextMissing, &modelRuntimeMissing, &egressMissing, &dispatchMissing, &identityMissing); err != nil {
+				to_regclass('public.model_execution_identity_policy_versions') IS NULL,
+				to_regclass('public.model_provider_requests') IS NULL
+				AND to_regclass('public.model_provider_outcomes') IS NULL
+		`).Scan(&contextMissing, &modelRuntimeMissing, &egressMissing, &dispatchMissing, &identityMissing, &providerMissing); err != nil {
 			t.Fatal(err)
 		}
-		if !contextMissing || !modelRuntimeMissing || !egressMissing || !dispatchMissing || !identityMissing {
-			t.Fatalf("after down context_missing=%t model_runtime_missing=%t egress_missing=%t dispatch_missing=%t identity_missing=%t", contextMissing, modelRuntimeMissing, egressMissing, dispatchMissing, identityMissing)
+		if !contextMissing || !modelRuntimeMissing || !egressMissing || !dispatchMissing || !identityMissing || !providerMissing {
+			t.Fatalf("after down context_missing=%t model_runtime_missing=%t egress_missing=%t dispatch_missing=%t identity_missing=%t provider_missing=%t", contextMissing, modelRuntimeMissing, egressMissing, dispatchMissing, identityMissing, providerMissing)
 		}
 
 		result, err := runner.Up(ctx)
 		if err != nil {
 			t.Fatalf("reapply migrations: %v", err)
 		}
-		if len(result.Applied) != 5 || result.Current != 10 {
-			t.Fatalf("reapply result=%+v, want migrations 000006 through 000010", result)
+		if len(result.Applied) != 6 || result.Current != 11 {
+			t.Fatalf("reapply result=%+v, want migrations 000006 through 000011", result)
 		}
-		var contextExists, modelRuntimeExists, egressExists, dispatchExists, identityExists bool
+		var contextExists, modelRuntimeExists, egressExists, dispatchExists, identityExists, providerExists bool
 		if err = platform.Pool().QueryRow(ctx, `
 			SELECT
 				to_regclass('public.context_snapshots') IS NOT NULL
@@ -364,12 +377,14 @@ func TestContextEnginePostgreSQL17(t *testing.T) {
 				to_regclass('public.model_providers') IS NOT NULL,
 				to_regclass('public.model_egress_policy_versions') IS NOT NULL,
 				to_regclass('public.model_dispatcher_assignments') IS NOT NULL,
-				to_regclass('public.model_execution_identity_policy_versions') IS NOT NULL
-		`).Scan(&contextExists, &modelRuntimeExists, &egressExists, &dispatchExists, &identityExists); err != nil {
+				to_regclass('public.model_execution_identity_policy_versions') IS NOT NULL,
+				to_regclass('public.model_provider_requests') IS NOT NULL
+				AND to_regclass('public.model_provider_outcomes') IS NOT NULL
+		`).Scan(&contextExists, &modelRuntimeExists, &egressExists, &dispatchExists, &identityExists, &providerExists); err != nil {
 			t.Fatal(err)
 		}
-		if !contextExists || !modelRuntimeExists || !egressExists || !dispatchExists || !identityExists {
-			t.Fatalf("after reapply context_exists=%t model_runtime_exists=%t egress_exists=%t dispatch_exists=%t identity_exists=%t", contextExists, modelRuntimeExists, egressExists, dispatchExists, identityExists)
+		if !contextExists || !modelRuntimeExists || !egressExists || !dispatchExists || !identityExists || !providerExists {
+			t.Fatalf("after reapply context_exists=%t model_runtime_exists=%t egress_exists=%t dispatch_exists=%t identity_exists=%t provider_exists=%t", contextExists, modelRuntimeExists, egressExists, dispatchExists, identityExists, providerExists)
 		}
 	})
 }
@@ -389,7 +404,7 @@ func openStore(t *testing.T, ctx context.Context) *platformpostgres.Store {
 }
 func resetSchema(t *testing.T, ctx context.Context, store *platformpostgres.Store) {
 	t.Helper()
-	_, err := store.Pool().Exec(ctx, `TRUNCATE model_egress_evaluations,model_invocation_usage,model_invocation_results,model_dispatch_attempts,model_invocations,model_egress_revision_bindings,model_egress_rules,model_egress_policy_versions,role_model_bindings,model_capability_snapshots,model_profile_versions,model_profiles,model_providers,context_segments,context_snapshots,authorization_uses,authorization_decisions,authorization_requests,staging_events,staging_reviews,staging_promotions,staging_checks,staging_workspace_artifacts,staging_artifacts,staging_workspaces,outbox_events,task_dead_letters,task_events,task_leases,task_attempts,task_evidence,task_requirements,task_dependencies,tasks,organization_reporting_lines,organization_registry_revision_documents,organization_roles,organizational_units,organizations,organization_registry_revisions,audit_events RESTART IDENTITY CASCADE`)
+	_, err := store.Pool().Exec(ctx, `TRUNCATE model_provider_outcomes,model_provider_requests,model_egress_evaluations,model_invocation_usage,model_invocation_results,model_dispatch_attempts,model_invocations,model_egress_revision_bindings,model_egress_rules,model_egress_policy_versions,role_model_bindings,model_capability_snapshots,model_profile_versions,model_profiles,model_providers,context_segments,context_snapshots,authorization_uses,authorization_decisions,authorization_requests,staging_events,staging_reviews,staging_promotions,staging_checks,staging_workspace_artifacts,staging_artifacts,staging_workspaces,outbox_events,task_dead_letters,task_events,task_leases,task_attempts,task_evidence,task_requirements,task_dependencies,tasks,organization_reporting_lines,organization_registry_revision_documents,organization_roles,organizational_units,organizations,organization_registry_revisions,audit_events RESTART IDENTITY CASCADE`)
 	if err != nil {
 		t.Fatal(err)
 	}

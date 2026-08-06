@@ -10,7 +10,37 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func (s *Store) MarkResponseReceived(ctx context.Context, invocationID, attemptID int64, token, providerRequestID string) (modelruntime.Invocation, error) {
+func insertProviderOutcome(ctx context.Context, tx pgx.Tx, invocationID, attemptID int64, outcome modelruntime.ProviderOutcome) error {
+	if err := outcome.Validate(); err != nil {
+		return err
+	}
+	var httpStatus any
+	if outcome.HTTPStatus > 0 {
+		httpStatus = outcome.HTTPStatus
+	}
+	tag, err := tx.Exec(ctx, `
+INSERT INTO model_provider_outcomes(
+    provider_request_record_id,organization_id,invocation_id,dispatch_attempt_id,
+    outcome_classification,provider_request_id,http_status,error_class,error_code,
+    retryable,response_hash,response_schema_version,cancellation_confirmed
+)
+SELECT r.id,r.organization_id,r.invocation_id,r.dispatch_attempt_id,
+       $3,NULLIF($4,''),$5,NULLIF($6,''),NULLIF($7,''),$8,NULLIF($9,''),$10,$11
+FROM model_provider_requests r
+WHERE r.invocation_id=$1 AND r.dispatch_attempt_id=$2`,
+		invocationID, attemptID, outcome.OutcomeClassification, outcome.ProviderRequestID,
+		httpStatus, outcome.ErrorClass, outcome.ErrorCode, outcome.Retryable,
+		outcome.ResponseHash, outcome.ResponseSchemaVersion, outcome.CancellationConfirmed)
+	if err != nil {
+		return mapError(err)
+	}
+	if tag.RowsAffected() != 1 {
+		return modelruntime.ErrConflict
+	}
+	return nil
+}
+
+func (s *Store) MarkResponseReceived(ctx context.Context, invocationID, attemptID int64, token string, outcome modelruntime.ProviderOutcome) (modelruntime.Invocation, error) {
 	return withTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) (modelruntime.Invocation, error) {
 		if err := lockInvocation(ctx, tx, invocationID); err != nil {
 			return modelruntime.Invocation{}, err
@@ -22,13 +52,19 @@ func (s *Store) MarkResponseReceived(ctx context.Context, invocationID, attemptI
 		if attempt.InvocationID != invocationID || attempt.Status != modelruntime.DispatchSendStarted {
 			return modelruntime.Invocation{}, modelruntime.ErrConflict
 		}
+		if outcome.OutcomeClassification != modelruntime.ProviderOutcomeResponseReceived {
+			return modelruntime.Invocation{}, modelruntime.ErrInvalidRequest
+		}
+		if err = insertProviderOutcome(ctx, tx, invocationID, attemptID, outcome); err != nil {
+			return modelruntime.Invocation{}, err
+		}
 		if _, err = tx.Exec(ctx, `
 UPDATE model_dispatch_attempts
 SET status='response_received',
     response_received_at=clock_timestamp(),
     provider_request_id=NULLIF($2,''),
     retry_safety='not_retryable'
-WHERE id=$1`, attemptID, providerRequestID); err != nil {
+WHERE id=$1`, attemptID, outcome.ProviderRequestID); err != nil {
 			return modelruntime.Invocation{}, mapError(err)
 		}
 		invocation, err := scanInvocation(tx.QueryRow(ctx, `
@@ -37,6 +73,99 @@ SET status='response_received',updated_at=clock_timestamp()
 WHERE id=$1 AND status='send_started'
 RETURNING `+invocationColumns, invocationID))
 		if err != nil {
+			return modelruntime.Invocation{}, err
+		}
+		return invocation, nil
+	})
+}
+
+func (s *Store) RejectProviderResponse(ctx context.Context, command modelruntime.FailureCommand, outcome modelruntime.ProviderOutcome, outboxMax int) (modelruntime.Invocation, error) {
+	if outcome.OutcomeClassification != modelruntime.ProviderOutcomeRejected {
+		return modelruntime.Invocation{}, modelruntime.ErrInvalidRequest
+	}
+	return withTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) (modelruntime.Invocation, error) {
+		if err := lockInvocation(ctx, tx, command.InvocationID); err != nil {
+			return modelruntime.Invocation{}, err
+		}
+		attempt, err := verifyToken(ctx, tx, command.DispatchAttemptID, command.ClaimToken)
+		if err != nil {
+			return modelruntime.Invocation{}, err
+		}
+		if attempt.InvocationID != command.InvocationID || attempt.Status != modelruntime.DispatchSendStarted {
+			return modelruntime.Invocation{}, modelruntime.ErrConflict
+		}
+		if err = insertProviderOutcome(ctx, tx, command.InvocationID, command.DispatchAttemptID, outcome); err != nil {
+			return modelruntime.Invocation{}, err
+		}
+		if _, err = tx.Exec(ctx, `
+UPDATE model_dispatch_attempts
+SET status='completed',response_received_at=clock_timestamp(),provider_request_id=NULLIF($2,''),
+    retry_safety='not_retryable',outcome_classification=NULLIF($3,''),error_code=NULLIF($4,''),
+    finished_at=clock_timestamp()
+WHERE id=$1`, attempt.ID, outcome.ProviderRequestID, command.OutcomeClassification, command.ErrorCode); err != nil {
+			return modelruntime.Invocation{}, mapError(err)
+		}
+		invocation, err := scanInvocation(tx.QueryRow(ctx, `
+UPDATE model_invocations
+SET status='failed',error_code=NULLIF($2,''),updated_at=clock_timestamp(),terminal_at=clock_timestamp()
+WHERE id=$1 AND status='send_started'
+RETURNING `+invocationColumns, command.InvocationID, command.ErrorCode))
+		if err != nil {
+			return modelruntime.Invocation{}, err
+		}
+		if err = appendInvocationEvent(ctx, tx, invocation, modelruntime.AuditInvocationFailed, "service", attempt.ClaimedBy, true, outboxMax, map[string]any{
+			"dispatch_attempt_id":    attempt.ID,
+			"outcome_classification": command.OutcomeClassification,
+			"provider_http_status":   outcome.HTTPStatus,
+			"provider_error_class":   outcome.ErrorClass,
+			"provider_error_code":    outcome.ErrorCode,
+			"provider_retryable":     outcome.Retryable,
+		}); err != nil {
+			return modelruntime.Invocation{}, err
+		}
+		return invocation, nil
+	})
+}
+
+func (s *Store) FailCommittedBeforeRequest(ctx context.Context, command modelruntime.FailureCommand, outcome modelruntime.ProviderOutcome, outboxMax int) (modelruntime.Invocation, error) {
+	if outcome.OutcomeClassification != modelruntime.ProviderOutcomeNotSent {
+		return modelruntime.Invocation{}, modelruntime.ErrInvalidRequest
+	}
+	return withTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) (modelruntime.Invocation, error) {
+		if err := lockInvocation(ctx, tx, command.InvocationID); err != nil {
+			return modelruntime.Invocation{}, err
+		}
+		attempt, err := verifyToken(ctx, tx, command.DispatchAttemptID, command.ClaimToken)
+		if err != nil {
+			return modelruntime.Invocation{}, err
+		}
+		if attempt.InvocationID != command.InvocationID || attempt.Status != modelruntime.DispatchSendStarted {
+			return modelruntime.Invocation{}, modelruntime.ErrConflict
+		}
+		if err = insertProviderOutcome(ctx, tx, command.InvocationID, command.DispatchAttemptID, outcome); err != nil {
+			return modelruntime.Invocation{}, err
+		}
+		if _, err = tx.Exec(ctx, `
+UPDATE model_dispatch_attempts
+SET status='failed_before_send',retry_safety='safe_before_send',
+    outcome_classification=NULLIF($2,''),error_code=NULLIF($3,''),finished_at=clock_timestamp()
+WHERE id=$1`, attempt.ID, command.OutcomeClassification, command.ErrorCode); err != nil {
+			return modelruntime.Invocation{}, mapError(err)
+		}
+		invocation, err := scanInvocation(tx.QueryRow(ctx, `
+UPDATE model_invocations
+SET status='failed',error_code=NULLIF($2,''),updated_at=clock_timestamp(),terminal_at=clock_timestamp()
+WHERE id=$1 AND status='send_started'
+RETURNING `+invocationColumns, command.InvocationID, command.ErrorCode))
+		if err != nil {
+			return modelruntime.Invocation{}, err
+		}
+		if err = appendInvocationEvent(ctx, tx, invocation, modelruntime.AuditInvocationFailed, "service", attempt.ClaimedBy, true, outboxMax, map[string]any{
+			"dispatch_attempt_id":    attempt.ID,
+			"outcome_classification": command.OutcomeClassification,
+			"provider_error_class":   outcome.ErrorClass,
+			"provider_error_code":    outcome.ErrorCode,
+		}); err != nil {
 			return modelruntime.Invocation{}, err
 		}
 		return invocation, nil
@@ -242,6 +371,11 @@ func (s *Store) MarkAmbiguous(ctx context.Context, command modelruntime.FailureC
 		if attempt.InvocationID != command.InvocationID || attempt.Status != modelruntime.DispatchSendStarted {
 			return modelruntime.Invocation{}, modelruntime.ErrConflict
 		}
+		if command.ProviderOutcome != nil {
+			if err = insertProviderOutcome(ctx, tx, command.InvocationID, command.DispatchAttemptID, *command.ProviderOutcome); err != nil {
+				return modelruntime.Invocation{}, err
+			}
+		}
 		if _, err = tx.Exec(ctx, `
 UPDATE model_dispatch_attempts
 SET status='ambiguous',retry_safety='not_retryable',
@@ -285,6 +419,17 @@ func (s *Store) MarkCancelled(ctx context.Context, command modelruntime.FailureC
 		}
 		if !cancellationRequested {
 			return modelruntime.Invocation{}, fmt.Errorf("%w: no durable cancellation request", modelruntime.ErrConflict)
+		}
+		if attempt.Status == modelruntime.DispatchResponseReceived && command.ProviderOutcome != nil {
+			return modelruntime.Invocation{}, fmt.Errorf("%w: provider outcome already persisted", modelruntime.ErrConflict)
+		}
+		if attempt.Status == modelruntime.DispatchSendStarted {
+			if command.ProviderOutcome == nil || command.ProviderOutcome.OutcomeClassification != modelruntime.ProviderOutcomeCancelled {
+				return modelruntime.Invocation{}, fmt.Errorf("%w: confirmed cancellation outcome is required", modelruntime.ErrInvalidRequest)
+			}
+			if err = insertProviderOutcome(ctx, tx, command.InvocationID, command.DispatchAttemptID, *command.ProviderOutcome); err != nil {
+				return modelruntime.Invocation{}, err
+			}
 		}
 		if _, err = tx.Exec(ctx, `
 UPDATE model_dispatch_attempts

@@ -1,5 +1,5 @@
 schema_version: 0.1.0
-document_status: branch_0_candidate
+document_status: branch_12_candidate
 policies:
   executive.ceo:
     provider: alibaba_token_plan_via_claude_code

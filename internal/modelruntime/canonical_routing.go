@@ -472,6 +472,22 @@ func profileIDForPolicy(policy string) string {
 	return policy
 }
 
+// compiledAdapterAvailability lists, in this exact literal form, every
+// provider/transport pair with a compiled adapter. scripts/check-model-runtime-fitness.sh
+// greps for these two conditions verbatim; keep the phrasing (policy.Transport
+// == ... && policy.Provider == ...) in sync with the fitness script if this
+// set ever changes.
+func compiledAdapterAvailability(policy routingPolicy) (AdapterStatus, bool) {
+	switch {
+	case policy.Transport == TransportFake && policy.Provider == "test.fake":
+		return AdapterAvailable, true
+	case policy.Transport == TransportHTTP && policy.Provider == "openai_compatible":
+		return AdapterAvailable, true
+	default:
+		return AdapterUnavailable, false
+	}
+}
+
 func BuildRegistryPlan(roles []RoleRef, org OrganizationRef, routing CanonicalRouting) (RegistryPlan, error) {
 	if strings.TrimSpace(org.ID) == "" || org.RevisionID <= 0 {
 		return RegistryPlan{}, fmt.Errorf("%w: organization revision is required", ErrInvalidRequest)
@@ -496,12 +512,7 @@ func BuildRegistryPlan(roles []RoleRef, org OrganizationRef, routing CanonicalRo
 	profilesSeen := map[string]string{}
 	for _, policyID := range policyIDs {
 		policy := routing.Policies[policyID]
-		adapterStatus := AdapterUnavailable
-		dispatchEnabled := false
-		if policy.Transport == TransportFake && policy.Provider == "test.fake" {
-			adapterStatus = AdapterAvailable
-			dispatchEnabled = true
-		}
+		adapterStatus, dispatchEnabled := compiledAdapterAvailability(policy)
 		providerHashBody, err := CanonicalJSON(map[string]any{
 			"provider":              policy.Provider,
 			"transport":             policy.Transport,

@@ -39,8 +39,8 @@ func TestModelEgressPostgreSQL17(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Current != 10 {
-		t.Fatalf("current migration=%d want=10", result.Current)
+	if result.Current != 11 {
+		t.Fatalf("current migration=%d want=11", result.Current)
 	}
 	resetEgressSchema(t, ctx, platform)
 	revision := syncEgressCanonical(t, ctx, platform)
@@ -48,7 +48,7 @@ func TestModelEgressPostgreSQL17(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	canonical, err := modelegress.LoadCanonicalPolicy(filepath.Join("..", "..", "..", "docs", "canonical"), modelegress.LoadOptions{KnownProviders: []string{"alibaba_token_plan_via_claude_code", "deepseek", "openai_compatible"}})
+	canonical, err := modelegress.LoadCanonicalPolicy(filepath.Join("..", "..", "..", "docs", "canonical"), modelegress.ProductiveLoadOptions([]string{"alibaba_token_plan_via_claude_code", "deepseek", "openai_compatible"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,12 +67,18 @@ func TestModelEgressPostgreSQL17(t *testing.T) {
 		if statusErr != nil || !status.Synchronized || status.Rules != len(canonical.HardDenies)+len(canonical.Rules) {
 			t.Fatalf("status=%+v err=%v", status, statusErr)
 		}
+		var wantAllow int
+		for _, rule := range canonical.Rules {
+			if rule.Effect == modelegress.EffectAllow {
+				wantAllow++
+			}
+		}
 		var allowRules int
 		if err := platform.Pool().QueryRow(ctx, `SELECT count(*) FROM model_egress_rules WHERE policy_version_id=$1 AND effect='allow'`, first.PolicyVersionID).Scan(&allowRules); err != nil {
 			t.Fatal(err)
 		}
-		if allowRules != 0 {
-			t.Fatalf("productive materialization has %d allow rules", allowRules)
+		if allowRules != wantAllow {
+			t.Fatalf("productive materialization has %d allow rules, want %d compiled-in (Rama 12: openai_compatible public+sanitized)", allowRules, wantAllow)
 		}
 		if _, err := platform.Pool().Exec(ctx, `UPDATE model_egress_policy_versions SET canonical_hash=$1 WHERE id=$2`, modelegress.SHA256Bytes([]byte("mutated")), first.PolicyVersionID); err == nil {
 			t.Fatal("historical policy version was mutable")
@@ -101,7 +107,7 @@ func TestModelEgressPostgreSQL17(t *testing.T) {
 
 	t.Run("version conflicts and new semantic versions", func(t *testing.T) {
 		newPolicy := canonical
-		newPolicy.PolicyVersion = 2
+		newPolicy.PolicyVersion = canonical.PolicyVersion + 1
 		newPolicy.Rules = append([]modelegress.Rule(nil), canonical.Rules...)
 		newPolicy.Rules[0].ReasonCode = "organizational_egress_still_not_approved"
 		newPolicy.CanonicalHash = semanticFixtureHash(newPolicy)
@@ -121,7 +127,7 @@ func TestModelEgressPostgreSQL17(t *testing.T) {
 		}
 
 		redundant := newPolicy
-		redundant.PolicyVersion = 3
+		redundant.PolicyVersion = canonical.PolicyVersion + 2
 		redundantRevision := insertEgressRevision(t, ctx, platform, redundant.CanonicalHash, "redundant-v3")
 		_, applyErr = store.Apply(ctx, modelegress.RegistryPlan{OrganizationID: egressIntegrationOrganization, OrganizationRevisionID: redundantRevision, CanonicalHash: redundant.CanonicalHash, Policy: redundant})
 		if !errors.Is(applyErr, modelegress.ErrPolicyConflict) {
@@ -132,7 +138,7 @@ func TestModelEgressPostgreSQL17(t *testing.T) {
 
 	t.Run("concurrent sync creates one version and one binding", func(t *testing.T) {
 		concurrent := canonical
-		concurrent.PolicyVersion = 4
+		concurrent.PolicyVersion = canonical.PolicyVersion + 3
 		concurrent.Rules = append([]modelegress.Rule(nil), canonical.Rules...)
 		concurrent.Rules[0].ReasonCode = "concurrent_sync_fixture"
 		concurrent.CanonicalHash = semanticFixtureHash(concurrent)
@@ -171,7 +177,13 @@ func TestModelEgressPostgreSQL17(t *testing.T) {
 		if applied != 1 || noOp != 1 {
 			t.Fatalf("concurrent outcomes applied=%d noop=%d", applied, noOp)
 		}
-		assertEgressCount(t, ctx, platform, `SELECT count(*) FROM model_egress_policy_versions WHERE organization_id=$1 AND policy_version=4`, egressIntegrationOrganization, 1)
+		var concurrentVersionCount int
+		if err := platform.Pool().QueryRow(ctx, `SELECT count(*) FROM model_egress_policy_versions WHERE organization_id=$1 AND policy_version=$2`, egressIntegrationOrganization, concurrent.PolicyVersion).Scan(&concurrentVersionCount); err != nil {
+			t.Fatal(err)
+		}
+		if concurrentVersionCount != 1 {
+			t.Fatalf("concurrent policy_version=%d count=%d want=1", concurrent.PolicyVersion, concurrentVersionCount)
+		}
 		setCurrentEgressRevision(t, ctx, platform, revision.ID)
 	})
 
@@ -301,7 +313,7 @@ func openEgressStore(t *testing.T, ctx context.Context) *platformpostgres.Store 
 
 func resetEgressSchema(t *testing.T, ctx context.Context, store *platformpostgres.Store) {
 	t.Helper()
-	_, err := store.Pool().Exec(ctx, `TRUNCATE model_egress_evaluations,model_invocation_usage,model_invocation_results,model_dispatch_attempts,model_invocations,model_egress_revision_bindings,model_egress_rules,model_egress_policy_versions,role_model_bindings,model_capability_snapshots,model_profile_versions,model_profiles,model_providers,context_segments,context_snapshots,authorization_uses,authorization_decisions,authorization_requests,staging_events,staging_reviews,staging_promotions,staging_checks,staging_workspace_artifacts,staging_artifacts,staging_workspaces,outbox_events,task_dead_letters,task_events,task_leases,task_attempts,task_evidence,task_requirements,task_dependencies,tasks,organization_reporting_lines,organization_registry_revision_documents,organization_roles,organizational_units,organizations,organization_registry_revisions,audit_events RESTART IDENTITY CASCADE`)
+	_, err := store.Pool().Exec(ctx, `TRUNCATE model_provider_outcomes,model_provider_requests,model_egress_evaluations,model_invocation_usage,model_invocation_results,model_dispatch_attempts,model_invocations,model_egress_revision_bindings,model_egress_rules,model_egress_policy_versions,role_model_bindings,model_capability_snapshots,model_profile_versions,model_profiles,model_providers,context_segments,context_snapshots,authorization_uses,authorization_decisions,authorization_requests,staging_events,staging_reviews,staging_promotions,staging_checks,staging_workspace_artifacts,staging_artifacts,staging_workspaces,outbox_events,task_dead_letters,task_events,task_leases,task_attempts,task_evidence,task_requirements,task_dependencies,tasks,organization_reporting_lines,organization_registry_revision_documents,organization_roles,organizational_units,organizations,organization_registry_revisions,audit_events RESTART IDENTITY CASCADE`)
 	if err != nil {
 		t.Fatal(err)
 	}

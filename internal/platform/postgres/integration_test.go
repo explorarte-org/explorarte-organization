@@ -45,6 +45,10 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 		t.Fatalf("ping PostgreSQL: %v", err)
 	}
 	for _, statement := range []string{
+		`DROP TABLE IF EXISTS model_provider_outcomes`,
+		`DROP TABLE IF EXISTS model_provider_requests`,
+		`DROP FUNCTION IF EXISTS reject_model_provider_outcome_mutation()`,
+		`DROP FUNCTION IF EXISTS reject_model_provider_request_mutation()`,
 		`ALTER TABLE IF EXISTS model_dispatch_attempts DROP CONSTRAINT IF EXISTS model_dispatch_attempts_identity_assertion_fk`,
 		`ALTER TABLE IF EXISTS model_dispatch_attempts DROP CONSTRAINT IF EXISTS model_dispatch_attempts_identity_key_fk`,
 		`DROP TABLE IF EXISTS model_execution_identity_assertions`,
@@ -116,14 +120,14 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("apply migrations: %v", err)
 	}
-	if len(result.Applied) != 10 || result.Current != 10 {
+	if len(result.Applied) != 11 || result.Current != 11 {
 		t.Fatalf("unexpected migration result: %+v", result)
 	}
 	status, err := runner.Status(ctx)
 	if err != nil {
 		t.Fatalf("migration status: %v", err)
 	}
-	if !status.Ready || status.Pending != 0 || status.Applied != 10 {
+	if !status.Ready || status.Pending != 0 || status.Applied != 11 {
 		t.Fatalf("unexpected migration status: %+v", status)
 	}
 	if err := store.UnitOfWork().WithinTransaction(ctx, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
@@ -153,7 +157,7 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("idempotent migration run: %v", err)
 	}
-	if len(second.Applied) != 0 || second.Current != 10 {
+	if len(second.Applied) != 0 || second.Current != 11 {
 		t.Fatalf("second migration result = %+v, want no changes", second)
 	}
 
@@ -161,37 +165,32 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load migrations for down test: %v", err)
 	}
-	if len(loaded) != 10 {
-		t.Fatalf("loaded migrations = %d, want 10", len(loaded))
+	if len(loaded) != 11 {
+		t.Fatalf("loaded migrations = %d, want 11", len(loaded))
 	}
 	if err := store.UnitOfWork().WithinTransaction(ctx, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, loaded[9].DownSQL); err != nil {
+		if _, err := tx.Exec(ctx, loaded[10].DownSQL); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, `DELETE FROM schema_migrations WHERE version = 10`)
+		_, err := tx.Exec(ctx, `DELETE FROM schema_migrations WHERE version = 11`)
 		return err
 	}); err != nil {
-		t.Fatalf("down migration 000010: %v", err)
+		t.Fatalf("down migration 000011: %v", err)
 	}
-	var identityPolicyTable *string
-	if err := store.Pool().QueryRow(ctx, `SELECT to_regclass('public.model_execution_identity_policy_versions')::text`).Scan(&identityPolicyTable); err != nil {
-		t.Fatalf("check down migration: %v", err)
-	}
-	if identityPolicyTable != nil {
-		t.Fatalf("model_execution_identity_policy_versions still exists after down: %v", *identityPolicyTable)
-	}
-	var identityColumnCount int
-	if err := store.Pool().QueryRow(ctx, `SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND ((table_name='model_invocations' AND column_name IN ('execution_identity_policy_version_id','execution_identity_policy_hash')) OR (table_name='model_dispatch_attempts' AND column_name IN ('execution_identity_key_id','identity_assertion_id','identity_verified_at')))`).Scan(&identityColumnCount); err != nil {
-		t.Fatalf("check identity columns after down: %v", err)
-	}
-	if identityColumnCount != 0 {
-		t.Fatalf("execution identity columns remain after down: %d", identityColumnCount)
+	for _, table := range []string{"model_provider_requests", "model_provider_outcomes"} {
+		var relation *string
+		if err := store.Pool().QueryRow(ctx, `SELECT to_regclass('public.' || $1)::text`, table).Scan(&relation); err != nil {
+			t.Fatalf("check down migration table %s: %v", table, err)
+		}
+		if relation != nil {
+			t.Fatalf("%s still exists after down: %v", table, *relation)
+		}
 	}
 	restored, err := runner.Up(ctx)
 	if err != nil {
-		t.Fatalf("restore migration 000010: %v", err)
+		t.Fatalf("restore migration 000011: %v", err)
 	}
-	if len(restored.Applied) != 1 || restored.Current != 10 {
-		t.Fatalf("restore migration result = %+v, want only 000010", restored)
+	if len(restored.Applied) != 1 || restored.Current != 11 {
+		t.Fatalf("restore migration result = %+v, want only 000011", restored)
 	}
 }
