@@ -19,6 +19,15 @@ func TestParseDecisionFileRejectsUnknownFields(t *testing.T) {
 	}
 }
 
+func TestParseDecisionFinishRejectsClaimTokenInJSON(t *testing.T) {
+	path := writeDecisionInput(t, `{"execution_id":1,"claim_token":"must-use-stdin","final_state":"succeeded","input_tokens":0,"output_tokens":0}`)
+	var input decisionFinishInput
+	var stderr bytes.Buffer
+	if _, code := parseDecisionFile([]string{"--file", path}, &stderr, &input); code != exitUsage {
+		t.Fatalf("code=%d, want %d", code, exitUsage)
+	}
+}
+
 func TestParseDecisionFileRejectsMultipleTopLevelValues(t *testing.T) {
 	path := writeDecisionInput(t, `{"run_id":1,"claimed_by":"worker","lease_duration":"1m"} {"run_id":2}`)
 	var input decisionClaimInput

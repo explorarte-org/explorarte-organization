@@ -82,7 +82,6 @@ type decisionTransitionInput struct {
 
 type decisionFinishInput struct {
 	ExecutionID       int64                        `json:"execution_id"`
-	ClaimToken        string                       `json:"claim_token"`
 	FinalState        decisiongraph.ExecutionState `json:"final_state"`
 	InputTokens       int64                        `json:"input_tokens"`
 	OutputTokens      int64                        `json:"output_tokens"`
@@ -268,8 +267,13 @@ func runDecision(args []string, stdout, stderr io.Writer) int {
 		if code != exitOK {
 			return code
 		}
-		err := service.FinishExecution(ctx, decisiongraph.FinishExecutionRequest{
-			ExecutionID: input.ExecutionID, ClaimToken: input.ClaimToken, FinalState: input.FinalState,
+		claimToken, err := readSecretToken(os.Stdin)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return exitUsage
+		}
+		err = service.FinishExecution(ctx, decisiongraph.FinishExecutionRequest{
+			ExecutionID: input.ExecutionID, ClaimToken: claimToken, FinalState: input.FinalState,
 			InputTokens: input.InputTokens, OutputTokens: input.OutputTokens,
 			OutcomeHash: input.OutcomeHash, ReasonCode: input.ReasonCode,
 			ModelInvocationID: input.ModelInvocationID, DispatchAttemptID: input.DispatchAttemptID,

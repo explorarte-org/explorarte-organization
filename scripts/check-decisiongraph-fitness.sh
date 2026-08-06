@@ -81,6 +81,10 @@ rg -q 'used_wall_time_ms=used_wall_time_ms' "$store" || fail "wall-time budget i
 rg -q 'wall_time_ms_delta' "$store" || fail "wall-time budget events are missing"
 rg -q 'case "decision"' cmd/orgctl/main.go || fail "orgctl decision command is not wired"
 rg -q 'DisallowUnknownFields' cmd/orgctl/decision.go || fail "decision JSON input is not strict"
+rg -q 'readSecretToken\(os\.Stdin\)' cmd/orgctl/decision.go || fail "decision finish token is not read from stdin"
+if rg -n 'json:"claim_token"' cmd/orgctl/decision.go; then
+  fail "decision claim token must not be accepted from a JSON file"
+fi
 rg -q 'ExecutionAmbiguous' internal/decisiongraph/transitions.go || fail "ambiguous terminal state missing"
 if rg -n 'ExecutionAmbiguous.*ExecutionReady|status=.requested.*ambiguous|retry.*ambiguous' internal/decisiongraph --glob '*.go' --glob '!**/*_test.go'; then
   fail "ambiguous outcomes appear retryable"
