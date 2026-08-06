@@ -1,0 +1,53 @@
+--- a/internal/modelruntime/dispatch_service.go	2026-08-06 05:15:01.000000000 +0000
++++ b/internal/modelruntime/dispatch_service.go	2026-08-06 06:34:24.970065092 +0000
+@@ -113,6 +113,30 @@
+ 	if *invocation.ExecutionPrincipalID != principal.ID {
+ 		return DispatchResult{}, ErrExecutionPrincipalMismatch
+ 	}
++	// Branch 09 legacy rows may have a dispatcher assignment and execution
++	// principal pinned while still lacking the model egress policy pin. They
++	// cannot produce an ActionDigest and therefore cannot enter the execution
++	// identity challenge flow. Claim only to persist the terminal
++	// failed-before-send result; this is an expand-and-contract cleanup path,
++	// never an identity bypass and never reaches render, egress evaluation or an
++	// adapter.
++	if invocation.ModelEgressPolicyVersionID == nil || invocation.ModelEgressPolicyHash == "" {
++		claimed, claimErr := s.store.ClaimInvocation(ctx, ClaimCommand{InvocationID: invocationID, ClaimedBy: principal.PrincipalKey, ExecutionPrincipalID: principal.ID}, s.config)
++		if claimErr != nil {
++			return DispatchResult{}, claimErr
++		}
++		persistCtx, cancelPersist := context.WithTimeout(context.WithoutCancel(ctx), s.config.CommandTimeout)
++		defer cancelPersist()
++		failed, persistErr := s.store.FailBeforeSend(persistCtx, FailureCommand{
++			InvocationID: claimed.Invocation.ID, DispatchAttemptID: claimed.DispatchAttempt.ID,
++			ClaimToken: claimed.ClaimToken, ErrorCode: "egress_policy_unpinned",
++			OutcomeClassification: "failed_before_send", EventType: AuditInvocationFailed,
++		}, s.config.OutboxMaxAttempts)
++		if persistErr != nil {
++			return DispatchResult{}, errors.Join(ErrEgressPolicyUnpinned, persistErr)
++		}
++		return DispatchResult{Invocation: failed}, ErrEgressPolicyUnpinned
++	}
+ 	if invocation.ExecutionIdentityPolicyVersionID == nil || invocation.ExecutionIdentityPolicyHash == "" {
+ 		claimed, claimErr := s.store.ClaimInvocation(ctx, ClaimCommand{InvocationID: invocationID, ClaimedBy: principal.PrincipalKey, ExecutionPrincipalID: principal.ID}, s.config)
+ 		if claimErr != nil {
+--- a/internal/modelruntime/postgres/scans_test.go	2026-08-06 05:15:01.000000000 +0000
++++ b/internal/modelruntime/postgres/scans_test.go	2026-08-06 06:34:25.986065058 +0000
+@@ -60,7 +60,7 @@
+ 		int64(1), "explorarte", int64(7), int64(2), int64(3),
+ 		"ingenieria_ia/qa", "ingenieria_ia/qa", nil, nil, int64(4), "test",
+ 		"worker-default", int64(5), "test.fake", "deterministic-v1",
+-		int64(17), hash, []byte(`[]`), modelruntime.OutputText, nil, 128, nil,
++		int64(17), hash, int64(23), hash, []byte(`[]`), modelruntime.OutputText, nil, 128, nil,
+ 		modelruntime.ThinkingDisabled, "idempotency", hash,
+ 		modelruntime.InvocationRequested, nil, nil, now, nil, nil, now, now, nil,
+ 	}})
+@@ -75,7 +75,7 @@
+ func TestScanAttemptAcceptsNullableTextColumns(t *testing.T) {
+ 	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
+ 	value, err := scanAttempt(strictNullScanner{values: []any{
+-		int64(1), int64(2), 1, modelruntime.DispatchClaimed, "worker-1", nil,
++		int64(1), int64(2), 1, modelruntime.DispatchClaimed, "worker-1", nil, nil, nil, nil,
+ 		now, now.Add(time.Minute), nil, nil, nil,
+ 		modelruntime.RetrySafeBeforeSend, nil, nil, now, nil,
+ 	}})
