@@ -272,9 +272,12 @@ func TestContextEnginePostgreSQL17(t *testing.T) {
 	})
 
 	t.Run("down migration and reapply in disposable integration database", func(t *testing.T) {
-		// Branch 12 provider tables reference identity assertions, so 000011
-		// must come down before 000010; 000010 must in turn come down before
-		// 000009 and the earlier model migrations.
+		// Capa 14 references task attempts, context snapshots, model invocations,
+		// and dispatch attempts. It must come down before 000011-000006.
+		decisionDown, err := rootmigrations.Files.ReadFile("000012_create_durable_decision_graph.down.sql")
+		if err != nil {
+			t.Fatal(err)
+		}
 		providerDown, err := rootmigrations.Files.ReadFile("000011_create_model_provider_adapter.down.sql")
 		if err != nil {
 			t.Fatal(err)
@@ -304,6 +307,12 @@ func TestContextEnginePostgreSQL17(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer func() { _ = tx.Rollback(ctx) }()
+		if _, err = tx.Exec(ctx, string(decisionDown)); err != nil {
+			t.Fatalf("down migration 000012: %v", err)
+		}
+		if _, err = tx.Exec(ctx, `DELETE FROM schema_migrations WHERE version=12`); err != nil {
+			t.Fatal(err)
+		}
 		if _, err = tx.Exec(ctx, string(providerDown)); err != nil {
 			t.Fatalf("down migration 000011: %v", err)
 		}
@@ -366,8 +375,8 @@ func TestContextEnginePostgreSQL17(t *testing.T) {
 		if err != nil {
 			t.Fatalf("reapply migrations: %v", err)
 		}
-		if len(result.Applied) != 6 || result.Current != 11 {
-			t.Fatalf("reapply result=%+v, want migrations 000006 through 000011", result)
+		if len(result.Applied) != 7 || result.Current != 12 {
+			t.Fatalf("reapply result=%+v, want migrations 000006 through 000012", result)
 		}
 		var contextExists, modelRuntimeExists, egressExists, dispatchExists, identityExists, providerExists bool
 		if err = platform.Pool().QueryRow(ctx, `
