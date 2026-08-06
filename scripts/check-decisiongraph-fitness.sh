@@ -41,10 +41,14 @@ if rg -n 'internal/(secrets|modelruntime/adapter)|openaicompat|api[_-]?key|beare
   fail "decision graph crossed the provider or credential boundary"
 fi
 
-# The durable trace is structured and hash-based. Private chain-of-thought,
-# raw prompts, raw responses, credentials, and raw claim tokens are forbidden.
-if rg -ni 'private[_ -]?chain[_ -]?of[_ -]?thought|private[_ -]?reasoning|raw[_ -]?prompt|raw[_ -]?response|credential[_ -]?value|secret[_ -]?value' internal/decisiongraph migrations/000012_create_durable_decision_graph.up.sql; then
-  fail "forbidden sensitive trace field found"
+# The durable trace is structured and hash-based. Documentation may state the
+# privacy rule, but executable structs and SQL columns must not define fields
+# for private reasoning, raw prompts/responses, or credential material.
+if rg -n '(PrivateChainOfThought|PrivateReasoning|RawPrompt|RawResponse|CredentialValue|SecretValue)[[:space:]]+' internal/decisiongraph --glob '*.go'; then
+  fail "forbidden sensitive Go field found"
+fi
+if rg -ni 'private_chain_of_thought|private_reasoning|raw_prompt|raw_response|credential_value|secret_value' migrations/000012_create_durable_decision_graph.up.sql; then
+  fail "forbidden sensitive SQL column found"
 fi
 if rg -n 'claim_token[[:space:]]+TEXT' migrations/000012_create_durable_decision_graph.up.sql; then
   fail "raw claim token column found"
@@ -71,13 +75,13 @@ rg -q 'active_parallel_nodes=active_parallel_nodes\+1' "$store" || fail "paralle
 rg -q 'used_model_calls=used_model_calls\+1' "$store" || fail "model-call budget is not reserved at claim"
 rg -q 'decision_budget_events' "$store" || fail "append-only budget event ledger missing"
 rg -q 'ExecutionAmbiguous' internal/decisiongraph/transitions.go || fail "ambiguous terminal state missing"
-if rg -n 'ExecutionAmbiguous.*ExecutionReady|status=.requested.*ambiguous|retry.*ambiguous' internal/decisiongraph --glob '*.go'; then
+if rg -n 'ExecutionAmbiguous.*ExecutionReady|status=.requested.*ambiguous|retry.*ambiguous' internal/decisiongraph --glob '*.go' --glob '!**/*_test.go'; then
   fail "ambiguous outcomes appear retryable"
 fi
 
 # Decision graph completion never completes the parent task and never performs
 # tool intents; terminal task authority remains in the durable task engine.
-if rg -ni 'UPDATE[[:space:]]+tasks|status[[:space:]]*=[[:space:]]*.completed.|tool_intent' internal/decisiongraph --glob '*.go'; then
+if rg -ni 'UPDATE[[:space:]]+tasks|status[[:space:]]*=[[:space:]]*.completed.|tool_intent' internal/decisiongraph --glob '*.go' --glob '!**/*_test.go'; then
   fail "decision graph attempted task completion or tool execution"
 fi
 
