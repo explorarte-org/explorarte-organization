@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 )
 
 type Service struct {
@@ -22,7 +23,8 @@ func NewService(ledger Ledger, clock Clock) (*Service, error) {
 }
 
 func (s *Service) CreateRun(ctx context.Context, request CreateRunRequest) (Run, error) {
-	now := s.clock.Now().UTC()
+	now := postgresTimestamp(s.clock.Now())
+	request.Deadline = postgresTimestamp(request.Deadline)
 	if err := request.Validate(now); err != nil {
 		return Run{}, err
 	}
@@ -48,7 +50,7 @@ func (s *Service) StartRun(ctx context.Context, runID int64) error {
 	if runID <= 0 {
 		return fmt.Errorf("%w: invalid run id", ErrInvalidRun)
 	}
-	if err := s.ledger.StartRun(ctx, runID, s.clock.Now().UTC()); err != nil {
+	if err := s.ledger.StartRun(ctx, runID, postgresTimestamp(s.clock.Now())); err != nil {
 		return fmt.Errorf("start decision graph run: %w", err)
 	}
 	return nil
@@ -58,7 +60,7 @@ func (s *Service) ClaimReadyNode(ctx context.Context, request ClaimNodeRequest) 
 	if err := request.Validate(); err != nil {
 		return NodeClaim{}, err
 	}
-	claim, err := s.ledger.ClaimReadyNode(ctx, request, s.clock.Now().UTC())
+	claim, err := s.ledger.ClaimReadyNode(ctx, request, postgresTimestamp(s.clock.Now()))
 	if err != nil {
 		return NodeClaim{}, fmt.Errorf("claim decision node: %w", err)
 	}
@@ -69,7 +71,7 @@ func (s *Service) FinishExecution(ctx context.Context, request FinishExecutionRe
 	if err := request.Validate(); err != nil {
 		return err
 	}
-	if err := s.ledger.FinishExecution(ctx, request, s.clock.Now().UTC()); err != nil {
+	if err := s.ledger.FinishExecution(ctx, request, postgresTimestamp(s.clock.Now())); err != nil {
 		return fmt.Errorf("finish decision execution: %w", err)
 	}
 	return nil
@@ -79,7 +81,7 @@ func (s *Service) RecordObservation(ctx context.Context, record ObservationRecor
 	if err := record.Validate(); err != nil {
 		return err
 	}
-	if err := s.ledger.RecordObservation(ctx, record, s.clock.Now().UTC()); err != nil {
+	if err := s.ledger.RecordObservation(ctx, record, postgresTimestamp(s.clock.Now())); err != nil {
 		return fmt.Errorf("record decision observation: %w", err)
 	}
 	return nil
@@ -89,7 +91,7 @@ func (s *Service) RecordVerification(ctx context.Context, record VerificationRec
 	if err := record.Validate(); err != nil {
 		return err
 	}
-	if err := s.ledger.RecordVerification(ctx, record, s.clock.Now().UTC()); err != nil {
+	if err := s.ledger.RecordVerification(ctx, record, postgresTimestamp(s.clock.Now())); err != nil {
 		return fmt.Errorf("record decision verification: %w", err)
 	}
 	return nil
@@ -102,7 +104,7 @@ func (s *Service) RecordTerminalDecision(ctx context.Context, request TerminalDe
 	if request.VerificationLabel != VerificationVerified && request.VerificationLabel != VerificationInferred {
 		return fmt.Errorf("%w: terminal selection requires verified or inferred label", ErrInvalidDecision)
 	}
-	if err := s.ledger.RecordTerminalDecision(ctx, request, s.clock.Now().UTC()); err != nil {
+	if err := s.ledger.RecordTerminalDecision(ctx, request, postgresTimestamp(s.clock.Now())); err != nil {
 		return fmt.Errorf("record terminal decision: %w", err)
 	}
 	return nil
@@ -112,7 +114,7 @@ func (s *Service) RecoverExpiredExecutions(ctx context.Context, limit int) (int,
 	if limit < 1 || limit > 256 {
 		return 0, fmt.Errorf("%w: recovery limit must be between 1 and 256", ErrInvalidExecution)
 	}
-	recovered, err := s.ledger.RecoverExpiredExecutions(ctx, limit, s.clock.Now().UTC())
+	recovered, err := s.ledger.RecoverExpiredExecutions(ctx, limit, postgresTimestamp(s.clock.Now()))
 	if err != nil {
 		return 0, fmt.Errorf("recover expired decision executions: %w", err)
 	}
@@ -128,4 +130,8 @@ func (s *Service) TraceRef(ctx context.Context, runID int64) (TraceRef, error) {
 		return TraceRef{}, fmt.Errorf("load decision trace reference: %w", err)
 	}
 	return ref, nil
+}
+
+func postgresTimestamp(value time.Time) time.Time {
+	return value.UTC().Truncate(time.Microsecond)
 }
