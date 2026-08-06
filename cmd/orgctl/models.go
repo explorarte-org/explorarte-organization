@@ -78,6 +78,8 @@ func runModel(args []string, stdout, stderr io.Writer) int {
 		ctx, cancel := context.WithTimeout(context.Background(), runtime.Config.CommandTimeout)
 		defer cancel()
 		return modelIdentity(ctx, runtime.Identity, args[1:], stdout, stderr)
+	case "worker":
+		return runModelWorker(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown model command %q\n", args[0])
 		printModelUsage(stderr)
@@ -383,11 +385,12 @@ func modelError(stderr io.Writer, err error) int {
 	}
 }
 func printModelUsage(out io.Writer) {
-	fmt.Fprintln(out, "usage: orgctl model <registry|egress|invocation|principal|assignment|identity> ...")
+	fmt.Fprintln(out, "usage: orgctl model <registry|egress|invocation|principal|assignment|identity|worker> ...")
 	fmt.Fprintln(out, "  orgctl model registry <validate|diff|sync|status> [--json] [--apply]")
 	fmt.Fprintln(out, "  orgctl model egress <validate|diff|sync|status> [--json] [--apply]")
 	fmt.Fprintln(out, "  orgctl model invocation <create|get|list|dispatch|cancel|reconcile> ...")
 	fmt.Fprintln(out, "  orgctl model principal <register|get|list|disable> ...")
 	fmt.Fprintln(out, "  orgctl model assignment <create|get|list|revoke|expire> ...")
 	fmt.Fprintln(out, "  orgctl model identity <policy|key> ...")
+	fmt.Fprintln(out, "  orgctl model worker run")
 }

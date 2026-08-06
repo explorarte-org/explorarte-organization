@@ -266,3 +266,34 @@ is committed with egress allow, assignment consumption and `send_started`
 before the adapter may perform HTTP.
 
 See `docs/implementation/branch-12-model-provider-adapter/INTEGRATION.md`.
+
+### Persistent cell worker
+
+Rama 13 adds `orgctl model worker run`, a persistent process that replaces
+repeated manual `orgctl model invocation dispatch <id>` calls with a poll loop
+against invocations pinned to `ORG_MODEL_EXECUTION_PRINCIPAL_KEY`. It holds no
+state of its own: eligibility, claims and dispatch quota stay enforced by
+Ramas 08-12. It is a separate, explicitly-launched process — `orgd` still
+never dispatches.
+
+```bash
+orgctl model worker run
+```
+
+Operational configuration:
+
+```text
+ORG_MODEL_WORKER_BATCH_SIZE=10
+ORG_MODEL_WORKER_CONCURRENCY=1
+ORG_MODEL_WORKER_MIN_BACKOFF=1s
+ORG_MODEL_WORKER_MAX_BACKOFF=1m
+ORG_MODEL_WORKER_SHUTDOWN_GRACE=30s
+```
+
+The process exits gracefully on `SIGINT`/`SIGTERM`: it stops accepting new
+work but waits for every dispatch it already started to finish, bounded by
+`ORG_MODEL_WORKER_SHUTDOWN_GRACE`. It never selects a provider, holds
+credentials, or renders context — those stay behind
+`internal/modelruntime.DispatchService`.
+
+See `docs/implementation/branch-13-persistent-cell-worker/INTEGRATION.md`.
