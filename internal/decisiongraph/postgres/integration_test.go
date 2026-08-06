@@ -213,6 +213,20 @@ UPDATE decision_graph_nodes SET branch_state='active', updated_at=$2 WHERE id=$1
 		t.Fatal(err)
 	}
 	if err := service.TransitionBranch(ctx, decisiongraph.BranchTransitionRequest{
+		RunID: run.ID, NodeID: candidate.NodeID,
+		ToState:    decisiongraph.BranchRejectedByEvidence,
+		ReasonCode: "candidate_temporarily_rejected", Actor: "integration/verifier",
+	}); err != nil {
+		t.Fatalf("repeat rejection must remain append-only: %v", err)
+	}
+	clock.Set(clock.Now().Add(time.Microsecond))
+	if err := service.TransitionBranch(ctx, decisiongraph.BranchTransitionRequest{
+		RunID: run.ID, NodeID: candidate.NodeID, ToState: decisiongraph.BranchActive,
+		EvidenceHash: digest("second-candidate-evidence"), ReasonCode: "new_evidence", Actor: "integration/verifier",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.TransitionBranch(ctx, decisiongraph.BranchTransitionRequest{
 		RunID: run.ID, NodeID: candidate.NodeID, ToState: decisiongraph.BranchSelected,
 		ReasonCode: "candidate_selected", Actor: "integration/decider",
 	}); err != nil {

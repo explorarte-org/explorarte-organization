@@ -78,7 +78,7 @@ rg -q 'active_parallel_nodes=active_parallel_nodes\+1' "$store" || fail "paralle
 rg -q 'used_model_calls=used_model_calls\+1' "$store" || fail "model-call budget is not reserved at claim"
 rg -q 'decision_budget_events' "$store" || fail "append-only budget event ledger missing"
 rg -q 'used_wall_time_ms=used_wall_time_ms' "$store" || fail "wall-time budget is not consumed"
-rg -q 'wall_time_delta_ms' "$store" || fail "wall-time budget events are missing"
+rg -q 'wall_time_ms_delta' "$store" || fail "wall-time budget events are missing"
 rg -q 'case "decision"' cmd/orgctl/main.go || fail "orgctl decision command is not wired"
 rg -q 'DisallowUnknownFields' cmd/orgctl/decision.go || fail "decision JSON input is not strict"
 rg -q 'ExecutionAmbiguous' internal/decisiongraph/transitions.go || fail "ambiguous terminal state missing"

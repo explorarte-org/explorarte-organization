@@ -291,7 +291,7 @@ FOR UPDATE OF r,n`, request.RunID, s.organizationID, request.NodeID).Scan(&runSt
 		return err
 	}
 
-	eventHash := eventDigest("branch_transitioned", request.RunID, request.NodeID, current, request.ToState, request.EvidenceHash, request.ReasonCode, request.Actor)
+	eventHash := eventDigest("branch_transitioned", request.RunID, request.NodeID, current, request.ToState, request.EvidenceHash, request.ReasonCode, request.Actor, now.UTC().Format(time.RFC3339Nano))
 	if _, err := tx.Exec(ctx, `
 INSERT INTO decision_branch_events(
     organization_id,run_id,graph_version_id,node_id,from_branch_state,to_branch_state,
@@ -592,7 +592,7 @@ WHERE id=$1 AND branch_state='active'`, nodeID, now); err != nil {
 	if _, err := tx.Exec(ctx, `
 INSERT INTO decision_budget_events (
     organization_id, run_id, event_kind, parallel_delta,
-    input_tokens_delta, output_tokens_delta, wall_time_delta_ms, event_hash, created_at
+    input_tokens_delta, output_tokens_delta, wall_time_ms_delta, event_hash, created_at
 ) VALUES ($1,$2,'execution_finished',-1,$3,$4,$5,$6,$7)`, s.organizationID, runID, request.InputTokens, request.OutputTokens, elapsedMS, eventHash, now); err != nil {
 		return fmt.Errorf("insert finish budget event: %w", err)
 	}
@@ -972,7 +972,7 @@ WHERE id=$1 AND organization_id=$2
 		eventHash := eventDigest("execution_recovered", item.runID, item.id, finalState, reasonCode)
 		if _, err := tx.Exec(ctx, `
 INSERT INTO decision_budget_events (
-    organization_id, run_id, event_kind, parallel_delta, wall_time_delta_ms, event_hash, created_at
+    organization_id, run_id, event_kind, parallel_delta, wall_time_ms_delta, event_hash, created_at
 ) VALUES ($1,$2,'execution_finished',$3,$4,$5,$6)`, s.organizationID, item.runID, parallelDelta, wallTimeDeltaMS, eventHash, now); err != nil {
 			return 0, fmt.Errorf("record recovered execution event: %w", err)
 		}
