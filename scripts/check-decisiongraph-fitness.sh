@@ -76,6 +76,8 @@ rg -q 'FOR UPDATE OF n SKIP LOCKED' "$store" || fail "ready-node claim is not SK
 rg -q 'active_parallel_nodes=active_parallel_nodes\+1' "$store" || fail "parallel budget is not reserved at claim"
 rg -q 'used_model_calls=used_model_calls\+1' "$store" || fail "model-call budget is not reserved at claim"
 rg -q 'decision_budget_events' "$store" || fail "append-only budget event ledger missing"
+rg -q 'used_wall_time_ms=used_wall_time_ms' "$store" || fail "wall-time budget is not consumed"
+rg -q 'wall_time_delta_ms' "$store" || fail "wall-time budget events are missing"
 rg -q 'ExecutionAmbiguous' internal/decisiongraph/transitions.go || fail "ambiguous terminal state missing"
 if rg -n 'ExecutionAmbiguous.*ExecutionReady|status=.requested.*ambiguous|retry.*ambiguous' internal/decisiongraph --glob '*.go' --glob '!**/*_test.go'; then
   fail "ambiguous outcomes appear retryable"

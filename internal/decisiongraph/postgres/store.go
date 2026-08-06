@@ -469,12 +469,12 @@ func (s *Store) FinishExecution(ctx context.Context, request decisiongraph.Finis
 	var runID, nodeID int64
 	var status string
 	var tokenHash string
-	var expiresAt time.Time
+	var claimedAt, expiresAt time.Time
 	if err := tx.QueryRow(ctx, `
-SELECT run_id, node_id, status, claim_token_hash, claim_expires_at
+SELECT run_id, node_id, status, claim_token_hash, claimed_at, claim_expires_at
 FROM decision_node_executions
 WHERE id=$1 AND organization_id=$2
-FOR UPDATE`, request.ExecutionID, s.organizationID).Scan(&runID, &nodeID, &status, &tokenHash, &expiresAt); err != nil {
+FOR UPDATE`, request.ExecutionID, s.organizationID).Scan(&runID, &nodeID, &status, &tokenHash, &claimedAt, &expiresAt); err != nil {
 		return mapNotFound("execution", err)
 	}
 	if status != "running" {
@@ -531,30 +531,34 @@ WHERE id=$1`, nodeID, request.FinalState, now, nodeTerminalAt); err != nil {
 		return fmt.Errorf("update node state: %w", err)
 	}
 
-	var maxInput, maxOutput int64
-	if err := tx.QueryRow(ctx, `SELECT max_input_tokens, max_output_tokens FROM decision_graph_runs WHERE id=$1 AND organization_id=$2 FOR UPDATE`, runID, s.organizationID).Scan(&maxInput, &maxOutput); err != nil {
-		return fmt.Errorf("lock run token budget: %w", err)
+	var maxInput, maxOutput, maxWallTimeMS int64
+	if err := tx.QueryRow(ctx, `SELECT max_input_tokens, max_output_tokens, max_wall_time_ms FROM decision_graph_runs WHERE id=$1 AND organization_id=$2 FOR UPDATE`, runID, s.organizationID).Scan(&maxInput, &maxOutput, &maxWallTimeMS); err != nil {
+		return fmt.Errorf("lock run execution budget: %w", err)
 	}
-	var usedInput, usedOutput, active int64
+	var usedInput, usedOutput, usedWallTimeMS, active int64
 	if err := tx.QueryRow(ctx, `
-SELECT used_input_tokens, used_output_tokens, active_parallel_nodes
+SELECT used_input_tokens, used_output_tokens, used_wall_time_ms, active_parallel_nodes
 FROM decision_graph_budgets
 WHERE run_id=$1 AND organization_id=$2
-FOR UPDATE`, runID, s.organizationID).Scan(&usedInput, &usedOutput, &active); err != nil {
+FOR UPDATE`, runID, s.organizationID).Scan(&usedInput, &usedOutput, &usedWallTimeMS, &active); err != nil {
 		return fmt.Errorf("lock finish budget: %w", err)
 	}
 	if active <= 0 {
 		return decisiongraph.ErrInvalidBudget
 	}
-	overBudget := usedInput+request.InputTokens > maxInput || usedOutput+request.OutputTokens > maxOutput
+	elapsedMS := elapsedMilliseconds(claimedAt, now)
+	overBudget := usedInput+request.InputTokens > maxInput ||
+		usedOutput+request.OutputTokens > maxOutput ||
+		usedWallTimeMS+elapsedMS > maxWallTimeMS
 	if _, err := tx.Exec(ctx, `
 UPDATE decision_graph_budgets
 SET active_parallel_nodes=active_parallel_nodes-1,
     used_input_tokens=used_input_tokens+$3,
     used_output_tokens=used_output_tokens+$4,
+    used_wall_time_ms=used_wall_time_ms+$5,
     version=version+1,
-    updated_at=$5
-WHERE run_id=$1 AND organization_id=$2`, runID, s.organizationID, request.InputTokens, request.OutputTokens, now); err != nil {
+    updated_at=$6
+WHERE run_id=$1 AND organization_id=$2`, runID, s.organizationID, request.InputTokens, request.OutputTokens, elapsedMS, now); err != nil {
 		return fmt.Errorf("update finish budget: %w", err)
 	}
 	if overBudget {
@@ -564,6 +568,18 @@ SET status='failed', terminal_at=$3, terminal_reason_code='budget_exceeded', upd
 WHERE id=$1 AND organization_id=$2
   AND status IN ('planned','running','waiting')`, runID, s.organizationID, now); err != nil {
 			return fmt.Errorf("fail over-budget run: %w", err)
+		}
+		branchEventHash := eventDigest("branch_transitioned", runID, nodeID, decisiongraph.BranchActive, decisiongraph.BranchRejectedByBudget, "", "budget_exceeded", "decisiongraph/budget")
+		if _, err := tx.Exec(ctx, `
+INSERT INTO decision_branch_events(
+    organization_id,run_id,graph_version_id,node_id,from_branch_state,to_branch_state,
+    reason_code,actor,event_hash,created_at
+)
+SELECT organization_id,run_id,graph_version_id,id,'active','rejected_by_budget',
+       'budget_exceeded','decisiongraph/budget',$3,$4
+FROM decision_graph_nodes
+WHERE id=$1 AND run_id=$2 AND branch_state='active'`, nodeID, runID, branchEventHash, now); err != nil {
+			return fmt.Errorf("record over-budget branch event: %w", err)
 		}
 		if _, err := tx.Exec(ctx, `
 UPDATE decision_graph_nodes
@@ -576,8 +592,8 @@ WHERE id=$1 AND branch_state='active'`, nodeID, now); err != nil {
 	if _, err := tx.Exec(ctx, `
 INSERT INTO decision_budget_events (
     organization_id, run_id, event_kind, parallel_delta,
-    input_tokens_delta, output_tokens_delta, event_hash, created_at
-) VALUES ($1,$2,'execution_finished',-1,$3,$4,$5,$6)`, s.organizationID, runID, request.InputTokens, request.OutputTokens, eventHash, now); err != nil {
+    input_tokens_delta, output_tokens_delta, wall_time_delta_ms, event_hash, created_at
+) VALUES ($1,$2,'execution_finished',-1,$3,$4,$5,$6,$7)`, s.organizationID, runID, request.InputTokens, request.OutputTokens, elapsedMS, eventHash, now); err != nil {
 		return fmt.Errorf("insert finish budget event: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -836,7 +852,7 @@ func (s *Store) RecoverExpiredExecutions(ctx context.Context, limit int, now tim
 	defer tx.Rollback(ctx)
 
 	rows, err := tx.Query(ctx, `
-SELECT x.id, x.run_id, x.node_id, x.status, x.model_invocation_id, mi.status
+SELECT x.id, x.run_id, x.node_id, x.status, x.claimed_at, x.model_invocation_id, mi.status
 FROM decision_node_executions x
 LEFT JOIN model_invocations mi
   ON mi.id=x.model_invocation_id
@@ -857,13 +873,14 @@ LIMIT $3`, s.organizationID, now, limit)
 		runID            int64
 		nodeID           int64
 		status           string
+		claimedAt        time.Time
 		invocationID     *int64
 		invocationStatus *string
 	}
 	expired := make([]expiredExecution, 0, limit)
 	for rows.Next() {
 		var item expiredExecution
-		if err := rows.Scan(&item.id, &item.runID, &item.nodeID, &item.status, &item.invocationID, &item.invocationStatus); err != nil {
+		if err := rows.Scan(&item.id, &item.runID, &item.nodeID, &item.status, &item.claimedAt, &item.invocationID, &item.invocationStatus); err != nil {
 			return 0, fmt.Errorf("scan expired execution: %w", err)
 		}
 		expired = append(expired, item)
@@ -911,16 +928,35 @@ WHERE id=$1`, item.nodeID, finalState, now); err != nil {
 			return 0, fmt.Errorf("recover decision node %d: %w", item.nodeID, err)
 		}
 		parallelDelta := 0
+		wallTimeDeltaMS := int64(0)
+		overWallBudget := false
 		if item.status == "claimed" || item.status == "running" {
 			parallelDelta = -1
-			if _, err := tx.Exec(ctx, `
-UPDATE decision_graph_budgets
+			wallTimeDeltaMS = elapsedMilliseconds(item.claimedAt, now)
+			var usedWallTimeMS, maxWallTimeMS int64
+			if err := tx.QueryRow(ctx, `
+UPDATE decision_graph_budgets b
 SET active_parallel_nodes=active_parallel_nodes-1,
+    used_wall_time_ms=used_wall_time_ms+$3,
     version=version+1,
-    updated_at=$3
-WHERE run_id=$1 AND organization_id=$2
-  AND active_parallel_nodes>0`, item.runID, s.organizationID, now); err != nil {
-				return 0, fmt.Errorf("release recovered parallel budget: %w", err)
+    updated_at=$4
+FROM decision_graph_runs r
+WHERE b.run_id=$1 AND b.organization_id=$2
+  AND r.id=b.run_id AND r.organization_id=b.organization_id
+  AND b.active_parallel_nodes>0
+RETURNING b.used_wall_time_ms,r.max_wall_time_ms`, item.runID, s.organizationID, wallTimeDeltaMS, now).Scan(&usedWallTimeMS, &maxWallTimeMS); err != nil {
+				return 0, fmt.Errorf("release recovered execution budget: %w", err)
+			}
+			overWallBudget = usedWallTimeMS > maxWallTimeMS
+		}
+		if overWallBudget && finalState != decisiongraph.ExecutionAmbiguous {
+			if _, err := tx.Exec(ctx, `
+UPDATE decision_graph_runs
+SET status='failed', terminal_at=$3,
+    terminal_reason_code='budget_exceeded', updated_at=$3
+WHERE id=$1 AND organization_id=$2
+  AND status IN ('planned','running','waiting')`, item.runID, s.organizationID, now); err != nil {
+				return 0, fmt.Errorf("fail recovered over-budget run: %w", err)
 			}
 		}
 		if finalState == decisiongraph.ExecutionAmbiguous {
@@ -936,8 +972,8 @@ WHERE id=$1 AND organization_id=$2
 		eventHash := eventDigest("execution_recovered", item.runID, item.id, finalState, reasonCode)
 		if _, err := tx.Exec(ctx, `
 INSERT INTO decision_budget_events (
-    organization_id, run_id, event_kind, parallel_delta, event_hash, created_at
-) VALUES ($1,$2,'execution_finished',$3,$4,$5)`, s.organizationID, item.runID, parallelDelta, eventHash, now); err != nil {
+    organization_id, run_id, event_kind, parallel_delta, wall_time_delta_ms, event_hash, created_at
+) VALUES ($1,$2,'execution_finished',$3,$4,$5,$6)`, s.organizationID, item.runID, parallelDelta, wallTimeDeltaMS, eventHash, now); err != nil {
 			return 0, fmt.Errorf("record recovered execution event: %w", err)
 		}
 	}
@@ -1049,6 +1085,18 @@ func newClaimToken() (string, string, error) {
 func claimDigest(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
+}
+
+func elapsedMilliseconds(start, end time.Time) int64 {
+	if !end.After(start) {
+		return 0
+	}
+	duration := end.Sub(start)
+	milliseconds := duration.Milliseconds()
+	if duration%time.Millisecond != 0 {
+		milliseconds++
+	}
+	return milliseconds
 }
 
 func eventDigest(kind string, runID int64, values ...any) string {

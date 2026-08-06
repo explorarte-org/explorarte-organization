@@ -154,6 +154,7 @@ func TestDecisionGraphPostgresLedger(t *testing.T) {
 	}
 	assertClaimTokenHashed(t, ctx, platform, candidate)
 
+	clock.Set(now.Add(1500 * time.Millisecond))
 	if err := service.FinishExecution(ctx, decisiongraph.FinishExecutionRequest{
 		ExecutionID:  candidate.ExecutionID,
 		ClaimToken:   candidate.ClaimToken,
@@ -164,6 +165,13 @@ func TestDecisionGraphPostgresLedger(t *testing.T) {
 		ReasonCode:   "awaiting_process_verification",
 	}); err != nil {
 		t.Fatal(err)
+	}
+	var usedWallTimeMS int64
+	if err := platform.Pool().QueryRow(ctx, `SELECT used_wall_time_ms FROM decision_graph_budgets WHERE run_id=$1`, run.ID).Scan(&usedWallTimeMS); err != nil {
+		t.Fatal(err)
+	}
+	if usedWallTimeMS != 1500 {
+		t.Fatalf("used wall time=%dms, want 1500ms", usedWallTimeMS)
 	}
 	if err := service.RecordObservation(ctx, decisiongraph.ObservationRecord{
 		ExecutionID:         candidate.ExecutionID,
@@ -267,6 +275,33 @@ UPDATE decision_graph_nodes SET branch_state='active', updated_at=$2 WHERE id=$1
 		t.Fatalf("trace=%+v", trace)
 	}
 	assertTerminalDecisionImmutable(t, ctx, platform, run.ID)
+
+	t.Run("wall-time budget fails the run atomically", func(t *testing.T) {
+		tinyLimits := limits
+		tinyLimits.MaxWallTime = time.Millisecond
+		wallRun := createSimpleRun(t, ctx, service, taskID, attemptID, tinyLimits, "wall-budget", clock.Now())
+		claim, claimErr := service.ClaimReadyNode(ctx, decisiongraph.ClaimNodeRequest{
+			RunID: wallRun.ID, ClaimedBy: "integration/wall-budget", LeaseDuration: time.Minute,
+		})
+		if claimErr != nil {
+			t.Fatal(claimErr)
+		}
+		clock.Set(clock.Now().Add(2 * time.Millisecond))
+		finishErr := service.FinishExecution(ctx, decisiongraph.FinishExecutionRequest{
+			ExecutionID: claim.ExecutionID, ClaimToken: claim.ClaimToken,
+			FinalState: decisiongraph.ExecutionSucceeded,
+		})
+		if !errors.Is(finishErr, decisiongraph.ErrBudgetExceeded) {
+			t.Fatalf("finish error=%v, want budget exceeded", finishErr)
+		}
+		var status decisiongraph.RunStatus
+		if err := platform.Pool().QueryRow(ctx, `SELECT status FROM decision_graph_runs WHERE id=$1`, wallRun.ID).Scan(&status); err != nil {
+			t.Fatal(err)
+		}
+		if status != decisiongraph.RunFailed {
+			t.Fatalf("run status=%s, want failed", status)
+		}
+	})
 
 	t.Run("concurrent claim has one winner", func(t *testing.T) {
 		claimRun := createSimpleRun(t, ctx, service, taskID, attemptID, limits, "concurrent", now)
