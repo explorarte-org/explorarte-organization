@@ -547,9 +547,9 @@ FOR UPDATE`, runID, s.organizationID).Scan(&usedInput, &usedOutput, &usedWallTim
 		return decisiongraph.ErrInvalidBudget
 	}
 	elapsedMS := elapsedMilliseconds(claimedAt, now)
-	overBudget := usedInput+request.InputTokens > maxInput ||
-		usedOutput+request.OutputTokens > maxOutput ||
-		usedWallTimeMS+elapsedMS > maxWallTimeMS
+	overBudget := usedInput > maxInput || request.InputTokens > maxInput-usedInput ||
+		usedOutput > maxOutput || request.OutputTokens > maxOutput-usedOutput ||
+		usedWallTimeMS > maxWallTimeMS || elapsedMS > maxWallTimeMS-usedWallTimeMS
 	if _, err := tx.Exec(ctx, `
 UPDATE decision_graph_budgets
 SET active_parallel_nodes=active_parallel_nodes-1,
@@ -957,6 +957,24 @@ SET status='failed', terminal_at=$3,
 WHERE id=$1 AND organization_id=$2
   AND status IN ('planned','running','waiting')`, item.runID, s.organizationID, now); err != nil {
 				return 0, fmt.Errorf("fail recovered over-budget run: %w", err)
+			}
+			branchEventHash := eventDigest("branch_transitioned", item.runID, item.nodeID, decisiongraph.BranchActive, decisiongraph.BranchRejectedByBudget, "", "budget_exceeded", "decisiongraph/recovery", now.UTC().Format(time.RFC3339Nano))
+			if _, err := tx.Exec(ctx, `
+INSERT INTO decision_branch_events(
+    organization_id,run_id,graph_version_id,node_id,from_branch_state,to_branch_state,
+    reason_code,actor,event_hash,created_at
+)
+SELECT organization_id,run_id,graph_version_id,id,'active','rejected_by_budget',
+       'budget_exceeded','decisiongraph/recovery',$3,$4
+FROM decision_graph_nodes
+WHERE id=$1 AND run_id=$2 AND branch_state='active'`, item.nodeID, item.runID, branchEventHash, now); err != nil {
+				return 0, fmt.Errorf("record recovered over-budget branch event: %w", err)
+			}
+			if _, err := tx.Exec(ctx, `
+UPDATE decision_graph_nodes
+SET branch_state='rejected_by_budget', updated_at=$2
+WHERE id=$1 AND branch_state='active'`, item.nodeID, now); err != nil {
+				return 0, fmt.Errorf("reject recovered over-budget branch: %w", err)
 			}
 		}
 		if finalState == decisiongraph.ExecutionAmbiguous {

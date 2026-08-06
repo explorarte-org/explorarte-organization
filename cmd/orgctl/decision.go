@@ -379,7 +379,8 @@ func parseDecisionFile(args []string, stderr io.Writer, destination any) (bool, 
 		fmt.Fprintf(stderr, "decode decision request: %v\n", err)
 		return false, exitUsage
 	}
-	if decoder.More() {
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		fmt.Fprintln(stderr, "decode decision request: multiple JSON values")
 		return false, exitUsage
 	}
@@ -406,7 +407,8 @@ func decisionCommandError(stderr io.Writer, err error) int {
 	switch {
 	case errors.Is(err, decisiongraph.ErrNotFound):
 		return exitInvalid
-	case errors.Is(err, decisiongraph.ErrInvalidRun),
+	case errors.Is(err, decisiongraph.ErrIdempotencyConflict),
+		errors.Is(err, decisiongraph.ErrInvalidRun),
 		errors.Is(err, decisiongraph.ErrInvalidGraph),
 		errors.Is(err, decisiongraph.ErrInvalidTransition),
 		errors.Is(err, decisiongraph.ErrInvalidClaim),
@@ -415,7 +417,9 @@ func decisionCommandError(stderr io.Writer, err error) int {
 		errors.Is(err, decisiongraph.ErrInvalidDecision):
 		return exitInvalid
 	case errors.Is(err, decisiongraph.ErrBudgetExceeded),
+		errors.Is(err, decisiongraph.ErrRunNotMutable),
 		errors.Is(err, decisiongraph.ErrRunNotActive),
+		errors.Is(err, decisiongraph.ErrRunDeadlineExceeded),
 		errors.Is(err, decisiongraph.ErrClaimUnavailable),
 		errors.Is(err, decisiongraph.ErrStaleClaim):
 		return exitDenied

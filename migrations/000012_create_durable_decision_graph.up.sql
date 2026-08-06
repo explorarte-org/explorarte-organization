@@ -144,7 +144,6 @@ CREATE TABLE decision_branch_events (
         FOREIGN KEY (node_id, graph_version_id, run_id, organization_id)
         REFERENCES decision_graph_nodes(id, graph_version_id, run_id, organization_id)
         ON DELETE RESTRICT,
-    UNIQUE (run_id, event_hash),
     CHECK (from_branch_state <> to_branch_state),
     CHECK (reason_code IS NULL OR length(trim(reason_code)) BETWEEN 1 AND 120),
     CHECK (length(trim(actor)) BETWEEN 1 AND 200),
