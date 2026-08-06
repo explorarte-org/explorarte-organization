@@ -5,8 +5,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 MODE="${1:-all}"
 case "$MODE" in
-  all|tasks|staging|authorization|context|model|egress|dispatch|identity|worker|decision) ;;
-  *) echo "usage: $0 [all|tasks|staging|authorization|context|model|egress|dispatch|identity|worker|decision]" >&2; exit 2 ;;
+  all|tasks|staging|authorization|context|model|egress|dispatch|identity|worker|decision|trace|improvement) ;;
+  *) echo "usage: $0 [all|tasks|staging|authorization|context|model|egress|dispatch|identity|worker|decision|trace|improvement]" >&2; exit 2 ;;
 esac
 
 export ORG_POSTGRES_ADMIN_USER=explorarte_test_admin
@@ -59,6 +59,12 @@ if [[ "$MODE" == all || "$MODE" == worker ]]; then
 fi
 if [[ "$MODE" == all || "$MODE" == decision ]]; then
   timeout --foreground --signal=TERM --kill-after=30s 30m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/decisiongraph/postgres
+fi
+if [[ "$MODE" == all || "$MODE" == trace ]]; then
+  timeout --foreground --signal=TERM --kill-after=30s 15m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/decisiongraphtrace
+fi
+if [[ "$MODE" == all || "$MODE" == improvement ]]; then
+  timeout --foreground --signal=TERM --kill-after=30s 15m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/improvement/postgres
 fi
 
 if [[ "$MODE" == all ]]; then
