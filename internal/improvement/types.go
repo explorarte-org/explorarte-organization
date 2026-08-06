@@ -188,24 +188,28 @@ func (k PromotionKind) expectedTransition() (from, to CandidateState) {
 }
 
 // PromotionRequest is what an ApprovalGate evaluates to decide whether a
-// candidate may advance to the next promotion state.
+// candidate may advance to the next promotion state. CandidateHash is the
+// candidate's CanonicalHash (artifact + lineage), not just its artifact's
+// ContentHash: a promotion pins the exact (artifact, lineage) identity that
+// was authorized, and two candidates can share an artifact from different
+// lineages.
 type PromotionRequest struct {
-	CandidateID           string
-	CandidateArtifactHash string
-	FromState             CandidateState
-	ToState               CandidateState
-	Kind                  PromotionKind
-	Evaluation            evaluation.SuiteComparisonResult
-	RequestedAt           time.Time
-	RequestedBy           string
+	CandidateID   string
+	CandidateHash string
+	FromState     CandidateState
+	ToState       CandidateState
+	Kind          PromotionKind
+	Evaluation    evaluation.SuiteComparisonResult
+	RequestedAt   time.Time
+	RequestedBy   string
 }
 
 func (r PromotionRequest) Validate() error {
 	if r.CandidateID == "" {
 		return fmt.Errorf("%w: candidate id is required", ErrInvalidPromotionRequest)
 	}
-	if r.CandidateArtifactHash == "" {
-		return fmt.Errorf("%w: candidate artifact hash is required", ErrInvalidPromotionRequest)
+	if r.CandidateHash == "" {
+		return fmt.Errorf("%w: candidate hash is required", ErrInvalidPromotionRequest)
 	}
 	if !r.Kind.Valid() {
 		return fmt.Errorf("%w: invalid promotion kind %q", ErrInvalidPromotionRequest, r.Kind)
@@ -213,6 +217,12 @@ func (r PromotionRequest) Validate() error {
 	wantFrom, wantTo := r.Kind.expectedTransition()
 	if r.FromState != wantFrom || r.ToState != wantTo {
 		return fmt.Errorf("%w: kind %q requires %q -> %q, got %q -> %q", ErrInvalidPromotionRequest, r.Kind, wantFrom, wantTo, r.FromState, r.ToState)
+	}
+	if err := r.Evaluation.Validate(); err != nil {
+		return fmt.Errorf("%w: invalid evaluation: %v", ErrInvalidPromotionRequest, err)
+	}
+	if r.Evaluation.OverallVerdict != evaluation.VerdictPass {
+		return fmt.Errorf("%w: promotion requires a passing evaluation, got %q", ErrInvalidPromotionRequest, r.Evaluation.OverallVerdict)
 	}
 	if r.RequestedAt.IsZero() {
 		return fmt.Errorf("%w: requested_at is required", ErrInvalidPromotionRequest)

@@ -1,6 +1,9 @@
 package evaluation
 
-import "fmt"
+import (
+	"fmt"
+	"math"
+)
 
 // MetricDelta is the difference between a baseline and a candidate
 // measurement of the same named metric.
@@ -41,6 +44,9 @@ func CompareResults(baseline, candidate EvaluationResult) (ComparisonResult, err
 	if baseline.CaseID != candidate.CaseID {
 		return ComparisonResult{}, fmt.Errorf("%w: %s vs %s", ErrCaseMismatch, baseline.CaseID, candidate.CaseID)
 	}
+	if baseline.TraceRef != candidate.TraceRef {
+		return ComparisonResult{}, fmt.Errorf("%w: case %s: baseline and candidate reference different traces", ErrIncomparableResults, baseline.CaseID)
+	}
 
 	baselineByName := make(map[string]Metric, len(baseline.Metrics))
 	for _, m := range baseline.Metrics {
@@ -59,11 +65,15 @@ func CompareResults(baseline, candidate EvaluationResult) (ComparisonResult, err
 		if bm.Unit != cm.Unit {
 			return ComparisonResult{}, fmt.Errorf("%w: case %s: metric %s unit mismatch (%s vs %s)", ErrIncomparableResults, baseline.CaseID, cm.Name, bm.Unit, cm.Unit)
 		}
+		delta := cm.Value - bm.Value
+		if math.IsNaN(delta) || math.IsInf(delta, 0) {
+			return ComparisonResult{}, fmt.Errorf("%w: case %s: metric %s delta is not finite", ErrIncomparableResults, baseline.CaseID, cm.Name)
+		}
 		deltas = append(deltas, MetricDelta{
 			Name:           cm.Name,
 			BaselineValue:  bm.Value,
 			CandidateValue: cm.Value,
-			Delta:          cm.Value - bm.Value,
+			Delta:          delta,
 			Unit:           cm.Unit,
 		})
 	}
@@ -105,6 +115,30 @@ type SuiteComparisonResult struct {
 	WeightedPassRatio float64
 }
 
+// Validate rejects a fabricated or empty comparison: callers (in particular
+// internal/improvement) must not be able to approve or promote a candidate
+// on an evaluation that never actually ran any case.
+func (r SuiteComparisonResult) Validate() error {
+	if r.SuiteID == "" {
+		return fmt.Errorf("%w: suite comparison requires a suite id", ErrInvalidSuite)
+	}
+	if !r.OverallVerdict.Valid() {
+		return fmt.Errorf("%w: suite %s: invalid overall verdict %q", ErrInvalidResult, r.SuiteID, r.OverallVerdict)
+	}
+	if len(r.CaseResults) == 0 {
+		return fmt.Errorf("%w: suite %s has no case results", ErrEmptySuite, r.SuiteID)
+	}
+	for i, cr := range r.CaseResults {
+		if cr.CaseID == "" {
+			return fmt.Errorf("%w: suite %s: case result %d requires a case id", ErrInvalidResult, r.SuiteID, i)
+		}
+		if !cr.BaselineVerdict.Valid() || !cr.CandidateVerdict.Valid() || !cr.OverallVerdict.Valid() {
+			return fmt.Errorf("%w: suite %s: case result %d (%s) has an invalid verdict", ErrInvalidResult, r.SuiteID, i, cr.CaseID)
+		}
+	}
+	return nil
+}
+
 // CompareSuite compares every case in a suite between baseline and candidate
 // result sets. Both slices must cover exactly the same set of case IDs.
 func CompareSuite(suite EvaluationSuite, baselineResults, candidateResults []EvaluationResult) (SuiteComparisonResult, error) {
@@ -135,6 +169,12 @@ func CompareSuite(suite EvaluationSuite, baselineResults, candidateResults []Eva
 		cand, ok := candidateByCase[c.ID]
 		if !ok {
 			return SuiteComparisonResult{}, fmt.Errorf("%w: suite %s: missing candidate result for case %s", ErrIncomparableResults, suite.ID, c.ID)
+		}
+		if b.TraceRef != c.Trace {
+			return SuiteComparisonResult{}, fmt.Errorf("%w: suite %s: baseline result for case %s references a different trace than the suite pins", ErrIncomparableResults, suite.ID, c.ID)
+		}
+		if cand.TraceRef != c.Trace {
+			return SuiteComparisonResult{}, fmt.Errorf("%w: suite %s: candidate result for case %s references a different trace than the suite pins", ErrIncomparableResults, suite.ID, c.ID)
 		}
 		cr, err := CompareResults(b, cand)
 		if err != nil {

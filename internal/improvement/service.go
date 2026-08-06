@@ -52,7 +52,11 @@ func (s *Service) ProposeCandidate(id string, artifact ArtifactRef, lineage Line
 	return candidate, nil
 }
 
-// transition validates and applies an ungated state change.
+// transition validates and applies an ungated state change, then validates
+// the result. The one exception is a transition to rolled_back: RollBack
+// must set RollbackTarget after this returns, and Candidate.Validate
+// requires that field to be set whenever State is rolled_back, so RollBack
+// performs the post-mutation validation itself once the target is attached.
 func (s *Service) transition(candidate Candidate, to CandidateState) (Candidate, error) {
 	if err := candidate.Validate(); err != nil {
 		return Candidate{}, err
@@ -62,6 +66,11 @@ func (s *Service) transition(candidate Candidate, to CandidateState) (Candidate,
 	}
 	candidate.State = to
 	candidate.UpdatedAt = s.clock.Now().UTC()
+	if to != StateRolledBack {
+		if err := candidate.Validate(); err != nil {
+			return Candidate{}, err
+		}
+	}
 	return candidate, nil
 }
 
@@ -79,6 +88,9 @@ func (s *Service) BeginEvaluation(candidate Candidate) (Candidate, error) {
 // rejected or inconclusive, deterministically, from the suite comparison's
 // overall verdict.
 func (s *Service) RecordEvaluationVerdict(candidate Candidate, comparison evaluation.SuiteComparisonResult) (Candidate, error) {
+	if err := comparison.Validate(); err != nil {
+		return Candidate{}, err
+	}
 	var to CandidateState
 	switch comparison.OverallVerdict {
 	case evaluation.VerdictPass:
@@ -107,14 +119,14 @@ func (s *Service) requestPromotion(ctx context.Context, candidate Candidate, to 
 		return Candidate{}, PromotionDecision{}, fmt.Errorf("hash candidate %s: %w", candidate.ID, err)
 	}
 	request := PromotionRequest{
-		CandidateID:           candidate.ID,
-		CandidateArtifactHash: hash,
-		FromState:             candidate.State,
-		ToState:               to,
-		Kind:                  kind,
-		Evaluation:            comparison,
-		RequestedAt:           s.clock.Now().UTC(),
-		RequestedBy:           requestedBy,
+		CandidateID:   candidate.ID,
+		CandidateHash: hash,
+		FromState:     candidate.State,
+		ToState:       to,
+		Kind:          kind,
+		Evaluation:    comparison,
+		RequestedAt:   s.clock.Now().UTC(),
+		RequestedBy:   requestedBy,
 	}
 	if err := request.Validate(); err != nil {
 		return Candidate{}, PromotionDecision{}, err

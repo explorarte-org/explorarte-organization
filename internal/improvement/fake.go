@@ -39,3 +39,23 @@ func (f *FakeApprovalGate) AuthorizePromotion(ctx context.Context, request Promo
 		DecidedBy:   "fake-approver",
 	}, nil
 }
+
+// FakeClock is a settable Clock for tests. It is safe for concurrent use.
+type FakeClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func NewFakeClock(t time.Time) *FakeClock { return &FakeClock{t: t} }
+
+func (f *FakeClock) Set(t time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.t = t
+}
+
+func (f *FakeClock) Now() time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.t
+}

@@ -19,11 +19,23 @@ func NewFakeTraceSource() *FakeTraceSource {
 	return &FakeTraceSource{traces: make(map[TraceRef]EvaluationTrace)}
 }
 
-// Seed registers a trace so LoadTrace can resolve its ref.
+// Seed registers a trace so LoadTrace can resolve its ref. Payload is cloned
+// so a caller mutating its own slice after seeding, or mutating a slice
+// returned by LoadTrace, can never corrupt what other callers observe.
 func (f *FakeTraceSource) Seed(trace EvaluationTrace) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	trace.Payload = cloneBytes(trace.Payload)
 	f.traces[trace.Ref] = trace
+}
+
+func cloneBytes(b []byte) []byte {
+	if b == nil {
+		return nil
+	}
+	c := make([]byte, len(b))
+	copy(c, b)
+	return c
 }
 
 // SetError makes every subsequent LoadTrace call fail with err.
@@ -46,6 +58,7 @@ func (f *FakeTraceSource) LoadTrace(ctx context.Context, ref TraceRef) (Evaluati
 	if !ok {
 		return EvaluationTrace{}, fmt.Errorf("%w: no trace seeded for run %d", ErrInvalidTraceRef, ref.RunID)
 	}
+	trace.Payload = cloneBytes(trace.Payload)
 	return trace, nil
 }
 

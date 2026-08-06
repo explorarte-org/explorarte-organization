@@ -15,7 +15,23 @@ func validArtifact(id string) ArtifactRef {
 }
 
 func passingComparison() evaluation.SuiteComparisonResult {
-	return evaluation.SuiteComparisonResult{SuiteID: "suite-1", OverallVerdict: evaluation.VerdictPass}
+	return evaluation.SuiteComparisonResult{
+		SuiteID:        "suite-1",
+		OverallVerdict: evaluation.VerdictPass,
+		CaseResults: []evaluation.ComparisonResult{
+			{CaseID: "case-1", BaselineVerdict: evaluation.VerdictPass, CandidateVerdict: evaluation.VerdictPass, OverallVerdict: evaluation.VerdictPass},
+		},
+	}
+}
+
+func failingComparison() evaluation.SuiteComparisonResult {
+	return evaluation.SuiteComparisonResult{
+		SuiteID:        "suite-1",
+		OverallVerdict: evaluation.VerdictFail,
+		CaseResults: []evaluation.ComparisonResult{
+			{CaseID: "case-1", BaselineVerdict: evaluation.VerdictPass, CandidateVerdict: evaluation.VerdictFail, OverallVerdict: evaluation.VerdictFail},
+		},
+	}
 }
 
 func TestArtifactRefValidate(t *testing.T) {
@@ -199,13 +215,80 @@ func TestServiceRecordEvaluationVerdictBranches(t *testing.T) {
 		}
 		c, _ = svc.ValidateCandidate(c)
 		c, _ = svc.BeginEvaluation(c)
-		c, err = svc.RecordEvaluationVerdict(c, evaluation.SuiteComparisonResult{SuiteID: "s", OverallVerdict: tc.verdict})
+		comparison := evaluation.SuiteComparisonResult{
+			SuiteID:        "s",
+			OverallVerdict: tc.verdict,
+			CaseResults: []evaluation.ComparisonResult{
+				{CaseID: "case-1", BaselineVerdict: evaluation.VerdictPass, CandidateVerdict: tc.verdict, OverallVerdict: tc.verdict},
+			},
+		}
+		c, err = svc.RecordEvaluationVerdict(c, comparison)
 		if err != nil {
 			t.Fatalf("RecordEvaluationVerdict(%s): %v", tc.verdict, err)
 		}
 		if c.State != tc.want {
 			t.Fatalf("verdict %s: expected state %s, got %s", tc.verdict, tc.want, c.State)
 		}
+	}
+}
+
+// TestServiceRecordEvaluationVerdictRejectsFabricatedComparison proves an
+// empty or otherwise malformed SuiteComparisonResult (no case results) can
+// never approve a candidate: the evidence backing "approved" must actually
+// come from cases that ran.
+func TestServiceRecordEvaluationVerdictRejectsFabricatedComparison(t *testing.T) {
+	gate := NewFakeApprovalGate()
+	svc := newService(t, gate)
+	c, _ := svc.ProposeCandidate("cand-fab", validArtifact("art-fab"), Lineage{})
+	c, _ = svc.ValidateCandidate(c)
+	c, _ = svc.BeginEvaluation(c)
+
+	fabricated := evaluation.SuiteComparisonResult{SuiteID: "suite-1", OverallVerdict: evaluation.VerdictPass}
+	if _, err := svc.RecordEvaluationVerdict(c, fabricated); err == nil {
+		t.Fatal("expected an error for a comparison with no case results")
+	}
+}
+
+// TestServicePromoteToCanaryRejectsFailingEvaluation proves a promotion
+// cannot be authorized on evidence that never actually passed, independent
+// of what an ApprovalGate would decide: PromotionRequest.Validate rejects it
+// before the gate is even consulted.
+func TestServicePromoteToCanaryRejectsFailingEvaluation(t *testing.T) {
+	ctx := context.Background()
+	gate := NewFakeApprovalGate()
+	svc := newService(t, gate)
+	c, _ := svc.ProposeCandidate("cand-fail-eval", validArtifact("art-fail-eval"), Lineage{})
+	c, _ = svc.ValidateCandidate(c)
+	c, _ = svc.BeginEvaluation(c)
+	c, err := svc.RecordEvaluationVerdict(c, passingComparison())
+	if err != nil {
+		t.Fatalf("RecordEvaluationVerdict: %v", err)
+	}
+
+	if _, _, err := svc.PromoteToCanary(ctx, c, "owner", failingComparison()); !errors.Is(err, ErrInvalidPromotionRequest) {
+		t.Fatalf("expected ErrInvalidPromotionRequest for a failing evaluation, got %v", err)
+	}
+}
+
+// TestServiceTransitionRevalidatesAfterMutation proves that if the injected
+// Clock produces a timestamp that violates Candidate's own invariant
+// (updated_at before proposed_at), transition() surfaces that as an error
+// instead of silently returning an invalid Candidate.
+func TestServiceTransitionRevalidatesAfterMutation(t *testing.T) {
+	clock := NewFakeClock(time.Unix(1_700_000_000, 0).UTC())
+	gate := NewFakeApprovalGate()
+	svc, err := NewService(gate, clock)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	c, err := svc.ProposeCandidate("cand-clock", validArtifact("art-clock"), Lineage{})
+	if err != nil {
+		t.Fatalf("ProposeCandidate: %v", err)
+	}
+
+	clock.Set(c.ProposedAt.Add(-time.Hour)) // clock now moves backwards
+	if _, err := svc.ValidateCandidate(c); err == nil {
+		t.Fatal("expected an error when the clock produces updated_at before proposed_at")
 	}
 }
 

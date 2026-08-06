@@ -29,8 +29,11 @@ func NewService(traces TraceSource, evaluator Evaluator, clock Clock) (*Service,
 }
 
 // EvaluateCase loads the trace for one case and scores it for the given
-// role, returning a fully validated result.
-func (s *Service) EvaluateCase(ctx context.Context, suite EvaluationSuite, c EvaluationCase, candidateID, candidateArtifactHash string, role EvaluationRole) (EvaluationResult, error) {
+// role, returning a fully validated result that is verified to actually be
+// about the requested case, role and trace: an Evaluator is untrusted input,
+// and a mismatched result would otherwise corrupt downstream comparisons
+// that index by CaseID.
+func (s *Service) EvaluateCase(ctx context.Context, suite EvaluationSuite, c EvaluationCase, subjectID, subjectArtifactHash string, role EvaluationRole) (EvaluationResult, error) {
 	if err := suite.Validate(); err != nil {
 		return EvaluationResult{}, err
 	}
@@ -42,12 +45,12 @@ func (s *Service) EvaluateCase(ctx context.Context, suite EvaluationSuite, c Eva
 		return EvaluationResult{}, fmt.Errorf("load evaluation trace for case %s: %w", c.ID, err)
 	}
 	request := EvaluationRequest{
-		Suite:                 suite,
-		Case:                  c,
-		Trace:                 trace,
-		CandidateID:           candidateID,
-		CandidateArtifactHash: candidateArtifactHash,
-		Role:                  role,
+		Suite:               suite,
+		Case:                c,
+		Trace:               trace,
+		SubjectID:           subjectID,
+		SubjectArtifactHash: subjectArtifactHash,
+		Role:                role,
 	}
 	if err := request.Validate(); err != nil {
 		return EvaluationResult{}, err
@@ -55,6 +58,10 @@ func (s *Service) EvaluateCase(ctx context.Context, suite EvaluationSuite, c Eva
 	result, err := s.evaluator.Evaluate(ctx, request)
 	if err != nil {
 		return EvaluationResult{}, fmt.Errorf("evaluate case %s: %w", c.ID, err)
+	}
+	if result.CaseID != c.ID || result.Role != role || result.TraceRef != trace.Ref {
+		return EvaluationResult{}, fmt.Errorf("%w: evaluator returned a result for case %q/role %q/trace %d, requested case %q/role %q/trace %d",
+			ErrInvalidResult, result.CaseID, result.Role, result.TraceRef.RunID, c.ID, role, trace.Ref.RunID)
 	}
 	if result.EvaluatedAt.IsZero() {
 		result.EvaluatedAt = s.clock.Now().UTC()
@@ -67,13 +74,13 @@ func (s *Service) EvaluateCase(ctx context.Context, suite EvaluationSuite, c Eva
 
 // EvaluateSuite runs every case in the suite for the given role, in order,
 // stopping at the first error.
-func (s *Service) EvaluateSuite(ctx context.Context, suite EvaluationSuite, candidateID, candidateArtifactHash string, role EvaluationRole) ([]EvaluationResult, error) {
+func (s *Service) EvaluateSuite(ctx context.Context, suite EvaluationSuite, subjectID, subjectArtifactHash string, role EvaluationRole) ([]EvaluationResult, error) {
 	if err := suite.Validate(); err != nil {
 		return nil, err
 	}
 	results := make([]EvaluationResult, 0, len(suite.Cases))
 	for _, c := range suite.Cases {
-		result, err := s.EvaluateCase(ctx, suite, c, candidateID, candidateArtifactHash, role)
+		result, err := s.EvaluateCase(ctx, suite, c, subjectID, subjectArtifactHash, role)
 		if err != nil {
 			return nil, err
 		}

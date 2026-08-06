@@ -153,14 +153,15 @@ func (r EvaluationRole) Valid() bool {
 }
 
 // EvaluationRequest is what an Evaluator needs to score a single case for
-// either the baseline or the candidate.
+// either the baseline or the candidate. SubjectID/SubjectArtifactHash name
+// whichever side is being scored (baseline or candidate); see EvaluationRole.
 type EvaluationRequest struct {
-	Suite                 EvaluationSuite
-	Case                  EvaluationCase
-	Trace                 EvaluationTrace
-	CandidateID           string
-	CandidateArtifactHash string
-	Role                  EvaluationRole
+	Suite               EvaluationSuite
+	Case                EvaluationCase
+	Trace               EvaluationTrace
+	SubjectID           string
+	SubjectArtifactHash string
+	Role                EvaluationRole
 }
 
 func (r EvaluationRequest) Validate() error {
@@ -170,7 +171,7 @@ func (r EvaluationRequest) Validate() error {
 	if err := r.Case.Validate(); err != nil {
 		return err
 	}
-	if member, ok := r.Suite.caseByID(r.Case.ID); !ok || member.Trace != r.Case.Trace {
+	if member, ok := r.Suite.caseByID(r.Case.ID); !ok || member != r.Case {
 		return fmt.Errorf("%w: case %s is not a member of suite %s", ErrInvalidRequest, r.Case.ID, r.Suite.ID)
 	}
 	if err := r.Trace.Validate(); err != nil {
@@ -179,11 +180,11 @@ func (r EvaluationRequest) Validate() error {
 	if r.Trace.Ref != r.Case.Trace {
 		return fmt.Errorf("%w: loaded trace does not match case %s", ErrInvalidRequest, r.Case.ID)
 	}
-	if r.CandidateID == "" {
-		return fmt.Errorf("%w: candidate id is required", ErrInvalidRequest)
+	if r.SubjectID == "" {
+		return fmt.Errorf("%w: subject id is required", ErrInvalidRequest)
 	}
-	if r.CandidateArtifactHash == "" {
-		return fmt.Errorf("%w: candidate artifact hash is required", ErrInvalidRequest)
+	if r.SubjectArtifactHash == "" {
+		return fmt.Errorf("%w: subject artifact hash is required", ErrInvalidRequest)
 	}
 	if !r.Role.Valid() {
 		return fmt.Errorf("%w: invalid role %q", ErrInvalidRequest, r.Role)

@@ -3,6 +3,7 @@ package evaluation
 import (
 	"context"
 	"errors"
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -91,7 +92,7 @@ func TestEvaluationRequestValidateCaseNotInSuite(t *testing.T) {
 	foreign := EvaluationCase{ID: "not-a-member", Trace: otherRef, Weight: 1, ExpectedOutcome: "x"}
 	req := EvaluationRequest{
 		Suite: suite, Case: foreign, Trace: trace,
-		CandidateID: "c1", CandidateArtifactHash: "h1", Role: RoleCandidate,
+		SubjectID: "c1", SubjectArtifactHash: "h1", Role: RoleCandidate,
 	}
 	if err := req.Validate(); !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("expected ErrInvalidRequest, got %v", err)
@@ -104,10 +105,28 @@ func TestEvaluationRequestValidateTraceMismatch(t *testing.T) {
 	_, wrongTrace := mustTrace(2, []byte("different"))
 	req := EvaluationRequest{
 		Suite: suite, Case: suite.Cases[0], Trace: wrongTrace,
-		CandidateID: "c1", CandidateArtifactHash: "h1", Role: RoleCandidate,
+		SubjectID: "c1", SubjectArtifactHash: "h1", Role: RoleCandidate,
 	}
 	if err := req.Validate(); !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("expected ErrInvalidRequest, got %v", err)
+	}
+}
+
+// TestEvaluationRequestValidateCaseFieldMismatch proves a request cannot
+// smuggle in a case that shares an ID and Trace with the suite's real case
+// but differs in another field (here, ExpectedOutcome): membership requires
+// full struct equality, not just a matching ID and trace.
+func TestEvaluationRequestValidateCaseFieldMismatch(t *testing.T) {
+	ref, trace := mustTrace(1, []byte("payload"))
+	suite := mustSuite(t, ref)
+	tampered := suite.Cases[0]
+	tampered.ExpectedOutcome = "a different expectation than the suite's"
+	req := EvaluationRequest{
+		Suite: suite, Case: tampered, Trace: trace,
+		SubjectID: "c1", SubjectArtifactHash: "h1", Role: RoleCandidate,
+	}
+	if err := req.Validate(); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("expected ErrInvalidRequest for a tampered case, got %v", err)
 	}
 }
 
@@ -128,6 +147,41 @@ func TestCompareResultsRoleAndCaseMismatch(t *testing.T) {
 	cand2.CaseID = "case-2"
 	if _, err := CompareResults(base, cand2); !errors.Is(err, ErrCaseMismatch) {
 		t.Fatalf("expected ErrCaseMismatch, got %v", err)
+	}
+}
+
+// TestCompareResultsTraceRefMismatch proves two results that share a CaseID
+// but were evaluated against different traces are rejected, even though
+// nothing else about them looks wrong.
+func TestCompareResultsTraceRefMismatch(t *testing.T) {
+	ref1, _ := mustTrace(1, []byte("payload-1"))
+	ref2, _ := mustTrace(2, []byte("payload-2"))
+	base := EvaluationResult{
+		CaseID: "case-1", Role: RoleBaseline, TraceRef: ref1,
+		Metrics: []Metric{{Name: "m", Value: 1, Unit: "u"}}, Verdict: VerdictPass, EvaluatedAt: time.Now().UTC(),
+	}
+	cand := base
+	cand.Role = RoleCandidate
+	cand.TraceRef = ref2
+	if _, err := CompareResults(base, cand); !errors.Is(err, ErrIncomparableResults) {
+		t.Fatalf("expected ErrIncomparableResults for trace ref mismatch, got %v", err)
+	}
+}
+
+// TestCompareResultsNonFiniteDelta proves that two individually finite
+// metric values whose subtraction overflows to +/-Inf are rejected instead
+// of silently producing a non-finite MetricDelta.
+func TestCompareResultsNonFiniteDelta(t *testing.T) {
+	ref, _ := mustTrace(1, []byte("payload"))
+	base := EvaluationResult{
+		CaseID: "case-1", Role: RoleBaseline, TraceRef: ref,
+		Metrics: []Metric{{Name: "m", Value: -math.MaxFloat64, Unit: "u"}}, Verdict: VerdictPass, EvaluatedAt: time.Now().UTC(),
+	}
+	cand := base
+	cand.Role = RoleCandidate
+	cand.Metrics = []Metric{{Name: "m", Value: math.MaxFloat64, Unit: "u"}}
+	if _, err := CompareResults(base, cand); !errors.Is(err, ErrIncomparableResults) {
+		t.Fatalf("expected ErrIncomparableResults for a non-finite delta, got %v", err)
 	}
 }
 
@@ -223,11 +277,72 @@ func TestCompareSuiteWeightedPassRatio(t *testing.T) {
 	}
 }
 
+// TestCompareSuiteWrongPinnedTrace proves a result that names the right
+// CaseID but was actually evaluated against a trace other than the one the
+// suite's case pins is rejected, even though CompareResults alone (which
+// only sees the two results, not the suite) couldn't tell.
+func TestCompareSuiteWrongPinnedTrace(t *testing.T) {
+	ref, _ := mustTrace(1, []byte("payload"))
+	suite := mustSuite(t, ref)
+	wrongRef, _ := mustTrace(2, []byte("other"))
+	build := func(role EvaluationRole, traceRef TraceRef) EvaluationResult {
+		return EvaluationResult{
+			CaseID: suite.Cases[0].ID, Role: role, TraceRef: traceRef,
+			Metrics: []Metric{{Name: "m", Value: 1, Unit: "u"}}, Verdict: VerdictPass, EvaluatedAt: time.Now().UTC(),
+		}
+	}
+	baseline := []EvaluationResult{build(RoleBaseline, wrongRef)}
+	candidate := []EvaluationResult{build(RoleCandidate, wrongRef)}
+	if _, err := CompareSuite(suite, baseline, candidate); !errors.Is(err, ErrIncomparableResults) {
+		t.Fatalf("expected ErrIncomparableResults for a result pinned to the wrong trace, got %v", err)
+	}
+}
+
+func TestSuiteComparisonResultValidateRejectsEmpty(t *testing.T) {
+	empty := SuiteComparisonResult{SuiteID: "suite-1", OverallVerdict: VerdictPass}
+	if err := empty.Validate(); err == nil {
+		t.Fatal("expected an empty comparison (no case results) to be rejected")
+	}
+	withCase := empty
+	withCase.CaseResults = []ComparisonResult{
+		{CaseID: "case-1", BaselineVerdict: VerdictPass, CandidateVerdict: VerdictPass, OverallVerdict: VerdictPass},
+	}
+	if err := withCase.Validate(); err != nil {
+		t.Fatalf("expected a well-formed comparison to be valid, got %v", err)
+	}
+}
+
 func TestCompareSuiteMissingResult(t *testing.T) {
 	ref, _ := mustTrace(1, []byte("payload"))
 	suite := mustSuite(t, ref)
 	if _, err := CompareSuite(suite, nil, nil); !errors.Is(err, ErrIncomparableResults) {
 		t.Fatalf("expected ErrIncomparableResults, got %v", err)
+	}
+}
+
+// TestServiceEvaluateCaseRejectsMismatchedEvaluatorResult proves EvaluateCase
+// does not trust an Evaluator's returned CaseID/Role/TraceRef: a buggy or
+// malicious Evaluator returning a result for the wrong case must not slip
+// through, since downstream comparisons index results by CaseID.
+func TestServiceEvaluateCaseRejectsMismatchedEvaluatorResult(t *testing.T) {
+	ctx := context.Background()
+	ref, trace := mustTrace(1, []byte("payload"))
+	suite := mustSuite(t, ref)
+	source := NewFakeTraceSource()
+	source.Seed(trace)
+	evaluator := NewFakeEvaluator()
+	evaluator.SetScoreFunc(func(req EvaluationRequest) (EvaluationResult, error) {
+		return EvaluationResult{
+			CaseID: "some-other-case", Role: req.Role, TraceRef: req.Trace.Ref,
+			Metrics: []Metric{{Name: "m", Value: 1, Unit: "u"}}, Verdict: VerdictPass, EvaluatedAt: time.Now().UTC(),
+		}, nil
+	})
+	service, err := NewService(source, evaluator, nil)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if _, err := service.EvaluateCase(ctx, suite, suite.Cases[0], "c1", "h1", RoleCandidate); !errors.Is(err, ErrInvalidResult) {
+		t.Fatalf("expected ErrInvalidResult for a mismatched evaluator response, got %v", err)
 	}
 }
 
