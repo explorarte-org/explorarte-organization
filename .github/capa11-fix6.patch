@@ -1,0 +1,38 @@
+diff --git a/internal/modelruntime/postgres/integration_test.go b/internal/modelruntime/postgres/integration_test.go
+index 35ab5bd..e53f5bc 100644
+--- a/internal/modelruntime/postgres/integration_test.go
++++ b/internal/modelruntime/postgres/integration_test.go
+@@ -336,7 +336,7 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
+ 
+ 	t.Run("legacy unpinned invocation blocks before render", func(t *testing.T) {
+ 		created := createModelInvocation(t, ctx, invocations, validInvocationCommand(taskRef, snapshotRef, "ingenieria_ia/code-runner", "legacy-unpinned-dispatch"))
+-		if _, updateErr := platform.Pool().Exec(ctx, `UPDATE model_invocations SET model_egress_policy_version_id=NULL,model_egress_policy_hash=NULL WHERE id=$1`, created.ID); updateErr != nil {
++		if _, updateErr := platform.Pool().Exec(ctx, `UPDATE model_invocations SET model_egress_policy_version_id=NULL,model_egress_policy_hash=NULL,execution_identity_policy_version_id=NULL,execution_identity_policy_hash=NULL WHERE id=$1`, created.ID); updateErr != nil {
+ 			t.Fatal(updateErr)
+ 		}
+ 		provider := &countingAdapter{}
+@@ -354,7 +354,7 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
+ 
+ 	t.Run("dispatcher-unpinned legacy invocation fails before claim mutation and never renders", func(t *testing.T) {
+ 		created := createModelInvocation(t, ctx, invocations, validInvocationCommand(taskRef, snapshotRef, "ingenieria_ia/code-runner", "dispatcher-unpinned-dispatch"))
+-		if _, updateErr := platform.Pool().Exec(ctx, `UPDATE model_invocations SET dispatcher_assignment_id=NULL,execution_principal_id=NULL WHERE id=$1`, created.ID); updateErr != nil {
++		if _, updateErr := platform.Pool().Exec(ctx, `UPDATE model_invocations SET dispatcher_assignment_id=NULL,execution_principal_id=NULL,execution_identity_policy_version_id=NULL,execution_identity_policy_hash=NULL WHERE id=$1`, created.ID); updateErr != nil {
+ 			t.Fatal(updateErr)
+ 		}
+ 		provider := &countingAdapter{}
+diff --git a/internal/modelruntime/service_test.go b/internal/modelruntime/service_test.go
+index dbe522e..a421ad1 100644
+--- a/internal/modelruntime/service_test.go
++++ b/internal/modelruntime/service_test.go
+@@ -500,6 +500,11 @@ func TestDispatchLegacyUnpinnedDoesNotRenderOrCallAdapter(t *testing.T) {
+ 	store, catalog, task, contexts, assignments, principals, now := serviceFixture()
+ 	store.invocation.ModelEgressPolicyVersionID = nil
+ 	store.invocation.ModelEgressPolicyHash = ""
++	// A genuine pre-Branch-11 row has no execution-identity policy pin. Keep
++	// the fixture internally consistent so the legacy terminalization path does
++	// not exercise the authenticated-claim boundary.
++	store.invocation.ExecutionIdentityPolicyVersionID = nil
++	store.invocation.ExecutionIdentityPolicyHash = ""
+ 	store.claimed.Invocation = store.invocation
+ 	providerAdapter := &deterministicAdapter{}
+ 	cfg := RuntimeConfig{Enabled: true, CommandTimeout: time.Minute, GlobalConcurrency: 1, MaxResponseBytes: 1024, MaxToolIntents: 2, ClaimTTL: time.Minute, ReconcileBatchSize: 10, OutboxMaxAttempts: 10, ExecutionPrincipalKey: "test-principal", ExecutionIdentityEnabled: true, ExecutionIdentityKeyFile: "test://identity"}
