@@ -37,7 +37,8 @@ func New(store *platformpostgres.Store, organizationID string) (*Store, error) {
 // with no pinned principal at all — those are reconciled separately (see
 // orgctl model invocation reconcile), not picked up by a persistent worker.
 func (s *Store) ListEligible(ctx context.Context, principalKey string, limit int) ([]int64, error) {
-	if strings.TrimSpace(principalKey) == "" {
+	principalKey = strings.TrimSpace(principalKey)
+	if principalKey == "" {
 		return nil, fmt.Errorf("cellworker: principal key is required")
 	}
 	if limit < 1 {

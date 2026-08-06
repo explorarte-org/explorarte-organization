@@ -54,7 +54,7 @@ func runModelWorker(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "open worker work source: %v\n", err)
 		return exitInternal
 	}
-	worker, err := cellworker.New(workerCfg, workSource, runtime.Dispatch, nil)
+	worker, err := cellworker.New(workerCfg, workSource, runtime.Dispatch, nil, stderrObserver{stderr})
 	if err != nil {
 		fmt.Fprintf(stderr, "construct worker: %v\n", err)
 		return exitUsage
@@ -70,6 +70,19 @@ func runModelWorker(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintln(stdout, "model worker stopped")
 	return exitOK
+}
+
+// stderrObserver is the production cellworker.Observer: it makes list and
+// dispatch failures visible on the process's own stderr, since durable
+// state alone gives an operator watching this process no signal.
+type stderrObserver struct{ w io.Writer }
+
+func (o stderrObserver) OnListError(err error) {
+	fmt.Fprintf(o.w, "model worker: list eligible invocations failed: %v\n", err)
+}
+
+func (o stderrObserver) OnDispatchError(invocationID int64, err error) {
+	fmt.Fprintf(o.w, "model worker: dispatch invocation %d failed: %v\n", invocationID, err)
 }
 
 func openModelWorkerRuntime(stderr io.Writer) (config.Config, *postgres.Store, *modelbootstrap.Runtime, func(), int) {

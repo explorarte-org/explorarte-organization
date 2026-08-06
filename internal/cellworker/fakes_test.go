@@ -70,6 +70,10 @@ func (f *fakeDispatcher) Dispatch(ctx context.Context, invocationID int64) (mode
 		select {
 		case <-f.gate:
 		case <-ctx.Done():
+			// A real Dispatcher must not report a cancelled call as a
+			// completed dispatch: return promptly with ctx's error instead
+			// of falling through to record success below.
+			return modelruntime.DispatchResult{}, ctx.Err()
 		}
 	}
 
@@ -114,4 +118,40 @@ func (f *fakeClock) sleepCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.sleeps)
+}
+
+// fakeObserver records every OnListError/OnDispatchError call so tests can
+// assert that failures are surfaced rather than silently discarded.
+type fakeObserver struct {
+	mu             sync.Mutex
+	listErrors     []error
+	dispatchErrors map[int64][]error
+}
+
+func newFakeObserver() *fakeObserver {
+	return &fakeObserver{dispatchErrors: make(map[int64][]error)}
+}
+
+func (f *fakeObserver) OnListError(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.listErrors = append(f.listErrors, err)
+}
+
+func (f *fakeObserver) OnDispatchError(invocationID int64, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.dispatchErrors[invocationID] = append(f.dispatchErrors[invocationID], err)
+}
+
+func (f *fakeObserver) listErrorCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.listErrors)
+}
+
+func (f *fakeObserver) dispatchErrorCount(invocationID int64) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.dispatchErrors[invocationID])
 }
