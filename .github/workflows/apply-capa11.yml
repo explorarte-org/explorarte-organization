@@ -44,7 +44,10 @@ jobs:
           echo "6eb02d1d1a055643278de181e59d96c4e85fdd40f5de07e87d9bebb52ced2e23  .github/capa11-fix.patch" | sha256sum --check -
           git apply --check .github/capa11-fix.patch
           git apply .github/capa11-fix.patch
-          rm -rf .github/capa11-patch .github/capa11-fix.patch .github/workflows/apply-capa11.yml
+          echo "c6fbd8db4cd516bb0b8a51203a2ffff209de22afc47aa79162ba4c2ed9f77a6a  .github/capa11-fix2.patch" | sha256sum --check -
+          git apply --check .github/capa11-fix2.patch
+          git apply .github/capa11-fix2.patch
+          rm -rf .github/capa11-patch .github/capa11-fix.patch .github/capa11-fix2.patch .github/workflows/apply-capa11.yml
           git diff --check
 
       - name: Download and verify modules
