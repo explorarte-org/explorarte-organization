@@ -25,4 +25,5 @@ var (
 	ErrStaleClaim          = errors.New("stale decision node claim")
 	ErrNotFound            = errors.New("decision graph record not found")
 	ErrIdempotencyConflict = errors.New("decision run idempotency conflict")
+	ErrConflict            = errors.New("decision graph optimistic concurrency conflict")
 )
