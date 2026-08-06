@@ -1,0 +1,70 @@
+diff --git a/scripts/check-authorization-fitness.sh b/scripts/check-authorization-fitness.sh
+index c31fa3d..1d335db 100755
+--- a/scripts/check-authorization-fitness.sh
++++ b/scripts/check-authorization-fitness.sh
+@@ -71,7 +71,7 @@ mapfile -t canonical_changes < <({
+ } | sort -u)
+ for path in "${canonical_changes[@]}"; do
+   case "$path" in
+-    docs/canonical/capability-matrix.yaml|docs/canonical/model-egress-policy.yaml) ;;
++    docs/canonical/capability-matrix.yaml|docs/canonical/model-egress-policy.yaml|docs/canonical/model-execution-identity-policy.yaml) ;;
+     *) fail "unauthorized canonical change: $path" ;;
+   esac
+ done
+diff --git a/scripts/check-context-fitness.sh b/scripts/check-context-fitness.sh
+index a2910d2..7611bae 100755
+--- a/scripts/check-context-fitness.sh
++++ b/scripts/check-context-fitness.sh
+@@ -44,7 +44,7 @@ if git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+   } | sort -u)
+   for path in "${canonical_changes[@]}"; do
+     case "$path" in
+-      docs/canonical/capability-matrix.yaml|docs/canonical/model-egress-policy.yaml) ;;
++      docs/canonical/capability-matrix.yaml|docs/canonical/model-egress-policy.yaml|docs/canonical/model-execution-identity-policy.yaml) ;;
+       *) fail "unauthorized canonical change: $path" ;;
+     esac
+   done
+diff --git a/scripts/check-staging-fitness.sh b/scripts/check-staging-fitness.sh
+index bd485b9..b0000b7 100755
+--- a/scripts/check-staging-fitness.sh
++++ b/scripts/check-staging-fitness.sh
+@@ -3,6 +3,8 @@ set -euo pipefail
+ 
+ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ cd "$ROOT"
++
++fail() { echo "ERROR: $*" >&2; exit 1; }
+ BASE_COMMIT="${STAGING_ENGINE_BASE_COMMIT:-de5ac792cb67489b9f35e3b52cbec9ca8f63c7c7}"
+ 
+ if git cat-file -e "${BASE_COMMIT}^{commit}" 2>/dev/null; then
+@@ -12,7 +14,7 @@ if git cat-file -e "${BASE_COMMIT}^{commit}" 2>/dev/null; then
+   } | sort -u)
+   for path in "${canonical_changes[@]}"; do
+     case "$path" in
+-      docs/canonical/capability-matrix.yaml|docs/canonical/model-egress-policy.yaml) ;;
++      docs/canonical/capability-matrix.yaml|docs/canonical/model-egress-policy.yaml|docs/canonical/model-execution-identity-policy.yaml) ;;
+       *) fail "unauthorized canonical change: $path" ;;
+     esac
+   done
+diff --git a/scripts/check-task-fitness.sh b/scripts/check-task-fitness.sh
+index 2d37e5c..01302ea 100755
+--- a/scripts/check-task-fitness.sh
++++ b/scripts/check-task-fitness.sh
+@@ -8,6 +8,8 @@ command -v rg >/dev/null 2>&1 || {
+ 
+ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ cd "$ROOT"
++
++fail() { echo "ERROR: $*" >&2; exit 1; }
+ BASE_COMMIT="${TASK_ENGINE_BASE_COMMIT:-a199d1eea1f4f28d1b9f346e9ccbd670d5e8b69a}"
+ 
+ if git cat-file -e "${BASE_COMMIT}^{commit}" 2>/dev/null; then
+@@ -17,7 +19,7 @@ if git cat-file -e "${BASE_COMMIT}^{commit}" 2>/dev/null; then
+   } | sort -u)
+   for path in "${canonical_changes[@]}"; do
+     case "$path" in
+-      docs/canonical/capability-matrix.yaml|docs/canonical/model-egress-policy.yaml) ;;
++      docs/canonical/capability-matrix.yaml|docs/canonical/model-egress-policy.yaml|docs/canonical/model-execution-identity-policy.yaml) ;;
+       *) fail "unauthorized canonical change: $path" ;;
+     esac
+   done
