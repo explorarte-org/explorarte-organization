@@ -45,6 +45,29 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 		t.Fatalf("ping PostgreSQL: %v", err)
 	}
 	for _, statement := range []string{
+		`DROP TRIGGER IF EXISTS decision_budget_events_immutable ON decision_budget_events`,
+		`DROP TRIGGER IF EXISTS decision_records_immutable ON decision_records`,
+		`DROP TRIGGER IF EXISTS decision_verifications_immutable ON decision_verifications`,
+		`DROP TRIGGER IF EXISTS decision_observations_immutable ON decision_observations`,
+		`DROP TRIGGER IF EXISTS decision_graph_edges_immutable ON decision_graph_edges`,
+		`DROP TRIGGER IF EXISTS decision_graph_versions_immutable ON decision_graph_versions`,
+		`DROP TRIGGER IF EXISTS decision_graph_runs_update_guard ON decision_graph_runs`,
+		`DROP TRIGGER IF EXISTS decision_graph_nodes_update_guard ON decision_graph_nodes`,
+		`DROP TRIGGER IF EXISTS decision_graph_edges_cycle_guard ON decision_graph_edges`,
+		`DROP TABLE IF EXISTS decision_budget_events`,
+		`DROP TABLE IF EXISTS decision_records`,
+		`DROP TABLE IF EXISTS decision_verifications`,
+		`DROP TABLE IF EXISTS decision_observations`,
+		`DROP TABLE IF EXISTS decision_node_executions`,
+		`DROP TABLE IF EXISTS decision_graph_budgets`,
+		`DROP TABLE IF EXISTS decision_graph_edges`,
+		`DROP TABLE IF EXISTS decision_graph_nodes`,
+		`DROP TABLE IF EXISTS decision_graph_versions`,
+		`DROP TABLE IF EXISTS decision_graph_runs`,
+		`DROP FUNCTION IF EXISTS decision_graph_immutable_row()`,
+		`DROP FUNCTION IF EXISTS decision_graph_guard_run_update()`,
+		`DROP FUNCTION IF EXISTS decision_graph_guard_node_update()`,
+		`DROP FUNCTION IF EXISTS decision_graph_reject_edge_cycle()`,
 		`DROP TABLE IF EXISTS model_provider_outcomes`,
 		`DROP TABLE IF EXISTS model_provider_requests`,
 		`DROP FUNCTION IF EXISTS reject_model_provider_outcome_mutation()`,
@@ -120,14 +143,14 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("apply migrations: %v", err)
 	}
-	if len(result.Applied) != 11 || result.Current != 11 {
+	if len(result.Applied) != 12 || result.Current != 12 {
 		t.Fatalf("unexpected migration result: %+v", result)
 	}
 	status, err := runner.Status(ctx)
 	if err != nil {
 		t.Fatalf("migration status: %v", err)
 	}
-	if !status.Ready || status.Pending != 0 || status.Applied != 11 {
+	if !status.Ready || status.Pending != 0 || status.Applied != 12 {
 		t.Fatalf("unexpected migration status: %+v", status)
 	}
 	if err := store.UnitOfWork().WithinTransaction(ctx, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
@@ -157,7 +180,7 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("idempotent migration run: %v", err)
 	}
-	if len(second.Applied) != 0 || second.Current != 11 {
+	if len(second.Applied) != 0 || second.Current != 12 {
 		t.Fatalf("second migration result = %+v, want no changes", second)
 	}
 
@@ -165,19 +188,19 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load migrations for down test: %v", err)
 	}
-	if len(loaded) != 11 {
-		t.Fatalf("loaded migrations = %d, want 11", len(loaded))
+	if len(loaded) != 12 {
+		t.Fatalf("loaded migrations = %d, want 12", len(loaded))
 	}
 	if err := store.UnitOfWork().WithinTransaction(ctx, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, loaded[10].DownSQL); err != nil {
+		if _, err := tx.Exec(ctx, loaded[11].DownSQL); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, `DELETE FROM schema_migrations WHERE version = 11`)
+		_, err := tx.Exec(ctx, `DELETE FROM schema_migrations WHERE version = 12`)
 		return err
 	}); err != nil {
-		t.Fatalf("down migration 000011: %v", err)
+		t.Fatalf("down migration 000012: %v", err)
 	}
-	for _, table := range []string{"model_provider_requests", "model_provider_outcomes"} {
+	for _, table := range []string{"decision_graph_runs", "decision_graph_versions", "decision_graph_nodes", "decision_node_executions", "decision_records"} {
 		var relation *string
 		if err := store.Pool().QueryRow(ctx, `SELECT to_regclass('public.' || $1)::text`, table).Scan(&relation); err != nil {
 			t.Fatalf("check down migration table %s: %v", table, err)
@@ -188,9 +211,9 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	}
 	restored, err := runner.Up(ctx)
 	if err != nil {
-		t.Fatalf("restore migration 000011: %v", err)
+		t.Fatalf("restore migration 000012: %v", err)
 	}
-	if len(restored.Applied) != 1 || restored.Current != 11 {
-		t.Fatalf("restore migration result = %+v, want only 000011", restored)
+	if len(restored.Applied) != 1 || restored.Current != 12 {
+		t.Fatalf("restore migration result = %+v, want only 000012", restored)
 	}
 }
