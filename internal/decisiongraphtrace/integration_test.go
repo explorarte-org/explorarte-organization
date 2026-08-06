@@ -35,8 +35,12 @@ func TestDecisionGraphTraceStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = runner.Up(ctx); err != nil {
+	result, err := runner.Up(ctx)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if result.Current != 13 {
+		t.Fatalf("current migration=%d, want 13", result.Current)
 	}
 	resetTraceSchema(t, ctx, platform)
 	t.Cleanup(func() { resetTraceSchema(t, context.Background(), platform) })
