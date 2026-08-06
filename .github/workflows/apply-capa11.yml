@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: write
-  workflows: write
 
 jobs:
   apply-and-validate:
@@ -65,7 +64,7 @@ jobs:
           echo "c6a56414460bb7d37f930d6132f34d117142751ae10f0e293ddafacf98d23596  /tmp/capa11-fix7.patch" | sha256sum --check -
           git apply --check /tmp/capa11-fix7.patch
           git apply /tmp/capa11-fix7.patch
-          rm -rf .github/capa11-patch .github/capa11-fix.patch .github/capa11-fix2.patch .github/capa11-fix3.patch .github/capa11-fix4.patch .github/capa11-fix5.patch .github/capa11-fix6.patch .github/capa11-fix7.patch.b64 .github/workflows/apply-capa11.yml
+          rm -rf .github/capa11-patch .github/capa11-fix.patch .github/capa11-fix2.patch .github/capa11-fix3.patch .github/capa11-fix4.patch .github/capa11-fix5.patch .github/capa11-fix6.patch .github/capa11-fix7.patch.b64
           git diff --check
 
       - name: Download and verify modules
