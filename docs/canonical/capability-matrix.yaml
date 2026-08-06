@@ -23,6 +23,14 @@ capabilities:
   risk: medium
 - id: model.invoke
   risk: high
+- id: model.execution_principal.register
+  risk: high
+- id: model.execution_principal.disable
+  risk: high
+- id: model.dispatch_assignment.create
+  risk: high
+- id: model.dispatch_assignment.revoke
+  risk: high
 - id: task.review
   risk: medium
 - id: task.approve_terminal
@@ -108,6 +116,10 @@ hard_denies:
   - project.delegate_department
   - organization.activate_skill
   - memory.approve
+  - model.execution_principal.register
+  - model.execution_principal.disable
+  - model.dispatch_assignment.create
+  - model.dispatch_assignment.revoke
   specialist:
   - project.delegate_department
   - task.assign_worker

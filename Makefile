@@ -97,6 +97,12 @@ test-model-egress-fitness:
 test-model-egress-integration:
 	./scripts/test-integration.sh egress
 
+test-model-dispatch-fitness:
+	./scripts/check-model-dispatch-fitness.sh
+
+test-model-dispatch-integration:
+	./scripts/test-integration.sh dispatch
+
 build:
 	@mkdir -p $(BINARY_DIR)
 	CGO_ENABLED=0 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY_DIR)/orgd ./cmd/orgd
@@ -112,9 +118,9 @@ build-cross:
 run:
 	$(GO) run ./cmd/orgd
 
-verify: fmt-check vet test-unit test-task-fitness test-staging-fitness test-authorization-fitness test-context-fitness test-model-runtime-fitness test-model-egress-fitness build
+verify: fmt-check vet test-unit test-task-fitness test-staging-fitness test-authorization-fitness test-context-fitness test-model-runtime-fitness test-model-egress-fitness test-model-dispatch-fitness build
 
-verify-all: verify build-cross registry-validate test-integration test-context-integration test-model-runtime-integration test-model-egress-integration test-authorization-integration test-staging-integration
+verify-all: verify build-cross registry-validate test-integration test-context-integration test-model-runtime-integration test-model-egress-integration test-model-dispatch-integration test-authorization-integration test-staging-integration
 
 migrate-up:
 	$(GO) run ./cmd/orgctl migrate up

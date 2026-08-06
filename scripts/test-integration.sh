@@ -5,8 +5,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 MODE="${1:-all}"
 case "$MODE" in
-  all|tasks|staging|authorization|context|model|egress) ;;
-  *) echo "usage: $0 [all|tasks|staging|authorization|context|model|egress]" >&2; exit 2 ;;
+  all|tasks|staging|authorization|context|model|egress|dispatch) ;;
+  *) echo "usage: $0 [all|tasks|staging|authorization|context|model|egress|dispatch]" >&2; exit 2 ;;
 esac
 
 export ORG_POSTGRES_ADMIN_USER=explorarte_test_admin
@@ -47,6 +47,9 @@ if [[ "$MODE" == all || "$MODE" == egress ]]; then
 fi
 if [[ "$MODE" == all || "$MODE" == model ]]; then
   timeout --foreground --signal=TERM --kill-after=30s 30m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/modelruntime/postgres
+fi
+if [[ "$MODE" == all || "$MODE" == dispatch ]]; then
+  timeout --foreground --signal=TERM --kill-after=30s 30m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/modeldispatch/postgres
 fi
 
 if [[ "$MODE" == all ]]; then
@@ -140,5 +143,25 @@ EOF
     /tmp/orgctl context get "$context_id" --json >/tmp/context-get.json
     /tmp/orgctl context validate "$context_id" --json >/tmp/context-validation.json
     /tmp/orgctl context render "$context_id" --output /tmp/context-render.json
+    cat >/tmp/principal.json <<JSON
+{"organization_id":"explorarte","principal_key":"ci/model-runtime-smoke","dispatch_actor_role_id":"ingenieria_ia/code-runner","principal_kind":"local_process","idempotency_key":"cli-principal-smoke"}
+JSON
+    /tmp/orgctl model principal register --file /tmp/principal.json --actor-role empresa/human --json >/tmp/principal-created.json
+    principal_id="$(grep -m1 "\"id\"" /tmp/principal-created.json | tr -cd "0-9")"
+    /tmp/orgctl model principal get "$principal_id" --json >/tmp/principal-get.json
+    /tmp/orgctl model principal list --organization-id explorarte --json >/tmp/principal-list.json
+    grep -Fq "\"status\": \"active\"" /tmp/principal-get.json
+    set +e
+    /tmp/orgctl model principal register --file /tmp/principal.json --actor-role ingenieria_ia/code-runner --json >/tmp/principal-denied.out 2>/tmp/principal-denied.err
+    denied_code=$?
+    set -e
+    test "$denied_code" -ne 0
+    for forbidden in claimed-by principal assignment; do
+      set +e
+      /tmp/orgctl model invocation dispatch 1 --"$forbidden" x >/tmp/dispatch-forbidden.out 2>/tmp/dispatch-forbidden.err
+      forbidden_code=$?
+      set -e
+      test "$forbidden_code" -eq 2
+    done
   '
 fi

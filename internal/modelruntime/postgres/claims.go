@@ -38,6 +38,12 @@ func (s *Store) ClaimInvocation(ctx context.Context, command modelruntime.ClaimC
 		if invocation.Status != modelruntime.InvocationRequested {
 			return modelruntime.ClaimedInvocation{}, fmt.Errorf("%w: invocation status is %s", modelruntime.ErrClaimUnavailable, invocation.Status)
 		}
+		// A pinned invocation may only be claimed by the principal it was pinned
+		// to at creation time. A legacy invocation (both nil) is claimable by any
+		// active principal; the dispatcher fails it before send immediately after.
+		if invocation.ExecutionPrincipalID != nil && *invocation.ExecutionPrincipalID != command.ExecutionPrincipalID {
+			return modelruntime.ClaimedInvocation{}, modelruntime.ErrExecutionPrincipalMismatch
+		}
 		if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, `model-runtime:`+invocation.OrganizationID); err != nil {
 			return modelruntime.ClaimedInvocation{}, mapError(err)
 		}
@@ -64,13 +70,21 @@ WHERE i.organization_id=$1
 		if err = tx.QueryRow(ctx, `SELECT COALESCE(MAX(attempt_number),0)+1 FROM model_dispatch_attempts WHERE invocation_id=$1`, invocation.ID).Scan(&attemptNumber); err != nil {
 			return modelruntime.ClaimedInvocation{}, mapError(err)
 		}
+		// Legacy (unpinned) invocations leave the attempt's principal NULL too: the
+		// FK to model_invocations(id, execution_principal_id) would otherwise
+		// never match a row whose own execution_principal_id is NULL.
+		var attemptPrincipalID *int64
+		if invocation.ExecutionPrincipalID != nil {
+			attemptPrincipalID = &command.ExecutionPrincipalID
+		}
 		attempt, err := scanAttempt(tx.QueryRow(ctx, `
 INSERT INTO model_dispatch_attempts(
     invocation_id,attempt_number,status,claim_token_hash,claimed_by,
-    claim_expires_at,retry_safety
+    execution_principal_id,claim_expires_at,retry_safety
 ) VALUES(
     $1,$2,'claimed',$3,$4,
-    clock_timestamp() + make_interval(secs => $5::double precision),
+    $5,
+    clock_timestamp() + make_interval(secs => $6::double precision),
     'safe_before_send'
 )
 RETURNING `+attemptColumns,
@@ -78,6 +92,7 @@ RETURNING `+attemptColumns,
 			attemptNumber,
 			tokenHash,
 			command.ClaimedBy,
+			attemptPrincipalID,
 			config.ClaimTTL.Seconds(),
 		))
 		if err != nil {

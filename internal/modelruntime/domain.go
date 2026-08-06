@@ -132,7 +132,6 @@ type CreateInvocationCommand struct {
 	OrganizationID       string            `json:"organization_id"`
 	TaskID               int64             `json:"task_id"`
 	AttemptID            int64             `json:"attempt_id"`
-	DispatchActorRoleID  string            `json:"dispatch_actor_role_id"`
 	SubjectRoleID        string            `json:"subject_role_id"`
 	ContextSnapshotID    int64             `json:"context_snapshot_id"`
 	Purpose              string            `json:"purpose"`
@@ -156,6 +155,8 @@ type Invocation struct {
 	AttemptID                  int64             `json:"attempt_id"`
 	DispatchActorRoleID        string            `json:"dispatch_actor_role_id"`
 	SubjectRoleID              string            `json:"subject_role_id"`
+	DispatcherAssignmentID     *int64            `json:"dispatcher_assignment_id,omitempty"`
+	ExecutionPrincipalID       *int64            `json:"execution_principal_id,omitempty"`
 	ContextSnapshotID          int64             `json:"context_snapshot_id"`
 	Purpose                    string            `json:"purpose"`
 	ModelProfileID             string            `json:"model_profile_id"`
@@ -189,6 +190,7 @@ type DispatchAttempt struct {
 	AttemptNumber         int            `json:"attempt_number"`
 	Status                DispatchStatus `json:"status"`
 	ClaimedBy             string         `json:"claimed_by"`
+	ExecutionPrincipalID  *int64         `json:"execution_principal_id,omitempty"`
 	ClaimedAt             time.Time      `json:"claimed_at"`
 	ClaimExpiresAt        time.Time      `json:"claim_expires_at"`
 	SendStartedAt         *time.Time     `json:"send_started_at,omitempty"`

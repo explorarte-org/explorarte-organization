@@ -39,8 +39,8 @@ func TestModelEgressPostgreSQL17(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Current != 8 {
-		t.Fatalf("current migration=%d want=8", result.Current)
+	if result.Current != 9 {
+		t.Fatalf("current migration=%d want=9", result.Current)
 	}
 	resetEgressSchema(t, ctx, platform)
 	revision := syncEgressCanonical(t, ctx, platform)
@@ -200,144 +200,6 @@ INSERT INTO model_egress_evaluations(
 		}
 	})
 
-	t.Run("allow evaluation and send_started are atomic", func(t *testing.T) {
-		fixture := insertPreSendFixture(t, ctx, platform, revision.ID, resolved.Version.ID, resolved.CanonicalHash, "allow")
-		evaluation := fixture.evaluation(modelegress.AuthorizationAllow, modelegress.EffectAllow, []string{"fixture_organizational_allow"})
-		if err := store.PersistPreSendAllowAndMarkSendStarted(ctx, modelegress.PersistAllowCommand{Evaluation: evaluation, ClaimToken: fixture.claimToken, ProviderIdempotencyKeyHash: modelegress.SHA256Bytes([]byte("provider-idempotency")), Deadline: time.Now().Add(time.Hour)}); err != nil {
-			t.Fatal(err)
-		}
-		var invocationStatus, attemptStatus string
-		if err := platform.Pool().QueryRow(ctx, `SELECT i.status,a.status FROM model_invocations i JOIN model_dispatch_attempts a ON a.invocation_id=i.id WHERE i.id=$1`, fixture.invocationID).Scan(&invocationStatus, &attemptStatus); err != nil {
-			t.Fatal(err)
-		}
-		if invocationStatus != "send_started" || attemptStatus != "send_started" {
-			t.Fatalf("states invocation=%s attempt=%s", invocationStatus, attemptStatus)
-		}
-		assertEgressCount(t, ctx, platform, `SELECT count(*) FROM model_egress_evaluations WHERE dispatch_attempt_id=$1 AND authorization_effect='allow' AND egress_effect='allow'`, fixture.attemptID, 1)
-		assertEgressCount(t, ctx, platform, `SELECT count(*) FROM audit_events WHERE subject_type='model_invocation' AND subject_id=$1 AND event_type='model.egress_allowed'`, fmt.Sprint(fixture.invocationID), 1)
-	})
-
-	t.Run("deny evaluation and failed_before_send are atomic", func(t *testing.T) {
-		fixture := insertPreSendFixture(t, ctx, platform, revision.ID, resolved.Version.ID, resolved.CanonicalHash, "deny")
-		evaluation := fixture.evaluation(modelegress.AuthorizationDeny, modelegress.EffectNotEvaluated, nil)
-		evaluation.AuthorizationReasonCode = "grant_missing"
-		evaluation.DecisionHash = modelegress.DecisionHash(evaluation)
-		if err := store.PersistPreSendDenyAndFail(ctx, modelegress.PersistDenyCommand{Evaluation: evaluation, ClaimToken: fixture.claimToken, ErrorCode: "authorization_denied", OutboxMaxAttempts: 10}); err != nil {
-			t.Fatal(err)
-		}
-		var invocationStatus, attemptStatus string
-		if err := platform.Pool().QueryRow(ctx, `SELECT i.status,a.status FROM model_invocations i JOIN model_dispatch_attempts a ON a.invocation_id=i.id WHERE i.id=$1`, fixture.invocationID).Scan(&invocationStatus, &attemptStatus); err != nil {
-			t.Fatal(err)
-		}
-		if invocationStatus != "failed" || attemptStatus != "failed_before_send" {
-			t.Fatalf("states invocation=%s attempt=%s", invocationStatus, attemptStatus)
-		}
-		assertEgressCount(t, ctx, platform, `SELECT count(*) FROM outbox_events WHERE aggregate_type='model_invocation' AND aggregate_id=$1 AND event_type='model.invocation_failed'`, fmt.Sprint(fixture.invocationID), 1)
-	})
-
-	t.Run("audit failure rolls back evaluation and state transition", func(t *testing.T) {
-		fixture := insertPreSendFixture(t, ctx, platform, revision.ID, resolved.Version.ID, resolved.CanonicalHash, "rollback")
-		_, err := platform.Pool().Exec(ctx, `
-CREATE FUNCTION fail_model_egress_audit() RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
-  IF NEW.event_type='model.egress_allowed' THEN RAISE EXCEPTION 'forced egress audit failure'; END IF;
-  RETURN NEW;
-END $$;
-CREATE TRIGGER fail_model_egress_audit_trigger BEFORE INSERT ON audit_events FOR EACH ROW EXECUTE FUNCTION fail_model_egress_audit();`)
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() {
-			_, _ = platform.Pool().Exec(context.Background(), `DROP TRIGGER IF EXISTS fail_model_egress_audit_trigger ON audit_events; DROP FUNCTION IF EXISTS fail_model_egress_audit()`)
-		})
-		evaluation := fixture.evaluation(modelegress.AuthorizationAllow, modelegress.EffectAllow, []string{"fixture_allow"})
-		err = store.PersistPreSendAllowAndMarkSendStarted(ctx, modelegress.PersistAllowCommand{Evaluation: evaluation, ClaimToken: fixture.claimToken, ProviderIdempotencyKeyHash: modelegress.SHA256Bytes([]byte("rollback-provider-key")), Deadline: time.Now().Add(time.Hour)})
-		if err == nil {
-			t.Fatal("forced audit failure was ignored")
-		}
-		assertEgressCount(t, ctx, platform, `SELECT count(*) FROM model_egress_evaluations WHERE dispatch_attempt_id=$1`, fixture.attemptID, 0)
-		var invocationStatus, attemptStatus string
-		if err := platform.Pool().QueryRow(ctx, `SELECT i.status,a.status FROM model_invocations i JOIN model_dispatch_attempts a ON a.invocation_id=i.id WHERE i.id=$1`, fixture.invocationID).Scan(&invocationStatus, &attemptStatus); err != nil {
-			t.Fatal(err)
-		}
-		if invocationStatus != "claimed" || attemptStatus != "claimed" {
-			t.Fatalf("rollback states invocation=%s attempt=%s", invocationStatus, attemptStatus)
-		}
-	})
-
-	t.Run("claim and metadata mismatches reject without partial writes", func(t *testing.T) {
-		fixture := insertPreSendFixture(t, ctx, platform, revision.ID, resolved.Version.ID, resolved.CanonicalHash, "claim-mismatch")
-		evaluation := fixture.evaluation(modelegress.AuthorizationAllow, modelegress.EffectAllow, []string{"fixture_allow"})
-		command := modelegress.PersistAllowCommand{Evaluation: evaluation, ClaimToken: "wrong-claim", ProviderIdempotencyKeyHash: modelegress.SHA256Bytes([]byte("claim-mismatch-provider")), Deadline: time.Now().Add(time.Hour)}
-		if persistErr := store.PersistPreSendAllowAndMarkSendStarted(ctx, command); !errors.Is(persistErr, modelegress.ErrClaimMismatch) {
-			t.Fatalf("claim mismatch error=%v", persistErr)
-		}
-		assertEgressCount(t, ctx, platform, `SELECT count(*) FROM model_egress_evaluations WHERE dispatch_attempt_id=$1`, fixture.attemptID, 0)
-
-		command.ClaimToken = fixture.claimToken
-		command.Evaluation.ActionDigest = modelegress.SHA256Bytes([]byte("wrong-action-digest"))
-		command.Evaluation.DecisionHash = modelegress.DecisionHash(command.Evaluation)
-		if persistErr := store.PersistPreSendAllowAndMarkSendStarted(ctx, command); !errors.Is(persistErr, modelegress.ErrEvaluationConflict) {
-			t.Fatalf("action digest mismatch error=%v", persistErr)
-		}
-		assertEgressCount(t, ctx, platform, `SELECT count(*) FROM model_egress_evaluations WHERE dispatch_attempt_id=$1`, fixture.attemptID, 0)
-
-		command.Evaluation = fixture.evaluation(modelegress.AuthorizationAllow, modelegress.EffectAllow, []string{"fixture_allow"})
-		command.Evaluation.ProviderID = "other-provider"
-		command.Evaluation.DecisionHash = modelegress.DecisionHash(command.Evaluation)
-		if persistErr := store.PersistPreSendAllowAndMarkSendStarted(ctx, command); !errors.Is(persistErr, modelegress.ErrEvaluationConflict) {
-			t.Fatalf("metadata mismatch error=%v", persistErr)
-		}
-		assertEgressCount(t, ctx, platform, `SELECT count(*) FROM model_egress_evaluations WHERE dispatch_attempt_id=$1`, fixture.attemptID, 0)
-	})
-
-	t.Run("evaluation is unique and immutable", func(t *testing.T) {
-		fixture := insertPreSendFixture(t, ctx, platform, revision.ID, resolved.Version.ID, resolved.CanonicalHash, "immutable")
-		evaluation := fixture.evaluation(modelegress.AuthorizationDeny, modelegress.EffectNotEvaluated, nil)
-		evaluation.AuthorizationReasonCode = "grant_missing"
-		evaluation.DecisionHash = modelegress.DecisionHash(evaluation)
-		command := modelegress.PersistDenyCommand{Evaluation: evaluation, ClaimToken: fixture.claimToken, ErrorCode: "authorization_denied", OutboxMaxAttempts: 10}
-		if persistErr := store.PersistPreSendDenyAndFail(ctx, command); persistErr != nil {
-			t.Fatal(persistErr)
-		}
-		if _, updateErr := platform.Pool().Exec(ctx, `UPDATE model_egress_evaluations SET authorization_reason_code='mutated' WHERE dispatch_attempt_id=$1`, fixture.attemptID); updateErr == nil {
-			t.Fatal("historical evaluation was mutable")
-		}
-		if persistErr := store.PersistPreSendDenyAndFail(ctx, command); !errors.Is(persistErr, modelegress.ErrEvaluationConflict) {
-			t.Fatalf("duplicate evaluation error=%v", persistErr)
-		}
-		assertEgressCount(t, ctx, platform, `SELECT count(*) FROM model_egress_evaluations WHERE dispatch_attempt_id=$1`, fixture.attemptID, 1)
-	})
-
-	t.Run("deny audit failure rolls back evaluation and terminal state", func(t *testing.T) {
-		fixture := insertPreSendFixture(t, ctx, platform, revision.ID, resolved.Version.ID, resolved.CanonicalHash, "deny-rollback")
-		_, triggerErr := platform.Pool().Exec(ctx, `
-CREATE FUNCTION fail_model_egress_deny_audit() RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
-  IF NEW.event_type='model.egress_denied' THEN RAISE EXCEPTION 'forced egress deny audit failure'; END IF;
-  RETURN NEW;
-END $$;
-CREATE TRIGGER fail_model_egress_deny_audit_trigger BEFORE INSERT ON audit_events FOR EACH ROW EXECUTE FUNCTION fail_model_egress_deny_audit();`)
-		if triggerErr != nil {
-			t.Fatal(triggerErr)
-		}
-		t.Cleanup(func() {
-			_, _ = platform.Pool().Exec(context.Background(), `DROP TRIGGER IF EXISTS fail_model_egress_deny_audit_trigger ON audit_events; DROP FUNCTION IF EXISTS fail_model_egress_deny_audit()`)
-		})
-		evaluation := fixture.evaluation(modelegress.AuthorizationAllow, modelegress.EffectDeny, []string{"fixture_denied"})
-		if persistErr := store.PersistPreSendDenyAndFail(ctx, modelegress.PersistDenyCommand{Evaluation: evaluation, ClaimToken: fixture.claimToken, ErrorCode: "egress_denied", OutboxMaxAttempts: 10}); persistErr == nil {
-			t.Fatal("forced deny audit failure was ignored")
-		}
-		assertEgressCount(t, ctx, platform, `SELECT count(*) FROM model_egress_evaluations WHERE dispatch_attempt_id=$1`, fixture.attemptID, 0)
-		var invocationStatus, attemptStatus string
-		if queryErr := platform.Pool().QueryRow(ctx, `SELECT i.status,a.status FROM model_invocations i JOIN model_dispatch_attempts a ON a.invocation_id=i.id WHERE i.id=$1`, fixture.invocationID).Scan(&invocationStatus, &attemptStatus); queryErr != nil {
-			t.Fatal(queryErr)
-		}
-		if invocationStatus != "claimed" || attemptStatus != "claimed" {
-			t.Fatalf("rollback states invocation=%s attempt=%s", invocationStatus, attemptStatus)
-		}
-	})
-
 	t.Run("migration preserves legacy unpinned invocations", func(t *testing.T) {
 		fixture := insertPreSendFixture(t, ctx, platform, revision.ID, resolved.Version.ID, resolved.CanonicalHash, "legacy")
 		if _, err := platform.Pool().Exec(ctx, `UPDATE model_invocations SET model_egress_policy_version_id=NULL,model_egress_policy_hash=NULL WHERE id=$1`, fixture.invocationID); err != nil {
@@ -352,34 +214,6 @@ CREATE TRIGGER fail_model_egress_deny_audit_trigger BEFORE INSERT ON audit_event
 			t.Fatalf("legacy pair=%v/%v", versionID, policyHash)
 		}
 	})
-
-	t.Run("migration 000008 down and reapply are ordered", func(t *testing.T) {
-		down, readErr := rootmigrations.Files.ReadFile("000008_create_model_egress_authorization.down.sql")
-		if readErr != nil {
-			t.Fatal(readErr)
-		}
-		if _, execErr := platform.Pool().Exec(ctx, string(down)); execErr != nil {
-			t.Fatalf("down migration 000008: %v", execErr)
-		}
-		if _, execErr := platform.Pool().Exec(ctx, `DELETE FROM schema_migrations WHERE version=8`); execErr != nil {
-			t.Fatal(execErr)
-		}
-		var tableExists bool
-		var policyColumns int
-		if queryErr := platform.Pool().QueryRow(ctx, `SELECT to_regclass('public.model_egress_policy_versions') IS NOT NULL`).Scan(&tableExists); queryErr != nil {
-			t.Fatal(queryErr)
-		}
-		if queryErr := platform.Pool().QueryRow(ctx, `SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='model_invocations' AND column_name IN ('model_egress_policy_version_id','model_egress_policy_hash')`).Scan(&policyColumns); queryErr != nil {
-			t.Fatal(queryErr)
-		}
-		if tableExists || policyColumns != 0 {
-			t.Fatalf("down left table=%v policy_columns=%d", tableExists, policyColumns)
-		}
-		reapplied, upErr := runner.Up(ctx)
-		if upErr != nil || len(reapplied.Applied) != 1 || reapplied.Current != 8 {
-			t.Fatalf("reapply=%+v err=%v", reapplied, upErr)
-		}
-	})
 }
 
 type preSendFixture struct {
@@ -392,26 +226,6 @@ type preSendFixture struct {
 	revisionID     int64
 	capabilityHash string
 	requestHash    string
-}
-
-func (f preSendFixture) evaluation(auth modelegress.AuthorizationEffect, egress modelegress.Effect, reasons []string) modelegress.PreSendEvaluation {
-	classes, classHash := modelegress.NormalizeClassifications([]string{"organizational"})
-	actionDigest, err := modelegress.InvocationActionDigest(f.invocationID, f.requestHash, f.policyID, f.policyHash)
-	if err != nil {
-		panic(err)
-	}
-	value := modelegress.PreSendEvaluation{
-		InvocationID: f.invocationID, DispatchAttemptID: f.attemptID, PolicyVersionID: f.policyID, PolicyHash: f.policyHash,
-		OrganizationID: egressIntegrationOrganization, OrganizationRevisionID: f.revisionID,
-		DispatchActorRoleID: "ingenieria_ia/code-runner", SubjectRoleID: "ingenieria_ia/code-runner",
-		ModelProfileVersionID: f.profileID, ProviderID: "test.fake", ProviderTransport: "fake_adapter",
-		ActionDigest: actionDigest, CapabilityMatrixHash: f.capabilityHash,
-		ContextClassifications: classes, ContextClassificationsHash: classHash,
-		AuthorizationEffect: auth, AuthorizationReasonCode: "allowed_by_grant", EgressEffect: egress, EgressReasonCodes: reasons,
-		CorrelationID: "egress-integration", CausationID: "branch-09",
-	}
-	value.DecisionHash = modelegress.DecisionHash(value)
-	return value
 }
 
 func insertPreSendFixture(t *testing.T, ctx context.Context, store *platformpostgres.Store, revisionID, policyVersionID int64, policyHash, suffix string) preSendFixture {

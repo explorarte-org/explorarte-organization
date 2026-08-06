@@ -31,13 +31,13 @@ func TestNormalizerRejectsSchemaMismatchAndTrailingJSON(t *testing.T) {
 		t.Fatal("expected trailing JSON rejection")
 	}
 }
-func TestPrepareCreateRejectsCrossRoleAndPastDeadline(t *testing.T) {
+func TestPrepareCreateRejectsInvalidRoleAndPastDeadline(t *testing.T) {
 	now := mustTime("2026-01-01T00:00:00Z")
-	base := CreateInvocationCommand{OrganizationID: "explorarte", TaskID: 1, AttemptID: 1, DispatchActorRoleID: "a/x", SubjectRoleID: "a/y", ContextSnapshotID: 1, Purpose: "test", OutputMode: OutputText, MaxOutputTokens: 10, ThinkingMode: ThinkingDisabled, IdempotencyKey: "x", Deadline: now.Add(1)}
+	base := CreateInvocationCommand{OrganizationID: "explorarte", TaskID: 1, AttemptID: 1, SubjectRoleID: "Not A Role", ContextSnapshotID: 1, Purpose: "test", OutputMode: OutputText, MaxOutputTokens: 10, ThinkingMode: ThinkingDisabled, IdempotencyKey: "x", Deadline: now.Add(1)}
 	if _, _, _, err := PrepareCreateCommand(base, now); err == nil {
-		t.Fatal("expected cross role rejection")
+		t.Fatal("expected invalid role rejection")
 	}
-	base.SubjectRoleID = base.DispatchActorRoleID
+	base.SubjectRoleID = "a/y"
 	base.Deadline = now.Add(-1)
 	if _, _, _, err := PrepareCreateCommand(base, now); err == nil {
 		t.Fatal("expected deadline rejection")

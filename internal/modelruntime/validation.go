@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Mireuz13/explorarte-organization/internal/modeldispatch"
 	"github.com/Mireuz13/explorarte-organization/internal/modelegress"
 )
 
@@ -19,7 +20,6 @@ var toolNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`)
 
 func PrepareCreateCommand(c CreateInvocationCommand, now time.Time) (CreateInvocationCommand, []ModelCapability, []byte, error) {
 	c.OrganizationID = strings.TrimSpace(c.OrganizationID)
-	c.DispatchActorRoleID = strings.TrimSpace(c.DispatchActorRoleID)
 	c.SubjectRoleID = strings.TrimSpace(c.SubjectRoleID)
 	c.Purpose = strings.TrimSpace(c.Purpose)
 	c.IdempotencyKey = strings.TrimSpace(c.IdempotencyKey)
@@ -28,11 +28,8 @@ func PrepareCreateCommand(c CreateInvocationCommand, now time.Time) (CreateInvoc
 	if c.OrganizationID == "" || c.TaskID <= 0 || c.AttemptID <= 0 || c.ContextSnapshotID <= 0 {
 		return c, nil, nil, fmt.Errorf("%w: organization, task, attempt and context are required", ErrInvalidRequest)
 	}
-	if !roleIDPattern.MatchString(c.DispatchActorRoleID) || !roleIDPattern.MatchString(c.SubjectRoleID) {
+	if !roleIDPattern.MatchString(c.SubjectRoleID) {
 		return c, nil, nil, fmt.Errorf("%w: invalid role identifier", ErrInvalidRequest)
-	}
-	if c.DispatchActorRoleID != c.SubjectRoleID {
-		return c, nil, nil, fmt.Errorf("%w: cross-role dispatch is not available in branch 09", ErrTaskAttemptRejected)
 	}
 	if len(c.Purpose) < 1 || len(c.Purpose) > 4000 {
 		return c, nil, nil, fmt.Errorf("%w: purpose outside allowed length", ErrInvalidRequest)
@@ -104,8 +101,8 @@ func validateTaskAttempt(ref TaskAttemptRef, c CreateInvocationCommand, now time
 	if ref.OrganizationID != c.OrganizationID {
 		return fmt.Errorf("%w: organization mismatch", ErrTaskAttemptRejected)
 	}
-	if ref.AssignedRoleID != c.SubjectRoleID || ref.AssignedRoleID != c.DispatchActorRoleID {
-		return fmt.Errorf("%w: dispatcher and subject must be assigned role", ErrTaskAttemptRejected)
+	if ref.AssignedRoleID != c.SubjectRoleID {
+		return fmt.Errorf("%w: subject must be the task's assigned role", ErrTaskAttemptRejected)
 	}
 	if ref.TaskStatus != "running" || ref.AttemptStatus != "running" {
 		return fmt.Errorf("%w: task and attempt must be running", ErrTaskAttemptRejected)
@@ -140,6 +137,32 @@ func validateResolvedEgressPolicy(policy modelegress.ResolvedPolicy, organizatio
 		policy.CanonicalHash == "" || policy.Version.CanonicalHash != policy.CanonicalHash ||
 		policy.CanonicalHash != organization.ModelEgressPolicyHash {
 		return fmt.Errorf("%w: egress policy revision drift", ErrEgressPolicyUnpinned)
+	}
+	return nil
+}
+
+// validateAssignmentForCreation re-checks vigency and quota even though
+// ResolveActive already filters status='active': expiration is a one-shot
+// batch operation (orgctl model assignment expire), not automatic, so an
+// assignment can remain status='active' past its valid_until until someone
+// runs it. Quota is double-checked defensively; the authoritative gate is the
+// atomic consume transaction at send_started time, not this preview.
+func validateAssignmentForCreation(resolved modeldispatch.ResolvedAssignment, organizationRevisionID int64, now time.Time) error {
+	assignment := resolved.Assignment
+	if assignment.Status != modeldispatch.AssignmentActive {
+		return fmt.Errorf("%w: assignment is not active", ErrAssignmentUnavailable)
+	}
+	if assignment.OrganizationRevisionID != organizationRevisionID {
+		return fmt.Errorf("%w: assignment organization revision drift", ErrAssignmentRevisionDrift)
+	}
+	if now.Before(assignment.ValidFrom) || !now.Before(assignment.ValidUntil) {
+		return fmt.Errorf("%w: assignment is outside its vigency window", ErrAssignmentVigencyExpired)
+	}
+	if assignment.UsedInvocations >= assignment.MaxInvocations {
+		return fmt.Errorf("%w: assignment quota is exhausted", ErrAssignmentQuotaExhausted)
+	}
+	if resolved.Principal.Status != modeldispatch.PrincipalActive {
+		return fmt.Errorf("%w: execution principal is disabled", ErrExecutionPrincipalDisabled)
 	}
 	return nil
 }

@@ -272,6 +272,13 @@ func TestContextEnginePostgreSQL17(t *testing.T) {
 	})
 
 	t.Run("down migration and reapply in disposable integration database", func(t *testing.T) {
+		// Branch 10's migration 000009 adds FKs from model_dispatcher_assignment_uses
+		// into model_invocations/model_dispatch_attempts, so it must come down
+		// before 000007's tables can be dropped.
+		dispatchDown, err := rootmigrations.Files.ReadFile("000009_create_model_dispatcher_assignments.down.sql")
+		if err != nil {
+			t.Fatal(err)
+		}
 		egressDown, err := rootmigrations.Files.ReadFile("000008_create_model_egress_authorization.down.sql")
 		if err != nil {
 			t.Fatal(err)
@@ -289,6 +296,12 @@ func TestContextEnginePostgreSQL17(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer func() { _ = tx.Rollback(ctx) }()
+		if _, err = tx.Exec(ctx, string(dispatchDown)); err != nil {
+			t.Fatalf("down migration 000009: %v", err)
+		}
+		if _, err = tx.Exec(ctx, `DELETE FROM schema_migrations WHERE version=9`); err != nil {
+			t.Fatal(err)
+		}
 		if _, err = tx.Exec(ctx, string(egressDown)); err != nil {
 			t.Fatalf("down migration 000008: %v", err)
 		}
@@ -311,39 +324,41 @@ func TestContextEnginePostgreSQL17(t *testing.T) {
 			t.Fatalf("commit down migrations: %v", err)
 		}
 
-		var contextMissing, modelRuntimeMissing, egressMissing bool
+		var contextMissing, modelRuntimeMissing, egressMissing, dispatchMissing bool
 		if err = platform.Pool().QueryRow(ctx, `
 			SELECT
 				to_regclass('public.context_snapshots') IS NULL
 				AND to_regclass('public.context_segments') IS NULL,
 				to_regclass('public.model_providers') IS NULL,
-				to_regclass('public.model_egress_policy_versions') IS NULL
-		`).Scan(&contextMissing, &modelRuntimeMissing, &egressMissing); err != nil {
+				to_regclass('public.model_egress_policy_versions') IS NULL,
+				to_regclass('public.model_dispatcher_assignments') IS NULL
+		`).Scan(&contextMissing, &modelRuntimeMissing, &egressMissing, &dispatchMissing); err != nil {
 			t.Fatal(err)
 		}
-		if !contextMissing || !modelRuntimeMissing || !egressMissing {
-			t.Fatalf("after down context_missing=%t model_runtime_missing=%t egress_missing=%t", contextMissing, modelRuntimeMissing, egressMissing)
+		if !contextMissing || !modelRuntimeMissing || !egressMissing || !dispatchMissing {
+			t.Fatalf("after down context_missing=%t model_runtime_missing=%t egress_missing=%t dispatch_missing=%t", contextMissing, modelRuntimeMissing, egressMissing, dispatchMissing)
 		}
 
 		result, err := runner.Up(ctx)
 		if err != nil {
 			t.Fatalf("reapply migrations: %v", err)
 		}
-		if len(result.Applied) != 3 || result.Current != 8 {
-			t.Fatalf("reapply result=%+v, want migrations 000006, 000007 and 000008", result)
+		if len(result.Applied) != 4 || result.Current != 9 {
+			t.Fatalf("reapply result=%+v, want migrations 000006, 000007, 000008 and 000009", result)
 		}
-		var contextExists, modelRuntimeExists, egressExists bool
+		var contextExists, modelRuntimeExists, egressExists, dispatchExists bool
 		if err = platform.Pool().QueryRow(ctx, `
 			SELECT
 				to_regclass('public.context_snapshots') IS NOT NULL
 				AND to_regclass('public.context_segments') IS NOT NULL,
 				to_regclass('public.model_providers') IS NOT NULL,
-				to_regclass('public.model_egress_policy_versions') IS NOT NULL
-		`).Scan(&contextExists, &modelRuntimeExists, &egressExists); err != nil {
+				to_regclass('public.model_egress_policy_versions') IS NOT NULL,
+				to_regclass('public.model_dispatcher_assignments') IS NOT NULL
+		`).Scan(&contextExists, &modelRuntimeExists, &egressExists, &dispatchExists); err != nil {
 			t.Fatal(err)
 		}
-		if !contextExists || !modelRuntimeExists || !egressExists {
-			t.Fatalf("after reapply context_exists=%t model_runtime_exists=%t egress_exists=%t", contextExists, modelRuntimeExists, egressExists)
+		if !contextExists || !modelRuntimeExists || !egressExists || !dispatchExists {
+			t.Fatalf("after reapply context_exists=%t model_runtime_exists=%t egress_exists=%t dispatch_exists=%t", contextExists, modelRuntimeExists, egressExists, dispatchExists)
 		}
 	})
 }

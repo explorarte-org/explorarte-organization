@@ -12,6 +12,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/config"
 	"github.com/Mireuz13/explorarte-organization/internal/contextengine"
 	contextbootstrap "github.com/Mireuz13/explorarte-organization/internal/contextengine/bootstrap"
+	dispatchbootstrap "github.com/Mireuz13/explorarte-organization/internal/modeldispatch/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/modelegress"
 	egressbootstrap "github.com/Mireuz13/explorarte-organization/internal/modelegress/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
@@ -59,6 +60,7 @@ type Runtime struct {
 	Invocations *modelruntime.InvocationService
 	Dispatch    *modelruntime.DispatchService
 	Store       *modelpostgres.Store
+	Dispatcher  *dispatchbootstrap.Runtime
 }
 
 func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, error) {
@@ -93,6 +95,10 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	if err != nil {
 		return nil, fmt.Errorf("open model egress runtime: %w", err)
 	}
+	dispatchRuntime, err := dispatchbootstrap.Open(cfg, platformStore, taskStore)
+	if err != nil {
+		return nil, fmt.Errorf("open model dispatch runtime: %w", err)
+	}
 	catalog := catalogAdapter{reader: registryRepo}
 	tasksAdapter := taskAdapter{reader: taskStore}
 	contexts := contextAdapter{service: contextRuntime.Service}
@@ -101,16 +107,16 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	if err != nil {
 		return nil, err
 	}
-	invocationService, err := modelruntime.NewInvocationService(cfg.Tasks.OrganizationID, catalog, tasksAdapter, contexts, modelStore, egressRuntime.Store, modelruntime.ClockFunc(time.Now), cfg.Tasks.OutboxMaxAttempts)
+	invocationService, err := modelruntime.NewInvocationService(cfg.Tasks.OrganizationID, catalog, tasksAdapter, contexts, modelStore, egressRuntime.Store, dispatchRuntime.Store, modelruntime.ClockFunc(time.Now), cfg.Tasks.OutboxMaxAttempts)
 	if err != nil {
 		return nil, err
 	}
 	adapters := adapter.NewRegistry()
-	dispatchService, err := modelruntime.NewDispatchService(runtimeCfg, catalog, tasksAdapter, contexts, evaluator, egressRuntime.Store, egressRuntime.Evaluator, egressRuntime.Store, modelStore, adapters, modelruntime.ClockFunc(time.Now))
+	dispatchService, err := modelruntime.NewDispatchService(cfg.Tasks.OrganizationID, runtimeCfg, catalog, tasksAdapter, contexts, evaluator, egressRuntime.Store, egressRuntime.Evaluator, modelStore, dispatchRuntime.Store, dispatchRuntime.Store, modelStore, adapters, modelruntime.ClockFunc(time.Now))
 	if err != nil {
 		return nil, err
 	}
-	return &Runtime{Config: runtimeCfg, Registry: registryService, Invocations: invocationService, Dispatch: dispatchService, Store: modelStore}, nil
+	return &Runtime{Config: runtimeCfg, Registry: registryService, Invocations: invocationService, Dispatch: dispatchService, Store: modelStore, Dispatcher: dispatchRuntime}, nil
 }
 
 type catalogAdapter struct{ reader registry.Reader }
