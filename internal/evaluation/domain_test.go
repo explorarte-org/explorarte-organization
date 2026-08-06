@@ -9,7 +9,7 @@ import (
 )
 
 func mustTrace(runID int64, payload []byte) (TraceRef, EvaluationTrace) {
-	ref := TraceRef{RunID: runID, SchemaVersion: "test.v1", OrganizationID: 1}
+	ref := TraceRef{RunID: runID, SchemaVersion: "test.v1", OrganizationID: "org-1"}
 	trace := EvaluationTrace{Ref: ref, Payload: payload, LoadedAt: time.Unix(1_700_000_000, 0).UTC()}
 	ref.TraceHash = trace.ContentHash()
 	trace.Ref = ref
@@ -33,15 +33,15 @@ func mustSuite(t *testing.T, ref TraceRef) EvaluationSuite {
 }
 
 func TestTraceRefValidate(t *testing.T) {
-	valid := TraceRef{RunID: 1, TraceHash: "abc", SchemaVersion: "v1", OrganizationID: 1}
+	valid := TraceRef{RunID: 1, TraceHash: "abc", SchemaVersion: "v1", OrganizationID: "org-1"}
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("expected valid ref, got %v", err)
 	}
 	cases := []TraceRef{
-		{RunID: 0, TraceHash: "abc", SchemaVersion: "v1", OrganizationID: 1},
-		{RunID: 1, TraceHash: "", SchemaVersion: "v1", OrganizationID: 1},
-		{RunID: 1, TraceHash: "abc", SchemaVersion: "", OrganizationID: 1},
-		{RunID: 1, TraceHash: "abc", SchemaVersion: "v1", OrganizationID: 0},
+		{RunID: 0, TraceHash: "abc", SchemaVersion: "v1", OrganizationID: "org-1"},
+		{RunID: 1, TraceHash: "", SchemaVersion: "v1", OrganizationID: "org-1"},
+		{RunID: 1, TraceHash: "abc", SchemaVersion: "", OrganizationID: "org-1"},
+		{RunID: 1, TraceHash: "abc", SchemaVersion: "v1", OrganizationID: ""},
 	}
 	for i, c := range cases {
 		if err := c.Validate(); !errors.Is(err, ErrInvalidTraceRef) {

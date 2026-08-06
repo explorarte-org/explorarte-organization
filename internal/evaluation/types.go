@@ -15,7 +15,7 @@ type TraceRef struct {
 	RunID          int64
 	TraceHash      string
 	SchemaVersion  string
-	OrganizationID int64
+	OrganizationID string
 }
 
 func (r TraceRef) Validate() error {
@@ -28,8 +28,8 @@ func (r TraceRef) Validate() error {
 	if r.SchemaVersion == "" {
 		return fmt.Errorf("%w: schema version is required", ErrInvalidTraceRef)
 	}
-	if r.OrganizationID <= 0 {
-		return fmt.Errorf("%w: organization id must be positive", ErrInvalidTraceRef)
+	if r.OrganizationID == "" {
+		return fmt.Errorf("%w: organization id is required", ErrInvalidTraceRef)
 	}
 	return nil
 }
