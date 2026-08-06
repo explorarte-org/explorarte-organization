@@ -39,8 +39,8 @@ jobs:
           echo "e009645bddab1875a19736f3f6c47a8ff829532533b275b7218e369473d50872  /tmp/capa11.patch.gz" | sha256sum --check -
           gzip --decompress --stdout /tmp/capa11.patch.gz > /tmp/capa11.patch
           echo "3252fc78b9e461a4b2d39fdf03c4161218967f7d2957fa15cef722df60dac9a8  /tmp/capa11.patch" | sha256sum --check -
-          git apply --check /tmp/capa11.patch
-          git apply /tmp/capa11.patch
+          git apply --exclude=.github/workflows/ci.yml --check /tmp/capa11.patch
+          git apply --exclude=.github/workflows/ci.yml /tmp/capa11.patch
           echo "6eb02d1d1a055643278de181e59d96c4e85fdd40f5de07e87d9bebb52ced2e23  .github/capa11-fix.patch" | sha256sum --check -
           git apply --check .github/capa11-fix.patch
           git apply .github/capa11-fix.patch
