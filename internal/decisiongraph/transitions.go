@@ -32,7 +32,7 @@ func ValidateExecutionTransition(from, to ExecutionState) error {
 	}
 	allowed := map[ExecutionState]map[ExecutionState]struct{}{
 		ExecutionPending: {
-			ExecutionReady: {}, ExecutionCancelled: {},
+			ExecutionReady: {}, ExecutionRunning: {}, ExecutionCancelled: {},
 		},
 		ExecutionReady: {
 			ExecutionRunning: {}, ExecutionCancelled: {},
