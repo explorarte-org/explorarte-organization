@@ -1,0 +1,68 @@
+name: Apply Capa 14 core ledger
+
+on:
+  push:
+    branches: [feat/14-durable-decision-graph]
+    paths:
+      - ".rama14-transfer/**"
+      - ".github/workflows/apply-capa14.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-capa14-core-ledger
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Reconstruct and verify bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .rama14-transfer/part-* > /tmp/capa14-core2.tar.gz.b64
+          echo "ad0759620a41cfb0a6db5f69e65b83891fe4e27a3ee804919a0aee40097a58d6  /tmp/capa14-core2.tar.gz.b64" | sha256sum --check -
+          base64 --decode /tmp/capa14-core2.tar.gz.b64 > /tmp/capa14-core2.tar.gz
+          echo "a0163bffefa1c036dbd17c89452bcb599cb193bfd1f9e7ba1e40811ec69ca21e  /tmp/capa14-core2.tar.gz" | sha256sum --check -
+          tar -tzf /tmp/capa14-core2.tar.gz
+
+      - name: Apply durable ledger files
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -xzf /tmp/capa14-core2.tar.gz -C .
+          rm -rf .rama14-transfer
+          gofmt -w internal/decisiongraph/postgres/store.go
+          git diff --check
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify decision graph packages
+        run: |
+          go mod download
+          go mod verify
+          go test -race -short ./internal/decisiongraph/...
+
+      - name: Commit core ledger
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "feat(decisiongraph): add durable PostgreSQL ledger"
+          git push origin HEAD:feat/14-durable-decision-graph
