@@ -28,18 +28,18 @@ jobs:
           sudo apt-get install -y ripgrep
       - name: Download and verify modules
         run: go mod download && go mod verify
-      - name: Branch 11 canonical allowlist
+      - name: Branch 12 canonical allowlist
         run: |
-          base=f1a9ffacd8b3401ed56fd4e95ba95520b28b025a
+          base=c34e0f489ee84de99ba61fb89a75062752c4f065
           mapfile -t changed < <(git diff --name-only "$base"...HEAD -- docs/canonical | sort -u)
           for path in "${changed[@]}"; do
             case "$path" in
-              docs/canonical/capability-matrix.yaml|docs/canonical/model-execution-identity-policy.yaml) ;;
+              docs/canonical/model-routing.yaml|docs/canonical/model-egress-policy.yaml) ;;
               *) echo "unauthorized canonical change: $path" >&2; exit 1 ;;
             esac
           done
       - name: Git whitespace validation
-        run: git diff --check f1a9ffacd8b3401ed56fd4e95ba95520b28b025a...HEAD
+        run: git diff --check c34e0f489ee84de99ba61fb89a75062752c4f065...HEAD
       - name: Full non-integration verification
         run: make verify
       - name: Context engine race tests
@@ -52,6 +52,8 @@ jobs:
         run: go test -race -short ./internal/modeldispatch/...
       - name: Model identity race tests
         run: go test -race -short ./internal/modelidentity/... ./internal/secrets/...
+      - name: OpenAI-compatible provider race tests
+        run: go test -race -short ./internal/modelruntime/adapter/openaicompat/... ./internal/secrets/...
       - name: Cross builds
         run: make build-cross
       - name: Validate canonical registry
@@ -87,13 +89,13 @@ jobs:
           sudo apt-get install -y ripgrep
       - name: Download and verify modules
         run: go mod download && go mod verify
-      - name: Branch 11 canonical allowlist
+      - name: Branch 12 canonical allowlist
         run: |
-          base=f1a9ffacd8b3401ed56fd4e95ba95520b28b025a
+          base=c34e0f489ee84de99ba61fb89a75062752c4f065
           mapfile -t changed < <(git diff --name-only "$base"...HEAD -- docs/canonical | sort -u)
           for path in "${changed[@]}"; do
             case "$path" in
-              docs/canonical/capability-matrix.yaml|docs/canonical/model-execution-identity-policy.yaml) ;;
+              docs/canonical/model-routing.yaml|docs/canonical/model-egress-policy.yaml) ;;
               *) echo "unauthorized canonical change: $path" >&2; exit 1 ;;
             esac
           done

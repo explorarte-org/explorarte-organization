@@ -44,8 +44,18 @@ type policyRuleDocument struct {
 }
 
 type LoadOptions struct {
-	KnownProviders      []string
-	AllowExplicitAllows bool
+	KnownProviders          []string
+	AllowExplicitAllows     bool
+	ProductiveExplicitRules map[string][]DataClassification
+}
+
+func ProductiveLoadOptions(knownProviders []string) LoadOptions {
+	return LoadOptions{
+		KnownProviders: append([]string(nil), knownProviders...),
+		ProductiveExplicitRules: map[string][]DataClassification{
+			"openai_compatible": {ClassificationPublic, ClassificationSanitized},
+		},
+	}
 }
 
 func LoadCanonicalPolicy(canonicalDir string, options LoadOptions) (CanonicalPolicy, error) {
@@ -254,8 +264,8 @@ func validatePolicyDocument(document policyDocument, options LoadOptions) error 
 		if rule.Effect != EffectAllow && rule.Effect != EffectDeny {
 			return fmt.Errorf("%w: invalid effect %q", ErrInvalidPolicy, rule.Effect)
 		}
-		if rule.Effect == EffectAllow && !options.AllowExplicitAllows {
-			return fmt.Errorf("%w: productive policy cannot contain allow rules", ErrInvalidPolicy)
+		if rule.Effect == EffectAllow && !options.AllowExplicitAllows && !productiveAllowApproved(options, rule) {
+			return fmt.Errorf("%w: productive allow rule is not compiled into this adapter release", ErrInvalidPolicy)
 		}
 		if !validReasonCode(rule.ReasonCode) {
 			return fmt.Errorf("%w: invalid rule reason code", ErrInvalidPolicy)
@@ -267,6 +277,19 @@ func validatePolicyDocument(document policyDocument, options LoadOptions) error 
 		ruleSeen[key] = struct{}{}
 	}
 	return nil
+}
+
+func productiveAllowApproved(options LoadOptions, rule policyRuleDocument) bool {
+	classifications, ok := options.ProductiveExplicitRules[rule.ProviderID]
+	if !ok {
+		return false
+	}
+	for _, classification := range classifications {
+		if classification == rule.DataClassification {
+			return true
+		}
+	}
+	return false
 }
 
 func validDeclaredClassification(classification DataClassification) bool {

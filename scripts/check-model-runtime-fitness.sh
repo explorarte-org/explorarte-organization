@@ -10,16 +10,22 @@ test -d internal/modelruntime || fail "internal/modelruntime is missing"
 test -f migrations/000007_create_model_runtime_gateway.up.sql || fail "migration 000007 is missing"
 test -f migrations/000007_create_model_runtime_gateway.down.sql || fail "migration 000007 down is missing"
 
-# The branch is a one-shot local control plane. Network clients, subprocesses,
-# shell execution and background model daemons are forbidden.
-if rg -n --glob '*.go' '("net/http"|"os/exec"|exec\.Command|syscall\.|/bin/(ba)?sh|sh -c)' internal/modelruntime; then
-  fail "network or subprocess execution found in model runtime"
+# Network is isolated to the single approved provider adapter. Subprocesses,
+# shell execution and background model daemons remain forbidden everywhere.
+if rg -n --glob '*.go' --glob '!internal/modelruntime/adapter/openaicompat/**' '"net/http"' internal/modelruntime; then
+  fail "network client found outside the approved openai-compatible adapter"
+fi
+if rg -n --glob '*.go' '("os/exec"|exec\.Command|syscall\.|/bin/(ba)?sh|sh -c)' internal/modelruntime internal/secrets; then
+  fail "subprocess or shell execution found in model runtime"
 fi
 if rg -n --glob '*.go' '(\bmodeld\b|pollModel|polling|ReconcileInterval|ORG_MODEL_RUNTIME_RECONCILE_INTERVAL)' internal/modelruntime cmd/orgctl/models.go; then
   fail "persistent worker or reconcile interval found"
 fi
 if find internal/modelruntime/adapter -maxdepth 1 -type f -name '*.go' ! -name 'fake.go' ! -name 'fake_test.go' ! -name 'registry.go' -print | grep -q .; then
-  fail "unexpected provider adapter implementation found"
+  fail "unexpected top-level provider adapter implementation found"
+fi
+if find internal/modelruntime/adapter -mindepth 1 -maxdepth 1 -type d ! -name openaicompat -print | grep -q .; then
+  fail "unexpected real provider adapter directory found"
 fi
 
 # orgd and the generic application process must remain unaware of adapters.
@@ -27,14 +33,36 @@ if rg -n 'internal/modelruntime|modelruntime' cmd/orgd internal/app; then
   fail "orgd or app imports model runtime"
 fi
 
-# Real provider secrets and endpoints are intentionally outside Branch 08.
-# The branch 10 principal key is a non-secret local identity label. The branch
-# 11 identity key-file variable is only a filesystem reference; raw private-key
-# values remain forbidden by the model-identity fitness checks.
-if rg -n --glob '!**/*_test.go' '(API[_-]?KEY|ACCESS[_-]?TOKEN|PROVIDER[_-]?TOKEN|BASE[_-]?URL|Authorization: Bearer|ORG_MODEL_.*(KEY|TOKEN|URL))' internal/modelruntime cmd/orgctl/models.go .env.example \
-  | rg -v 'ORG_MODEL_EXECUTION_(PRINCIPAL_KEY|IDENTITY_KEY_FILE)' | rg -q .; then
-  fail "provider credential or endpoint configuration found"
+# Provider credentials remain file references. Raw API keys/tokens and generic
+# caller-selectable URLs are forbidden; only the exact Rama 12 variables exist.
+if rg -n --glob '!**/*_test.go' '(API[_-]?KEY|ACCESS[_-]?TOKEN|PROVIDER[_-]?TOKEN|BASE[_-]?URL|ORG_MODEL_.*PRIVATE_KEY)' internal/modelruntime cmd/orgctl .env.example; then
+  fail "raw provider credential or generic endpoint configuration found"
 fi
+python3 - <<'PYENV'
+from pathlib import Path
+import re, sys
+allowed = {
+    "ORG_MODEL_EXECUTION_PRINCIPAL_KEY",
+    "ORG_MODEL_EXECUTION_IDENTITY_KEY_FILE",
+    "ORG_MODEL_PROVIDER_OPENAI_COMPATIBLE_ENABLED",
+    "ORG_MODEL_PROVIDER_OPENAI_COMPATIBLE_ENDPOINT_URL",
+    "ORG_MODEL_PROVIDER_OPENAI_COMPATIBLE_CREDENTIAL_FILE",
+    "ORG_MODEL_PROVIDER_OPENAI_COMPATIBLE_REQUEST_TIMEOUT",
+    "ORG_MODEL_PROVIDER_OPENAI_COMPATIBLE_CIRCUIT_FAILURE_THRESHOLD",
+    "ORG_MODEL_PROVIDER_OPENAI_COMPATIBLE_CIRCUIT_OPEN_DURATION",
+}
+seen=set()
+for path in [Path("internal/modelruntime"), Path(".env.example")]:
+    paths = path.rglob("*.go") if path.is_dir() else [path]
+    for item in paths:
+        if item.name.endswith("_test.go"):
+            continue
+        seen.update(re.findall(r"ORG_MODEL_(?:EXECUTION|PROVIDER)_[A-Z0-9_]+", item.read_text(encoding="utf-8")))
+extra={value for value in seen if ("KEY" in value or "TOKEN" in value or "URL" in value or value.startswith("ORG_MODEL_PROVIDER_")) and value not in allowed}
+if extra:
+    print("unapproved provider configuration variables:", sorted(extra), file=sys.stderr)
+    sys.exit(1)
+PYENV
 
 # Context is consumed only through contextengine public interfaces.
 if rg -n --glob '*.go' --glob '!integration_test.go' '(context_snapshots|context_segments)' internal/modelruntime; then
@@ -94,9 +122,13 @@ if 'ClaimToken      string          `json:"-"`' not in claim:
     sys.exit(1)
 
 routing = Path("internal/modelruntime/canonical_routing.go").read_text(encoding="utf-8")
-required = 'policy.Transport == TransportFake && policy.Provider == "test.fake"'
-if required not in routing:
-    print("fake availability is not restricted to test.fake", file=sys.stderr)
+required = {
+    'policy.Transport == TransportFake && policy.Provider == "test.fake"',
+    'policy.Transport == TransportHTTP && policy.Provider == "openai_compatible"',
+}
+missing = [item for item in required if item not in routing]
+if missing:
+    print("compiled adapter availability is not exact:", missing, file=sys.stderr)
     sys.exit(1)
 PY
 
@@ -108,7 +140,7 @@ mapfile -t canonical_changes < <({
 } | sort -u)
 for path in "${canonical_changes[@]}"; do
   case "$path" in
-    docs/canonical/capability-matrix.yaml|docs/canonical/model-egress-policy.yaml|docs/canonical/model-execution-identity-policy.yaml) ;;
+    docs/canonical/capability-matrix.yaml|docs/canonical/model-routing.yaml|docs/canonical/model-egress-policy.yaml|docs/canonical/model-execution-identity-policy.yaml) ;;
     *) fail "unauthorized canonical change: $path" ;;
   esac
 done

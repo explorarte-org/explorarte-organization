@@ -23,7 +23,7 @@ mapfile -t canonical_changes < <({
 } | sort -u)
 for path in "${canonical_changes[@]}"; do
   case "$path" in
-    docs/canonical/capability-matrix.yaml|docs/canonical/model-egress-policy.yaml|docs/canonical/model-execution-identity-policy.yaml) ;;
+    docs/canonical/capability-matrix.yaml|docs/canonical/model-routing.yaml|docs/canonical/model-egress-policy.yaml|docs/canonical/model-execution-identity-policy.yaml) ;;
     *) fail "unauthorized canonical change: $path" ;;
   esac
 done
@@ -35,7 +35,6 @@ git diff --exit-code "$BASE_SHA" -- \
   migrations/000001\* migrations/000002\* migrations/000003\* migrations/000004\* \
   migrations/000005\* migrations/000006\* migrations/000007\* >/dev/null \
   || fail "migration 000001-000007 changed"
-git diff --exit-code "$BASE_SHA" -- docs/canonical/model-routing.yaml >/dev/null || fail "model-routing.yaml changed"
 git diff --exit-code "$BASE_SHA" -- docs/canonical/role-catalog.yaml >/dev/null || fail "role-catalog.yaml changed"
 git diff --exit-code "$BASE_SHA" -- docs/canonical/leader-worker-map.yaml >/dev/null || fail "leader-worker-map.yaml changed"
 
@@ -60,18 +59,44 @@ for authority in executive department_leadership specialist transversal_audit re
   fi
 done
 
-if rg -n 'effect:[[:space:]]*allow' docs/canonical/model-egress-policy.yaml; then fail "productive policy contains allow"; fi
+python3 - <<'PYPOLICY'
+from pathlib import Path
+import sys
+text=Path("docs/canonical/model-egress-policy.yaml").read_text(encoding="utf-8").splitlines()
+rules=[]
+current={}
+in_rules=False
+for raw in text:
+    line=raw.strip()
+    if line == "rules:":
+        in_rules=True
+        continue
+    if not in_rules:
+        continue
+    if line.startswith("- provider_id:"):
+        if current:
+            rules.append(current)
+        current={"provider_id": line.split(":",1)[1].strip()}
+    elif current and ":" in line:
+        key,value=line.split(":",1)
+        current[key.strip()]=value.strip()
+if current:
+    rules.append(current)
+allows={(r.get("provider_id"), r.get("data_classification")) for r in rules if r.get("effect") == "allow"}
+expected={("openai_compatible","public"),("openai_compatible","sanitized")}
+if allows != expected:
+    print(f"productive egress allows must be exactly {sorted(expected)}, got {sorted(allows)}", file=sys.stderr)
+    sys.exit(1)
+for provider in ("alibaba_token_plan_via_claude_code","deepseek"):
+    for cls in ("public","sanitized","organizational"):
+        matches=[r for r in rules if r.get("provider_id")==provider and r.get("data_classification")==cls]
+        if len(matches)!=1 or matches[0].get("effect")!="deny":
+            raise SystemExit(f"{provider}/{cls} must remain explicit deny")
+match=[r for r in rules if r.get("provider_id")=="openai_compatible" and r.get("data_classification")=="organizational"]
+if len(match)!=1 or match[0].get("effect")!="deny":
+    raise SystemExit("openai_compatible/organizational must remain explicit deny")
+PYPOLICY
 if rg -n 'provider_id:[[:space:]]*test\.fake' docs/canonical/model-egress-policy.yaml; then fail "test.fake leaked into productive policy"; fi
-for class in public sanitized organizational; do
-  if awk -v class="$class" '
-    $0 ~ "data_classification:[[:space:]]*" class "$" {seen=1; next}
-    seen && $0 ~ /effect:[[:space:]]*allow/ {found=1}
-    seen && $0 ~ /^(  )?- provider_id:/ {seen=0}
-    END {exit found ? 0 : 1}
-  ' docs/canonical/model-egress-policy.yaml; then
-    fail "$class is allowed for a productive provider"
-  fi
-done
 for class in secret clinical; do
   rg -U -q "data_classification:[[:space:]]*${class}\n[[:space:]]+reason_code:" docs/canonical/model-egress-policy.yaml || fail "$class hard deny missing"
 done

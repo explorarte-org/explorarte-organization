@@ -146,8 +146,18 @@ func ValidatePersistAllowCommand(command PersistAllowCommand) error {
 	if command.Evaluation.AuthorizationEffect != AuthorizationAllow || command.Evaluation.EgressEffect != EffectAllow {
 		return fmt.Errorf("%w: allow transition requires authorization and egress allow", ErrEvaluationConflict)
 	}
+	request := command.ProviderRequest
 	if strings.TrimSpace(command.ClaimToken) == "" || !lowerHex64Pattern.MatchString(command.ProviderIdempotencyKeyHash) || command.Deadline.IsZero() {
 		return fmt.Errorf("%w: invalid allow transition metadata", ErrEvaluationConflict)
+	}
+	if strings.TrimSpace(request.ModelProfileID) == "" || strings.TrimSpace(request.ProviderModelID) == "" || strings.TrimSpace(request.AdapterID) == "" || request.AdapterVersion <= 0 ||
+		strings.TrimSpace(request.RequestSchemaVersion) == "" || strings.TrimSpace(request.ResponseSchemaVersion) == "" ||
+		!lowerHex64Pattern.MatchString(request.RequestHash) || !lowerHex64Pattern.MatchString(request.EndpointFingerprint) ||
+		!lowerHex64Pattern.MatchString(request.CredentialRefHash) {
+		return fmt.Errorf("%w: invalid provider request evidence", ErrEvaluationConflict)
+	}
+	if len(request.ModelProfileID) > 160 || len(request.ProviderModelID) > 240 || len(request.AdapterID) > 160 || len(request.RequestSchemaVersion) > 120 || len(request.ResponseSchemaVersion) > 120 {
+		return fmt.Errorf("%w: provider request evidence exceeds limits", ErrEvaluationConflict)
 	}
 	return nil
 }

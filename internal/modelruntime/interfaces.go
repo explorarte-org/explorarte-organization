@@ -103,6 +103,8 @@ type EgressEvaluationStore interface {
 
 type ProviderAdapter interface {
 	ProviderID() string
+	Descriptor() AdapterDescriptor
+	Preflight(context.Context, ProviderPreflightRequest) error
 	Dispatch(context.Context, CanonicalRequest) (RawResponse, error)
 }
 type AdapterRegistry interface {
@@ -122,7 +124,9 @@ type InvocationStore interface {
 	ListInvocations(context.Context, string, int) ([]Invocation, error)
 	ClaimInvocation(context.Context, ClaimCommand, RuntimeConfig) (ClaimedInvocation, error)
 	ClaimInvocationAuthenticated(context.Context, AuthenticatedClaimCommand, RuntimeConfig) (ClaimedInvocation, error)
-	MarkResponseReceived(context.Context, int64, int64, string, string) (Invocation, error)
+	MarkResponseReceived(context.Context, int64, int64, string, ProviderOutcome) (Invocation, error)
+	RejectProviderResponse(context.Context, FailureCommand, ProviderOutcome, int) (Invocation, error)
+	FailCommittedBeforeRequest(context.Context, FailureCommand, ProviderOutcome, int) (Invocation, error)
 	CompleteInvocation(context.Context, CompletionCommand, int) (DispatchResult, error)
 	FailBeforeSend(context.Context, FailureCommand, int) (Invocation, error)
 	FailAfterResponse(context.Context, FailureCommand, int) (Invocation, error)
@@ -178,6 +182,7 @@ type FailureCommand struct {
 	ErrorCode             string
 	OutcomeClassification string
 	EventType             string
+	ProviderOutcome       *ProviderOutcome
 }
 
 type Clock interface{ Now() time.Time }

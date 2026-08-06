@@ -237,3 +237,32 @@ disabled means dispatch denied; there is no fallback to label-only dispatch.
 Administrative policy and public-key commands are available under
 `orgctl model identity`. This does not enable a real provider: `FakeAdapter`
 remains the only executable adapter.
+
+### Real provider adapter boundary
+
+Rama 12 adds one executable HTTP adapter for the canonical `openai_compatible`
+provider. It is disabled by default and cannot be selected from invocation JSON
+or CLI flags. Productive egress remains default-deny: only `public` and
+`sanitized` context classifications are approved for this provider;
+`organizational`, `secret` and `clinical` are denied.
+
+Operational configuration:
+
+```text
+ORG_MODEL_PROVIDER_OPENAI_COMPATIBLE_ENABLED=false
+ORG_MODEL_PROVIDER_OPENAI_COMPATIBLE_ENDPOINT_URL=https://provider.example/v1/chat/completions
+ORG_MODEL_PROVIDER_OPENAI_COMPATIBLE_CREDENTIAL_FILE=/run/secrets/openai-compatible-token
+ORG_MODEL_PROVIDER_OPENAI_COMPATIBLE_REQUEST_TIMEOUT=2m
+ORG_MODEL_PROVIDER_OPENAI_COMPATIBLE_CIRCUIT_FAILURE_THRESHOLD=5
+ORG_MODEL_PROVIDER_OPENAI_COMPATIBLE_CIRCUIT_OPEN_DURATION=30s
+```
+
+The endpoint must be HTTPS and the credential file must be absolute, regular,
+bounded and private (normally mode `0600`). Environment proxies and redirects
+are not used. PostgreSQL persists only versioned request/outcome metadata,
+hashes and provenance. It never stores the endpoint, token, headers, rendered
+context, HTTP bodies or provider error messages. A durable provider-request row
+is committed with egress allow, assignment consumption and `send_started`
+before the adapter may perform HTTP.
+
+See `docs/implementation/branch-12-model-provider-adapter/INTEGRATION.md`.

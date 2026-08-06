@@ -48,7 +48,7 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err = runner.Up(ctx); err != nil {
-		t.Fatalf("migrations through 000010: %v", err)
+		t.Fatalf("migrations through 000011: %v", err)
 	}
 	resetModelSchema(t, ctx, platform)
 	syncModelCanonical(t, ctx, platform)
@@ -79,7 +79,7 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 	}
 	baseCatalog := catalogFixture{organization: modelruntime.OrganizationRef{ID: modelIntegrationOrganization, RevisionID: revision.ID, ModelRoutingHash: revision.DocumentHashes["model-routing.yaml"], ModelEgressPolicyHash: revision.DocumentHashes["model-egress-policy.yaml"], CapabilityMatrixHash: revision.DocumentHashes["capability-matrix.yaml"]}, roles: convertRoles(roles)}
 
-	t.Run("canonical real providers materialize unavailable and sync is idempotent", func(t *testing.T) {
+	t.Run("canonical compiled provider availability and sync are durable", func(t *testing.T) {
 		service, newErr := modelruntime.NewRegistryService(filepath.Join("..", "..", "..", "docs", "canonical"), modelIntegrationOrganization, baseCatalog, store)
 		if newErr != nil {
 			t.Fatal(newErr)
@@ -96,9 +96,11 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		if err := platform.Pool().QueryRow(ctx, `SELECT count(*) FILTER (WHERE dispatch_enabled), count(*) FILTER (WHERE adapter_status='available') FROM model_profile_versions WHERE organization_revision_id=$1`, revision.ID).Scan(&enabled, &available); err != nil {
 			t.Fatal(err)
 		}
-		if enabled != 0 || available != 0 {
-			t.Fatalf("real providers enabled=%d available=%d", enabled, available)
+		if enabled != 1 || available != 1 {
+			t.Fatalf("compiled provider versions enabled=%d available=%d, want 1/1", enabled, available)
 		}
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id='openai_compatible' AND transport='http_adapter' AND dispatch_enabled AND adapter_status='available'`, revision.ID, 1)
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id<>'openai_compatible' AND (dispatch_enabled OR adapter_status<>'unavailable')`, revision.ID, 0)
 	})
 
 	fakeRoutingHash := modelruntime.SHA256Bytes([]byte("test.fake canonical routing fixture v1"))
@@ -209,6 +211,14 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		}
 		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_invocation_results WHERE invocation_id=$1`, created.Invocation.ID, 1)
 		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_invocation_usage WHERE invocation_id=$1`, created.Invocation.ID, 1)
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_provider_requests WHERE invocation_id=$1 AND provider_id='test.fake' AND adapter_id='fake' AND request_schema_version='test.fake.request.v1' AND request_hash ~ '^[0-9a-f]{64}$' AND endpoint_fingerprint ~ '^[0-9a-f]{64}$' AND credential_ref_hash ~ '^[0-9a-f]{64}$'`, created.Invocation.ID, 1)
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_provider_outcomes WHERE invocation_id=$1 AND outcome_classification='response_received' AND http_status=200 AND response_hash ~ '^[0-9a-f]{64}$'`, created.Invocation.ID, 1)
+		if _, mutationErr := platform.Pool().Exec(ctx, `UPDATE model_provider_requests SET adapter_version=2 WHERE invocation_id=$1`, created.Invocation.ID); mutationErr == nil {
+			t.Fatal("provider request ledger accepted mutation")
+		}
+		if _, mutationErr := platform.Pool().Exec(ctx, `UPDATE model_provider_outcomes SET error_code='mutated' WHERE invocation_id=$1`, created.Invocation.ID); mutationErr == nil {
+			t.Fatal("provider outcome ledger accepted mutation")
+		}
 		assertModelCount(t, ctx, platform, `SELECT count(*) FROM audit_events WHERE subject_type='model_invocation' AND subject_id=$1 AND event_type='model.invocation_succeeded'`, strconv.FormatInt(created.Invocation.ID, 10), 1)
 		assertModelCount(t, ctx, platform, `SELECT count(*) FROM outbox_events WHERE aggregate_type='model_invocation' AND aggregate_id=$1 AND event_type='model.invocation_succeeded'`, strconv.FormatInt(created.Invocation.ID, 10), 1)
 
@@ -245,6 +255,42 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		}
 		if leaked != 0 {
 			t.Fatalf("outbox leaked sensitive runtime payload in %d rows", leaked)
+		}
+		if err := platform.Pool().QueryRow(ctx, `SELECT count(*) FROM model_provider_requests r JOIN model_provider_outcomes o ON o.provider_request_record_id=r.id WHERE r.invocation_id=$1 AND (r::text || o::text) ~* '(safe integration context|hidden fake reasoning|claim_token|challenge_nonce|raw_signature|private_key)'`, created.Invocation.ID).Scan(&leaked); err != nil {
+			t.Fatal(err)
+		}
+		if leaked != 0 {
+			t.Fatalf("provider evidence leaked sensitive payload in %d rows", leaked)
+		}
+	})
+
+	t.Run("classified provider outcomes are immutable and terminal", func(t *testing.T) {
+		cases := []struct {
+			name       string
+			phase      modelruntime.AdapterFailurePhase
+			outcome    modelruntime.ProviderOutcome
+			wantStatus modelruntime.InvocationStatus
+			wantClass  string
+		}{
+			{name: "not sent after commit", phase: modelruntime.AdapterFailureBeforeRequest, outcome: modelruntime.ProviderOutcome{OutcomeClassification: modelruntime.ProviderOutcomeNotSent, ErrorClass: "credential", ErrorCode: "credential_unavailable", ResponseSchemaVersion: "test.fake.response.v1"}, wantStatus: modelruntime.InvocationFailed, wantClass: modelruntime.ProviderOutcomeNotSent},
+			{name: "provider rejected", phase: modelruntime.AdapterFailureResponseReceived, outcome: modelruntime.ProviderOutcome{OutcomeClassification: modelruntime.ProviderOutcomeRejected, ProviderRequestID: "provider-rejected", HTTPStatus: 429, ErrorClass: "rate_limit", ErrorCode: "rate_limited", Retryable: true, ResponseHash: modelruntime.SHA256Bytes([]byte("provider rejection")), ResponseSchemaVersion: "test.fake.response.v1"}, wantStatus: modelruntime.InvocationFailed, wantClass: modelruntime.ProviderOutcomeRejected},
+			{name: "transport ambiguous", phase: modelruntime.AdapterFailureAmbiguous, outcome: modelruntime.ProviderOutcome{OutcomeClassification: modelruntime.ProviderOutcomeAmbiguous, ErrorClass: "transport", ErrorCode: "transport_timeout", Retryable: true, ResponseSchemaVersion: "test.fake.response.v1"}, wantStatus: modelruntime.InvocationAmbiguous, wantClass: modelruntime.ProviderOutcomeAmbiguous},
+		}
+		for _, test := range cases {
+			t.Run(test.name, func(t *testing.T) {
+				created := createModelInvocation(t, ctx, invocations, validInvocationCommand(taskRef, snapshotRef, "ingenieria_ia/code-runner", "provider-outcome-"+strings.ReplaceAll(test.name, " ", "-")))
+				provider := &classifiedAdapter{phase: test.phase, outcome: test.outcome}
+				classifiedDispatch, newErr := modelruntime.NewDispatchService(modelIntegrationOrganization, cfg, fakeCatalog, tasks, contexts, allowEvaluator{matrixHash: fakeCapabilityHash}, egressStore, modelegress.NewEvaluator(), store, principals, assignments, identityService, store, adapter.NewRegistry(provider), modelruntime.ClockFunc(time.Now))
+				if newErr != nil {
+					t.Fatal(newErr)
+				}
+				result, dispatchErr := classifiedDispatch.Dispatch(ctx, created.ID)
+				if dispatchErr == nil || result.Invocation.Status != test.wantStatus || provider.calls != 1 {
+					t.Fatalf("result=%+v err=%v calls=%d", result, dispatchErr, provider.calls)
+				}
+				assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_provider_requests WHERE invocation_id=$1`, created.ID, 1)
+				assertModelCountTwo(t, ctx, platform, `SELECT count(*) FROM model_provider_outcomes WHERE invocation_id=$1 AND outcome_classification=$2`, created.ID, test.wantClass, 1)
+			})
 		}
 	})
 
@@ -564,10 +610,12 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 	})
 
 	t.Run("down migration and reapply in disposable integration database", func(t *testing.T) {
-		for _, version := range []int{10, 9, 8, 7} {
+		// Branch 12 provider tables reference identity assertions, so 000011
+		// must come down before 000010 and the earlier model migrations.
+		for _, version := range []int{11, 10, 9, 8, 7} {
 			name := fmt.Sprintf("%06d_", version)
 			var downName string
-			for _, candidate := range []string{"000010_create_model_execution_identity.down.sql", "000009_create_model_dispatcher_assignments.down.sql", "000008_create_model_egress_authorization.down.sql", "000007_create_model_runtime_gateway.down.sql"} {
+			for _, candidate := range []string{"000011_create_model_provider_adapter.down.sql", "000010_create_model_execution_identity.down.sql", "000009_create_model_dispatcher_assignments.down.sql", "000008_create_model_egress_authorization.down.sql", "000007_create_model_runtime_gateway.down.sql"} {
 				if strings.HasPrefix(candidate, name) {
 					downName = candidate
 					break
@@ -585,11 +633,11 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 			}
 		}
 		reapplied, upErr := runner.Up(ctx)
-		if upErr != nil || len(reapplied.Applied) != 4 || reapplied.Current != 10 {
+		if upErr != nil || len(reapplied.Applied) != 5 || reapplied.Current != 11 {
 			t.Fatalf("reapply=%+v err=%v", reapplied, upErr)
 		}
 		var exists bool
-		if err = platform.Pool().QueryRow(ctx, `SELECT to_regclass('public.model_invocations') IS NOT NULL AND to_regclass('public.model_dispatch_attempts') IS NOT NULL AND to_regclass('public.model_egress_policy_versions') IS NOT NULL AND to_regclass('public.model_dispatcher_assignments') IS NOT NULL AND to_regclass('public.model_execution_principals') IS NOT NULL AND to_regclass('public.model_execution_identity_policy_versions') IS NOT NULL`).Scan(&exists); err != nil || !exists {
+		if err = platform.Pool().QueryRow(ctx, `SELECT to_regclass('public.model_invocations') IS NOT NULL AND to_regclass('public.model_dispatch_attempts') IS NOT NULL AND to_regclass('public.model_egress_policy_versions') IS NOT NULL AND to_regclass('public.model_dispatcher_assignments') IS NOT NULL AND to_regclass('public.model_execution_principals') IS NOT NULL AND to_regclass('public.model_execution_identity_policy_versions') IS NOT NULL AND to_regclass('public.model_provider_requests') IS NOT NULL AND to_regclass('public.model_provider_outcomes') IS NOT NULL`).Scan(&exists); err != nil || !exists {
 			t.Fatalf("reapply exists=%v err=%v", exists, err)
 		}
 	})
@@ -754,9 +802,59 @@ func (d denyEvaluator) EvaluateDispatch(context.Context, string, int64, string, 
 type countingAdapter struct{ calls int }
 
 func (a *countingAdapter) ProviderID() string { return "test.fake" }
+func (a *countingAdapter) Descriptor() modelruntime.AdapterDescriptor {
+	return modelruntime.AdapterDescriptor{
+		ProviderID: "test.fake", AdapterID: "counting-test", AdapterVersion: 1,
+		Transport: modelruntime.TransportFake, RequestSchemaVersion: "test.fake.request.v1",
+		ResponseSchemaVersion: "test.fake.response.v1",
+		EndpointFingerprint:   modelruntime.SHA256Bytes([]byte("test.fake:endpoint")),
+		CredentialRefHash:     modelruntime.SHA256Bytes([]byte("test.fake:credential")),
+	}
+}
+func (a *countingAdapter) Preflight(ctx context.Context, request modelruntime.ProviderPreflightRequest) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if request.ProviderID != "test.fake" || request.ProviderModelID == "" || request.Deadline.IsZero() {
+		return modelruntime.ErrInvalidRequest
+	}
+	return nil
+}
 func (a *countingAdapter) Dispatch(context.Context, modelruntime.CanonicalRequest) (modelruntime.RawResponse, error) {
 	a.calls++
-	return modelruntime.RawResponse{Content: []byte(`{"provider":"test.fake"}`), ProviderRequestID: "counting"}, nil
+	content := []byte(`{"provider":"test.fake"}`)
+	return modelruntime.RawResponse{Content: content, ProviderRequestID: "counting", ProviderOutcome: modelruntime.ProviderOutcome{
+		OutcomeClassification: modelruntime.ProviderOutcomeResponseReceived,
+		ProviderRequestID:     "counting", HTTPStatus: 200,
+		ResponseHash: modelruntime.SHA256Bytes(content), ResponseSchemaVersion: "test.fake.response.v1",
+	}}, nil
+}
+
+type classifiedAdapter struct {
+	phase   modelruntime.AdapterFailurePhase
+	outcome modelruntime.ProviderOutcome
+	calls   int
+}
+
+func (a *classifiedAdapter) ProviderID() string { return "test.fake" }
+func (a *classifiedAdapter) Descriptor() modelruntime.AdapterDescriptor {
+	return modelruntime.AdapterDescriptor{
+		ProviderID: "test.fake", AdapterID: "classified-test", AdapterVersion: 1,
+		Transport: modelruntime.TransportFake, RequestSchemaVersion: "test.fake.request.v1",
+		ResponseSchemaVersion: "test.fake.response.v1",
+		EndpointFingerprint:   modelruntime.SHA256Bytes([]byte("test.fake:endpoint")),
+		CredentialRefHash:     modelruntime.SHA256Bytes([]byte("test.fake:credential")),
+	}
+}
+func (a *classifiedAdapter) Preflight(ctx context.Context, request modelruntime.ProviderPreflightRequest) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return nil
+}
+func (a *classifiedAdapter) Dispatch(context.Context, modelruntime.CanonicalRequest) (modelruntime.RawResponse, error) {
+	a.calls++
+	return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: a.phase, Outcome: a.outcome, Cause: errors.New("classified provider failure")}
 }
 
 func openModelStore(t *testing.T, ctx context.Context) *platformpostgres.Store {
@@ -775,7 +873,7 @@ func openModelStore(t *testing.T, ctx context.Context) *platformpostgres.Store {
 
 func resetModelSchema(t *testing.T, ctx context.Context, store *platformpostgres.Store) {
 	t.Helper()
-	_, err := store.Pool().Exec(ctx, `TRUNCATE model_egress_evaluations,model_invocation_usage,model_invocation_results,model_dispatch_attempts,model_invocations,model_egress_revision_bindings,model_egress_rules,model_egress_policy_versions,role_model_bindings,model_capability_snapshots,model_profile_versions,model_profiles,model_providers,context_segments,context_snapshots,authorization_uses,authorization_decisions,authorization_requests,staging_events,staging_reviews,staging_promotions,staging_checks,staging_workspace_artifacts,staging_artifacts,staging_workspaces,outbox_events,task_dead_letters,task_events,task_leases,task_attempts,task_evidence,task_requirements,task_dependencies,tasks,organization_reporting_lines,organization_registry_revision_documents,organization_roles,organizational_units,organizations,organization_registry_revisions,audit_events RESTART IDENTITY CASCADE`)
+	_, err := store.Pool().Exec(ctx, `TRUNCATE model_provider_outcomes,model_provider_requests,model_egress_evaluations,model_invocation_usage,model_invocation_results,model_dispatch_attempts,model_invocations,model_egress_revision_bindings,model_egress_rules,model_egress_policy_versions,role_model_bindings,model_capability_snapshots,model_profile_versions,model_profiles,model_providers,context_segments,context_snapshots,authorization_uses,authorization_decisions,authorization_requests,staging_events,staging_reviews,staging_promotions,staging_checks,staging_workspace_artifacts,staging_artifacts,staging_workspaces,outbox_events,task_dead_letters,task_events,task_leases,task_attempts,task_evidence,task_requirements,task_dependencies,tasks,organization_reporting_lines,organization_registry_revision_documents,organization_roles,organizational_units,organizations,organization_registry_revisions,audit_events RESTART IDENTITY CASCADE`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -990,6 +1088,14 @@ func assertModelCount(t *testing.T, ctx context.Context, store *platformpostgres
 	t.Helper()
 	var count int
 	if err := store.Pool().QueryRow(ctx, query, arg).Scan(&count); err != nil || count != want {
+		t.Fatalf("count=%d want=%d err=%v", count, want, err)
+	}
+}
+
+func assertModelCountTwo(t *testing.T, ctx context.Context, store *platformpostgres.Store, query string, first, second any, want int) {
+	t.Helper()
+	var count int
+	if err := store.Pool().QueryRow(ctx, query, first, second).Scan(&count); err != nil || count != want {
 		t.Fatalf("count=%d want=%d err=%v", count, want, err)
 	}
 }

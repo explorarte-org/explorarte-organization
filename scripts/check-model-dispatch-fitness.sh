@@ -22,7 +22,7 @@ mapfile -t canonical_changes < <({
 } | sort -u)
 for path in "${canonical_changes[@]}"; do
   case "$path" in
-    docs/canonical/capability-matrix.yaml|docs/canonical/model-execution-identity-policy.yaml) ;;
+    docs/canonical/capability-matrix.yaml|docs/canonical/model-routing.yaml|docs/canonical/model-egress-policy.yaml|docs/canonical/model-execution-identity-policy.yaml) ;;
     *) fail "unauthorized canonical change: $path" ;;
   esac
 done
@@ -31,8 +31,6 @@ git diff --exit-code "$BASE_SHA" -- \
   migrations/000001\* migrations/000002\* migrations/000003\* migrations/000004\* \
   migrations/000005\* migrations/000006\* migrations/000007\* migrations/000008\* >/dev/null \
   || fail "migration 000001-000008 changed"
-git diff --exit-code "$BASE_SHA" -- docs/canonical/model-routing.yaml >/dev/null || fail "model-routing.yaml changed"
-git diff --exit-code "$BASE_SHA" -- docs/canonical/model-egress-policy.yaml >/dev/null || fail "model-egress-policy.yaml changed"
 git diff --exit-code "$BASE_SHA" -- docs/canonical/role-catalog.yaml >/dev/null || fail "role-catalog.yaml changed"
 git diff --exit-code "$BASE_SHA" -- docs/canonical/leader-worker-map.yaml >/dev/null || fail "leader-worker-map.yaml changed"
 git diff --exit-code "$BASE_SHA" -- docs/canonical/organization.yaml >/dev/null || fail "organization.yaml changed"

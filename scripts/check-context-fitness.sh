@@ -44,7 +44,7 @@ if git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
   } | sort -u)
   for path in "${canonical_changes[@]}"; do
     case "$path" in
-      docs/canonical/capability-matrix.yaml|docs/canonical/model-egress-policy.yaml|docs/canonical/model-execution-identity-policy.yaml) ;;
+      docs/canonical/capability-matrix.yaml|docs/canonical/model-routing.yaml|docs/canonical/model-egress-policy.yaml|docs/canonical/model-execution-identity-policy.yaml) ;;
       *) fail "unauthorized canonical change: $path" ;;
     esac
   done

@@ -1,0 +1,7 @@
+DROP TRIGGER model_provider_outcomes_no_mutation ON model_provider_outcomes;
+DROP FUNCTION reject_model_provider_outcome_mutation();
+DROP TABLE model_provider_outcomes;
+
+DROP TRIGGER model_provider_requests_no_mutation ON model_provider_requests;
+DROP FUNCTION reject_model_provider_request_mutation();
+DROP TABLE model_provider_requests;

@@ -31,7 +31,7 @@ func (s *Service) load(ctx context.Context) (RegistryPlan, error) {
 		return RegistryPlan{}, err
 	}
 	sort.Strings(providers)
-	policy, err := LoadCanonicalPolicy(s.canonicalDir, LoadOptions{KnownProviders: providers})
+	policy, err := LoadCanonicalPolicy(s.canonicalDir, ProductiveLoadOptions(providers))
 	if err != nil {
 		return RegistryPlan{}, err
 	}
