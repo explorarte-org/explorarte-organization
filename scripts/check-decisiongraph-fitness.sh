@@ -18,7 +18,8 @@ for path in \
   internal/decisiongraph/postgres/store.go \
   migrations/000012_create_durable_decision_graph.up.sql \
   migrations/000012_create_durable_decision_graph.down.sql \
-  internal/decisiongraph/postgres/integration_test.go; do
+  internal/decisiongraph/postgres/integration_test.go \
+  cmd/orgctl/decision.go; do
   test -f "$path" || fail "required file missing: $path"
 done
 
@@ -78,6 +79,8 @@ rg -q 'used_model_calls=used_model_calls\+1' "$store" || fail "model-call budget
 rg -q 'decision_budget_events' "$store" || fail "append-only budget event ledger missing"
 rg -q 'used_wall_time_ms=used_wall_time_ms' "$store" || fail "wall-time budget is not consumed"
 rg -q 'wall_time_delta_ms' "$store" || fail "wall-time budget events are missing"
+rg -q 'case "decision"' cmd/orgctl/main.go || fail "orgctl decision command is not wired"
+rg -q 'DisallowUnknownFields' cmd/orgctl/decision.go || fail "decision JSON input is not strict"
 rg -q 'ExecutionAmbiguous' internal/decisiongraph/transitions.go || fail "ambiguous terminal state missing"
 if rg -n 'ExecutionAmbiguous.*ExecutionReady|status=.requested.*ambiguous|retry.*ambiguous' internal/decisiongraph --glob '*.go' --glob '!**/*_test.go'; then
   fail "ambiguous outcomes appear retryable"

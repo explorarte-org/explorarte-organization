@@ -140,6 +140,8 @@ EOF
     /tmp/orgctl model identity policy sync --apply --json >/tmp/model-identity-policy-sync-noop.json
     /tmp/orgctl model identity policy status --json >/tmp/model-identity-policy-status.json
     grep -Fq "\"synchronized\": true" /tmp/model-identity-policy-status.json
+    /tmp/orgctl decision recover --limit 1 --json >/tmp/decision-recover.json
+    grep -Fq "\"recovered\": 0" /tmp/decision-recover.json
     for forbidden in provider policy policy-id policy-version transport classifications effect url api-key; do
       set +e
       /tmp/orgctl model egress validate --"$forbidden" forbidden >/tmp/model-egress-forbidden.out 2>/tmp/model-egress-forbidden.err

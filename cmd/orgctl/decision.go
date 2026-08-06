@@ -41,14 +41,14 @@ type decisionCreateInput struct {
 }
 
 type decisionNodeInput struct {
-	ID                   int64                     `json:"id"`
-	Type                 decisiongraph.NodeType    `json:"type"`
-	BranchState          decisiongraph.BranchState `json:"branch_state"`
+	ID                   int64                        `json:"id"`
+	Type                 decisiongraph.NodeType       `json:"type"`
+	BranchState          decisiongraph.BranchState    `json:"branch_state"`
 	ExecutionState       decisiongraph.ExecutionState `json:"execution_state"`
-	PayloadSchemaVersion string                    `json:"payload_schema_version"`
-	PayloadHash          string                    `json:"payload_hash"`
-	ContextSnapshotID    *int64                    `json:"context_snapshot_id,omitempty"`
-	CreatedBy            string                    `json:"created_by"`
+	PayloadSchemaVersion string                       `json:"payload_schema_version"`
+	PayloadHash          string                       `json:"payload_hash"`
+	ContextSnapshotID    *int64                       `json:"context_snapshot_id,omitempty"`
+	CreatedBy            string                       `json:"created_by"`
 }
 
 type decisionEdgeInput struct {
@@ -58,11 +58,11 @@ type decisionEdgeInput struct {
 }
 
 type decisionAppendInput struct {
-	RunID     int64                   `json:"run_id"`
-	Nodes     []decisionNodeInput     `json:"nodes"`
-	Edges     []decisionEdgeInput     `json:"edges"`
-	Depths    map[int64]int           `json:"depths"`
-	CreatedBy string                  `json:"created_by"`
+	RunID     int64               `json:"run_id"`
+	Nodes     []decisionNodeInput `json:"nodes"`
+	Edges     []decisionEdgeInput `json:"edges"`
+	Depths    map[int64]int       `json:"depths"`
+	CreatedBy string              `json:"created_by"`
 }
 
 type decisionClaimInput struct {
@@ -179,7 +179,7 @@ func runDecision(args []string, stdout, stderr io.Writer) int {
 		value, err := service.CreateRun(ctx, decisiongraph.CreateRunRequest{
 			TaskID: input.TaskID, AttemptID: input.AttemptID,
 			ReasoningPolicySchemaVersion: input.ReasoningPolicySchemaVersion,
-			ReasoningPolicyHash: input.ReasoningPolicyHash, IdempotencyKey: input.IdempotencyKey,
+			ReasoningPolicyHash:          input.ReasoningPolicyHash, IdempotencyKey: input.IdempotencyKey,
 			BudgetLimits: decisiongraph.BudgetLimits{
 				MaxNodes: input.Budget.MaxNodes, MaxDepth: input.Budget.MaxDepth,
 				MaxParallelNodes: input.Budget.MaxParallelNodes, MaxModelCalls: input.Budget.MaxModelCalls,
@@ -320,7 +320,7 @@ func runDecision(args []string, stdout, stderr io.Writer) int {
 		err := service.RecordTerminalDecision(ctx, decisiongraph.TerminalDecisionRequest{
 			RunID: input.RunID, DecisionNodeID: input.DecisionNodeID,
 			SelectedCandidateNodeID: input.SelectedCandidateNodeID,
-			EvidenceSetHash: input.EvidenceSetHash, VerificationSetHash: input.VerificationSetHash,
+			EvidenceSetHash:         input.EvidenceSetHash, VerificationSetHash: input.VerificationSetHash,
 			DecisionHash: input.DecisionHash, VerificationLabel: input.VerificationLabel, CreatedBy: input.CreatedBy,
 		})
 		if err != nil {
