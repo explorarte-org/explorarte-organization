@@ -6,6 +6,7 @@ on:
     paths:
       - ".rama14-transfer/**"
       - ".github/workflows/apply-capa14.yml"
+      - "internal/decisiongraph/hashing.go"
   workflow_dispatch:
 
 permissions:
