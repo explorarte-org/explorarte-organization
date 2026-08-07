@@ -30,39 +30,41 @@ func (e EvidenceTasks) CreateTask(ctx context.Context, command executive.CreateT
 	if err != nil {
 		return executive.TaskRecord{}, false, err
 	}
-	if e.Models == nil || e.Completion == nil {
+	if e.Models == nil || e.Completion == nil || hasExecutiveBundle(task) {
 		return task, reused, nil
 	}
 	if strings.HasPrefix(command.Title, "Department review: ") {
 		if err = e.attachDepartmentBundle(ctx, task, command.CorrelationID, strings.TrimPrefix(command.Title, "Department review: ")); err != nil {
 			return executive.TaskRecord{}, false, err
 		}
-		return e.Tasks.GetTask(ctx, task.ID)
+		refreshed, getErr := e.Tasks.GetTask(ctx, task.ID)
+		return refreshed, reused, getErr
 	}
 	if command.Title == "CEO executive closure" {
 		if err = e.attachClosureBundle(ctx, task, command.CorrelationID); err != nil {
 			return executive.TaskRecord{}, false, err
 		}
-		return e.Tasks.GetTask(ctx, task.ID)
+		refreshed, getErr := e.Tasks.GetTask(ctx, task.ID)
+		return refreshed, reused, getErr
 	}
 	return task, reused, nil
 }
 
 type projectedWorker struct {
-	TaskID          int64                       `json:"task_id"`
-	RoleID          string                      `json:"role_id"`
-	Status          string                      `json:"status"`
-	Completion      executive.CompletionVerdict `json:"completion"`
-	Summary         string                      `json:"summary"`
-	EvidenceRefs    []string                    `json:"evidence_refs"`
-	TaskEvidence    []string                    `json:"task_evidence_refs"`
-	ResponseHash    string                      `json:"response_hash"`
+	TaskID       int64                       `json:"task_id"`
+	RoleID       string                      `json:"role_id"`
+	Status       string                      `json:"status"`
+	Completion   executive.CompletionVerdict `json:"completion"`
+	Summary      string                      `json:"summary"`
+	EvidenceRefs []string                    `json:"evidence_refs"`
+	TaskEvidence []string                    `json:"task_evidence_refs"`
+	ResponseHash string                      `json:"response_hash"`
 }
 
 type departmentEvidenceBundle struct {
 	SchemaVersion string            `json:"schema_version"`
-	DepartmentID string            `json:"department_id"`
-	Workers      []projectedWorker `json:"workers"`
+	DepartmentID  string            `json:"department_id"`
+	Workers       []projectedWorker `json:"workers"`
 }
 
 type projectedReview struct {
@@ -194,9 +196,8 @@ func (e EvidenceTasks) projectReview(ctx context.Context, task executive.TaskRec
 	if err != nil {
 		return projectedReview{}, err
 	}
-	department := task.AssignedUnitID
 	return projectedReview{
-		TaskID: task.ID, DepartmentID: department, Status: task.Status, Completion: completion.Verdict,
+		TaskID: task.ID, DepartmentID: task.AssignedUnitID, Status: task.Status, Completion: completion.Verdict,
 		Verdict: parsed.Verdict, Findings: boundedRefs(parsed.Findings, 24),
 		UnsatisfiedCriteria: boundedRefs(parsed.UnsatisfiedCriteria, 24), EvidenceRefs: boundedRefs(parsed.EvidenceRefs, 24),
 		TaskEvidence: taskEvidenceRefs(task, 16), ResponseHash: result.ResponseHash,
@@ -265,6 +266,15 @@ func truncateBundleString(value string, max int) string {
 		return value
 	}
 	return value[:max]
+}
+
+func hasExecutiveBundle(task executive.TaskRecord) bool {
+	for _, evidence := range task.Evidence {
+		if strings.HasPrefix(evidence.Reference, "executive-evidence:") {
+			return true
+		}
+	}
+	return false
 }
 
 var _ executive.TaskCoordinator = EvidenceTasks{}
