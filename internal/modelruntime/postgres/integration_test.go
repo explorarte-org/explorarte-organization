@@ -48,7 +48,7 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err = runner.Up(ctx); err != nil {
-		t.Fatalf("migrations through 000011: %v", err)
+		t.Fatalf("migrations through 000018: %v", err)
 	}
 	resetModelSchema(t, ctx, platform)
 	syncModelCanonical(t, ctx, platform)
@@ -96,11 +96,13 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		if err := platform.Pool().QueryRow(ctx, `SELECT count(*) FILTER (WHERE dispatch_enabled), count(*) FILTER (WHERE adapter_status='available') FROM model_profile_versions WHERE organization_revision_id=$1`, revision.ID).Scan(&enabled, &available); err != nil {
 			t.Fatal(err)
 		}
-		if enabled != 1 || available != 1 {
-			t.Fatalf("compiled provider versions enabled=%d available=%d, want 1/1", enabled, available)
+		if enabled != 2 || available != 2 {
+			t.Fatalf("compiled provider versions enabled=%d available=%d, want 2/2", enabled, available)
 		}
 		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id='openai_compatible' AND transport='http_adapter' AND dispatch_enabled AND adapter_status='available'`, revision.ID, 1)
-		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id<>'openai_compatible' AND (dispatch_enabled OR adapter_status<>'unavailable')`, revision.ID, 0)
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND profile_id='ceo-primary' AND provider_id='alibaba_token_plan_via_claude_code' AND transport='cli_adapter' AND dispatch_enabled AND adapter_status='available'`, revision.ID, 1)
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id='alibaba_token_plan_via_claude_code' AND profile_id<>'ceo-primary' AND (dispatch_enabled OR adapter_status<>'unavailable')`, revision.ID, 0)
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id NOT IN ('openai_compatible','alibaba_token_plan_via_claude_code') AND (dispatch_enabled OR adapter_status<>'unavailable')`, revision.ID, 0)
 	})
 
 	fakeRoutingHash := modelruntime.SHA256Bytes([]byte("test.fake canonical routing fixture v1"))
@@ -212,7 +214,7 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_invocation_results WHERE invocation_id=$1`, created.Invocation.ID, 1)
 		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_invocation_usage WHERE invocation_id=$1`, created.Invocation.ID, 1)
 		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_provider_requests WHERE invocation_id=$1 AND provider_id='test.fake' AND adapter_id='fake' AND request_schema_version='test.fake.request.v1' AND request_hash ~ '^[0-9a-f]{64}$' AND endpoint_fingerprint ~ '^[0-9a-f]{64}$' AND credential_ref_hash ~ '^[0-9a-f]{64}$'`, created.Invocation.ID, 1)
-		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_provider_outcomes WHERE invocation_id=$1 AND outcome_classification='response_received' AND http_status=200 AND response_hash ~ '^[0-9a-f]{64}$'`, created.Invocation.ID, 1)
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_provider_outcomes WHERE invocation_id=$1 AND outcome_classification='response_received' AND transport='fake_adapter' AND http_status=200 AND response_hash ~ '^[0-9a-f]{64}$'`, created.Invocation.ID, 1)
 		if _, mutationErr := platform.Pool().Exec(ctx, `UPDATE model_provider_requests SET adapter_version=2 WHERE invocation_id=$1`, created.Invocation.ID); mutationErr == nil {
 			t.Fatal("provider request ledger accepted mutation")
 		}
@@ -222,8 +224,6 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		assertModelCount(t, ctx, platform, `SELECT count(*) FROM audit_events WHERE subject_type='model_invocation' AND subject_id=$1 AND event_type='model.invocation_succeeded'`, strconv.FormatInt(created.Invocation.ID, 10), 1)
 		assertModelCount(t, ctx, platform, `SELECT count(*) FROM outbox_events WHERE aggregate_type='model_invocation' AND aggregate_id=$1 AND event_type='model.invocation_succeeded'`, strconv.FormatInt(created.Invocation.ID, 10), 1)
 
-		// Branch 10: the dispatcher assignment's quota must have been consumed
-		// exactly once, atomically with send_started, via a durable use record.
 		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_execution_identity_assertions WHERE invocation_id=$1 AND verification_effect='allow'`, created.Invocation.ID, 1)
 		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_execution_identity_challenges WHERE invocation_id=$1 AND consumed_at IS NOT NULL AND invalidated_at IS NULL`, created.Invocation.ID, 1)
 		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_dispatch_attempts WHERE invocation_id=$1 AND execution_identity_key_id IS NOT NULL AND identity_assertion_id IS NOT NULL AND identity_verified_at IS NOT NULL`, created.Invocation.ID, 1)
@@ -310,10 +310,6 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 	})
 
 	t.Run("task.execute without model.invoke cannot become a dispatcher", func(t *testing.T) {
-		// Branch 10 evaluates model.invoke on the dispatch actor, not the
-		// subject, so a specialist role can no longer reach dispatch denial by
-		// being both subject and actor: registering it as a principal at all is
-		// rejected first, because it lacks authority_class=execution_service.
 		frontendTask, _ := insertModelExecutionFixture(t, ctx, platform, fakeRevisionID, "ingenieria_ia/frontend", "frontend-no-model-invoke")
 		taskDecision, evalErr := authorizer.Evaluate(ctx, authorization.EvaluationRequest{OrganizationID: modelIntegrationOrganization, OrganizationRevisionID: fakeRevisionID, ActorRoleID: "ingenieria_ia/frontend", CapabilityID: "task.execute", ResourceType: "task", ResourceID: strconv.FormatInt(frontendTask.TaskID, 10), ActionDigest: authorization.DigestAction([]byte("task-execute-fixture"))})
 		if evalErr != nil || taskDecision.Effect != authorization.EffectAllow {
@@ -467,8 +463,6 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		if claimErr != nil {
 			t.Fatal(claimErr)
 		}
-		// Re-open only the invocation status to exercise the durable one-time
-		// challenge guard. The original attempt and assertion remain immutable.
 		if _, updateErr := platform.Pool().Exec(ctx, `UPDATE model_invocations SET status='requested',updated_at=clock_timestamp() WHERE id=$1`, created.ID); updateErr != nil {
 			t.Fatal(updateErr)
 		}
@@ -610,30 +604,35 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 	})
 
 	t.Run("down migration and reapply in disposable integration database", func(t *testing.T) {
-		// Capa 14 references model invocations and dispatch attempts, so 000012
-		// must come down before 000011 and the earlier model migrations.
-		for _, version := range []int{12, 11, 10, 9, 8, 7} {
-			name := fmt.Sprintf("%06d_", version)
-			var downName string
-			for _, candidate := range []string{"000012_create_durable_decision_graph.down.sql", "000011_create_model_provider_adapter.down.sql", "000010_create_model_execution_identity.down.sql", "000009_create_model_dispatcher_assignments.down.sql", "000008_create_model_egress_authorization.down.sql", "000007_create_model_runtime_gateway.down.sql"} {
-				if strings.HasPrefix(candidate, name) {
-					downName = candidate
-					break
-				}
-			}
-			down, readErr := rootmigrations.Files.ReadFile(downName)
+		// R21 extends the R12 provider-outcome table, so 000018 must come down
+		// before 000011. R14 also references model invocations/attempts, so
+		// 000012 must come down before the earlier model migrations.
+		versions := []struct {
+			version int
+			file    string
+		}{
+			{18, "000018_make_provider_outcomes_transport_aware.down.sql"},
+			{12, "000012_create_durable_decision_graph.down.sql"},
+			{11, "000011_create_model_provider_adapter.down.sql"},
+			{10, "000010_create_model_execution_identity.down.sql"},
+			{9, "000009_create_model_dispatcher_assignments.down.sql"},
+			{8, "000008_create_model_egress_authorization.down.sql"},
+			{7, "000007_create_model_runtime_gateway.down.sql"},
+		}
+		for _, item := range versions {
+			down, readErr := rootmigrations.Files.ReadFile(item.file)
 			if readErr != nil {
 				t.Fatal(readErr)
 			}
 			if _, execErr := platform.Pool().Exec(ctx, string(down)); execErr != nil {
-				t.Fatalf("down migration %d: %v", version, execErr)
+				t.Fatalf("down migration %d: %v", item.version, execErr)
 			}
-			if _, execErr := platform.Pool().Exec(ctx, `DELETE FROM schema_migrations WHERE version=$1`, version); execErr != nil {
+			if _, execErr := platform.Pool().Exec(ctx, `DELETE FROM schema_migrations WHERE version=$1`, item.version); execErr != nil {
 				t.Fatal(execErr)
 			}
 		}
 		reapplied, upErr := runner.Up(ctx)
-		if upErr != nil || len(reapplied.Applied) != 6 || reapplied.Current != 17 {
+		if upErr != nil || len(reapplied.Applied) != 7 || reapplied.Current != 18 {
 			t.Fatalf("reapply=%+v err=%v", reapplied, upErr)
 		}
 		var exists bool
@@ -1025,10 +1024,6 @@ func validInvocationCommand(task modelruntime.TaskAttemptRef, snapshot modelrunt
 	return modelruntime.CreateInvocationCommand{OrganizationID: modelIntegrationOrganization, TaskID: task.TaskID, AttemptID: task.AttemptID, SubjectRoleID: roleID, ContextSnapshotID: snapshot.ID, Purpose: "PostgreSQL fake adapter integration", RequiredCapabilities: []modelruntime.ModelCapability{"structured.output"}, OutputMode: modelruntime.OutputJSON, OutputSchema: json.RawMessage(`{"type":"object","required":["provider"],"properties":{"provider":{"type":"string"}}}`), MaxOutputTokens: 256, ThinkingMode: modelruntime.ThinkingDisabled, IdempotencyKey: key, CorrelationID: "model-integration", CausationID: "branch-10", Deadline: time.Now().UTC().Add(20 * time.Minute)}
 }
 
-// fixturePrincipalAndAssignment registers a durable execution principal and a
-// single active dispatcher assignment directly against the store, bypassing
-// the administrative authorization layer the way a provisioning script would.
-// maxInvocations is generous so several subtests can share one attempt.
 func fixturePrincipalAndAssignment(t *testing.T, ctx context.Context, store *dispatchpostgres.Store, task modelruntime.TaskAttemptRef, subjectRoleID, dispatchActorRoleID, suffix string) (modeldispatch.ExecutionPrincipal, modeldispatch.DispatcherAssignment) {
 	t.Helper()
 	principalKey := "integration/model-runtime-" + suffix
@@ -1037,11 +1032,7 @@ func fixturePrincipalAndAssignment(t *testing.T, ctx context.Context, store *dis
 		t.Fatal(err)
 	}
 	registered, err := store.RegisterPrincipal(ctx, modeldispatch.PreparedRegisterPrincipal{
-		Command: modeldispatch.RegisterPrincipalCommand{
-			OrganizationID: modelIntegrationOrganization, PrincipalKey: principalKey,
-			DispatchActorRoleID: dispatchActorRoleID, PrincipalKind: modeldispatch.PrincipalLocalProcess,
-			IdempotencyKey: "principal-" + suffix,
-		},
+		Command: modeldispatch.RegisterPrincipalCommand{OrganizationID: modelIntegrationOrganization, PrincipalKey: principalKey, DispatchActorRoleID: dispatchActorRoleID, PrincipalKind: modeldispatch.PrincipalLocalProcess, IdempotencyKey: "principal-" + suffix},
 		RequestHash: principalHash, RegisteredByRoleID: "empresa/human",
 	})
 	if err != nil {
@@ -1060,14 +1051,8 @@ func fixturePrincipalAndAssignment(t *testing.T, ctx context.Context, store *dis
 		t.Fatal(err)
 	}
 	created, err := store.CreateAssignment(ctx, modeldispatch.PreparedCreateAssignment{
-		Command: modeldispatch.CreateAssignmentCommand{
-			OrganizationID: modelIntegrationOrganization, TaskID: task.TaskID, AttemptID: task.AttemptID,
-			SubjectRoleID: subjectRoleID, ExecutionPrincipalKey: principal.PrincipalKey,
-			MaxInvocations: maxInvocations, IdempotencyKey: "assignment-" + suffix,
-		},
-		Principal: principal, OrganizationRevisionID: task.OrganizationRevisionID,
-		ValidFrom: validFrom, ValidUntil: validUntil,
-		AssignmentHash: assignmentHash, RequestHash: requestHash, CreatedByRoleID: "empresa/human",
+		Command: modeldispatch.CreateAssignmentCommand{OrganizationID: modelIntegrationOrganization, TaskID: task.TaskID, AttemptID: task.AttemptID, SubjectRoleID: subjectRoleID, ExecutionPrincipalKey: principal.PrincipalKey, MaxInvocations: maxInvocations, IdempotencyKey: "assignment-" + suffix},
+		Principal: principal, OrganizationRevisionID: task.OrganizationRevisionID, ValidFrom: validFrom, ValidUntil: validUntil, AssignmentHash: assignmentHash, RequestHash: requestHash, CreatedByRoleID: "empresa/human",
 	})
 	if err != nil {
 		t.Fatal(err)
