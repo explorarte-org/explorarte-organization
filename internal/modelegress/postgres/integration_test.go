@@ -39,8 +39,8 @@ func TestModelEgressPostgreSQL17(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Current != 17 {
-		t.Fatalf("current migration=%d want=17", result.Current)
+	if result.Current != 18 {
+		t.Fatalf("current migration=%d want=18", result.Current)
 	}
 	resetEgressSchema(t, ctx, platform)
 	revision := syncEgressCanonical(t, ctx, platform)
