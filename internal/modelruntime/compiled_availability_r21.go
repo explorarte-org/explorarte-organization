@@ -1,12 +1,16 @@
 package modelruntime
 
-const alibabaTokenPlanProviderID = "alibaba_token_plan_via_claude_code"
+const (
+	alibabaTokenPlanProviderID = "alibaba_token_plan_via_claude_code"
+	r21CEOProfileID            = "ceo-primary"
+)
 
-// applyR21CompiledAvailability decorates a canonical registry plan with
-// adapters that are compiled by branches newer than the original routing
-// parser. RegistryService is the productive entry point for every
-// validate/plan/diff/sync/status operation, so persisted availability is
-// always derived here before it reaches PostgreSQL.
+// applyR21CompiledAvailability decorates a canonical registry plan with the
+// Alibaba CLI adapter compiled by R21. Provider availability and profile
+// dispatchability are deliberately separate: R21 makes the transport known to
+// the binary, but only the owner-confirmed CEO profile becomes dispatchable.
+// executive.observer and research.audit keep their canonical candidate status
+// and remain unavailable until their own governance decisions are resolved.
 func applyR21CompiledAvailability(plan RegistryPlan) RegistryPlan {
 	for i := range plan.Providers {
 		provider := &plan.Providers[i]
@@ -17,7 +21,7 @@ func applyR21CompiledAvailability(plan RegistryPlan) RegistryPlan {
 	}
 	for i := range plan.Versions {
 		version := &plan.Versions[i]
-		if version.ProviderID == alibabaTokenPlanProviderID && version.Transport == TransportCLI {
+		if version.ProfileID == r21CEOProfileID && version.ProviderID == alibabaTokenPlanProviderID && version.Transport == TransportCLI {
 			version.AdapterStatus = AdapterAvailable
 			version.DispatchEnabled = true
 		}
