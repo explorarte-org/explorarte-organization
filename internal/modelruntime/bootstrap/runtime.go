@@ -18,6 +18,7 @@ import (
 	identitybootstrap "github.com/Mireuz13/explorarte-organization/internal/modelidentity/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter"
+	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/alibabaclaude"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/openaicompat"
 	modelpostgres "github.com/Mireuz13/explorarte-organization/internal/modelruntime/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
@@ -118,15 +119,27 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	if err != nil {
 		return nil, err
 	}
-	providerConfig, err := openaicompat.LoadConfig(os.LookupEnv, runtimeCfg.MaxResponseBytes)
+
+	openAIConfig, err := openaicompat.LoadConfig(os.LookupEnv, runtimeCfg.MaxResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("load openai-compatible provider config: %w", err)
 	}
-	registeredAdapters := make([]modelruntime.ProviderAdapter, 0, 1)
-	if providerConfig.Enabled {
-		providerAdapter, providerErr := openaicompat.New(providerConfig)
+	alibabaConfig, err := alibabaclaude.LoadConfig(os.LookupEnv, runtimeCfg.MaxResponseBytes)
+	if err != nil {
+		return nil, fmt.Errorf("load Alibaba Claude Code provider config: %w", err)
+	}
+	registeredAdapters := make([]modelruntime.ProviderAdapter, 0, 2)
+	if openAIConfig.Enabled {
+		providerAdapter, providerErr := openaicompat.New(openAIConfig)
 		if providerErr != nil {
 			return nil, fmt.Errorf("open openai-compatible provider adapter: %w", providerErr)
+		}
+		registeredAdapters = append(registeredAdapters, providerAdapter)
+	}
+	if alibabaConfig.Enabled {
+		providerAdapter, providerErr := alibabaclaude.New(alibabaConfig)
+		if providerErr != nil {
+			return nil, fmt.Errorf("open Alibaba Claude Code provider adapter: %w", providerErr)
 		}
 		registeredAdapters = append(registeredAdapters, providerAdapter)
 	}
