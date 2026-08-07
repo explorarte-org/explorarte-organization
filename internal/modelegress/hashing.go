@@ -38,17 +38,10 @@ func NormalizeClassifications(values []string) ([]string, string) {
 		if value == "" {
 			continue
 		}
-		switch value {
-		case ScopeExecutiveCEO, ScopeDepartmentLeader, ScopeDepartmentWorker:
-			// R24 internal scope markers are metadata, not data classes. Preserve
-			// exactly these known values so the pre-send decision hash proves the
-			// scope that was evaluated. They are removed before policy rule lookup.
+		switch DataClassification(value) {
+		case ClassificationPublic, ClassificationSanitized, ClassificationOrganizational, ClassificationSecret, ClassificationClinical, ClassificationUnknown:
 		default:
-			switch DataClassification(value) {
-			case ClassificationPublic, ClassificationSanitized, ClassificationOrganizational, ClassificationSecret, ClassificationClinical, ClassificationUnknown:
-			default:
-				value = string(ClassificationUnknown)
-			}
+			value = string(ClassificationUnknown)
 		}
 		seen[value] = struct{}{}
 	}
