@@ -22,16 +22,16 @@ func (e Entry) CanonicalHash() (string, error) {
 		return refs[i].Reference < refs[j].Reference
 	})
 	body := struct {
-		SchemaVersion     string                `json:"schema_version"`
-		OrganizationID    string                `json:"organization_id"`
-		RoleID            string                `json:"role_id"`
-		Category          string                `json:"category"`
-		Problem           string                `json:"problem"`
-		Correction        string                `json:"correction"`
-		SourceRunID       int64                 `json:"source_run_id"`
-		EvidenceRefs      []EvidenceRef         `json:"evidence_refs"`
-		Classification    ContentClassification `json:"classification"`
-		SupersedesEntryID string                `json:"supersedes_entry_id,omitempty"`
+		SchemaVersion     string               `json:"schema_version"`
+		OrganizationID    string               `json:"organization_id"`
+		RoleID            string               `json:"role_id"`
+		Category          string               `json:"category"`
+		Problem           string               `json:"problem"`
+		Correction        string               `json:"correction"`
+		SourceRunID       int64                `json:"source_run_id"`
+		EvidenceRefs      []EvidenceRef        `json:"evidence_refs"`
+		Admission         AdmissionAttestation `json:"admission"`
+		SupersedesEntryID string               `json:"supersedes_entry_id,omitempty"`
 	}{
 		SchemaVersion:     "organizational-memory.v1",
 		OrganizationID:    strings.TrimSpace(e.OrganizationID),
@@ -41,7 +41,7 @@ func (e Entry) CanonicalHash() (string, error) {
 		Correction:        strings.TrimSpace(e.Correction),
 		SourceRunID:       e.SourceRunID,
 		EvidenceRefs:      refs,
-		Classification:    e.Classification,
+		Admission:         e.Admission,
 		SupersedesEntryID: strings.TrimSpace(e.SupersedesEntryID),
 	}
 	raw, err := json.Marshal(body)
