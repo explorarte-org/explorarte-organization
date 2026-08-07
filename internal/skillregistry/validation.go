@@ -9,12 +9,13 @@ import (
 )
 
 var (
-	skillIDPattern     = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
-	roleIDPattern      = regexp.MustCompile(`^[a-z0-9]+(?:[-_][a-z0-9]+)*/[a-z0-9]+(?:[-_][a-z0-9]+)*$`)
-	canonicalIDPattern = regexp.MustCompile(`^[a-z0-9]+(?:[-_][a-z0-9]+)*$`)
-	digestPattern      = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	capabilityPattern  = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*$`)
-	githubRefPattern   = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:@[A-Za-z0-9._/-]+)?$`)
+	skillIDPattern       = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
+	roleIDPattern        = regexp.MustCompile(`^[a-z0-9]+(?:[-_][a-z0-9]+)*/[a-z0-9]+(?:[-_][a-z0-9]+)*$`)
+	canonicalIDPattern   = regexp.MustCompile(`^[a-z0-9]+(?:[-_][a-z0-9]+)*$`)
+	digestPattern        = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	capabilityPattern    = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*$`)
+	githubPinnedPattern  = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$`)
+	legacySkillFilePattern = regexp.MustCompile(`^SKILL(?:\([1-9][0-9]*\))?\.md$`)
 )
 
 func (s Skill) Validate() error {
@@ -78,8 +79,13 @@ func (s SourceRecord) Validate() error {
 	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("%w: source path escapes repository", ErrInvalidVersion)
 	}
-	if !strings.EqualFold(filepath.Base(clean), "SKILL.md") {
-		return fmt.Errorf("%w: source must point to SKILL.md", ErrInvalidVersion)
+	base := filepath.Base(clean)
+	if s.LegacyImported {
+		if !legacySkillFilePattern.MatchString(base) {
+			return fmt.Errorf("%w: legacy source filename is not recognized", ErrInvalidVersion)
+		}
+	} else if base != "SKILL.md" {
+		return fmt.Errorf("%w: new skill source must point to SKILL.md", ErrInvalidVersion)
 	}
 	if !digestPattern.MatchString(strings.TrimSpace(s.SHA256)) {
 		return fmt.Errorf("%w: source sha256 is invalid", ErrInvalidVersion)
@@ -87,8 +93,8 @@ func (s SourceRecord) Validate() error {
 	if !s.Origin.Valid() {
 		return fmt.Errorf("%w: invalid origin", ErrInvalidVersion)
 	}
-	if s.Origin == OriginGitHub && !githubRefPattern.MatchString(strings.TrimSpace(s.OriginRef)) {
-		return fmt.Errorf("%w: github origin requires owner/repo[@ref]", ErrInvalidVersion)
+	if s.Origin == OriginGitHub && !githubPinnedPattern.MatchString(strings.TrimSpace(s.OriginRef)) {
+		return fmt.Errorf("%w: github origin must be pinned as owner/repo@40-char-commit-sha", ErrInvalidVersion)
 	}
 	if s.Origin == OriginInternal && strings.TrimSpace(s.OriginRef) != "" {
 		return fmt.Errorf("%w: internal origin must not carry an external origin ref", ErrInvalidVersion)
@@ -119,6 +125,20 @@ func (v SkillVersion) Validate() error {
 		if !digestPattern.MatchString(value) {
 			return fmt.Errorf("%w: invalid canonical digest", ErrInvalidVersion)
 		}
+	}
+	expectedManifestHash, err := HashManifest(v.Manifest)
+	if err != nil {
+		return err
+	}
+	if expectedManifestHash != v.ManifestHash {
+		return fmt.Errorf("%w: manifest hash mismatch", ErrSourceDrift)
+	}
+	expectedCanonicalHash, err := HashVersionIdentity(v.SkillID, v.OrganizationID, v.Version, v.ManifestHash, v.Source)
+	if err != nil {
+		return err
+	}
+	if expectedCanonicalHash != v.CanonicalHash {
+		return fmt.Errorf("%w: canonical version hash mismatch", ErrSourceDrift)
 	}
 	if v.CreatedAt.IsZero() || v.UpdatedAt.IsZero() || v.UpdatedAt.Before(v.CreatedAt) {
 		return fmt.Errorf("%w: invalid timestamps", ErrInvalidVersion)
@@ -159,7 +179,7 @@ func (v SkillVersion) Validate() error {
 			return err
 		}
 	case LifecycleRetired:
-		// Historical evidence remains as-is; retirement can happen from any prior state allowed by transitions.go.
+		// Historical evidence remains immutable; retirement may occur from any state explicitly listed in transitions.go.
 	}
 	return nil
 }
@@ -172,7 +192,7 @@ func validateApproval(value *ApprovalEvidence) error {
 }
 
 func validateValidation(value *ValidationEvidence, sourceRef string) error {
-	if value == nil || strings.TrimSpace(value.SchemaValidationRef) == "" || strings.TrimSpace(value.CapabilityReviewRef) == "" || strings.TrimSpace(value.SourceRecordRef) == "" || !roleIDPattern.MatchString(value.ValidatedBy) || value.ValidatedAt.IsZero() {
+	if value == nil || strings.TrimSpace(value.SchemaValidationRef) == "" || strings.TrimSpace(value.CapabilityReviewRef) == "" || strings.TrimSpace(value.InstructionSafetyRef) == "" || strings.TrimSpace(value.SourceRecordRef) == "" || !roleIDPattern.MatchString(value.ValidatedBy) || value.ValidatedAt.IsZero() {
 		return fmt.Errorf("%w: validation evidence is incomplete", ErrMissingActivationProof)
 	}
 	if value.SourceRecordRef != sourceRef {
@@ -180,6 +200,9 @@ func validateValidation(value *ValidationEvidence, sourceRef string) error {
 	}
 	if !value.CapabilitiesPass {
 		return ErrCapabilityReviewFailed
+	}
+	if !value.InstructionSafetyPass {
+		return fmt.Errorf("%w: instruction safety review failed", ErrMissingActivationProof)
 	}
 	return nil
 }
