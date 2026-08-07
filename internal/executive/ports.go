@@ -15,6 +15,7 @@ type RegistryResolver interface {
 
 type TaskCoordinator interface {
 	CreateTask(context.Context, CreateTaskCommand) (TaskRecord, bool, error)
+	AddDependency(context.Context, int64, int64) error
 	GetTask(context.Context, int64) (TaskRecord, error)
 	ListByCorrelation(context.Context, string) ([]TaskRecord, error)
 	ClaimTask(context.Context, int64, string, string, time.Duration) (TaskRecord, AttemptRecord, LeaseRecord, error)
@@ -62,8 +63,8 @@ type ContextCoordinator interface {
 
 type ContextRequest struct {
 	OrganizationRevisionID int64
-	ActorRoleID            string
-	Purpose                string
+	ActorRoleID             string
+	Purpose                 string
 	TaskRef                 string
 	IdempotencyKey          string
 	CorrelationID           string
@@ -105,14 +106,15 @@ type AuthorizationGate interface {
 
 type AuthorizationRequest struct {
 	OrganizationRevisionID int64
-	ActorRoleID            string
-	CapabilityID           string
-	ResourceType           string
-	ResourceID             string
-	ActionDigest           string
-	ApprovalRequestID      *int64
+	ActorRoleID             string
+	CapabilityID            string
+	ResourceType            string
+	ResourceID              string
+	ActionDigest            string
+	ApprovalRequestID       *int64
 }
 
 type Clock interface{ Now() time.Time }
 type ClockFunc func() time.Time
+
 func (f ClockFunc) Now() time.Time { return f() }
