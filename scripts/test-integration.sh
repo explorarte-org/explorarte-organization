@@ -5,8 +5,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 MODE="${1:-all}"
 case "$MODE" in
-  all|tasks|staging|authorization|context|model|egress|dispatch|identity|worker|decision|trace|improvement|completion|shadow) ;;
-  *) echo "usage: $0 [all|tasks|staging|authorization|context|model|egress|dispatch|identity|worker|decision|trace|improvement|completion|shadow]" >&2; exit 2 ;;
+  all|tasks|staging|authorization|context|memory|model|egress|dispatch|identity|worker|decision|trace|improvement|completion|shadow) ;;
+  *) echo "usage: $0 [all|tasks|staging|authorization|context|memory|model|egress|dispatch|identity|worker|decision|trace|improvement|completion|shadow]" >&2; exit 2 ;;
 esac
 
 export ORG_POSTGRES_ADMIN_USER=explorarte_test_admin
@@ -41,6 +41,9 @@ if [[ "$MODE" == all || "$MODE" == authorization ]]; then
 fi
 if [[ "$MODE" == all || "$MODE" == context ]]; then
   timeout --foreground --signal=TERM --kill-after=30s 25m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/contextengine/postgres
+fi
+if [[ "$MODE" == all || "$MODE" == memory ]]; then
+  timeout --foreground --signal=TERM --kill-after=30s 20m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/memory/postgres
 fi
 if [[ "$MODE" == all || "$MODE" == egress ]]; then
   timeout --foreground --signal=TERM --kill-after=30s 30m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/modelegress/postgres
@@ -178,6 +181,22 @@ JSON
     /tmp/orgctl authorization consume "$request_id" --actor-role creativo/copywriter --action-digest "$action_digest" --json >/tmp/authorization-consume.json
     grep -Fq "\"status\": \"ready\"" /tmp/task-created.json
     grep -Fq "\"pending\"" /tmp/outbox.json
+
+    admission_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    memory_digest="$(printf %s cli-memory-evidence | sha256sum | cut -d" " -f1)"
+    cat >/tmp/memory-propose.json <<JSON
+{"id":"cli-memory-smoke","role_id":"ingenieria_ia/orquestador","category":"integration_learning","problem":"A simulated integration failure occurred.","correction":"Use the verified integration correction.","source_run_id":1,"evidence_refs":[{"reference":"integration:memory:1","digest":"$memory_digest"}],"proposed_by":"ingenieria_ia/orquestador","admission":{"data_class":"organizational","attested_by":"ingenieria_ia/orquestador","source_boundary":"organization","evidence_ref":"integration:memory:admission","attested_at":"$admission_time"},"idempotency_key":"cli-memory-smoke"}
+JSON
+    /tmp/orgctl memory propose --file /tmp/memory-propose.json --json >/tmp/memory-created.json
+    grep -Fq "\"status\": \"candidate\"" /tmp/memory-created.json
+    cat >/tmp/memory-review.json <<JSON
+{"entry_id":"cli-memory-smoke","expected_revision":1,"actor_role_id":"empresa/human","reason":"CI owner reviewed evidence and admission provenance","outcome":"approve"}
+JSON
+    /tmp/orgctl memory review --file /tmp/memory-review.json --json >/tmp/memory-approved.json
+    grep -Fq "\"status\": \"approved\"" /tmp/memory-approved.json
+    /tmp/orgctl memory list --role ingenieria_ia/orquestador --status approved --json >/tmp/memory-list.json
+    grep -Fq "cli-memory-smoke" /tmp/memory-list.json
+
     /tmp/orgctl context build --actor-role ingenieria_ia/qa --purpose "CLI context smoke" --idempotency-key cli-context-smoke --json >/tmp/context-created.json
     context_id="$(grep -m1 "\"id\"" /tmp/context-created.json | tr -cd "0-9")"
     /tmp/orgctl context get "$context_id" --json >/tmp/context-get.json
