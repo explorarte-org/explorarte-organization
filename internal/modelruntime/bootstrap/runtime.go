@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/authorization"
@@ -172,6 +173,7 @@ func (a catalogAdapter) CurrentOrganization(ctx context.Context, id string) (mod
 	}
 	return modelruntime.OrganizationRef{ID: org.ID, RevisionID: rev.ID, ModelRoutingHash: rev.DocumentHashes["model-routing.yaml"], ModelEgressPolicyHash: rev.DocumentHashes["model-egress-policy.yaml"], CapabilityMatrixHash: rev.DocumentHashes["capability-matrix.yaml"]}, nil
 }
+
 func (a catalogAdapter) GetRole(ctx context.Context, org, id string) (modelruntime.RoleRef, error) {
 	r, err := a.reader.GetRole(ctx, org, id)
 	if err != nil {
@@ -183,6 +185,7 @@ func (a catalogAdapter) GetRole(ctx context.Context, org, id string) (modelrunti
 	}
 	return modelruntime.RoleRef{ID: r.ID, ModelPolicy: policy, Enabled: r.Enabled, Executable: r.Executable, AuthorityClass: r.AuthorityClass, UnitID: r.UnitID}, nil
 }
+
 func (a catalogAdapter) ListRoles(ctx context.Context, org string) ([]modelruntime.RoleRef, error) {
 	values, err := a.reader.ListRoles(ctx, org, registry.RoleFilter{})
 	if err != nil {
@@ -246,8 +249,14 @@ func (a contextAdapter) GetContextSnapshot(ctx context.Context, id int64) (model
 			classes = append(classes, scope)
 		}
 	}
-	return modelruntime.ContextSnapshotRef{ID: snapshot.ID, OrganizationID: snapshot.OrganizationID, OrganizationRevisionID: snapshot.OrganizationRevisionID, ActorRoleID: snapshot.ActorRoleID, TaskRef: snapshot.TaskRef, Status: string(snapshot.Status), RenderedHash: snapshot.RenderedHash, DataClasses: classes}, nil
+	// Context Engine task references are canonical task:<id> strings, while the
+	// modelruntime task-attempt contract intentionally stores only the numeric
+	// task scope. Normalize only at this adapter boundary; the durable snapshot
+	// and the scope derivation above retain the canonical task:<id> reference.
+	taskRef := strings.TrimPrefix(snapshot.TaskRef, "task:")
+	return modelruntime.ContextSnapshotRef{ID: snapshot.ID, OrganizationID: snapshot.OrganizationID, OrganizationRevisionID: snapshot.OrganizationRevisionID, ActorRoleID: snapshot.ActorRoleID, TaskRef: taskRef, Status: string(snapshot.Status), RenderedHash: snapshot.RenderedHash, DataClasses: classes}, nil
 }
+
 func (a contextAdapter) ValidateContextSnapshot(ctx context.Context, id int64) error {
 	result, err := a.service.Validate(ctx, id)
 	if err != nil {
@@ -258,6 +267,7 @@ func (a contextAdapter) ValidateContextSnapshot(ctx context.Context, id int64) e
 	}
 	return nil
 }
+
 func (a contextAdapter) RenderContextSnapshot(ctx context.Context, id int64) ([]byte, error) {
 	return a.service.Render(ctx, id)
 }
