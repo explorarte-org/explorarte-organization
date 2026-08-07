@@ -2,15 +2,17 @@ package modelruntime
 
 import "testing"
 
-func TestR21CompiledAvailabilityEnablesOnlyCanonicalAlibabaCLI(t *testing.T) {
+func TestR21CompiledAvailabilityEnablesProviderAndCEOOnly(t *testing.T) {
 	plan := RegistryPlan{
 		Providers: []Provider{
 			{ID: alibabaTokenPlanProviderID, Transport: TransportCLI, DirectHTTPForbidden: true, AdapterStatus: AdapterUnavailable},
 			{ID: "other_cli", Transport: TransportCLI, DirectHTTPForbidden: true, AdapterStatus: AdapterUnavailable},
 		},
 		Versions: []ProfileVersion{
-			{ProviderID: alibabaTokenPlanProviderID, Transport: TransportCLI, AdapterStatus: AdapterUnavailable},
-			{ProviderID: "other_cli", Transport: TransportCLI, AdapterStatus: AdapterUnavailable},
+			{ProfileID: r21CEOProfileID, ProviderID: alibabaTokenPlanProviderID, Transport: TransportCLI, AdapterStatus: AdapterUnavailable},
+			{ProfileID: "executive.observer", ProviderID: alibabaTokenPlanProviderID, Transport: TransportCLI, AdapterStatus: AdapterUnavailable},
+			{ProfileID: "research.audit", ProviderID: alibabaTokenPlanProviderID, Transport: TransportCLI, AdapterStatus: AdapterUnavailable},
+			{ProfileID: "other", ProviderID: "other_cli", Transport: TransportCLI, AdapterStatus: AdapterUnavailable},
 		},
 	}
 	got := applyR21CompiledAvailability(plan)
@@ -18,13 +20,15 @@ func TestR21CompiledAvailabilityEnablesOnlyCanonicalAlibabaCLI(t *testing.T) {
 		t.Fatalf("Alibaba provider not enabled: %+v", got.Providers[0])
 	}
 	if got.Versions[0].AdapterStatus != AdapterAvailable || !got.Versions[0].DispatchEnabled {
-		t.Fatalf("Alibaba version not enabled: %+v", got.Versions[0])
+		t.Fatalf("CEO version not enabled: %+v", got.Versions[0])
+	}
+	for _, index := range []int{1, 2, 3} {
+		if got.Versions[index].AdapterStatus != AdapterUnavailable || got.Versions[index].DispatchEnabled {
+			t.Fatalf("non-CEO CLI version unexpectedly enabled: %+v", got.Versions[index])
+		}
 	}
 	if got.Providers[1].AdapterStatus != AdapterUnavailable || got.Providers[1].DispatchEnabled {
 		t.Fatalf("unknown CLI provider unexpectedly enabled: %+v", got.Providers[1])
-	}
-	if got.Versions[1].AdapterStatus != AdapterUnavailable || got.Versions[1].DispatchEnabled {
-		t.Fatalf("unknown CLI version unexpectedly enabled: %+v", got.Versions[1])
 	}
 }
 
