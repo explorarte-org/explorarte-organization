@@ -72,6 +72,7 @@ type EvaluationRequest struct {
 	OrganizationRevisionID int64
 	Policy                 ResolvedPolicy
 	ContextClassifications []string
+	ExecutiveScope         string
 }
 
 type Decision struct {
