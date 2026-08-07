@@ -5,6 +5,7 @@ CREATE TABLE organizational_memory_versions (
     category TEXT NOT NULL,
     problem TEXT NOT NULL,
     correction TEXT NOT NULL,
+    source_kind TEXT NOT NULL CHECK (source_kind IN ('operational', 'simulation', 'synthetic_test')),
     source_run_id BIGINT NOT NULL CHECK (source_run_id > 0),
     canonical_hash TEXT NOT NULL CHECK (canonical_hash ~ '^[0-9a-f]{64}$'),
     proposed_by_role_id TEXT NOT NULL,
@@ -120,21 +121,12 @@ $$;
 CREATE TRIGGER organizational_memory_version_insert_guard BEFORE INSERT ON organizational_memory_versions FOR EACH ROW EXECUTE FUNCTION organizational_memory_guard_version_insert();
 
 CREATE OR REPLACE FUNCTION organizational_memory_guard_entry_insert() RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE
-    created TIMESTAMPTZ;
-    event_found BOOLEAN;
+DECLARE created TIMESTAMPTZ; event_found BOOLEAN;
 BEGIN
-    IF NEW.status <> 'candidate' OR NEW.revision <> 1 OR NEW.reviewer_role_id IS NOT NULL OR NEW.reviewed_at IS NOT NULL THEN
-        RAISE EXCEPTION 'organizational memory lifecycle must start as unreviewed candidate revision 1' USING ERRCODE = '23514';
-    END IF;
+    IF NEW.status <> 'candidate' OR NEW.revision <> 1 OR NEW.reviewer_role_id IS NOT NULL OR NEW.reviewed_at IS NOT NULL THEN RAISE EXCEPTION 'organizational memory lifecycle must start as unreviewed candidate revision 1' USING ERRCODE = '23514'; END IF;
     SELECT created_at INTO created FROM organizational_memory_versions WHERE organization_id = NEW.organization_id AND entry_key = NEW.entry_key;
     IF created IS NULL OR NEW.updated_at < created THEN RAISE EXCEPTION 'organizational memory updated_at cannot predate content creation' USING ERRCODE = '23514'; END IF;
-    SELECT EXISTS (
-        SELECT 1 FROM organizational_memory_state_events
-        WHERE organization_id=NEW.organization_id AND entry_key=NEW.entry_key
-          AND revision=1 AND from_status IS NULL AND to_status='candidate'
-          AND created_at=NEW.updated_at
-    ) INTO event_found;
+    SELECT EXISTS (SELECT 1 FROM organizational_memory_state_events WHERE organization_id=NEW.organization_id AND entry_key=NEW.entry_key AND revision=1 AND from_status IS NULL AND to_status='candidate' AND created_at=NEW.updated_at) INTO event_found;
     IF NOT event_found THEN RAISE EXCEPTION 'organizational memory candidate requires creation audit event' USING ERRCODE = '23514'; END IF;
     RETURN NEW;
 END;
@@ -142,28 +134,17 @@ $$;
 CREATE TRIGGER organizational_memory_entry_insert_guard BEFORE INSERT ON organizational_memory_entries FOR EACH ROW EXECUTE FUNCTION organizational_memory_guard_entry_insert();
 
 CREATE OR REPLACE FUNCTION organizational_memory_guard_entry_update() RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE
-    created TIMESTAMPTZ;
-    event_found BOOLEAN;
+DECLARE created TIMESTAMPTZ; event_found BOOLEAN;
 BEGIN
     IF NEW.organization_id <> OLD.organization_id OR NEW.entry_key <> OLD.entry_key THEN RAISE EXCEPTION 'organizational memory identity is immutable' USING ERRCODE = '23514'; END IF;
     IF NEW.revision <> OLD.revision + 1 THEN RAISE EXCEPTION 'organizational memory revision must advance exactly by one' USING ERRCODE = '23514'; END IF;
     IF NEW.updated_at < OLD.updated_at THEN RAISE EXCEPTION 'organizational memory updated_at cannot move backwards' USING ERRCODE = '23514'; END IF;
-    IF NOT ((OLD.status = 'candidate' AND NEW.status IN ('approved', 'rejected')) OR (OLD.status = 'approved' AND NEW.status = 'deprecated') OR (OLD.status = 'deprecated' AND NEW.status = 'archived') OR (OLD.status = 'rejected' AND NEW.status = 'archived')) THEN
-        RAISE EXCEPTION 'invalid organizational memory transition % -> %', OLD.status, NEW.status USING ERRCODE = '23514';
-    END IF;
+    IF NOT ((OLD.status = 'candidate' AND NEW.status IN ('approved', 'rejected')) OR (OLD.status = 'approved' AND NEW.status = 'deprecated') OR (OLD.status = 'deprecated' AND NEW.status = 'archived') OR (OLD.status = 'rejected' AND NEW.status = 'archived')) THEN RAISE EXCEPTION 'invalid organizational memory transition % -> %', OLD.status, NEW.status USING ERRCODE = '23514'; END IF;
     IF NEW.status <> 'candidate' AND (NEW.reviewer_role_id IS NULL OR NEW.reviewed_at IS NULL) THEN RAISE EXCEPTION 'reviewed organizational memory state requires reviewer provenance' USING ERRCODE = '23514'; END IF;
     SELECT created_at INTO created FROM organizational_memory_versions WHERE organization_id=NEW.organization_id AND entry_key=NEW.entry_key;
     IF NEW.reviewed_at IS NOT NULL AND (NEW.reviewed_at < created OR NEW.reviewed_at > NEW.updated_at) THEN RAISE EXCEPTION 'organizational memory reviewed_at must be within the entry lifetime' USING ERRCODE = '23514'; END IF;
-    IF OLD.status <> 'candidate' AND (NEW.reviewer_role_id IS DISTINCT FROM OLD.reviewer_role_id OR NEW.reviewed_at IS DISTINCT FROM OLD.reviewed_at) THEN
-        RAISE EXCEPTION 'organizational memory review provenance is immutable after review' USING ERRCODE = '23514';
-    END IF;
-    SELECT EXISTS (
-        SELECT 1 FROM organizational_memory_state_events
-        WHERE organization_id=NEW.organization_id AND entry_key=NEW.entry_key
-          AND revision=NEW.revision AND from_status=OLD.status AND to_status=NEW.status
-          AND created_at=NEW.updated_at
-    ) INTO event_found;
+    IF OLD.status <> 'candidate' AND (NEW.reviewer_role_id IS DISTINCT FROM OLD.reviewer_role_id OR NEW.reviewed_at IS DISTINCT FROM OLD.reviewed_at) THEN RAISE EXCEPTION 'organizational memory review provenance is immutable after review' USING ERRCODE = '23514'; END IF;
+    SELECT EXISTS (SELECT 1 FROM organizational_memory_state_events WHERE organization_id=NEW.organization_id AND entry_key=NEW.entry_key AND revision=NEW.revision AND from_status=OLD.status AND to_status=NEW.status AND created_at=NEW.updated_at) INTO event_found;
     IF NOT event_found THEN RAISE EXCEPTION 'organizational memory transition requires matching audit event' USING ERRCODE = '23514'; END IF;
     RETURN NEW;
 END;
