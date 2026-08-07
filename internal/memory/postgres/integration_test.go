@@ -42,8 +42,8 @@ func TestOrganizationalMemoryPostgresRepository(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Current != 17 {
-		t.Fatalf("current migration=%d want17", result.Current)
+	if result.Current != 18 {
+		t.Fatalf("current migration=%d want18", result.Current)
 	}
 	resetMemorySchema(t, ctx, platform)
 	t.Cleanup(func() { resetMemorySchema(t, context.Background(), platform) })
