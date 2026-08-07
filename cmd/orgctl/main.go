@@ -73,6 +73,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runMemory(args[1:], stdout, stderr)
 	case "skill":
 		return runSkill(args[1:], stdout, stderr)
+	case "rag":
+		return runRAG(args[1:], stdout, stderr)
 	case "model":
 		return runModel(args[1:], stdout, stderr)
 	case "decision":
@@ -523,6 +525,7 @@ commands:
   context <validate-source|build|get|list|render|validate|invalidate>
   memory <propose|review|deprecate|archive|get|list>
   skill <propose|approve|qualify|activate|suspend|retire|assign|revoke|get-version|list-versions|get-assignment|list-assignments>
+  rag <propose|review|get|list|reindex|query>
   model <registry|invocation>
   decision <create|append|start|transition|claim|finish|observe|verify|decide|recover|trace>
   improvement <propose|get|validate|begin-evaluation|verdict|promote-canary|promote-active|deprecate|rollback|trace>
