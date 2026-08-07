@@ -21,9 +21,11 @@ func (f orphanModelCoordinator) GetResult(_ context.Context, id int64) (Invocati
 func TestFindOrphanedSucceededInvocationBlocksReinferenceCandidate(t *testing.T) {
 	models := orphanModelCoordinator{
 		invocations: map[[2]int64][]InvocationRecord{
-			{2, 20}: {{ID: 200, TaskID: 2, AttemptID: 20, Status: "succeeded"}},
+			{2, 20}: []InvocationRecord{{ID: 200, TaskID: 2, AttemptID: 20, Status: "succeeded"}},
 		},
-		results: map[int64]InvocationResult{200: {InvocationID: 200, JSONOutput: []byte(`{"schema_version":"worker-result/v1","summary":"done","evidence_refs":[]}`)}},
+		results: map[int64]InvocationResult{
+			200: {InvocationID: 200, JSONOutput: []byte("{\"schema_version\":\"worker-result/v1\",\"summary\":\"done\",\"evidence_refs\":[]}")},
+		},
 	}
 	o := &Orchestrator{models: models}
 	root := TaskRecord{ID: 1, CorrelationID: "executive:x"}
@@ -40,11 +42,16 @@ func TestFindOrphanedSucceededInvocationBlocksReinferenceCandidate(t *testing.T)
 }
 
 func TestFindOrphanedSucceededInvocationIgnoresActiveRunningAttempt(t *testing.T) {
-	models := orphanModelCoordinator{invocations: map[[2]int64][]InvocationRecord{
-		{2, 20}: {{ID: 200, TaskID: 2, AttemptID: 20, Status: "succeeded"}},
-	}, results: map[int64]InvocationResult{200: {InvocationID: 200}}}
+	models := orphanModelCoordinator{
+		invocations: map[[2]int64][]InvocationRecord{
+			{2, 20}: []InvocationRecord{{ID: 200, TaskID: 2, AttemptID: 20, Status: "succeeded"}},
+		},
+		results: map[int64]InvocationResult{200: {InvocationID: 200}},
+	}
 	o := &Orchestrator{models: models}
-	_, ok, err := o.findOrphanedSucceededInvocation(context.Background(), TaskRecord{ID: 1}, []TaskRecord{{ID: 2, Status: "running", Attempts: []AttemptRecord{{ID: 20, State: "running"}}}})
+	_, ok, err := o.findOrphanedSucceededInvocation(context.Background(), TaskRecord{ID: 1}, []TaskRecord{{
+		ID: 2, Status: "running", Attempts: []AttemptRecord{{ID: 20, State: "running"}},
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
