@@ -8,29 +8,38 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/Mireuz13/explorarte-organization/internal/contextengine"
 	"github.com/Mireuz13/explorarte-organization/internal/memory"
 )
 
 type Provider struct {
-	repository memory.Repository
-	maxEntries int
+	repository     memory.Repository
+	organizationID string
+	maxEntries     int
 }
 
-func New(repository memory.Repository, maxEntries int) (*Provider, error) {
+func New(repository memory.Repository, organizationID string, maxEntries int) (*Provider, error) {
 	if repository == nil {
 		return nil, errors.New("memory context provider requires repository")
+	}
+	organizationID = strings.TrimSpace(organizationID)
+	if organizationID == "" {
+		return nil, errors.New("memory context provider requires organization ID")
 	}
 	if maxEntries <= 0 {
 		return nil, errors.New("memory context provider requires positive max entries")
 	}
-	return &Provider{repository: repository, maxEntries: maxEntries}, nil
+	return &Provider{repository: repository, organizationID: organizationID, maxEntries: maxEntries}, nil
 }
 
 func (p *Provider) ListApproved(ctx context.Context, request contextengine.BuildRequest) ([]contextengine.SourceRecord, error) {
+	if request.OrganizationID != p.organizationID {
+		return nil, fmt.Errorf("memory provider organization mismatch: request=%s configured=%s", request.OrganizationID, p.organizationID)
+	}
 	entries, err := p.repository.ListApproved(ctx, memory.ApprovedFilter{
-		OrganizationID: request.OrganizationID,
+		OrganizationID: p.organizationID,
 		RoleID:         request.ActorRoleID,
 		Limit:          p.maxEntries,
 	})
@@ -49,7 +58,7 @@ func (p *Provider) ListApproved(ctx context.Context, request contextengine.Build
 
 	result := make([]contextengine.SourceRecord, 0, len(entries))
 	for _, entry := range entries {
-		if entry.OrganizationID != request.OrganizationID || entry.RoleID != request.ActorRoleID {
+		if entry.OrganizationID != p.organizationID || entry.RoleID != request.ActorRoleID {
 			return nil, fmt.Errorf("memory provider returned entry outside requested scope: %s", entry.ID)
 		}
 		if entry.Status != memory.StatusApproved {
@@ -68,9 +77,12 @@ func (p *Provider) ValidateVersion(ctx context.Context, expected contextengine.S
 	if expected.Kind != contextengine.SourceApprovedMemory {
 		return fmt.Errorf("memory version validation received source kind %s", expected.Kind)
 	}
-	entry, err := p.repository.Get(ctx, expected.Reference)
+	entry, err := p.repository.Get(ctx, p.organizationID, expected.Reference)
 	if err != nil {
 		return err
+	}
+	if entry.OrganizationID != p.organizationID {
+		return fmt.Errorf("memory entry %s crossed organization boundary", entry.ID)
 	}
 	if entry.Status != memory.StatusApproved {
 		return fmt.Errorf("memory entry %s is no longer approved", entry.ID)
