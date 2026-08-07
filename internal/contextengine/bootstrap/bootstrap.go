@@ -8,6 +8,8 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/contextengine/canonical"
 	"github.com/Mireuz13/explorarte-organization/internal/contextengine/document"
 	contextpostgres "github.com/Mireuz13/explorarte-organization/internal/contextengine/postgres"
+	memorycontext "github.com/Mireuz13/explorarte-organization/internal/memory/contextprovider"
+	memorypostgres "github.com/Mireuz13/explorarte-organization/internal/memory/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
 )
@@ -19,6 +21,7 @@ type Runtime struct {
 	Documents      *document.Loader
 	Canonical      *canonical.Provider
 	Skills         *canonical.SkillProvider
+	Memory         *memorycontext.Provider
 	OrganizationID string
 }
 
@@ -46,6 +49,14 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	if err != nil {
 		return nil, err
 	}
+	memoryStore, err := memorypostgres.New(platformStore, cfg.Tasks.OrganizationID)
+	if err != nil {
+		return nil, err
+	}
+	memoryProvider, err := memorycontext.New(memoryStore, cfg.Tasks.OrganizationID, cfg.Context.MaxMemorySegments)
+	if err != nil {
+		return nil, err
+	}
 	service, err := contextengine.NewService(contextengine.ServiceConfig{
 		OrganizationAgentPath: "AGENT.md",
 		MaxTotalBytes:         cfg.Context.MaxTotalBytes,
@@ -54,9 +65,9 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 		MaxSkills:             cfg.Context.MaxSkills,
 		MaxMemorySegments:     cfg.Context.MaxMemorySegments,
 		MaxRAGSegments:        cfg.Context.MaxRAGSegments,
-	}, registryRepository, documents, canonicalProvider, contextengine.NoopOwnerConstraintProvider{}, contextengine.UnavailableMemoryProvider{}, skillProvider, contextengine.UnavailableProjectProvider{}, contextengine.UnavailableTaskProvider{}, contextengine.UnavailableRAGProvider{}, contextengine.NewAssembler(), contextengine.NewRenderer(), store, nil)
+	}, registryRepository, documents, canonicalProvider, contextengine.NoopOwnerConstraintProvider{}, memoryProvider, skillProvider, contextengine.UnavailableProjectProvider{}, contextengine.UnavailableTaskProvider{}, contextengine.UnavailableRAGProvider{}, contextengine.NewAssembler(), contextengine.NewRenderer(), store, nil)
 	if err != nil {
 		return nil, err
 	}
-	return &Runtime{Service: service, Store: store, Registry: registryRepository, Documents: documents, Canonical: canonicalProvider, Skills: skillProvider, OrganizationID: cfg.Tasks.OrganizationID}, nil
+	return &Runtime{Service: service, Store: store, Registry: registryRepository, Documents: documents, Canonical: canonicalProvider, Skills: skillProvider, Memory: memoryProvider, OrganizationID: cfg.Tasks.OrganizationID}, nil
 }
