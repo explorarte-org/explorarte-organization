@@ -111,6 +111,23 @@ func TestSettingsAndEndpointDriftFailClosed(t *testing.T) {
 	}
 }
 
+func TestIsolatedGlobalConfigRequiresOnlyCompletedOnboarding(t *testing.T) {
+	cfg := testConfig(t, "#!/bin/sh\nprintf '2.1.224\\n'\n")
+	path := filepath.Join(cfg.WorkDir, ".claude.json")
+	if err := os.WriteFile(path, []byte(`{"hasCompletedOnboarding":false}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateClaudeGlobalConfig(cfg.WorkDir); err == nil {
+		t.Fatal("onboarding=false accepted")
+	}
+	if err := os.WriteFile(path, []byte(`{"hasCompletedOnboarding":true,"extra":"not-allowed"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateClaudeGlobalConfig(cfg.WorkDir); err == nil {
+		t.Fatal("extra global Claude config accepted")
+	}
+}
+
 func TestPostStartTimeoutIsAmbiguousPrimitive(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0o700); err != nil {
@@ -160,6 +177,9 @@ func testConfig(t *testing.T, executableBody string) Config {
 	t.Helper()
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".claude.json"), []byte(`{"hasCompletedOnboarding":true}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	executable := filepath.Join(dir, "claude")
