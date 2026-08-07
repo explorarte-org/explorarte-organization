@@ -12,6 +12,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/contextengine"
 	"github.com/Mireuz13/explorarte-organization/internal/executive"
 	"github.com/Mireuz13/explorarte-organization/internal/executive/runtimeadapter"
+	"github.com/Mireuz13/explorarte-organization/internal/tasks"
 	taskcontextprovider "github.com/Mireuz13/explorarte-organization/internal/tasks/contextprovider"
 	taskpostgres "github.com/Mireuz13/explorarte-organization/internal/tasks/postgres"
 )
@@ -59,7 +60,7 @@ func TestR23PostgreSQLProjectsWorkerEvidenceAndClosesDAGRace(t *testing.T) {
 		t.Fatalf("run did not complete: %+v", run)
 	}
 
-	values, err := h.tasks.ListTasks(h.ctx, tasksFilterForCorrelation(run.CorrelationID))
+	values, err := h.tasks.ListTasks(h.ctx, tasks.TaskFilter{OrganizationID: "explorarte", CorrelationID: run.CorrelationID, Limit: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
