@@ -155,7 +155,9 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 
 func (a *Adapter) arguments(request modelruntime.CanonicalRequest) []string {
 	args := []string{
-		"--bare", "-p", fixedQueryPrompt,
+		"--safe-mode",
+		"--setting-sources", "",
+		"-p", fixedQueryPrompt,
 		"--output-format", "json",
 		"--no-session-persistence",
 		"--disable-slash-commands",
@@ -180,7 +182,6 @@ func (a *Adapter) arguments(request modelruntime.CanonicalRequest) []string {
 
 func parseCLIResponse(body []byte, mode modelruntime.OutputMode) ([]byte, int64, int64, error) {
 	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.DisallowUnknownFields()
 	var response cliJSONResponse
 	if err := decoder.Decode(&response); err != nil {
 		return nil, 0, 0, err
