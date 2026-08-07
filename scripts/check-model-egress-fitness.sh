@@ -98,7 +98,7 @@ for provider in providers:
     for cls in classes:
         matches=[r for r in rules if r.get("provider_id")==provider and r.get("data_classification")==cls]
         if len(matches)!=1 or matches[0].get("effect")!="allow":
-            raise SystemExit(f"{provider}/{cls} must be explicit allow behind the R24 scope gate")
+            raise SystemExit(f"{provider}/{cls} must be explicit allow behind the R24 creation scope gate")
 PYPOLICY
 if rg -n 'provider_id:[[:space:]]*test\.fake' docs/canonical/model-egress-policy.yaml; then fail "test.fake leaked into productive policy"; fi
 for class in secret clinical; do
@@ -106,17 +106,22 @@ for class in secret clinical; do
 done
 rg -q '^default_action:[[:space:]]*deny$' docs/canonical/model-egress-policy.yaml || fail "default deny missing"
 
-# R24: the broadened provider/classification table is safe only while every
-# executive-only route is guarded by a backend-derived scope marker.
+# R24: policy v3 broadens the non-sensitive provider/classification table, but
+# InvocationService must reject executive-only routes before materialization
+# unless scope was derived from the durable Context Engine snapshot.
 rg -q 'func ExecutiveScopeMarker\(' internal/modelegress/executive_scope.go || fail "executive scope derivation missing"
-rg -q 'executive_scope_required' internal/modelegress/evaluator.go || fail "scope-missing deny missing"
-rg -q 'executive_scope_verified' internal/modelegress/evaluator.go || fail "scope verification evidence missing"
-rg -q 'scopeRequired\(' internal/modelegress/evaluator.go || fail "evaluator does not enforce executive scope"
+rg -q 'func ValidateExecutiveScope\(' internal/modelegress/executive_scope.go || fail "executive scope validator missing"
+rg -q 'modelegress\.ValidateExecutiveScope\(' internal/modelruntime/invocation_service.go || fail "InvocationService does not enforce executive scope"
 rg -q 'ExecutiveScopeMarker\(snapshot\.ActorRoleID, snapshot\.Purpose, snapshot\.CorrelationID, snapshot\.TaskRef\)' internal/modelruntime/bootstrap/runtime.go || fail "model context adapter does not derive scope from durable snapshot metadata"
+rg -q 'ExecutiveScope:[[:space:]]*scope' internal/modelruntime/bootstrap/runtime.go || fail "derived executive scope is not carried to InvocationService"
+rg -q 'strings\.TrimPrefix\(snapshot\.TaskRef, "task:"\)' internal/modelruntime/bootstrap/runtime.go || fail "canonical task:<id> reference is not normalized at modelruntime boundary"
 rg -q 'strings\.HasPrefix\(correlationID, "executive:"\)' internal/modelegress/executive_scope.go || fail "scope is not bound to executive correlation"
 rg -q 'strings\.HasPrefix\(taskRef, "task:"\)' internal/modelegress/executive_scope.go || fail "scope is not bound to a durable task ref"
 if rg -n 'ScopeExecutiveCEO|ScopeDepartmentLeader|ScopeDepartmentWorker' docs/canonical; then
   fail "internal scope markers must not become model-controlled canonical instructions"
+fi
+if git diff --name-only feat/23-executive-evidence-recovery-layer...HEAD -- migrations | grep -q .; then
+  fail "R24 must not change migrations; scope is metadata, not a new data classification"
 fi
 
 if rg -n 'adapter\.NewFake\(' internal/modelruntime/bootstrap cmd/orgd; then fail "product runtime registers FakeAdapter"; fi
@@ -142,9 +147,6 @@ done
 (( auth_line < egress_line && egress_line < adapter_line && adapter_line < render_line && render_line < persist_line )) \
   || fail "dispatch order must be authorization -> egress -> adapter -> render -> durable allow/send_started"
 
-# Branch 10 moved this transaction into internal/modelruntime/postgres so it can
-# also consume a model_dispatcher_assignment atomically (a single shared
-# implementation, not one per module — see modeldispatch fitness for the rest).
 rg -q 'PersistPreSendAllowAndMarkSendStarted' internal/modelruntime/postgres/presend.go || fail "atomic allow transition is missing"
 rg -q "INSERT INTO model_egress_evaluations" internal/modelruntime/postgres/presend.go || fail "durable pre-send evaluation is missing"
 rg -q "SET status='send_started'" internal/modelruntime/postgres/presend.go || fail "atomic send_started transition is missing"
@@ -152,12 +154,9 @@ rg -q 'UNIQUE \(dispatch_attempt_id\)' migrations/000008_create_model_egress_aut
 rg -q 'model_egress_policy_version_id IS NULL AND model_egress_policy_hash IS NULL' migrations/000008_create_model_egress_authorization.up.sql || fail "legacy null/null policy pin is not preserved"
 rg -q 'egress_policy_unpinned' internal/modelruntime/dispatch_service.go || fail "legacy unpinned dispatch guard is missing"
 
-# Event payloads and schema must remain metadata-only.
 if rg -n 'RenderedContext|rendered_context|prompt|hidden_reasoning|provider_payload|tool_arguments|api_key|claim_token[^_h]' internal/modelegress migrations/000008_create_model_egress_authorization.up.sql; then
   fail "sensitive content field detected in model egress persistence"
 fi
-
-# Verify the parser/domain package itself stays deterministic and free of package-global mutable state.
 if rg -n '^var[[:space:]]+[A-Za-z0-9_]+[[:space:]]*=.*map\[' internal/modelegress; then
   fail "mutable package-global map detected"
 fi
