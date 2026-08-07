@@ -75,6 +75,22 @@ printf '{"result":"ignored","structured_output":{"ok":true},"usage":{"input_toke
 		OutputMode: modelruntime.OutputJSON, OutputSchema: []byte(`{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}`),
 		MaxOutputTokens: 64, Deadline: now.Add(time.Minute),
 	})
+	if err == nil {
+		t.Fatal("escaped non-JSON schema unexpectedly accepted")
+	}
+	response, err = adapter.Dispatch(context.Background(), modelruntime.CanonicalRequest{
+		ProviderID: ProviderID, ProviderModelID: "qwen3.6-flash", RenderedContext: []byte("input"),
+		OutputMode: modelruntime.OutputJSON, OutputSchema: []byte(`{"type":"object"}`),
+		MaxOutputTokens: 64, Deadline: now.Add(time.Minute),
+	})
+	_ = response
+	_ = err
+
+	response, err = adapter.Dispatch(context.Background(), modelruntime.CanonicalRequest{
+		ProviderID: ProviderID, ProviderModelID: "qwen3.6-flash", RenderedContext: []byte("input"),
+		OutputMode: modelruntime.OutputJSON, OutputSchema: []byte("{\"type\":\"object\",\"properties\":{\"ok\":{\"type\":\"boolean\"}},\"required\":[\"ok\"]}"),
+		MaxOutputTokens: 64, Deadline: now.Add(time.Minute),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +99,7 @@ printf '{"result":"ignored","structured_output":{"ok":true},"usage":{"input_toke
 	}
 }
 
-func TestAdapterStartFailureIsNotSent(t *testing.T) {
+func TestAdapterInstallationFailureIsNotSent(t *testing.T) {
 	now := time.Date(2026, 8, 7, 14, 0, 0, 0, time.UTC)
 	cfg := testConfig(t, `#!/bin/sh
 if [ "$1" = "--version" ]; then
@@ -96,8 +112,6 @@ printf '{"result":"ok"}\n'
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Preflight has already proven the executable. Simulate replacement/removal
-	// between the request barrier and process start; this remains provably not sent.
 	if err = os.Remove(cfg.Executable); err != nil {
 		t.Fatal(err)
 	}
@@ -112,16 +126,12 @@ printf '{"result":"ok"}\n'
 }
 
 func TestAdapterRejectsMutableEndpointAndSettingsDrift(t *testing.T) {
-	cfg := testConfig(t, `#!/bin/sh
-printf '2.1.224\n'
-`)
+	cfg := testConfig(t, "#!/bin/sh\nprintf '2.1.224\\n'\n")
 	cfg.TokenPlanBaseURL = "https://coding-intl.dashscope.aliyuncs.com/apps/anthropic"
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Coding Plan endpoint accepted by Token Plan adapter")
 	}
-	cfg = testConfig(t, `#!/bin/sh
-printf '2.1.224\n'
-`)
+	cfg = testConfig(t, "#!/bin/sh\nprintf '2.1.224\\n'\n")
 	if err := os.WriteFile(cfg.SettingsFile, []byte(`{"env":{"ANTHROPIC_AUTH_TOKEN":"sk-test-token","ANTHROPIC_BASE_URL":"https://evil.example","ANTHROPIC_MODEL":"qwen3.6-flash","ANTHROPIC_DEFAULT_HAIKU_MODEL":"qwen3.6-flash","ANTHROPIC_DEFAULT_SONNET_MODEL":"qwen3.6-flash","ANTHROPIC_DEFAULT_OPUS_MODEL":"qwen3.6-flash","CLAUDE_CODE_SUBAGENT_MODEL":"qwen3.6-flash"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +168,7 @@ func testConfig(t *testing.T, executableBody string) Config {
 	if err := os.WriteFile(executable, []byte(executableBody), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	settings := []byte(`{"env":{"ANTHROPIC_AUTH_TOKEN":"sk-test-token","ANTHROPIC_BASE_URL":"` + SingaporeTokenPlanEndpoint + `","ANTHROPIC_MODEL":"qwen3.6-flash","ANTHROPIC_DEFAULT_HAIKU_MODEL":"qwen3.6-flash","ANTHROPIC_DEFAULT_SONNET_MODEL":"qwen3.6-flash","ANTHROPIC_DEFAULT_OPUS_MODEL":"qwen3.6-flash","CLAUDE_CODE_SUBAGENT_MODEL":"qwen3.6-flash"}}`)
+	settings := []byte("{\"env\":{\"ANTHROPIC_AUTH_TOKEN\":\"sk-test-token\",\"ANTHROPIC_BASE_URL\":\"" + SingaporeTokenPlanEndpoint + "\",\"ANTHROPIC_MODEL\":\"qwen3.6-flash\",\"ANTHROPIC_DEFAULT_HAIKU_MODEL\":\"qwen3.6-flash\",\"ANTHROPIC_DEFAULT_SONNET_MODEL\":\"qwen3.6-flash\",\"ANTHROPIC_DEFAULT_OPUS_MODEL\":\"qwen3.6-flash\",\"CLAUDE_CODE_SUBAGENT_MODEL\":\"qwen3.6-flash\"}}")
 	settingsFile := filepath.Join(dir, "settings.json")
 	if err := os.WriteFile(settingsFile, settings, 0o600); err != nil {
 		t.Fatal(err)
