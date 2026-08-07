@@ -135,27 +135,29 @@ func TestPolicyHashIgnoresRuleOrder(t *testing.T) {
 	}
 }
 
-func TestProductivePolicyAllowsOnlyCompiledOpenAICompatibleClasses(t *testing.T) {
-	body := strings.Replace(validPolicyBody(), "provider_id: test.fake", "provider_id: openai_compatible", 1)
-	body = strings.Replace(body, "data_classification: organizational", "data_classification: public", 1)
-	body = strings.Replace(body, "effect: deny", "effect: allow", 1)
-	body = strings.Replace(body, "reason_code: organizational_egress_not_approved", "reason_code: public_egress_approved_for_openai_compatible_v2", 1)
-	options := ProductiveLoadOptions([]string{"openai_compatible", "deepseek"})
-	policy, err := LoadCanonicalPolicy(writePolicy(t, body), options)
-	if err != nil {
-		t.Fatal(err)
+func TestProductivePolicyAllowsOnlyCompiledR24Classes(t *testing.T) {
+	providers := []string{"alibaba_token_plan_via_claude_code", "deepseek", "openai_compatible"}
+	options := ProductiveLoadOptions(providers)
+	for _, provider := range providers {
+		for _, classification := range []string{"public", "sanitized", "organizational"} {
+			t.Run(provider+"_"+classification, func(t *testing.T) {
+				body := strings.Replace(validPolicyBody(), "provider_id: test.fake", "provider_id: "+provider, 1)
+				body = strings.Replace(body, "data_classification: organizational", "data_classification: "+classification, 1)
+				body = strings.Replace(body, "effect: deny", "effect: allow", 1)
+				body = strings.Replace(body, "reason_code: organizational_egress_not_approved", "reason_code: r24_compiled_scope_gate", 1)
+				policy, err := LoadCanonicalPolicy(writePolicy(t, body), options)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if policy.Rules[0].Effect != EffectAllow {
+					t.Fatalf("rule=%+v", policy.Rules[0])
+				}
+			})
+		}
 	}
-	if policy.Rules[0].Effect != EffectAllow {
-		t.Fatalf("rule=%+v", policy.Rules[0])
-	}
-	for name, candidate := range map[string]string{
-		"organizational": strings.Replace(body, "data_classification: public", "data_classification: organizational", 1),
-		"other provider": strings.Replace(body, "provider_id: openai_compatible", "provider_id: deepseek", 1),
-	} {
-		t.Run(name, func(t *testing.T) {
-			if _, err := LoadCanonicalPolicy(writePolicy(t, candidate), options); !errors.Is(err, ErrInvalidPolicy) {
-				t.Fatalf("error=%v", err)
-			}
-		})
+	unknownProvider := strings.Replace(validPolicyBody(), "provider_id: test.fake", "provider_id: missing", 1)
+	unknownProvider = strings.Replace(unknownProvider, "effect: deny", "effect: allow", 1)
+	if _, err := LoadCanonicalPolicy(writePolicy(t, unknownProvider), options); !errors.Is(err, ErrInvalidPolicy) {
+		t.Fatalf("unknown provider error=%v", err)
 	}
 }
