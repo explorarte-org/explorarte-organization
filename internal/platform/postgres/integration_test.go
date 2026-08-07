@@ -58,14 +58,14 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Applied) != 16 || result.Current != 16 {
+	if len(result.Applied) != 17 || result.Current != 17 {
 		t.Fatalf("unexpected migration result: %+v", result)
 	}
 	status, err := runner.Status(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !status.Ready || status.Pending != 0 || status.Applied != 16 {
+	if !status.Ready || status.Pending != 0 || status.Applied != 17 {
 		t.Fatalf("status=%+v", status)
 	}
 	if err := store.UnitOfWork().WithinTransaction(ctx, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
@@ -95,26 +95,26 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(second.Applied) != 0 || second.Current != 16 {
+	if len(second.Applied) != 0 || second.Current != 17 {
 		t.Fatalf("second=%+v", second)
 	}
 	loaded, err := platformmigrations.Load(rootmigrations.Files)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded) != 16 {
-		t.Fatalf("loaded=%d want16", len(loaded))
+	if len(loaded) != 17 {
+		t.Fatalf("loaded=%d want17", len(loaded))
 	}
 	if err := store.UnitOfWork().WithinTransaction(ctx, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, loaded[15].DownSQL); err != nil {
+		if _, err := tx.Exec(ctx, loaded[16].DownSQL); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, `DELETE FROM schema_migrations WHERE version=16`)
+		_, err := tx.Exec(ctx, `DELETE FROM schema_migrations WHERE version=17`)
 		return err
 	}); err != nil {
-		t.Fatalf("down migration 000016: %v", err)
+		t.Fatalf("down migration 000017: %v", err)
 	}
-	for _, table := range []string{"skill_registry_versions", "skill_registry_skills", "skill_registry_lifecycle_events"} {
+	for _, table := range []string{"rag_knowledge_versions", "rag_knowledge_documents", "rag_knowledge_lifecycle_events"} {
 		var relation *string
 		if err := store.Pool().QueryRow(ctx, `SELECT to_regclass('public.' || $1)::text`, table).Scan(&relation); err != nil {
 			t.Fatal(err)
@@ -127,7 +127,7 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(restored.Applied) != 1 || restored.Current != 16 {
-		t.Fatalf("restore=%+v want 000016", restored)
+	if len(restored.Applied) != 1 || restored.Current != 17 {
+		t.Fatalf("restore=%+v want 000017", restored)
 	}
 }

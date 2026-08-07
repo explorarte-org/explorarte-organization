@@ -66,6 +66,10 @@ type MutationRequest struct {
 	ExpectedRevision int64
 	ActorRoleID      string
 	Reason           string
+	// ApprovalRequestID carries a prior decided orgctl authorization
+	// request/decide sequence, required because rag.publish_approved
+	// always evaluates as approval-required regardless of grants.
+	ApprovalRequestID *int64
 }
 
 type ReviewRequest struct {
@@ -160,7 +164,7 @@ func (m *Manager) authorizeMutation(ctx context.Context, request MutationRequest
 	digest := mutationDigest(before, after, request.ActorRoleID, request.Reason)
 	return m.gate.Authorize(ctx, AuthorizationRequest{
 		OrganizationID: before.OrganizationID, ActorRoleID: strings.TrimSpace(request.ActorRoleID), CapabilityID: CapabilityPublish,
-		ResourceType: "knowledge_version", ResourceID: before.ID, ActionDigest: digest,
+		ResourceType: "knowledge_version", ResourceID: before.ID, ActionDigest: digest, ApprovalRequestID: request.ApprovalRequestID,
 	})
 }
 
@@ -168,19 +172,28 @@ func mutationDigest(before, after KnowledgeVersion, actor, reason string) string
 	return ContentHash(strings.Join([]string{"rag-mutation.v1", before.ID, before.CanonicalHash, string(before.Lifecycle), string(after.Lifecycle), fmt.Sprint(before.Revision), strings.TrimSpace(actor), strings.TrimSpace(reason)}, "|"))
 }
 
+type ReindexRequest struct {
+	OrganizationID    string
+	NamespaceKind     NamespaceKind
+	NamespaceID       string
+	ActorRoleID       string
+	ApprovalRequestID *int64
+}
+
 // Reindex builds a new index generation over every approved, non-superseded
 // knowledge version in a namespace and atomically activates it once complete.
-func (m *Manager) Reindex(ctx context.Context, organizationID string, namespaceKind NamespaceKind, namespaceID, actorRoleID string) (IndexGeneration, error) {
-	organizationID = strings.TrimSpace(organizationID)
-	namespaceID = strings.TrimSpace(namespaceID)
-	actorRoleID = strings.TrimSpace(actorRoleID)
+func (m *Manager) Reindex(ctx context.Context, request ReindexRequest) (IndexGeneration, error) {
+	organizationID := strings.TrimSpace(request.OrganizationID)
+	namespaceID := strings.TrimSpace(request.NamespaceID)
+	actorRoleID := strings.TrimSpace(request.ActorRoleID)
+	namespaceKind := request.NamespaceKind
 	if organizationID == "" || namespaceID == "" || actorRoleID == "" || !namespaceKind.Valid() {
 		return IndexGeneration{}, fmt.Errorf("%w: organization_id, namespace, and actor_role_id are required", ErrInvalidGeneration)
 	}
 	if err := m.gate.Authorize(ctx, AuthorizationRequest{
 		OrganizationID: organizationID, ActorRoleID: actorRoleID, CapabilityID: CapabilityPublish,
 		ResourceType: "knowledge_index", ResourceID: string(namespaceKind) + ":" + namespaceID,
-		ActionDigest: ContentHash("rag-reindex.v1|" + organizationID + "|" + string(namespaceKind) + "|" + namespaceID),
+		ActionDigest: ContentHash("rag-reindex.v1|" + organizationID + "|" + string(namespaceKind) + "|" + namespaceID), ApprovalRequestID: request.ApprovalRequestID,
 	}); err != nil {
 		return IndexGeneration{}, err
 	}

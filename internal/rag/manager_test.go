@@ -176,7 +176,7 @@ func TestManagerFullLifecycleAndReindexAndQuery(t *testing.T) {
 	if approved.Lifecycle != LifecycleApproved {
 		t.Fatalf("approved=%+v", approved)
 	}
-	generation, err := manager.Reindex(ctx, approved.OrganizationID, approved.NamespaceKind, approved.NamespaceID, "empresa/human")
+	generation, err := manager.Reindex(ctx, ReindexRequest{OrganizationID: approved.OrganizationID, NamespaceKind: approved.NamespaceKind, NamespaceID: approved.NamespaceID, ActorRoleID: "empresa/human"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +231,7 @@ func TestManagerReindexRejectsNonApprovedVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.Reindex(context.Background(), candidate.OrganizationID, candidate.NamespaceKind, candidate.NamespaceID, "empresa/human"); !errors.Is(err, ErrVersionNotApproved) {
+	if _, err := manager.Reindex(context.Background(), ReindexRequest{OrganizationID: candidate.OrganizationID, NamespaceKind: candidate.NamespaceKind, NamespaceID: candidate.NamespaceID, ActorRoleID: "empresa/human"}); !errors.Is(err, ErrVersionNotApproved) {
 		t.Fatalf("reindex of candidate err=%v", err)
 	}
 }

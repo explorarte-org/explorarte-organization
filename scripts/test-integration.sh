@@ -228,5 +228,97 @@ JSON
       set -e
       test "$forbidden_code" -eq 2
     done
+
+    rag_admission_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    rag_digest="$(printf %s cli-rag-evidence | sha256sum | cut -d" " -f1)"
+    cat >/tmp/rag-propose.json <<JSON
+{"id":"cli-rag-smoke","document_id":"cli-rag-smoke-doc","namespace_kind":"department","namespace_id":"ingenieria_ia","version":1,"title":"CLI RAG smoke knowledge","body":"Antes de desplegar un modelo nuevo, valida la politica de egress y el owner del dataset.","source_kind":"research","source_reference":"investigacion:report:cli-smoke","evidence_refs":[{"reference":"integration:rag:1","digest":"$rag_digest"}],"proposed_by":"empresa/human","admission":{"data_class":"organizational","attested_by":"empresa/human","source_boundary":"organization","evidence_ref":"integration:rag:admission","attested_at":"$rag_admission_time"},"idempotency_key":"cli-rag-smoke"}
+JSON
+    /tmp/orgctl rag propose --file /tmp/rag-propose.json --json >/tmp/rag-created.json
+    grep -Fq "\"lifecycle\": \"candidate\"" /tmp/rag-created.json
+    rag_canonical_hash="$(grep -o "\"canonical_hash\": \"[0-9a-f]*\"" /tmp/rag-created.json | head -1 | grep -o "[0-9a-f]\{64\}")"
+
+    /tmp/orgctl rag query --file - --json <<JSON >/tmp/rag-query-before-approval.json
+{"actor_role_id":"ingenieria_ia/orquestador","scope":"department","query_text":"egress"}
+JSON
+    grep -Fq "[]" /tmp/rag-query-before-approval.json
+
+    # rag.publish_approved carries approval:policy_or_human in
+    # capability-matrix.yaml: it always evaluates as approval-required, even
+    # for the owner, so review/reindex/deprecate must each go through a real
+    # request -> decide -> evaluate-with-approval-request-id cycle. The
+    # action digest must match exactly what internal/rag/manager.go computes.
+    rag_review_digest="$(printf %s "rag-mutation.v1|cli-rag-smoke|$rag_canonical_hash|candidate|approved|1|empresa/human|CI owner reviewed evidence and admission provenance" | sha256sum | cut -d" " -f1)"
+    /tmp/orgctl authorization request --actor-role empresa/human --capability rag.publish_approved --resource-type knowledge_version --resource-id cli-rag-smoke --action-digest "$rag_review_digest" --idempotency-key cli-rag-review-request --reason "CI owner approval" --json >/tmp/rag-review-request.json
+    rag_review_request_id="$(grep -m1 "\"id\"" /tmp/rag-review-request.json | tr -cd "0-9")"
+    /tmp/orgctl authorization decide "$rag_review_request_id" --decision approve --actor-role empresa/human --reason "CI owner approval" --json >/tmp/rag-review-decision.json
+    cat >/tmp/rag-review.json <<JSON
+{"version_id":"cli-rag-smoke","expected_revision":1,"actor_role_id":"empresa/human","reason":"CI owner reviewed evidence and admission provenance","outcome":"approve","approval_request_id":$rag_review_request_id}
+JSON
+    /tmp/orgctl rag review --file /tmp/rag-review.json --json >/tmp/rag-approved.json
+    grep -Fq "\"lifecycle\": \"approved\"" /tmp/rag-approved.json
+
+    rag_reindex_digest="$(printf %s "rag-reindex.v1|explorarte|department|ingenieria_ia" | sha256sum | cut -d" " -f1)"
+    /tmp/orgctl authorization request --actor-role empresa/human --capability rag.publish_approved --resource-type knowledge_index --resource-id department:ingenieria_ia --action-digest "$rag_reindex_digest" --idempotency-key cli-rag-reindex-request --reason "CI owner approval" --json >/tmp/rag-reindex-request.json
+    rag_reindex_request_id="$(grep -m1 "\"id\"" /tmp/rag-reindex-request.json | tr -cd "0-9")"
+    /tmp/orgctl authorization decide "$rag_reindex_request_id" --decision approve --actor-role empresa/human --reason "CI owner approval" --json >/tmp/rag-reindex-decision.json
+    cat >/tmp/rag-reindex.json <<JSON
+{"namespace_kind":"department","namespace_id":"ingenieria_ia","actor_role_id":"empresa/human","approval_request_id":$rag_reindex_request_id}
+JSON
+    /tmp/orgctl rag reindex --file /tmp/rag-reindex.json --json >/tmp/rag-generation.json
+    grep -Fq "\"status\": \"active\"" /tmp/rag-generation.json
+
+    /tmp/orgctl rag query --file - --json <<JSON >/tmp/rag-query-after-approval.json
+{"actor_role_id":"ingenieria_ia/orquestador","scope":"department","query_text":"egress"}
+JSON
+    grep -Fq "cli-rag-smoke-doc" /tmp/rag-query-after-approval.json
+
+    set +e
+    /tmp/orgctl rag query --file - --json <<JSON >/tmp/rag-query-denied.out 2>/tmp/rag-query-denied.err
+{"actor_role_id":"creativo/copywriter","scope":"department","query_text":"egress"}
+JSON
+    rag_denied_code=$?
+    set -e
+    test "$rag_denied_code" -eq 6
+
+    mkdir -p /tmp/context-source/ingenieria_ia/orquestador
+    cat >/tmp/context-source/ingenieria_ia/orquestador/PERFIL.md <<EOF
+---
+departamento: ingenieria_ia
+rol: orquestador
+dominio_memoria: ingenieria_ia
+agente_base: true
+---
+# Orquestador profile
+Coordinate ingenieria_ia work.
+EOF
+    /tmp/orgctl context build --actor-role ingenieria_ia/orquestador --purpose "egress" --idempotency-key cli-rag-context-smoke --json >/tmp/rag-context-created.json
+    rag_context_id="$(grep -m1 "\"id\"" /tmp/rag-context-created.json | tr -cd "0-9")"
+    /tmp/orgctl context get "$rag_context_id" --json >/tmp/rag-context-get.json
+    /tmp/orgctl context render "$rag_context_id" --output /tmp/rag-context-render.json
+    grep -Fq "\"source_kind\":\"rag_evidence\"" /tmp/rag-context-render.json
+    grep -Fq "\"trust_class\":\"untrusted\"" /tmp/rag-context-render.json
+    grep -Fq "\"may_grant_capabilities\":false" /tmp/rag-context-render.json
+
+    rag_deprecate_digest="$(printf %s "rag-mutation.v1|cli-rag-smoke|$rag_canonical_hash|approved|deprecated|2|empresa/human|superseded for CLI smoke" | sha256sum | cut -d" " -f1)"
+    /tmp/orgctl authorization request --actor-role empresa/human --capability rag.publish_approved --resource-type knowledge_version --resource-id cli-rag-smoke --action-digest "$rag_deprecate_digest" --idempotency-key cli-rag-deprecate-request --reason "CI owner approval" --json >/tmp/rag-deprecate-request.json
+    rag_deprecate_request_id="$(grep -m1 "\"id\"" /tmp/rag-deprecate-request.json | tr -cd "0-9")"
+    /tmp/orgctl authorization decide "$rag_deprecate_request_id" --decision approve --actor-role empresa/human --reason "CI owner approval" --json >/tmp/rag-deprecate-decision.json
+    cat >/tmp/rag-deprecate.json <<JSON
+{"version_id":"cli-rag-smoke","expected_revision":2,"actor_role_id":"empresa/human","reason":"superseded for CLI smoke","outcome":"deprecate","approval_request_id":$rag_deprecate_request_id}
+JSON
+    /tmp/orgctl rag review --file /tmp/rag-deprecate.json --json >/tmp/rag-deprecated.json
+    grep -Fq "\"lifecycle\": \"deprecated\"" /tmp/rag-deprecated.json
+
+    /tmp/orgctl rag query --file - --json <<JSON >/tmp/rag-query-after-deprecation.json
+{"actor_role_id":"ingenieria_ia/orquestador","scope":"department","query_text":"egress"}
+JSON
+    grep -Fq "[]" /tmp/rag-query-after-deprecation.json
+
+    set +e
+    /tmp/orgctl context validate "$rag_context_id" --json >/tmp/rag-context-validate.json 2>/tmp/rag-context-validate.err
+    rag_validate_code=$?
+    set -e
+    test "$rag_validate_code" -ne 0
   '
 fi

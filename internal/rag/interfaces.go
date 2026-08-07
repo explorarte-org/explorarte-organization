@@ -57,6 +57,13 @@ type AuthorizationRequest struct {
 	ResourceType   string
 	ResourceID     string
 	ActionDigest   string
+	// ApprovalRequestID references a prior orgctl authorization
+	// request/decide sequence for capabilities that carry a non-empty
+	// approval mode in capability-matrix.yaml (e.g. rag.publish_approved).
+	// Those capabilities always evaluate as approval-required regardless
+	// of grants; only a decided request consumed against a matching
+	// action digest resolves to allow.
+	ApprovalRequestID *int64
 }
 
 type AuthorizationGate interface {

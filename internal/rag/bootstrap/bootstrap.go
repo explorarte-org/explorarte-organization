@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/Mireuz13/explorarte-organization/internal/authorization"
-	authorizationpostgres "github.com/Mireuz13/explorarte-organization/internal/authorization/postgres"
+	authorizationbootstrap "github.com/Mireuz13/explorarte-organization/internal/authorization/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/config"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
@@ -20,7 +20,7 @@ type Runtime struct {
 	Store          *ragpostgres.Store
 	Gate           *ragauthz.Gate
 	Namespaces     *ragroles.Resolver
-	Authorizer     *authorization.Authorizer
+	Authorization  *authorization.Service
 	Registry       *registry.PostgresRepository
 	OrganizationID string
 }
@@ -33,15 +33,17 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	if err != nil {
 		return nil, fmt.Errorf("create rag registry repository: %w", err)
 	}
-	authorizationStore, err := authorizationpostgres.New(platformStore)
+	// rag.publish_approved carries approval:policy_or_human in
+	// capability-matrix.yaml. The bare *authorization.Authorizer always
+	// returns EffectApprovalRequired for any capability with a non-empty
+	// approval mode, even for the owner acting directly; only
+	// *authorization.Service resolves a consumed approval request back to
+	// EffectAllow, so the gate must evaluate through the full service.
+	authRuntime, err := authorizationbootstrap.Open(cfg, platformStore)
 	if err != nil {
-		return nil, fmt.Errorf("create rag authorization store: %w", err)
+		return nil, fmt.Errorf("create rag authorization runtime: %w", err)
 	}
-	authorizer, err := authorization.NewWithPolicyReader(authorizationStore, cfg.Tasks.OrganizationID, cfg.Registry.CanonicalDir)
-	if err != nil {
-		return nil, fmt.Errorf("create rag authorizer: %w", err)
-	}
-	gate, err := ragauthz.New(authorizer, registryRepository, cfg.Tasks.OrganizationID)
+	gate, err := ragauthz.New(authRuntime.Service, registryRepository, cfg.Tasks.OrganizationID)
 	if err != nil {
 		return nil, fmt.Errorf("create rag authorization gate: %w", err)
 	}
@@ -60,7 +62,7 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	}
 	return &Runtime{
 		Manager: manager, Domain: domain, Store: store, Gate: gate, Namespaces: namespaces,
-		Authorizer: authorizer, Registry: registryRepository,
+		Authorization: authRuntime.Service, Registry: registryRepository,
 		OrganizationID: cfg.Tasks.OrganizationID,
 	}, nil
 }

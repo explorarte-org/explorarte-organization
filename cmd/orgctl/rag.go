@@ -48,16 +48,18 @@ type ragProposeInput struct {
 	IdempotencyKey      string             `json:"idempotency_key"`
 }
 type ragReviewInput struct {
-	VersionID        string `json:"version_id"`
-	ExpectedRevision int64  `json:"expected_revision"`
-	ActorRoleID      string `json:"actor_role_id"`
-	Reason           string `json:"reason"`
-	Outcome          string `json:"outcome"`
+	VersionID         string `json:"version_id"`
+	ExpectedRevision  int64  `json:"expected_revision"`
+	ActorRoleID       string `json:"actor_role_id"`
+	Reason            string `json:"reason"`
+	Outcome           string `json:"outcome"`
+	ApprovalRequestID *int64 `json:"approval_request_id,omitempty"`
 }
 type ragReindexInput struct {
-	NamespaceKind rag.NamespaceKind `json:"namespace_kind"`
-	NamespaceID   string            `json:"namespace_id"`
-	ActorRoleID   string            `json:"actor_role_id"`
+	NamespaceKind     rag.NamespaceKind `json:"namespace_kind"`
+	NamespaceID       string            `json:"namespace_id"`
+	ActorRoleID       string            `json:"actor_role_id"`
+	ApprovalRequestID *int64            `json:"approval_request_id,omitempty"`
 }
 type ragQueryInput struct {
 	ActorRoleID string            `json:"actor_role_id"`
@@ -134,7 +136,7 @@ func runRAG(args []string, stdout, stderr io.Writer) int {
 		if code != exitOK {
 			return code
 		}
-		mutation := rag.MutationRequest{OrganizationID: runtime.OrganizationID, VersionID: input.VersionID, ExpectedRevision: input.ExpectedRevision, ActorRoleID: input.ActorRoleID, Reason: input.Reason}
+		mutation := rag.MutationRequest{OrganizationID: runtime.OrganizationID, VersionID: input.VersionID, ExpectedRevision: input.ExpectedRevision, ActorRoleID: input.ActorRoleID, Reason: input.Reason, ApprovalRequestID: input.ApprovalRequestID}
 		var version rag.KnowledgeVersion
 		switch input.Outcome {
 		case "approve":
@@ -191,7 +193,7 @@ func runRAG(args []string, stdout, stderr io.Writer) int {
 		if code != exitOK {
 			return code
 		}
-		generation, err := runtime.Manager.Reindex(ctx, runtime.OrganizationID, input.NamespaceKind, input.NamespaceID, input.ActorRoleID)
+		generation, err := runtime.Manager.Reindex(ctx, rag.ReindexRequest{OrganizationID: runtime.OrganizationID, NamespaceKind: input.NamespaceKind, NamespaceID: input.NamespaceID, ActorRoleID: input.ActorRoleID, ApprovalRequestID: input.ApprovalRequestID})
 		if err != nil {
 			return ragCommandError(stderr, err)
 		}

@@ -60,6 +60,7 @@ func (g *Gate) Authorize(ctx context.Context, request rag.AuthorizationRequest) 
 		ResourceType:           strings.TrimSpace(request.ResourceType),
 		ResourceID:             strings.TrimSpace(request.ResourceID),
 		ActionDigest:           strings.TrimSpace(request.ActionDigest),
+		ApprovalRequestID:      request.ApprovalRequestID,
 	})
 	if err != nil {
 		return err
@@ -68,7 +69,7 @@ func (g *Gate) Authorize(ctx context.Context, request rag.AuthorizationRequest) 
 	case authorization.EffectAllow:
 		return nil
 	case authorization.EffectApprovalRequired:
-		return fmt.Errorf("%w: %s", authorization.ErrApprovalRequired, result.ReasonCode)
+		return fmt.Errorf("%w: %s (capability=%s resource_type=%s resource_id=%s action_digest=%s)", authorization.ErrApprovalRequired, result.ReasonCode, request.CapabilityID, request.ResourceType, request.ResourceID, request.ActionDigest)
 	case authorization.EffectDeny:
 		return fmt.Errorf("%w: %s", authorization.ErrCapabilityDenied, result.ReasonCode)
 	default:
