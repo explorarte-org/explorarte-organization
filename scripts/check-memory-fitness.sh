@@ -32,7 +32,7 @@ require 'SourceApprovedMemory' internal/memory/contextprovider/provider.go
 require 'TierApprovedMemory' internal/memory/contextprovider/provider.go
 require 'InstructionData' internal/memory/contextprovider/provider.go
 require 'TrustUntrusted' internal/memory/contextprovider/provider.go
-require 'MayGrantCapabilities:false' internal/memory/contextprovider/provider.go
+require 'MayGrantCapabilities:[[:space:]]*false' internal/memory/contextprovider/provider.go
 require 'SourceKind' internal/memory/contextprovider/provider.go
 require 'ValidateVersion' internal/memory/contextprovider/provider.go
 require 'DisallowUnknownFields' cmd/orgctl/memory.go

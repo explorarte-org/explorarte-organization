@@ -60,8 +60,8 @@ func (c DataClass) AllowedInOrganizationalMemory() bool {
 type SourceKind string
 
 const (
-	SourceOperational SourceKind = "operational"
-	SourceSimulation  SourceKind = "simulation"
+	SourceOperational   SourceKind = "operational"
+	SourceSimulation    SourceKind = "simulation"
 	SourceSyntheticTest SourceKind = "synthetic_test"
 )
 
