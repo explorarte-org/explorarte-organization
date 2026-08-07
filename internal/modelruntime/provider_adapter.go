@@ -57,7 +57,11 @@ type ProviderPreflightRequest struct {
 type ProviderOutcome struct {
 	OutcomeClassification string
 	ProviderRequestID     string
+	// Transport is optional for rows/events created before CLI adapters existed.
+	// An empty transport is interpreted as HTTP for backwards compatibility.
+	Transport             Transport
 	HTTPStatus            int
+	ProcessExitCode       *int
 	ErrorClass            string
 	ErrorCode             string
 	Retryable             bool
@@ -66,14 +70,34 @@ type ProviderOutcome struct {
 	CancellationConfirmed bool
 }
 
+func (o ProviderOutcome) effectiveTransport() Transport {
+	if o.Transport == "" {
+		return TransportHTTP
+	}
+	return o.Transport
+}
+
 func (o ProviderOutcome) Validate() error {
 	switch o.OutcomeClassification {
 	case ProviderOutcomeResponseReceived, ProviderOutcomeRejected, ProviderOutcomeNotSent, ProviderOutcomeAmbiguous, ProviderOutcomeCancelled:
 	default:
 		return fmt.Errorf("%w: invalid provider outcome classification", ErrInvalidRequest)
 	}
+	transport := o.effectiveTransport()
+	if transport != TransportHTTP && transport != TransportCLI && transport != TransportFake {
+		return fmt.Errorf("%w: invalid provider outcome transport", ErrInvalidRequest)
+	}
 	if o.HTTPStatus < 0 || o.HTTPStatus > 599 {
 		return fmt.Errorf("%w: invalid provider HTTP status", ErrInvalidRequest)
+	}
+	if o.ProcessExitCode != nil && (*o.ProcessExitCode < 0 || *o.ProcessExitCode > 255) {
+		return fmt.Errorf("%w: invalid provider process exit code", ErrInvalidRequest)
+	}
+	if transport == TransportHTTP && o.ProcessExitCode != nil {
+		return fmt.Errorf("%w: HTTP outcome cannot carry process exit code", ErrInvalidRequest)
+	}
+	if transport == TransportCLI && o.HTTPStatus != 0 {
+		return fmt.Errorf("%w: CLI outcome cannot carry HTTP status", ErrInvalidRequest)
 	}
 	if o.ResponseHash != "" && !validProviderSHA256(o.ResponseHash) {
 		return fmt.Errorf("%w: invalid provider response hash", ErrInvalidRequest)
@@ -95,15 +119,31 @@ func (o ProviderOutcome) Validate() error {
 	}
 	switch o.OutcomeClassification {
 	case ProviderOutcomeResponseReceived:
-		if o.HTTPStatus < 200 || o.HTTPStatus >= 300 || o.ResponseHash == "" || o.Retryable || o.CancellationConfirmed {
+		if o.ResponseHash == "" || o.Retryable || o.CancellationConfirmed {
 			return fmt.Errorf("%w: successful provider outcome is inconsistent", ErrInvalidRequest)
 		}
+		switch transport {
+		case TransportHTTP:
+			if o.HTTPStatus < 200 || o.HTTPStatus >= 300 {
+				return fmt.Errorf("%w: successful HTTP provider outcome is inconsistent", ErrInvalidRequest)
+			}
+		case TransportCLI:
+			if o.ProcessExitCode == nil || *o.ProcessExitCode != 0 {
+				return fmt.Errorf("%w: successful CLI provider outcome is inconsistent", ErrInvalidRequest)
+			}
+		}
 	case ProviderOutcomeRejected:
-		if o.HTTPStatus < 100 || o.ResponseHash == "" || strings.TrimSpace(o.ErrorCode) == "" || o.CancellationConfirmed {
+		if o.ResponseHash == "" || strings.TrimSpace(o.ErrorCode) == "" || o.CancellationConfirmed {
 			return fmt.Errorf("%w: rejected provider outcome is inconsistent", ErrInvalidRequest)
 		}
+		if transport == TransportHTTP && o.HTTPStatus < 100 {
+			return fmt.Errorf("%w: rejected HTTP provider outcome is inconsistent", ErrInvalidRequest)
+		}
+		if transport == TransportCLI && o.ProcessExitCode == nil {
+			return fmt.Errorf("%w: rejected CLI provider outcome is inconsistent", ErrInvalidRequest)
+		}
 	case ProviderOutcomeNotSent:
-		if o.HTTPStatus != 0 || o.ResponseHash != "" || o.ProviderRequestID != "" || strings.TrimSpace(o.ErrorCode) == "" || o.CancellationConfirmed {
+		if o.HTTPStatus != 0 || o.ProcessExitCode != nil || o.ResponseHash != "" || o.ProviderRequestID != "" || strings.TrimSpace(o.ErrorCode) == "" || o.CancellationConfirmed {
 			return fmt.Errorf("%w: not-sent provider outcome is inconsistent", ErrInvalidRequest)
 		}
 	case ProviderOutcomeAmbiguous:
