@@ -129,10 +129,10 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 		if !started {
 			return modelruntime.RawResponse{}, a.beforeRequest("process", "process_not_started", runErr)
 		}
-		return modelruntime.RawResponse{}, a.ambiguous(exitCode, classifyCLIError(runErr), runErr)
+		return modelruntime.RawResponse{}, a.ambiguous(exitCode, classifyCLIError(runErr, exitCode), runErr)
 	}
 	if !started || exitCode == nil || *exitCode != 0 {
-		return modelruntime.RawResponse{}, a.ambiguous(exitCode, "process_exit_unknown", modelruntime.ErrProviderUnavailable)
+		return modelruntime.RawResponse{}, a.ambiguous(exitCode, classifyCLIError(modelruntime.ErrProviderUnavailable, exitCode), modelruntime.ErrProviderUnavailable)
 	}
 	responseHash := modelruntime.SHA256Bytes(stdout)
 	content, inputTokens, outputTokens, err := parseCLIResponse(stdout, request.OutputMode)
@@ -249,7 +249,10 @@ func validEffort(value string) bool {
 	}
 }
 
-func classifyCLIError(err error) string {
+func classifyCLIError(err error, exitCode *int) string {
+	if exitCode != nil && *exitCode >= 0 && *exitCode <= 255 {
+		return "process_exit_" + strconv.Itoa(*exitCode)
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "process_timeout"
 	}
