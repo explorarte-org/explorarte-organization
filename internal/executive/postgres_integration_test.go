@@ -1,0 +1,456 @@
+//go:build integration
+
+package executive_test
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	authorizationbootstrap "github.com/Mireuz13/explorarte-organization/internal/authorization/bootstrap"
+	"github.com/Mireuz13/explorarte-organization/internal/completion"
+	completionpostgres "github.com/Mireuz13/explorarte-organization/internal/completion/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/config"
+	"github.com/Mireuz13/explorarte-organization/internal/executive"
+	"github.com/Mireuz13/explorarte-organization/internal/executive/runtimeadapter"
+	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
+	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
+	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/tasks"
+	taskpostgres "github.com/Mireuz13/explorarte-organization/internal/tasks/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/tasks/registryadapter"
+	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
+)
+
+type integrationHarness struct {
+	ctx        context.Context
+	cancel     context.CancelFunc
+	store      *platformpostgres.Store
+	registry   *registry.PostgresRepository
+	tasks      *tasks.Service
+	authz      executive.AuthorizationGate
+	completion executive.CompletionGate
+}
+
+func newIntegrationHarness(t *testing.T) *integrationHarness {
+	t.Helper()
+	databaseURL := os.Getenv("ORG_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Fatal("ORG_TEST_DATABASE_URL is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	canonicalDir := filepath.Join("..", "..", "docs", "canonical")
+	cfg, err := config.LoadFrom(func(key string) (string, bool) {
+		values := map[string]string{
+			"ORG_ENVIRONMENT":        "test",
+			"ORG_DATABASE_URL":       databaseURL,
+			"ORG_DATABASE_MAX_CONNS": "24",
+			"ORG_DATABASE_MIN_CONNS": "0",
+			"ORG_CANONICAL_DIR":      canonicalDir,
+		}
+		value, ok := values[key]
+		return value, ok
+	})
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	store, err := platformpostgres.Open(ctx, cfg.Database, "executive-integration-test")
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	runner, err := platformmigrations.New(store.Pool(), rootmigrations.Files)
+	if err != nil {
+		store.Close()
+		cancel()
+		t.Fatal(err)
+	}
+	if _, err = runner.Up(ctx); err != nil {
+		store.Close()
+		cancel()
+		t.Fatalf("migrate: %v", err)
+	}
+	if _, err = store.Pool().Exec(ctx, `
+TRUNCATE outbox_events,task_dead_letters,task_events,task_leases,task_attempts,task_evidence,
+         task_requirements,task_dependencies,tasks,organization_reporting_lines,
+         organization_registry_revision_documents,organization_roles,organizational_units,
+         organizations,organization_registry_revisions,audit_events RESTART IDENTITY CASCADE`); err != nil {
+		store.Close()
+		cancel()
+		t.Fatalf("reset schema: %v", err)
+	}
+	registryRepo, err := registry.NewPostgresRepository(store)
+	if err != nil {
+		store.Close()
+		cancel()
+		t.Fatal(err)
+	}
+	loader, err := registry.NewLoader(canonicalDir)
+	if err != nil {
+		store.Close()
+		cancel()
+		t.Fatal(err)
+	}
+	registryService, err := registry.NewService(loader, registryRepo, "explorarte", 30*time.Second)
+	if err != nil {
+		store.Close()
+		cancel()
+		t.Fatal(err)
+	}
+	if syncResult, syncErr := registryService.SynchronizeCanonical(ctx, true); syncErr != nil || !syncResult.Applied {
+		store.Close()
+		cancel()
+		t.Fatalf("sync registry: result=%+v err=%v", syncResult, syncErr)
+	}
+	catalog, err := registryadapter.New(registryRepo)
+	if err != nil {
+		store.Close()
+		cancel()
+		t.Fatal(err)
+	}
+	taskDB, err := taskpostgres.New(store)
+	if err != nil {
+		store.Close()
+		cancel()
+		t.Fatal(err)
+	}
+	taskService, err := tasks.NewService(taskDB, catalog, tasks.Config{
+		OrganizationID:       "explorarte",
+		DefaultMaxAttempts:   5,
+		DefaultLeaseDuration: time.Minute,
+		MaxLeaseDuration:     15 * time.Minute,
+		RetryPolicy:          tasks.RetryPolicy{BaseDelay: time.Second, MaxDelay: time.Minute},
+		OutboxMaxAttempts:    3,
+		OutboxClaimDuration:  time.Minute,
+	})
+	if err != nil {
+		store.Close()
+		cancel()
+		t.Fatal(err)
+	}
+	authRuntime, err := authorizationbootstrap.Open(cfg, store)
+	if err != nil {
+		store.Close()
+		cancel()
+		t.Fatal(err)
+	}
+	completionReader, err := completionpostgres.New(store, "explorarte")
+	if err != nil {
+		store.Close()
+		cancel()
+		t.Fatal(err)
+	}
+	completionService, err := completion.NewService(completionReader, completionReader, completionReader, completionReader, completionReader, nil)
+	if err != nil {
+		store.Close()
+		cancel()
+		t.Fatal(err)
+	}
+	return &integrationHarness{
+		ctx: ctx, cancel: cancel, store: store, registry: registryRepo, tasks: taskService,
+		authz: runtimeadapter.Authorization{Service: authRuntime.Service, OrganizationID: "explorarte"},
+		completion: runtimeadapter.Completion{Service: completionService},
+	}
+}
+
+func (h *integrationHarness) close() {
+	h.store.Close()
+	h.cancel()
+}
+
+type integrationContext struct{ next int64 }
+
+func (f *integrationContext) Build(context.Context, executive.ContextRequest) (int64, error) {
+	f.next++
+	return f.next, nil
+}
+
+type integrationAssignments struct{ fail bool }
+
+func (f integrationAssignments) ResolveAssignment(_ context.Context, taskID, attemptID int64, role string) (executive.AssignmentRef, error) {
+	if f.fail {
+		return executive.AssignmentRef{}, errors.New("assignment unavailable")
+	}
+	return executive.AssignmentRef{
+		ID: 1000 + attemptID, OrganizationRevisionID: 1, TaskID: taskID, AttemptID: attemptID,
+		SubjectRoleID: role, ExecutionPrincipalID: 77, DispatchActorRoleID: "ingenieria_ia/code-runner",
+		ValidUntil: time.Now().Add(time.Hour),
+	}, nil
+}
+
+type integrationModelRuntime struct {
+	nextID             int64
+	byAttempt          map[string][]executive.InvocationRecord
+	results            map[int64]executive.InvocationResult
+	ensureCalls        int
+	ambiguousPurpose   string
+	invalidCEOOverride bool
+	crossDepartment    bool
+}
+
+func newIntegrationModelRuntime() *integrationModelRuntime {
+	return &integrationModelRuntime{nextID: 9000, byAttempt: map[string][]executive.InvocationRecord{}, results: map[int64]executive.InvocationResult{}}
+}
+
+func modelAttemptKey(taskID, attemptID int64) string { return fmt.Sprintf("%d/%d", taskID, attemptID) }
+
+func (f *integrationModelRuntime) EnsureInvocation(_ context.Context, command executive.InvocationCommand) (executive.InvocationRecord, bool, error) {
+	key := modelAttemptKey(command.TaskID, command.AttemptID)
+	if existing := f.byAttempt[key]; len(existing) > 0 {
+		return existing[0], true, nil
+	}
+	f.ensureCalls++
+	f.nextID++
+	status := "succeeded"
+	if command.Purpose == f.ambiguousPurpose {
+		status = "ambiguous"
+	}
+	invocation := executive.InvocationRecord{
+		ID: f.nextID, TaskID: command.TaskID, AttemptID: command.AttemptID, SubjectRoleID: command.SubjectRoleID,
+		Status: status, CorrelationID: command.CorrelationID, CausationID: command.CausationID,
+	}
+	f.byAttempt[key] = []executive.InvocationRecord{invocation}
+	if status == "succeeded" {
+		body := f.output(command.Purpose)
+		hash := sha256.Sum256(body)
+		f.results[invocation.ID] = executive.InvocationResult{
+			InvocationID: invocation.ID, JSONOutput: body, ResponseHash: hex.EncodeToString(hash[:]), ResponseBytes: len(body),
+		}
+	}
+	return invocation, false, nil
+}
+
+func (f *integrationModelRuntime) GetInvocation(_ context.Context, id int64) (executive.InvocationRecord, error) {
+	for _, values := range f.byAttempt {
+		for _, value := range values {
+			if value.ID == id {
+				return value, nil
+			}
+		}
+	}
+	return executive.InvocationRecord{}, errors.New("invocation not found")
+}
+
+func (f *integrationModelRuntime) FindTaskAttemptInvocations(_ context.Context, taskID, attemptID int64) ([]executive.InvocationRecord, error) {
+	return append([]executive.InvocationRecord(nil), f.byAttempt[modelAttemptKey(taskID, attemptID)]...), nil
+}
+
+func (f *integrationModelRuntime) GetResult(_ context.Context, invocationID int64) (executive.InvocationResult, error) {
+	value, ok := f.results[invocationID]
+	if !ok {
+		return executive.InvocationResult{}, errors.New("result not found")
+	}
+	return value, nil
+}
+
+func (f *integrationModelRuntime) output(purpose string) json.RawMessage {
+	switch purpose {
+	case "executive_ceo_plan":
+		if f.invalidCEOOverride {
+			return json.RawMessage(`{"schema_version":"executive-plan/v1","objective":"analyze","department_requests":[{"unit_id":"ingenieria_ia","objective":"inspect","deliverable":"report","priority":10,"constraints":[],"provider":"deepseek"}],"global_constraints":[],"success_criteria":["verified"],"owner_decisions_required":[]}`)
+		}
+		return json.RawMessage(`{"schema_version":"executive-plan/v1","objective":"analyze","department_requests":[{"unit_id":"ingenieria_ia","objective":"inspect","deliverable":"report","priority":10,"constraints":[]}],"global_constraints":[],"success_criteria":["verified"],"owner_decisions_required":[]}`)
+	case "department_plan":
+		role := "ingenieria_ia/qa"
+		if f.crossDepartment {
+			role = "marketing/estratega_crecimiento"
+		}
+		return json.RawMessage(fmt.Sprintf(`{"schema_version":"department-plan/v1","department_id":"ingenieria_ia","tasks":[{"client_key":"inspect","assigned_role_id":%q,"title":"Inspect state","instructions":"Inspect the bounded task context and report findings.","acceptance_criteria":["return findings"],"dependencies":[],"requirements":[],"priority":5}],"review_criteria":["findings verified"],"unresolved":[]}`, role))
+	case "department_worker":
+		return json.RawMessage(`{"schema_version":"worker-result/v1","summary":"bounded findings","evidence_refs":["integration:evidence:1"]}`)
+	case "department_review":
+		return json.RawMessage(`{"schema_version":"department-review/v1","verdict":"accept","findings":["criteria satisfied"],"unsatisfied_criteria":[],"evidence_refs":["integration:evidence:1"],"proposed_followup_tasks":[]}`)
+	case "executive_ceo_closure":
+		return json.RawMessage(`{"schema_version":"executive-closure/v1","status":"completed","answer_to_owner":"The requested area was analyzed with verified evidence.","completed_items":["engineering analysis"],"blocked_items":[],"unresolved_decisions":[],"evidence_refs":["integration:evidence:1"]}`)
+	default:
+		return json.RawMessage(`{"schema_version":"worker-result/v1","summary":"unknown","evidence_refs":[]}`)
+	}
+}
+
+type countingCompletion struct {
+	delegate executive.CompletionGate
+	calls    int
+	forceAt  int
+}
+
+func (c *countingCompletion) Verify(ctx context.Context, taskID, attemptID int64) (executive.CompletionResult, error) {
+	c.calls++
+	if c.forceAt > 0 && c.calls == c.forceAt {
+		return executive.CompletionResult{Verdict: executive.CompletionInconclusive, Detail: "injected inconclusive"}, nil
+	}
+	return c.delegate.Verify(ctx, taskID, attemptID)
+}
+
+func newOrchestrator(t *testing.T, h *integrationHarness, models *integrationModelRuntime, assignments integrationAssignments, completionGate executive.CompletionGate) *executive.Orchestrator {
+	t.Helper()
+	value, err := executive.NewOrchestrator(
+		"explorarte",
+		runtimeadapter.Registry{Reader: h.registry, OrganizationID: "explorarte"},
+		runtimeadapter.Tasks{Service: h.tasks, OrganizationID: "explorarte"},
+		&integrationContext{}, assignments, models, completionGate, h.authz,
+		executive.DefaultLimits(), executive.ClockFunc(time.Now),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return value
+}
+
+func runUntilTerminalOrError(t *testing.T, ctx context.Context, orchestrator *executive.Orchestrator, rootID int64, max int) (executive.Run, error) {
+	t.Helper()
+	var run executive.Run
+	var err error
+	for i := 0; i < max; i++ {
+		run, err = orchestrator.Resume(ctx, rootID)
+		if err != nil || run.State == executive.StateCompleted || run.State == executive.StateFailed || run.State == executive.StateBlocked {
+			return run, err
+		}
+	}
+	return run, fmt.Errorf("executive run did not converge after %d resumes", max)
+}
+
+func TestExecutivePostgreSQL17EndToEndAndRestart(t *testing.T) {
+	h := newIntegrationHarness(t)
+	defer h.close()
+	models := newIntegrationModelRuntime()
+	completionGate := &countingCompletion{delegate: h.completion}
+	orchestrator := newOrchestrator(t, h, models, integrationAssignments{}, completionGate)
+	run, reused, err := orchestrator.Submit(h.ctx, executive.SubmitRequest{
+		ActorRoleID: executive.OwnerRoleID, IdempotencyKey: "integration-executive-normal",
+		Goal: executive.OwnerGoal{Goal: "Analyze the organization and return a one-area plan without external actions.", AcceptanceCriteria: []string{"one department reviewed", "closure verified"}},
+	})
+	if err != nil || reused {
+		t.Fatalf("submit: run=%+v reused=%v err=%v", run, reused, err)
+	}
+	rootID := run.RootTaskID
+	for i := 0; i < 3; i++ {
+		if _, err = orchestrator.Resume(h.ctx, rootID); err != nil {
+			t.Fatalf("pre-restart resume %d: %v", i, err)
+		}
+	}
+	orchestrator = newOrchestrator(t, h, models, integrationAssignments{}, completionGate)
+	run, err = runUntilTerminalOrError(t, h.ctx, orchestrator, rootID, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.State != executive.StateCompleted || run.AnswerToOwner == "" {
+		t.Fatalf("run=%+v", run)
+	}
+	if models.ensureCalls != executive.NormalExpectedCalls(1, 1) {
+		t.Fatalf("model calls=%d want=%d", models.ensureCalls, executive.NormalExpectedCalls(1, 1))
+	}
+	if completionGate.calls != 6 {
+		t.Fatalf("completion verifier calls=%d want=6", completionGate.calls)
+	}
+	root, err := h.tasks.GetTask(h.ctx, rootID)
+	if err != nil || root.Task.Status != tasks.StatusCompleted {
+		t.Fatalf("root=%+v err=%v", root.Task, err)
+	}
+	correlated, err := h.tasks.ListTasks(h.ctx, tasks.TaskFilter{OrganizationID: "explorarte", CorrelationID: *root.Task.CorrelationID, Limit: 100})
+	if err != nil || len(correlated) != 6 {
+		t.Fatalf("correlated tasks=%d err=%v", len(correlated), err)
+	}
+	for _, task := range correlated {
+		if task.CorrelationID == nil || *task.CorrelationID != *root.Task.CorrelationID {
+			t.Fatalf("correlation drift task=%+v", task)
+		}
+		if task.ID != rootID && (task.CausationID == nil || *task.CausationID == "") {
+			t.Fatalf("missing causation task=%+v", task)
+		}
+	}
+}
+
+func TestExecutivePostgreSQL17AmbiguousBlocksWithoutSecondInvocation(t *testing.T) {
+	h := newIntegrationHarness(t)
+	defer h.close()
+	models := newIntegrationModelRuntime()
+	models.ambiguousPurpose = "department_worker"
+	gate := &countingCompletion{delegate: h.completion}
+	orchestrator := newOrchestrator(t, h, models, integrationAssignments{}, gate)
+	run, _, err := orchestrator.Submit(h.ctx, executive.SubmitRequest{ActorRoleID: executive.OwnerRoleID, IdempotencyKey: "integration-ambiguous", Goal: executive.OwnerGoal{Goal: "Analyze one area.", AcceptanceCriteria: []string{"verified"}}})
+	if err != nil { t.Fatal(err) }
+	run, err = runUntilTerminalOrError(t, h.ctx, orchestrator, run.RootTaskID, 20)
+	if !errors.Is(err, executive.ErrModelOutcomeAmbiguous) {
+		t.Fatalf("err=%v run=%+v", err, run)
+	}
+	if run.State != executive.StateBlocked || run.ReasonCode != "model_outcome_ambiguous" {
+		t.Fatalf("run=%+v", run)
+	}
+	before := models.ensureCalls
+	_, secondErr := orchestrator.Resume(h.ctx, run.RootTaskID)
+	if !errors.Is(secondErr, executive.ErrModelOutcomeAmbiguous) || models.ensureCalls != before {
+		t.Fatalf("second resume err=%v calls=%d before=%d", secondErr, models.ensureCalls, before)
+	}
+}
+
+func TestExecutivePostgreSQL17CompletionInconclusiveNeverCompletes(t *testing.T) {
+	h := newIntegrationHarness(t)
+	defer h.close()
+	models := newIntegrationModelRuntime()
+	gate := &countingCompletion{delegate: h.completion, forceAt: 3}
+	orchestrator := newOrchestrator(t, h, models, integrationAssignments{}, gate)
+	run, _, err := orchestrator.Submit(h.ctx, executive.SubmitRequest{ActorRoleID: executive.OwnerRoleID, IdempotencyKey: "integration-inconclusive", Goal: executive.OwnerGoal{Goal: "Analyze one area.", AcceptanceCriteria: []string{"verified"}}})
+	if err != nil { t.Fatal(err) }
+	run, err = runUntilTerminalOrError(t, h.ctx, orchestrator, run.RootTaskID, 20)
+	if !errors.Is(err, executive.ErrCompletionInconclusive) || run.State != executive.StateBlocked {
+		t.Fatalf("run=%+v err=%v", run, err)
+	}
+	root, getErr := h.tasks.GetTask(h.ctx, run.RootTaskID)
+	if getErr != nil || root.Task.Status == tasks.StatusCompleted {
+		t.Fatalf("root=%+v err=%v", root.Task, getErr)
+	}
+}
+
+func TestExecutivePostgreSQL17RejectsModelOverridesAndCrossDepartmentDelegation(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mutate func(*integrationModelRuntime)
+	}{
+		{name: "provider override", mutate: func(m *integrationModelRuntime) { m.invalidCEOOverride = true }},
+		{name: "cross department", mutate: func(m *integrationModelRuntime) { m.crossDepartment = true }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newIntegrationHarness(t)
+			defer h.close()
+			models := newIntegrationModelRuntime()
+			tc.mutate(models)
+			orchestrator := newOrchestrator(t, h, models, integrationAssignments{}, &countingCompletion{delegate: h.completion})
+			run, _, err := orchestrator.Submit(h.ctx, executive.SubmitRequest{ActorRoleID: executive.OwnerRoleID, IdempotencyKey: "integration-reject-"+tc.name, Goal: executive.OwnerGoal{Goal: "Analyze one area.", AcceptanceCriteria: []string{"verified"}}})
+			if err != nil { t.Fatal(err) }
+			run, err = runUntilTerminalOrError(t, h.ctx, orchestrator, run.RootTaskID, 20)
+			if err == nil || run.State != executive.StateBlocked {
+				t.Fatalf("run=%+v err=%v", run, err)
+			}
+		})
+	}
+}
+
+func TestExecutivePostgreSQL17MissingDispatchAssignmentBlocks(t *testing.T) {
+	h := newIntegrationHarness(t)
+	defer h.close()
+	models := newIntegrationModelRuntime()
+	orchestrator := newOrchestrator(t, h, models, integrationAssignments{fail: true}, &countingCompletion{delegate: h.completion})
+	run, _, err := orchestrator.Submit(h.ctx, executive.SubmitRequest{ActorRoleID: executive.OwnerRoleID, IdempotencyKey: "integration-assignment", Goal: executive.OwnerGoal{Goal: "Analyze one area.", AcceptanceCriteria: []string{"verified"}}})
+	if err != nil { t.Fatal(err) }
+	for i := 0; i < 3; i++ {
+		run, err = orchestrator.Resume(h.ctx, run.RootTaskID)
+		if errors.Is(err, executive.ErrDispatchAssignmentRequired) {
+			break
+		}
+		if err != nil { t.Fatal(err) }
+	}
+	if !errors.Is(err, executive.ErrDispatchAssignmentRequired) || run.State != executive.StateBlocked || run.ReasonCode != "dispatch_assignment_required" {
+		t.Fatalf("run=%+v err=%v", run, err)
+	}
+	if models.ensureCalls != 0 {
+		t.Fatalf("model invocation created without assignment: %d", models.ensureCalls)
+	}
+}
