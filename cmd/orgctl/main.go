@@ -69,6 +69,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runAuthorization(args[1:], stdout, stderr)
 	case "context":
 		return runContext(args[1:], stdout, stderr)
+	case "memory":
+		return runMemory(args[1:], stdout, stderr)
 	case "model":
 		return runModel(args[1:], stdout, stderr)
 	case "decision":
@@ -517,12 +519,13 @@ commands:
   staging <repo|workspace|check|promotion|reconcile>
   authorization <evaluate|request|get|list|decide|consume|cancel|expire>
   context <validate-source|build|get|list|render|validate|invalidate>
+  memory <propose|review|deprecate|archive|get|list>
   model <registry|invocation>
   decision <create|append|start|transition|claim|finish|observe|verify|decide|recover|trace>
   improvement <propose|get|validate|begin-evaluation|verdict|promote-canary|promote-active|deprecate|rollback|trace>
-   completion <verify>
-   shadow <verify|replay|report>
- exit codes:
+  completion <verify>
+  shadow <verify|replay|report>
+exit codes:
   0 success
   1 internal or operational failure
   2 usage error
