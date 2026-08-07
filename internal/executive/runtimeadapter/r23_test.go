@@ -90,11 +90,7 @@ func TestBudgetModelsRejectsProspectiveThirdCEOCall(t *testing.T) {
 }
 
 func TestEvidenceProjectionCarriesValidatedWorkerResultAndEvidence(t *testing.T) {
-	body := []byte(`{"schema_version":"worker-result/v1"}`)
-	body = []byte(`{"schema_version":"worker-result/v1","summary":"actual bounded worker result","evidence_refs":["artifact:abc","check:def"]}`)
-	// Convert the fixture to canonical JSON bytes without embedding escaped
-	// quotes in the raw literal used by the source file.
-	body = []byte("{\"schema_version\":\"worker-result/v1\",\"summary\":\"actual bounded worker result\",\"evidence_refs\":[\"artifact:abc\",\"check:def\"]}")
+	body := []byte("{\"schema_version\":\"worker-result/v1\",\"summary\":\"actual bounded worker result\",\"evidence_refs\":[\"artifact:abc\",\"check:def\"]}")
 	adapter := EvidenceTasks{
 		Models: evidenceModels{
 			invocation: executive.InvocationRecord{ID: 77, Status: "succeeded"},
