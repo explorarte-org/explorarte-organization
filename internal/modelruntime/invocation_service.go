@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/modeldispatch"
+	"github.com/Mireuz13/explorarte-organization/internal/modelegress"
 )
 
 type InvocationService struct {
@@ -31,6 +32,7 @@ func NewInvocationService(organizationID string, catalog OrganizationCatalog, ta
 	}
 	return &InvocationService{organizationID: organizationID, catalog: catalog, tasks: tasks, contexts: contexts, store: store, egress: egress, identity: identity, assignments: assignments, clock: clock, outboxMaxAttempts: outboxMaxAttempts}, nil
 }
+
 func (s *InvocationService) Create(ctx context.Context, command CreateInvocationCommand) (CreateInvocationResult, error) {
 	if command.OrganizationID == "" {
 		command.OrganizationID = s.organizationID
@@ -91,6 +93,14 @@ func (s *InvocationService) Create(ctx context.Context, command CreateInvocation
 	if !capabilitiesSatisfy(binding.Capabilities.Capabilities, caps) {
 		return CreateInvocationResult{}, fmt.Errorf("%w: profile lacks requested capabilities", ErrCapabilityMismatch)
 	}
+	if reason, allowed := modelegress.ValidateExecutiveScope(
+		binding.Version.ProviderID,
+		string(binding.Version.Transport),
+		snapshot.DataClasses,
+		snapshot.ExecutiveScope,
+	); !allowed {
+		return CreateInvocationResult{}, fmt.Errorf("%w: %s", ErrEgressDenied, reason)
+	}
 	policy, err := s.egress.ResolveForRevision(ctx, prepared.OrganizationID, org.RevisionID)
 	if err != nil {
 		return CreateInvocationResult{}, err
@@ -111,12 +121,14 @@ func (s *InvocationService) Create(ctx context.Context, command CreateInvocation
 	}
 	return s.store.CreateInvocation(ctx, PreparedInvocation{Command: prepared, OrganizationRevisionID: org.RevisionID, Binding: binding, RequestHash: hash, RequiredCapabilities: caps, OutputSchema: schema, EgressPolicy: policy, IdentityPolicy: identityPolicy, Assignment: resolved}, s.outboxMaxAttempts)
 }
+
 func (s *InvocationService) Get(ctx context.Context, id int64) (Invocation, error) {
 	if id <= 0 {
 		return Invocation{}, fmt.Errorf("%w: invalid invocation ID", ErrInvalidRequest)
 	}
 	return s.store.GetInvocation(ctx, id)
 }
+
 func (s *InvocationService) List(ctx context.Context, limit int) ([]Invocation, error) {
 	if limit <= 0 {
 		limit = 100
@@ -126,6 +138,7 @@ func (s *InvocationService) List(ctx context.Context, limit int) ([]Invocation, 
 	}
 	return s.store.ListInvocations(ctx, s.organizationID, limit)
 }
+
 func (s *InvocationService) Cancel(ctx context.Context, id int64, actor, reason string) (CancelResult, error) {
 	actor = strings.TrimSpace(actor)
 	reason = strings.TrimSpace(reason)
@@ -144,6 +157,7 @@ func (s *InvocationService) Cancel(ctx context.Context, id int64, actor, reason 
 	}
 	return s.store.RequestCancellation(ctx, id, actor, reason, s.outboxMaxAttempts)
 }
+
 func (s *InvocationService) Reconcile(ctx context.Context, batch int) (ReconcileResult, error) {
 	if batch <= 0 {
 		batch = 100
