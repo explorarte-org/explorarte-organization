@@ -83,3 +83,23 @@ func scopeVerifiedReason(scope string) string {
 		return ""
 	}
 }
+
+// ValidateExecutiveScope is the R24 backend gate. It is evaluated after model
+// routing has resolved provider/transport and after Context Engine has resolved
+// data classes. A provider/classification combination that requires executive
+// scope is rejected unless the durable context-derived marker matches exactly.
+func ValidateExecutiveScope(provider, transport string, dataClasses []string, scope string) (string, bool) {
+	classes, _ := NormalizeClassifications(dataClasses)
+	if !scopeRequired(strings.TrimSpace(provider), classes) {
+		return "executive_scope_not_required", true
+	}
+	scope = strings.TrimSpace(scope)
+	if !scopeAllows(strings.TrimSpace(provider), strings.TrimSpace(transport), scope) {
+		return "executive_scope_required", false
+	}
+	reason := scopeVerifiedReason(scope)
+	if reason == "" {
+		return "executive_scope_invalid", false
+	}
+	return reason, true
+}
