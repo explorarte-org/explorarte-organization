@@ -31,7 +31,22 @@ func (s *Service) load(ctx context.Context) (RegistryPlan, error) {
 		return RegistryPlan{}, err
 	}
 	sort.Strings(providers)
-	policy, err := LoadCanonicalPolicy(s.canonicalDir, ProductiveLoadOptions(providers))
+	options := ProductiveLoadOptions(providers)
+	// R24 broadens the provider/classification table only together with the
+	// deterministic executive scope gate in Evaluator. These entries are not
+	// unconditional productive authority: Alibaba and DeepSeek always require a
+	// matching executive scope marker, and OpenAI organizational egress requires
+	// the department-leader scope. Secret/clinical remain hard-denied.
+	options.ProductiveExplicitRules["alibaba_token_plan_via_claude_code"] = []DataClassification{
+		ClassificationPublic, ClassificationSanitized, ClassificationOrganizational,
+	}
+	options.ProductiveExplicitRules["deepseek"] = []DataClassification{
+		ClassificationPublic, ClassificationSanitized, ClassificationOrganizational,
+	}
+	options.ProductiveExplicitRules["openai_compatible"] = []DataClassification{
+		ClassificationPublic, ClassificationSanitized, ClassificationOrganizational,
+	}
+	policy, err := LoadCanonicalPolicy(s.canonicalDir, options)
 	if err != nil {
 		return RegistryPlan{}, err
 	}
