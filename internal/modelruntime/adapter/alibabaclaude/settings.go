@@ -23,13 +23,13 @@ type settingsEnvelope struct {
 }
 
 type settingsEnv struct {
-	AnthropicAuthToken         json.RawMessage `json:"ANTHROPIC_AUTH_TOKEN"`
-	AnthropicBaseURL           string          `json:"ANTHROPIC_BASE_URL"`
-	AnthropicModel             string          `json:"ANTHROPIC_MODEL"`
-	AnthropicDefaultHaikuModel string          `json:"ANTHROPIC_DEFAULT_HAIKU_MODEL"`
-	AnthropicDefaultSonnetModel string         `json:"ANTHROPIC_DEFAULT_SONNET_MODEL"`
-	AnthropicDefaultOpusModel   string         `json:"ANTHROPIC_DEFAULT_OPUS_MODEL"`
-	ClaudeCodeSubagentModel     string         `json:"CLAUDE_CODE_SUBAGENT_MODEL"`
+	AnthropicAuthToken          json.RawMessage `json:"ANTHROPIC_AUTH_TOKEN"`
+	AnthropicBaseURL            string          `json:"ANTHROPIC_BASE_URL"`
+	AnthropicModel              string          `json:"ANTHROPIC_MODEL"`
+	AnthropicDefaultHaikuModel  string          `json:"ANTHROPIC_DEFAULT_HAIKU_MODEL"`
+	AnthropicDefaultSonnetModel string          `json:"ANTHROPIC_DEFAULT_SONNET_MODEL"`
+	AnthropicDefaultOpusModel   string          `json:"ANTHROPIC_DEFAULT_OPUS_MODEL"`
+	ClaudeCodeSubagentModel     string          `json:"CLAUDE_CODE_SUBAGENT_MODEL"`
 }
 
 type validatedSettings struct {
@@ -63,6 +63,7 @@ func validateSettingsFile(config Config) (validatedSettings, error) {
 	if err = decoder.Decode(&envelope); err != nil {
 		return validatedSettings{}, fmt.Errorf("parse Alibaba Claude Code settings: %w", err)
 	}
+	defer secrets.Zero(envelope.Env.AnthropicAuthToken)
 	var extra any
 	if err = decoder.Decode(&extra); !errors.Is(err, io.EOF) {
 		if err == nil {
@@ -70,8 +71,8 @@ func validateSettingsFile(config Config) (validatedSettings, error) {
 		}
 		return validatedSettings{}, fmt.Errorf("parse Alibaba Claude Code settings trailer: %w", err)
 	}
-	if len(envelope.Env.AnthropicAuthToken) < 10 || bytes.Equal(bytes.TrimSpace(envelope.Env.AnthropicAuthToken), []byte(`""`)) || bytes.Equal(bytes.TrimSpace(envelope.Env.AnthropicAuthToken), []byte("null")) {
-		return validatedSettings{}, errors.New("Alibaba Claude Code settings require ANTHROPIC_AUTH_TOKEN")
+	if !validOpaqueTokenJSON(envelope.Env.AnthropicAuthToken) {
+		return validatedSettings{}, errors.New("Alibaba Claude Code settings require a simple opaque ANTHROPIC_AUTH_TOKEN")
 	}
 	if strings.TrimSpace(envelope.Env.AnthropicBaseURL) != config.TokenPlanBaseURL || envelope.Env.AnthropicBaseURL != config.TokenPlanBaseURL {
 		return validatedSettings{}, errors.New("Alibaba Claude Code settings endpoint does not match configured Token Plan endpoint")
@@ -89,6 +90,19 @@ func validateSettingsFile(config Config) (validatedSettings, error) {
 		}
 	}
 	return validatedSettings{BaseURL: envelope.Env.AnthropicBaseURL}, nil
+}
+
+func validOpaqueTokenJSON(raw []byte) bool {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) < 10 || raw[0] != '"' || raw[len(raw)-1] != '"' {
+		return false
+	}
+	for _, ch := range raw[1 : len(raw)-1] {
+		if ch < 0x21 || ch > 0x7e || ch == '"' || ch == '\\' {
+			return false
+		}
+	}
+	return true
 }
 
 func validModelID(value string) bool {
