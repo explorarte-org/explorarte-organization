@@ -34,16 +34,6 @@ func (e *Evaluator) Evaluate(request EvaluationRequest) (Decision, error) {
 		return decision, nil
 	}
 
-	dataClasses, scopes, invalidScope := splitScopeClassifications(classes)
-	if invalidScope {
-		decision.ReasonCodes = []string{"executive_scope_invalid"}
-		return decision, nil
-	}
-	if len(dataClasses) == 0 {
-		decision.ReasonCodes = []string{"empty_classification_set"}
-		return decision, nil
-	}
-
 	rules := make(map[string]Rule, len(request.Policy.Rules))
 	hard := make(map[string]Rule)
 	knownProvider := false
@@ -58,10 +48,9 @@ func (e *Evaluator) Evaluate(request EvaluationRequest) (Decision, error) {
 		}
 	}
 
-	// Hard denials are provider-independent and dominate every other rule,
-	// including any executive scope marker.
-	hardReasons := make([]string, 0, len(dataClasses))
-	for _, classification := range dataClasses {
+	// Hard denials are provider-independent and dominate every executive scope.
+	hardReasons := make([]string, 0, len(classes))
+	for _, classification := range classes {
 		if rule, exists := hard[classification]; exists {
 			hardReasons = append(hardReasons, rule.ReasonCode)
 		}
@@ -76,8 +65,8 @@ func (e *Evaluator) Evaluate(request EvaluationRequest) (Decision, error) {
 	}
 
 	allowed := true
-	reasons := make([]string, 0, len(dataClasses)+1)
-	for _, classification := range dataClasses {
+	reasons := make([]string, 0, len(classes)+1)
+	for _, classification := range classes {
 		if !validRuntimeClassification(classification) {
 			allowed = false
 			reasons = append(reasons, "unknown_classification")
@@ -94,12 +83,16 @@ func (e *Evaluator) Evaluate(request EvaluationRequest) (Decision, error) {
 			allowed = false
 		}
 	}
-	if allowed && scopeRequired(provider, dataClasses) {
-		if !scopeAllows(provider, request.ProviderTransport, scopes) {
+	if allowed && scopeRequired(provider, classes) {
+		scope := strings.TrimSpace(request.ExecutiveScope)
+		if !scopeAllows(provider, request.ProviderTransport, scope) {
 			allowed = false
 			reasons = append(reasons, "executive_scope_required")
+		} else if reason := scopeVerifiedReason(scope); reason != "" {
+			reasons = append(reasons, reason)
 		} else {
-			reasons = append(reasons, "executive_scope_verified")
+			allowed = false
+			reasons = append(reasons, "executive_scope_invalid")
 		}
 	}
 	decision.ReasonCodes = NormalizeReasonCodes(reasons)
