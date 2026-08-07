@@ -15,6 +15,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/tasks"
+	taskcontextprovider "github.com/Mireuz13/explorarte-organization/internal/tasks/contextprovider"
 	taskpostgres "github.com/Mireuz13/explorarte-organization/internal/tasks/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/tasks/registryadapter"
 )
@@ -56,7 +57,11 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create executive task service: %w", err)
 	}
-	contextRuntime, err := contextbootstrap.Open(cfg, store)
+	taskContextProvider, err := taskcontextprovider.New(taskStore)
+	if err != nil {
+		return nil, fmt.Errorf("create executive task context provider: %w", err)
+	}
+	contextRuntime, err := contextbootstrap.Open(cfg, store, taskContextProvider)
 	if err != nil {
 		return nil, fmt.Errorf("open executive context runtime: %w", err)
 	}

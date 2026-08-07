@@ -54,8 +54,8 @@ func newAdapter(config Config, now func() time.Time) (*Adapter, error) {
 		ProviderID: ProviderID, AdapterID: AdapterID, AdapterVersion: AdapterVersion,
 		Transport: modelruntime.TransportCLI, RequestSchemaVersion: RequestSchemaVersion,
 		ResponseSchemaVersion: ResponseSchemaVersion,
-		EndpointFingerprint: modelruntime.SHA256Bytes([]byte(fingerprintMaterial)),
-		CredentialRefHash:   modelruntime.SHA256Bytes([]byte(config.SettingsFile)),
+		EndpointFingerprint:   modelruntime.SHA256Bytes([]byte(fingerprintMaterial)),
+		CredentialRefHash:     modelruntime.SHA256Bytes([]byte(config.SettingsFile)),
 	}
 	if err := descriptor.Validate(); err != nil {
 		return nil, err
@@ -63,7 +63,7 @@ func newAdapter(config Config, now func() time.Time) (*Adapter, error) {
 	return &Adapter{config: config, descriptor: descriptor, sem: make(chan struct{}, config.MaxConcurrency), now: now}, nil
 }
 
-func (*Adapter) ProviderID() string                            { return ProviderID }
+func (*Adapter) ProviderID() string                           { return ProviderID }
 func (a *Adapter) Descriptor() modelruntime.AdapterDescriptor { return a.descriptor }
 
 func (a *Adapter) Preflight(ctx context.Context, request modelruntime.ProviderPreflightRequest) error {
@@ -141,7 +141,7 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 	}
 	outcome := modelruntime.ProviderOutcome{
 		OutcomeClassification: modelruntime.ProviderOutcomeResponseReceived,
-		Transport: modelruntime.TransportCLI, ProcessExitCode: exitCode,
+		Transport:             modelruntime.TransportCLI, ProcessExitCode: exitCode,
 		ResponseHash: responseHash, ResponseSchemaVersion: ResponseSchemaVersion,
 	}
 	if err := outcome.Validate(); err != nil {

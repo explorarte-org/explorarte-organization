@@ -24,6 +24,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/tasks"
+	taskcontextprovider "github.com/Mireuz13/explorarte-organization/internal/tasks/contextprovider"
 	taskpostgres "github.com/Mireuz13/explorarte-organization/internal/tasks/postgres"
 )
 
@@ -87,7 +88,11 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	if err != nil {
 		return nil, fmt.Errorf("create model task reader: %w", err)
 	}
-	contextRuntime, err := contextbootstrap.Open(cfg, platformStore)
+	taskContextProvider, err := taskcontextprovider.New(taskStore)
+	if err != nil {
+		return nil, fmt.Errorf("create model task context provider: %w", err)
+	}
+	contextRuntime, err := contextbootstrap.Open(cfg, platformStore, taskContextProvider)
 	if err != nil {
 		return nil, fmt.Errorf("open context runtime for models: %w", err)
 	}

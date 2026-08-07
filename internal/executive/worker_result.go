@@ -12,9 +12,17 @@ type WorkerResult struct {
 
 func ParseWorkerResult(body []byte, limits Limits) (WorkerResult, error) {
 	var out WorkerResult
-	if err:=decodeStrictModelJSON(body,&out,limits);err!=nil{return WorkerResult{},err}
-	if out.SchemaVersion!=WorkerResultSchemaVersion{return WorkerResult{},fmt.Errorf("%w: schema_version",ErrContractRejected)}
-	if err:=validateRequiredString(out.Summary,limits.MaxStringBytes,"summary");err!=nil{return WorkerResult{},err}
-	if err:=validateStrings(out.EvidenceRefs,limits,"evidence_refs");err!=nil{return WorkerResult{},err}
-	return out,nil
+	if err := decodeStrictModelJSON(body, &out, limits); err != nil {
+		return WorkerResult{}, err
+	}
+	if out.SchemaVersion != WorkerResultSchemaVersion {
+		return WorkerResult{}, fmt.Errorf("%w: schema_version", ErrContractRejected)
+	}
+	if err := validateRequiredString(out.Summary, limits.MaxStringBytes, "summary"); err != nil {
+		return WorkerResult{}, err
+	}
+	if err := validateStrings(out.EvidenceRefs, limits, "evidence_refs"); err != nil {
+		return WorkerResult{}, err
+	}
+	return out, nil
 }

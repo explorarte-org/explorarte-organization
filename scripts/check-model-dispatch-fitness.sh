@@ -36,7 +36,7 @@ git diff --exit-code "$BASE_SHA" -- docs/canonical/leader-worker-map.yaml >/dev/
 git diff --exit-code "$BASE_SHA" -- docs/canonical/organization.yaml >/dev/null || fail "organization.yaml changed"
 
 if rg -n '"net/http"' internal/modeldispatch; then fail "net/http is forbidden in modeldispatch"; fi
-if rg -n '"os/exec"|exec\.Command|/bin/(sh|bash)|sh -c|bash -c' internal/modeldispatch internal/modelruntime internal/modelegress; then
+if rg -n --glob '!internal/modelruntime/adapter/alibabaclaude/**' '"os/exec"|exec\.Command|/bin/(sh|bash)|sh -c|bash -c' internal/modeldispatch internal/modelruntime internal/modelegress; then
   fail "process or shell execution is forbidden"
 fi
 if rg -n --glob '!**/*_test.go' 'context_snapshots|context_segments' internal/modeldispatch; then fail "modeldispatch may not access contextengine tables directly"; fi

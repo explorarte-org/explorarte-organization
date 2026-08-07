@@ -63,8 +63,8 @@ printf '{"result":"ignored","structured_output":{"ok":true},"usage":{"input_toke
 	}
 	response, err := adapter.Dispatch(context.Background(), modelruntime.CanonicalRequest{
 		ProviderID: ProviderID, ProviderModelID: "qwen3.6-flash", RenderedContext: []byte("input"),
-		OutputMode: modelruntime.OutputJSON,
-		OutputSchema: []byte("{\"type\":\"object\",\"properties\":{\"ok\":{\"type\":\"boolean\"}},\"required\":[\"ok\"]}"),
+		OutputMode:      modelruntime.OutputJSON,
+		OutputSchema:    []byte("{\"type\":\"object\",\"properties\":{\"ok\":{\"type\":\"boolean\"}},\"required\":[\"ok\"]}"),
 		MaxOutputTokens: 64, Deadline: now.Add(time.Minute),
 	})
 	if err != nil {

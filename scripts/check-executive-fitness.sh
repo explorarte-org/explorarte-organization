@@ -74,12 +74,15 @@ fi
 if git diff --name-only "$base"...HEAD -- internal/decisiongraph | grep -q .; then
   fail "R14 internals changed by R22"
 fi
-if git diff --name-only "$base"...HEAD -- migrations | grep -q .; then
+if git diff --name-only "$base"...HEAD -- migrations \
+  ':!migrations/000018_make_provider_outcomes_transport_aware.up.sql' \
+  ':!migrations/000018_make_provider_outcomes_transport_aware.down.sql' \
+  ':!migrations/r21_tip_test.go' | grep -q .; then
   fail "R22 reserved or added a migration before post-R21 necessity was demonstrated"
 fi
 
-if ! rg -n 'TrustUntrusted' internal/contextengine/taskprovider/provider.go >/dev/null || \
-   ! rg -n 'MayGrantCapabilities: false' internal/contextengine/taskprovider/provider.go >/dev/null; then
+if ! rg -n 'TrustUntrusted' internal/tasks/contextprovider/provider.go >/dev/null || \
+   ! rg -n 'MayGrantCapabilities: false' internal/tasks/contextprovider/provider.go >/dev/null; then
   fail "task/model-derived context must remain untrusted and non-authoritative"
 fi
 

@@ -14,6 +14,7 @@ import (
 	modelpostgres "github.com/Mireuz13/explorarte-organization/internal/modelruntime/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
+	taskcontextprovider "github.com/Mireuz13/explorarte-organization/internal/tasks/contextprovider"
 	taskpostgres "github.com/Mireuz13/explorarte-organization/internal/tasks/postgres"
 )
 
@@ -50,7 +51,11 @@ func OpenCoordinator(cfg config.Config, platformStore *platformpostgres.Store) (
 	if err != nil {
 		return nil, fmt.Errorf("create model coordinator task reader: %w", err)
 	}
-	contextRuntime, err := contextbootstrap.Open(cfg, platformStore)
+	taskContextProvider, err := taskcontextprovider.New(taskStore)
+	if err != nil {
+		return nil, fmt.Errorf("create model coordinator task context provider: %w", err)
+	}
+	contextRuntime, err := contextbootstrap.Open(cfg, platformStore, taskContextProvider)
 	if err != nil {
 		return nil, fmt.Errorf("open context runtime for model coordinator: %w", err)
 	}

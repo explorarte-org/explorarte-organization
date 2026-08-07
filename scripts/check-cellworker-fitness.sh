@@ -41,8 +41,11 @@ fi
 
 # The composition root and the real provider adapter stay untouched — this is
 # a separate, explicitly-launched CLI process (orgctl model worker run), not
-# a change to orgd's always-on loop or Rama 12's adapter boundary.
-git diff --exit-code "$BASE_SHA" -- cmd/orgd internal/app internal/modelruntime/adapter >/dev/null \
+# a change to orgd's always-on loop or Rama 12's adapter boundary. Rama 21's
+# sandboxed Alibaba Claude Code CLI adapter is a separately governed, opt-in
+# addition (see check-alibaba-cli-fitness.sh) and is excluded here.
+git diff --exit-code "$BASE_SHA" -- cmd/orgd internal/app internal/modelruntime/adapter \
+  ':!internal/modelruntime/adapter/alibabaclaude' >/dev/null \
   || fail "orgd, application composition, or the provider adapter changed"
 
 # The worker package must stay behind the Dispatcher/WorkSource ports: no

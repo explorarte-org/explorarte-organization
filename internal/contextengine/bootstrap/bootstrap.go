@@ -8,14 +8,12 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/contextengine/canonical"
 	"github.com/Mireuz13/explorarte-organization/internal/contextengine/document"
 	contextpostgres "github.com/Mireuz13/explorarte-organization/internal/contextengine/postgres"
-	taskcontext "github.com/Mireuz13/explorarte-organization/internal/contextengine/taskprovider"
 	memorycontext "github.com/Mireuz13/explorarte-organization/internal/memory/contextprovider"
 	memorypostgres "github.com/Mireuz13/explorarte-organization/internal/memory/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
 	ragbootstrap "github.com/Mireuz13/explorarte-organization/internal/rag/bootstrap"
 	ragcontext "github.com/Mireuz13/explorarte-organization/internal/rag/contextprovider"
-	taskpostgres "github.com/Mireuz13/explorarte-organization/internal/tasks/postgres"
 )
 
 type Runtime struct {
@@ -27,11 +25,14 @@ type Runtime struct {
 	Skills         *canonical.SkillProvider
 	Memory         *memorycontext.Provider
 	RAG            *ragcontext.Provider
-	Tasks          *taskcontext.Provider
+	Tasks          contextengine.TaskContextProvider
 	OrganizationID string
 }
 
-func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, error) {
+// Open wires the context runtime. taskProvider is supplied by the caller
+// because contextengine must not import the tasks domain directly; pass nil
+// to fall back to contextengine.UnavailableTaskProvider.
+func Open(cfg config.Config, platformStore *platformpostgres.Store, taskProvider contextengine.TaskContextProvider) (*Runtime, error) {
 	if platformStore == nil {
 		return nil, errors.New("context bootstrap requires PostgreSQL store")
 	}
@@ -71,13 +72,8 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	if err != nil {
 		return nil, err
 	}
-	taskStore, err := taskpostgres.New(platformStore)
-	if err != nil {
-		return nil, err
-	}
-	taskProvider, err := taskcontext.New(taskStore)
-	if err != nil {
-		return nil, err
+	if taskProvider == nil {
+		taskProvider = contextengine.UnavailableTaskProvider{}
 	}
 	service, err := contextengine.NewService(contextengine.ServiceConfig{
 		OrganizationAgentPath: "AGENT.md",

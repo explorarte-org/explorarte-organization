@@ -6,13 +6,13 @@ import (
 )
 
 const (
-	ExecutivePlanSchemaVersion   = "executive-plan/v1"
-	DepartmentPlanSchemaVersion  = "department-plan/v1"
+	ExecutivePlanSchemaVersion    = "executive-plan/v1"
+	DepartmentPlanSchemaVersion   = "department-plan/v1"
 	DepartmentReviewSchemaVersion = "department-review/v1"
 	ExecutiveClosureSchemaVersion = "executive-closure/v1"
 
-	OwnerRoleID = "empresa/human"
-	CEORoleID   = "empresa/ceo"
+	OwnerRoleID    = "empresa/human"
+	CEORoleID      = "empresa/ceo"
 	ObserverRoleID = "empresa/ceo_observer"
 )
 
@@ -61,10 +61,10 @@ type DepartmentRequest struct {
 
 type DepartmentPlan struct {
 	SchemaVersion  string               `json:"schema_version"`
-	DepartmentID  string               `json:"department_id"`
-	Tasks         []WorkerTaskProposal `json:"tasks"`
+	DepartmentID   string               `json:"department_id"`
+	Tasks          []WorkerTaskProposal `json:"tasks"`
 	ReviewCriteria []string             `json:"review_criteria"`
-	Unresolved    []string             `json:"unresolved"`
+	Unresolved     []string             `json:"unresolved"`
 }
 
 type WorkerTaskProposal struct {
@@ -149,8 +149,8 @@ func DefaultLimits() Limits {
 }
 
 type OwnerGoal struct {
-	Goal               string   `json:"goal"`
-	AcceptanceCriteria []string `json:"acceptance_criteria"`
+	Goal               string                `json:"goal"`
+	AcceptanceCriteria []string              `json:"acceptance_criteria"`
 	Requirements       []RequirementProposal `json:"requirements,omitempty"`
 }
 
@@ -171,28 +171,28 @@ type Run struct {
 }
 
 type TaskRecord struct {
-	ID                 int64
-	OrganizationID     string
+	ID                     int64
+	OrganizationID         string
 	OrganizationRevisionID int64
-	RequestedByRoleID  string
-	AssignedRoleID     string
-	AssignedUnitID     string
-	IdempotencyKey     string
-	RequestHash        string
-	Title              string
-	Instructions       string
-	AcceptanceCriteria []string
-	Status             string
-	Priority           int
-	MaxAttempts        int
-	AttemptCount       int
-	CorrelationID      string
-	CausationID        string
-	ReasonCode         string
-	Reason             string
-	Requirements       []RequirementRecord
-	Attempts           []AttemptRecord
-	ActiveLease        *LeaseRecord
+	RequestedByRoleID      string
+	AssignedRoleID         string
+	AssignedUnitID         string
+	IdempotencyKey         string
+	RequestHash            string
+	Title                  string
+	Instructions           string
+	AcceptanceCriteria     []string
+	Status                 string
+	Priority               int
+	MaxAttempts            int
+	AttemptCount           int
+	CorrelationID          string
+	CausationID            string
+	ReasonCode             string
+	Reason                 string
+	Requirements           []RequirementRecord
+	Attempts               []AttemptRecord
+	ActiveLease            *LeaseRecord
 }
 
 type RequirementRecord struct {
@@ -229,18 +229,19 @@ type InvocationRecord struct {
 }
 
 type InvocationResult struct {
-	InvocationID int64
-	JSONOutput   json.RawMessage
-	TextOutput   string
-	ToolIntents  int
-	ResponseHash string
+	InvocationID  int64
+	JSONOutput    json.RawMessage
+	TextOutput    string
+	ToolIntents   int
+	ResponseHash  string
 	ResponseBytes int
 }
 
 type CompletionVerdict string
+
 const (
-	CompletionPass CompletionVerdict = "pass"
-	CompletionFail CompletionVerdict = "fail"
+	CompletionPass         CompletionVerdict = "pass"
+	CompletionFail         CompletionVerdict = "fail"
 	CompletionInconclusive CompletionVerdict = "inconclusive"
 )
 
@@ -273,14 +274,14 @@ type RevisionRef struct {
 }
 
 type AssignmentRef struct {
-	ID                  int64
+	ID                     int64
 	OrganizationRevisionID int64
-	TaskID              int64
-	AttemptID           int64
-	SubjectRoleID       string
-	ExecutionPrincipalID int64
-	DispatchActorRoleID string
-	ValidUntil          time.Time
+	TaskID                 int64
+	AttemptID              int64
+	SubjectRoleID          string
+	ExecutionPrincipalID   int64
+	DispatchActorRoleID    string
+	ValidUntil             time.Time
 }
 
 type AuthorizationDecision struct {

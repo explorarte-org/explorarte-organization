@@ -63,12 +63,12 @@ type ContextCoordinator interface {
 
 type ContextRequest struct {
 	OrganizationRevisionID int64
-	ActorRoleID             string
-	Purpose                 string
-	TaskRef                 string
-	IdempotencyKey          string
-	CorrelationID           string
-	CausationID             string
+	ActorRoleID            string
+	Purpose                string
+	TaskRef                string
+	IdempotencyKey         string
+	CorrelationID          string
+	CausationID            string
 }
 
 type DispatchProvisioner interface {
@@ -106,12 +106,12 @@ type AuthorizationGate interface {
 
 type AuthorizationRequest struct {
 	OrganizationRevisionID int64
-	ActorRoleID             string
-	CapabilityID            string
-	ResourceType            string
-	ResourceID              string
-	ActionDigest            string
-	ApprovalRequestID       *int64
+	ActorRoleID            string
+	CapabilityID           string
+	ResourceType           string
+	ResourceID             string
+	ActionDigest           string
+	ApprovalRequestID      *int64
 }
 
 type Clock interface{ Now() time.Time }

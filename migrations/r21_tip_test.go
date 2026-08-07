@@ -16,7 +16,7 @@ func TestR21MigrationTipIs18AndContiguous(t *testing.T) {
 		t.Fatalf("migration count=%d want 18", len(loaded))
 	}
 	for index, migration := range loaded {
-		want := index + 1
+		want := int64(index + 1)
 		if migration.Version != want {
 			t.Fatalf("migration[%d].version=%d want %d", index, migration.Version, want)
 		}

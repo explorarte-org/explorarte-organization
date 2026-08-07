@@ -61,11 +61,11 @@ func (a Models) GetResult(ctx context.Context, id int64) (executive.InvocationRe
 		return executive.InvocationResult{}, err
 	}
 	return executive.InvocationResult{
-		InvocationID: value.InvocationID,
-		JSONOutput:   append([]byte(nil), value.JSONOutput...),
-		TextOutput:   value.TextOutput,
-		ToolIntents:  len(value.ToolIntents),
-		ResponseHash: value.ResponseHash,
+		InvocationID:  value.InvocationID,
+		JSONOutput:    append([]byte(nil), value.JSONOutput...),
+		TextOutput:    value.TextOutput,
+		ToolIntents:   len(value.ToolIntents),
+		ResponseHash:  value.ResponseHash,
 		ResponseBytes: value.ResponseBytes,
 	}, nil
 }

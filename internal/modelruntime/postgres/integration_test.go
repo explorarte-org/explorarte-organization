@@ -1032,7 +1032,7 @@ func fixturePrincipalAndAssignment(t *testing.T, ctx context.Context, store *dis
 		t.Fatal(err)
 	}
 	registered, err := store.RegisterPrincipal(ctx, modeldispatch.PreparedRegisterPrincipal{
-		Command: modeldispatch.RegisterPrincipalCommand{OrganizationID: modelIntegrationOrganization, PrincipalKey: principalKey, DispatchActorRoleID: dispatchActorRoleID, PrincipalKind: modeldispatch.PrincipalLocalProcess, IdempotencyKey: "principal-" + suffix},
+		Command:     modeldispatch.RegisterPrincipalCommand{OrganizationID: modelIntegrationOrganization, PrincipalKey: principalKey, DispatchActorRoleID: dispatchActorRoleID, PrincipalKind: modeldispatch.PrincipalLocalProcess, IdempotencyKey: "principal-" + suffix},
 		RequestHash: principalHash, RegisteredByRoleID: "empresa/human",
 	})
 	if err != nil {
@@ -1051,7 +1051,7 @@ func fixturePrincipalAndAssignment(t *testing.T, ctx context.Context, store *dis
 		t.Fatal(err)
 	}
 	created, err := store.CreateAssignment(ctx, modeldispatch.PreparedCreateAssignment{
-		Command: modeldispatch.CreateAssignmentCommand{OrganizationID: modelIntegrationOrganization, TaskID: task.TaskID, AttemptID: task.AttemptID, SubjectRoleID: subjectRoleID, ExecutionPrincipalKey: principal.PrincipalKey, MaxInvocations: maxInvocations, IdempotencyKey: "assignment-" + suffix},
+		Command:   modeldispatch.CreateAssignmentCommand{OrganizationID: modelIntegrationOrganization, TaskID: task.TaskID, AttemptID: task.AttemptID, SubjectRoleID: subjectRoleID, ExecutionPrincipalKey: principal.PrincipalKey, MaxInvocations: maxInvocations, IdempotencyKey: "assignment-" + suffix},
 		Principal: principal, OrganizationRevisionID: task.OrganizationRevisionID, ValidFrom: validFrom, ValidUntil: validUntil, AssignmentHash: assignmentHash, RequestHash: requestHash, CreatedByRoleID: "empresa/human",
 	})
 	if err != nil {

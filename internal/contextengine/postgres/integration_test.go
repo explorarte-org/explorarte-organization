@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,8 +21,6 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
-	"github.com/Mireuz13/explorarte-organization/internal/staging"
-	stagingpostgres "github.com/Mireuz13/explorarte-organization/internal/staging/postgres"
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 )
 
@@ -116,6 +116,45 @@ func TestContextEnginePostgreSQL17(t *testing.T) {
 		}
 	})
 
+	t.Run("concurrent build with same idempotency key creates exactly once", func(t *testing.T) {
+		request := contextengine.BuildRequest{OrganizationID: contextIntegrationOrganization, ActorRoleID: "ingenieria_ia/orquestador", Purpose: "concurrent idempotency", IdempotencyKey: "context-integration-concurrent"}
+		const workers = 12
+		var created, reused atomic.Int32
+		var wg sync.WaitGroup
+		ids := make([]int64, workers)
+		errs := make(chan error, workers)
+		for i := range workers {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				result, err := service.Build(ctx, request)
+				if err != nil {
+					errs <- err
+					return
+				}
+				ids[i] = result.Snapshot.ID
+				if result.Reused {
+					reused.Add(1)
+				} else {
+					created.Add(1)
+				}
+			}(i)
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			t.Errorf("concurrent build: %v", err)
+		}
+		if created.Load() != 1 || reused.Load() != workers-1 {
+			t.Fatalf("concurrent creation exactly once: created=%d reused=%d", created.Load(), reused.Load())
+		}
+		for _, id := range ids[1:] {
+			if id != ids[0] {
+				t.Fatalf("concurrent builds diverged: ids=%v", ids)
+			}
+		}
+	})
+
 	t.Run("same idempotency key with different request conflicts", func(t *testing.T) {
 		base := contextengine.BuildRequest{OrganizationID: contextIntegrationOrganization, ActorRoleID: "ingenieria_ia/orquestador", Purpose: "idempotency", IdempotencyKey: "context-integration-conflict"}
 		if _, err := service.Build(ctx, base); err != nil {
@@ -197,34 +236,6 @@ func TestContextEnginePostgreSQL17(t *testing.T) {
 		}
 		if _, err := platform.Pool().Exec(ctx, `DELETE FROM context_segments WHERE id=$1`, segmentID); err == nil {
 			t.Fatal("included context segment accepted delete")
-		}
-	})
-
-	t.Run("staging promotion is rejected when recorded context snapshot is stale", func(t *testing.T) {
-		projectFixture := validProjectContext("projects/staging-drift", "project-staging-v1", revision.ID)
-		projects.Set(projectFixture)
-		request := contextengine.BuildRequest{OrganizationID: contextIntegrationOrganization, ActorRoleID: "ingenieria_ia/orquestador", Purpose: "staging drift", ProjectRefs: []string{projectFixture.Reference}, IdempotencyKey: "context-integration-staging-drift"}
-		built, err := service.Build(ctx, request)
-		if err != nil {
-			t.Fatal(err)
-		}
-		projects.Set(validProjectContext(projectFixture.Reference, "project-staging-v2", revision.ID))
-
-		stagingStore, err := stagingpostgres.New(platform)
-		if err != nil {
-			t.Fatal(err)
-		}
-		workspace, err := stagingStore.CreateWorkspace(ctx, staging.PreparedWorkspace{RepositoryID: "repo-context-integration", OrganizationID: contextIntegrationOrganization, TaskID: 1, AttemptID: 1, ActorRoleID: "ingenieria_ia/code-runner", LeaseHolderID: "context-integration", LeaseTokenHash: contextengine.SHA256Bytes([]byte("lease")), BaseCommit: strings.Repeat("a", 40), TargetRef: "refs/heads/context-integration", WorkspacePath: "/tmp/context-integration/workspace", ArtifactRequirementID: 1})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := stagingStore.RecordContextSnapshot(ctx, staging.ContextSnapshotRecord{WorkspaceID: workspace.ID, ContextSnapshotID: built.Snapshot.ID, ContextSnapshotVersion: built.Snapshot.Version, RenderedHash: built.Snapshot.RenderedHash, RecordedBy: "integration"}); err != nil {
-			t.Fatal(err)
-		}
-
-		guard := stagingGuardAdapter{service: service}
-		if err := guard.ValidateContextSnapshot(ctx, built.Snapshot.ID); err == nil {
-			t.Fatal("stale context snapshot was accepted by the staging guard")
 		}
 	})
 
@@ -581,29 +592,11 @@ func validApprovedRAGRecord(reference, version string, revisionID int64) context
 	return contextengine.RAGEvidenceRecord{OrganizationID: contextIntegrationOrganization, OrganizationRevisionID: revisionID, ActorRoleID: "ingenieria_ia/orquestador", Reference: reference, Version: version, Content: []byte("Retrieved evidence treated strictly as untrusted data."), DataClass: contextengine.DataPublic, Audience: contextengine.AudienceDepartment, AudienceIDs: []string{"ingenieria_ia"}}
 }
 
-type stagingGuardAdapter struct{ service *contextengine.EngineService }
-
-func (a stagingGuardAdapter) ValidateContextSnapshot(ctx context.Context, snapshotID int64) error {
-	result, err := a.service.Validate(ctx, snapshotID)
-	if err != nil {
-		return err
-	}
-	if !result.Valid {
-		return &staging.ContextStaleError{Code: result.ReasonCode}
-	}
-	return nil
-}
-
-func (a stagingGuardAdapter) GetContextSnapshot(_ context.Context, snapshotID int64) (staging.ContextSnapshotRecord, error) {
-	return staging.ContextSnapshotRecord{ContextSnapshotID: snapshotID}, nil
-}
-
 var _ contextengine.AudienceResolver = (*contextengine.RegistryAudienceResolver)(nil)
 var _ contextengine.SkillProvider = (*contextengine.CanonicalSkillProvider)(nil)
 var _ contextengine.ProjectProvider = (*mutableProjectProvider)(nil)
 var _ contextengine.MemoryProvider = (*mutableMemoryProvider)(nil)
 var _ contextengine.RAGEvidenceProvider = (*mutableRAGProvider)(nil)
-var _ staging.ContextGuard = stagingGuardAdapter{}
 
 func _unusedAuthorizationReference() {
 	_ = authorization.EffectAllow

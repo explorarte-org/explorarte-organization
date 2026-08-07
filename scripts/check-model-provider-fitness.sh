@@ -39,13 +39,13 @@ git diff --exit-code "$BASE_SHA" -- migrations/000001\* migrations/000002\* migr
   || fail "migration 000001-000010 changed"
 git diff --exit-code "$BASE_SHA" -- cmd/orgd internal/app >/dev/null || fail "orgd or application composition changed"
 
-if find internal/modelruntime/adapter -mindepth 1 -maxdepth 1 -type d ! -name openaicompat -print | grep -q .; then
+if find internal/modelruntime/adapter -mindepth 1 -maxdepth 1 -type d ! -name openaicompat ! -name alibabaclaude -print | grep -q .; then
   fail "more than one real provider adapter was introduced"
 fi
 if rg -n '"net/http"' internal/modelruntime --glob '*.go' --glob '!internal/modelruntime/adapter/openaicompat/**'; then
   fail "HTTP client found outside openai-compatible adapter"
 fi
-if rg -n '"os/exec"|exec\.Command|/bin/(sh|bash)|sh -c|bash -c' internal/modelruntime internal/secrets; then
+if rg -n --glob '!internal/modelruntime/adapter/alibabaclaude/**' '"os/exec"|exec\.Command|/bin/(sh|bash)|sh -c|bash -c' internal/modelruntime internal/secrets; then
   fail "shell or subprocess execution found"
 fi
 if rg -n '(deepseek|alibaba_token_plan|claude_code).*(Adapter|Dispatch|http\.Client)' internal/modelruntime/adapter --glob '*.go'; then
@@ -62,6 +62,19 @@ allowed={
  "ORG_MODEL_PROVIDER_OPENAI_COMPATIBLE_REQUEST_TIMEOUT",
  "ORG_MODEL_PROVIDER_OPENAI_COMPATIBLE_CIRCUIT_FAILURE_THRESHOLD",
  "ORG_MODEL_PROVIDER_OPENAI_COMPATIBLE_CIRCUIT_OPEN_DURATION",
+ "ORG_MODEL_PROVIDER_ALIBABA_CLAUDE_ENABLED",
+ "ORG_MODEL_PROVIDER_ALIBABA_CLAUDE_EXECUTABLE",
+ "ORG_MODEL_PROVIDER_ALIBABA_CLAUDE_EXECUTABLE_SHA256",
+ "ORG_MODEL_PROVIDER_ALIBABA_CLAUDE_EXPECTED_VERSION",
+ "ORG_MODEL_PROVIDER_ALIBABA_CLAUDE_KILL_GRACE",
+ "ORG_MODEL_PROVIDER_ALIBABA_CLAUDE_MAX_CONCURRENCY",
+ "ORG_MODEL_PROVIDER_ALIBABA_CLAUDE_MAX_STDERR_BYTES",
+ "ORG_MODEL_PROVIDER_ALIBABA_CLAUDE_REQUEST_TIMEOUT",
+ "ORG_MODEL_PROVIDER_ALIBABA_CLAUDE_RUNTIME_PATH",
+ "ORG_MODEL_PROVIDER_ALIBABA_CLAUDE_SETTINGS_FILE",
+ "ORG_MODEL_PROVIDER_ALIBABA_CLAUDE_SETTINGS_SHA256",
+ "ORG_MODEL_PROVIDER_ALIBABA_CLAUDE_TOKEN_PLAN_BASE_URL",
+ "ORG_MODEL_PROVIDER_ALIBABA_CLAUDE_WORK_DIR",
 }
 seen=set()
 for root in (Path("internal/modelruntime"), Path(".env.example")):

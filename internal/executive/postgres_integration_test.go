@@ -156,7 +156,7 @@ TRUNCATE outbox_events,task_dead_letters,task_events,task_leases,task_attempts,t
 	}
 	return &integrationHarness{
 		ctx: ctx, cancel: cancel, store: store, registry: registryRepo, tasks: taskService,
-		authz: runtimeadapter.Authorization{Service: authRuntime.Service, OrganizationID: "explorarte"},
+		authz:      runtimeadapter.Authorization{Service: authRuntime.Service, OrganizationID: "explorarte"},
 		completion: runtimeadapter.Completion{Service: completionService},
 	}
 }
@@ -255,7 +255,7 @@ func (f *integrationModelRuntime) output(purpose string) json.RawMessage {
 	switch purpose {
 	case "executive_ceo_plan":
 		if f.invalidCEOOverride {
-			return json.RawMessage(`{"schema_version":"executive-plan/v1","objective":"analyze","department_requests":[{"unit_id":"ingenieria_ia","objective":"inspect","deliverable":"report","priority":10,"constraints":[],"provider":"deepseek"}],"global_constraints":[],"success_criteria":["verified"],"owner_decisions_required":[]}`)
+			return json.RawMessage(`{"schema_version":"executive-plan/v1","objective":"analyze","department_requests":[{"unit_id":"ingenieria_ia","objective":"inspect","deliverable":"report","priority":10,"constraints":[],"provider":"unapproved-vendor"}],"global_constraints":[],"success_criteria":["verified"],"owner_decisions_required":[]}`)
 		}
 		return json.RawMessage(`{"schema_version":"executive-plan/v1","objective":"analyze","department_requests":[{"unit_id":"ingenieria_ia","objective":"inspect","deliverable":"report","priority":10,"constraints":[]}],"global_constraints":[],"success_criteria":["verified"],"owner_decisions_required":[]}`)
 	case "department_plan":
@@ -376,7 +376,9 @@ func TestExecutivePostgreSQL17AmbiguousBlocksWithoutSecondInvocation(t *testing.
 	gate := &countingCompletion{delegate: h.completion}
 	orchestrator := newOrchestrator(t, h, models, integrationAssignments{}, gate)
 	run, _, err := orchestrator.Submit(h.ctx, executive.SubmitRequest{ActorRoleID: executive.OwnerRoleID, IdempotencyKey: "integration-ambiguous", Goal: executive.OwnerGoal{Goal: "Analyze one area.", AcceptanceCriteria: []string{"verified"}}})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	run, err = runUntilTerminalOrError(t, h.ctx, orchestrator, run.RootTaskID, 20)
 	if !errors.Is(err, executive.ErrModelOutcomeAmbiguous) {
 		t.Fatalf("err=%v run=%+v", err, run)
@@ -398,7 +400,9 @@ func TestExecutivePostgreSQL17CompletionInconclusiveNeverCompletes(t *testing.T)
 	gate := &countingCompletion{delegate: h.completion, forceAt: 3}
 	orchestrator := newOrchestrator(t, h, models, integrationAssignments{}, gate)
 	run, _, err := orchestrator.Submit(h.ctx, executive.SubmitRequest{ActorRoleID: executive.OwnerRoleID, IdempotencyKey: "integration-inconclusive", Goal: executive.OwnerGoal{Goal: "Analyze one area.", AcceptanceCriteria: []string{"verified"}}})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	run, err = runUntilTerminalOrError(t, h.ctx, orchestrator, run.RootTaskID, 20)
 	if !errors.Is(err, executive.ErrCompletionInconclusive) || run.State != executive.StateBlocked {
 		t.Fatalf("run=%+v err=%v", run, err)
@@ -411,7 +415,7 @@ func TestExecutivePostgreSQL17CompletionInconclusiveNeverCompletes(t *testing.T)
 
 func TestExecutivePostgreSQL17RejectsModelOverridesAndCrossDepartmentDelegation(t *testing.T) {
 	for _, tc := range []struct {
-		name string
+		name   string
 		mutate func(*integrationModelRuntime)
 	}{
 		{name: "provider override", mutate: func(m *integrationModelRuntime) { m.invalidCEOOverride = true }},
@@ -423,8 +427,10 @@ func TestExecutivePostgreSQL17RejectsModelOverridesAndCrossDepartmentDelegation(
 			models := newIntegrationModelRuntime()
 			tc.mutate(models)
 			orchestrator := newOrchestrator(t, h, models, integrationAssignments{}, &countingCompletion{delegate: h.completion})
-			run, _, err := orchestrator.Submit(h.ctx, executive.SubmitRequest{ActorRoleID: executive.OwnerRoleID, IdempotencyKey: "integration-reject-"+tc.name, Goal: executive.OwnerGoal{Goal: "Analyze one area.", AcceptanceCriteria: []string{"verified"}}})
-			if err != nil { t.Fatal(err) }
+			run, _, err := orchestrator.Submit(h.ctx, executive.SubmitRequest{ActorRoleID: executive.OwnerRoleID, IdempotencyKey: "integration-reject-" + tc.name, Goal: executive.OwnerGoal{Goal: "Analyze one area.", AcceptanceCriteria: []string{"verified"}}})
+			if err != nil {
+				t.Fatal(err)
+			}
 			run, err = runUntilTerminalOrError(t, h.ctx, orchestrator, run.RootTaskID, 20)
 			if err == nil || run.State != executive.StateBlocked {
 				t.Fatalf("run=%+v err=%v", run, err)
@@ -439,13 +445,17 @@ func TestExecutivePostgreSQL17MissingDispatchAssignmentBlocks(t *testing.T) {
 	models := newIntegrationModelRuntime()
 	orchestrator := newOrchestrator(t, h, models, integrationAssignments{fail: true}, &countingCompletion{delegate: h.completion})
 	run, _, err := orchestrator.Submit(h.ctx, executive.SubmitRequest{ActorRoleID: executive.OwnerRoleID, IdempotencyKey: "integration-assignment", Goal: executive.OwnerGoal{Goal: "Analyze one area.", AcceptanceCriteria: []string{"verified"}}})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < 3; i++ {
 		run, err = orchestrator.Resume(h.ctx, run.RootTaskID)
 		if errors.Is(err, executive.ErrDispatchAssignmentRequired) {
 			break
 		}
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	if !errors.Is(err, executive.ErrDispatchAssignmentRequired) || run.State != executive.StateBlocked || run.ReasonCode != "dispatch_assignment_required" {
 		t.Fatalf("run=%+v err=%v", run, err)

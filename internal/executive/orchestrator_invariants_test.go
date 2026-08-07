@@ -127,8 +127,8 @@ func TestToolIntentsRejectedForPlanning(t *testing.T) {
 	models.ensure = InvocationRecord{ID: 502, Status: "succeeded"}
 	models.results[502] = InvocationResult{
 		InvocationID: 502,
-		JSONOutput: json.RawMessage(`{"schema_version":"department-plan/v1","department_id":"ingenieria_ia","tasks":[],"review_criteria":[],"unresolved":[]}`),
-		ToolIntents: 1, ResponseHash: actionDigest("result"), ResponseBytes: 128,
+		JSONOutput:   json.RawMessage(`{"schema_version":"department-plan/v1","department_id":"ingenieria_ia","tasks":[],"review_criteria":[],"unresolved":[]}`),
+		ToolIntents:  1, ResponseHash: actionDigest("result"), ResponseBytes: 128,
 	}
 	completion := &fakeCompletion{verdict: CompletionPass}
 	orchestrator := testOrchestratorForPorts(t, tasksPort, models, completion)
@@ -211,7 +211,7 @@ func TestCEOCompletedClaimCannotOverrideReviewEvidence(t *testing.T) {
 	plan := ExecutivePlan{
 		SchemaVersion: ExecutivePlanSchemaVersion, Objective: "x",
 		DepartmentRequests: []DepartmentRequest{{UnitID: "ingenieria_ia", Objective: "x", Deliverable: "x"}},
-		SuccessCriteria: []string{"x"},
+		SuccessCriteria:    []string{"x"},
 	}
 	if err := orchestrator.validateRunCompletionEvidence(context.Background(), root, plan); err == nil {
 		t.Fatal("expected evidence conflict")

@@ -14,6 +14,8 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/contextengine"
 	contextbootstrap "github.com/Mireuz13/explorarte-organization/internal/contextengine/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
+	taskcontextprovider "github.com/Mireuz13/explorarte-organization/internal/tasks/contextprovider"
+	taskpostgres "github.com/Mireuz13/explorarte-organization/internal/tasks/postgres"
 )
 
 func runContext(args []string, stdout, stderr io.Writer) int {
@@ -75,7 +77,19 @@ func openContextRuntime(stderr io.Writer) (config.Config, *contextbootstrap.Runt
 		fmt.Fprintf(stderr, "database schema has %d pending migrations\n", status.Pending)
 		return config.Config{}, nil, func() {}, exitDrift
 	}
-	runtime, err := contextbootstrap.Open(cfg, store)
+	taskStore, err := taskpostgres.New(store)
+	if err != nil {
+		cleanup()
+		fmt.Fprintf(stderr, "create task reader: %v\n", err)
+		return config.Config{}, nil, func() {}, exitInternal
+	}
+	taskProvider, err := taskcontextprovider.New(taskStore)
+	if err != nil {
+		cleanup()
+		fmt.Fprintf(stderr, "create task context provider: %v\n", err)
+		return config.Config{}, nil, func() {}, exitInternal
+	}
+	runtime, err := contextbootstrap.Open(cfg, store, taskProvider)
 	if err != nil {
 		cleanup()
 		fmt.Fprintf(stderr, "open context runtime: %v\n", err)

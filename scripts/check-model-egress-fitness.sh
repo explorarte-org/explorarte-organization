@@ -39,7 +39,7 @@ git diff --exit-code "$BASE_SHA" -- docs/canonical/role-catalog.yaml >/dev/null 
 git diff --exit-code "$BASE_SHA" -- docs/canonical/leader-worker-map.yaml >/dev/null || fail "leader-worker-map.yaml changed"
 
 if rg -n '"net/http"' internal/modelegress; then fail "net/http is forbidden in modelegress"; fi
-if rg -n '"os/exec"|exec\.Command|/bin/(sh|bash)|sh -c|bash -c' internal/modelegress internal/modelruntime; then fail "process or shell execution is forbidden"; fi
+if rg -n --glob '!internal/modelruntime/adapter/alibabaclaude/**' '"os/exec"|exec\.Command|/bin/(sh|bash)|sh -c|bash -c' internal/modelegress internal/modelruntime; then fail "process or shell execution is forbidden"; fi
 if rg -n --glob '!**/*_test.go' 'context_snapshots|context_segments' internal/modelegress; then fail "modelegress may not access contextengine tables directly"; fi
 if rg -n --glob '!**/*_test.go' 'CapabilityID\s*:\s*"task\.execute"|CapabilityID[^\n]*task\.execute' internal/modelruntime internal/modelegress; then fail "task.execute still authorizes model dispatch"; fi
 rg -q 'CapabilityID\s*:\s*"model\.invoke"' internal/modelruntime/bootstrap/runtime.go || fail "model dispatch does not request model.invoke"
