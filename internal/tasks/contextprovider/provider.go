@@ -86,9 +86,10 @@ type renderedRequirement struct {
 }
 
 type renderedEvidence struct {
-	Type      string `json:"type"`
-	Reference string `json:"reference"`
-	Digest    string `json:"digest,omitempty"`
+	Type      string         `json:"type"`
+	Reference string         `json:"reference"`
+	Digest    string         `json:"digest,omitempty"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
 }
 
 type renderedAttempt struct {
@@ -123,7 +124,11 @@ func sourceRecord(detail tasks.TaskDetail) (contextengine.SourceRecord, error) {
 		if e.Digest != nil {
 			digest = *e.Digest
 		}
-		evidence = append(evidence, renderedEvidence{Type: string(e.Type), Reference: e.Reference, Digest: digest})
+		metadata := e.Metadata
+		if metadata == nil {
+			metadata = map[string]any{}
+		}
+		evidence = append(evidence, renderedEvidence{Type: string(e.Type), Reference: e.Reference, Digest: digest, Metadata: metadata})
 	}
 	attempts := make([]renderedAttempt, 0, len(detail.Attempts))
 	for _, a := range detail.Attempts {
