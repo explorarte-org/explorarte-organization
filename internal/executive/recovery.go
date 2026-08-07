@@ -3,12 +3,17 @@ package executive
 import (
 	"context"
 	"errors"
+	"fmt"
 )
 
+var ErrOrphanedModelResult = errors.New("executive orphaned successful model result requires explicit reconciliation")
+
 // ResumeDurable is the restart-safe entry point used by the persistent worker
-// and CLI. It never reconstructs or persists lease tokens. If a process died
-// while an executive child held a lease, reconciliation is allowed to expire
-// that lease and the next attempt must obtain its own dispatcher assignment.
+// and CLI. Lease tokens remain process-local and are never persisted. R23 adds
+// a second recovery invariant: once a prior attempt has a durable succeeded
+// model invocation, a later lease expiry must never silently create another
+// cognitive result for the same logical task. Such a run is blocked for
+// explicit reconciliation instead of being reinferred.
 func (o *Orchestrator) ResumeDurable(ctx context.Context, rootTaskID int64) (Run, error) {
 	if err := o.tasks.Reconcile(ctx, 100); err != nil {
 		return Run{}, err
@@ -26,33 +31,85 @@ func (o *Orchestrator) ResumeDurable(ctx context.Context, rootTaskID int64) (Run
 		}
 		return o.Status(ctx, rootTaskID)
 	}
-	if root.Status == "blocked" && root.ReasonCode == "dispatch_assignment_required" {
-		children, listErr := o.tasks.ListByCorrelation(ctx, root.CorrelationID)
-		if listErr != nil {
-			return Run{}, listErr
+	children, err := o.tasks.ListByCorrelation(ctx, root.CorrelationID)
+	if err != nil {
+		return Run{}, err
+	}
+
+	// An active lease owned by a previous process cannot be adopted because its
+	// opaque token is intentionally not durable. Wait for Task Engine
+	// reconciliation; never reuse its attempt-specific assignment.
+	for _, child := range children {
+		if child.ID == root.ID || child.ActiveLease == nil {
+			continue
 		}
-		for _, child := range children {
-			if child.ID == root.ID || child.ActiveLease == nil {
+		if child.ActiveLease.HolderID == orchestratorWorkerID {
+			if _, haveToken := o.localLease(child.ID); !haveToken {
+				return o.Status(ctx, rootTaskID)
+			}
+		}
+	}
+
+	if orphan, ok, detectErr := o.findOrphanedSucceededInvocation(ctx, root, children); detectErr != nil {
+		return Run{}, detectErr
+	} else if ok {
+		reason := fmt.Sprintf("task=%d attempt=%d invocation=%d has durable succeeded output but its execution lease is no longer adoptable", orphan.TaskID, orphan.AttemptID, orphan.InvocationID)
+		if root.Status != "blocked" || root.ReasonCode != "orphaned_model_result" {
+			if _, err = o.tasks.BlockTask(ctx, root.ID, "orphaned_model_result", reason, "service", orchestratorWorkerID); err != nil {
+				return Run{}, err
+			}
+		}
+		run, _ := o.Status(ctx, rootTaskID)
+		return run, ErrOrphanedModelResult
+	}
+
+	if root.Status == "blocked" {
+		switch root.ReasonCode {
+		case "model_outcome_ambiguous":
+			return o.Status(ctx, rootTaskID)
+		case "orphaned_model_result":
+			return o.Status(ctx, rootTaskID)
+		case "dispatch_assignment_required":
+			// With no unrecoverable active lease and no orphaned succeeded
+			// invocation, it is safe to reopen the root. The next claim creates a
+			// fresh attempt and therefore requires a fresh assignment.
+			if _, err = o.tasks.UnblockTask(ctx, root.ID, "service", orchestratorWorkerID); err != nil {
+				return Run{}, err
+			}
+		}
+	}
+	return o.Resume(ctx, rootTaskID)
+}
+
+type orphanedInvocation struct {
+	TaskID       int64
+	AttemptID    int64
+	InvocationID int64
+}
+
+func (o *Orchestrator) findOrphanedSucceededInvocation(ctx context.Context, root TaskRecord, all []TaskRecord) (orphanedInvocation, bool, error) {
+	for _, task := range all {
+		if task.ID == root.ID || isTerminalTask(task.Status) || task.Status == "awaiting_verification" {
+			continue
+		}
+		for _, attempt := range task.Attempts {
+			if attempt.State == "finished" || attempt.State == "running" || attempt.State == "leased" {
 				continue
 			}
-			if child.ActiveLease.HolderID == orchestratorWorkerID {
-				if _, haveToken := o.localLease(child.ID); !haveToken {
-					// The prior process owned the opaque token. Reusing the lease or
-					// its attempt-specific assignment would violate Task Engine and R10.
-					return o.Status(ctx, rootTaskID)
+			invocations, err := o.models.FindTaskAttemptInvocations(ctx, task.ID, attempt.ID)
+			if err != nil {
+				return orphanedInvocation{}, false, err
+			}
+			if len(invocations) > 1 {
+				return orphanedInvocation{}, false, fmt.Errorf("%w: task=%d attempt=%d has multiple invocations", ErrContractRejected, task.ID, attempt.ID)
+			}
+			if len(invocations) == 1 && invocations[0].Status == "succeeded" {
+				if _, err = o.models.GetResult(ctx, invocations[0].ID); err != nil {
+					return orphanedInvocation{}, false, err
 				}
+				return orphanedInvocation{TaskID: task.ID, AttemptID: attempt.ID, InvocationID: invocations[0].ID}, true, nil
 			}
 		}
-		// No unrecoverable active lease remains. Re-open the root so the next
-		// exact child claim creates a fresh attempt and can request/prove a fresh
-		// dispatcher assignment through the administrative flow.
-		if _, err = o.tasks.UnblockTask(ctx, root.ID, "service", orchestratorWorkerID); err != nil {
-			return Run{}, err
-		}
 	}
-	run, err := o.Resume(ctx, rootTaskID)
-	if errors.Is(err, ErrRunBlocked) {
-		return run, err
-	}
-	return run, err
+	return orphanedInvocation{}, false, nil
 }
