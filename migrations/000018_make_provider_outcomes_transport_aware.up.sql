@@ -2,6 +2,11 @@ ALTER TABLE model_provider_outcomes
     ADD COLUMN transport TEXT NOT NULL DEFAULT 'http_adapter',
     ADD COLUMN process_exit_code INTEGER;
 
+-- 000011 made outcomes immutable. Temporarily remove only the mutation
+-- trigger while this migration backfills transport metadata, then restore it
+-- before the migration completes.
+DROP TRIGGER model_provider_outcomes_no_mutation ON model_provider_outcomes;
+
 -- Backfill from the immutable provider request rather than assuming every
 -- historical row was HTTP. This also keeps test.fake evidence honest.
 UPDATE model_provider_outcomes o
@@ -20,6 +25,10 @@ process_exit_code = CASE
 END
 FROM model_provider_requests r
 WHERE r.id = o.provider_request_record_id;
+
+CREATE TRIGGER model_provider_outcomes_no_mutation
+BEFORE UPDATE OR DELETE ON model_provider_outcomes
+FOR EACH ROW EXECUTE FUNCTION reject_model_provider_outcome_mutation();
 
 ALTER TABLE model_provider_outcomes ALTER COLUMN transport DROP DEFAULT;
 
