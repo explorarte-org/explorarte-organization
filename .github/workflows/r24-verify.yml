@@ -1,0 +1,75 @@
+name: R24 Verify
+
+on:
+  push:
+    branches:
+      - feat/24-executive-scoped-egress
+
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-bookworm
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: explorarte_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d explorarte_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      ORG_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/explorarte_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Formatting
+        run: test -z "$(gofmt -l .)"
+      - name: Vet
+        run: go vet ./...
+      - name: Scoped egress unit tests
+        run: go test ./internal/modelegress/... ./internal/modelruntime/... ./internal/executive/...
+      - name: Scoped egress race tests
+        run: go test -race -short ./internal/modelegress/... ./internal/modelruntime/... ./internal/executive/...
+      - name: Model egress fitness
+        run: bash scripts/check-model-egress-fitness.sh
+      - name: Model runtime fitness
+        run: bash scripts/check-model-runtime-fitness.sh
+      - name: Executive fitness
+        run: bash scripts/check-executive-fitness.sh
+      - name: PostgreSQL model egress integration
+        run: go test -tags=integration ./internal/modelegress/... -count=1
+      - name: PostgreSQL model runtime integration
+        run: go test -tags=integration ./internal/modelruntime/... -count=1
+      - name: PostgreSQL executive integration
+        run: go test -tags=integration ./internal/executive/... -count=1
+      - name: Build
+        run: go build ./...
+      - name: Publish R24 status
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          state="$JOB_STATUS"
+          if [ "$state" != "success" ]; then state="failure"; fi
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            -d "{\"state\":\"${state}\",\"context\":\"r24/verify\",\"description\":\"R24 scoped egress, runtime, executive and PostgreSQL integration\"}"
