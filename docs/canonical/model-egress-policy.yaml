@@ -1,7 +1,7 @@
 schema_version: 0.1.0
-document_status: branch_12_candidate
+document_status: branch_24_candidate
 policy_id: model-egress
-policy_version: 2
+policy_version: 3
 default_action: deny
 hard_denies:
 - data_classification: clinical
@@ -11,37 +11,37 @@ hard_denies:
 rules:
 - provider_id: alibaba_token_plan_via_claude_code
   data_classification: organizational
-  effect: deny
-  reason_code: organizational_egress_not_approved
+  effect: allow
+  reason_code: executive_scope_gate_required_v3
 - provider_id: alibaba_token_plan_via_claude_code
   data_classification: public
-  effect: deny
-  reason_code: public_egress_not_approved
+  effect: allow
+  reason_code: executive_scope_gate_required_v3
 - provider_id: alibaba_token_plan_via_claude_code
   data_classification: sanitized
-  effect: deny
-  reason_code: sanitized_egress_not_approved
+  effect: allow
+  reason_code: executive_scope_gate_required_v3
 - provider_id: deepseek
   data_classification: organizational
-  effect: deny
-  reason_code: organizational_egress_not_approved
+  effect: allow
+  reason_code: executive_scope_gate_required_v3
 - provider_id: deepseek
   data_classification: public
-  effect: deny
-  reason_code: public_egress_not_approved
+  effect: allow
+  reason_code: executive_scope_gate_required_v3
 - provider_id: deepseek
   data_classification: sanitized
-  effect: deny
-  reason_code: sanitized_egress_not_approved
+  effect: allow
+  reason_code: executive_scope_gate_required_v3
 - provider_id: openai_compatible
   data_classification: organizational
-  effect: deny
-  reason_code: organizational_egress_not_approved
+  effect: allow
+  reason_code: executive_scope_gate_required_v3
 - provider_id: openai_compatible
   data_classification: public
   effect: allow
-  reason_code: public_egress_approved_for_openai_compatible_v2
+  reason_code: public_egress_approved_for_openai_compatible_v3
 - provider_id: openai_compatible
   data_classification: sanitized
   effect: allow
-  reason_code: sanitized_egress_approved_for_openai_compatible_v2
+  reason_code: sanitized_egress_approved_for_openai_compatible_v3
