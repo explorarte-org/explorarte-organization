@@ -287,6 +287,25 @@ func mapTaskDetail(detail tasks.TaskDetail) executive.TaskRecord {
 			Status:   string(requirement.Status),
 		})
 	}
+	for _, evidence := range detail.Evidence {
+		requirementID := int64(0)
+		if evidence.RequirementID != nil {
+			requirementID = *evidence.RequirementID
+		}
+		digest := ""
+		if evidence.Digest != nil {
+			digest = *evidence.Digest
+		}
+		out.Evidence = append(out.Evidence, executive.EvidenceRecord{
+			ID:            evidence.ID,
+			RequirementID: requirementID,
+			Type:          string(evidence.Type),
+			Reference:     evidence.Reference,
+			Digest:        digest,
+			RecordedBy:    evidence.RecordedBy,
+			Metadata:      evidence.Metadata,
+		})
+	}
 	for _, attempt := range detail.Attempts {
 		out.Attempts = append(out.Attempts, mapAttempt(attempt))
 	}
@@ -302,7 +321,21 @@ func mapTaskDetail(detail tasks.TaskDetail) executive.TaskRecord {
 }
 
 func mapAttempt(attempt tasks.Attempt) executive.AttemptRecord {
-	return executive.AttemptRecord{ID: attempt.ID, Ordinal: attempt.Ordinal, State: string(attempt.State)}
+	resultSummary := ""
+	if attempt.ResultSummary != nil {
+		resultSummary = *attempt.ResultSummary
+	}
+	failureCode := ""
+	if attempt.FailureCode != nil {
+		failureCode = *attempt.FailureCode
+	}
+	return executive.AttemptRecord{
+		ID:            attempt.ID,
+		Ordinal:       attempt.Ordinal,
+		State:         string(attempt.State),
+		ResultSummary: resultSummary,
+		FailureCode:   failureCode,
+	}
 }
 
 var _ executive.TaskCoordinator = Tasks{}
