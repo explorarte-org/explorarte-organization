@@ -58,8 +58,8 @@ func TestDecisionGraphPostgresLedger(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Current != 12 {
-		t.Fatalf("current migration=%d, want 12", result.Current)
+	if result.Current != 13 {
+		t.Fatalf("current migration=%d, want 13", result.Current)
 	}
 	resetDecisionGraphSchema(t, ctx, platform)
 	t.Cleanup(func() { resetDecisionGraphSchema(t, context.Background(), platform) })
