@@ -4,11 +4,13 @@
 
 Implementación cerrada para validación externa en PostgreSQL real.
 
-- Base efectiva: `main` con Rama 17 (`0499c9d57eb79f2f4918c687d73d2d0232e09090`).
+- Base histórica de implementación R18: Rama 17 en `0499c9d57eb79f2f4918c687d73d2d0232e09090`.
 - Migración propia: `000015_create_organizational_memory`.
+- `main` observado durante este handoff: `b6c6340d700e9b06e65668eb372c48685951954d`. Ese avance ocurrió externamente e incluye la implementación R18 previa, `gofmt`, los asserts legacy de migration tip `15` y el smoke CLI con `source_kind`.
+- Los endurecimientos posteriores de concurrencia, cobertura PostgreSQL, fitness y este handoff permanecen en `feat/18-organizational-memory`, por delante del `main` observado.
 - Rama pública de handoff: `feat/18-organizational-memory`.
 - Rama histórica/de trabajo: `rebase/18-organizational-memory-on-r17`.
-- No hay PR ni merge a `main` en este estado.
+- No existe un PR abierto de esta rama de handoff al momento de escribir este documento.
 - La rama debe considerarse **candidate implementation** hasta que el worker del VPS ejecute PostgreSQL real, race tests y `make verify-all`.
 
 ## Objetivo
@@ -285,7 +287,7 @@ make verify-all
 
 ### Migration-tip legacy assertions
 
-Rama 17 dejó el tip global en `14`; Rama 18 lo eleva a `15`. Los asserts legacy conocidos de Context Engine, Decision Graph, Trace, Improvement, Model Egress, Model Identity y Model Runtime ya fueron actualizados en la rama pública para reflejar el tip `15`. El worker debe igualmente comprobar que no quede otro assert que represente **el tip global actual** y siga esperando 14.
+Rama 17 dejó el tip global en `14`; Rama 18 lo eleva a `15`. Los asserts legacy conocidos de Context Engine, Decision Graph, Trace, Improvement, Model Egress, Model Identity y Model Runtime ya fueron actualizados para reflejar el tip `15`. El worker debe igualmente comprobar que no quede otro assert que represente **el tip global actual** y siga esperando 14.
 
 Búsqueda recomendada:
 
@@ -314,7 +316,7 @@ El worker debe validar explícitamente:
 - `source_kind=simulation` visible en el contexto;
 - ausencia de raw clinical payloads.
 
-Cualquier corrección descubierta por estos tests debe permanecer en la rama R18. No abrir PR ni mergear `main` hasta que la suite esté verde y exista autorización explícita.
+Cualquier corrección descubierta por estos tests debe permanecer en la rama R18. No abrir PR ni mergear los endurecimientos restantes a `main` hasta que la suite esté verde y exista autorización explícita.
 
 ## Fuera de alcance
 
