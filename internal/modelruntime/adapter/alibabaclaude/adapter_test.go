@@ -129,6 +129,16 @@ func TestPostStartTimeoutIsAmbiguousPrimitive(t *testing.T) {
 	}
 }
 
+func TestKnownNonzeroExitCodeIsNormalizedForDurableEvidence(t *testing.T) {
+	code := 23
+	if got := classifyCLIError(errors.New("process failed"), &code); got != "process_exit_23" {
+		t.Fatalf("classification=%q want process_exit_23", got)
+	}
+	if got := classifyCLIError(context.DeadlineExceeded, nil); got != "process_timeout" {
+		t.Fatalf("timeout classification=%q", got)
+	}
+}
+
 func TestArgumentsDisableCustomizationsToolsSessionsAndMCP(t *testing.T) {
 	cfg := testConfig(t, "#!/bin/sh\nprintf '2.1.224\\n'\n")
 	adapter, err := New(cfg)
