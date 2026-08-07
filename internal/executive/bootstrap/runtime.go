@@ -22,7 +22,7 @@ import (
 type Runtime struct {
 	Orchestrator *executive.Orchestrator
 	Tasks        *tasks.Service
-	Models       *modelbootstrap.Runtime
+	Models       *modelbootstrap.CoordinatorRuntime
 }
 
 func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
@@ -64,9 +64,9 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open executive authorization runtime: %w", err)
 	}
-	modelRuntime, err := modelbootstrap.Open(cfg, store)
+	modelRuntime, err := modelbootstrap.OpenCoordinator(cfg, store)
 	if err != nil {
-		return nil, fmt.Errorf("open executive model runtime: %w", err)
+		return nil, fmt.Errorf("open executive model coordinator runtime: %w", err)
 	}
 	completionReader, err := completionpostgres.New(store, cfg.Tasks.OrganizationID)
 	if err != nil {
