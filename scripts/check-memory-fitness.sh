@@ -3,8 +3,17 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-fail(){ echo "memory fitness: FAIL: $*" >&2; exit 1; }
-require(){ local pattern="$1" path="$2"; grep -Eq "$pattern" "$path" || fail "missing pattern '$pattern' in $path"; }
+
+fail() {
+  echo "memory fitness: FAIL: $*" >&2
+  exit 1
+}
+
+require() {
+  local pattern="$1"
+  local path="$2"
+  grep -Eq "$pattern" "$path" || fail "missing pattern '$pattern' in $path"
+}
 
 require 'DataClinical' internal/memory/types.go
 require 'DataSecret' internal/memory/types.go
@@ -32,18 +41,32 @@ require 'SourceApprovedMemory' internal/memory/contextprovider/provider.go
 require 'TierApprovedMemory' internal/memory/contextprovider/provider.go
 require 'InstructionData' internal/memory/contextprovider/provider.go
 require 'TrustUntrusted' internal/memory/contextprovider/provider.go
-require 'MayGrantCapabilities:false' internal/memory/contextprovider/provider.go
+require 'MayGrantCapabilities:[[:space:]]*false' internal/memory/contextprovider/provider.go
 require 'SourceKind' internal/memory/contextprovider/provider.go
 require 'ValidateVersion' internal/memory/contextprovider/provider.go
 require 'DisallowUnknownFields' cmd/orgctl/memory.go
 require 'multiple top-level JSON values are not allowed' cmd/orgctl/memory.go
 require 'memoryProvider' internal/contextengine/bootstrap/bootstrap.go
 
-if grep -R -E 'cell\.read_clinical_data|clinical_records|patient_records' internal/memory --include='*.go'; then fail 'organizational memory reached into a clinical source boundary'; fi
-if grep -R -E 'embedding|pgvector|semantic_search|internal/rag' internal/memory --include='*.go'; then fail 'R18 introduced retrieval/vector semantics that belong to a later layer'; fi
-if grep -R -E 'MayGrantCapabilities:[[:space:]]*true' internal/memory/contextprovider --include='*.go'; then fail 'approved memory may grant capabilities'; fi
+# R18 is admission-only for sensitive boundaries. It must not read clinical
+# stores or depend on future retrieval/vector code to decide publishability.
+if grep -R -E 'cell\.read_clinical_data|clinical_records|patient_records' internal/memory --include='*.go'; then
+  fail 'organizational memory reached into a clinical source boundary'
+fi
+if grep -R -E 'embedding|vector|pgvector|semantic_search|internal/rag' internal/memory --include='*.go'; then
+  fail 'R18 introduced retrieval/vector semantics that belong to a later layer'
+fi
+
+# Approved memory is data, never a capability source.
+if grep -R -E 'MayGrantCapabilities:[[:space:]]*true' internal/memory/contextprovider --include='*.go'; then
+  fail 'approved memory may grant capabilities'
+fi
+
+# Domain lifecycle remains closed/default-deny.
 require 'StatusCandidate:[[:space:]]*\{' internal/memory/transitions.go
 require 'StatusArchived:[[:space:]]*\{\}' internal/memory/transitions.go
+
+# Production CLI/runtime wiring must remain present.
 require 'case "memory"' cmd/orgctl/main.go
 require 'memorybootstrap\.Open' cmd/orgctl/memory.go
 require 'memoryauthz\.New' internal/memory/bootstrap/bootstrap.go
