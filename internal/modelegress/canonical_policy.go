@@ -50,10 +50,17 @@ type LoadOptions struct {
 }
 
 func ProductiveLoadOptions(knownProviders []string) LoadOptions {
+	// R24 compiles the provider/classification surface needed by executive
+	// orchestration. These allows are necessary but not sufficient: Evaluator
+	// independently requires a backend-derived executive scope for Alibaba and
+	// DeepSeek, and for OpenAI-compatible whenever organizational data is
+	// present. Secret and clinical remain hard-denied below this table.
 	return LoadOptions{
 		KnownProviders: append([]string(nil), knownProviders...),
 		ProductiveExplicitRules: map[string][]DataClassification{
-			"openai_compatible": {ClassificationPublic, ClassificationSanitized},
+			"alibaba_token_plan_via_claude_code": {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
+			"deepseek":                           {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
+			"openai_compatible":                  {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
 		},
 	}
 }
