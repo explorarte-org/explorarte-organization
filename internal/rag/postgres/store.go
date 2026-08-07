@@ -260,7 +260,7 @@ func (s *Store) Reindex(ctx context.Context, command rag.ReindexCommand) (rag.In
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	var nextGeneration int64
-	if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(generation),0)+1 FROM rag_index_generations WHERE organization_id=$1 AND namespace_kind=$2 AND namespace_id=$3 FOR UPDATE`,
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(generation),0)+1 FROM rag_index_generations WHERE organization_id=$1 AND namespace_kind=$2 AND namespace_id=$3`,
 		organizationID, string(command.NamespaceKind), namespaceID).Scan(&nextGeneration); err != nil {
 		return rag.IndexGeneration{}, mapError("reserve rag index generation", err)
 	}
@@ -271,7 +271,7 @@ func (s *Store) Reindex(ctx context.Context, command rag.ReindexCommand) (rag.In
 		return rag.IndexGeneration{}, mapError("insert rag index generation", err)
 	}
 	for _, chunk := range command.Chunks {
-		chunkID := fmt.Sprintf("%s-%d", chunk.VersionID, chunk.Ordinal)
+		chunkID := fmt.Sprintf("%s-%s-%d", generationID, chunk.VersionID, chunk.Ordinal)
 		if _, err := tx.Exec(ctx, `INSERT INTO rag_knowledge_chunks (organization_id,chunk_id,generation_id,version_id,chunker_id,chunker_version,ordinal,start_offset,end_offset,content,content_hash,embedding_model_id,embedding_model_version,embedding_dimension) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
 			organizationID, chunkID, generationID, chunk.VersionID, chunk.ChunkerID, chunk.ChunkerVersion, chunk.Ordinal, chunk.StartOffset, chunk.EndOffset, chunk.Content, chunk.ContentHash,
 			nullableString(chunk.EmbeddingModelID), nullableString(chunk.EmbeddingModelVersion), nullableInt(chunk.EmbeddingDimension)); err != nil {

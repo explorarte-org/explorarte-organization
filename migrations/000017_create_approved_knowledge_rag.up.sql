@@ -42,6 +42,7 @@ CREATE TABLE rag_knowledge_versions (
     PRIMARY KEY (organization_id, version_id),
     UNIQUE (organization_id, document_id, version),
     UNIQUE (organization_id, canonical_hash),
+    UNIQUE (organization_id, version_id, canonical_hash),
     CONSTRAINT rag_knowledge_versions_document_fk FOREIGN KEY (organization_id, document_id) REFERENCES rag_knowledge_documents(organization_id, document_id) ON DELETE RESTRICT,
     CONSTRAINT rag_knowledge_versions_supersedes_fk FOREIGN KEY (organization_id, supersedes_version_id) REFERENCES rag_knowledge_versions(organization_id, version_id) ON DELETE RESTRICT,
     CONSTRAINT rag_knowledge_versions_proposer_fk FOREIGN KEY (organization_id, proposed_by_role_id) REFERENCES organization_roles(organization_id, id) ON DELETE RESTRICT,
