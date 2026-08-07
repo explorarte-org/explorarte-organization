@@ -7,7 +7,9 @@ desarrolló en paralelo a la Rama 14; tras su fusión, esta rama se rebaseó
 sobre `main` y se cerró con la integración durable: adapter `TraceSource`
 contra el ledger de decisiones, migración `000013`, store de PostgreSQL para
 `Candidate` con optimistic concurrency, guard de estados a nivel de base de
-datos, y fitness.
+datos, y fitness. El cierre definitivo añade la CLI `orgctl improvement`,
+siguiendo el precedente de la Rama 14 (que incorporó `orgctl decision` como
+último paso).
 
 ## Base exacta
 
@@ -126,6 +128,59 @@ detecta — dos de los primeros intentos no lo hacían (un regex de Go cegado
 por las llaves de `struct{}{}`, y un `\|` mal escapado) y se corrigieron o
 se reemplazaron por la verificación real en Go (`TestCandidateTransitionMatrixIsDefaultDeny`).
 
+## CLI
+
+Comandos explícitos:
+
+```text
+orgctl improvement propose --file candidate.json
+orgctl improvement get <candidate_id>
+orgctl improvement validate <candidate_id>
+orgctl improvement begin-evaluation <candidate_id>
+orgctl improvement verdict --file verdict.json
+orgctl improvement promote-canary --file promotion.json
+orgctl improvement promote-active --file promotion.json
+orgctl improvement deprecate <candidate_id>
+orgctl improvement rollback --file rollback.json
+orgctl improvement trace <run_id>
+```
+
+La CLI es el composition root del dominio sin estado: cada mutación hace
+cargar → mutar → guardar contra la revisión leída (`GetCandidate` → método de
+`Service` → `SaveCandidate`), por lo que un escritor concurrente falla con
+`ErrRevisionConflict` (exit code 3) en vez de pisar el cambio. Las
+mutaciones complejas reciben JSON estricto mediante `--file`; unknown fields
+y múltiples valores top-level son rechazados.
+
+- `propose` crea el candidato en `proposed` (artifact + lineage + created_by).
+- `validate`, `begin-evaluation` y `deprecate` aplican las transiciones sin
+  gate correspondientes sobre el candidato cargado.
+- `verdict` mueve `evaluating` a `approved`/`rejected`/`inconclusive` a
+  partir de una `SuiteComparisonResult` suministrada por el operador; el
+  veredicto de seguridad (`OverallVerdict`) decide el estado, nunca el
+  `WeightedPassRatio`.
+- `promote-canary` y `promote-active` exigen la comparación con veredicto
+  `pass` Y la decisión explícita del gate (`outcome`, `reason`, `decided_by`)
+  en el mismo archivo: la CLI implementa un `ApprovalGate` que materializa la
+  decisión del operador, y el `Service` revalida que la decisión coincida con
+  el request. Toda decisión que llega al gate (autorizada o denegada) se
+  registra en `improvement_promotion_decisions` mediante
+  `RecordPromotionDecision` antes de guardar el nuevo estado: nunca existe
+  una promoción efectiva sin registro de auditoría. Una denegación retorna
+  exit code 6 y no cambia el estado.
+- `rollback` exige el destino del rollback (`target_candidate_id` +
+  `target_artifact_hash`); el `FromState` se fija al estado real del
+  candidato cargado, y el dominio rechaza cualquier otro origen que no sea
+  `canary`/`active`.
+- `trace` resuelve el `TraceRef` de un run `succeeded` de la Rama 14 vía
+  `internal/decisiongraphtrace`, para construir los casos de una suite de
+  evaluación.
+
+Los comandos que no promocionan usan un gate que rechaza cualquier request
+(fail-closed): ninguna ruta fuera de `promote-canary`/`promote-active` puede
+autorizar una promoción. No hay scheduler ni promoción automática: cada paso
+del ciclo de vida es una invocación explícita del operador.
+
 ## Invariantes
 
 1. `proposed -> active` es irreproducible en Go y en la base de datos.
@@ -147,12 +202,12 @@ se reemplazaron por la verificación real en Go (`TestCandidateTransitionMatrixI
 
 ## Fuera de alcance
 
-- CLI (`orgctl improvement ...`): no incluida en este cierre, siguiendo el
-  mismo precedente de la Rama 14 (que también difirió su CLI al commit
-  final) y el plan de 8 pasos del owner, que no la menciona.
 - Memoria, RAG, tool execution, shell, credenciales en este paquete.
 - RL online, promoción automática sin gate, experimentos sobre datos
   clínicos reales.
+- Un `Evaluator` productivo: la comparación que alimenta `verdict` y las
+  promociones la produce el proceso de evaluación externo del operador y
+  entra a la CLI como evidencia JSON explícita.
 
 ## Relación con Rama 14
 
