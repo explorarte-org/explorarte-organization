@@ -8,15 +8,15 @@ import (
 type Clock interface{ Now() time.Time }
 
 type Repository interface {
-	CreateSkill(context.Context, Skill, SkillVersion, string) (Skill, SkillVersion, bool, error)
+	CreateSkill(context.Context, Skill, SkillVersion, string, GovernanceEvidence) (Skill, SkillVersion, bool, error)
 	GetSkill(context.Context, string, string) (Skill, error)
 	GetVersion(context.Context, string, string) (SkillVersion, error)
 	ListVersions(context.Context, string, string) ([]SkillVersion, error)
-	SaveVersion(context.Context, SkillVersion, int64) (SkillVersion, error)
-	CreateAssignment(context.Context, SkillAssignment, string) (SkillAssignment, bool, error)
+	SaveVersion(context.Context, SkillVersion, int64, LifecycleEvent) (SkillVersion, error)
+	CreateAssignment(context.Context, SkillAssignment, string, AssignmentEvent) (SkillAssignment, bool, error)
 	GetAssignment(context.Context, string, string) (SkillAssignment, error)
 	ListActiveAssignmentsForRole(context.Context, string, string) ([]SkillAssignment, error)
-	SaveAssignment(context.Context, SkillAssignment, int64) (SkillAssignment, error)
+	SaveAssignment(context.Context, SkillAssignment, int64, AssignmentEvent) (SkillAssignment, error)
 }
 
 type GovernanceEvidence struct {
