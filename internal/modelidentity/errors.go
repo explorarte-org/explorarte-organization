@@ -17,4 +17,5 @@ var (
 	ErrAssertionInvalid    = errors.New("model execution identity assertion invalid")
 	ErrReplayDenied        = errors.New("model execution identity replay denied")
 	ErrAuthorizationDenied = errors.New("model execution identity administration denied")
+	ErrConflict            = errors.New("model execution identity store transient conflict")
 )

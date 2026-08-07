@@ -43,6 +43,8 @@ func mapError(err error) error {
 			return fmt.Errorf("%w: PostgreSQL %s", modelidentity.ErrKeyConflict, pgerr.Code)
 		case "23503", "23514", "22P02":
 			return fmt.Errorf("%w: PostgreSQL %s", modelidentity.ErrInvalidKey, pgerr.Code)
+		case "40001", "40P01":
+			return fmt.Errorf("%w: PostgreSQL %s", modelidentity.ErrConflict, pgerr.Code)
 		}
 	}
 	return err

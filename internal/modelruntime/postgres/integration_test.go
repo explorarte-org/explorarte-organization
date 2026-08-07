@@ -557,7 +557,7 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		}
 		losers := 0
 		for claimErr := range errs {
-			if !errors.Is(claimErr, modelruntime.ErrClaimUnavailable) && !errors.Is(claimErr, modelruntime.ErrConflict) && !errors.Is(claimErr, modelidentity.ErrReplayDenied) {
+			if !errors.Is(claimErr, modelruntime.ErrClaimUnavailable) && !errors.Is(claimErr, modelruntime.ErrConflict) && !errors.Is(claimErr, modelidentity.ErrReplayDenied) && !errors.Is(claimErr, modelidentity.ErrConflict) {
 				t.Fatalf("unexpected loser error: %v", claimErr)
 			}
 			losers++
