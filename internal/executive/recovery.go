@@ -31,6 +31,31 @@ func (o *Orchestrator) ResumeDurable(ctx context.Context, rootTaskID int64) (Run
 		}
 		return o.Status(ctx, rootTaskID)
 	}
+
+	// A durable blocked state is fail-closed. The only automatically reopenable
+	// reason is dispatch_assignment_required, because the owner/admin flow can
+	// provision a fresh bounded assignment and the Task Engine can then create a
+	// fresh attempt. Every other reason requires explicit intervention.
+	if root.Status == "blocked" {
+		switch root.ReasonCode {
+		case "model_outcome_ambiguous":
+			run, _ := o.Status(ctx, rootTaskID)
+			return run, ErrModelOutcomeAmbiguous
+		case "orphaned_model_result":
+			run, _ := o.Status(ctx, rootTaskID)
+			return run, ErrOrphanedModelResult
+		case "completion_verification_inconclusive":
+			run, _ := o.Status(ctx, rootTaskID)
+			return run, ErrCompletionInconclusive
+		case "dispatch_assignment_required":
+			// handled below after checking whether a prior-process lease or
+			// succeeded invocation makes reopening unsafe.
+		default:
+			run, _ := o.Status(ctx, rootTaskID)
+			return run, ErrRunBlocked
+		}
+	}
+
 	children, err := o.tasks.ListByCorrelation(ctx, root.CorrelationID)
 	if err != nil {
 		return Run{}, err
@@ -45,7 +70,11 @@ func (o *Orchestrator) ResumeDurable(ctx context.Context, rootTaskID int64) (Run
 		}
 		if child.ActiveLease.HolderID == orchestratorWorkerID {
 			if _, haveToken := o.localLease(child.ID); !haveToken {
-				return o.Status(ctx, rootTaskID)
+				run, _ := o.Status(ctx, rootTaskID)
+				if root.Status == "blocked" && root.ReasonCode == "dispatch_assignment_required" {
+					return run, ErrDispatchAssignmentRequired
+				}
+				return run, ErrRunBlocked
 			}
 		}
 	}
@@ -63,19 +92,12 @@ func (o *Orchestrator) ResumeDurable(ctx context.Context, rootTaskID int64) (Run
 		return run, ErrOrphanedModelResult
 	}
 
-	if root.Status == "blocked" {
-		switch root.ReasonCode {
-		case "model_outcome_ambiguous":
-			return o.Status(ctx, rootTaskID)
-		case "orphaned_model_result":
-			return o.Status(ctx, rootTaskID)
-		case "dispatch_assignment_required":
-			// With no unrecoverable active lease and no orphaned succeeded
-			// invocation, it is safe to reopen the root. The next claim creates a
-			// fresh attempt and therefore requires a fresh assignment.
-			if _, err = o.tasks.UnblockTask(ctx, root.ID, "service", orchestratorWorkerID); err != nil {
-				return Run{}, err
-			}
+	if root.Status == "blocked" && root.ReasonCode == "dispatch_assignment_required" {
+		// With no unrecoverable active lease and no orphaned succeeded invocation,
+		// it is safe to reopen the root. The next exact child claim creates a fresh
+		// attempt and therefore requires a fresh assignment.
+		if _, err = o.tasks.UnblockTask(ctx, root.ID, "service", orchestratorWorkerID); err != nil {
+			return Run{}, err
 		}
 	}
 	return o.Resume(ctx, rootTaskID)
