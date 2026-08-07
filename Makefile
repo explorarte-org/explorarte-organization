@@ -10,7 +10,7 @@ LDFLAGS := -s -w \
 	-X main.commit=$(COMMIT) \
 	-X main.buildTime=$(BUILD_TIME)
 
-.PHONY: help deps fmt fmt-check vet test test-unit test-race test-integration test-task-integration test-task-fitness test-staging-integration test-staging-fitness test-authorization-integration test-authorization-fitness test-context-integration test-context-fitness test-memory-integration test-memory-fitness test-skillregistry-integration test-skillregistry-fitness test-rag-integration test-rag-fitness test-model-runtime-integration test-model-runtime-fitness test-model-egress-integration test-model-egress-fitness test-model-identity-integration test-model-identity-fitness test-model-provider-fitness test-alibaba-cli-fitness test-cellworker-integration test-cellworker-fitness test-decisiongraph-integration test-decisiongraph-fitness test-decisiongraphtrace-integration test-improvement-integration test-improvement-fitness test-completion-integration test-completion-fitness build build-cross run verify verify-all clean docker-build compose-up compose-down compose-logs migrate-up migrate-status registry-validate registry-diff registry-sync registry-status task-reconcile outbox-status
+.PHONY: help deps fmt fmt-check vet test test-unit test-race test-integration test-task-integration test-task-fitness test-staging-integration test-staging-fitness test-authorization-integration test-authorization-fitness test-context-integration test-context-fitness test-memory-integration test-memory-fitness test-skillregistry-integration test-skillregistry-fitness test-rag-integration test-rag-fitness test-model-runtime-integration test-model-runtime-fitness test-model-egress-integration test-model-egress-fitness test-model-identity-integration test-model-identity-fitness test-model-provider-fitness test-alibaba-cli-fitness test-cellworker-integration test-cellworker-fitness test-decisiongraph-integration test-decisiongraph-fitness test-decisiongraphtrace-integration test-improvement-integration test-improvement-fitness test-completion-integration test-completion-fitness test-executive-integration test-executive-fitness build build-cross run verify verify-all clean docker-build compose-up compose-down compose-logs migrate-up migrate-status registry-validate registry-diff registry-sync registry-status task-reconcile outbox-status
 
 help:
 	@printf '%s\n' \
@@ -40,6 +40,8 @@ help:
 	  'make test-alibaba-cli-fitness Validate Alibaba Claude Code CLI sandbox and transport invariants' \
 	  'make test-decisiongraph-fitness Validate durable DAG, budget, privacy, and claim invariants' \
 	  'make test-decisiongraph-integration Run PostgreSQL 17 decision-graph integration tests' \
+	  'make test-executive-fitness Validate executive orchestration authority, completion, and transport boundaries' \
+	  'make test-executive-integration Run PostgreSQL 17 executive orchestration integration tests' \
 	  'make test-staging-integration Run PostgreSQL 17 and real Git staging integration tests' \
 	  'make verify-all        Run verify, cross-build, canonical validation, and integration tests' \
 	  'make registry-validate Validate docs/canonical without PostgreSQL writes' \
@@ -172,6 +174,12 @@ test-completion-fitness:
 test-completion-integration:
 	./scripts/test-integration.sh completion
 
+test-executive-fitness:
+	./scripts/check-executive-fitness.sh
+
+test-executive-integration:
+	./scripts/test-executive-integration.sh
+
 build:
 	@mkdir -p $(BINARY_DIR)
 	CGO_ENABLED=0 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY_DIR)/orgd ./cmd/orgd
@@ -187,9 +195,9 @@ build-cross:
 run:
 	$(GO) run ./cmd/orgd
 
-verify: fmt-check vet test-unit test-task-fitness test-staging-fitness test-authorization-fitness test-context-fitness test-memory-fitness test-skillregistry-fitness test-rag-fitness test-model-runtime-fitness test-model-egress-fitness test-model-dispatch-fitness test-model-identity-fitness test-model-provider-fitness test-alibaba-cli-fitness test-cellworker-fitness test-decisiongraph-fitness test-improvement-fitness test-completion-fitness build
+verify: fmt-check vet test-unit test-task-fitness test-staging-fitness test-authorization-fitness test-context-fitness test-memory-fitness test-skillregistry-fitness test-rag-fitness test-model-runtime-fitness test-model-egress-fitness test-model-dispatch-fitness test-model-identity-fitness test-model-provider-fitness test-alibaba-cli-fitness test-cellworker-fitness test-decisiongraph-fitness test-improvement-fitness test-completion-fitness test-executive-fitness build
 
-verify-all: verify build-cross registry-validate test-integration test-context-integration test-memory-integration test-skillregistry-integration test-rag-integration test-model-runtime-integration test-model-egress-integration test-model-dispatch-integration test-model-identity-integration test-cellworker-integration test-decisiongraph-integration test-decisiongraphtrace-integration test-improvement-integration test-authorization-integration test-staging-integration test-completion-integration
+verify-all: verify build-cross registry-validate test-integration test-context-integration test-memory-integration test-skillregistry-integration test-rag-integration test-model-runtime-integration test-model-egress-integration test-model-dispatch-integration test-model-identity-integration test-cellworker-integration test-decisiongraph-integration test-decisiongraphtrace-integration test-improvement-integration test-authorization-integration test-staging-integration test-completion-integration test-executive-integration
 
 migrate-up:
 	$(GO) run ./cmd/orgctl migrate up
