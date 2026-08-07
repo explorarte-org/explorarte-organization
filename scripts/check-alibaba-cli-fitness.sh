@@ -51,10 +51,10 @@ grep -Fq 'model_provider_outcomes_no_mutation' "$MIGRATION" || fail "outcome imm
 
 grep -Fq 'provider_id: alibaba_token_plan_via_claude_code' "$POLICY" || fail "canonical Alibaba egress rules missing"
 if awk '
-  $0 ~ /provider_id: alibaba_token_plan_via_claude_code/ { inrule=1 }
-  inrule && $0 ~ /effect: allow/ { exit 0 }
-  inrule && $0 ~ /provider_id:/ && $0 !~ /alibaba_token_plan_via_claude_code/ { inrule=0 }
-  END { exit 1 }
+  $0 ~ /provider_id: alibaba_token_plan_via_claude_code/ { inrule=1; next }
+  inrule && $0 ~ /provider_id:/ { inrule=0 }
+  inrule && $0 ~ /effect: allow/ { found=1 }
+  END { exit(found ? 0 : 1) }
 ' "$POLICY"; then
   fail "R21 must not silently widen Alibaba egress while plan terms/policy remain unresolved"
 fi
