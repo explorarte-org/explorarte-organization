@@ -244,17 +244,17 @@ func (a contextAdapter) GetContextSnapshot(ctx context.Context, id int64) (model
 			classes = append(classes, value)
 		}
 	}
-	if scope := modelegress.ExecutiveScopeMarker(snapshot.ActorRoleID, snapshot.Purpose, snapshot.CorrelationID, snapshot.TaskRef); scope != "" {
-		if _, ok := seen[scope]; !ok {
-			classes = append(classes, scope)
-		}
-	}
+	scope := modelegress.ExecutiveScopeMarker(snapshot.ActorRoleID, snapshot.Purpose, snapshot.CorrelationID, snapshot.TaskRef)
 	// Context Engine task references are canonical task:<id> strings, while the
 	// modelruntime task-attempt contract intentionally stores only the numeric
-	// task scope. Normalize only at this adapter boundary; the durable snapshot
-	// and the scope derivation above retain the canonical task:<id> reference.
+	// task scope. Normalize only at this adapter boundary; scope derivation above
+	// retains the canonical task:<id> reference.
 	taskRef := strings.TrimPrefix(snapshot.TaskRef, "task:")
-	return modelruntime.ContextSnapshotRef{ID: snapshot.ID, OrganizationID: snapshot.OrganizationID, OrganizationRevisionID: snapshot.OrganizationRevisionID, ActorRoleID: snapshot.ActorRoleID, TaskRef: taskRef, Status: string(snapshot.Status), RenderedHash: snapshot.RenderedHash, DataClasses: classes}, nil
+	return modelruntime.ContextSnapshotRef{
+		ID: snapshot.ID, OrganizationID: snapshot.OrganizationID, OrganizationRevisionID: snapshot.OrganizationRevisionID,
+		ActorRoleID: snapshot.ActorRoleID, TaskRef: taskRef, Status: string(snapshot.Status), RenderedHash: snapshot.RenderedHash,
+		DataClasses: classes, ExecutiveScope: scope,
+	}, nil
 }
 
 func (a contextAdapter) ValidateContextSnapshot(ctx context.Context, id int64) error {
