@@ -33,7 +33,7 @@ type ProposeCommand struct {
 	SourceRunID       int64
 	EvidenceRefs      []EvidenceRef
 	ProposedBy        string
-	Classification    ContentClassification
+	Admission         AdmissionAttestation
 	SupersedesEntryID string
 }
 
@@ -52,6 +52,12 @@ func (s *Service) Propose(command ProposeCommand) (Entry, error) {
 		}
 		return refs[i].Reference < refs[j].Reference
 	})
+	admission := command.Admission
+	admission.AttestedBy = strings.TrimSpace(admission.AttestedBy)
+	admission.SourceBoundary = strings.TrimSpace(admission.SourceBoundary)
+	admission.EvidenceRef = strings.TrimSpace(admission.EvidenceRef)
+	admission.SanitizationEvidenceRef = strings.TrimSpace(admission.SanitizationEvidenceRef)
+
 	now := s.clock.Now().UTC()
 	entry := Entry{
 		ID:                strings.TrimSpace(command.ID),
@@ -64,7 +70,7 @@ func (s *Service) Propose(command ProposeCommand) (Entry, error) {
 		EvidenceRefs:      refs,
 		Status:            StatusCandidate,
 		ProposedBy:        strings.TrimSpace(command.ProposedBy),
-		Classification:    command.Classification,
+		Admission:         admission,
 		SupersedesEntryID: strings.TrimSpace(command.SupersedesEntryID),
 		Revision:          1,
 		CreatedAt:         now,
