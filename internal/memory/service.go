@@ -30,6 +30,7 @@ type ProposeCommand struct {
 	Category          string
 	Problem           string
 	Correction        string
+	SourceKind        SourceKind
 	SourceRunID       int64
 	EvidenceRefs      []EvidenceRef
 	ProposedBy        string
@@ -69,6 +70,7 @@ func (s *Service) Propose(command ProposeCommand) (Entry, error) {
 		Category:          strings.TrimSpace(command.Category),
 		Problem:           strings.TrimSpace(command.Problem),
 		Correction:        strings.TrimSpace(command.Correction),
+		SourceKind:        command.SourceKind,
 		SourceRunID:       command.SourceRunID,
 		EvidenceRefs:      refs,
 		Status:            StatusCandidate,
@@ -101,10 +103,6 @@ func (s *Service) transition(entry Entry, to Status) (Entry, error) {
 	return entry, nil
 }
 
-// Review is the only path from candidate to approved/rejected. Authorization
-// for memory.approve belongs to the composition root; the pure domain requires
-// an explicit reviewer and makes approved state structurally impossible
-// without review provenance.
 func (s *Service) Review(entry Entry, review Review) (Entry, error) {
 	if err := review.Validate(); err != nil {
 		return Entry{}, err
