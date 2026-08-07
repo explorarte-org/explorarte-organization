@@ -43,8 +43,8 @@ func TestApprovedKnowledgeRAGPostgresRepository(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Current != 17 {
-		t.Fatalf("current migration=%d want=17", result.Current)
+	if result.Current != 18 {
+		t.Fatalf("current migration=%d want=18", result.Current)
 	}
 	resetRAGSchema(t, ctx, platform)
 	t.Cleanup(func() { resetRAGSchema(t, context.Background(), platform) })
