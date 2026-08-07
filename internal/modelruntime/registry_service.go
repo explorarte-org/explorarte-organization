@@ -34,10 +34,11 @@ func (s *RegistryService) Validate(ctx context.Context) (CanonicalRouting, error
 	if err != nil {
 		return CanonicalRouting{}, err
 	}
-	_, err = BuildRegistryPlan(roles, org, routing)
+	plan, err := BuildRegistryPlan(roles, org, routing)
 	if err != nil {
 		return CanonicalRouting{}, err
 	}
+	_ = applyR21CompiledAvailability(plan)
 	if err = s.store.RecordRegistryValidated(ctx, org.ID, routing.Hash); err != nil {
 		return CanonicalRouting{}, err
 	}
@@ -56,7 +57,11 @@ func (s *RegistryService) Plan(ctx context.Context) (RegistryPlan, error) {
 	if err != nil {
 		return RegistryPlan{}, err
 	}
-	return BuildRegistryPlan(roles, org, routing)
+	plan, err := BuildRegistryPlan(roles, org, routing)
+	if err != nil {
+		return RegistryPlan{}, err
+	}
+	return applyR21CompiledAvailability(plan), nil
 }
 func (s *RegistryService) Diff(ctx context.Context) (RegistryDiff, error) {
 	plan, err := s.Plan(ctx)
