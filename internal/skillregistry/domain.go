@@ -75,14 +75,14 @@ type ApprovalEvidence struct {
 }
 
 type ValidationEvidence struct {
-	SchemaValidationRef     string    `json:"schema_validation_ref"`
-	CapabilityReviewRef     string    `json:"capability_review_ref"`
-	InstructionSafetyRef    string    `json:"instruction_safety_ref"`
-	SourceRecordRef         string    `json:"source_record_ref"`
-	ValidatedBy             string    `json:"validated_by"`
-	ValidatedAt             time.Time `json:"validated_at"`
-	CapabilitiesPass        bool      `json:"capabilities_pass"`
-	InstructionSafetyPass   bool      `json:"instruction_safety_pass"`
+	SchemaValidationRef   string    `json:"schema_validation_ref"`
+	CapabilityReviewRef   string    `json:"capability_review_ref"`
+	InstructionSafetyRef  string    `json:"instruction_safety_ref"`
+	SourceRecordRef       string    `json:"source_record_ref"`
+	ValidatedBy           string    `json:"validated_by"`
+	ValidatedAt           time.Time `json:"validated_at"`
+	CapabilitiesPass      bool      `json:"capabilities_pass"`
+	InstructionSafetyPass bool      `json:"instruction_safety_pass"`
 }
 
 type SkillVersion struct {

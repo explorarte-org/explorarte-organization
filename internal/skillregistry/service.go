@@ -25,7 +25,7 @@ func NewService(clock Clock) *Service {
 type CreateDraftCommand struct {
 	SkillID           string
 	VersionID         string
-	OrganizationID   string
+	OrganizationID    string
 	Version           int64
 	CreatedByRole     string
 	Manifest          Manifest

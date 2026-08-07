@@ -9,12 +9,12 @@ import (
 )
 
 var (
-	skillIDPattern       = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
-	roleIDPattern        = regexp.MustCompile(`^[a-z0-9]+(?:[-_][a-z0-9]+)*/[a-z0-9]+(?:[-_][a-z0-9]+)*$`)
-	canonicalIDPattern   = regexp.MustCompile(`^[a-z0-9]+(?:[-_][a-z0-9]+)*$`)
-	digestPattern        = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	capabilityPattern    = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*$`)
-	githubPinnedPattern  = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$`)
+	skillIDPattern         = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
+	roleIDPattern          = regexp.MustCompile(`^[a-z0-9]+(?:[-_][a-z0-9]+)*/[a-z0-9]+(?:[-_][a-z0-9]+)*$`)
+	canonicalIDPattern     = regexp.MustCompile(`^[a-z0-9]+(?:[-_][a-z0-9]+)*$`)
+	digestPattern          = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	capabilityPattern      = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*$`)
+	githubPinnedPattern    = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$`)
 	legacySkillFilePattern = regexp.MustCompile(`^SKILL(?:\([1-9][0-9]*\))?\.md$`)
 )
 

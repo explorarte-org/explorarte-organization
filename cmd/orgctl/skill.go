@@ -131,8 +131,8 @@ func runSkill(args []string, stdout, stderr io.Writer) int {
 		skill, version, reused, err := runtime.Manager.Propose(ctx, skillregistry.ProposeRequest{
 			Command: skillregistry.CreateDraftCommand{
 				SkillID: input.SkillID, VersionID: input.VersionID, OrganizationID: runtime.OrganizationID, Version: input.Version, CreatedByRole: input.CreatedByRole,
-				Manifest: skillregistry.Manifest{Name: input.Manifest.Name, Description: input.Manifest.Description, Department: input.Manifest.Department, OwnerRoleID: input.Manifest.OwnerRoleID, MemoryDomain: input.Manifest.MemoryDomain, BaseProtocol: input.Manifest.BaseProtocol, VerifierRef: input.Manifest.VerifierRef, RequiredCapabilities: input.Manifest.RequiredCapabilities},
-				Source: skillregistry.SourceRecord{Path: input.Source.Path, SHA256: input.Source.SHA256, Origin: skillregistry.OriginKind(input.Source.Origin), OriginRef: input.Source.OriginRef, LegacyImported: input.Source.LegacyImported, RecordedBy: input.Source.RecordedBy, RecordRef: input.Source.RecordRef},
+				Manifest:    skillregistry.Manifest{Name: input.Manifest.Name, Description: input.Manifest.Description, Department: input.Manifest.Department, OwnerRoleID: input.Manifest.OwnerRoleID, MemoryDomain: input.Manifest.MemoryDomain, BaseProtocol: input.Manifest.BaseProtocol, VerifierRef: input.Manifest.VerifierRef, RequiredCapabilities: input.Manifest.RequiredCapabilities},
+				Source:      skillregistry.SourceRecord{Path: input.Source.Path, SHA256: input.Source.SHA256, Origin: skillregistry.OriginKind(input.Source.Origin), OriginRef: input.Source.OriginRef, LegacyImported: input.Source.LegacyImported, RecordedBy: input.Source.RecordedBy, RecordRef: input.Source.RecordRef},
 				ContentHash: input.ContentHash, SupersedesVersion: input.SupersedesVersion,
 			},
 			IdempotencyKey: input.IdempotencyKey,
