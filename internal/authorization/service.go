@@ -62,7 +62,7 @@ func (s *Service) Evaluate(ctx context.Context, request EvaluationRequest) (Eval
 			base.ReasonCode = ReasonApprovalMissing
 			return base, nil
 		}
-		if errors.Is(err, ErrApprovalPending) || errors.Is(err, ErrApprovalRejected) || errors.Is(err, ErrApprovalExpired) || errors.Is(err, ErrApprovalConsumed) || errors.Is(err, ErrApprovalCancelled) || errors.Is(err, ErrApprovalScopeMismatch) || errors.Is(err, ErrApprovalPolicyDrift) || errors.Is(err, ErrCapabilityDenied) || errors.Is(err, ErrRoleNotFound) || errors.Is(err, ErrRoleDisabled) || errors.Is(err, ErrRoleRetired) || errors.Is(err, ErrRoleNotExecutable) {
+		if errors.Is(err, ErrApprovalPending) || errors.Is(err, ErrApprovalRejected) || errors.Is(err, ErrApprovalExpired) || errors.Is(err, ErrApprovalConsumed) || errors.Is(err, ErrApprovalCancelled) || errors.Is(err, ErrApprovalScopeMismatch) || errors.Is(err, ErrApprovalPolicyDrift) || errors.Is(err, ErrCapabilityDenied) || errors.Is(err, ErrOrganizationMismatch) || errors.Is(err, ErrRoleNotFound) || errors.Is(err, ErrRoleDisabled) || errors.Is(err, ErrRoleRetired) || errors.Is(err, ErrRoleNotExecutable) {
 			base.ReasonCode = result.ReasonCode
 			if base.ReasonCode == "" {
 				base.ReasonCode = reasonFromError(err)
@@ -144,6 +144,9 @@ func (s *Service) validateDecision(value ApprovalValidationContext) ReasonCode {
 	if value.Organization.ID != request.OrganizationID || value.Organization.CurrentRevision != request.OrganizationRevisionID || value.Revision.ID != request.OrganizationRevisionID {
 		return ReasonApprovalPolicyDrift
 	}
+	if value.Organization.RetiredAt != nil {
+		return ReasonOrganizationMismatch
+	}
 	if value.Revision.DocumentHashes["capability-matrix.yaml"] != request.CapabilityMatrixHash || request.CapabilityMatrixHash != s.policy.MatrixHash() {
 		return ReasonApprovalPolicyDrift
 	}
@@ -205,6 +208,9 @@ func (s *Service) validateConsumption(value ApprovalValidationContext, command C
 	request := value.Request
 	if value.Organization.ID != request.OrganizationID || value.Organization.CurrentRevision != request.OrganizationRevisionID || value.Revision.ID != request.OrganizationRevisionID {
 		return ReasonApprovalPolicyDrift
+	}
+	if value.Organization.RetiredAt != nil {
+		return ReasonOrganizationMismatch
 	}
 	if value.Revision.DocumentHashes["capability-matrix.yaml"] != request.CapabilityMatrixHash || request.CapabilityMatrixHash != s.policy.MatrixHash() {
 		return ReasonApprovalPolicyDrift
@@ -365,6 +371,8 @@ func errorForReason(reason ReasonCode) error {
 		return ErrApprovalScopeMismatch
 	case ReasonApprovalPolicyDrift, ReasonRevisionMismatch, ReasonMatrixHashMismatch:
 		return ErrApprovalPolicyDrift
+	case ReasonOrganizationMismatch:
+		return ErrOrganizationMismatch
 	case ReasonRoleNotFound:
 		return ErrRoleNotFound
 	case ReasonRoleDisabled:
