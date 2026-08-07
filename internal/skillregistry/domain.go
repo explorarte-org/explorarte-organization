@@ -48,12 +48,13 @@ type Skill struct {
 }
 
 type SourceRecord struct {
-	Path       string     `json:"path"`
-	SHA256     string     `json:"sha256"`
-	Origin     OriginKind `json:"origin"`
-	OriginRef  string     `json:"origin_ref,omitempty"`
-	RecordedBy string     `json:"recorded_by"`
-	RecordRef  string     `json:"record_ref"`
+	Path           string     `json:"path"`
+	SHA256         string     `json:"sha256"`
+	Origin         OriginKind `json:"origin"`
+	OriginRef      string     `json:"origin_ref,omitempty"`
+	LegacyImported bool       `json:"legacy_imported,omitempty"`
+	RecordedBy     string     `json:"recorded_by"`
+	RecordRef      string     `json:"record_ref"`
 }
 
 type Manifest struct {
@@ -74,12 +75,14 @@ type ApprovalEvidence struct {
 }
 
 type ValidationEvidence struct {
-	SchemaValidationRef string    `json:"schema_validation_ref"`
-	CapabilityReviewRef string    `json:"capability_review_ref"`
-	SourceRecordRef     string    `json:"source_record_ref"`
-	ValidatedBy         string    `json:"validated_by"`
-	ValidatedAt         time.Time `json:"validated_at"`
-	CapabilitiesPass    bool      `json:"capabilities_pass"`
+	SchemaValidationRef     string    `json:"schema_validation_ref"`
+	CapabilityReviewRef     string    `json:"capability_review_ref"`
+	InstructionSafetyRef    string    `json:"instruction_safety_ref"`
+	SourceRecordRef         string    `json:"source_record_ref"`
+	ValidatedBy             string    `json:"validated_by"`
+	ValidatedAt             time.Time `json:"validated_at"`
+	CapabilitiesPass        bool      `json:"capabilities_pass"`
+	InstructionSafetyPass   bool      `json:"instruction_safety_pass"`
 }
 
 type SkillVersion struct {
