@@ -1,9 +1,9 @@
 DO $$
 BEGIN
     IF EXISTS (
-        SELECT 1 FROM model_provider_outcomes WHERE transport <> 'http_adapter'
+        SELECT 1 FROM model_provider_outcomes WHERE transport = 'cli_adapter'
     ) THEN
-        RAISE EXCEPTION 'cannot roll back 000018 while non-HTTP provider outcome evidence exists';
+        RAISE EXCEPTION 'cannot roll back 000018 while CLI provider outcome evidence exists';
     END IF;
 END;
 $$;
