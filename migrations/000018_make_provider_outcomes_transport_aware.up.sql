@@ -21,6 +21,11 @@ process_exit_code = CASE
     WHEN r.provider_id = 'alibaba_token_plan_via_claude_code'
          AND r.adapter_id = 'alibaba_claude_code_print'
          AND o.outcome_classification = 'response_received' THEN 0
+    WHEN r.provider_id = 'alibaba_token_plan_via_claude_code'
+         AND r.adapter_id = 'alibaba_claude_code_print'
+         AND o.error_code ~ '^process_exit_([0-9]{1,3})$'
+         AND substring(o.error_code FROM '^process_exit_([0-9]{1,3})$')::INTEGER BETWEEN 0 AND 255
+      THEN substring(o.error_code FROM '^process_exit_([0-9]{1,3})$')::INTEGER
     ELSE NULL
 END
 FROM model_provider_requests r
@@ -143,6 +148,7 @@ RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
     request_provider TEXT;
     request_adapter TEXT;
+    parsed_exit_code INTEGER;
 BEGIN
     SELECT provider_id, adapter_id
       INTO request_provider, request_adapter
@@ -161,11 +167,16 @@ BEGIN
         ELSE 'http_adapter'
     END;
 
-    -- A response_received outcome is emitted by the CLI adapter only after
-    -- Wait returned a zero exit code. Persist that proven fact even though
-    -- the R12 insert statement predates process_exit_code.
-    IF NEW.transport = 'cli_adapter' AND NEW.outcome_classification = 'response_received' THEN
-        NEW.process_exit_code := 0;
+    IF NEW.transport = 'cli_adapter' THEN
+        -- response_received is emitted only after Wait returned exit code 0.
+        IF NEW.outcome_classification = 'response_received' THEN
+            NEW.process_exit_code := 0;
+        ELSIF NEW.error_code ~ '^process_exit_([0-9]{1,3})$' THEN
+            parsed_exit_code := substring(NEW.error_code FROM '^process_exit_([0-9]{1,3})$')::INTEGER;
+            IF parsed_exit_code BETWEEN 0 AND 255 THEN
+                NEW.process_exit_code := parsed_exit_code;
+            END IF;
+        END IF;
     END IF;
 
     RETURN NEW;
