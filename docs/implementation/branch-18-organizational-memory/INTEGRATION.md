@@ -6,16 +6,20 @@ Implementación cerrada para validación externa en PostgreSQL real.
 
 - Base efectiva: `main` con Rama 17 (`0499c9d57eb79f2f4918c687d73d2d0232e09090`).
 - Migración propia: `000015_create_organizational_memory`.
-- Rama de trabajo rebaseada: `rebase/18-organizational-memory-on-r17`.
-- La rama pública `feat/18-organizational-memory` debe apuntar a esta historia antes del handoff final.
+- Rama pública de handoff: `feat/18-organizational-memory`.
+- Rama histórica/de trabajo: `rebase/18-organizational-memory-on-r17`.
 - No hay PR ni merge a `main` en este estado.
-- La validación PostgreSQL/`make verify-all` debe ejecutarse en el worker del VPS antes de considerar la rama mergeable.
+- La rama debe considerarse **candidate implementation** hasta que el worker del VPS ejecute PostgreSQL real, race tests y `make verify-all`.
 
 ## Objetivo
 
-Rama 18 implementa memoria organizacional durable, evidence-backed, revisada y consumible por el `MemoryProvider` del Context Engine. No implementa scratchpad, chain-of-thought, memoria clínica, RAG ni búsqueda vectorial.
+Rama 18 implementa memoria organizacional durable, evidence-backed, revisada y consumible por el `MemoryProvider` del Context Engine.
 
-La propiedad central es que un agente puede **proponer** aprendizaje, pero no convertirlo por sí solo en conocimiento organizacional aprobado.
+No implementa scratchpad, chain-of-thought, memoria clínica, RAG, búsqueda vectorial ni llamadas a proveedores de modelos.
+
+La propiedad central es:
+
+> un agente puede proponer aprendizaje, pero no convertirlo por sí solo en conocimiento organizacional aprobado.
 
 ## Modelo de dominio
 
@@ -129,7 +133,14 @@ Invariantes DB relevantes:
 - revision avanza exactamente en +1;
 - `supersedes_entry_id` debe pertenecer al mismo role namespace.
 
-El store usa transacciones serializables y `FOR UPDATE` para mutaciones.
+### Concurrencia
+
+Las dos rutas de escritura usan mecanismos distintos de forma intencional:
+
+- `CreateCandidate` usa `READ COMMITTED` + constraints únicas de `canonical_hash` e `idempotency_key`. El objetivo es que, si dos propuestas idénticas chocan, la transacción perdedora pueda observar la fila que la ganadora acaba de confirmar y converger sobre la misma versión durable. Usar un snapshot `REPEATABLE READ/SERIALIZABLE` alrededor de `ON CONFLICT DO NOTHING` puede impedir esa relectura después de esperar el conflicto único.
+- `Save` de lifecycle usa `SERIALIZABLE` + `FOR UPDATE OF e` + `expected_revision`. Dos reviews de la misma revisión no pueden ganar: una persiste y la otra debe terminar como `ErrRevisionConflict`/serialization conflict.
+
+El audit event se inserta antes que la proyección de estado, pero ambos permanecen atómicos porque pertenecen a la misma transacción.
 
 ## Idempotencia y duplicados
 
@@ -140,7 +151,7 @@ El store usa transacciones serializables y `FOR UPDATE` para mutaciones.
 - duplicate exacto por hash canónico => reutiliza la versión existente y registra la nueva key;
 - aprendizaje diferente => nuevo candidate; no overwrite.
 
-El hash canónico incluye contenido, evidence refs, admission provenance, `source_kind` y supersession. Excluye estado/reviewer/revision para que el lifecycle no cambie la identidad de lo revisado.
+El hash canónico incluye contenido, evidence refs, admission provenance, `source_kind` y supersession. Excluye estado/reviewer/revision/ID para que el lifecycle no cambie la identidad de lo revisado y dos IDs distintos con contenido idéntico puedan converger.
 
 ## Context Engine
 
@@ -205,6 +216,14 @@ Reglas para esa integración futura:
 
 Esto permite usar distintos proveedores/modelos sin introducir dependencias vendor-specific en `internal/memory`.
 
+Una asignación posterior compatible con este contrato es:
+
+- Gemini 2.5 Flash: generación masiva de escenarios/experiencias simuladas;
+- Gemini 3.1 Pro: evaluación/revisión independiente y producción de evidencia;
+- Google Embeddings 2: indexación/retrieval posterior de memoria aprobada.
+
+Ninguno de esos componentes recibe autoridad implícita para aprobar memoria.
+
 ## Tests incluidos
 
 Unitarios:
@@ -226,7 +245,10 @@ PostgreSQL integration:
 - candidate round-trip;
 - idempotencia/conflictos;
 - `source_kind=simulation` round-trip;
+- propuestas exactas concurrentes convergen en una sola versión;
+- mismo idempotency key + contenido distinto concurrente deja un ganador y revierte al perdedor;
 - review/deprecate + optimistic concurrency;
+- dos reviews concurrentes de revision 1 dejan un solo ganador;
 - audit-event requirement;
 - DB rejection de clinical/secret;
 - immutability de versiones/evidence/events/idempotencia;
@@ -249,6 +271,9 @@ El worker debe tratar esta rama como **candidate implementation**, no como códi
 Orden recomendado:
 
 ```bash
+git switch feat/18-organizational-memory
+git pull --ff-only
+
 go fmt ./...
 go test ./internal/memory/... ./cmd/orgctl
 make test-memory-fitness
@@ -258,13 +283,30 @@ make verify
 make verify-all
 ```
 
-Además debe revisar todas las suites legacy que hardcodean el migration tip. Rama 17 dejó `14`; Rama 18 eleva el tip a `15`. Cambiar solo assertions que representan el tip global; no incrementar mecánicamente contadores de reapply en tests que bajan únicamente migraciones anteriores.
+### Migration-tip legacy assertions
+
+Rama 17 dejó el tip global en `14`; Rama 18 lo eleva a `15`. Los asserts legacy conocidos de Context Engine, Decision Graph, Trace, Improvement, Model Egress, Model Identity y Model Runtime ya fueron actualizados en la rama pública para reflejar el tip `15`. El worker debe igualmente comprobar que no quede otro assert que represente **el tip global actual** y siga esperando 14.
+
+Búsqueda recomendada:
+
+```bash
+grep -R -nE 'Current != 14|want 14|Applied != 14|Applied\) != 14|len\(.*Applied.*14' internal --include='*_test.go'
+```
+
+No incrementar mecánicamente:
+
+- índices de migraciones históricas;
+- contadores que prueban un down/up parcial de una migración anterior;
+- fixtures donde `14` sea dato de dominio y no migration tip.
+
+### Validaciones obligatorias
 
 El worker debe validar explícitamente:
 
 - `000015 down/up` real;
 - triggers y orden event-before-state;
-- concurrent duplicate proposal/idempotency;
+- concurrent exact duplicate proposal;
+- concurrent conflicting idempotency key;
 - concurrent stale review;
 - owner `memory.approve` y denial para roles sin grant;
 - CLI propose/review/list;
