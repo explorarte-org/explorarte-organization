@@ -61,7 +61,7 @@ func TestOrganizationalMemoryPostgresRepository(t *testing.T) {
 	domain := memory.NewService(clock)
 
 	t.Run("candidate round trip, idempotency, and evidence", func(t *testing.T) {
-		entry := proposeEntry(t, domain, now, "mem-roundtrip", memoryIntegrationRole, memory.DataOrganizational, "")
+		entry := proposeEntry(t, domain, clock, now, "mem-roundtrip", memoryIntegrationRole, memory.DataOrganizational, "")
 		created, reused, err := store.CreateCandidate(ctx, memory.CreateCandidateCommand{Entry: entry, IdempotencyKey: "idem-roundtrip"})
 		if err != nil {
 			t.Fatal(err)
@@ -89,7 +89,7 @@ func TestOrganizationalMemoryPostgresRepository(t *testing.T) {
 	})
 
 	t.Run("review lifecycle is durable and optimistic", func(t *testing.T) {
-		entry := proposeEntry(t, domain, now.Add(10*time.Second), "mem-lifecycle", memoryIntegrationRole, memory.DataOrganizational, "")
+		entry := proposeEntry(t, domain, clock, now.Add(10*time.Second), "mem-lifecycle", memoryIntegrationRole, memory.DataOrganizational, "")
 		created, _, err := store.CreateCandidate(ctx, memory.CreateCandidateCommand{Entry: entry, IdempotencyKey: "idem-lifecycle"})
 		if err != nil {
 			t.Fatal(err)
@@ -158,7 +158,7 @@ INSERT INTO organizational_memory_versions (
 	})
 
 	t.Run("database requires audit event before lifecycle mutation", func(t *testing.T) {
-		entry := proposeEntry(t, domain, now.Add(20*time.Second), "mem-db-guard", memoryIntegrationRole, memory.DataOrganizational, "")
+		entry := proposeEntry(t, domain, clock, now.Add(20*time.Second), "mem-db-guard", memoryIntegrationRole, memory.DataOrganizational, "")
 		created, _, err := store.CreateCandidate(ctx, memory.CreateCandidateCommand{Entry: entry, IdempotencyKey: "idem-db-guard"})
 		if err != nil {
 			t.Fatal(err)
@@ -189,11 +189,12 @@ WHERE organization_id=$1 AND entry_key=$2`, memoryIntegrationOrganization, creat
 	})
 
 	t.Run("sanitized entries require sanitization evidence", func(t *testing.T) {
+		clock.now = now.Add(30 * time.Second)
 		command := memory.ProposeCommand{
 			ID: "mem-sanitized", OrganizationID: memoryIntegrationOrganization, RoleID: memoryIntegrationRole,
 			Category: "sanitized_learning", Problem: "sanitized source", Correction: "bounded correction", SourceRunID: 900,
 			EvidenceRefs: []memory.EvidenceRef{{Reference: "evidence:sanitized", Digest: "digest"}}, ProposedBy: memoryIntegrationRole,
-			Admission: memory.AdmissionAttestation{DataClass: memory.DataSanitized, AttestedBy: "cell-gateway/clinical", SourceBoundary: "cell_gateway", EvidenceRef: "classification:sanitized", AttestedAt: now},
+			Admission: memory.AdmissionAttestation{DataClass: memory.DataSanitized, AttestedBy: "cell-gateway/clinical", SourceBoundary: "cell_gateway", EvidenceRef: "classification:sanitized", AttestedAt: clock.now.Add(-time.Second)},
 		}
 		if _, err := domain.Propose(command); !errors.Is(err, memory.ErrInvalidAdmission) {
 			t.Fatalf("sanitized entry without sanitization evidence error=%v", err)
@@ -209,12 +210,9 @@ WHERE organization_id=$1 AND entry_key=$2`, memoryIntegrationOrganization, creat
 	})
 }
 
-func proposeEntry(t *testing.T, domain *memory.Service, now time.Time, id, role string, class memory.DataClass, sanitizationRef string) memory.Entry {
+func proposeEntry(t *testing.T, domain *memory.Service, clock *fixedClock, now time.Time, id, role string, class memory.DataClass, sanitizationRef string) memory.Entry {
 	t.Helper()
-	clock, ok := domainClock(domain)
-	if ok {
-		clock.now = now
-	}
+	clock.now = now
 	entry, err := domain.Propose(memory.ProposeCommand{
 		ID: id, OrganizationID: memoryIntegrationOrganization, RoleID: role,
 		Category: "incident_learning", Problem: "A verified failure occurred.", Correction: "Apply the verified correction.",
@@ -230,16 +228,6 @@ func proposeEntry(t *testing.T, domain *memory.Service, now time.Time, id, role 
 		t.Fatal(err)
 	}
 	return entry
-}
-
-// domainClock is intentionally narrow: all tests construct the service with a
-// *fixedClock and need deterministic transition timestamps.
-func domainClock(domain *memory.Service) (*fixedClock, bool) {
-	// The pure Service deliberately does not expose its clock. Integration
-	// tests therefore create a fresh service whenever they need a new proposal
-	// timestamp; this helper remains false and documents that no reflection or
-	// unsafe access is used.
-	return nil, false
 }
 
 func openMemoryStore(t *testing.T, ctx context.Context) *platformpostgres.Store {
