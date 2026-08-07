@@ -21,6 +21,9 @@ func validateInstallation(ctx context.Context, config Config) error {
 	if err := validateWorkDir(config.WorkDir); err != nil {
 		return err
 	}
+	if err := validateClaudeGlobalConfig(config.WorkDir); err != nil {
+		return err
+	}
 	resolved, err := filepath.EvalSymlinks(filepath.Clean(config.Executable))
 	if err != nil {
 		return fmt.Errorf("resolve Claude Code executable: %w", err)
