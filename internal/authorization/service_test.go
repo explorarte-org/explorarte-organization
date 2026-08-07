@@ -211,6 +211,51 @@ func TestConsumeRejectsOrganizationOverride(t *testing.T) {
 	}
 }
 
+func TestValidatorsRejectRetiredOrganization(t *testing.T) {
+	service, store, now := testService(t)
+	digest := DigestAction([]byte("activate skill x"))
+	store.request = ApprovalRequest{ID: 9, OrganizationID: "explorarte", OrganizationRevisionID: 7, CapabilityMatrixHash: service.policy.MatrixHash(), RequesterRoleID: "empresa/human", CapabilityID: "organization.activate_skill", Risk: "high", ApprovalMode: "owner", ResourceType: "skill", ResourceID: "x", ActionDigest: digest, Status: RequestApproved, ExpiresAt: now.Add(time.Hour)}
+	contextValue := func() ApprovalValidationContext {
+		return ApprovalValidationContext{Request: store.request, Organization: store.organization, Revision: *store.revision, Role: store.role}
+	}
+	if reason := service.validateDecision(contextValue()); reason != "" {
+		t.Fatalf("active organization decision reason=%q", reason)
+	}
+	retired := now.Add(-time.Hour)
+	store.organization.RetiredAt = &retired
+	if reason := service.validateDecision(contextValue()); reason != ReasonOrganizationMismatch {
+		t.Fatalf("retired organization decision reason=%q", reason)
+	}
+	result, err := service.ConsumeApproval(context.Background(), ConsumeApprovalCommand{RequestID: 9, ActorRoleID: "empresa/human", ActionDigest: digest})
+	if !errors.Is(err, ErrOrganizationMismatch) || result.ReasonCode != ReasonOrganizationMismatch {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	store.organization.RetiredAt = nil
+	result, err = service.ConsumeApproval(context.Background(), ConsumeApprovalCommand{RequestID: 9, ActorRoleID: "empresa/human", ActionDigest: digest})
+	if err != nil || result.ReasonCode != "" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
+func TestEvaluateDeniesWhenOrganizationRetiredBeforeConsumption(t *testing.T) {
+	service, store, now := testService(t)
+	digest := DigestAction([]byte("activate skill x"))
+	store.request = ApprovalRequest{ID: 9, OrganizationID: "explorarte", OrganizationRevisionID: 7, CapabilityMatrixHash: service.policy.MatrixHash(), RequesterRoleID: "empresa/human", CapabilityID: "organization.activate_skill", Risk: "high", ApprovalMode: "owner", ResourceType: "skill", ResourceID: "x", ActionDigest: digest, Status: RequestApproved, ExpiresAt: now.Add(time.Hour)}
+	retired := now.Add(-time.Hour)
+	store.organization.RetiredAt = &retired
+	id := int64(9)
+	got, err := service.Evaluate(context.Background(), EvaluationRequest{OrganizationID: "explorarte", OrganizationRevisionID: 7, ActorRoleID: "empresa/human", CapabilityID: "organization.activate_skill", ResourceType: "skill", ResourceID: "x", ActionDigest: digest, ApprovalRequestID: &id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Effect != EffectDeny || got.ReasonCode != ReasonOrganizationMismatch {
+		t.Fatalf("evaluation=%+v", got)
+	}
+	if store.request.Status != RequestApproved {
+		t.Fatalf("request status changed: %v", store.request.Status)
+	}
+}
+
 func TestServiceValidationAndDefaultTTL(t *testing.T) {
 	policy, reader := testAuthorizer(t)
 	store := &fakeStore{organization: reader.organization, revision: reader.revision, role: reader.roles["empresa/human"]}
