@@ -45,20 +45,27 @@ func (s *Store) CreateCandidate(ctx context.Context, command memory.CreateCandid
 	if entry.Status != memory.StatusCandidate || entry.Revision != 1 || entry.ReviewerID != "" || entry.ReviewedAt != nil {
 		return memory.Entry{}, false, fmt.Errorf("%w: persisted candidate must start at candidate revision 1 without review metadata", memory.ErrInvalidEntry)
 	}
-	key := strings.TrimSpace(command.IdempotencyKey)
-	if key == "" {
+	idempotencyKey := strings.TrimSpace(command.IdempotencyKey)
+	if idempotencyKey == "" {
 		return memory.Entry{}, false, fmt.Errorf("%w: idempotency_key is required", memory.ErrInvalidRequest)
 	}
 	canonicalHash, err := entry.CanonicalHash()
 	if err != nil {
 		return memory.Entry{}, false, err
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+
+	// Candidate creation deliberately uses READ COMMITTED. Unique constraints
+	// serialize canonical/idempotency conflicts, and a new snapshot on the
+	// statement following a waited ON CONFLICT lets the loser resolve the row
+	// committed by the winner. REPEATABLE READ/SERIALIZABLE can otherwise make
+	// that winner invisible to the losing transaction after the conflict wait.
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return memory.Entry{}, false, fmt.Errorf("memory/postgres: begin create candidate: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if existing, ok, err := lookupIdempotency(ctx, tx, s.organizationID, key); err != nil {
+
+	if existing, ok, err := lookupIdempotency(ctx, tx, s.organizationID, idempotencyKey); err != nil {
 		return memory.Entry{}, false, err
 	} else if ok {
 		if existing.canonicalHash != canonicalHash {
@@ -73,9 +80,13 @@ func (s *Store) CreateCandidate(ctx context.Context, command memory.CreateCandid
 		}
 		return value, true, nil
 	}
+
 	if entry.SupersedesEntryID != "" {
 		var priorRole string
-		if err := tx.QueryRow(ctx, `SELECT role_id FROM organizational_memory_versions WHERE organization_id=$1 AND entry_key=$2`, s.organizationID, entry.SupersedesEntryID).Scan(&priorRole); err != nil {
+		if err := tx.QueryRow(ctx, `
+SELECT role_id
+FROM organizational_memory_versions
+WHERE organization_id=$1 AND entry_key=$2`, s.organizationID, entry.SupersedesEntryID).Scan(&priorRole); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return memory.Entry{}, false, fmt.Errorf("%w: superseded memory entry %s", memory.ErrEntryNotFound, entry.SupersedesEntryID)
 			}
@@ -85,16 +96,20 @@ func (s *Store) CreateCandidate(ctx context.Context, command memory.CreateCandid
 			return memory.Entry{}, false, fmt.Errorf("%w: superseded memory belongs to another role", memory.ErrConflict)
 		}
 	}
+
 	inserted, err := insertVersion(ctx, tx, entry, canonicalHash)
 	if err != nil {
 		return memory.Entry{}, false, err
 	}
 	if !inserted {
 		var existingKey string
-		if err := tx.QueryRow(ctx, `SELECT entry_key FROM organizational_memory_versions WHERE organization_id=$1 AND canonical_hash=$2`, s.organizationID, canonicalHash).Scan(&existingKey); err != nil {
+		if err := tx.QueryRow(ctx, `
+SELECT entry_key
+FROM organizational_memory_versions
+WHERE organization_id=$1 AND canonical_hash=$2`, s.organizationID, canonicalHash).Scan(&existingKey); err != nil {
 			return memory.Entry{}, false, mapError("resolve exact memory duplicate", err)
 		}
-		if err := insertIdempotency(ctx, tx, s.organizationID, key, existingKey, canonicalHash); err != nil {
+		if err := insertIdempotency(ctx, tx, s.organizationID, idempotencyKey, existingKey, canonicalHash); err != nil {
 			return memory.Entry{}, false, err
 		}
 		value, err := getEntry(ctx, tx, s.organizationID, existingKey)
@@ -106,18 +121,32 @@ func (s *Store) CreateCandidate(ctx context.Context, command memory.CreateCandid
 		}
 		return value, true, nil
 	}
-	for i, ref := range entry.EvidenceRefs {
-		if _, err := tx.Exec(ctx, `INSERT INTO organizational_memory_evidence_refs (organization_id,entry_key,ordinal,reference,digest) VALUES ($1,$2,$3,$4,$5)`, s.organizationID, entry.ID, i+1, ref.Reference, ref.Digest); err != nil {
+
+	for index, ref := range entry.EvidenceRefs {
+		if _, err := tx.Exec(ctx, `
+INSERT INTO organizational_memory_evidence_refs (
+    organization_id, entry_key, ordinal, reference, digest
+) VALUES ($1,$2,$3,$4,$5)`, s.organizationID, entry.ID, index+1, ref.Reference, ref.Digest); err != nil {
 			return memory.Entry{}, false, mapError("insert memory evidence reference", err)
 		}
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO organizational_memory_state_events (organization_id,entry_key,from_status,to_status,actor_role_id,reason,revision,created_at) VALUES ($1,$2,NULL,'candidate',$3,'candidate_created',1,$4)`, s.organizationID, entry.ID, entry.ProposedBy, entry.UpdatedAt); err != nil {
+
+	// The database lifecycle trigger requires the matching append-only event to
+	// exist before the state row is inserted. Both writes remain atomic because
+	// they are committed in the same transaction.
+	if _, err := tx.Exec(ctx, `
+INSERT INTO organizational_memory_state_events (
+    organization_id, entry_key, from_status, to_status, actor_role_id, reason, revision, created_at
+) VALUES ($1,$2,NULL,'candidate',$3,'candidate_created',1,$4)`, s.organizationID, entry.ID, entry.ProposedBy, entry.UpdatedAt); err != nil {
 		return memory.Entry{}, false, mapError("insert memory creation event", err)
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO organizational_memory_entries (organization_id,entry_key,status,reviewer_role_id,reviewed_at,revision,updated_at) VALUES ($1,$2,'candidate',NULL,NULL,1,$3)`, s.organizationID, entry.ID, entry.UpdatedAt); err != nil {
+	if _, err := tx.Exec(ctx, `
+INSERT INTO organizational_memory_entries (
+    organization_id, entry_key, status, reviewer_role_id, reviewed_at, revision, updated_at
+) VALUES ($1,$2,'candidate',NULL,NULL,1,$3)`, s.organizationID, entry.ID, entry.UpdatedAt); err != nil {
 		return memory.Entry{}, false, mapError("insert memory lifecycle projection", err)
 	}
-	if err := insertIdempotency(ctx, tx, s.organizationID, key, entry.ID, canonicalHash); err != nil {
+	if err := insertIdempotency(ctx, tx, s.organizationID, idempotencyKey, entry.ID, canonicalHash); err != nil {
 		return memory.Entry{}, false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -127,11 +156,19 @@ func (s *Store) CreateCandidate(ctx context.Context, command memory.CreateCandid
 }
 
 func insertVersion(ctx context.Context, tx pgx.Tx, entry memory.Entry, canonicalHash string) (bool, error) {
-	result, err := tx.Exec(ctx, `INSERT INTO organizational_memory_versions (
- organization_id,entry_key,role_id,category,problem,correction,source_kind,source_run_id,canonical_hash,proposed_by_role_id,
- data_class,admission_attested_by,source_boundary,admission_evidence_ref,sanitization_evidence_ref,admission_attested_at,supersedes_entry_key,created_at
+	result, err := tx.Exec(ctx, `
+INSERT INTO organizational_memory_versions (
+    organization_id, entry_key, role_id, category, problem, correction,
+    source_kind, source_run_id, canonical_hash, proposed_by_role_id,
+    data_class, admission_attested_by, source_boundary, admission_evidence_ref,
+    sanitization_evidence_ref, admission_attested_at, supersedes_entry_key, created_at
 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
-ON CONFLICT (organization_id,canonical_hash) DO NOTHING`, entry.OrganizationID, entry.ID, entry.RoleID, entry.Category, entry.Problem, entry.Correction, string(entry.SourceKind), entry.SourceRunID, canonicalHash, entry.ProposedBy, string(entry.Admission.DataClass), entry.Admission.AttestedBy, entry.Admission.SourceBoundary, entry.Admission.EvidenceRef, nullableString(entry.Admission.SanitizationEvidenceRef), entry.Admission.AttestedAt, nullableString(entry.SupersedesEntryID), entry.CreatedAt)
+ON CONFLICT (organization_id, canonical_hash) DO NOTHING`,
+		entry.OrganizationID, entry.ID, entry.RoleID, entry.Category, entry.Problem, entry.Correction,
+		string(entry.SourceKind), entry.SourceRunID, canonicalHash, entry.ProposedBy,
+		string(entry.Admission.DataClass), entry.Admission.AttestedBy, entry.Admission.SourceBoundary, entry.Admission.EvidenceRef,
+		nullableString(entry.Admission.SanitizationEvidenceRef), entry.Admission.AttestedAt, nullableString(entry.SupersedesEntryID), entry.CreatedAt,
+	)
 	if err != nil {
 		return false, mapError("insert memory content version", err)
 	}
@@ -166,15 +203,23 @@ func (s *Store) Save(ctx context.Context, command memory.SaveCommand) (memory.En
 	if actor == "" || reason == "" {
 		return memory.Entry{}, fmt.Errorf("%w: actor and reason are required", memory.ErrInvalidRequest)
 	}
+
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
 		return memory.Entry{}, fmt.Errorf("memory/postgres: begin save: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+
 	var currentStatus string
 	var currentRevision int64
 	var canonicalHash string
-	if err := tx.QueryRow(ctx, `SELECT e.status,e.revision,v.canonical_hash FROM organizational_memory_entries e JOIN organizational_memory_versions v ON v.organization_id=e.organization_id AND v.entry_key=e.entry_key WHERE e.organization_id=$1 AND e.entry_key=$2 FOR UPDATE OF e`, s.organizationID, entry.ID).Scan(&currentStatus, &currentRevision, &canonicalHash); err != nil {
+	if err := tx.QueryRow(ctx, `
+SELECT e.status, e.revision, v.canonical_hash
+FROM organizational_memory_entries e
+JOIN organizational_memory_versions v
+  ON v.organization_id=e.organization_id AND v.entry_key=e.entry_key
+WHERE e.organization_id=$1 AND e.entry_key=$2
+FOR UPDATE OF e`, s.organizationID, entry.ID).Scan(&currentStatus, &currentRevision, &canonicalHash); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return memory.Entry{}, fmt.Errorf("%w: %s", memory.ErrEntryNotFound, entry.ID)
 		}
@@ -193,10 +238,21 @@ func (s *Store) Save(ctx context.Context, command memory.SaveCommand) (memory.En
 	if entryHash != canonicalHash {
 		return memory.Entry{}, fmt.Errorf("%w: lifecycle mutation changed immutable memory content", memory.ErrConflict)
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO organizational_memory_state_events (organization_id,entry_key,from_status,to_status,actor_role_id,reason,revision,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, s.organizationID, entry.ID, currentStatus, string(entry.Status), actor, reason, entry.Revision, entry.UpdatedAt); err != nil {
+
+	if _, err := tx.Exec(ctx, `
+INSERT INTO organizational_memory_state_events (
+    organization_id, entry_key, from_status, to_status, actor_role_id, reason, revision, created_at
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		s.organizationID, entry.ID, currentStatus, string(entry.Status), actor, reason, entry.Revision, entry.UpdatedAt,
+	); err != nil {
 		return memory.Entry{}, mapError("insert memory state event", err)
 	}
-	result, err := tx.Exec(ctx, `UPDATE organizational_memory_entries SET status=$3,reviewer_role_id=$4,reviewed_at=$5,revision=$6,updated_at=$7 WHERE organization_id=$1 AND entry_key=$2 AND revision=$8`, s.organizationID, entry.ID, string(entry.Status), nullableString(entry.ReviewerID), entry.ReviewedAt, entry.Revision, entry.UpdatedAt, command.ExpectedRevision)
+	result, err := tx.Exec(ctx, `
+UPDATE organizational_memory_entries
+SET status=$3, reviewer_role_id=$4, reviewed_at=$5, revision=$6, updated_at=$7
+WHERE organization_id=$1 AND entry_key=$2 AND revision=$8`,
+		s.organizationID, entry.ID, string(entry.Status), nullableString(entry.ReviewerID), entry.ReviewedAt, entry.Revision, entry.UpdatedAt, command.ExpectedRevision,
+	)
 	if err != nil {
 		return memory.Entry{}, mapError("update memory lifecycle", err)
 	}
@@ -222,12 +278,22 @@ func (s *Store) List(ctx context.Context, filter memory.ListFilter) ([]memory.En
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.pool.Query(ctx, `SELECT e.entry_key FROM organizational_memory_entries e JOIN organizational_memory_versions v ON v.organization_id=e.organization_id AND v.entry_key=e.entry_key WHERE e.organization_id=$1 AND ($2='' OR v.role_id=$2) AND ($3='' OR e.status=$3) ORDER BY e.updated_at DESC,e.entry_key ASC LIMIT $4`, s.organizationID, filter.RoleID, string(filter.Status), limit)
+	rows, err := s.pool.Query(ctx, `
+SELECT e.entry_key
+FROM organizational_memory_entries e
+JOIN organizational_memory_versions v
+  ON v.organization_id=e.organization_id AND v.entry_key=e.entry_key
+WHERE e.organization_id=$1
+  AND ($2='' OR v.role_id=$2)
+  AND ($3='' OR e.status=$3)
+ORDER BY e.updated_at DESC, e.entry_key ASC
+LIMIT $4`, s.organizationID, filter.RoleID, string(filter.Status), limit)
 	if err != nil {
 		return nil, mapError("list memory entries", err)
 	}
 	defer rows.Close()
-	keys := []string{}
+
+	keys := make([]string, 0)
 	for rows.Next() {
 		var key string
 		if err := rows.Scan(&key); err != nil {
@@ -238,6 +304,7 @@ func (s *Store) List(ctx context.Context, filter memory.ListFilter) ([]memory.En
 	if err := rows.Err(); err != nil {
 		return nil, mapError("iterate memory list", err)
 	}
+
 	result := make([]memory.Entry, 0, len(keys))
 	for _, key := range keys {
 		entry, err := s.Get(ctx, s.organizationID, key)
@@ -248,13 +315,19 @@ func (s *Store) List(ctx context.Context, filter memory.ListFilter) ([]memory.En
 	}
 	return result, nil
 }
+
 func (s *Store) ListApproved(ctx context.Context, filter memory.ApprovedFilter) ([]memory.Entry, error) {
 	filter.OrganizationID = strings.TrimSpace(filter.OrganizationID)
 	filter.RoleID = strings.TrimSpace(filter.RoleID)
 	if filter.OrganizationID == "" || filter.RoleID == "" {
 		return nil, fmt.Errorf("%w: approved memory requires organization and role scope", memory.ErrInvalidRequest)
 	}
-	return s.List(ctx, memory.ListFilter{OrganizationID: filter.OrganizationID, RoleID: filter.RoleID, Status: memory.StatusApproved, Limit: filter.Limit})
+	return s.List(ctx, memory.ListFilter{
+		OrganizationID: filter.OrganizationID,
+		RoleID:         filter.RoleID,
+		Status:         memory.StatusApproved,
+		Limit:          filter.Limit,
+	})
 }
 
 type queryer interface {
@@ -267,7 +340,22 @@ func getEntry(ctx context.Context, q queryer, organizationID, entryID string) (m
 	var status, dataClass, sourceKind string
 	var reviewer, sanitizationEvidence, supersedes *string
 	var reviewedAt *time.Time
-	if err := q.QueryRow(ctx, `SELECT v.entry_key,v.organization_id,v.role_id,v.category,v.problem,v.correction,v.source_kind,v.source_run_id,e.status,v.proposed_by_role_id,e.reviewer_role_id,v.data_class,v.admission_attested_by,v.source_boundary,v.admission_evidence_ref,v.sanitization_evidence_ref,v.admission_attested_at,v.supersedes_entry_key,e.revision,v.created_at,e.updated_at,e.reviewed_at FROM organizational_memory_versions v JOIN organizational_memory_entries e ON e.organization_id=v.organization_id AND e.entry_key=v.entry_key WHERE v.organization_id=$1 AND v.entry_key=$2`, organizationID, entryID).Scan(&entry.ID, &entry.OrganizationID, &entry.RoleID, &entry.Category, &entry.Problem, &entry.Correction, &sourceKind, &entry.SourceRunID, &status, &entry.ProposedBy, &reviewer, &dataClass, &entry.Admission.AttestedBy, &entry.Admission.SourceBoundary, &entry.Admission.EvidenceRef, &sanitizationEvidence, &entry.Admission.AttestedAt, &supersedes, &entry.Revision, &entry.CreatedAt, &entry.UpdatedAt, &reviewedAt); err != nil {
+	if err := q.QueryRow(ctx, `
+SELECT v.entry_key, v.organization_id, v.role_id, v.category, v.problem, v.correction,
+       v.source_kind, v.source_run_id, e.status, v.proposed_by_role_id, e.reviewer_role_id,
+       v.data_class, v.admission_attested_by, v.source_boundary, v.admission_evidence_ref,
+       v.sanitization_evidence_ref, v.admission_attested_at, v.supersedes_entry_key,
+       e.revision, v.created_at, e.updated_at, e.reviewed_at
+FROM organizational_memory_versions v
+JOIN organizational_memory_entries e
+  ON e.organization_id=v.organization_id AND e.entry_key=v.entry_key
+WHERE v.organization_id=$1 AND v.entry_key=$2`, organizationID, entryID).Scan(
+		&entry.ID, &entry.OrganizationID, &entry.RoleID, &entry.Category, &entry.Problem, &entry.Correction,
+		&sourceKind, &entry.SourceRunID, &status, &entry.ProposedBy, &reviewer,
+		&dataClass, &entry.Admission.AttestedBy, &entry.Admission.SourceBoundary, &entry.Admission.EvidenceRef,
+		&sanitizationEvidence, &entry.Admission.AttestedAt, &supersedes,
+		&entry.Revision, &entry.CreatedAt, &entry.UpdatedAt, &reviewedAt,
+	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return memory.Entry{}, fmt.Errorf("%w: %s", memory.ErrEntryNotFound, entryID)
 		}
@@ -286,7 +374,12 @@ func getEntry(ctx context.Context, q queryer, organizationID, entryID string) (m
 	entry.CreatedAt = entry.CreatedAt.UTC()
 	entry.UpdatedAt = entry.UpdatedAt.UTC()
 	entry.Admission.AttestedAt = entry.Admission.AttestedAt.UTC()
-	rows, err := q.Query(ctx, `SELECT reference,digest FROM organizational_memory_evidence_refs WHERE organization_id=$1 AND entry_key=$2 ORDER BY ordinal ASC`, organizationID, entryID)
+
+	rows, err := q.Query(ctx, `
+SELECT reference, digest
+FROM organizational_memory_evidence_refs
+WHERE organization_id=$1 AND entry_key=$2
+ORDER BY ordinal ASC`, organizationID, entryID)
 	if err != nil {
 		return memory.Entry{}, mapError("list memory evidence refs", err)
 	}
@@ -307,11 +400,18 @@ func getEntry(ctx context.Context, q queryer, organizationID, entryID string) (m
 	return entry, nil
 }
 
-type idempotencyRecord struct{ entryKey, canonicalHash string }
+type idempotencyRecord struct {
+	entryKey      string
+	canonicalHash string
+}
 
 func lookupIdempotency(ctx context.Context, tx pgx.Tx, organizationID, key string) (idempotencyRecord, bool, error) {
 	var record idempotencyRecord
-	err := tx.QueryRow(ctx, `SELECT entry_key,canonical_hash FROM organizational_memory_idempotency WHERE organization_id=$1 AND idempotency_key=$2 FOR SHARE`, organizationID, key).Scan(&record.entryKey, &record.canonicalHash)
+	err := tx.QueryRow(ctx, `
+SELECT entry_key, canonical_hash
+FROM organizational_memory_idempotency
+WHERE organization_id=$1 AND idempotency_key=$2
+FOR SHARE`, organizationID, key).Scan(&record.entryKey, &record.canonicalHash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return idempotencyRecord{}, false, nil
 	}
@@ -320,16 +420,25 @@ func lookupIdempotency(ctx context.Context, tx pgx.Tx, organizationID, key strin
 	}
 	return record, true, nil
 }
+
 func insertIdempotency(ctx context.Context, tx pgx.Tx, organizationID, key, entryKey, canonicalHash string) error {
-	result, err := tx.Exec(ctx, `INSERT INTO organizational_memory_idempotency (organization_id,idempotency_key,entry_key,canonical_hash) VALUES ($1,$2,$3,$4) ON CONFLICT (organization_id,idempotency_key) DO NOTHING`, organizationID, key, entryKey, canonicalHash)
+	result, err := tx.Exec(ctx, `
+INSERT INTO organizational_memory_idempotency (
+    organization_id, idempotency_key, entry_key, canonical_hash
+) VALUES ($1,$2,$3,$4)
+ON CONFLICT (organization_id, idempotency_key) DO NOTHING`, organizationID, key, entryKey, canonicalHash)
 	if err != nil {
 		return mapError("insert memory idempotency", err)
 	}
 	if result.RowsAffected() == 1 {
 		return nil
 	}
+
 	var existingEntry, existingHash string
-	if err := tx.QueryRow(ctx, `SELECT entry_key,canonical_hash FROM organizational_memory_idempotency WHERE organization_id=$1 AND idempotency_key=$2`, organizationID, key).Scan(&existingEntry, &existingHash); err != nil {
+	if err := tx.QueryRow(ctx, `
+SELECT entry_key, canonical_hash
+FROM organizational_memory_idempotency
+WHERE organization_id=$1 AND idempotency_key=$2`, organizationID, key).Scan(&existingEntry, &existingHash); err != nil {
 		return mapError("re-read memory idempotency", err)
 	}
 	if existingHash != canonicalHash || existingEntry != entryKey {
@@ -337,6 +446,7 @@ func insertIdempotency(ctx context.Context, tx pgx.Tx, organizationID, key, entr
 	}
 	return nil
 }
+
 func normalizeLimit(limit int) (int, error) {
 	if limit == 0 {
 		return 100, nil
@@ -346,6 +456,7 @@ func normalizeLimit(limit int) (int, error) {
 	}
 	return limit, nil
 }
+
 func nullableString(value string) *string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -353,12 +464,14 @@ func nullableString(value string) *string {
 	}
 	return &value
 }
+
 func stringOrEmpty(value *string) string {
 	if value == nil {
 		return ""
 	}
 	return *value
 }
+
 func mapError(operation string, err error) error {
 	if err == nil {
 		return nil
