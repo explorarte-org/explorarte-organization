@@ -19,7 +19,7 @@ const executiveEvidenceSchema = "executive-evidence.v1"
 // so the canonical TaskContextProvider includes it in the Context Engine
 // snapshot used by the immediately following model invocation.
 type EvidenceTasks struct {
-	Tasks      Tasks
+	Tasks
 	Models     executive.ModelCoordinator
 	Completion executive.CompletionGate
 	Limits     executive.Limits
