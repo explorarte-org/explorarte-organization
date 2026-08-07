@@ -70,6 +70,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runModel(args[1:], stdout, stderr)
 	case "decision":
 		return runDecision(args[1:], stdout, stderr)
+	case "improvement":
+		return runImprovement(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return exitOK
@@ -510,6 +512,7 @@ commands:
   context <validate-source|build|get|list|render|validate|invalidate>
   model <registry|invocation>
   decision <create|append|start|transition|claim|finish|observe|verify|decide|recover|trace>
+  improvement <propose|get|validate|begin-evaluation|verdict|promote-canary|promote-active|deprecate|rollback|trace>
 exit codes:
   0 success
   1 internal or operational failure
