@@ -45,6 +45,7 @@ type ContextSnapshotRef struct {
 	Status                 string
 	RenderedHash           string
 	DataClasses            []string
+	ExecutiveScope         string
 }
 type AuthorizationDecision struct {
 	Effect     modelegress.AuthorizationEffect
@@ -168,7 +169,6 @@ type AuthenticatedClaimCommand struct {
 	ChallengeNonce       string
 	Signature            []byte
 }
-
 type CompletionCommand struct {
 	InvocationID      int64
 	DispatchAttemptID int64
