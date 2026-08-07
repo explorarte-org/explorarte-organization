@@ -84,16 +84,25 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 	if err = runtimeadapter.ValidateStaticDependencies(registryRepository, modelRuntime.Dispatcher.Store, completionService, authorizationRuntime.Service); err != nil {
 		return nil, err
 	}
+
+	limits := executive.DefaultLimits()
+	baseTasks := runtimeadapter.Tasks{Service: taskService, OrganizationID: cfg.Tasks.OrganizationID}
+	baseModels := runtimeadapter.Models{Service: modelRuntime.Invocations, OrganizationID: cfg.Tasks.OrganizationID}
+	completionGate := runtimeadapter.Completion{Service: completionService}
+	evidenceTasks := runtimeadapter.EvidenceTasks{Tasks: baseTasks, Models: baseModels, Completion: completionGate, Limits: limits}
+	dagTasks := runtimeadapter.DAGTasks{TaskCoordinator: evidenceTasks}
+	budgetModels := runtimeadapter.BudgetModels{Models: baseModels, Tasks: dagTasks, Limits: limits}
+
 	orchestrator, err := executive.NewOrchestrator(
 		cfg.Tasks.OrganizationID,
 		runtimeadapter.Registry{Reader: registryRepository, OrganizationID: cfg.Tasks.OrganizationID},
-		runtimeadapter.Tasks{Service: taskService, OrganizationID: cfg.Tasks.OrganizationID},
+		dagTasks,
 		runtimeadapter.Context{Service: contextRuntime.Service, OrganizationID: cfg.Tasks.OrganizationID},
 		runtimeadapter.Assignment{Resolver: modelRuntime.Dispatcher.Store, OrganizationID: cfg.Tasks.OrganizationID},
-		runtimeadapter.Models{Service: modelRuntime.Invocations, OrganizationID: cfg.Tasks.OrganizationID},
-		runtimeadapter.Completion{Service: completionService},
+		budgetModels,
+		completionGate,
 		runtimeadapter.Authorization{Service: authorizationRuntime.Service, OrganizationID: cfg.Tasks.OrganizationID},
-		executive.DefaultLimits(),
+		limits,
 		executive.ClockFunc(time.Now),
 	)
 	if err != nil {
