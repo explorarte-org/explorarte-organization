@@ -185,7 +185,7 @@ JSON
     admission_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     memory_digest="$(printf %s cli-memory-evidence | sha256sum | cut -d" " -f1)"
     cat >/tmp/memory-propose.json <<JSON
-{"id":"cli-memory-smoke","role_id":"ingenieria_ia/orquestador","category":"integration_learning","problem":"A simulated integration failure occurred.","correction":"Use the verified integration correction.","source_run_id":1,"evidence_refs":[{"reference":"integration:memory:1","digest":"$memory_digest"}],"proposed_by":"ingenieria_ia/orquestador","admission":{"data_class":"organizational","attested_by":"ingenieria_ia/orquestador","source_boundary":"organization","evidence_ref":"integration:memory:admission","attested_at":"$admission_time"},"idempotency_key":"cli-memory-smoke"}
+{"id":"cli-memory-smoke","role_id":"ingenieria_ia/orquestador","category":"integration_learning","problem":"A simulated integration failure occurred.","correction":"Use the verified integration correction.","source_kind":"simulation","source_run_id":1,"evidence_refs":[{"reference":"integration:memory:1","digest":"$memory_digest"}],"proposed_by":"ingenieria_ia/orquestador","admission":{"data_class":"organizational","attested_by":"ingenieria_ia/orquestador","source_boundary":"organization","evidence_ref":"integration:memory:admission","attested_at":"$admission_time"},"idempotency_key":"cli-memory-smoke"}
 JSON
     /tmp/orgctl memory propose --file /tmp/memory-propose.json --json >/tmp/memory-created.json
     grep -Fq "\"status\": \"candidate\"" /tmp/memory-created.json

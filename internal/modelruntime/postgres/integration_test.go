@@ -633,7 +633,7 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 			}
 		}
 		reapplied, upErr := runner.Up(ctx)
-		if upErr != nil || len(reapplied.Applied) != 6 || reapplied.Current != 14 {
+		if upErr != nil || len(reapplied.Applied) != 6 || reapplied.Current != 15 {
 			t.Fatalf("reapply=%+v err=%v", reapplied, upErr)
 		}
 		var exists bool
