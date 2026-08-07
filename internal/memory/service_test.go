@@ -24,11 +24,13 @@ func validCommand(now time.Time) ProposeCommand {
 			{Reference: "task:42:evidence:1", Digest: "aaa"},
 		},
 		ProposedBy: "ingenieria_ia/orquestador",
-		Classification: ContentClassification{
-			DataClass:    DataSanitized,
-			ClassifierID: "empresa/human",
-			EvidenceRef:  "classification:42",
-			ClassifiedAt: now.Add(-time.Minute),
+		Admission: AdmissionAttestation{
+			DataClass:               DataSanitized,
+			AttestedBy:              "cell-gateway/clinica-online",
+			SourceBoundary:          "cell_gateway",
+			EvidenceRef:             "classification:42",
+			SanitizationEvidenceRef: "sanitization:42",
+			AttestedAt:              now.Add(-time.Minute),
 		},
 	}
 }
@@ -82,11 +84,49 @@ func TestClinicalAndSecretContentCannotBecomeCandidate(t *testing.T) {
 	service := NewService(&fixedClock{now: now})
 	for _, class := range []DataClass{DataClinical, DataSecret} {
 		command := validCommand(now)
-		command.Classification.DataClass = class
+		command.Admission.DataClass = class
+		command.Admission.SanitizationEvidenceRef = ""
 		_, err := service.Propose(command)
 		if !errors.Is(err, ErrForbiddenDataClass) {
 			t.Fatalf("class %s error=%v, want ErrForbiddenDataClass", class, err)
 		}
+	}
+}
+
+func TestSanitizedAdmissionRequiresSanitizationEvidence(t *testing.T) {
+	now := time.Date(2026, 8, 7, 4, 0, 0, 0, time.UTC)
+	service := NewService(&fixedClock{now: now})
+	command := validCommand(now)
+	command.Admission.SanitizationEvidenceRef = ""
+	_, err := service.Propose(command)
+	if !errors.Is(err, ErrInvalidAdmission) {
+		t.Fatalf("error=%v, want ErrInvalidAdmission", err)
+	}
+}
+
+func TestOrganizationalAdmissionCannotCarrySanitizationEvidence(t *testing.T) {
+	now := time.Date(2026, 8, 7, 4, 0, 0, 0, time.UTC)
+	service := NewService(&fixedClock{now: now})
+	command := validCommand(now)
+	command.Admission.DataClass = DataOrganizational
+	_, err := service.Propose(command)
+	if !errors.Is(err, ErrInvalidAdmission) {
+		t.Fatalf("error=%v, want ErrInvalidAdmission", err)
+	}
+	command.Admission.SanitizationEvidenceRef = ""
+	if _, err = service.Propose(command); err != nil {
+		t.Fatalf("organizational admission should succeed without sanitization evidence: %v", err)
+	}
+}
+
+func TestAdmissionMustPrecedeCandidate(t *testing.T) {
+	now := time.Date(2026, 8, 7, 4, 0, 0, 0, time.UTC)
+	service := NewService(&fixedClock{now: now})
+	command := validCommand(now)
+	command.Admission.AttestedAt = now.Add(time.Second)
+	_, err := service.Propose(command)
+	if !errors.Is(err, ErrInvalidEntry) {
+		t.Fatalf("error=%v, want ErrInvalidEntry", err)
 	}
 }
 
@@ -132,11 +172,11 @@ func TestRejectedEntryCanOnlyArchive(t *testing.T) {
 func TestTransitionMatrixIsDefaultDeny(t *testing.T) {
 	states := []Status{StatusCandidate, StatusApproved, StatusDeprecated, StatusArchived, StatusRejected}
 	allowed := map[[2]Status]bool{
-		{StatusCandidate, StatusApproved}:   true,
-		{StatusCandidate, StatusRejected}:   true,
-		{StatusApproved, StatusDeprecated}:  true,
-		{StatusDeprecated, StatusArchived}:  true,
-		{StatusRejected, StatusArchived}:    true,
+		{StatusCandidate, StatusApproved}:  true,
+		{StatusCandidate, StatusRejected}:  true,
+		{StatusApproved, StatusDeprecated}: true,
+		{StatusDeprecated, StatusArchived}: true,
+		{StatusRejected, StatusArchived}:   true,
 	}
 	for _, from := range states {
 		for _, to := range states {
@@ -151,7 +191,7 @@ func TestTransitionMatrixIsDefaultDeny(t *testing.T) {
 	}
 }
 
-func TestCanonicalHashIgnoresLifecycleButCommitsContent(t *testing.T) {
+func TestCanonicalHashIgnoresLifecycleButCommitsContentAndAdmission(t *testing.T) {
 	now := time.Date(2026, 8, 7, 4, 0, 0, 0, time.UTC)
 	clock := &fixedClock{now: now}
 	service := NewService(clock)
@@ -183,5 +223,14 @@ func TestCanonicalHashIgnoresLifecycleButCommitsContent(t *testing.T) {
 	}
 	if changedHash == after {
 		t.Fatal("content change did not change canonical hash")
+	}
+	changed = approved
+	changed.Admission.EvidenceRef = "classification:changed"
+	changedHash, err = changed.CanonicalHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changedHash == after {
+		t.Fatal("admission provenance change did not change canonical hash")
 	}
 }
