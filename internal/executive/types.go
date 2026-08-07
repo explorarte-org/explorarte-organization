@@ -191,6 +191,7 @@ type TaskRecord struct {
 	ReasonCode             string
 	Reason                 string
 	Requirements           []RequirementRecord
+	Evidence               []EvidenceRecord
 	Attempts               []AttemptRecord
 	ActiveLease            *LeaseRecord
 }
@@ -203,10 +204,22 @@ type RequirementRecord struct {
 	Status   string
 }
 
+type EvidenceRecord struct {
+	ID            int64
+	RequirementID int64
+	Type          string
+	Reference     string
+	Digest        string
+	RecordedBy    string
+	Metadata      map[string]any
+}
+
 type AttemptRecord struct {
-	ID      int64
-	Ordinal int
-	State   string
+	ID            int64
+	Ordinal       int
+	State         string
+	ResultSummary string
+	FailureCode   string
 }
 
 type LeaseRecord struct {
