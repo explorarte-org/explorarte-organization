@@ -39,6 +39,7 @@ const (
 	exitContextStale           = 9
 	exitCompletionFailed       = 10
 	exitCompletionInconclusive = 11
+	exitShadowDivergence       = 12
 )
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
@@ -76,6 +77,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runImprovement(args[1:], stdout, stderr)
 	case "completion":
 		return runCompletion(args[1:], stdout, stderr)
+	case "shadow":
+		return runShadow(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return exitOK
@@ -517,8 +520,9 @@ commands:
   model <registry|invocation>
   decision <create|append|start|transition|claim|finish|observe|verify|decide|recover|trace>
   improvement <propose|get|validate|begin-evaluation|verdict|promote-canary|promote-active|deprecate|rollback|trace>
-  completion <verify>
-exit codes:
+   completion <verify>
+   shadow <verify|replay|report>
+ exit codes:
   0 success
   1 internal or operational failure
   2 usage error
@@ -530,7 +534,8 @@ exit codes:
   8 context rejected by validation or policy
   9 context stale or invalidated
   10 completion verification failed (a required obligation is contradicted)
-  11 completion verification inconclusive (a required obligation is unproven)`)
+  11 completion verification inconclusive (a required obligation is unproven)
+  12 shadow verification recorded divergences or counterexamples (observe-only; nothing was blocked)`)
 }
 func printRegistryUsage(out io.Writer) {
 	fmt.Fprintln(out, "usage: orgctl registry <command> [options]")

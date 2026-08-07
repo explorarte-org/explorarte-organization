@@ -5,8 +5,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 MODE="${1:-all}"
 case "$MODE" in
-  all|tasks|staging|authorization|context|model|egress|dispatch|identity|worker|decision|trace|improvement|completion) ;;
-  *) echo "usage: $0 [all|tasks|staging|authorization|context|model|egress|dispatch|identity|worker|decision|trace|improvement|completion]" >&2; exit 2 ;;
+  all|tasks|staging|authorization|context|model|egress|dispatch|identity|worker|decision|trace|improvement|completion|shadow) ;;
+  *) echo "usage: $0 [all|tasks|staging|authorization|context|model|egress|dispatch|identity|worker|decision|trace|improvement|completion|shadow]" >&2; exit 2 ;;
 esac
 
 export ORG_POSTGRES_ADMIN_USER=explorarte_test_admin
@@ -68,6 +68,9 @@ if [[ "$MODE" == all || "$MODE" == improvement ]]; then
 fi
 if [[ "$MODE" == all || "$MODE" == completion ]]; then
   timeout --foreground --signal=TERM --kill-after=30s 15m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/completion/postgres
+fi
+if [[ "$MODE" == all || "$MODE" == shadow ]]; then
+  timeout --foreground --signal=TERM --kill-after=30s 15m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/shadowverifier/postgres
 fi
 
 if [[ "$MODE" == all ]]; then
