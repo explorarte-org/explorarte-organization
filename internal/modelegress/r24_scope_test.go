@@ -31,10 +31,10 @@ func TestExecutiveScopeMarkerRequiresDurableExecutiveMetadata(t *testing.T) {
 	}
 	for name, got := range map[string]string{
 		"non executive correlation": ExecutiveScopeMarker("empresa/ceo", "executive_ceo_plan", "other:abc", "task:10"),
-		"no task ref": ExecutiveScopeMarker("empresa/ceo", "executive_ceo_plan", "executive:abc", ""),
-		"owner cannot be worker": ExecutiveScopeMarker("empresa/human", "department_worker", "executive:abc", "task:10"),
+		"no task ref":               ExecutiveScopeMarker("empresa/ceo", "executive_ceo_plan", "executive:abc", ""),
+		"owner cannot be worker":    ExecutiveScopeMarker("empresa/human", "department_worker", "executive:abc", "task:10"),
 		"observer cannot be leader": ExecutiveScopeMarker("empresa/ceo_observer", "department_review", "executive:abc", "task:10"),
-		"unknown purpose": ExecutiveScopeMarker("ingenieria_ia/qa", "anything", "executive:abc", "task:10"),
+		"unknown purpose":           ExecutiveScopeMarker("ingenieria_ia/qa", "anything", "executive:abc", "task:10"),
 	} {
 		if got != "" {
 			t.Fatalf("%s unexpectedly scoped as %q", name, got)
@@ -42,110 +42,63 @@ func TestExecutiveScopeMarkerRequiresDurableExecutiveMetadata(t *testing.T) {
 	}
 }
 
-func TestScopedEgressCEOAlibaba(t *testing.T) {
-	e := NewEvaluator()
-	policy := r24Policy()
-	base := EvaluationRequest{
-		ProviderID: "alibaba_token_plan_via_claude_code", ProviderTransport: "cli_adapter",
-		OrganizationRevisionID: 7, Policy: policy,
-		ContextClassifications: []string{"organizational", "public"},
+func TestValidateExecutiveScopeMatrix(t *testing.T) {
+	cases := []struct {
+		name      string
+		provider  string
+		transport string
+		classes   []string
+		scope     string
+		allowed   bool
+		reason    string
+	}{
+		{"ceo alibaba", "alibaba_token_plan_via_claude_code", "cli_adapter", []string{"organizational", "public"}, ScopeExecutiveCEO, true, "executive_scope_verified_ceo"},
+		{"ceo missing scope", "alibaba_token_plan_via_claude_code", "cli_adapter", []string{"organizational"}, "", false, "executive_scope_required"},
+		{"ceo wrong transport", "alibaba_token_plan_via_claude_code", "http_adapter", []string{"organizational"}, ScopeExecutiveCEO, false, "executive_scope_required"},
+		{"leader openai organizational", "openai_compatible", "http_adapter", []string{"organizational"}, ScopeDepartmentLeader, true, "executive_scope_verified_department_leader"},
+		{"leader wrong scope", "openai_compatible", "http_adapter", []string{"organizational"}, ScopeDepartmentWorker, false, "executive_scope_required"},
+		{"openai public legacy", "openai_compatible", "http_adapter", []string{"public"}, "", true, "executive_scope_not_required"},
+		{"worker deepseek", "deepseek", "http_adapter", []string{"sanitized", "organizational"}, ScopeDepartmentWorker, true, "executive_scope_verified_department_worker"},
+		{"worker deepseek no scope", "deepseek", "http_adapter", []string{"public"}, "", false, "executive_scope_required"},
 	}
-	decision, err := e.Evaluate(base)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if decision.Effect != EffectDeny || !containsReason(decision.ReasonCodes, "executive_scope_required") {
-		t.Fatalf("unscoped CEO decision=%+v", decision)
-	}
-	base.ContextClassifications = append(base.ContextClassifications, ScopeExecutiveCEO)
-	decision, err = e.Evaluate(base)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if decision.Effect != EffectAllow || !containsReason(decision.ReasonCodes, "executive_scope_verified") {
-		t.Fatalf("scoped CEO decision=%+v", decision)
-	}
-	base.ProviderTransport = "http_adapter"
-	decision, _ = e.Evaluate(base)
-	if decision.Effect != EffectDeny {
-		t.Fatalf("wrong transport unexpectedly allowed: %+v", decision)
-	}
-}
-
-func TestScopedEgressLeaderOpenAIAndPublicCompatibility(t *testing.T) {
-	e := NewEvaluator()
-	policy := r24Policy()
-	organizational := EvaluationRequest{
-		ProviderID: "openai_compatible", ProviderTransport: "http_adapter",
-		OrganizationRevisionID: 7, Policy: policy,
-		ContextClassifications: []string{"organizational", ScopeDepartmentLeader},
-	}
-	decision, err := e.Evaluate(organizational)
-	if err != nil || decision.Effect != EffectAllow {
-		t.Fatalf("leader decision=%+v err=%v", decision, err)
-	}
-	organizational.ContextClassifications = []string{"organizational", ScopeDepartmentWorker}
-	decision, _ = e.Evaluate(organizational)
-	if decision.Effect != EffectDeny {
-		t.Fatalf("worker scope used for leader unexpectedly allowed: %+v", decision)
-	}
-	publicOnly := organizational
-	publicOnly.ContextClassifications = []string{"public"}
-	decision, err = e.Evaluate(publicOnly)
-	if err != nil || decision.Effect != EffectAllow {
-		t.Fatalf("legacy public OpenAI egress regressed: %+v err=%v", decision, err)
-	}
-}
-
-func TestScopedEgressWorkerDeepSeekAndHardDenies(t *testing.T) {
-	e := NewEvaluator()
-	policy := r24Policy()
-	request := EvaluationRequest{
-		ProviderID: "deepseek", ProviderTransport: "http_adapter",
-		OrganizationRevisionID: 7, Policy: policy,
-		ContextClassifications: []string{"organizational", "sanitized", ScopeDepartmentWorker},
-	}
-	decision, err := e.Evaluate(request)
-	if err != nil || decision.Effect != EffectAllow {
-		t.Fatalf("worker decision=%+v err=%v", decision, err)
-	}
-	request.ContextClassifications = append(request.ContextClassifications, "secret")
-	decision, err = e.Evaluate(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if decision.Effect != EffectDeny || !containsReason(decision.ReasonCodes, "secret_egress_forbidden") {
-		t.Fatalf("hard deny was bypassed by scope: %+v", decision)
-	}
-}
-
-func TestUnknownOrMultipleScopeFailsClosed(t *testing.T) {
-	e := NewEvaluator()
-	policy := r24Policy()
-	for name, classes := range map[string][]string{
-		"unknown": {"organizational", "scope.executive.made_up"},
-		"multiple": {"organizational", ScopeExecutiveCEO, ScopeDepartmentWorker},
-	} {
-		t.Run(name, func(t *testing.T) {
-			decision, err := e.Evaluate(EvaluationRequest{
-				ProviderID: "alibaba_token_plan_via_claude_code", ProviderTransport: "cli_adapter",
-				OrganizationRevisionID: 7, Policy: policy, ContextClassifications: classes,
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if decision.Effect != EffectDeny {
-				t.Fatalf("decision=%+v", decision)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reason, allowed := ValidateExecutiveScope(tc.provider, tc.transport, tc.classes, tc.scope)
+			if allowed != tc.allowed || reason != tc.reason {
+				t.Fatalf("allowed=%v reason=%q want allowed=%v reason=%q", allowed, reason, tc.allowed, tc.reason)
 			}
 		})
 	}
 }
 
-func containsReason(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
+func TestPolicyEvaluationStillHardDeniesSecretAndClinical(t *testing.T) {
+	e := NewEvaluator()
+	policy := r24Policy()
+	for _, classification := range []string{"secret", "clinical"} {
+		decision, err := e.Evaluate(EvaluationRequest{
+			ProviderID: "alibaba_token_plan_via_claude_code", ProviderTransport: "cli_adapter",
+			OrganizationRevisionID: 7, Policy: policy, ContextClassifications: []string{classification},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if decision.Effect != EffectDeny {
+			t.Fatalf("%s unexpectedly allowed: %+v", classification, decision)
 		}
 	}
-	return false
+}
+
+func TestPolicyV3AllowDoesNotReplaceSeparateScopeGate(t *testing.T) {
+	e := NewEvaluator()
+	policy := r24Policy()
+	decision, err := e.Evaluate(EvaluationRequest{
+		ProviderID: "deepseek", ProviderTransport: "http_adapter",
+		OrganizationRevisionID: 7, Policy: policy, ContextClassifications: []string{"organizational", "sanitized"},
+	})
+	if err != nil || decision.Effect != EffectAllow {
+		t.Fatalf("classification decision=%+v err=%v", decision, err)
+	}
+	if reason, allowed := ValidateExecutiveScope("deepseek", "http_adapter", decision.Classifications, ""); allowed || reason != "executive_scope_required" {
+		t.Fatalf("policy allow bypassed scope gate: allowed=%v reason=%q", allowed, reason)
+	}
 }
