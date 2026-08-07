@@ -57,6 +57,9 @@ func (s *Service) Propose(command ProposeCommand) (Entry, error) {
 	admission.SourceBoundary = strings.TrimSpace(admission.SourceBoundary)
 	admission.EvidenceRef = strings.TrimSpace(admission.EvidenceRef)
 	admission.SanitizationEvidenceRef = strings.TrimSpace(admission.SanitizationEvidenceRef)
+	if !admission.AttestedAt.IsZero() {
+		admission.AttestedAt = admission.AttestedAt.UTC()
+	}
 
 	now := s.clock.Now().UTC()
 	entry := Entry{
