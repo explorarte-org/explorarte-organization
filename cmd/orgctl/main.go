@@ -27,16 +27,18 @@ var (
 )
 
 const (
-	exitOK               = 0
-	exitInternal         = 1
-	exitUsage            = 2
-	exitDrift            = 3
-	exitInvalid          = 4
-	exitDatabase         = 5
-	exitDenied           = 6
-	exitApprovalRequired = 7
-	exitContextRejected  = 8
-	exitContextStale     = 9
+	exitOK                     = 0
+	exitInternal               = 1
+	exitUsage                  = 2
+	exitDrift                  = 3
+	exitInvalid                = 4
+	exitDatabase               = 5
+	exitDenied                 = 6
+	exitApprovalRequired       = 7
+	exitContextRejected        = 8
+	exitContextStale           = 9
+	exitCompletionFailed       = 10
+	exitCompletionInconclusive = 11
 )
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
@@ -72,6 +74,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runDecision(args[1:], stdout, stderr)
 	case "improvement":
 		return runImprovement(args[1:], stdout, stderr)
+	case "completion":
+		return runCompletion(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return exitOK
@@ -513,6 +517,7 @@ commands:
   model <registry|invocation>
   decision <create|append|start|transition|claim|finish|observe|verify|decide|recover|trace>
   improvement <propose|get|validate|begin-evaluation|verdict|promote-canary|promote-active|deprecate|rollback|trace>
+  completion <verify>
 exit codes:
   0 success
   1 internal or operational failure
@@ -523,7 +528,9 @@ exit codes:
   6 capability denied
   7 approval required
   8 context rejected by validation or policy
-  9 context stale or invalidated`)
+  9 context stale or invalidated
+  10 completion verification failed (a required obligation is contradicted)
+  11 completion verification inconclusive (a required obligation is unproven)`)
 }
 func printRegistryUsage(out io.Writer) {
 	fmt.Fprintln(out, "usage: orgctl registry <command> [options]")
