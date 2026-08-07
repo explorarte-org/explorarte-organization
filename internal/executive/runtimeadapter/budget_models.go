@@ -26,7 +26,7 @@ func (b BudgetModels) EnsureInvocation(ctx context.Context, command executive.In
 	if len(existing) > 0 {
 		return b.Models.EnsureInvocation(ctx, command)
 	}
-	if err = b.validateCorrelationBudget(ctx, command.CorrelationID); err != nil {
+	if err = b.validateCorrelationBudget(ctx, command); err != nil {
 		return executive.InvocationRecord{}, false, err
 	}
 	return b.Models.EnsureInvocation(ctx, command)
@@ -44,8 +44,8 @@ func (b BudgetModels) GetResult(ctx context.Context, id int64) (executive.Invoca
 	return b.Models.GetResult(ctx, id)
 }
 
-func (b BudgetModels) validateCorrelationBudget(ctx context.Context, correlation string) error {
-	tasks, err := b.Tasks.ListByCorrelation(ctx, correlation)
+func (b BudgetModels) validateCorrelationBudget(ctx context.Context, command executive.InvocationCommand) error {
+	tasks, err := b.Tasks.ListByCorrelation(ctx, command.CorrelationID)
 	if err != nil {
 		return err
 	}
@@ -55,7 +55,12 @@ func (b BudgetModels) validateCorrelationBudget(ctx context.Context, correlation
 	}
 	budget := executive.InvocationBudget{}
 	departments := map[string]struct{}{}
-	for _, task := range tasks {
+	var target *executive.TaskRecord
+	for i := range tasks {
+		task := tasks[i]
+		if task.ID == command.TaskID {
+			target = &tasks[i]
+		}
 		if strings.Contains(task.IdempotencyKey, ":leader-plan:") {
 			dept := suffixAfter(task.IdempotencyKey, ":leader-plan:")
 			if idx := strings.IndexByte(dept, ':'); idx >= 0 {
@@ -74,22 +79,29 @@ func (b BudgetModels) validateCorrelationBudget(ctx context.Context, correlation
 				return findErr
 			}
 			for range invocations {
-				switch {
-				case task.AssignedRoleID == executive.CEORoleID:
-					budget.CEOCalls++
-				case strings.Contains(task.IdempotencyKey, ":leader-plan:"), strings.Contains(task.IdempotencyKey, ":leader-review:"):
-					budget.LeaderCalls++
-				case strings.Contains(task.IdempotencyKey, ":worker:"):
-					budget.WorkerAttempts++
-				default:
-					// Any unexpected executive model-backed task still counts against
-					// the global ceiling, conservatively as a worker attempt.
-					budget.WorkerAttempts++
-				}
+				incrementInvocationBudget(&budget, task)
 			}
 		}
 	}
+	if target == nil {
+		return executive.ErrContractRejected
+	}
+	// Validate the state *after* the requested new invocation would exist.
+	incrementInvocationBudget(&budget, *target)
 	return budget.Validate(limits, len(departments))
+}
+
+func incrementInvocationBudget(budget *executive.InvocationBudget, task executive.TaskRecord) {
+	switch {
+	case task.AssignedRoleID == executive.CEORoleID:
+		budget.CEOCalls++
+	case strings.Contains(task.IdempotencyKey, ":leader-plan:"), strings.Contains(task.IdempotencyKey, ":leader-review:"):
+		budget.LeaderCalls++
+	case strings.Contains(task.IdempotencyKey, ":worker:"):
+		budget.WorkerAttempts++
+	default:
+		budget.WorkerAttempts++
+	}
 }
 
 func suffixAfter(value, marker string) string {
