@@ -8,9 +8,9 @@ const (
 	ScopeDepartmentWorker = "scope.executive.department_worker"
 )
 
-// ExecutiveScopeMarker derives an internal egress scope marker exclusively
-// from durable Context Engine metadata. It is never rendered into model
-// context and never accepted from model output.
+// ExecutiveScopeMarker derives an internal egress scope exclusively from
+// durable Context Engine metadata. It is never rendered into model context,
+// never stored as a data classification, and never accepted from model output.
 func ExecutiveScopeMarker(actorRoleID, purpose, correlationID, taskRef string) string {
 	actorRoleID = strings.TrimSpace(actorRoleID)
 	purpose = strings.TrimSpace(purpose)
@@ -44,23 +44,6 @@ func scopedDepartmentRole(roleID string) bool {
 	return len(parts) == 2 && parts[0] != "" && parts[1] != ""
 }
 
-func splitScopeClassifications(values []string) (data []string, scopes []string, invalidScope bool) {
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if strings.HasPrefix(value, "scope.") {
-			switch value {
-			case ScopeExecutiveCEO, ScopeDepartmentLeader, ScopeDepartmentWorker:
-				scopes = append(scopes, value)
-			default:
-				invalidScope = true
-			}
-			continue
-		}
-		data = append(data, value)
-	}
-	return data, scopes, invalidScope
-}
-
 func scopeRequired(provider string, dataClasses []string) bool {
 	switch provider {
 	case "alibaba_token_plan_via_claude_code", "deepseek":
@@ -75,18 +58,28 @@ func scopeRequired(provider string, dataClasses []string) bool {
 	return false
 }
 
-func scopeAllows(provider, transport string, scopes []string) bool {
-	if len(scopes) != 1 {
-		return false
-	}
+func scopeAllows(provider, transport, scope string) bool {
 	switch provider {
 	case "alibaba_token_plan_via_claude_code":
-		return transport == "cli_adapter" && scopes[0] == ScopeExecutiveCEO
+		return transport == "cli_adapter" && scope == ScopeExecutiveCEO
 	case "openai_compatible":
-		return transport == "http_adapter" && scopes[0] == ScopeDepartmentLeader
+		return transport == "http_adapter" && scope == ScopeDepartmentLeader
 	case "deepseek":
-		return transport == "http_adapter" && scopes[0] == ScopeDepartmentWorker
+		return transport == "http_adapter" && scope == ScopeDepartmentWorker
 	default:
 		return false
+	}
+}
+
+func scopeVerifiedReason(scope string) string {
+	switch scope {
+	case ScopeExecutiveCEO:
+		return "executive_scope_verified_ceo"
+	case ScopeDepartmentLeader:
+		return "executive_scope_verified_department_leader"
+	case ScopeDepartmentWorker:
+		return "executive_scope_verified_department_worker"
+	default:
+		return ""
 	}
 }
