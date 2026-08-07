@@ -93,7 +93,7 @@ test-context-integration:
 	./scripts/test-integration.sh context
 
 test-memory-fitness:
-	./scripts/check-memory-fitness.sh
+	bash ./scripts/check-memory-fitness.sh
 
 test-memory-integration:
 	./scripts/test-integration.sh memory
