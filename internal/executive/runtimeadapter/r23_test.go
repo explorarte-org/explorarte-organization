@@ -76,8 +76,8 @@ func TestBudgetModelsRejectsProspectiveThirdCEOCall(t *testing.T) {
 		Attempts: []executive.AttemptRecord{{ID: 11}, {ID: 12}, {ID: 13}},
 	}}}
 	models := &fakeBudgetModels{byAttempt: map[[2]int64][]executive.InvocationRecord{
-		{1, 11}: {{ID: 101}},
-		{1, 12}: {{ID: 102}},
+		{1, 11}: []executive.InvocationRecord{{ID: 101}},
+		{1, 12}: []executive.InvocationRecord{{ID: 102}},
 	}}
 	guard := BudgetModels{Models: models, Tasks: tasks, Limits: executive.DefaultLimits()}
 	_, _, err := guard.EnsureInvocation(context.Background(), executive.InvocationCommand{TaskID: 1, AttemptID: 13, CorrelationID: "executive:x"})
@@ -90,7 +90,11 @@ func TestBudgetModelsRejectsProspectiveThirdCEOCall(t *testing.T) {
 }
 
 func TestEvidenceProjectionCarriesValidatedWorkerResultAndEvidence(t *testing.T) {
-	body := []byte(`{"schema_version":"worker-result/v1","summary":"actual bounded worker result","evidence_refs":["artifact:abc","check:def"]}`)
+	body := []byte(`{"schema_version":"worker-result/v1"}`)
+	body = []byte(`{"schema_version":"worker-result/v1","summary":"actual bounded worker result","evidence_refs":["artifact:abc","check:def"]}`)
+	// Convert the fixture to canonical JSON bytes without embedding escaped
+	// quotes in the raw literal used by the source file.
+	body = []byte("{\"schema_version\":\"worker-result/v1\",\"summary\":\"actual bounded worker result\",\"evidence_refs\":[\"artifact:abc\",\"check:def\"]}")
 	adapter := EvidenceTasks{
 		Models: evidenceModels{
 			invocation: executive.InvocationRecord{ID: 77, Status: "succeeded"},
