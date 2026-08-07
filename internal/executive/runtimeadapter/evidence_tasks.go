@@ -62,9 +62,11 @@ type projectedWorker struct {
 }
 
 type departmentEvidenceBundle struct {
-	SchemaVersion string            `json:"schema_version"`
-	DepartmentID  string            `json:"department_id"`
-	Workers       []projectedWorker `json:"workers"`
+	SchemaVersion    string            `json:"schema_version"`
+	DepartmentID     string            `json:"department_id"`
+	ReviewCriteria   []string          `json:"review_criteria"`
+	PlanResponseHash string            `json:"plan_response_hash"`
+	Workers          []projectedWorker `json:"workers"`
 }
 
 type projectedReview struct {
@@ -91,6 +93,10 @@ func (e EvidenceTasks) attachDepartmentBundle(ctx context.Context, target execut
 	if err != nil {
 		return err
 	}
+	criteria, planHash, err := e.projectDepartmentPlan(ctx, all, department)
+	if err != nil {
+		return err
+	}
 	workers := make([]projectedWorker, 0)
 	for _, task := range all {
 		if task.AssignedUnitID != department || !strings.Contains(task.IdempotencyKey, ":worker:"+department+":") {
@@ -106,7 +112,45 @@ func (e EvidenceTasks) attachDepartmentBundle(ctx context.Context, target execut
 		workers = append(workers, item)
 	}
 	sort.Slice(workers, func(i, j int) bool { return workers[i].TaskID < workers[j].TaskID })
-	return e.recordBundle(ctx, target.ID, "department:"+department, departmentEvidenceBundle{SchemaVersion: executiveEvidenceSchema, DepartmentID: department, Workers: workers})
+	bundle := departmentEvidenceBundle{
+		SchemaVersion: executiveEvidenceSchema, DepartmentID: department,
+		ReviewCriteria: boundedRefs(criteria, 32), PlanResponseHash: planHash, Workers: workers,
+	}
+	return e.recordBundle(ctx, target.ID, "department:"+department, bundle)
+}
+
+func (e EvidenceTasks) projectDepartmentPlan(ctx context.Context, all []executive.TaskRecord, department string) ([]string, string, error) {
+	var planTask *executive.TaskRecord
+	marker := ":leader-plan:" + department
+	for i := range all {
+		if strings.Contains(all[i].IdempotencyKey, marker) && all[i].Status == "completed" {
+			planTask = &all[i]
+			break
+		}
+	}
+	if planTask == nil {
+		return nil, "", fmt.Errorf("completed department plan for %s is missing", department)
+	}
+	attemptID := latestFinishedAttempt(planTask.Attempts)
+	if attemptID == 0 {
+		return nil, "", fmt.Errorf("department plan %d has no finished attempt", planTask.ID)
+	}
+	invocations, err := e.Models.FindTaskAttemptInvocations(ctx, planTask.ID, attemptID)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(invocations) != 1 || invocations[0].Status != "succeeded" {
+		return nil, "", fmt.Errorf("department plan %d lacks one succeeded invocation", planTask.ID)
+	}
+	result, err := e.Models.GetResult(ctx, invocations[0].ID)
+	if err != nil {
+		return nil, "", err
+	}
+	parsed, err := executive.ParseDepartmentPlan(result.JSONOutput, e.effectiveLimits())
+	if err != nil {
+		return nil, "", err
+	}
+	return parsed.ReviewCriteria, result.ResponseHash, nil
 }
 
 func (e EvidenceTasks) projectWorker(ctx context.Context, task executive.TaskRecord) (projectedWorker, error) {
@@ -149,7 +193,7 @@ func (e EvidenceTasks) attachClosureBundle(ctx context.Context, target executive
 	if err != nil {
 		return err
 	}
-	reviews := make([]projectedReview, 0)
+	latest := map[string]executive.TaskRecord{}
 	blocked := make([]int64, 0)
 	for _, task := range all {
 		if task.Status == "blocked" {
@@ -158,13 +202,24 @@ func (e EvidenceTasks) attachClosureBundle(ctx context.Context, target executive
 		if !strings.Contains(task.IdempotencyKey, ":leader-review:") || task.Status != "completed" {
 			continue
 		}
-		item, projectErr := e.projectReview(ctx, task)
+		previous, ok := latest[task.AssignedUnitID]
+		if !ok || task.ID > previous.ID {
+			latest[task.AssignedUnitID] = task
+		}
+	}
+	reviews := make([]projectedReview, 0, len(latest))
+	departments := make([]string, 0, len(latest))
+	for department := range latest {
+		departments = append(departments, department)
+	}
+	sort.Strings(departments)
+	for _, department := range departments {
+		item, projectErr := e.projectReview(ctx, latest[department])
 		if projectErr != nil {
 			return projectErr
 		}
 		reviews = append(reviews, item)
 	}
-	sort.Slice(reviews, func(i, j int) bool { return reviews[i].TaskID < reviews[j].TaskID })
 	sort.Slice(blocked, func(i, j int) bool { return blocked[i] < blocked[j] })
 	return e.recordBundle(ctx, target.ID, "closure", closureEvidenceBundle{SchemaVersion: executiveEvidenceSchema, Reviews: reviews, BlockedTasks: blocked})
 }
