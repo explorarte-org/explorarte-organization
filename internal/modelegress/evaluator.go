@@ -48,7 +48,6 @@ func (e *Evaluator) Evaluate(request EvaluationRequest) (Decision, error) {
 		}
 	}
 
-	// Hard denials are provider-independent and dominate every executive scope.
 	hardReasons := make([]string, 0, len(classes))
 	for _, classification := range classes {
 		if rule, exists := hard[classification]; exists {
@@ -65,7 +64,7 @@ func (e *Evaluator) Evaluate(request EvaluationRequest) (Decision, error) {
 	}
 
 	allowed := true
-	reasons := make([]string, 0, len(classes)+1)
+	reasons := make([]string, 0, len(classes))
 	for _, classification := range classes {
 		if !validRuntimeClassification(classification) {
 			allowed = false
@@ -81,18 +80,6 @@ func (e *Evaluator) Evaluate(request EvaluationRequest) (Decision, error) {
 		reasons = append(reasons, rule.ReasonCode)
 		if rule.Effect != EffectAllow {
 			allowed = false
-		}
-	}
-	if allowed && scopeRequired(provider, classes) {
-		scope := strings.TrimSpace(request.ExecutiveScope)
-		if !scopeAllows(provider, request.ProviderTransport, scope) {
-			allowed = false
-			reasons = append(reasons, "executive_scope_required")
-		} else if reason := scopeVerifiedReason(scope); reason != "" {
-			reasons = append(reasons, reason)
-		} else {
-			allowed = false
-			reasons = append(reasons, "executive_scope_invalid")
 		}
 	}
 	decision.ReasonCodes = NormalizeReasonCodes(reasons)
