@@ -117,12 +117,6 @@ WHERE organization_id=$1 AND canonical_hash=$2`, s.organizationID, canonicalHash
 		return value, true, nil
 	}
 
-	if _, err := tx.Exec(ctx, `
-INSERT INTO organizational_memory_entries (
-    organization_id, entry_key, status, reviewer_role_id, reviewed_at, revision, updated_at
-) VALUES ($1,$2,'candidate',NULL,NULL,1,$3)`, s.organizationID, entry.ID, entry.UpdatedAt); err != nil {
-		return memory.Entry{}, false, mapError("insert memory lifecycle projection", err)
-	}
 	for index, ref := range entry.EvidenceRefs {
 		if _, err := tx.Exec(ctx, `
 INSERT INTO organizational_memory_evidence_refs (
@@ -134,8 +128,14 @@ INSERT INTO organizational_memory_evidence_refs (
 	if _, err := tx.Exec(ctx, `
 INSERT INTO organizational_memory_state_events (
     organization_id, entry_key, from_status, to_status, actor_role_id, reason, revision, created_at
-) VALUES ($1,$2,NULL,'candidate',$3,'candidate_created',1,$4)`, s.organizationID, entry.ID, entry.ProposedBy, entry.CreatedAt); err != nil {
+) VALUES ($1,$2,NULL,'candidate',$3,'candidate_created',1,$4)`, s.organizationID, entry.ID, entry.ProposedBy, entry.UpdatedAt); err != nil {
 		return memory.Entry{}, false, mapError("insert memory creation event", err)
+	}
+	if _, err := tx.Exec(ctx, `
+INSERT INTO organizational_memory_entries (
+    organization_id, entry_key, status, reviewer_role_id, reviewed_at, revision, updated_at
+) VALUES ($1,$2,'candidate',NULL,NULL,1,$3)`, s.organizationID, entry.ID, entry.UpdatedAt); err != nil {
+		return memory.Entry{}, false, mapError("insert memory lifecycle projection", err)
 	}
 	if err := insertIdempotency(ctx, tx, s.organizationID, idempotencyKey, entry.ID, canonicalHash); err != nil {
 		return memory.Entry{}, false, err
@@ -230,6 +230,14 @@ FOR UPDATE OF e`, s.organizationID, entry.ID).Scan(&currentStatus, &currentRevis
 		return memory.Entry{}, fmt.Errorf("%w: lifecycle mutation changed immutable memory content", memory.ErrConflict)
 	}
 
+	if _, err := tx.Exec(ctx, `
+INSERT INTO organizational_memory_state_events (
+    organization_id, entry_key, from_status, to_status, actor_role_id, reason, revision, created_at
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		s.organizationID, entry.ID, currentStatus, string(entry.Status), actor, reason, entry.Revision, entry.UpdatedAt,
+	); err != nil {
+		return memory.Entry{}, mapError("insert memory state event", err)
+	}
 	result, err := tx.Exec(ctx, `
 UPDATE organizational_memory_entries
 SET status=$3, reviewer_role_id=$4, reviewed_at=$5, revision=$6, updated_at=$7
@@ -241,14 +249,6 @@ WHERE organization_id=$1 AND entry_key=$2 AND revision=$8`,
 	}
 	if result.RowsAffected() != 1 {
 		return memory.Entry{}, fmt.Errorf("%w: entry %s", memory.ErrRevisionConflict, entry.ID)
-	}
-	if _, err := tx.Exec(ctx, `
-INSERT INTO organizational_memory_state_events (
-    organization_id, entry_key, from_status, to_status, actor_role_id, reason, revision, created_at
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-		s.organizationID, entry.ID, currentStatus, string(entry.Status), actor, reason, entry.Revision, entry.UpdatedAt,
-	); err != nil {
-		return memory.Entry{}, mapError("insert memory state event", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return memory.Entry{}, mapError("commit memory lifecycle mutation", err)
