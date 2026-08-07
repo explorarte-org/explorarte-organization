@@ -134,7 +134,7 @@ func (e Entry) Validate() error {
 	seen := make(map[string]struct{}, len(e.EvidenceRefs))
 	for _, ref := range e.EvidenceRefs {
 		if err := ref.Validate(); err != nil {
-			return fmt.Errorf("%w: %v", ErrInvalidEntry, err)
+			return fmt.Errorf("%w: %w", ErrInvalidEntry, err)
 		}
 		key := strings.TrimSpace(ref.Reference)
 		if _, exists := seen[key]; exists {
@@ -149,7 +149,7 @@ func (e Entry) Validate() error {
 		return fmt.Errorf("%w: proposed_by is required", ErrInvalidEntry)
 	}
 	if err := e.Classification.Validate(); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidEntry, err)
+		return fmt.Errorf("%w: %w", ErrInvalidEntry, err)
 	}
 	if e.SupersedesEntryID == e.ID && e.SupersedesEntryID != "" {
 		return fmt.Errorf("%w: an entry cannot supersede itself", ErrInvalidEntry)
