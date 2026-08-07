@@ -28,6 +28,7 @@ func (e Entry) CanonicalHash() (string, error) {
 		Category          string               `json:"category"`
 		Problem           string               `json:"problem"`
 		Correction        string               `json:"correction"`
+		SourceKind        SourceKind           `json:"source_kind"`
 		SourceRunID       int64                `json:"source_run_id"`
 		EvidenceRefs      []EvidenceRef        `json:"evidence_refs"`
 		Admission         AdmissionAttestation `json:"admission"`
@@ -39,6 +40,7 @@ func (e Entry) CanonicalHash() (string, error) {
 		Category:          strings.TrimSpace(e.Category),
 		Problem:           strings.TrimSpace(e.Problem),
 		Correction:        strings.TrimSpace(e.Correction),
+		SourceKind:        e.SourceKind,
 		SourceRunID:       e.SourceRunID,
 		EvidenceRefs:      refs,
 		Admission:         e.Admission,
