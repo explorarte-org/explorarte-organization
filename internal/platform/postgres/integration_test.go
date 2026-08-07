@@ -145,14 +145,14 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("apply migrations: %v", err)
 	}
-	if len(result.Applied) != 13 || result.Current != 13 {
+	if len(result.Applied) != 14 || result.Current != 14 {
 		t.Fatalf("unexpected migration result: %+v", result)
 	}
 	status, err := runner.Status(ctx)
 	if err != nil {
 		t.Fatalf("migration status: %v", err)
 	}
-	if !status.Ready || status.Pending != 0 || status.Applied != 13 {
+	if !status.Ready || status.Pending != 0 || status.Applied != 14 {
 		t.Fatalf("unexpected migration status: %+v", status)
 	}
 	if err := store.UnitOfWork().WithinTransaction(ctx, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
@@ -182,7 +182,7 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("idempotent migration run: %v", err)
 	}
-	if len(second.Applied) != 0 || second.Current != 13 {
+	if len(second.Applied) != 0 || second.Current != 14 {
 		t.Fatalf("second migration result = %+v, want no changes", second)
 	}
 
@@ -190,19 +190,19 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load migrations for down test: %v", err)
 	}
-	if len(loaded) != 13 {
-		t.Fatalf("loaded migrations = %d, want 13", len(loaded))
+	if len(loaded) != 14 {
+		t.Fatalf("loaded migrations = %d, want 14", len(loaded))
 	}
 	if err := store.UnitOfWork().WithinTransaction(ctx, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, loaded[12].DownSQL); err != nil {
+		if _, err := tx.Exec(ctx, loaded[13].DownSQL); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, `DELETE FROM schema_migrations WHERE version = 13`)
+		_, err := tx.Exec(ctx, `DELETE FROM schema_migrations WHERE version = 14`)
 		return err
 	}); err != nil {
-		t.Fatalf("down migration 000013: %v", err)
+		t.Fatalf("down migration 000014: %v", err)
 	}
-	for _, table := range []string{"improvement_candidates", "improvement_promotion_decisions"} {
+	for _, table := range []string{"shadow_verifier_runs", "shadow_verifier_divergences"} {
 		var relation *string
 		if err := store.Pool().QueryRow(ctx, `SELECT to_regclass('public.' || $1)::text`, table).Scan(&relation); err != nil {
 			t.Fatalf("check down migration table %s: %v", table, err)
@@ -213,9 +213,9 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	}
 	restored, err := runner.Up(ctx)
 	if err != nil {
-		t.Fatalf("restore migration 000013: %v", err)
+		t.Fatalf("restore migration 000014: %v", err)
 	}
-	if len(restored.Applied) != 1 || restored.Current != 13 {
-		t.Fatalf("restore migration result = %+v, want only 000013", restored)
+	if len(restored.Applied) != 1 || restored.Current != 14 {
+		t.Fatalf("restore migration result = %+v, want only 000014", restored)
 	}
 }
