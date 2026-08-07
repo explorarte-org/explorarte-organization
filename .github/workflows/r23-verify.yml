@@ -1,0 +1,69 @@
+name: R23 Verify
+
+on:
+  push:
+    branches:
+      - feat/23-executive-evidence-recovery-layer
+
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-bookworm
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: explorarte_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d explorarte_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      ORG_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/explorarte_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: gofmt
+        run: |
+          files=$(git diff --name-only 3090966772da048a6245200dcef4bcfe42c9d22c...HEAD -- '*.go')
+          test -z "$files" || test -z "$(gofmt -l $files)"
+      - name: Vet
+        run: go vet ./...
+      - name: Unit tests
+        run: go test ./internal/executive/... ./internal/tasks/contextprovider/...
+      - name: Race tests
+        run: go test -race -short ./internal/executive/... ./internal/tasks/contextprovider/...
+      - name: Executive fitness
+        run: bash scripts/check-executive-fitness.sh
+      - name: PostgreSQL executive integration
+        run: go test -tags=integration ./internal/executive/... -count=1
+      - name: Build
+        run: go build ./...
+      - name: Publish R23 status
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          state="$JOB_STATUS"
+          if [ "$state" != "success" ]; then state="failure"; fi
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            -d "{\"state\":\"${state}\",\"context\":\"r23/verify\",\"description\":\"R23 build, vet, unit/race, fitness and PostgreSQL integration\"}"
