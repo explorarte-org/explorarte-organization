@@ -68,54 +68,72 @@ func (e EvidenceRef) Validate() error {
 	return nil
 }
 
-// ContentClassification is the publication-boundary attestation that the
-// proposed memory payload is safe to retain as organizational memory. The
-// durable adapter must verify its EvidenceRef against an authoritative source;
-// the pure domain only validates its shape and fail-closed data-class policy.
-type ContentClassification struct {
-	DataClass    DataClass `json:"data_class"`
-	ClassifierID string    `json:"classifier_id"`
-	EvidenceRef  string    `json:"evidence_ref"`
-	ClassifiedAt time.Time `json:"classified_at"`
+// AdmissionAttestation is evidence produced before data reaches
+// organizational memory. R18 does not inspect a clinical source, classify a
+// clinical record, or sanitize it. It only enforces that an upstream boundary
+// has classified the proposed organizational payload and supplied provenance
+// for that decision.
+//
+// SourceBoundary identifies the boundary that produced the attestation (for
+// example an organizational producer or, in the future, an approved cell
+// gateway). EvidenceRef points to the durable evidence for the classification.
+// SanitizationEvidenceRef is mandatory for DataSanitized so R18 never treats a
+// bare "sanitized" label as proof that sensitive source material was cleaned.
+type AdmissionAttestation struct {
+	DataClass               DataClass `json:"data_class"`
+	AttestedBy              string    `json:"attested_by"`
+	SourceBoundary          string    `json:"source_boundary"`
+	EvidenceRef             string    `json:"evidence_ref"`
+	SanitizationEvidenceRef string    `json:"sanitization_evidence_ref,omitempty"`
+	AttestedAt              time.Time `json:"attested_at"`
 }
 
-func (c ContentClassification) Validate() error {
-	if !c.DataClass.Valid() {
-		return fmt.Errorf("%w: unknown data class %q", ErrInvalidClassification, c.DataClass)
+func (a AdmissionAttestation) Validate() error {
+	if !a.DataClass.Valid() {
+		return fmt.Errorf("%w: unknown data class %q", ErrInvalidAdmission, a.DataClass)
 	}
-	if !c.DataClass.AllowedInOrganizationalMemory() {
-		return fmt.Errorf("%w: %s", ErrForbiddenDataClass, c.DataClass)
+	if !a.DataClass.AllowedInOrganizationalMemory() {
+		return fmt.Errorf("%w: %s", ErrForbiddenDataClass, a.DataClass)
 	}
-	if strings.TrimSpace(c.ClassifierID) == "" {
-		return fmt.Errorf("%w: classifier_id is required", ErrInvalidClassification)
+	if strings.TrimSpace(a.AttestedBy) == "" {
+		return fmt.Errorf("%w: attested_by is required", ErrInvalidAdmission)
 	}
-	if strings.TrimSpace(c.EvidenceRef) == "" {
-		return fmt.Errorf("%w: evidence_ref is required", ErrInvalidClassification)
+	if strings.TrimSpace(a.SourceBoundary) == "" {
+		return fmt.Errorf("%w: source_boundary is required", ErrInvalidAdmission)
 	}
-	if c.ClassifiedAt.IsZero() {
-		return fmt.Errorf("%w: classified_at is required", ErrInvalidClassification)
+	if strings.TrimSpace(a.EvidenceRef) == "" {
+		return fmt.Errorf("%w: evidence_ref is required", ErrInvalidAdmission)
+	}
+	if a.DataClass == DataSanitized && strings.TrimSpace(a.SanitizationEvidenceRef) == "" {
+		return fmt.Errorf("%w: sanitized data requires sanitization_evidence_ref", ErrInvalidAdmission)
+	}
+	if a.DataClass != DataSanitized && strings.TrimSpace(a.SanitizationEvidenceRef) != "" {
+		return fmt.Errorf("%w: sanitization evidence is only valid for sanitized data", ErrInvalidAdmission)
+	}
+	if a.AttestedAt.IsZero() {
+		return fmt.Errorf("%w: attested_at is required", ErrInvalidAdmission)
 	}
 	return nil
 }
 
 type Entry struct {
-	ID                string                `json:"id"`
-	OrganizationID    string                `json:"organization_id"`
-	RoleID            string                `json:"role_id"`
-	Category          string                `json:"category"`
-	Problem           string                `json:"problem"`
-	Correction        string                `json:"correction"`
-	SourceRunID       int64                 `json:"source_run_id"`
-	EvidenceRefs      []EvidenceRef         `json:"evidence_refs"`
-	Status            Status                `json:"status"`
-	ProposedBy        string                `json:"proposed_by"`
-	ReviewerID        string                `json:"reviewer_id,omitempty"`
-	Classification    ContentClassification `json:"classification"`
-	SupersedesEntryID string                `json:"supersedes_entry_id,omitempty"`
-	Revision          int64                 `json:"revision"`
-	CreatedAt         time.Time             `json:"created_at"`
-	UpdatedAt         time.Time             `json:"updated_at"`
-	ReviewedAt        *time.Time            `json:"reviewed_at,omitempty"`
+	ID                string               `json:"id"`
+	OrganizationID    string               `json:"organization_id"`
+	RoleID            string               `json:"role_id"`
+	Category          string               `json:"category"`
+	Problem           string               `json:"problem"`
+	Correction        string               `json:"correction"`
+	SourceRunID       int64                `json:"source_run_id"`
+	EvidenceRefs      []EvidenceRef        `json:"evidence_refs"`
+	Status            Status               `json:"status"`
+	ProposedBy        string               `json:"proposed_by"`
+	ReviewerID        string               `json:"reviewer_id,omitempty"`
+	Admission         AdmissionAttestation `json:"admission"`
+	SupersedesEntryID string               `json:"supersedes_entry_id,omitempty"`
+	Revision          int64                `json:"revision"`
+	CreatedAt         time.Time            `json:"created_at"`
+	UpdatedAt         time.Time            `json:"updated_at"`
+	ReviewedAt        *time.Time           `json:"reviewed_at,omitempty"`
 }
 
 func (e Entry) Validate() error {
@@ -148,7 +166,7 @@ func (e Entry) Validate() error {
 	if strings.TrimSpace(e.ProposedBy) == "" {
 		return fmt.Errorf("%w: proposed_by is required", ErrInvalidEntry)
 	}
-	if err := e.Classification.Validate(); err != nil {
+	if err := e.Admission.Validate(); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidEntry, err)
 	}
 	if e.SupersedesEntryID == e.ID && e.SupersedesEntryID != "" {
@@ -160,8 +178,8 @@ func (e Entry) Validate() error {
 	if e.CreatedAt.IsZero() || e.UpdatedAt.IsZero() || e.UpdatedAt.Before(e.CreatedAt) {
 		return fmt.Errorf("%w: created_at and a nondecreasing updated_at are required", ErrInvalidEntry)
 	}
-	if e.Classification.ClassifiedAt.After(e.CreatedAt) {
-		return fmt.Errorf("%w: classification must exist before candidate creation", ErrInvalidEntry)
+	if e.Admission.AttestedAt.After(e.CreatedAt) {
+		return fmt.Errorf("%w: admission attestation must exist before candidate creation", ErrInvalidEntry)
 	}
 
 	reviewed := e.Status != StatusCandidate
