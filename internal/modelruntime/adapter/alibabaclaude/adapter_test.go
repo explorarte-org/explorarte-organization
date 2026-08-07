@@ -129,17 +129,20 @@ func TestPostStartTimeoutIsAmbiguousPrimitive(t *testing.T) {
 	}
 }
 
-func TestArgumentsDisableToolsSessionsAndMCP(t *testing.T) {
+func TestArgumentsDisableCustomizationsToolsSessionsAndMCP(t *testing.T) {
 	cfg := testConfig(t, "#!/bin/sh\nprintf '2.1.224\\n'\n")
 	adapter, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	args := strings.Join(adapter.arguments(modelruntime.CanonicalRequest{ProviderModelID: "qwen3.6-flash", OutputMode: modelruntime.OutputText}), " ")
-	for _, required := range []string{"--bare", "--no-session-persistence", "--disable-slash-commands", "--no-chrome", "--strict-mcp-config", "--tools", "--disallowedTools", "--max-turns 1"} {
+	for _, required := range []string{"--safe-mode", "--setting-sources", "--no-session-persistence", "--disable-slash-commands", "--no-chrome", "--strict-mcp-config", "--tools", "--disallowedTools", "--max-turns 1"} {
 		if !strings.Contains(args, required) {
 			t.Fatalf("missing bounded CLI flag %q in %q", required, args)
 		}
+	}
+	if strings.Contains(args, "--bare") {
+		t.Fatalf("bare mode would bypass Alibaba ANTHROPIC_AUTH_TOKEN settings: %q", args)
 	}
 }
 
