@@ -124,9 +124,9 @@ func sourceRecord(detail tasks.TaskDetail) (contextengine.SourceRecord, error) {
 		if e.Digest != nil {
 			digest = *e.Digest
 		}
-		metadata := e.Metadata
-		if metadata == nil {
-			metadata = map[string]any{}
+		metadata := map[string]any{}
+		if strings.HasPrefix(e.Reference, "executive-evidence:") && e.Metadata != nil {
+			metadata = e.Metadata
 		}
 		evidence = append(evidence, renderedEvidence{Type: string(e.Type), Reference: e.Reference, Digest: digest, Metadata: metadata})
 	}
