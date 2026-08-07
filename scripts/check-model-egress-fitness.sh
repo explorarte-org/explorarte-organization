@@ -66,8 +66,11 @@ text=Path("docs/canonical/model-egress-policy.yaml").read_text(encoding="utf-8")
 rules=[]
 current={}
 in_rules=False
+policy_version=None
 for raw in text:
     line=raw.strip()
+    if line.startswith("policy_version:"):
+        policy_version=int(line.split(":",1)[1].strip())
     if line == "rules:":
         in_rules=True
         continue
@@ -82,25 +85,39 @@ for raw in text:
         current[key.strip()]=value.strip()
 if current:
     rules.append(current)
+if policy_version != 3:
+    raise SystemExit(f"R24 model egress policy_version must be 3, got {policy_version}")
 allows={(r.get("provider_id"), r.get("data_classification")) for r in rules if r.get("effect") == "allow"}
-expected={("openai_compatible","public"),("openai_compatible","sanitized")}
+providers=("alibaba_token_plan_via_claude_code","deepseek","openai_compatible")
+classes=("public","sanitized","organizational")
+expected={(provider, cls) for provider in providers for cls in classes}
 if allows != expected:
-    print(f"productive egress allows must be exactly {sorted(expected)}, got {sorted(allows)}", file=sys.stderr)
+    print(f"R24 productive allow table must be exactly {sorted(expected)}, got {sorted(allows)}", file=sys.stderr)
     sys.exit(1)
-for provider in ("alibaba_token_plan_via_claude_code","deepseek"):
-    for cls in ("public","sanitized","organizational"):
+for provider in providers:
+    for cls in classes:
         matches=[r for r in rules if r.get("provider_id")==provider and r.get("data_classification")==cls]
-        if len(matches)!=1 or matches[0].get("effect")!="deny":
-            raise SystemExit(f"{provider}/{cls} must remain explicit deny")
-match=[r for r in rules if r.get("provider_id")=="openai_compatible" and r.get("data_classification")=="organizational"]
-if len(match)!=1 or match[0].get("effect")!="deny":
-    raise SystemExit("openai_compatible/organizational must remain explicit deny")
+        if len(matches)!=1 or matches[0].get("effect")!="allow":
+            raise SystemExit(f"{provider}/{cls} must be explicit allow behind the R24 scope gate")
 PYPOLICY
 if rg -n 'provider_id:[[:space:]]*test\.fake' docs/canonical/model-egress-policy.yaml; then fail "test.fake leaked into productive policy"; fi
 for class in secret clinical; do
   rg -U -q "data_classification:[[:space:]]*${class}\n[[:space:]]+reason_code:" docs/canonical/model-egress-policy.yaml || fail "$class hard deny missing"
 done
 rg -q '^default_action:[[:space:]]*deny$' docs/canonical/model-egress-policy.yaml || fail "default deny missing"
+
+# R24: the broadened provider/classification table is safe only while every
+# executive-only route is guarded by a backend-derived scope marker.
+rg -q 'func ExecutiveScopeMarker\(' internal/modelegress/executive_scope.go || fail "executive scope derivation missing"
+rg -q 'executive_scope_required' internal/modelegress/evaluator.go || fail "scope-missing deny missing"
+rg -q 'executive_scope_verified' internal/modelegress/evaluator.go || fail "scope verification evidence missing"
+rg -q 'scopeRequired\(' internal/modelegress/evaluator.go || fail "evaluator does not enforce executive scope"
+rg -q 'ExecutiveScopeMarker\(snapshot\.ActorRoleID, snapshot\.Purpose, snapshot\.CorrelationID, snapshot\.TaskRef\)' internal/modelruntime/bootstrap/runtime.go || fail "model context adapter does not derive scope from durable snapshot metadata"
+rg -q 'strings\.HasPrefix\(correlationID, "executive:"\)' internal/modelegress/executive_scope.go || fail "scope is not bound to executive correlation"
+rg -q 'strings\.HasPrefix\(taskRef, "task:"\)' internal/modelegress/executive_scope.go || fail "scope is not bound to a durable task ref"
+if rg -n 'ScopeExecutiveCEO|ScopeDepartmentLeader|ScopeDepartmentWorker' docs/canonical; then
+  fail "internal scope markers must not become model-controlled canonical instructions"
+fi
 
 if rg -n 'adapter\.NewFake\(' internal/modelruntime/bootstrap cmd/orgd; then fail "product runtime registers FakeAdapter"; fi
 if rg -n '(api[_-]?key|authorization:[[:space:]]*bearer|provider[_-]?secret|base[_-]?url|endpoint[_-]?url)' internal/modelegress docs/canonical/model-egress-policy.yaml migrations/000008_create_model_egress_authorization.up.sql; then
@@ -112,7 +129,6 @@ fi
 
 rg -U -q 'id:[[:space:]]*ingenieria_ia/code-runner(?:.|\n)*?model_policy:[[:space:]]*null' docs/canonical/role-catalog.yaml || fail "code-runner model_policy is no longer null"
 
-
 # Dispatch order is security-sensitive: capability, egress and adapter checks must precede rendering.
 dispatch_file=internal/modelruntime/dispatch_service.go
 auth_line="$(rg -n -m1 'EvaluateDispatch\(' "$dispatch_file" | cut -d: -f1)"
@@ -123,7 +139,8 @@ persist_line="$(rg -n -m1 'PersistPreSendAllowAndMarkSendStarted\(' "$dispatch_f
 for line in "$auth_line" "$egress_line" "$adapter_line" "$render_line" "$persist_line"; do
   [[ "$line" =~ ^[0-9]+$ ]] || fail "could not determine security-sensitive dispatch order"
 done
-(( auth_line < egress_line && egress_line < adapter_line && adapter_line < render_line && render_line < persist_line ))   || fail "dispatch order must be authorization -> egress -> adapter -> render -> durable allow/send_started"
+(( auth_line < egress_line && egress_line < adapter_line && adapter_line < render_line && render_line < persist_line )) \
+  || fail "dispatch order must be authorization -> egress -> adapter -> render -> durable allow/send_started"
 
 # Branch 10 moved this transaction into internal/modelruntime/postgres so it can
 # also consume a model_dispatcher_assignment atomically (a single shared
