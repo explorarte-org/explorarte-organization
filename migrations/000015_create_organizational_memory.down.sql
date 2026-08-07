@@ -1,0 +1,20 @@
+DROP TRIGGER IF EXISTS organizational_memory_entries_no_delete ON organizational_memory_entries;
+DROP TRIGGER IF EXISTS organizational_memory_entry_update_guard ON organizational_memory_entries;
+DROP TRIGGER IF EXISTS organizational_memory_entry_insert_guard ON organizational_memory_entries;
+DROP TRIGGER IF EXISTS organizational_memory_version_insert_guard ON organizational_memory_versions;
+DROP TRIGGER IF EXISTS organizational_memory_idempotency_immutable ON organizational_memory_idempotency;
+DROP TRIGGER IF EXISTS organizational_memory_events_immutable ON organizational_memory_state_events;
+DROP TRIGGER IF EXISTS organizational_memory_evidence_immutable ON organizational_memory_evidence_refs;
+DROP TRIGGER IF EXISTS organizational_memory_versions_immutable ON organizational_memory_versions;
+
+DROP FUNCTION IF EXISTS organizational_memory_reject_entry_delete();
+DROP FUNCTION IF EXISTS organizational_memory_guard_entry_update();
+DROP FUNCTION IF EXISTS organizational_memory_guard_entry_insert();
+DROP FUNCTION IF EXISTS organizational_memory_guard_version_insert();
+DROP FUNCTION IF EXISTS organizational_memory_reject_mutation();
+
+DROP TABLE IF EXISTS organizational_memory_idempotency;
+DROP TABLE IF EXISTS organizational_memory_state_events;
+DROP TABLE IF EXISTS organizational_memory_evidence_refs;
+DROP TABLE IF EXISTS organizational_memory_entries;
+DROP TABLE IF EXISTS organizational_memory_versions;
