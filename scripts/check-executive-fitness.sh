@@ -4,7 +4,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-base=8782fda55c07e04024866a7826886f2ef2a7fea5
+# R23 starts from the integrated R21/R22 main tip. New executive hardening must
+# not smuggle in migrations, authority widening or provider coupling.
+base=3090966772da048a6245200dcef4bcfe42c9d22c
 core=(internal/executive/*.go)
 
 fail() {
@@ -55,6 +57,26 @@ if rg -n 'ambiguous.*retry|retry.*ambiguous' internal/executive --glob '*.go' --
   fail "ambiguous automatic retry detected"
 fi
 
+if ! rg -n 'orphaned_model_result' internal/executive/recovery.go >/dev/null || \
+   ! rg -n 'findOrphanedSucceededInvocation' internal/executive/recovery.go >/dev/null; then
+  fail "orphaned succeeded invocation recovery guard missing"
+fi
+if ! rg -n 'BudgetModels' internal/executive/bootstrap/runtime.go >/dev/null || \
+   ! rg -n 'incrementInvocationBudget' internal/executive/runtimeadapter/budget_models.go >/dev/null; then
+  fail "durable prospective invocation budget guard missing"
+fi
+if ! rg -n 'DAGTasks' internal/executive/bootstrap/runtime.go >/dev/null || \
+   ! rg -n 'command\.Dependencies = append\(\[\]int64\{sourceID\}' internal/executive/runtimeadapter/dag_tasks.go >/dev/null; then
+  fail "worker source dependency guard missing"
+fi
+if ! rg -n 'EvidenceTasks' internal/executive/bootstrap/runtime.go >/dev/null || \
+   ! rg -n 'executive-evidence:' internal/executive/runtimeadapter/evidence_tasks.go >/dev/null; then
+  fail "executive evidence projector missing"
+fi
+if ! rg -n 'strings\.HasPrefix\(e\.Reference, "executive-evidence:"\)' internal/tasks/contextprovider/provider.go >/dev/null; then
+  fail "TaskContextProvider must expose metadata only for executive evidence bundles"
+fi
+
 if rg -n 'ceo_observer' internal/executive --glob '*.go' --glob '!**/*_test.go' | grep -v 'ObserverRoleID = ' | grep -v 'role.ID == ObserverRoleID'; then
   fail "productive CEO observer path detected"
 fi
@@ -69,16 +91,13 @@ if rg -n 'DispatchActorRoleID:.*OwnerRoleID|ActorRoleID:.*OwnerRoleID.*model\.di
 fi
 
 if git diff --name-only "$base"...HEAD -- docs/canonical/capability-matrix.yaml | grep -q .; then
-  fail "capability-matrix widening/change is forbidden in R22"
+  fail "capability-matrix widening/change is forbidden in R23"
 fi
 if git diff --name-only "$base"...HEAD -- internal/decisiongraph | grep -q .; then
-  fail "R14 internals changed by R22"
+  fail "R14 internals changed by R23"
 fi
-if git diff --name-only "$base"...HEAD -- migrations \
-  ':!migrations/000018_make_provider_outcomes_transport_aware.up.sql' \
-  ':!migrations/000018_make_provider_outcomes_transport_aware.down.sql' \
-  ':!migrations/r21_tip_test.go' | grep -q .; then
-  fail "R22 reserved or added a migration before post-R21 necessity was demonstrated"
+if git diff --name-only "$base"...HEAD -- migrations | grep -q .; then
+  fail "R23 must not add or reserve persistence migrations"
 fi
 
 if ! rg -n 'TrustUntrusted' internal/tasks/contextprovider/provider.go >/dev/null || \
