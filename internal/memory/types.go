@@ -53,6 +53,27 @@ func (c DataClass) AllowedInOrganizationalMemory() bool {
 	}
 }
 
+// SourceKind keeps simulated experience distinguishable from observed
+// operational experience. SyntheticTest is reserved for deterministic test or
+// benchmark executions. The distinction is immutable provenance: reviewers
+// and later retrieval layers may use it, but it never grants authority.
+type SourceKind string
+
+const (
+	SourceOperational SourceKind = "operational"
+	SourceSimulation  SourceKind = "simulation"
+	SourceSyntheticTest SourceKind = "synthetic_test"
+)
+
+func (k SourceKind) Valid() bool {
+	switch k {
+	case SourceOperational, SourceSimulation, SourceSyntheticTest:
+		return true
+	default:
+		return false
+	}
+}
+
 type EvidenceRef struct {
 	Reference string `json:"reference"`
 	Digest    string `json:"digest"`
@@ -73,12 +94,6 @@ func (e EvidenceRef) Validate() error {
 // clinical record, or sanitize it. It only enforces that an upstream boundary
 // has classified the proposed organizational payload and supplied provenance
 // for that decision.
-//
-// SourceBoundary identifies the boundary that produced the attestation (for
-// example an organizational producer or, in the future, an approved cell
-// gateway). EvidenceRef points to the durable evidence for the classification.
-// SanitizationEvidenceRef is mandatory for DataSanitized so R18 never treats a
-// bare "sanitized" label as proof that sensitive source material was cleaned.
 type AdmissionAttestation struct {
 	DataClass               DataClass `json:"data_class"`
 	AttestedBy              string    `json:"attested_by"`
@@ -123,6 +138,7 @@ type Entry struct {
 	Category          string               `json:"category"`
 	Problem           string               `json:"problem"`
 	Correction        string               `json:"correction"`
+	SourceKind        SourceKind           `json:"source_kind"`
 	SourceRunID       int64                `json:"source_run_id"`
 	EvidenceRefs      []EvidenceRef        `json:"evidence_refs"`
 	Status            Status               `json:"status"`
@@ -142,6 +158,9 @@ func (e Entry) Validate() error {
 	}
 	if strings.TrimSpace(e.Category) == "" || strings.TrimSpace(e.Problem) == "" || strings.TrimSpace(e.Correction) == "" {
 		return fmt.Errorf("%w: category, problem, and correction are required", ErrInvalidEntry)
+	}
+	if !e.SourceKind.Valid() {
+		return fmt.Errorf("%w: invalid source_kind %q", ErrInvalidEntry, e.SourceKind)
 	}
 	if e.SourceRunID <= 0 {
 		return fmt.Errorf("%w: source_run_id must be positive", ErrInvalidEntry)
