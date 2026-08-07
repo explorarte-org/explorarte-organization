@@ -1,0 +1,27 @@
+package migrations_test
+
+import (
+	"testing"
+
+	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
+	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
+)
+
+func TestR21MigrationTipIs18AndContiguous(t *testing.T) {
+	loaded, err := platformmigrations.Load(rootmigrations.Files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != 18 {
+		t.Fatalf("migration count=%d want 18", len(loaded))
+	}
+	for index, migration := range loaded {
+		want := index + 1
+		if migration.Version != want {
+			t.Fatalf("migration[%d].version=%d want %d", index, migration.Version, want)
+		}
+	}
+	if loaded[len(loaded)-1].Name != "make_provider_outcomes_transport_aware" {
+		t.Fatalf("migration 18 name=%q", loaded[len(loaded)-1].Name)
+	}
+}
