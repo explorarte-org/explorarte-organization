@@ -241,6 +241,11 @@ func (a contextAdapter) GetContextSnapshot(ctx context.Context, id int64) (model
 			classes = append(classes, value)
 		}
 	}
+	if scope := modelegress.ExecutiveScopeMarker(snapshot.ActorRoleID, snapshot.Purpose, snapshot.CorrelationID, snapshot.TaskRef); scope != "" {
+		if _, ok := seen[scope]; !ok {
+			classes = append(classes, scope)
+		}
+	}
 	return modelruntime.ContextSnapshotRef{ID: snapshot.ID, OrganizationID: snapshot.OrganizationID, OrganizationRevisionID: snapshot.OrganizationRevisionID, ActorRoleID: snapshot.ActorRoleID, TaskRef: snapshot.TaskRef, Status: string(snapshot.Status), RenderedHash: snapshot.RenderedHash, DataClasses: classes}, nil
 }
 func (a contextAdapter) ValidateContextSnapshot(ctx context.Context, id int64) error {
