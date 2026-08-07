@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -189,8 +189,11 @@ func parseCLIResponse(body []byte, mode modelruntime.OutputMode) ([]byte, int64,
 		return nil, 0, 0, err
 	}
 	var extra any
-	if err := decoder.Decode(&extra); !errors.Is(err, context.Canceled) && err == nil {
-		return nil, 0, 0, errors.New("Claude Code returned multiple JSON values")
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return nil, 0, 0, errors.New("Claude Code returned multiple JSON values")
+		}
+		return nil, 0, 0, err
 	}
 	if mode == modelruntime.OutputJSON {
 		if len(response.StructuredOutput) == 0 || bytes.Equal(bytes.TrimSpace(response.StructuredOutput), []byte("null")) {
@@ -226,10 +229,7 @@ func (a *Adapter) ambiguous(exitCode *int, code string, cause error) error {
 }
 
 func (a *Adapter) effectiveTimeout(deadline time.Time) time.Duration {
-	remaining := time.Until(deadline)
-	if a.now != nil {
-		remaining = deadline.Sub(a.now())
-	}
+	remaining := deadline.Sub(a.now())
 	if remaining <= 0 {
 		return time.Nanosecond
 	}
