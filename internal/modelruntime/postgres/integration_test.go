@@ -96,13 +96,21 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		if err := platform.Pool().QueryRow(ctx, `SELECT count(*) FILTER (WHERE dispatch_enabled), count(*) FILTER (WHERE adapter_status='available') FROM model_profile_versions WHERE organization_revision_id=$1`, revision.ID).Scan(&enabled, &available); err != nil {
 			t.Fatal(err)
 		}
-		if enabled != 2 || available != 2 {
-			t.Fatalf("compiled provider versions enabled=%d available=%d, want 2/2", enabled, available)
+		// deepseek (department.worker, research.worker) joined openai_compatible
+		// and alibaba_token_plan_via_claude_code as a real compiled adapter
+		// later than this test's original 2/2 expectation — see
+		// internal/modelruntime/canonical_routing.go's compiledAdapterAvailability
+		// and internal/modelruntime/adapter/deepseek. gemini has a real
+		// compiled adapter too, but docs/canonical/model-routing.yaml never
+		// binds any profile to it, so it contributes 0 here by construction.
+		if enabled != 4 || available != 4 {
+			t.Fatalf("compiled provider versions enabled=%d available=%d, want 4/4", enabled, available)
 		}
 		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id='openai_compatible' AND transport='http_adapter' AND dispatch_enabled AND adapter_status='available'`, revision.ID, 1)
 		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND profile_id='ceo-primary' AND provider_id='alibaba_token_plan_via_claude_code' AND transport='cli_adapter' AND dispatch_enabled AND adapter_status='available'`, revision.ID, 1)
 		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id='alibaba_token_plan_via_claude_code' AND profile_id<>'ceo-primary' AND (dispatch_enabled OR adapter_status<>'unavailable')`, revision.ID, 0)
-		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id NOT IN ('openai_compatible','alibaba_token_plan_via_claude_code') AND (dispatch_enabled OR adapter_status<>'unavailable')`, revision.ID, 0)
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id='deepseek' AND transport='http_adapter' AND dispatch_enabled AND adapter_status='available'`, revision.ID, 2)
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id NOT IN ('openai_compatible','alibaba_token_plan_via_claude_code','deepseek') AND (dispatch_enabled OR adapter_status<>'unavailable')`, revision.ID, 0)
 	})
 
 	fakeRoutingHash := modelruntime.SHA256Bytes([]byte("test.fake canonical routing fixture v1"))
@@ -631,9 +639,20 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 				t.Fatal(execErr)
 			}
 		}
+		// Current always reflects the tip of the full migration list (the
+		// runner's Up loop walks every migration, setting Current even for
+		// ones already applied) — migration 19 is untouched by this
+		// rollback/reapply cycle (it depends on 17, not any version rolled
+		// back here), so only the 7 explicitly rolled-back versions above
+		// are expected in Applied, while Current still reports the real tip.
+		loadedForTip, tipErr := platformmigrations.Load(rootmigrations.Files)
+		if tipErr != nil {
+			t.Fatal(tipErr)
+		}
+		tip := loadedForTip[len(loadedForTip)-1].Version
 		reapplied, upErr := runner.Up(ctx)
-		if upErr != nil || len(reapplied.Applied) != 7 || reapplied.Current != 18 {
-			t.Fatalf("reapply=%+v err=%v", reapplied, upErr)
+		if upErr != nil || len(reapplied.Applied) != 7 || reapplied.Current != tip {
+			t.Fatalf("reapply=%+v err=%v want current=%d", reapplied, upErr, tip)
 		}
 		var exists bool
 		if err = platform.Pool().QueryRow(ctx, `SELECT to_regclass('public.model_invocations') IS NOT NULL AND to_regclass('public.model_dispatch_attempts') IS NOT NULL AND to_regclass('public.model_egress_policy_versions') IS NOT NULL AND to_regclass('public.model_dispatcher_assignments') IS NOT NULL AND to_regclass('public.model_execution_principals') IS NOT NULL AND to_regclass('public.model_execution_identity_policy_versions') IS NOT NULL AND to_regclass('public.model_provider_requests') IS NOT NULL AND to_regclass('public.model_provider_outcomes') IS NOT NULL`).Scan(&exists); err != nil || !exists {

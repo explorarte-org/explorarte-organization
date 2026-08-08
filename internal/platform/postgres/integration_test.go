@@ -39,16 +39,16 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err := store.Ping(ctx); err != nil {
 		t.Fatal(err)
 	}
-	for _, statement := range []string{
-		`DROP TRIGGER IF EXISTS organizational_memory_entries_no_delete ON organizational_memory_entries`, `DROP TRIGGER IF EXISTS organizational_memory_entry_update_guard ON organizational_memory_entries`, `DROP TRIGGER IF EXISTS organizational_memory_entry_insert_guard ON organizational_memory_entries`, `DROP TRIGGER IF EXISTS organizational_memory_version_insert_guard ON organizational_memory_versions`, `DROP TRIGGER IF EXISTS organizational_memory_idempotency_immutable ON organizational_memory_idempotency`, `DROP TRIGGER IF EXISTS organizational_memory_events_immutable ON organizational_memory_state_events`, `DROP TRIGGER IF EXISTS organizational_memory_evidence_immutable ON organizational_memory_evidence_refs`, `DROP TRIGGER IF EXISTS organizational_memory_versions_immutable ON organizational_memory_versions`, `DROP TABLE IF EXISTS organizational_memory_idempotency`, `DROP TABLE IF EXISTS organizational_memory_state_events`, `DROP TABLE IF EXISTS organizational_memory_evidence_refs`, `DROP TABLE IF EXISTS organizational_memory_entries`, `DROP TABLE IF EXISTS organizational_memory_versions`, `DROP FUNCTION IF EXISTS organizational_memory_reject_entry_delete()`, `DROP FUNCTION IF EXISTS organizational_memory_guard_entry_update()`, `DROP FUNCTION IF EXISTS organizational_memory_guard_entry_insert()`, `DROP FUNCTION IF EXISTS organizational_memory_guard_version_insert()`, `DROP FUNCTION IF EXISTS organizational_memory_reject_mutation()`,
-		`DROP TABLE IF EXISTS shadow_verifier_divergences`, `DROP TABLE IF EXISTS shadow_verifier_runs`,
-		`DROP TRIGGER IF EXISTS decision_budget_events_immutable ON decision_budget_events`, `DROP TRIGGER IF EXISTS decision_records_immutable ON decision_records`, `DROP TRIGGER IF EXISTS decision_verifications_immutable ON decision_verifications`, `DROP TRIGGER IF EXISTS decision_observations_immutable ON decision_observations`, `DROP TRIGGER IF EXISTS decision_graph_edges_immutable ON decision_graph_edges`, `DROP TRIGGER IF EXISTS decision_branch_events_immutable ON decision_branch_events`, `DROP TRIGGER IF EXISTS decision_graph_versions_immutable ON decision_graph_versions`, `DROP TRIGGER IF EXISTS decision_graph_runs_update_guard ON decision_graph_runs`, `DROP TRIGGER IF EXISTS decision_graph_nodes_update_guard ON decision_graph_nodes`, `DROP TRIGGER IF EXISTS decision_graph_edges_cycle_guard ON decision_graph_edges`, `DROP TABLE IF EXISTS decision_budget_events`, `DROP TABLE IF EXISTS decision_records`, `DROP TABLE IF EXISTS decision_verifications`, `DROP TABLE IF EXISTS decision_observations`, `DROP TABLE IF EXISTS decision_node_executions`, `DROP TABLE IF EXISTS decision_graph_budgets`, `DROP TABLE IF EXISTS decision_branch_events`, `DROP TABLE IF EXISTS decision_graph_edges`, `DROP TABLE IF EXISTS decision_graph_nodes`, `DROP TABLE IF EXISTS decision_graph_versions`, `DROP TABLE IF EXISTS decision_graph_runs`, `DROP FUNCTION IF EXISTS decision_graph_immutable_row()`, `DROP FUNCTION IF EXISTS decision_graph_guard_run_update()`, `DROP FUNCTION IF EXISTS decision_graph_guard_node_update()`, `DROP FUNCTION IF EXISTS decision_graph_reject_edge_cycle()`,
-		`DROP TABLE IF EXISTS improvement_promotion_decisions`, `DROP TABLE IF EXISTS improvement_candidates`,
-		`DROP TABLE IF EXISTS model_provider_outcomes`, `DROP TABLE IF EXISTS model_provider_requests`, `DROP FUNCTION IF EXISTS set_model_provider_outcome_transport()`, `DROP FUNCTION IF EXISTS reject_model_provider_outcome_mutation()`, `DROP FUNCTION IF EXISTS reject_model_provider_request_mutation()`, `ALTER TABLE IF EXISTS model_dispatch_attempts DROP CONSTRAINT IF EXISTS model_dispatch_attempts_identity_assertion_fk`, `ALTER TABLE IF EXISTS model_dispatch_attempts DROP CONSTRAINT IF EXISTS model_dispatch_attempts_identity_key_fk`, `DROP TABLE IF EXISTS model_execution_identity_assertions`, `DROP TABLE IF EXISTS model_execution_identity_challenges`, `DROP TABLE IF EXISTS model_execution_identity_keys`, `DROP TABLE IF EXISTS model_execution_identity_policy_versions`, `DROP TABLE IF EXISTS model_egress_evaluations`, `DROP TABLE IF EXISTS model_invocation_usage`, `DROP TABLE IF EXISTS model_invocation_results`, `DROP TABLE IF EXISTS model_dispatch_attempts`, `DROP TABLE IF EXISTS model_invocations`, `DROP TABLE IF EXISTS role_model_bindings`, `DROP TABLE IF EXISTS model_capability_snapshots`, `DROP TABLE IF EXISTS model_profile_versions`, `DROP TABLE IF EXISTS model_profiles`, `DROP TABLE IF EXISTS model_providers`, `DROP TABLE IF EXISTS model_egress_revision_bindings`, `DROP TABLE IF EXISTS model_egress_rules`, `DROP TABLE IF EXISTS model_egress_policy_versions`, `DROP FUNCTION IF EXISTS model_egress_revision_belongs_to_organization(TEXT,BIGINT)`, `DROP FUNCTION IF EXISTS model_egress_normalized_reason_codes(JSONB)`, `DROP FUNCTION IF EXISTS model_egress_normalized_classifications(JSONB)`, `DROP FUNCTION IF EXISTS reject_model_egress_immutable_mutation()`, `DROP FUNCTION IF EXISTS enforce_model_egress_rule_insert_window()`, `DROP FUNCTION IF EXISTS enforce_model_egress_policy_version_immutability()`, `DROP TABLE IF EXISTS context_segments`, `DROP TABLE IF EXISTS context_snapshots`, `DROP FUNCTION IF EXISTS reject_context_segment_mutation()`, `DROP TABLE IF EXISTS authorization_uses`, `DROP TABLE IF EXISTS authorization_decisions`, `DROP TABLE IF EXISTS authorization_requests`, `DROP TABLE IF EXISTS staging_events`, `DROP TABLE IF EXISTS staging_reviews`, `DROP TABLE IF EXISTS staging_promotions`, `DROP TABLE IF EXISTS staging_checks`, `DROP TABLE IF EXISTS staging_workspace_artifacts`, `DROP TABLE IF EXISTS staging_artifacts`, `DROP TABLE IF EXISTS staging_workspaces`, `DROP TABLE IF EXISTS outbox_events`, `DROP TABLE IF EXISTS task_dead_letters`, `DROP TABLE IF EXISTS task_events`, `DROP TABLE IF EXISTS task_leases`, `DROP TABLE IF EXISTS task_attempts`, `DROP TABLE IF EXISTS task_evidence`, `DROP TABLE IF EXISTS task_requirements`, `DROP TABLE IF EXISTS task_dependencies`, `DROP TABLE IF EXISTS tasks`, `DROP TABLE IF EXISTS organization_reporting_lines`, `ALTER TABLE IF EXISTS organizational_units DROP CONSTRAINT IF EXISTS organizational_units_leader_role_fk`, `ALTER TABLE IF EXISTS organizations DROP CONSTRAINT IF EXISTS organizations_ceo_role_fk`, `ALTER TABLE IF EXISTS organizations DROP CONSTRAINT IF EXISTS organizations_owner_role_fk`, `DROP TABLE IF EXISTS organization_roles`, `DROP TABLE IF EXISTS organizational_units`, `DROP TABLE IF EXISTS organizations`, `DROP TABLE IF EXISTS organization_registry_revision_documents`, `DROP TABLE IF EXISTS organization_registry_revisions`, `DROP TABLE IF EXISTS audit_events`, `DROP TABLE IF EXISTS schema_migrations`,
-	} {
-		if _, err := store.Pool().Exec(ctx, statement); err != nil {
-			t.Fatalf("reset integration schema: %v", err)
-		}
+	// A hand-maintained per-table/function DROP list here previously went
+	// silently out of sync with the real migrations more than once — most
+	// recently missing every table migration 000009 creates entirely, which
+	// left runner.Up below unable to recreate them and corrupted this
+	// database for every other integration suite sharing it, since this
+	// test's DROP list ran destructively but incompletely. Recreating the
+	// whole public schema is the only reset that can't drift from whatever
+	// migrations actually exist, now or in the future.
+	if _, err := store.Pool().Exec(ctx, `DROP SCHEMA public CASCADE; CREATE SCHEMA public;`); err != nil {
+		t.Fatalf("reset integration schema: %v", err)
 	}
 	runner, err := platformmigrations.New(store.Pool(), rootmigrations.Files)
 	if err != nil {
@@ -58,15 +58,20 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Applied) != 18 || result.Current != 18 {
-		t.Fatalf("unexpected migration result: %+v", result)
+	loadedTip, err := platformmigrations.Load(rootmigrations.Files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tip := loadedTip[len(loadedTip)-1].Version
+	if int64(len(result.Applied)) != tip || result.Current != tip {
+		t.Fatalf("unexpected migration result: %+v want tip=%d", result, tip)
 	}
 	status, err := runner.Status(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !status.Ready || status.Pending != 0 || status.Applied != 18 || status.Current != 18 || status.Latest != 18 {
-		t.Fatalf("status=%+v", status)
+	if !status.Ready || status.Pending != 0 || status.Applied != int(tip) || status.Current != tip || status.Latest != tip {
+		t.Fatalf("status=%+v want tip=%d", status, tip)
 	}
 	if err := store.UnitOfWork().WithinTransaction(ctx, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `INSERT INTO audit_events (event_type,actor_type,actor_id,payload) VALUES ($1,$2,$3,$4::jsonb)`, "integration.commit", "test", "runner", `{"ok":true}`)
@@ -95,15 +100,28 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(second.Applied) != 0 || second.Current != 18 {
-		t.Fatalf("second=%+v", second)
+	if len(second.Applied) != 0 || second.Current != tip {
+		t.Fatalf("second=%+v want current=%d", second, tip)
 	}
 	loaded, err := platformmigrations.Load(rootmigrations.Files)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded) != 18 || loaded[17].Version != 18 {
-		t.Fatalf("loaded=%d last=%d want 18/18", len(loaded), loaded[len(loaded)-1].Version)
+	if int64(len(loaded)) != tip || loaded[len(loaded)-1].Version != tip {
+		t.Fatalf("loaded=%d last=%d want %d/%d", len(loaded), loaded[len(loaded)-1].Version, tip, tip)
+	}
+
+	// Roll back migration 000019 first — it only adds constraints onto
+	// tables migration 000017 creates, but must still be undone before 000017
+	// itself, since 000017's down script drops those tables outright.
+	if err := store.UnitOfWork().WithinTransaction(ctx, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, loaded[18].DownSQL); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `DELETE FROM schema_migrations WHERE version=19`)
+		return err
+	}); err != nil {
+		t.Fatalf("down migration 000019: %v", err)
 	}
 
 	// First prove R21 can roll back to the exact post-R20 schema when no CLI
@@ -146,7 +164,7 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(restored.Applied) != 2 || restored.Applied[0] != 17 || restored.Applied[1] != 18 || restored.Current != 18 {
-		t.Fatalf("restore=%+v want 000017+000018", restored)
+	if len(restored.Applied) != 3 || restored.Applied[0] != 17 || restored.Applied[1] != 18 || restored.Applied[2] != 19 || restored.Current != tip {
+		t.Fatalf("restore=%+v want 000017+000018+000019", restored)
 	}
 }
