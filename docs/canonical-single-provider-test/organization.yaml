@@ -1,0 +1,69 @@
+schema_version: 0.1.0
+document_status: branch_0_candidate
+organization:
+  id: explorarte
+  display_name: Psi.Explorarte
+  owner_role_id: empresa/human
+  canonical_source: docs/canonical/organization.yaml
+  runtime_target: single_modular_go_binary
+  state_store_target: postgresql
+  cells_are_external: true
+executive:
+  ceo_role_id: empresa/ceo
+  observer:
+    id: empresa/ceo_observer
+    runtime_kind: concurrent_read_only_observer
+    may_reply_to_owner: false
+    may_delegate: false
+    may_mutate_projects: false
+    late_result_policy: attach_to_next_turn
+    model_policy: executive.observer
+    decision_status: candidate_owner_confirmed_behavior_model_pending
+operational_departments:
+- id: comunicaciones
+  leader_role_id: comunicaciones/editor_contenido_marca
+  agent_path: comunicaciones/AGENT.md
+- id: creativo
+  leader_role_id: creativo/disenador
+  agent_path: creativo/AGENT.md
+- id: finanzas
+  leader_role_id: finanzas/administrador_financiero
+  agent_path: finanzas/AGENT.md
+- id: ingenieria_ia
+  leader_role_id: ingenieria_ia/orquestador
+  agent_path: ingenieria_ia/AGENT.md
+- id: marketing
+  leader_role_id: marketing/estratega_crecimiento
+  agent_path: marketing/AGENT.md
+- id: recursos_agenticos
+  leader_role_id: recursos_agenticos/desarrollo_organizacional
+  agent_path: recursos_agenticos/AGENT.md
+- id: servicios
+  leader_role_id: servicios/product_manager_portafolio
+  agent_path: servicios/AGENT.md
+transversal_units:
+- id: empresa
+  kind: executive_layer
+  leaderless: true
+  roles:
+  - empresa/human
+  - empresa/ceo
+  - empresa/ceo_observer
+- id: investigacion
+  kind: independent_audit_and_research
+  leaderless: true
+  roles:
+  - investigacion/auditor_cerebro_empresa
+  - investigacion/research_worker_hourly
+  hourly_schedule: 0 * * * *
+  timezone: America/Santiago
+  publishes_directly_to_approved_rag: false
+daily_cycle:
+  enabled: false
+  schedule: null
+  action: null
+  decision_status: open_exact_behavior_not_defined_by_sources
+counts:
+  operational_departments: 7
+  imported_profiles: 45
+  proposed_profiles: 3

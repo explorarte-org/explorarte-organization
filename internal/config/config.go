@@ -91,6 +91,18 @@ type Config struct {
 	Authorization AuthorizationConfig
 	Context       ContextConfig
 	Staging       StagingConfig
+	ModelRuntime  ModelRuntimeConfig
+}
+
+// ModelRuntimeConfig holds test-only overrides for model routing/egress. All
+// fields default to production-safe values and must be explicitly enabled.
+type ModelRuntimeConfig struct {
+	// SingleProviderTestMode relaxes the R24 executive egress scope gate so
+	// that a single openai_compatible provider can satisfy the CEO, leader,
+	// and worker scopes for a smoke test. Off by default; production
+	// canonical routing and the gate itself are unaffected unless this is
+	// explicitly set via ORG_MODEL_SINGLE_PROVIDER_TEST=true.
+	SingleProviderTestMode bool
 }
 
 type AppConfig struct {
@@ -250,6 +262,10 @@ func LoadFrom(lookup LookupEnv) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	singleProviderTestMode, err := boolean(lookup, "ORG_MODEL_SINGLE_PROVIDER_TEST", false)
+	if err != nil {
+		return Config{}, err
+	}
 
 	cfg := Config{
 		App: AppConfig{
@@ -274,6 +290,7 @@ func LoadFrom(lookup LookupEnv) (Config, error) {
 		Authorization: authorization,
 		Context:       contextConfig,
 		Staging:       staging,
+		ModelRuntime:  ModelRuntimeConfig{SingleProviderTestMode: singleProviderTestMode},
 	}
 
 	if err := cfg.Validate(); err != nil {

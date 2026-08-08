@@ -58,12 +58,18 @@ func scopeRequired(provider string, dataClasses []string) bool {
 	return false
 }
 
-func scopeAllows(provider, transport, scope string) bool {
+func scopeAllows(provider, transport, scope string, singleProviderTest bool) bool {
 	switch provider {
 	case "alibaba_token_plan_via_claude_code":
 		return transport == "cli_adapter" && scope == ScopeExecutiveCEO
 	case "openai_compatible":
-		return transport == "http_adapter" && scope == ScopeDepartmentLeader
+		if transport != "http_adapter" {
+			return false
+		}
+		if singleProviderTest {
+			return scope == ScopeExecutiveCEO || scope == ScopeDepartmentLeader || scope == ScopeDepartmentWorker
+		}
+		return scope == ScopeDepartmentLeader
 	case "deepseek":
 		return transport == "http_adapter" && scope == ScopeDepartmentWorker
 	default:
@@ -88,13 +94,13 @@ func scopeVerifiedReason(scope string) string {
 // routing has resolved provider/transport and after Context Engine has resolved
 // data classes. A provider/classification combination that requires executive
 // scope is rejected unless the durable context-derived marker matches exactly.
-func ValidateExecutiveScope(provider, transport string, dataClasses []string, scope string) (string, bool) {
+func ValidateExecutiveScope(provider, transport string, dataClasses []string, scope string, singleProviderTest bool) (string, bool) {
 	classes, _ := NormalizeClassifications(dataClasses)
 	if !scopeRequired(strings.TrimSpace(provider), classes) {
 		return "executive_scope_not_required", true
 	}
 	scope = strings.TrimSpace(scope)
-	if !scopeAllows(strings.TrimSpace(provider), strings.TrimSpace(transport), scope) {
+	if !scopeAllows(strings.TrimSpace(provider), strings.TrimSpace(transport), scope, singleProviderTest) {
 		return "executive_scope_required", false
 	}
 	reason := scopeVerifiedReason(scope)

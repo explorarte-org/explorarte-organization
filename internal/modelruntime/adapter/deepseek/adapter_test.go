@@ -1,4 +1,4 @@
-package openaicompat
+package deepseek
 
 import (
 	"context"
@@ -38,25 +38,26 @@ func validRequest(deadline time.Time) modelruntime.CanonicalRequest {
 	return modelruntime.CanonicalRequest{
 		InvocationID: 1, DispatchAttemptID: 2, OrganizationID: "explorarte",
 		OrganizationRevisionID: 3, TaskID: 4, AttemptID: 5,
-		DispatchActorRoleID: "ingenieria_ia/code-runner", SubjectRoleID: "ingenieria_ia/orquestador",
-		ModelProfileID: "department.leader", ModelProfileVersionID: 6,
-		ProviderID: ProviderID, ProviderModelID: "gpt-compatible-test",
+		DispatchActorRoleID: "ingenieria_ia/code-runner", SubjectRoleID: "ingenieria_ia/qa",
+		ModelProfileID: "department.worker", ModelProfileVersionID: 6,
+		ProviderID: ProviderID, ProviderModelID: "deepseek-v4-flash",
 		ProviderIdempotencyKey: modelruntime.SHA256Bytes([]byte("provider-request")),
 		ContextSnapshotID:      7, ContextRenderedHash: modelruntime.SHA256Bytes([]byte("hello")),
 		RenderedContext: []byte("hello"), OutputMode: modelruntime.OutputText,
 		MaxOutputTokens: 64, ThinkingMode: modelruntime.ThinkingOpaque,
-		ReasoningEffort: "high", Deadline: deadline,
+		Deadline: deadline,
 	}
 }
 
 func TestConfigRequiresSecureExplicitEndpointAndCredentialReference(t *testing.T) {
 	credential := writeCredential(t, "test-provider-token")
 	for name, endpoint := range map[string]string{
-		"plain HTTP": "http://example.test/v1/chat/completions",
-		"userinfo":   "https://user@example.test/v1/chat/completions",
-		"query":      "https://example.test/v1/chat/completions?x=1",
-		"fragment":   "https://example.test/v1/chat/completions#x",
-		"wrong path": "https://example.test/v1/responses",
+		"plain HTTP":      "http://api.deepseek.com/chat/completions",
+		"userinfo":        "https://user@api.deepseek.com/chat/completions",
+		"query":           "https://api.deepseek.com/chat/completions?x=1",
+		"fragment":        "https://api.deepseek.com/chat/completions#x",
+		"v1 prefix wrong": "https://api.deepseek.com/v1/chat/completions",
+		"wrong path":      "https://api.deepseek.com/responses",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := adapterConfig(endpoint, credential).Validate(); err == nil {
@@ -64,11 +65,11 @@ func TestConfigRequiresSecureExplicitEndpointAndCredentialReference(t *testing.T
 			}
 		})
 	}
-	cfg := adapterConfig("https://example.test/v1/chat/completions", "relative-token")
+	cfg := adapterConfig("https://api.deepseek.com/chat/completions", "relative-token")
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("relative credential path unexpectedly accepted")
 	}
-	if err := adapterConfig("https://example.test/v1/chat/completions", credential).Validate(); err != nil {
+	if err := adapterConfig("https://api.deepseek.com/chat/completions", credential).Validate(); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -78,7 +79,7 @@ func TestDispatchSendsBoundedCanonicalRequestAndNormalizesResponse(t *testing.T)
 	var called atomic.Int32
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called.Add(1)
-		if r.Method != http.MethodPost || r.URL.Path != "/v1/chat/completions" {
+		if r.Method != http.MethodPost || r.URL.Path != "/chat/completions" {
 			t.Errorf("request=%s %s", r.Method, r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer test-provider-token" {
@@ -97,14 +98,14 @@ func TestDispatchSendsBoundedCanonicalRequestAndNormalizesResponse(t *testing.T)
 			t.Error(err)
 			return
 		}
-		if payload["model"] != "gpt-compatible-test" || payload["stream"] != false || payload["reasoning_effort"] != "high" {
+		if payload["model"] != "deepseek-v4-flash" || payload["stream"] != false {
 			t.Errorf("payload=%s", body)
 		}
-		if _, present := payload["max_tokens"]; present {
-			t.Errorf("reasoning request must omit max_tokens: payload=%s", body)
+		if _, present := payload["reasoning_effort"]; present {
+			t.Errorf("non-reasoning request must omit reasoning_effort: payload=%s", body)
 		}
-		if payload["max_completion_tokens"] != float64(64) {
-			t.Errorf("reasoning request max_completion_tokens=%v want 64: payload=%s", payload["max_completion_tokens"], body)
+		if payload["max_tokens"] != float64(64) {
+			t.Errorf("max_tokens=%v want 64: payload=%s", payload["max_tokens"], body)
 		}
 		w.Header().Set("x-request-id", "provider-request-1")
 		w.Header().Set("Content-Type", "application/json")
@@ -112,7 +113,7 @@ func TestDispatchSendsBoundedCanonicalRequestAndNormalizesResponse(t *testing.T)
 	}))
 	defer server.Close()
 
-	cfg := adapterConfig(server.URL+"/v1/chat/completions", credential)
+	cfg := adapterConfig(server.URL+"/chat/completions", credential)
 	adapter, err := newAdapter(cfg, server.Client(), time.Now)
 	if err != nil {
 		t.Fatal(err)
@@ -125,8 +126,14 @@ func TestDispatchSendsBoundedCanonicalRequestAndNormalizesResponse(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if called.Load() != 1 || string(response.Content) != "ok" || response.ProviderRequestID != "provider-request-1" || response.InputTokens != 12 || response.OutputTokens != 3 || len(response.ToolIntents) != 1 {
-		t.Fatalf("response=%+v calls=%d", response, called.Load())
+	if called.Load() != 1 {
+		t.Fatalf("called=%d", called.Load())
+	}
+	if string(response.Content) != "ok" || response.InputTokens != 12 || response.OutputTokens != 3 || response.ProviderRequestID != "provider-request-1" {
+		t.Fatalf("response=%+v", response)
+	}
+	if len(response.ToolIntents) != 1 || response.ToolIntents[0].Name != "inspect" {
+		t.Fatalf("tool intents=%+v", response.ToolIntents)
 	}
 	if response.ProviderOutcome.OutcomeClassification != modelruntime.ProviderOutcomeResponseReceived || response.ProviderOutcome.HTTPStatus != http.StatusOK || len(response.ProviderOutcome.ResponseHash) != 64 {
 		t.Fatalf("outcome=%+v", response.ProviderOutcome)
@@ -179,7 +186,7 @@ func TestDispatchUsesStructuredOutputWithoutPersistingSchemaContent(t *testing.T
 		_, _ = io.WriteString(w, `{"id":"r1","choices":[{"message":{"content":"{\"ok\":true}"}}],"usage":{}}`)
 	}))
 	defer server.Close()
-	adapter, err := newAdapter(adapterConfig(server.URL+"/v1/chat/completions", credential), server.Client(), time.Now)
+	adapter, err := newAdapter(adapterConfig(server.URL+"/chat/completions", credential), server.Client(), time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +207,7 @@ func TestDispatchClassifiesProviderRejectionWithoutLeakingMessage(t *testing.T) 
 		_, _ = io.WriteString(w, `{"error":{"type":"rate_limit_error","code":"rate_limit_exceeded","message":"sensitive provider message"}}`)
 	}))
 	defer server.Close()
-	adapter, err := newAdapter(adapterConfig(server.URL+"/v1/chat/completions", credential), server.Client(), time.Now)
+	adapter, err := newAdapter(adapterConfig(server.URL+"/chat/completions", credential), server.Client(), time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +229,7 @@ func TestProviderErrorMetadataIsNormalizedBeforePersistence(t *testing.T) {
 		_, _ = io.WriteString(w, `{"error":{"type":"secret message with spaces","code":{"nested":"do not persist"},"message":"sensitive"}}`)
 	}))
 	defer server.Close()
-	adapter, err := newAdapter(adapterConfig(server.URL+"/v1/chat/completions", credential), server.Client(), time.Now)
+	adapter, err := newAdapter(adapterConfig(server.URL+"/chat/completions", credential), server.Client(), time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +249,7 @@ func TestDispatchRejectsOversizedResponseAndRecordsOnlyBoundedHash(t *testing.T)
 		_, _ = io.WriteString(w, strings.Repeat("x", 2048))
 	}))
 	defer server.Close()
-	cfg := adapterConfig(server.URL+"/v1/chat/completions", credential)
+	cfg := adapterConfig(server.URL+"/chat/completions", credential)
 	cfg.MaxResponseBytes = 1024
 	adapter, err := newAdapter(cfg, server.Client(), time.Now)
 	if err != nil {
@@ -261,7 +268,7 @@ func TestTransportFailureIsAmbiguousAndCircuitOpens(t *testing.T) {
 	client := &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
 		return nil, errors.New("dial failed with provider details")
 	})}
-	adapter, err := newAdapter(adapterConfig("https://example.test/v1/chat/completions", credential), client, func() time.Time { return now })
+	adapter, err := newAdapter(adapterConfig("https://api.deepseek.com/chat/completions", credential), client, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +293,7 @@ func TestRedirectIsRejectedAsAmbiguousAfterRequest(t *testing.T) {
 		http.Redirect(w, r, "/elsewhere", http.StatusTemporaryRedirect)
 	}))
 	defer server.Close()
-	adapter, err := newAdapter(adapterConfig(server.URL+"/v1/chat/completions", credential), server.Client(), time.Now)
+	adapter, err := newAdapter(adapterConfig(server.URL+"/chat/completions", credential), server.Client(), time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}

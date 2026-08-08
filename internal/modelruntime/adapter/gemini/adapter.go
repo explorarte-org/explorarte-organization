@@ -1,4 +1,4 @@
-package openaicompat
+package gemini
 
 import (
 	"bytes"
@@ -98,7 +98,7 @@ func newAdapter(config Config, client *http.Client, now func() time.Time) (*Adap
 		client = &clone
 	}
 	client.CheckRedirect = func(*http.Request, []*http.Request) error {
-		return errors.New("openai-compatible redirects are forbidden")
+		return errors.New("gemini redirects are forbidden")
 	}
 	if now == nil {
 		now = time.Now
@@ -248,11 +248,15 @@ func encodeRequest(request modelruntime.CanonicalRequest) ([]byte, error) {
 		Temperature:     request.Temperature,
 		ReasoningEffort: request.ReasoningEffort, Stream: false,
 	}
-	// Reasoning models (any request carrying a non-empty ReasoningEffort)
-	// reject max_tokens with "unsupported_parameter" and require
-	// max_completion_tokens instead. Non-reasoning callers keep max_tokens
-	// for compatibility with OpenAI-compatible backends that don't
-	// recognize the newer field.
+	// Google's OpenAI-compatibility layer for Gemini accepts both max_tokens
+	// and max_completion_tokens plus reasoning_effort, and applies them to
+	// its native thinking budget (verified live: reasoning_effort=low
+	// measurably reduced hidden thinking-token spend vs. an unset request).
+	// Gemini spends part of max_tokens/max_completion_tokens on invisible
+	// thinking before any visible content — a small budget can be consumed
+	// entirely by thinking, producing finish_reason=length with empty
+	// content (also observed live). Mirror the same field split used for
+	// openaicompat/deepseek for consistency across providers.
 	if strings.TrimSpace(request.ReasoningEffort) != "" {
 		payload.MaxCompletionTokens = request.MaxOutputTokens
 	} else {

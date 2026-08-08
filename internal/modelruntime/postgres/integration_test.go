@@ -147,7 +147,7 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	invocations, err := modelruntime.NewInvocationService(modelIntegrationOrganization, fakeCatalog, tasks, contexts, store, egressStore, identityStore, assignments, modelruntime.ClockFunc(time.Now), 10)
+	invocations, err := modelruntime.NewInvocationService(modelIntegrationOrganization, fakeCatalog, tasks, contexts, store, egressStore, identityStore, assignments, modelruntime.ClockFunc(time.Now), 10, false)
 	if err != nil {
 		t.Fatal(err)
 	}

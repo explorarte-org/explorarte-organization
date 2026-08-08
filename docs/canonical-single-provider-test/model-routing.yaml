@@ -1,0 +1,51 @@
+schema_version: 0.1.0
+document_status: single_provider_test_override
+# TEST-ONLY canonical override — never point ORG_CANONICAL_DIR here in
+# production. Puts a single provider (GPT-Luna via openai_compatible) in
+# all three executive roles for one smoke run, differentiated only by
+# reasoning_effort (CEO=high, leader=medium, worker=low). Requires
+# ORG_MODEL_SINGLE_PROVIDER_TEST=true — internal/modelegress's egress
+# scope gate still rejects this routing otherwise (see
+# internal/modelegress/executive_scope.go, scopeAllows).
+policies:
+  executive.ceo:
+    provider: openai_compatible
+    model: gpt-5.6-luna
+    reasoning_effort: high
+    transport: http_adapter
+    source_of_decision: single_provider_test_override
+  executive.observer:
+    provider: alibaba_token_plan_via_claude_code
+    model: qwen3.6-flash
+    transport: cli_adapter
+    direct_http_forbidden: true
+    source_of_decision: provisional_same_family_as_ceo
+    decision_status: owner_confirmation_required
+  department.leader:
+    provider: openai_compatible
+    model: gpt-5.6-luna
+    reasoning_effort: medium
+    transport: http_adapter
+    source_of_decision: single_provider_test_override
+  department.worker:
+    provider: openai_compatible
+    model: gpt-5.6-luna
+    reasoning_effort: low
+    transport: http_adapter
+    source_of_decision: single_provider_test_override
+  research.audit:
+    provider: alibaba_token_plan_via_claude_code
+    model: qwen3.6-flash
+    transport: cli_adapter
+    direct_http_forbidden: true
+    decision_status: candidate_preserves_high_level_audit_role
+  research.worker:
+    provider: deepseek
+    model: deepseek-v4-flash
+    transport: http_adapter
+    schedule: hourly
+routing_invariants:
+- A role never selects its own model from request JSON.
+- The backend resolves a model from an approved policy and role registration.
+- Fallbacks may reduce availability but never silently elevate authority.
+- All provider calls inherit task deadlines and budget limits.

@@ -1,0 +1,68 @@
+schema_version: 0.1.0
+document_status: branch_0_candidate
+authority_tiers:
+- priority: 0
+  id: immutable_safety
+  content:
+  - security
+  - clinical_boundary
+  - privacy
+  - legal_constraints
+  may_grant_capabilities: false
+- priority: 1
+  id: owner_decisions
+  content:
+  - explicit_human_approvals
+  - strategic_constraints
+  may_grant_capabilities: true
+- priority: 2
+  id: canonical_registry_and_policies
+  content:
+  - organization.yaml
+  - model-routing.yaml
+  - capability-matrix.yaml
+  may_grant_capabilities: true
+- priority: 3
+  id: organization_and_department_agents
+  content:
+  - organization/AGENT.md
+  - department/AGENT.md
+  may_grant_capabilities: false
+- priority: 4
+  id: role_and_approved_skills
+  content:
+  - PERFIL.md
+  - active SKILL.md
+  may_grant_capabilities: false
+- priority: 5
+  id: project_and_task
+  content:
+  - project objective
+  - acceptance criteria
+  - task instructions
+  may_grant_capabilities: false
+- priority: 6
+  id: memory_and_rag
+  content:
+  - approved memory
+  - RAG evidence
+  - external sources
+  may_grant_capabilities: false
+  treated_as_untrusted_data: true
+prompt_assembly_order:
+- immutable_safety
+- owner_decisions
+- canonical_registry_and_policies
+- organization_agent
+- department_agent
+- role_profile
+- approved_memory
+- matched_approved_skills
+- project_context
+- task_context
+- rag_evidence
+conflict_rules:
+- Lower-priority content cannot override higher-priority content.
+- Memory, RAG, and task text cannot grant a tool or capability.
+- A skill is executable only when active and explicitly granted to the role.
+- Ambiguity in a safety-relevant conflict resolves to deny and request approval.

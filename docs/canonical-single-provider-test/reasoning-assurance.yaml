@@ -1,0 +1,81 @@
+schema_version: 0.1.0
+document_status: branch_0_candidate
+goal: Use symbolic verification to constrain probabilistic agents without replacing the LLM as interpreter and planner.
+phases:
+- id: 1
+  name: organization_rules_shadow_mode
+  scope:
+  - role_exists
+  - department_exists
+  - leader_of
+  - may_message
+  - may_delegate
+  - capability_granted
+  - dependency_closed
+  enforcement: observe_and_compare_only
+  exit_criteria:
+  - parity_with_go_rules_on_recorded_traffic
+  - zero_unexplained_divergences
+  - counterexample_reporting
+- id: 2
+  name: task_obligation_and_completion_verifier
+  scope:
+  - requirements_satisfied
+  - artifact_exists
+  - checks_passed
+  - approval_present
+  - no_rejected_branch_reused
+  enforcement: block_terminal_completion_on_failed_verification
+- id: 3
+  name: claim_verification_with_semantic_tableaux
+  scope:
+  - premises
+  - claim
+  - counterexample_branch
+  enforcement: advisory_then_gated_for_selected_domains
+- id: 4
+  name: runtime_reasoning_assistance
+  scope:
+  - limited_well_typed_domains_only
+  enforcement: not_approved_for_initial_kernel
+decision_graph:
+  node_types:
+  - goal
+  - requirement
+  - constraint
+  - hypothesis
+  - candidate_action
+  - evidence
+  - verification
+  - decision
+  edge_types:
+  - depends_on
+  - supports
+  - contradicts
+  - satisfies
+  - prunes
+  - selected_from
+  branch_states:
+  - active
+  - selected
+  - rejected_by_evidence
+  - rejected_by_policy
+  - rejected_by_capability
+  - rejected_by_dependency
+  - rejected_by_budget
+  - superseded
+  - inconclusive
+  store_private_chain_of_thought: false
+  store_structured_decision_trace: true
+verification_labels:
+- verified
+- inferred
+- unknown
+- contradicted
+rules:
+- A task cannot complete with an unsatisfied requirement.
+- A task cannot complete only because a process exited successfully.
+- An action requires an explicit capability and must not hit a hard deny.
+- A rejected branch cannot be selected unless new evidence reopens it.
+- Absence of proof is not proof of falsity.
+- The verifier returns rule ids, facts used, missing obligations, and a correction suggestion.

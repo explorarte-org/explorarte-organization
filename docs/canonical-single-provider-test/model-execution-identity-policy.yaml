@@ -1,0 +1,8 @@
+schema_version: "1"
+document_status: active
+policy_id: model-execution-identity
+policy_version: 1
+default_action: deny
+algorithm: ed25519
+challenge_ttl_seconds: 120
+clock_skew_seconds: 15

@@ -1,4 +1,4 @@
-package openaicompat
+package deepseek
 
 import (
 	"bytes"
@@ -98,7 +98,7 @@ func newAdapter(config Config, client *http.Client, now func() time.Time) (*Adap
 		client = &clone
 	}
 	client.CheckRedirect = func(*http.Request, []*http.Request) error {
-		return errors.New("openai-compatible redirects are forbidden")
+		return errors.New("deepseek redirects are forbidden")
 	}
 	if now == nil {
 		now = time.Now
@@ -248,11 +248,12 @@ func encodeRequest(request modelruntime.CanonicalRequest) ([]byte, error) {
 		Temperature:     request.Temperature,
 		ReasoningEffort: request.ReasoningEffort, Stream: false,
 	}
-	// Reasoning models (any request carrying a non-empty ReasoningEffort)
-	// reject max_tokens with "unsupported_parameter" and require
-	// max_completion_tokens instead. Non-reasoning callers keep max_tokens
-	// for compatibility with OpenAI-compatible backends that don't
-	// recognize the newer field.
+	// DeepSeek documents its Chat Completions endpoint as OpenAI-compatible.
+	// Mirror the same reasoning-effort/max_completion_tokens split used for
+	// real OpenAI reasoning models (see internal/modelruntime/adapter/openaicompat)
+	// so a reasoning-tagged request never sends the max_tokens field that
+	// OpenAI's own reasoning models reject; non-reasoning DeepSeek calls keep
+	// max_tokens, which is the field DeepSeek's own docs and examples use.
 	if strings.TrimSpace(request.ReasoningEffort) != "" {
 		payload.MaxCompletionTokens = request.MaxOutputTokens
 	} else {

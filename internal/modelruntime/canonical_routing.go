@@ -474,7 +474,7 @@ func profileIDForPolicy(policy string) string {
 
 // compiledAdapterAvailability lists, in this exact literal form, every
 // provider/transport pair with a compiled adapter. scripts/check-model-runtime-fitness.sh
-// greps for these two conditions verbatim; keep the phrasing (policy.Transport
+// greps for these conditions verbatim; keep the phrasing (policy.Transport
 // == ... && policy.Provider == ...) in sync with the fitness script if this
 // set ever changes.
 func compiledAdapterAvailability(policy routingPolicy) (AdapterStatus, bool) {
@@ -482,6 +482,10 @@ func compiledAdapterAvailability(policy routingPolicy) (AdapterStatus, bool) {
 	case policy.Transport == TransportFake && policy.Provider == "test.fake":
 		return AdapterAvailable, true
 	case policy.Transport == TransportHTTP && policy.Provider == "openai_compatible":
+		return AdapterAvailable, true
+	case policy.Transport == TransportHTTP && policy.Provider == "deepseek":
+		return AdapterAvailable, true
+	case policy.Transport == TransportHTTP && policy.Provider == "gemini":
 		return AdapterAvailable, true
 	default:
 		return AdapterUnavailable, false

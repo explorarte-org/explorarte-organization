@@ -1,0 +1,68 @@
+schema_version: 0.1.0
+document_status: branch_0_candidate
+departments:
+- id: comunicaciones
+  leader: comunicaciones/editor_contenido_marca
+  workers:
+  - comunicaciones/analista_audiencias
+  - comunicaciones/community_manager
+  - comunicaciones/rrpp_alianzas
+- id: creativo
+  leader: creativo/disenador
+  workers:
+  - creativo/copywriter
+  - creativo/editor_video
+  - creativo/fotografo
+  - creativo/ilustrador
+- id: finanzas
+  leader: finanzas/administrador_financiero
+  workers:
+  - finanzas/analista_costos
+  - finanzas/analista_kpis
+  - finanzas/estratega_expansion
+  - finanzas/ingeniero_industrial
+- id: ingenieria_ia
+  leader: ingenieria_ia/orquestador
+  workers:
+  - ingenieria_ia/arquitecto_infraestructura
+  - ingenieria_ia/arquitecto_software
+  - ingenieria_ia/ciberseguridad
+  - ingenieria_ia/code-runner
+  - ingenieria_ia/data_engineer
+  - ingenieria_ia/frontend
+  - ingenieria_ia/guardian_cloud
+  - ingenieria_ia/ml_data_scientist
+  - ingenieria_ia/project_manager
+  - ingenieria_ia/qa
+  - ingenieria_ia/workflow_grafos
+  - ingenieria_ia/razonamiento_logico
+- id: marketing
+  leader: marketing/estratega_crecimiento
+  workers:
+  - marketing/analista_performance
+  - marketing/investigador_consumidor
+- id: recursos_agenticos
+  leader: recursos_agenticos/desarrollo_organizacional
+  workers:
+  - recursos_agenticos/curador_catalogo
+  - recursos_agenticos/disenador_perfiles
+  - recursos_agenticos/disenador_skills
+  - recursos_agenticos/evaluador_agentes
+  - recursos_agenticos/investigacion_ra
+- id: servicios
+  leader: servicios/product_manager_portafolio
+  workers:
+  - servicios/analista_calidad
+  - servicios/disenador_uxui
+  - servicios/operaciones_servicio
+  - servicios/responsable_datos
+  - servicios/service_designer
+  - servicios/soporte_usuario
+transversal:
+  empresa:
+  - empresa/human
+  - empresa/ceo
+  - empresa/ceo_observer
+  investigacion:
+  - investigacion/auditor_cerebro_empresa
+  - investigacion/research_worker_hourly

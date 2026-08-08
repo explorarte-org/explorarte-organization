@@ -14,8 +14,8 @@ test -f migrations/000007_create_model_runtime_gateway.down.sql || fail "migrati
 # shell execution and background model daemons remain forbidden everywhere
 # outside the sandboxed Alibaba Claude Code CLI adapter, which is separately
 # governed by check-alibaba-cli-fitness.sh.
-if rg -n --glob '*.go' --glob '!internal/modelruntime/adapter/openaicompat/**' '"net/http"' internal/modelruntime; then
-  fail "network client found outside the approved openai-compatible adapter"
+if rg -n --glob '*.go' --glob '!internal/modelruntime/adapter/openaicompat/**' --glob '!internal/modelruntime/adapter/deepseek/**' --glob '!internal/modelruntime/adapter/gemini/**' '"net/http"' internal/modelruntime; then
+  fail "network client found outside the approved openai-compatible, DeepSeek, or Gemini adapters"
 fi
 if rg -n --glob '*.go' --glob '!internal/modelruntime/adapter/alibabaclaude/**' '("os/exec"|exec\.Command|syscall\.|/bin/(ba)?sh|sh -c)' internal/modelruntime internal/secrets; then
   fail "subprocess or shell execution found in model runtime"
@@ -26,7 +26,7 @@ fi
 if find internal/modelruntime/adapter -maxdepth 1 -type f -name '*.go' ! -name 'fake.go' ! -name 'fake_test.go' ! -name 'registry.go' -print | grep -q .; then
   fail "unexpected top-level provider adapter implementation found"
 fi
-if find internal/modelruntime/adapter -mindepth 1 -maxdepth 1 -type d ! -name openaicompat ! -name alibabaclaude -print | grep -q .; then
+if find internal/modelruntime/adapter -mindepth 1 -maxdepth 1 -type d ! -name openaicompat ! -name alibabaclaude ! -name deepseek ! -name gemini -print | grep -q .; then
   fail "unexpected real provider adapter directory found"
 fi
 
@@ -58,6 +58,18 @@ allowed = {
     "ORG_MODEL_PROVIDER_OPENAI_COMPATIBLE_REQUEST_TIMEOUT",
     "ORG_MODEL_PROVIDER_OPENAI_COMPATIBLE_CIRCUIT_FAILURE_THRESHOLD",
     "ORG_MODEL_PROVIDER_OPENAI_COMPATIBLE_CIRCUIT_OPEN_DURATION",
+    "ORG_MODEL_PROVIDER_DEEPSEEK_ENABLED",
+    "ORG_MODEL_PROVIDER_DEEPSEEK_ENDPOINT_URL",
+    "ORG_MODEL_PROVIDER_DEEPSEEK_CREDENTIAL_FILE",
+    "ORG_MODEL_PROVIDER_DEEPSEEK_REQUEST_TIMEOUT",
+    "ORG_MODEL_PROVIDER_DEEPSEEK_CIRCUIT_FAILURE_THRESHOLD",
+    "ORG_MODEL_PROVIDER_DEEPSEEK_CIRCUIT_OPEN_DURATION",
+    "ORG_MODEL_PROVIDER_GEMINI_ENABLED",
+    "ORG_MODEL_PROVIDER_GEMINI_ENDPOINT_URL",
+    "ORG_MODEL_PROVIDER_GEMINI_CREDENTIAL_FILE",
+    "ORG_MODEL_PROVIDER_GEMINI_REQUEST_TIMEOUT",
+    "ORG_MODEL_PROVIDER_GEMINI_CIRCUIT_FAILURE_THRESHOLD",
+    "ORG_MODEL_PROVIDER_GEMINI_CIRCUIT_OPEN_DURATION",
     "ORG_MODEL_PROVIDER_ALIBABA_CLAUDE_ENABLED",
     "ORG_MODEL_PROVIDER_ALIBABA_CLAUDE_EXECUTABLE",
     "ORG_MODEL_PROVIDER_ALIBABA_CLAUDE_EXECUTABLE_SHA256",
@@ -146,6 +158,8 @@ routing = Path("internal/modelruntime/canonical_routing.go").read_text(encoding=
 required = {
     'policy.Transport == TransportFake && policy.Provider == "test.fake"',
     'policy.Transport == TransportHTTP && policy.Provider == "openai_compatible"',
+    'policy.Transport == TransportHTTP && policy.Provider == "deepseek"',
+    'policy.Transport == TransportHTTP && policy.Provider == "gemini"',
 }
 missing = [item for item in required if item not in routing]
 if missing:
