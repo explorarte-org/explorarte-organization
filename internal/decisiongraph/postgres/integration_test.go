@@ -58,8 +58,13 @@ func TestDecisionGraphPostgresLedger(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Current != 17 {
-		t.Fatalf("current migration=%d, want 17", result.Current)
+	// Compared against the runner's own Latest (the real migration tip
+	// baked into this binary via rootmigrations.Files), not a hardcoded
+	// version number that goes stale the moment a new migration lands.
+	if status, statusErr := runner.Status(ctx); statusErr != nil {
+		t.Fatal(statusErr)
+	} else if result.Current != status.Latest {
+		t.Fatalf("current migration=%d, want latest=%d", result.Current, status.Latest)
 	}
 	resetDecisionGraphSchema(t, ctx, platform)
 	t.Cleanup(func() { resetDecisionGraphSchema(t, context.Background(), platform) })
@@ -116,6 +121,21 @@ func TestDecisionGraphPostgresLedger(t *testing.T) {
 	conflict.BudgetLimits.MaxNodes++
 	if _, err := service.CreateRun(ctx, conflict); !errors.Is(err, decisiongraph.ErrIdempotencyConflict) {
 		t.Fatalf("idempotency conflict=%v", err)
+	}
+
+	// A real retry recomputes Deadline as now.Add(duration) fresh on every
+	// call (internal/executive/runtimeadapter/decisions.go), so a retry
+	// after a lost response legitimately carries a different deadline than
+	// the original call. That must still resolve to the already-committed
+	// run, not ErrIdempotencyConflict.
+	recomputedDeadline := createRequest
+	recomputedDeadline.Deadline = now.Add(11*time.Minute + 7*time.Second)
+	retryWithRecomputedDeadline, err := service.CreateRun(ctx, recomputedDeadline)
+	if err != nil {
+		t.Fatalf("retry with recomputed deadline: %v", err)
+	}
+	if retryWithRecomputedDeadline.ID != run.ID || !retryWithRecomputedDeadline.Deadline.Equal(run.Deadline) {
+		t.Fatalf("retry with recomputed deadline=%+v, want id=%d deadline=%v (the originally committed run)", retryWithRecomputedDeadline, run.ID, run.Deadline)
 	}
 
 	version, err := service.AppendGraph(ctx, decisiongraph.AppendGraphRequest{

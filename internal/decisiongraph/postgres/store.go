@@ -1273,12 +1273,22 @@ FOR UPDATE`, s.organizationID, key)
 	return run, nil
 }
 
+// sameCreateRequest deliberately does not compare Deadline. A real caller
+// computes Deadline as now.Add(duration) fresh on every call (see
+// internal/executive/runtimeadapter/decisions.go); retrying the identical
+// logical operation after a lost response — the entire point of idempotency
+// — recomputes a different deadline purely because time passed, which
+// previously turned a legitimate retry into a spurious ErrIdempotencyConflict
+// instead of returning the already-committed run. Every field that actually
+// identifies the logical request (task/attempt/policy/budget/idempotency
+// key/creator) still must match exactly; only the inherently time-varying
+// field is excluded. The caller always gets back the run as it was actually
+// committed — including its real deadline — never a value it supplied.
 func sameCreateRequest(run decisiongraph.Run, request decisiongraph.CreateRunRequest) error {
 	if run.TaskID != request.TaskID || run.AttemptID != request.AttemptID ||
 		run.ReasoningPolicySchemaVersion != request.ReasoningPolicySchemaVersion ||
 		run.ReasoningPolicyHash != request.ReasoningPolicyHash ||
 		run.IdempotencyKey != request.IdempotencyKey ||
-		!run.Deadline.Equal(request.Deadline) ||
 		run.CreatedBy != request.CreatedBy || run.BudgetLimits != request.BudgetLimits {
 		return decisiongraph.ErrIdempotencyConflict
 	}
