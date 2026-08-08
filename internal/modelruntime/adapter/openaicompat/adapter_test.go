@@ -100,6 +100,12 @@ func TestDispatchSendsBoundedCanonicalRequestAndNormalizesResponse(t *testing.T)
 		if payload["model"] != "gpt-compatible-test" || payload["stream"] != false || payload["reasoning_effort"] != "high" {
 			t.Errorf("payload=%s", body)
 		}
+		if _, present := payload["max_tokens"]; present {
+			t.Errorf("reasoning request must omit max_tokens: payload=%s", body)
+		}
+		if payload["max_completion_tokens"] != float64(64) {
+			t.Errorf("reasoning request max_completion_tokens=%v want 64: payload=%s", payload["max_completion_tokens"], body)
+		}
 		w.Header().Set("x-request-id", "provider-request-1")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"id":"fallback-id","choices":[{"message":{"content":"ok","tool_calls":[{"function":{"name":"inspect","arguments":{"read_only":true}}}]}}],"usage":{"prompt_tokens":12,"completion_tokens":3}}`)
@@ -124,6 +130,42 @@ func TestDispatchSendsBoundedCanonicalRequestAndNormalizesResponse(t *testing.T)
 	}
 	if response.ProviderOutcome.OutcomeClassification != modelruntime.ProviderOutcomeResponseReceived || response.ProviderOutcome.HTTPStatus != http.StatusOK || len(response.ProviderOutcome.ResponseHash) != 64 {
 		t.Fatalf("outcome=%+v", response.ProviderOutcome)
+	}
+}
+
+func TestEncodeRequestUsesMaxTokensFieldMatchingReasoningEffort(t *testing.T) {
+	reasoning := validRequest(time.Now().Add(time.Minute))
+	reasoning.ReasoningEffort = "high"
+	body, err := encodeRequest(reasoning)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reasoningPayload map[string]any
+	if err = json.Unmarshal(body, &reasoningPayload); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := reasoningPayload["max_tokens"]; present {
+		t.Errorf("reasoning-effort request must omit max_tokens: payload=%s", body)
+	}
+	if reasoningPayload["max_completion_tokens"] != float64(64) {
+		t.Errorf("reasoning-effort request max_completion_tokens=%v want 64: payload=%s", reasoningPayload["max_completion_tokens"], body)
+	}
+
+	nonReasoning := validRequest(time.Now().Add(time.Minute))
+	nonReasoning.ReasoningEffort = ""
+	body, err = encodeRequest(nonReasoning)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var nonReasoningPayload map[string]any
+	if err = json.Unmarshal(body, &nonReasoningPayload); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := nonReasoningPayload["max_completion_tokens"]; present {
+		t.Errorf("non-reasoning request must omit max_completion_tokens: payload=%s", body)
+	}
+	if nonReasoningPayload["max_tokens"] != float64(64) {
+		t.Errorf("non-reasoning request max_tokens=%v want 64: payload=%s", nonReasoningPayload["max_tokens"], body)
 	}
 }
 

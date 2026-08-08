@@ -26,13 +26,14 @@ type Adapter struct {
 }
 
 type chatRequest struct {
-	Model           string          `json:"model"`
-	Messages        []chatMessage   `json:"messages"`
-	MaxTokens       int             `json:"max_tokens"`
-	Temperature     *float64        `json:"temperature,omitempty"`
-	ResponseFormat  json.RawMessage `json:"response_format,omitempty"`
-	ReasoningEffort string          `json:"reasoning_effort,omitempty"`
-	Stream          bool            `json:"stream"`
+	Model               string          `json:"model"`
+	Messages            []chatMessage   `json:"messages"`
+	MaxTokens           int             `json:"max_tokens,omitempty"`
+	MaxCompletionTokens int             `json:"max_completion_tokens,omitempty"`
+	Temperature         *float64        `json:"temperature,omitempty"`
+	ResponseFormat      json.RawMessage `json:"response_format,omitempty"`
+	ReasoningEffort     string          `json:"reasoning_effort,omitempty"`
+	Stream              bool            `json:"stream"`
 }
 
 type chatMessage struct {
@@ -242,10 +243,20 @@ func encodeRequest(request modelruntime.CanonicalRequest) ([]byte, error) {
 		return nil, modelruntime.ErrInvalidRequest
 	}
 	payload := chatRequest{
-		Model:     request.ProviderModelID,
-		Messages:  []chatMessage{{Role: "user", Content: string(request.RenderedContext)}},
-		MaxTokens: request.MaxOutputTokens, Temperature: request.Temperature,
+		Model:           request.ProviderModelID,
+		Messages:        []chatMessage{{Role: "user", Content: string(request.RenderedContext)}},
+		Temperature:     request.Temperature,
 		ReasoningEffort: request.ReasoningEffort, Stream: false,
+	}
+	// Reasoning models (any request carrying a non-empty ReasoningEffort)
+	// reject max_tokens with "unsupported_parameter" and require
+	// max_completion_tokens instead. Non-reasoning callers keep max_tokens
+	// for compatibility with OpenAI-compatible backends that don't
+	// recognize the newer field.
+	if strings.TrimSpace(request.ReasoningEffort) != "" {
+		payload.MaxCompletionTokens = request.MaxOutputTokens
+	} else {
+		payload.MaxTokens = request.MaxOutputTokens
 	}
 	if request.OutputMode == modelruntime.OutputJSON {
 		if len(request.OutputSchema) > 0 {
