@@ -65,10 +65,12 @@ func TestConfidenceFormula(t *testing.T) {
 
 func TestPortabilityClassification(t *testing.T) {
 	now := time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)
+	providerBase := map[string]int64{"provider-a": 100, "provider-b": 200, "provider-c": 300}
 	group := func(provider string, labels ...string) Group {
 		g := Group{Key: GroupKey{UnitID: "ingenieria_ia", RoleID: "ingenieria_ia/qa", ProviderID: provider}}
+		base := providerBase[provider]
 		for i, label := range labels {
-			g.Experiences = append(g.Experiences, testExperience(int64(len(provider)*100+i+1), label, provider, now.Add(time.Duration(i)*time.Minute)))
+			g.Experiences = append(g.Experiences, testExperience(base+int64(i)+1, label, provider, now.Add(time.Duration(i)*time.Minute)))
 		}
 		return g
 	}
