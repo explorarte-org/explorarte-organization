@@ -74,6 +74,19 @@ func (m *memoryTasks) ListByCorrelation(_ context.Context, correlation string) (
 	return out, nil
 }
 
+func (m *memoryTasks) ListAwaitingGating(_ context.Context, limit int) ([]TaskRecord, error) {
+	out := []TaskRecord{}
+	for _, task := range m.tasks {
+		if task.Status == "awaiting_verification" {
+			out = append(out, task)
+		}
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
 func (m *memoryTasks) ClaimTask(_ context.Context, taskID int64, workerID, _ string, duration time.Duration) (TaskRecord, AttemptRecord, LeaseRecord, error) {
 	task := m.tasks[taskID]
 	m.nextAttempt++

@@ -18,6 +18,12 @@ type TaskCoordinator interface {
 	AddDependency(context.Context, int64, int64) error
 	GetTask(context.Context, int64) (TaskRecord, error)
 	ListByCorrelation(context.Context, string) ([]TaskRecord, error)
+	// ListAwaitingGating returns tasks whose latest attempt finished but
+	// were never finalized by gatedComplete — the crash window
+	// ReconcileGatedCompletions exists to close. A task sits in this exact
+	// status from the moment its attempt finishes until gatedComplete
+	// successfully finalizes/blocks it; nothing else produces this status.
+	ListAwaitingGating(context.Context, int) ([]TaskRecord, error)
 	ClaimTask(context.Context, int64, string, string, time.Duration) (TaskRecord, AttemptRecord, LeaseRecord, error)
 	StartAttempt(context.Context, LeaseRecord, string) (TaskRecord, error)
 	Heartbeat(context.Context, LeaseRecord, string, time.Duration) (LeaseRecord, error)

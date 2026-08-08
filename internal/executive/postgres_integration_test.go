@@ -558,6 +558,84 @@ func TestExecutivePostgreSQL17RejectsModelOverridesAndCrossDepartmentDelegation(
 	}
 }
 
+// TestExecutivePostgreSQL17ReconcileGatedCompletionsRecoversOrphanedTask
+// simulates the exact crash window ReconcileGatedCompletions exists to
+// close: RecordAttemptDecision commits (decisiongraph's own transaction),
+// then the process dies before gatedComplete's second half — finalizing the
+// task — runs (a separate transaction in a separate subsystem; there is no
+// shared transaction spanning both). A real end-to-end run establishes a
+// genuinely committed, terminal decision_graph_run; the task's own status is
+// then surgically rewound to StatusAwaitingVerification (the one and only
+// state that means "attempt finished, decision not yet acted on") to
+// reproduce that exact window without needing to hand-roll the task
+// lifecycle machinery the orchestrator already exercises correctly elsewhere
+// in this file.
+func TestExecutivePostgreSQL17ReconcileGatedCompletionsRecoversOrphanedTask(t *testing.T) {
+	h := newIntegrationHarness(t)
+	defer h.close()
+	models := newIntegrationModelRuntime()
+	completionGate := &countingCompletion{delegate: h.completion}
+	orchestrator := newOrchestrator(t, h, models, integrationAssignments{}, completionGate)
+	run, reused, err := orchestrator.Submit(h.ctx, executive.SubmitRequest{
+		ActorRoleID: executive.OwnerRoleID, IdempotencyKey: "integration-reconcile-gating",
+		Goal: executive.OwnerGoal{Goal: "Analyze the organization and return a one-area plan without external actions.", AcceptanceCriteria: []string{"one department reviewed", "closure verified"}},
+	})
+	if err != nil || reused {
+		t.Fatalf("submit: run=%+v reused=%v err=%v", run, reused, err)
+	}
+	run, err = runUntilTerminalOrError(t, h.ctx, orchestrator, run.RootTaskID, 20)
+	if err != nil || run.State != executive.StateCompleted {
+		t.Fatalf("run=%+v err=%v", run, err)
+	}
+
+	var decisionGraphRunsBefore, graphVersionsBefore int
+	if err := h.store.Pool().QueryRow(h.ctx, `SELECT count(*) FROM decision_graph_runs WHERE organization_id='explorarte'`).Scan(&decisionGraphRunsBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.Pool().QueryRow(h.ctx, `SELECT count(*) FROM decision_graph_versions v JOIN decision_graph_runs r ON r.id=v.run_id WHERE r.organization_id='explorarte'`).Scan(&graphVersionsBefore); err != nil {
+		t.Fatal(err)
+	}
+
+	// Rewind only the root task's own status — the decision graph run for
+	// it is already genuinely committed as terminal from the real run
+	// above. This reproduces "decision recorded, task never finalized"
+	// without touching decisiongraph state at all.
+	if _, err := h.store.Pool().Exec(h.ctx, `UPDATE tasks SET status='awaiting_verification', terminal_at=NULL WHERE id=$1`, run.RootTaskID); err != nil {
+		t.Fatal(err)
+	}
+	rewound, err := h.tasks.GetTask(h.ctx, run.RootTaskID)
+	if err != nil || rewound.Task.Status != tasks.StatusAwaitingVerification {
+		t.Fatalf("rewind root task: task=%+v err=%v", rewound.Task, err)
+	}
+
+	result, err := orchestrator.ReconcileGatedCompletions(h.ctx, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Found == 0 || result.Reconciled == 0 || len(result.Failed) != 0 {
+		t.Fatalf("reconcile result=%+v", result)
+	}
+
+	recovered, err := h.tasks.GetTask(h.ctx, run.RootTaskID)
+	if err != nil || recovered.Task.Status != tasks.StatusCompleted {
+		t.Fatalf("recovered root task=%+v err=%v", recovered.Task, err)
+	}
+
+	// The idempotency fix from RecordAttemptDecision must have made
+	// reconciliation a true no-op on the decisiongraph side: no new run, no
+	// extra graph version appended to the existing one.
+	var decisionGraphRunsAfter, graphVersionsAfter int
+	if err := h.store.Pool().QueryRow(h.ctx, `SELECT count(*) FROM decision_graph_runs WHERE organization_id='explorarte'`).Scan(&decisionGraphRunsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.Pool().QueryRow(h.ctx, `SELECT count(*) FROM decision_graph_versions v JOIN decision_graph_runs r ON r.id=v.run_id WHERE r.organization_id='explorarte'`).Scan(&graphVersionsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if decisionGraphRunsAfter != decisionGraphRunsBefore || graphVersionsAfter != graphVersionsBefore {
+		t.Fatalf("reconciliation was not a decisiongraph no-op: runs %d->%d, versions %d->%d", decisionGraphRunsBefore, decisionGraphRunsAfter, graphVersionsBefore, graphVersionsAfter)
+	}
+}
+
 func TestExecutivePostgreSQL17MissingDispatchAssignmentBlocks(t *testing.T) {
 	h := newIntegrationHarness(t)
 	defer h.close()

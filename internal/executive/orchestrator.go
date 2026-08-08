@@ -661,6 +661,56 @@ func (o *Orchestrator) gatedComplete(ctx context.Context, task TaskRecord) (Task
 	}
 }
 
+// ReconcileGatedCompletions closes the crash window between
+// RecordAttemptDecision committing a terminal decision and the task itself
+// being finalized/blocked: two separate Postgres transactions (decisiongraph
+// and tasks each own their own commits; there is no shared transaction
+// spanning both), with nothing driving a retry if the process dies between
+// them. A task sits in StatusAwaitingVerification from the moment its
+// attempt finishes until gatedComplete successfully finalizes it — nothing
+// else produces or clears that status — so finding tasks stuck there is a
+// direct, sufficient signal, without needing to read decisiongraph state at
+// all. Re-running gatedComplete is safe to retry because RecordAttemptDecision
+// is itself now idempotent (see runtimeadapter.DecisionGraph.RecordAttemptDecision):
+// if the decision was already recorded on a prior attempt, it's a no-op, and
+// gatedComplete proceeds straight to the task finalization step that never
+// ran. This is manually triggered (see cmd/orgctl), matching every other
+// reconciliation path in this codebase (orgctl task reconcile, orgctl sleep
+// run, orgctl postrun) — nothing in this system triggers work autonomously
+// on a timer yet; every recurring sweep is operator/cron-invoked.
+func (o *Orchestrator) ReconcileGatedCompletions(ctx context.Context, limit int) (ReconcileGatedCompletionsResult, error) {
+	pending, err := o.tasks.ListAwaitingGating(ctx, limit)
+	if err != nil {
+		return ReconcileGatedCompletionsResult{}, fmt.Errorf("list tasks awaiting gating: %w", err)
+	}
+	var result ReconcileGatedCompletionsResult
+	result.Found = len(pending)
+	// Each task's gatedComplete call is its own independent operation across
+	// separate transactions (that's the exact gap this reconciler exists to
+	// paper over) — one task failing to reconcile must not block recovery
+	// of every other genuinely orphaned task in the same batch.
+	for _, task := range pending {
+		if _, gateErr := o.gatedComplete(ctx, task); gateErr != nil &&
+			!errors.Is(gateErr, ErrCompletionFailed) && !errors.Is(gateErr, ErrCompletionInconclusive) {
+			result.Failed = append(result.Failed, ReconcileGatedCompletionFailure{TaskID: task.ID, Err: gateErr})
+			continue
+		}
+		result.Reconciled++
+	}
+	return result, nil
+}
+
+type ReconcileGatedCompletionsResult struct {
+	Found      int
+	Reconciled int
+	Failed     []ReconcileGatedCompletionFailure
+}
+
+type ReconcileGatedCompletionFailure struct {
+	TaskID int64
+	Err    error
+}
+
 func (o *Orchestrator) completeRoot(ctx context.Context, root, closureTask TaskRecord, result InvocationResult, closure ExecutiveClosure) error {
 	reqID := resultRequirementID(root.Requirements)
 	if reqID == 0 {

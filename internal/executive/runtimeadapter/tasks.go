@@ -95,6 +95,29 @@ func (a Tasks) ListByCorrelation(ctx context.Context, correlation string) ([]exe
 	return out, nil
 }
 
+func (a Tasks) ListAwaitingGating(ctx context.Context, limit int) ([]executive.TaskRecord, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	values, err := a.Service.ListTasks(ctx, tasks.TaskFilter{
+		OrganizationID: a.OrganizationID,
+		Statuses:       []tasks.Status{tasks.StatusAwaitingVerification},
+		Limit:          limit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]executive.TaskRecord, 0, len(values))
+	for _, value := range values {
+		detail, getErr := a.Service.GetTask(ctx, value.ID)
+		if getErr != nil {
+			return nil, getErr
+		}
+		out = append(out, mapTaskDetail(detail))
+	}
+	return out, nil
+}
+
 func (a Tasks) ClaimTask(ctx context.Context, taskID int64, workerID, assignedRole string, duration time.Duration) (executive.TaskRecord, executive.AttemptRecord, executive.LeaseRecord, error) {
 	claimed, err := a.Service.ClaimTaskByID(ctx, taskID, tasks.ClaimRequest{
 		OrganizationID: a.OrganizationID,

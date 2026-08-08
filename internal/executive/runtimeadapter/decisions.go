@@ -86,6 +86,20 @@ func (a DecisionGraph) RecordAttemptDecision(ctx context.Context, record executi
 	if err != nil {
 		return fmt.Errorf("create decision graph run: %w", err)
 	}
+	if run.TerminalAt != nil {
+		// CreateRun is idempotent on (organization, task, attempt): this run
+		// already reached a terminal state on a prior call — the whole
+		// decision was already durably recorded (RecordVerification and
+		// either RecordTerminalDecision or CloseUnselectedRun both already
+		// ran). Recording it again isn't just redundant, it would fail:
+		// AppendGraph would append a spurious extra graph version, and the
+		// terminal step requires the run to still be running/waiting. This
+		// makes gatedComplete's caller-visible half safe to retry after a
+		// crash between recording the decision and finalizing the task
+		// (see internal/executive/orchestrator.go's ReconcileGatedCompletions)
+		// without redoing or corrupting decision graph state.
+		return nil
+	}
 
 	detailHash := digestString(fmt.Sprintf("task:%d:attempt:%d:verdict:%s:detail:%s", record.TaskID, record.AttemptID, record.Verdict, record.Detail))
 	graphVersion, err := a.Service.AppendGraph(ctx, decisiongraph.AppendGraphRequest{

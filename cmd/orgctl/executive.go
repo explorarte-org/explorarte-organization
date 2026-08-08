@@ -36,6 +36,8 @@ func runExecutive(args []string, stdout, stderr io.Writer) int {
 		return runExecutiveResume(args[1:], stdout, stderr)
 	case "worker":
 		return runExecutiveWorker(args[1:], stdout, stderr)
+	case "reconcile-gating":
+		return runExecutiveReconcileGating(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printExecutiveUsage(stdout)
 		return exitOK
@@ -292,11 +294,42 @@ func writeExecutiveValue(out io.Writer, jsonOutput bool, value any) {
 	_ = encoder.Encode(value)
 }
 
+// runExecutiveReconcileGating manually triggers
+// Orchestrator.ReconcileGatedCompletions — recovering tasks whose attempt
+// finished and had its decision durably recorded, but where the process
+// died before the task itself was finalized/blocked. There is no autonomous
+// scheduler in this system yet, so this is operator/cron-triggered, the same
+// way orgctl task reconcile, orgctl sleep run, and orgctl postrun already are.
+func runExecutiveReconcileGating(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("executive reconcile-gating", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	limit := flags.Int("limit", 100, "maximum tasks to reconcile in one call")
+	jsonOutput := flags.Bool("json", false, "emit JSON")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: orgctl executive reconcile-gating [--limit 100] [--json]")
+		return exitUsage
+	}
+	_, runtime, store, ctx, cancel, code := openExecutiveRuntime(stderr, "executive-reconcile-gating", 45*time.Second)
+	if code != exitOK {
+		return code
+	}
+	defer cancel()
+	defer store.Close()
+	result, err := runtime.Orchestrator.ReconcileGatedCompletions(ctx, *limit)
+	writeExecutiveValue(stdout, *jsonOutput, result)
+	if err != nil {
+		fmt.Fprintf(stderr, "executive reconcile-gating: %v\n", err)
+		return executiveExitCode(err)
+	}
+	return exitOK
+}
+
 func printExecutiveUsage(out io.Writer) {
 	fmt.Fprintln(out, `usage: orgctl executive <command> [options]
 commands:
   submit --file goal.json --actor-role empresa/human --idempotency-key KEY [--json]
   status ROOT_TASK_ID [--json]
   resume ROOT_TASK_ID [--json]
-  worker run [--poll 1s] [--error-backoff 3s] [--batch 16]`)
+  worker run [--poll 1s] [--error-backoff 3s] [--batch 16]
+  reconcile-gating [--limit 100] [--json]`)
 }
