@@ -85,6 +85,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runCompletion(args[1:], stdout, stderr)
 	case "shadow":
 		return runShadow(args[1:], stdout, stderr)
+	case "postrun":
+		return runPostrun(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return exitOK

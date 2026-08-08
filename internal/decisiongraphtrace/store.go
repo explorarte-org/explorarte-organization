@@ -51,6 +51,45 @@ func (s *Store) TraceRefForRun(ctx context.Context, runID int64) (evaluation.Tra
 	return trace.Ref, nil
 }
 
+// RunSummary is the task/attempt linkage for a terminal decisiongraph run,
+// for callers that need to act on the run (e.g. re-verifying its
+// completion obligations) without depending on internal/decisiongraph
+// directly. evaluation.TraceRef deliberately does not carry this — it is
+// opaque by design — so this is a second, narrower accessor over the same
+// underlying read.
+type RunSummary struct {
+	TaskID    int64
+	AttemptID int64
+	TraceHash string
+	// TerminalAt is when this run reached 'succeeded' — decision_graph_runs
+	// guarantees it is set (and stable) for any run this method can
+	// successfully load. It is deliberately not part of canonicalTrace's
+	// hashed payload (that stays evidence-only); callers that need a
+	// deterministic timestamp tied to real, run-invariant provenance
+	// (rather than wall-clock "now") use this one.
+	TerminalAt time.Time
+}
+
+func (s *Store) RunSummary(ctx context.Context, runID int64) (RunSummary, error) {
+	trace, err := s.loadTrace(ctx, runID)
+	if err != nil {
+		return RunSummary{}, err
+	}
+	var payload canonicalTrace
+	if err := json.Unmarshal(trace.Payload, &payload); err != nil {
+		return RunSummary{}, fmt.Errorf("decisiongraphtrace: unmarshal own canonical trace for run %d: %w", runID, err)
+	}
+	var terminalAt time.Time
+	if err := s.pool.QueryRow(ctx, `
+SELECT terminal_at FROM decision_graph_runs
+WHERE id=$1 AND organization_id=$2 AND status='succeeded'`,
+		runID, s.organizationID,
+	).Scan(&terminalAt); err != nil {
+		return RunSummary{}, fmt.Errorf("decisiongraphtrace: load terminal_at for run %d: %w", runID, err)
+	}
+	return RunSummary{TaskID: payload.TaskID, AttemptID: payload.AttemptID, TraceHash: trace.Ref.TraceHash, TerminalAt: terminalAt}, nil
+}
+
 // LoadTrace implements evaluation.TraceSource. It independently
 // reconstructs the same canonical payload TraceRefForRun would produce for
 // ref.RunID and verifies the resulting hash still matches ref.TraceHash,
