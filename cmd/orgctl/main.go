@@ -87,6 +87,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runShadow(args[1:], stdout, stderr)
 	case "postrun":
 		return runPostrun(args[1:], stdout, stderr)
+	case "sleep":
+		return runSleep(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return exitOK
@@ -533,6 +535,8 @@ commands:
   improvement <propose|get|validate|begin-evaluation|verdict|promote-canary|promote-active|deprecate|rollback|trace>
   completion <verify>
   shadow <verify|replay|report>
+  postrun <propose-lesson>
+  sleep <run>
 exit codes:
   0 success
   1 internal or operational failure
