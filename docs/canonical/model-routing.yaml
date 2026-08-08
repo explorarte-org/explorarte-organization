@@ -2,13 +2,14 @@ schema_version: 0.1.0
 document_status: branch_12_candidate
 policies:
   executive.ceo:
-    provider: alibaba_token_plan_via_claude_code
-    model: qwen3.6-flash
-    transport: cli_adapter
-    direct_http_forbidden: true
+    provider: openai_compatible
+    model: gpt-5.6-luna
+    reasoning_effort: xhigh
+    transport: http_adapter
     source_of_decision: owner_conversation
     legacy_conflicts:
     - qwen3.8-max in current AGENT/PERFIL documents
+    - alibaba_token_plan_via_claude_code/qwen3.6-flash in prior routing revision
   executive.observer:
     provider: alibaba_token_plan_via_claude_code
     model: qwen3.6-flash
@@ -36,10 +37,13 @@ policies:
     direct_http_forbidden: true
     decision_status: candidate_preserves_high_level_audit_role
   research.worker:
-    provider: deepseek
-    model: deepseek-v4-flash
+    provider: gemini
+    model: gemini-2.5-flash
     transport: http_adapter
     schedule: hourly
+    source_of_decision: owner_conversation
+    legacy_conflicts:
+    - deepseek/deepseek-v4-flash in prior routing revision
 routing_invariants:
 - A role never selects its own model from request JSON.
 - The backend resolves a model from an approved policy and role registration.

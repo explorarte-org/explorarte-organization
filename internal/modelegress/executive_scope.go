@@ -69,7 +69,7 @@ func scopeAllows(provider, transport, scope string, singleProviderTest bool) boo
 		if singleProviderTest {
 			return scope == ScopeExecutiveCEO || scope == ScopeDepartmentLeader || scope == ScopeDepartmentWorker
 		}
-		return scope == ScopeDepartmentLeader
+		return scope == ScopeExecutiveCEO || scope == ScopeDepartmentLeader
 	case "deepseek":
 		return transport == "http_adapter" && scope == ScopeDepartmentWorker
 	default:

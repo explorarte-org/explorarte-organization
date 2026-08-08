@@ -96,21 +96,23 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		if err := platform.Pool().QueryRow(ctx, `SELECT count(*) FILTER (WHERE dispatch_enabled), count(*) FILTER (WHERE adapter_status='available') FROM model_profile_versions WHERE organization_revision_id=$1`, revision.ID).Scan(&enabled, &available); err != nil {
 			t.Fatal(err)
 		}
-		// deepseek (department.worker, research.worker) joined openai_compatible
-		// and alibaba_token_plan_via_claude_code as a real compiled adapter
-		// later than this test's original 2/2 expectation — see
-		// internal/modelruntime/canonical_routing.go's compiledAdapterAvailability
-		// and internal/modelruntime/adapter/deepseek. gemini has a real
-		// compiled adapter too, but docs/canonical/model-routing.yaml never
-		// binds any profile to it, so it contributes 0 here by construction.
+		// executive.ceo moved from alibaba_token_plan_via_claude_code/cli_adapter
+		// to openai_compatible/http_adapter (gpt-5.6-luna), and research.worker
+		// moved from deepseek to gemini/gemini-2.5-flash — see the routing
+		// revision that changed docs/canonical/model-routing.yaml. Both
+		// openai_compatible and gemini have real compiled adapters (see
+		// compiledAdapterAvailability); ceo-primary no longer matches R21's
+		// alibaba-specific carve-out (internal/modelruntime/compiled_availability_r21.go)
+		// since it no longer has any version with provider=alibaba.
 		if enabled != 4 || available != 4 {
 			t.Fatalf("compiled provider versions enabled=%d available=%d, want 4/4", enabled, available)
 		}
-		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id='openai_compatible' AND transport='http_adapter' AND dispatch_enabled AND adapter_status='available'`, revision.ID, 1)
-		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND profile_id='ceo-primary' AND provider_id='alibaba_token_plan_via_claude_code' AND transport='cli_adapter' AND dispatch_enabled AND adapter_status='available'`, revision.ID, 1)
-		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id='alibaba_token_plan_via_claude_code' AND profile_id<>'ceo-primary' AND (dispatch_enabled OR adapter_status<>'unavailable')`, revision.ID, 0)
-		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id='deepseek' AND transport='http_adapter' AND dispatch_enabled AND adapter_status='available'`, revision.ID, 2)
-		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id NOT IN ('openai_compatible','alibaba_token_plan_via_claude_code','deepseek') AND (dispatch_enabled OR adapter_status<>'unavailable')`, revision.ID, 0)
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id='openai_compatible' AND transport='http_adapter' AND dispatch_enabled AND adapter_status='available'`, revision.ID, 2)
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND profile_id='ceo-primary' AND provider_id='openai_compatible' AND transport='http_adapter' AND dispatch_enabled AND adapter_status='available'`, revision.ID, 1)
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id='alibaba_token_plan_via_claude_code' AND (dispatch_enabled OR adapter_status<>'unavailable')`, revision.ID, 0)
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id='deepseek' AND transport='http_adapter' AND dispatch_enabled AND adapter_status='available'`, revision.ID, 1)
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id='gemini' AND transport='http_adapter' AND dispatch_enabled AND adapter_status='available'`, revision.ID, 1)
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id NOT IN ('openai_compatible','alibaba_token_plan_via_claude_code','deepseek','gemini') AND (dispatch_enabled OR adapter_status<>'unavailable')`, revision.ID, 0)
 	})
 
 	fakeRoutingHash := modelruntime.SHA256Bytes([]byte("test.fake canonical routing fixture v1"))

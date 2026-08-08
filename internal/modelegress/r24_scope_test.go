@@ -55,17 +55,22 @@ func TestValidateExecutiveScopeMatrix(t *testing.T) {
 	}{
 		{"ceo alibaba", "alibaba_token_plan_via_claude_code", "cli_adapter", []string{"organizational", "public"}, ScopeExecutiveCEO, false, true, "executive_scope_verified_ceo"},
 		{"ceo missing scope", "alibaba_token_plan_via_claude_code", "cli_adapter", []string{"organizational"}, "", false, false, "executive_scope_required"},
-		{"ceo wrong transport", "alibaba_token_plan_via_claude_code", "http_adapter", []string{"organizational"}, ScopeExecutiveCEO, false, false, "executive_scope_required"},
+		// CEO moved to openai_compatible/http_adapter (gpt-5.6-luna) in the
+		// canonical routing revision that superseded the alibaba-only CEO
+		// path; this must now be allowed in production, not just under
+		// singleProviderTest.
+		{"ceo openai_compatible allowed in production", "openai_compatible", "http_adapter", []string{"organizational"}, ScopeExecutiveCEO, false, true, "executive_scope_verified_ceo"},
+		{"ceo cli_adapter without alibaba provider still denied", "openai_compatible", "cli_adapter", []string{"organizational"}, ScopeExecutiveCEO, false, false, "executive_scope_required"},
 		{"leader openai organizational", "openai_compatible", "http_adapter", []string{"organizational"}, ScopeDepartmentLeader, false, true, "executive_scope_verified_department_leader"},
 		{"leader wrong scope", "openai_compatible", "http_adapter", []string{"organizational"}, ScopeDepartmentWorker, false, false, "executive_scope_required"},
 		{"openai public legacy", "openai_compatible", "http_adapter", []string{"public"}, "", false, true, "executive_scope_not_required"},
 		{"worker deepseek", "deepseek", "http_adapter", []string{"sanitized", "organizational"}, ScopeDepartmentWorker, false, true, "executive_scope_verified_department_worker"},
 		{"worker deepseek no scope", "deepseek", "http_adapter", []string{"public"}, "", false, false, "executive_scope_required"},
 		// Single-provider test mode: same production data, but openai_compatible
-		// is now also accepted for CEO and worker scopes — never by default.
+		// is also accepted for the worker scope — never by default outside test mode.
 		{"single-provider test: openai as ceo", "openai_compatible", "http_adapter", []string{"organizational"}, ScopeExecutiveCEO, true, true, "executive_scope_verified_ceo"},
 		{"single-provider test: openai as worker", "openai_compatible", "http_adapter", []string{"organizational"}, ScopeDepartmentWorker, true, true, "executive_scope_verified_department_worker"},
-		{"single-provider test flag off still denies openai as ceo", "openai_compatible", "http_adapter", []string{"organizational"}, ScopeExecutiveCEO, false, false, "executive_scope_required"},
+		{"single-provider test flag off still denies openai as worker", "openai_compatible", "http_adapter", []string{"organizational"}, ScopeDepartmentWorker, false, false, "executive_scope_required"},
 		{"single-provider test never grants deepseek as ceo", "deepseek", "http_adapter", []string{"organizational"}, ScopeExecutiveCEO, true, false, "executive_scope_required"},
 	}
 	for _, tc := range cases {
