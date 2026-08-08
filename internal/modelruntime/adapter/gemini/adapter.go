@@ -48,7 +48,8 @@ type chatResponse struct {
 }
 
 type chatChoice struct {
-	Message chatResponseMessage `json:"message"`
+	Message      chatResponseMessage `json:"message"`
+	FinishReason string              `json:"finish_reason"`
 }
 
 type chatResponseMessage struct {
@@ -224,6 +225,20 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 			return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureResponseReceived, Outcome: responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", "tool_call_name_missing", false), Cause: modelruntime.ErrResponseRejected}
 		}
 		tools = append(tools, modelruntime.RawToolIntent{Name: call.Function.Name, Arguments: append([]byte(nil), call.Function.Arguments...)})
+	}
+	// A provider-side content block, or a truncated response with nothing
+	// usable, must never be classified as success: the caller would silently
+	// receive an empty result instead of an actionable failure. Observed live
+	// against Gemini's OpenAI-compatibility layer: a too-small token budget
+	// can be consumed entirely by invisible reasoning, returning
+	// finish_reason=length with empty content and zero tool calls.
+	switch finish := strings.TrimSpace(decoded.Choices[0].FinishReason); {
+	case finish == "content_filter":
+		outcome := responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", "response_content_filtered", false)
+		return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureResponseReceived, Outcome: outcome, Cause: modelruntime.ErrResponseRejected}
+	case finish == "length" && len(content) == 0 && len(tools) == 0:
+		outcome := responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", "response_truncated_empty", false)
+		return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureResponseReceived, Outcome: outcome, Cause: modelruntime.ErrResponseRejected}
 	}
 	a.breaker.success()
 	outcome := modelruntime.ProviderOutcome{

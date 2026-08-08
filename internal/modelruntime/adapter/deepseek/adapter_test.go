@@ -222,6 +222,59 @@ func TestDispatchClassifiesProviderRejectionWithoutLeakingMessage(t *testing.T) 
 	}
 }
 
+func TestDispatchRejectsTruncatedEmptyResponseAsFailure(t *testing.T) {
+	credential := writeCredential(t, "test-provider-token")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"r1","choices":[{"finish_reason":"length","message":{"content":null}}],"usage":{"prompt_tokens":10,"completion_tokens":0}}`)
+	}))
+	defer server.Close()
+	adapter, err := newAdapter(adapterConfig(server.URL+"/chat/completions", credential), server.Client(), time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = adapter.Dispatch(context.Background(), validRequest(time.Now().Add(time.Minute)))
+	classified, ok := modelruntime.AsAdapterError(err)
+	if !ok || classified.Outcome.ErrorCode != "response_truncated_empty" || classified.Outcome.Retryable {
+		t.Fatalf("error=%v classified=%+v", err, classified)
+	}
+}
+
+func TestDispatchAcceptsTruncatedResponseWithPartialContent(t *testing.T) {
+	credential := writeCredential(t, "test-provider-token")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"r1","choices":[{"finish_reason":"length","message":{"content":"partial but usable"}}],"usage":{"prompt_tokens":10,"completion_tokens":4}}`)
+	}))
+	defer server.Close()
+	adapter, err := newAdapter(adapterConfig(server.URL+"/chat/completions", credential), server.Client(), time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := adapter.Dispatch(context.Background(), validRequest(time.Now().Add(time.Minute)))
+	if err != nil || string(response.Content) != "partial but usable" {
+		t.Fatalf("response=%+v err=%v", response, err)
+	}
+}
+
+func TestDispatchRejectsContentFilteredResponseAsFailure(t *testing.T) {
+	credential := writeCredential(t, "test-provider-token")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"r1","choices":[{"finish_reason":"content_filter","message":{"content":null}}],"usage":{"prompt_tokens":10,"completion_tokens":0}}`)
+	}))
+	defer server.Close()
+	adapter, err := newAdapter(adapterConfig(server.URL+"/chat/completions", credential), server.Client(), time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = adapter.Dispatch(context.Background(), validRequest(time.Now().Add(time.Minute)))
+	classified, ok := modelruntime.AsAdapterError(err)
+	if !ok || classified.Outcome.ErrorCode != "response_content_filtered" || classified.Outcome.Retryable {
+		t.Fatalf("error=%v classified=%+v", err, classified)
+	}
+}
+
 func TestProviderErrorMetadataIsNormalizedBeforePersistence(t *testing.T) {
 	credential := writeCredential(t, "test-provider-token")
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
