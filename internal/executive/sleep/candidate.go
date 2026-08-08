@@ -13,23 +13,23 @@ import (
 )
 
 type CandidateBody struct {
-	SchemaVersion           string             `json:"schema_version"`
-	Claim                   string             `json:"claim"`
-	ApplicabilityConditions []string           `json:"applicability_conditions"`
-	Group                   GroupKey           `json:"group"`
-	RecurrenceCount         int                `json:"recurrence_count"`
-	SuccessCount            int                `json:"success_count"`
-	FailureCount            int                `json:"failure_count"`
-	VerifiedCount           int                `json:"verified_count"`
-	InferredCount           int                `json:"inferred_count"`
-	ContradictedCount       int                `json:"contradicted_count"`
-	UnknownCount            int                `json:"unknown_count"`
-	PassRate                float64            `json:"pass_rate"`
-	Confidence              float64            `json:"confidence"`
-	ConfidenceTerms         ConfidenceTerms    `json:"confidence_terms"`
-	Contradiction           bool               `json:"contradiction"`
-	Portability             Portability        `json:"portability"`
-	Sources                 []CandidateSource  `json:"sources"`
+	SchemaVersion           string            `json:"schema_version"`
+	Claim                   string            `json:"claim"`
+	ApplicabilityConditions []string          `json:"applicability_conditions"`
+	Group                   GroupKey          `json:"group"`
+	RecurrenceCount         int               `json:"recurrence_count"`
+	SuccessCount            int               `json:"success_count"`
+	FailureCount            int               `json:"failure_count"`
+	VerifiedCount           int               `json:"verified_count"`
+	InferredCount           int               `json:"inferred_count"`
+	ContradictedCount       int               `json:"contradicted_count"`
+	UnknownCount            int               `json:"unknown_count"`
+	PassRate                float64           `json:"pass_rate"`
+	Confidence              float64           `json:"confidence"`
+	ConfidenceTerms         ConfidenceTerms   `json:"confidence_terms"`
+	Contradiction           bool              `json:"contradiction"`
+	Portability             Portability       `json:"portability"`
+	Sources                 []CandidateSource `json:"sources"`
 }
 
 type ConfidenceTerms struct {
@@ -55,8 +55,8 @@ type CandidateSource struct {
 }
 
 type BuiltCandidate struct {
-	Request       rag.ProposeRequest
-	Confidence    float64
+	Request        rag.ProposeRequest
+	Confidence     float64
 	EvidenceRunIDs []int64
 }
 
@@ -159,7 +159,10 @@ func BuildCandidate(primary Group, recurring []Group, analysis GroupAnalysis, co
 				SourceBoundary: SourceBoundary, EvidenceRef: evidenceRef, AttestedAt: latestObserved,
 			},
 		},
-		IdempotencyKey: "sleep:" + evidenceHash,
+		// Cross-provider portability can make two primary groups share the same
+		// evidence set. Commit both the primary group and evidence set to the
+		// idempotency key so different claims cannot collide under one key.
+		IdempotencyKey: "sleep:" + groupHash + ":" + evidenceHash,
 	}
 	return BuiltCandidate{Request: request, Confidence: confidence, EvidenceRunIDs: runIDs}, nil
 }
