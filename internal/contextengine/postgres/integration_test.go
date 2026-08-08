@@ -355,9 +355,20 @@ func TestContextEnginePostgreSQL17(t *testing.T) {
 				t.Fatal(execErr)
 			}
 		}
+		// Current always reflects the tip of the full migration list (the
+		// runner's Up loop walks every migration, setting Current even for
+		// ones already applied) — migration 19 is untouched by this
+		// rollback/reapply cycle, so only the 8 explicitly rolled-back
+		// versions above are expected in Applied, while Current still
+		// reports the real tip.
+		loadedForTip, tipErr := platformmigrations.Load(rootmigrations.Files)
+		if tipErr != nil {
+			t.Fatal(tipErr)
+		}
+		tip := loadedForTip[len(loadedForTip)-1].Version
 		reapplied, upErr := runner.Up(ctx)
-		if upErr != nil || len(reapplied.Applied) != 8 || reapplied.Current != 18 {
-			t.Fatalf("reapply=%+v err=%v", reapplied, upErr)
+		if upErr != nil || len(reapplied.Applied) != 8 || reapplied.Current != tip {
+			t.Fatalf("reapply=%+v err=%v want current=%d", reapplied, upErr, tip)
 		}
 		var exists bool
 		if err = platform.Pool().QueryRow(ctx, `SELECT to_regclass('public.context_snapshots') IS NOT NULL AND to_regclass('public.context_segments') IS NOT NULL`).Scan(&exists); err != nil || !exists {

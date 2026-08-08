@@ -239,8 +239,76 @@ func (s *Store) List(ctx context.Context, filter rag.ListFilter) ([]rag.Knowledg
 	return result, nil
 }
 
+// ApprovedForNamespace returns every approved document in the namespace,
+// paginating internally with a keyset cursor rather than the single
+// maxListLimit-bounded query List uses. Reindex needs the complete set to
+// build a generation — silently truncating at maxListLimit (as this used to
+// do, delegating straight to List) would activate an index that's missing
+// every document past the cap, with nothing surfacing that loss.
 func (s *Store) ApprovedForNamespace(ctx context.Context, organizationID string, namespaceKind rag.NamespaceKind, namespaceID string) ([]rag.KnowledgeVersion, error) {
-	return s.List(ctx, rag.ListFilter{OrganizationID: organizationID, NamespaceKind: namespaceKind, NamespaceID: namespaceID, Lifecycle: rag.LifecycleApproved, Limit: maxListLimit})
+	organizationID = strings.TrimSpace(organizationID)
+	if organizationID == "" || organizationID != s.organizationID {
+		return nil, fmt.Errorf("%w: invalid organization filter", rag.ErrInvalidRequest)
+	}
+	type cursorRow struct {
+		id        string
+		updatedAt time.Time
+	}
+	var (
+		result     []rag.KnowledgeVersion
+		haveCursor bool
+		cursorTime time.Time
+		cursorID   string
+	)
+	for {
+		var rows pgx.Rows
+		var err error
+		if !haveCursor {
+			rows, err = s.pool.Query(ctx, `
+SELECT version_id, updated_at FROM rag_knowledge_versions
+WHERE organization_id=$1 AND namespace_kind=$2 AND namespace_id=$3 AND lifecycle=$4
+ORDER BY updated_at DESC, version_id ASC LIMIT $5`,
+				organizationID, string(namespaceKind), namespaceID, string(rag.LifecycleApproved), maxListLimit)
+		} else {
+			rows, err = s.pool.Query(ctx, `
+SELECT version_id, updated_at FROM rag_knowledge_versions
+WHERE organization_id=$1 AND namespace_kind=$2 AND namespace_id=$3 AND lifecycle=$4
+  AND (updated_at < $5 OR (updated_at = $5 AND version_id > $6))
+ORDER BY updated_at DESC, version_id ASC LIMIT $7`,
+				organizationID, string(namespaceKind), namespaceID, string(rag.LifecycleApproved), cursorTime, cursorID, maxListLimit)
+		}
+		if err != nil {
+			return nil, mapError("list approved knowledge versions page", err)
+		}
+		page := make([]cursorRow, 0, maxListLimit)
+		for rows.Next() {
+			var row cursorRow
+			if err := rows.Scan(&row.id, &row.updatedAt); err != nil {
+				rows.Close()
+				return nil, mapError("scan approved knowledge version", err)
+			}
+			page = append(page, row)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, mapError("iterate approved knowledge versions", err)
+		}
+		rows.Close()
+		for _, row := range page {
+			version, err := getVersion(ctx, s.pool, organizationID, row.id)
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, version)
+		}
+		if len(page) < maxListLimit {
+			return result, nil
+		}
+		last := page[len(page)-1]
+		haveCursor = true
+		cursorTime = last.updatedAt
+		cursorID = last.id
+	}
 }
 
 func (s *Store) Reindex(ctx context.Context, command rag.ReindexCommand) (rag.IndexGeneration, error) {

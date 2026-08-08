@@ -38,8 +38,13 @@ func TestImprovementPostgresCandidateStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Current != 18 {
-		t.Fatalf("current migration=%d, want 18", result.Current)
+	// Compared against the runner's own Latest (the real migration tip
+	// baked into this binary via rootmigrations.Files), not a hardcoded
+	// version number that goes stale the moment a new migration lands.
+	if status, statusErr := runner.Status(ctx); statusErr != nil {
+		t.Fatal(statusErr)
+	} else if result.Current != status.Latest {
+		t.Fatalf("current migration=%d, want latest=%d", result.Current, status.Latest)
 	}
 	resetImprovementSchema(t, ctx, platform)
 	t.Cleanup(func() { resetImprovementSchema(t, context.Background(), platform) })

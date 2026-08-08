@@ -46,21 +46,22 @@ func TestR21TransportAwareProviderOutcomeMigrationPostgreSQL17(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := runner.Up(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Current != 18 {
-		t.Fatalf("migration current=%d want 18", result.Current)
-	}
-	assertR21OutcomeSchema(t, ctx, store, true)
-
 	loaded, err := platformmigrations.Load(rootmigrations.Files)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded) != 18 || loaded[17].Version != 18 {
-		t.Fatalf("loaded migrations=%d last=%d want 18/18", len(loaded), loaded[len(loaded)-1].Version)
+	tip := loaded[len(loaded)-1].Version
+	result, err := runner.Up(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Current != tip {
+		t.Fatalf("migration current=%d want %d", result.Current, tip)
+	}
+	assertR21OutcomeSchema(t, ctx, store, true)
+
+	if int64(len(loaded)) != tip || loaded[len(loaded)-1].Version != tip {
+		t.Fatalf("loaded migrations=%d last=%d want %d/%d", len(loaded), loaded[len(loaded)-1].Version, tip, tip)
 	}
 
 	if err := store.UnitOfWork().WithinTransaction(ctx, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
@@ -78,8 +79,8 @@ func TestR21TransportAwareProviderOutcomeMigrationPostgreSQL17(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(restored.Applied) != 1 || restored.Applied[0] != 18 || restored.Current != 18 {
-		t.Fatalf("restored=%+v want only migration 18", restored)
+	if len(restored.Applied) != 1 || restored.Applied[0] != 18 || restored.Current != tip {
+		t.Fatalf("restored=%+v want only migration 18 reapplied, current=%d", restored, tip)
 	}
 	assertR21OutcomeSchema(t, ctx, store, true)
 }

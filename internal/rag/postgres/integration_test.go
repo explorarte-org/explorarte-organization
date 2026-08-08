@@ -5,6 +5,7 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -43,8 +44,13 @@ func TestApprovedKnowledgeRAGPostgresRepository(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Current != 18 {
-		t.Fatalf("current migration=%d want=18", result.Current)
+	// Compared against the runner's own Latest (the real migration tip
+	// baked into this binary via rootmigrations.Files), not a hardcoded
+	// version number that goes stale the moment a new migration lands.
+	if status, statusErr := runner.Status(ctx); statusErr != nil {
+		t.Fatal(statusErr)
+	} else if result.Current != status.Latest {
+		t.Fatalf("current migration=%d, want latest=%d", result.Current, status.Latest)
 	}
 	resetRAGSchema(t, ctx, platform)
 	t.Cleanup(func() { resetRAGSchema(t, context.Background(), platform) })
@@ -232,6 +238,54 @@ func TestApprovedKnowledgeRAGPostgresRepository(t *testing.T) {
 		}
 	})
 
+	t.Run("ApprovedForNamespace paginates past the single-query limit instead of silently truncating", func(t *testing.T) {
+		namespaceID := "ingenieria_ia_pagination"
+		const total = 1050 // maxListLimit (1000) + 50, to prove pagination actually ran, not just a coincidental single page.
+		pageClock := &fixedClock{now: now.Add(time.Hour)}
+		for i := 0; i < total; i++ {
+			docID := fmt.Sprintf("know-page-%04d", i)
+			pageClock.now = pageClock.now.Add(time.Millisecond)
+			candidate, err := rag.NewService(pageClock).Propose(rag.ProposeCommand{
+				ID: docID, DocumentID: docID, OrganizationID: ragIntegrationOrganization,
+				NamespaceKind: rag.NamespaceDepartment, NamespaceID: namespaceID, Version: 1,
+				Title: "pagination fixture", Body: fmt.Sprintf("pagination fixture body %d", i),
+				SourceKind: rag.SourceOperational, SourceReference: "pagination:fixture", ProposedBy: ragIntegrationProposer,
+				EvidenceRefs: []rag.EvidenceRef{{Reference: "evidence:pagination", Digest: "aaa"}},
+				Admission:    rag.AdmissionAttestation{DataClass: rag.DataOrganizational, AttestedBy: ragIntegrationProposer, SourceBoundary: "organization", EvidenceRef: "admission:" + docID, AttestedAt: pageClock.now.Add(-time.Second)},
+			})
+			if err != nil {
+				t.Fatalf("propose fixture %d: %v", i, err)
+			}
+			created, _, err := store.CreateCandidate(ctx, rag.CreateCandidateCommand{Version: candidate, IdempotencyKey: "idem-page-" + docID})
+			if err != nil {
+				t.Fatalf("create candidate fixture %d: %v", i, err)
+			}
+			pageClock.now = pageClock.now.Add(time.Millisecond)
+			approved, err := rag.NewService(pageClock).Review(created, rag.ReviewApprove, ragIntegrationReviewer)
+			if err != nil {
+				t.Fatalf("review fixture %d: %v", i, err)
+			}
+			if _, err := store.Save(ctx, rag.SaveCommand{Version: approved, ExpectedRevision: 1, ActorID: ragIntegrationReviewer, Reason: "pagination fixture"}); err != nil {
+				t.Fatalf("save fixture %d: %v", i, err)
+			}
+		}
+
+		approved, err := store.ApprovedForNamespace(ctx, ragIntegrationOrganization, rag.NamespaceDepartment, namespaceID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(approved) != total {
+			t.Fatalf("ApprovedForNamespace returned %d approved versions, want %d (silently truncated at the single-query limit)", len(approved), total)
+		}
+		seen := make(map[string]bool, total)
+		for _, version := range approved {
+			if seen[version.ID] {
+				t.Fatalf("duplicate version %s across pages", version.ID)
+			}
+			seen[version.ID] = true
+		}
+	})
+
 	t.Run("database rejects clinical and secret data classes", func(t *testing.T) {
 		for _, class := range []string{"clinical", "secret"} {
 			_, err := platform.Pool().Exec(ctx, `INSERT INTO rag_knowledge_versions (organization_id,version_id,document_id,namespace_kind,namespace_id,version,title,body,source_kind,source_reference,proposed_by_role_id,data_class,admission_attested_by,source_boundary,admission_evidence_ref,admission_attested_at,content_hash,canonical_hash,lifecycle,revision,created_at,updated_at) VALUES ($1,$2,'know-db-guard','department','ingenieria_ia',99,'t','b','research','ref',$3,$4,$3,'organization','ref',NOW(),repeat('a',64),repeat('b',64),'candidate',1,NOW(),NOW())`,
@@ -288,7 +342,14 @@ func resetRAGSchema(t *testing.T, ctx context.Context, store *platformpostgres.S
 	t.Helper()
 	resetCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	if _, err := store.Pool().Exec(resetCtx, `TRUNCATE organizations, organization_registry_revisions, audit_events RESTART IDENTITY CASCADE`); err != nil {
+	// rag_index_generations and rag_knowledge_chunks carry organization_id
+	// as a plain column with no foreign key back to organizations (see
+	// migrations/000017_create_approved_knowledge_rag.up.sql) — TRUNCATE
+	// ... CASCADE from organizations never reaches them, so they must be
+	// listed explicitly or rows accumulate across every test run against a
+	// long-lived database instead of being reset.
+	if _, err := store.Pool().Exec(resetCtx, `TRUNCATE organizations, organization_registry_revisions, audit_events,
+		rag_index_generations, rag_knowledge_chunks RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
 }
