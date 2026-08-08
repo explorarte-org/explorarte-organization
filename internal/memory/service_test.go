@@ -149,6 +149,28 @@ func TestApprovedEntryRequiresReviewer(t *testing.T) {
 	}
 }
 
+func TestProposeRejectsSecretContentDeclaredAsLowerDataClass(t *testing.T) {
+	now := time.Date(2026, 8, 7, 4, 0, 0, 0, time.UTC)
+	clock := &fixedClock{now: now}
+	service := NewService(clock)
+	command := validCommand(now)
+	command.Correction = "Rotate the credential.\n\napi_key: sk_live_abcdefghijklmnop\n\nUse it for the staging pipeline."
+	if _, err := service.Propose(command); !errors.Is(err, ErrForbiddenDataClass) {
+		t.Fatalf("propose secret-shaped correction under %q: err=%v want ErrForbiddenDataClass", command.Admission.DataClass, err)
+	}
+}
+
+func TestProposeRejectsClinicalContentDeclaredAsLowerDataClass(t *testing.T) {
+	now := time.Date(2026, 8, 7, 4, 0, 0, 0, time.UTC)
+	clock := &fixedClock{now: now}
+	service := NewService(clock)
+	command := validCommand(now)
+	command.Problem = "El paciente presenta síntomas tras el despliegue del nuevo modelo."
+	if _, err := service.Propose(command); !errors.Is(err, ErrForbiddenDataClass) {
+		t.Fatalf("propose clinical-shaped problem under %q: err=%v want ErrForbiddenDataClass", command.Admission.DataClass, err)
+	}
+}
+
 func TestRejectedEntryCanOnlyArchive(t *testing.T) {
 	now := time.Date(2026, 8, 7, 4, 0, 0, 0, time.UTC)
 	clock := &fixedClock{now: now}

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/Mireuz13/explorarte-organization/internal/dataclassifier"
 )
 
 var (
@@ -71,6 +73,11 @@ func (v KnowledgeVersion) Validate() error {
 	}
 	if err := v.Admission.Validate(); err != nil {
 		return err
+	}
+	if finding := dataclassifier.Detect(v.Body); finding.Secret && v.Admission.DataClass != DataSecret {
+		return fmt.Errorf("%w: body matches a %s but is declared %q", ErrForbiddenDataClass, finding.SecretReason, v.Admission.DataClass)
+	} else if finding.Clinical && v.Admission.DataClass != DataClinical {
+		return fmt.Errorf("%w: body matches a %s but is declared %q", ErrForbiddenDataClass, finding.ClinicalReason, v.Admission.DataClass)
 	}
 	if v.ContentHash != ContentHash(v.Body) {
 		return fmt.Errorf("%w: content hash must equal the hash of the normalized body", ErrInvalidVersion)

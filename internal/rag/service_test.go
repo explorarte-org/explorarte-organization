@@ -162,6 +162,37 @@ func TestDeterministicChunkingIsStableAcrossRuns(t *testing.T) {
 	}
 }
 
+func TestProposeRejectsSecretContentDeclaredAsLowerDataClass(t *testing.T) {
+	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
+	clock := &fixedClock{now: now}
+	svc := NewService(clock)
+	command := validProposeCommand(now)
+	command.Body = "Rotate the deploy key.\n\napi_key: sk_live_abcdefghijklmnop\n\nUse it for the staging pipeline."
+	if _, err := svc.Propose(command); !errors.Is(err, ErrForbiddenDataClass) {
+		t.Fatalf("propose secret-shaped body under %q: err=%v want ErrForbiddenDataClass", command.Admission.DataClass, err)
+	}
+}
+
+func TestProposeRejectsClinicalContentDeclaredAsLowerDataClass(t *testing.T) {
+	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
+	clock := &fixedClock{now: now}
+	svc := NewService(clock)
+	command := validProposeCommand(now)
+	command.Body = "El paciente presenta síntomas relacionados con el nuevo despliegue de modelos."
+	if _, err := svc.Propose(command); !errors.Is(err, ErrForbiddenDataClass) {
+		t.Fatalf("propose clinical-shaped body under %q: err=%v want ErrForbiddenDataClass", command.Admission.DataClass, err)
+	}
+}
+
+func TestProposeAllowsOrdinaryContentUnderDeclaredDataClass(t *testing.T) {
+	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
+	clock := &fixedClock{now: now}
+	svc := NewService(clock)
+	if _, err := svc.Propose(validProposeCommand(now)); err != nil {
+		t.Fatalf("propose ordinary body: %v", err)
+	}
+}
+
 func TestChunkingBoundsLargeParagraphs(t *testing.T) {
 	long := ""
 	for i := 0; i < 2000; i++ {
