@@ -163,41 +163,44 @@ func TestDatabaseURLOverride(t *testing.T) {
 
 func TestLoadFromRejectsInvalidValues(t *testing.T) {
 	tests := map[string]map[string]string{
-		"invalid address":                   {"ORG_HTTP_ADDR": "8080"},
-		"invalid duration":                  {"ORG_SHUTDOWN_TIMEOUT": "soon"},
-		"zero duration":                     {"ORG_HTTP_READ_TIMEOUT": "0s"},
-		"invalid level":                     {"ORG_LOG_LEVEL": "verbose"},
-		"invalid format":                    {"ORG_LOG_FORMAT": "yaml"},
-		"invalid database port":             {"ORG_DATABASE_PORT": "70000"},
-		"invalid max conns":                 {"ORG_DATABASE_MAX_CONNS": "0"},
-		"min exceeds max":                   {"ORG_DATABASE_MAX_CONNS": "2", "ORG_DATABASE_MIN_CONNS": "3"},
-		"invalid ssl mode":                  {"ORG_DATABASE_SSLMODE": "trust-me"},
-		"invalid boolean":                   {"ORG_DATABASE_AUTO_MIGRATE": "sometimes"},
-		"invalid database URL":              {"ORG_DATABASE_URL": "mysql://localhost/db"},
-		"empty canonical dir":               {"ORG_CANONICAL_DIR": "   "},
-		"invalid registry timeout":          {"ORG_REGISTRY_SYNC_TIMEOUT": "0s"},
-		"invalid task organization":         {"ORG_TASK_ORGANIZATION_ID": "Bad ID"},
-		"invalid reconciler flag":           {"ORG_TASK_RECONCILER_ENABLED": "sometimes"},
-		"invalid reconcile batch":           {"ORG_TASK_RECONCILE_BATCH_SIZE": "0"},
-		"invalid task attempts":             {"ORG_TASK_DEFAULT_MAX_ATTEMPTS": "101"},
-		"invalid lease ordering":            {"ORG_TASK_DEFAULT_LEASE_DURATION": "20m", "ORG_TASK_MAX_LEASE_DURATION": "5m"},
-		"invalid retry ordering":            {"ORG_TASK_RETRY_BASE_DELAY": "20m", "ORG_TASK_RETRY_MAX_DELAY": "1m"},
-		"invalid authorization default ttl": {"ORG_AUTHORIZATION_DEFAULT_TTL": "0s"},
-		"invalid authorization max ttl":     {"ORG_AUTHORIZATION_DEFAULT_TTL": "2h", "ORG_AUTHORIZATION_MAX_TTL": "1h"},
-		"invalid authorization timeout":     {"ORG_AUTHORIZATION_COMMAND_TIMEOUT": "0s"},
-		"invalid authorization batch":       {"ORG_AUTHORIZATION_EXPIRE_BATCH_SIZE": "1001"},
-		"invalid context timeout":           {"ORG_CONTEXT_COMMAND_TIMEOUT": "0s"},
-		"invalid context total":             {"ORG_CONTEXT_MAX_TOTAL_BYTES": "1024"},
-		"invalid context segment":           {"ORG_CONTEXT_MAX_TOTAL_BYTES": "65536", "ORG_CONTEXT_MAX_SEGMENT_BYTES": "65537"},
-		"invalid context segment count":     {"ORG_CONTEXT_MAX_SEGMENTS": "0"},
-		"invalid context skill count":       {"ORG_CONTEXT_MAX_SKILLS": "101"},
-		"invalid context memory count":      {"ORG_CONTEXT_MAX_MEMORY_SEGMENTS": "501"},
-		"invalid context rag count":         {"ORG_CONTEXT_MAX_RAG_SEGMENTS": "501"},
-		"invalid staging flag":              {"ORG_STAGING_ENABLED": "sometimes"},
-		"relative staging root":             {"ORG_STAGING_WORKSPACE_ROOT": "relative/path"},
-		"overlapping staging roots":         {"ORG_STAGING_WORKSPACE_ROOT": "/tmp/staging", "ORG_STAGING_ARTIFACT_ROOT": "/tmp/staging/artifacts"},
-		"invalid staging batch":             {"ORG_STAGING_RECONCILE_BATCH_SIZE": "501"},
-		"invalid staging git binary":        {"ORG_STAGING_GIT_BINARY": "git --no-pager"},
+		"invalid address":                               {"ORG_HTTP_ADDR": "8080"},
+		"invalid duration":                              {"ORG_SHUTDOWN_TIMEOUT": "soon"},
+		"zero duration":                                 {"ORG_HTTP_READ_TIMEOUT": "0s"},
+		"invalid level":                                 {"ORG_LOG_LEVEL": "verbose"},
+		"invalid format":                                {"ORG_LOG_FORMAT": "yaml"},
+		"invalid database port":                         {"ORG_DATABASE_PORT": "70000"},
+		"invalid max conns":                             {"ORG_DATABASE_MAX_CONNS": "0"},
+		"min exceeds max":                               {"ORG_DATABASE_MAX_CONNS": "2", "ORG_DATABASE_MIN_CONNS": "3"},
+		"invalid ssl mode":                              {"ORG_DATABASE_SSLMODE": "trust-me"},
+		"invalid boolean":                               {"ORG_DATABASE_AUTO_MIGRATE": "sometimes"},
+		"invalid database URL":                          {"ORG_DATABASE_URL": "mysql://localhost/db"},
+		"empty canonical dir":                           {"ORG_CANONICAL_DIR": "   "},
+		"invalid registry timeout":                      {"ORG_REGISTRY_SYNC_TIMEOUT": "0s"},
+		"invalid task organization":                     {"ORG_TASK_ORGANIZATION_ID": "Bad ID"},
+		"invalid reconciler flag":                       {"ORG_TASK_RECONCILER_ENABLED": "sometimes"},
+		"invalid reconcile batch":                       {"ORG_TASK_RECONCILE_BATCH_SIZE": "0"},
+		"invalid task attempts":                         {"ORG_TASK_DEFAULT_MAX_ATTEMPTS": "101"},
+		"invalid lease ordering":                        {"ORG_TASK_DEFAULT_LEASE_DURATION": "20m", "ORG_TASK_MAX_LEASE_DURATION": "5m"},
+		"invalid retry ordering":                        {"ORG_TASK_RETRY_BASE_DELAY": "20m", "ORG_TASK_RETRY_MAX_DELAY": "1m"},
+		"invalid authorization default ttl":             {"ORG_AUTHORIZATION_DEFAULT_TTL": "0s"},
+		"invalid authorization max ttl":                 {"ORG_AUTHORIZATION_DEFAULT_TTL": "2h", "ORG_AUTHORIZATION_MAX_TTL": "1h"},
+		"invalid authorization timeout":                 {"ORG_AUTHORIZATION_COMMAND_TIMEOUT": "0s"},
+		"invalid authorization batch":                   {"ORG_AUTHORIZATION_EXPIRE_BATCH_SIZE": "1001"},
+		"invalid context timeout":                       {"ORG_CONTEXT_COMMAND_TIMEOUT": "0s"},
+		"invalid context total":                         {"ORG_CONTEXT_MAX_TOTAL_BYTES": "1024"},
+		"invalid context segment":                       {"ORG_CONTEXT_MAX_TOTAL_BYTES": "65536", "ORG_CONTEXT_MAX_SEGMENT_BYTES": "65537"},
+		"invalid context segment count":                 {"ORG_CONTEXT_MAX_SEGMENTS": "0"},
+		"invalid context skill count":                   {"ORG_CONTEXT_MAX_SKILLS": "101"},
+		"invalid context memory count":                  {"ORG_CONTEXT_MAX_MEMORY_SEGMENTS": "501"},
+		"invalid context rag count":                     {"ORG_CONTEXT_MAX_RAG_SEGMENTS": "501"},
+		"invalid staging flag":                          {"ORG_STAGING_ENABLED": "sometimes"},
+		"relative staging root":                         {"ORG_STAGING_WORKSPACE_ROOT": "relative/path"},
+		"overlapping staging roots":                     {"ORG_STAGING_WORKSPACE_ROOT": "/tmp/staging", "ORG_STAGING_ARTIFACT_ROOT": "/tmp/staging/artifacts"},
+		"invalid staging batch":                         {"ORG_STAGING_RECONCILE_BATCH_SIZE": "501"},
+		"invalid staging git binary":                    {"ORG_STAGING_GIT_BINARY": "git --no-pager"},
+		"single provider test outside test environment": {"ORG_MODEL_SINGLE_PROVIDER_TEST": "true"},
+		"single provider test in development":           {"ORG_MODEL_SINGLE_PROVIDER_TEST": "true", "ORG_ENVIRONMENT": "development"},
+		"single provider test in production":            {"ORG_MODEL_SINGLE_PROVIDER_TEST": "true", "ORG_ENVIRONMENT": "production"},
 	}
 	for name, values := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -206,6 +209,16 @@ func TestLoadFromRejectsInvalidValues(t *testing.T) {
 				t.Fatal("LoadFrom() error = nil, want error")
 			}
 		})
+	}
+}
+
+func TestSingleProviderTestModeRequiresExplicitTestEnvironment(t *testing.T) {
+	cfg, err := LoadFrom(mapLookup(map[string]string{"ORG_MODEL_SINGLE_PROVIDER_TEST": "true", "ORG_ENVIRONMENT": "test"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.ModelRuntime.SingleProviderTestMode {
+		t.Fatal("ModelRuntime.SingleProviderTestMode = false, want true")
 	}
 }
 

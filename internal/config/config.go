@@ -584,6 +584,15 @@ func (cfg Config) Validate() error {
 	if err := cfg.Staging.Validate(); err != nil {
 		return err
 	}
+	// ORG_MODEL_SINGLE_PROVIDER_TEST relaxes the R24 executive egress scope
+	// gate; it must be structurally impossible to leave on in a production
+	// deployment. Requiring ORG_ENVIRONMENT=test (not merely "not production")
+	// fails closed: the default environment is "development", so enabling the
+	// flag without also explicitly setting the environment to "test" refuses
+	// to start, rather than silently doing nothing.
+	if cfg.ModelRuntime.SingleProviderTestMode && cfg.App.Environment != "test" {
+		return errors.New("ORG_MODEL_SINGLE_PROVIDER_TEST requires ORG_ENVIRONMENT=test")
+	}
 	return nil
 }
 
