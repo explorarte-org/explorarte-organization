@@ -248,14 +248,15 @@ func encodeRequest(request modelruntime.CanonicalRequest) ([]byte, error) {
 		Temperature:     request.Temperature,
 		ReasoningEffort: request.ReasoningEffort, Stream: false,
 	}
-	// Google's OpenAI-compatibility layer for Gemini accepts the same
-	// reasoning_effort parameter as OpenAI and translates it internally to
-	// Gemini's native thinking budget. Mirror the same max_tokens vs
-	// max_completion_tokens split used for openaicompat/deepseek so a
-	// reasoning-tagged request never sends the field OpenAI's own reasoning
-	// models reject; this has not been live-verified against Gemini (billing
-	// blocked live calls at adapter-build time — see INTEGRATION notes) so
-	// revisit if Google's shim turns out to require max_tokens unconditionally.
+	// Google's OpenAI-compatibility layer for Gemini accepts both max_tokens
+	// and max_completion_tokens plus reasoning_effort, and applies them to
+	// its native thinking budget (verified live: reasoning_effort=low
+	// measurably reduced hidden thinking-token spend vs. an unset request).
+	// Gemini spends part of max_tokens/max_completion_tokens on invisible
+	// thinking before any visible content — a small budget can be consumed
+	// entirely by thinking, producing finish_reason=length with empty
+	// content (also observed live). Mirror the same field split used for
+	// openaicompat/deepseek for consistency across providers.
 	if strings.TrimSpace(request.ReasoningEffort) != "" {
 		payload.MaxCompletionTokens = request.MaxOutputTokens
 	} else {
