@@ -260,5 +260,37 @@ go build ./...
 - [x] No nueva migración.
 - [x] No capability widening.
 - [x] No R14 changes.
-- [ ] `r23/verify` success en el SHA final.
+- [x] `internal/executive` integration suite verde contra PostgreSQL 17 real (ver "Addendum" abajo).
 - [ ] Egress productivo Alibaba/DeepSeek aprobado en una decisión separada antes de smoke real.
+
+## Addendum — validación real post-doc (SHA `fa75153`)
+
+El checkbox `r23/verify success en el SHA final` quedó sin marcar en la versión original de este documento porque el workflow de GitHub Actions **nunca llegó a ejecutarse**: los 5 check-runs sobre `a30b27b` fallan en check-runs, la anotación de GitHub CI en ~1-3 segundos con la anotación `The job was not started because recent account payments have failed or your spending limit needs to be increased` — un bloqueo de facturación de la cuenta, no un fallo de tests.
+
+Al validar localmente contra PostgreSQL 17 real (`go test -tags=integration ./internal/executive/...`), la suite **fallaba**, y no por datos corruptos ni por contenedores compartidos: el mismo fallo se reproduce de forma determinista en `main` en el commit `3090966` (el merge de R21+R22, base exacta de R23) — es decir, **ninguno de los dos bugs encontrados es específico de R23**; R23 simplemente heredó una base que nunca se había corrido en verde contra Postgres real.
+
+### Bug 1 — semántica `created`/`reused` invertida
+
+`internal/executive/runtimeadapter/tasks.go`, método `Tasks.CreateTask`, pasaba el segundo valor de retorno de `tasks.Service.CreateTask` directo como `reused`. Ese valor significa **`created`** en su origen (`internal/tasks/postgres/create.go`, `createResult.Created`; `cmd/orgctl/tasks.go` nombra la misma llamada `created`). Resultado: toda creación de tarea nueva (el caso normal) se reportaba como `reused=true`, y cada test de integración de `internal/executive` trata eso como fatal por diseño. Fix: invertir una sola vez en el límite del adapter (`reused := !created`), no en cada llamador.
+
+### Bug 2 — `driveDepartments` nunca señala `done=true`
+
+`driveDepartments` no retornaba `true` en ningún punto de su cuerpo — ni siquiera al completar el loop sobre todos los departamentos con revisión `ReviewAccept`. Como el llamador (`Resume`) solo corta temprano cuando `done || err != nil`, con `done` permanentemente `false` el código caía a crear/avanzar la tarea de cierre del CEO en **cada** ciclo, incluido el primero — antes incluso de que el leader-plan de un departamento se hubiera manejado. `validateRunCompletionEvidence` rechazaba correctamente ese cierre prematuro ("department review is not verified completed"), y la suite lo ve como un error duro de `Resume()`. Fix: nuevo helper `driveInProgress` que hace que cada punto de "hice trabajo parcial, el llamador debe esperar al próximo ciclo" corte devolviendo el estado real vía `Status`, en vez de caer al cierre; el único `return ..., false, nil` que queda es el fallthrough genuino al final del loop, cuando todos los departamentos ya fueron aceptados.
+
+### Validación tras los fixes (SHA `fa75153`)
+
+```bash
+go build ./...
+go vet ./...
+go test -count=1 ./internal/executive/... ./internal/tasks/contextprovider/...
+go test -race -short ./internal/executive/... ./internal/tasks/contextprovider/...
+bash scripts/check-executive-fitness.sh
+# PostgreSQL 17 real, project aislado (--project-name explorarte-org-integration)
+go test -count=1 -tags=integration ./internal/executive/...
+```
+
+Las cuatro pruebas de integración de `internal/executive` pasan: las tres preexistentes de R21/R22 (`TestExecutivePostgreSQL17EndToEndAndRestart`, `TestExecutivePostgreSQL17AmbiguousBlocksWithoutSecondInvocation`, `TestExecutivePostgreSQL17CompletionInconclusiveNeverCompletes`) y la propia de R23 (`TestR23PostgreSQLProjectsWorkerEvidenceAndClosesDAGRace`).
+
+**Nota operativa:** `scripts/test-executive-integration.sh` no aísla su proyecto Docker (`compose.yaml` fija `name: explorarte-organization`), por lo que puede chocar con un stack de desarrollo persistente que use el mismo nombre por defecto. Usar `--project-name explorarte-org-integration` explícito (como hace `scripts/test-integration.sh`) para evitar colisiones.
+
+**Riesgo para R24 y ramas futuras:** R24 se ramificó desde el SHA `a30b27b` (antes de este fix). Cualquier rama que dependa de `internal/executive/runtimeadapter` o de `Resume`/`driveDepartments` debe rebasar sobre este commit (`fa75153`) o cherry-pickear estos dos fixes antes de considerarse validada — de lo contrario hereda ambos bugs silenciosamente, igual que le pasó a R23.
