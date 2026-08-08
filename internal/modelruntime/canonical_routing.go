@@ -485,6 +485,8 @@ func compiledAdapterAvailability(policy routingPolicy) (AdapterStatus, bool) {
 		return AdapterAvailable, true
 	case policy.Transport == TransportHTTP && policy.Provider == "deepseek":
 		return AdapterAvailable, true
+	case policy.Transport == TransportHTTP && policy.Provider == "gemini":
+		return AdapterAvailable, true
 	default:
 		return AdapterUnavailable, false
 	}
