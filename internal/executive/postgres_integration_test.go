@@ -18,6 +18,9 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/completion"
 	completionpostgres "github.com/Mireuz13/explorarte-organization/internal/completion/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/config"
+	"github.com/Mireuz13/explorarte-organization/internal/contextengine/canonical"
+	"github.com/Mireuz13/explorarte-organization/internal/decisiongraph"
+	decisiongraphpostgres "github.com/Mireuz13/explorarte-organization/internal/decisiongraph/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/executive"
 	"github.com/Mireuz13/explorarte-organization/internal/executive/runtimeadapter"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
@@ -37,6 +40,7 @@ type integrationHarness struct {
 	tasks      *tasks.Service
 	authz      executive.AuthorizationGate
 	completion executive.CompletionGate
+	decisions  executive.DecisionRecorder
 }
 
 func newIntegrationHarness(t *testing.T) *integrationHarness {
@@ -82,7 +86,10 @@ func newIntegrationHarness(t *testing.T) *integrationHarness {
 TRUNCATE outbox_events,task_dead_letters,task_events,task_leases,task_attempts,task_evidence,
          task_requirements,task_dependencies,tasks,organization_reporting_lines,
          organization_registry_revision_documents,organization_roles,organizational_units,
-         organizations,organization_registry_revisions,audit_events RESTART IDENTITY CASCADE`); err != nil {
+         organizations,organization_registry_revisions,audit_events,
+         decision_records,decision_budget_events,decision_verifications,decision_observations,
+         decision_node_executions,decision_graph_budgets,decision_branch_events,decision_graph_edges,
+         decision_graph_nodes,decision_graph_versions,decision_graph_runs RESTART IDENTITY CASCADE`); err != nil {
 		store.Close()
 		cancel()
 		t.Fatalf("reset schema: %v", err)
@@ -154,10 +161,32 @@ TRUNCATE outbox_events,task_dead_letters,task_events,task_leases,task_attempts,t
 		cancel()
 		t.Fatal(err)
 	}
+	decisionGraphStore, err := decisiongraphpostgres.New(store, "explorarte")
+	if err != nil {
+		store.Close()
+		cancel()
+		t.Fatal(err)
+	}
+	decisionGraphService, err := decisiongraph.NewService(decisionGraphStore, decisiongraph.SystemClock{})
+	if err != nil {
+		store.Close()
+		cancel()
+		t.Fatal(err)
+	}
+	canonicalProvider, err := canonical.New(canonicalDir, int64(cfg.Context.MaxTotalBytes))
+	if err != nil {
+		store.Close()
+		cancel()
+		t.Fatal(err)
+	}
 	return &integrationHarness{
 		ctx: ctx, cancel: cancel, store: store, registry: registryRepo, tasks: taskService,
 		authz:      runtimeadapter.Authorization{Service: authRuntime.Service, OrganizationID: "explorarte"},
 		completion: runtimeadapter.Completion{Service: completionService},
+		decisions: runtimeadapter.DecisionGraph{
+			Service: decisionGraphService, Canonical: canonicalProvider,
+			Limits: executive.DefaultLimits(), Clock: executive.ClockFunc(time.Now),
+		},
 	}
 }
 
@@ -295,7 +324,7 @@ func newOrchestrator(t *testing.T, h *integrationHarness, models *integrationMod
 		"explorarte",
 		runtimeadapter.Registry{Reader: h.registry, OrganizationID: "explorarte"},
 		runtimeadapter.Tasks{Service: h.tasks, OrganizationID: "explorarte"},
-		&integrationContext{}, assignments, models, completionGate, h.authz,
+		&integrationContext{}, assignments, models, completionGate, h.decisions, h.authz,
 		executive.DefaultLimits(), executive.ClockFunc(time.Now),
 	)
 	if err != nil {
@@ -365,6 +394,96 @@ func TestExecutivePostgreSQL17EndToEndAndRestart(t *testing.T) {
 		if task.ID != rootID && (task.CausationID == nil || *task.CausationID == "") {
 			t.Fatalf("missing causation task=%+v", task)
 		}
+	}
+}
+
+// TestExecutivePostgreSQL17RecordsDecisionGraphTraceForEveryAttempt is the
+// Rama 25 producer smoke test: it runs one real executive task to completion
+// against real PostgreSQL 17 and asserts every finished attempt left a
+// durable, queryable decision-graph trace — not just that gatedComplete
+// didn't error. The trace's shape (goal/candidate_action/decision nodes, a
+// verified terminal decision pointing at the task/attempt that produced it)
+// is checked directly against the tables, matching how R23/R24 verified
+// behavior against real Postgres rather than fakes.
+func TestExecutivePostgreSQL17RecordsDecisionGraphTraceForEveryAttempt(t *testing.T) {
+	h := newIntegrationHarness(t)
+	defer h.close()
+	models := newIntegrationModelRuntime()
+	completionGate := &countingCompletion{delegate: h.completion}
+	orchestrator := newOrchestrator(t, h, models, integrationAssignments{}, completionGate)
+	run, reused, err := orchestrator.Submit(h.ctx, executive.SubmitRequest{
+		ActorRoleID: executive.OwnerRoleID, IdempotencyKey: "integration-decision-trace",
+		Goal: executive.OwnerGoal{Goal: "Analyze the organization and return a one-area plan without external actions.", AcceptanceCriteria: []string{"one department reviewed", "closure verified"}},
+	})
+	if err != nil || reused {
+		t.Fatalf("submit: run=%+v reused=%v err=%v", run, reused, err)
+	}
+	run, err = runUntilTerminalOrError(t, h.ctx, orchestrator, run.RootTaskID, 20)
+	if err != nil || run.State != executive.StateCompleted {
+		t.Fatalf("run=%+v err=%v", run, err)
+	}
+
+	rows, queryErr := h.store.Pool().Query(h.ctx, `
+SELECT r.id, r.task_id, r.attempt_id, r.status,
+       (SELECT count(*) FROM decision_graph_nodes n WHERE n.run_id = r.id) AS node_count,
+       d.decision_node_id, d.selected_candidate_node_id, d.verification_label
+FROM decision_graph_runs r
+JOIN decision_records d ON d.run_id = r.id
+WHERE r.organization_id = 'explorarte'
+ORDER BY r.id`)
+	if queryErr != nil {
+		t.Fatalf("query decision graph runs: %v", queryErr)
+	}
+	defer rows.Close()
+
+	type traceRow struct {
+		runID, taskID, attemptID, nodeCount, decisionNodeID, candidateNodeID int64
+		status, label                                                        string
+	}
+	var traces []traceRow
+	for rows.Next() {
+		var tr traceRow
+		if err := rows.Scan(&tr.runID, &tr.taskID, &tr.attemptID, &tr.status, &tr.nodeCount, &tr.decisionNodeID, &tr.candidateNodeID, &tr.label); err != nil {
+			t.Fatalf("scan decision graph row: %v", err)
+		}
+		traces = append(traces, tr)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate decision graph rows: %v", err)
+	}
+
+	// Every finished attempt in this run went through completion.Verify
+	// exactly once (countingCompletion.calls, asserted below matches the
+	// existing end-to-end test's expectation of 6), so exactly 6 runs with a
+	// recorded terminal decision are expected — one per attempt, no more, no
+	// fewer, and none left as an orphaned trace with no terminal decision.
+	if completionGate.calls != 6 {
+		t.Fatalf("completion verifier calls=%d want=6", completionGate.calls)
+	}
+	if len(traces) != completionGate.calls {
+		t.Fatalf("decision graph traces=%d want=%d (traces=%+v)", len(traces), completionGate.calls, traces)
+	}
+	seenTasks := map[int64]bool{}
+	for _, tr := range traces {
+		if tr.status != "succeeded" {
+			t.Fatalf("run %d status=%s want=succeeded", tr.runID, tr.status)
+		}
+		if tr.nodeCount != 3 {
+			t.Fatalf("run %d node_count=%d want=3 (goal, candidate_action, decision)", tr.runID, tr.nodeCount)
+		}
+		if tr.label != "verified" {
+			t.Fatalf("run %d verification_label=%s want=verified (every attempt in this scenario passes completion verification)", tr.runID, tr.label)
+		}
+		if tr.decisionNodeID == tr.candidateNodeID {
+			t.Fatalf("run %d decision node and candidate node must be distinct, got both=%d", tr.runID, tr.decisionNodeID)
+		}
+		if tr.taskID <= 0 || tr.attemptID <= 0 {
+			t.Fatalf("run %d has invalid task/attempt linkage: task=%d attempt=%d", tr.runID, tr.taskID, tr.attemptID)
+		}
+		seenTasks[tr.taskID] = true
+	}
+	if len(seenTasks) != 6 {
+		t.Fatalf("distinct tasks with a recorded decision trace=%d want=6 (traces=%+v)", len(seenTasks), traces)
 	}
 }
 

@@ -260,3 +260,16 @@ func (f *fakeCompletion) Verify(context.Context, int64, int64) (CompletionResult
 	f.calls++
 	return CompletionResult{Verdict: f.verdict, Detail: "test"}, nil
 }
+
+type fakeDecisionRecorder struct {
+	records []AttemptDecisionRecord
+	err     error
+}
+
+func (f *fakeDecisionRecorder) RecordAttemptDecision(_ context.Context, record AttemptDecisionRecord) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.records = append(f.records, record)
+	return nil
+}

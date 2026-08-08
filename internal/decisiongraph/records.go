@@ -69,6 +69,12 @@ type GraphVersion struct {
 	MaxDepth      int
 	CreatedBy     string
 	CreatedAt     time.Time
+	// NodeIDs maps each AppendGraphRequest.Nodes[i].ID (the caller-chosen
+	// logical_node_id) to the durable-store-assigned node id that
+	// RecordVerification, TransitionBranch and RecordTerminalDecision
+	// require. Callers that only append a graph and never verify/decide
+	// against it may ignore this field.
+	NodeIDs map[int64]int64
 }
 
 type AppendGraphRequest struct {

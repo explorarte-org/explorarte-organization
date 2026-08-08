@@ -33,7 +33,7 @@ func TestR23PostgreSQLProjectsWorkerEvidenceAndClosesDAGRace(t *testing.T) {
 		"explorarte",
 		runtimeadapter.Registry{Reader: h.registry, OrganizationID: "explorarte"},
 		dagTasks,
-		&integrationContext{}, integrationAssignments{}, budgetModels, completionGate, h.authz,
+		&integrationContext{}, integrationAssignments{}, budgetModels, completionGate, h.decisions, h.authz,
 		limits, executive.ClockFunc(time.Now),
 	)
 	if err != nil {

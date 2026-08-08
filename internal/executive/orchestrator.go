@@ -24,6 +24,7 @@ type Orchestrator struct {
 	assignments    DispatchProvisioner
 	models         ModelCoordinator
 	completion     CompletionGate
+	decisions      DecisionRecorder
 	validator      *Validator
 	limits         Limits
 	clock          Clock
@@ -32,8 +33,8 @@ type Orchestrator struct {
 	leases map[int64]LeaseRecord
 }
 
-func NewOrchestrator(organizationID string, registry RegistryResolver, tasks TaskCoordinator, contexts ContextCoordinator, assignments DispatchProvisioner, models ModelCoordinator, completion CompletionGate, authz AuthorizationGate, limits Limits, clock Clock) (*Orchestrator, error) {
-	if strings.TrimSpace(organizationID) == "" || registry == nil || tasks == nil || contexts == nil || assignments == nil || models == nil || completion == nil || authz == nil {
+func NewOrchestrator(organizationID string, registry RegistryResolver, tasks TaskCoordinator, contexts ContextCoordinator, assignments DispatchProvisioner, models ModelCoordinator, completion CompletionGate, decisions DecisionRecorder, authz AuthorizationGate, limits Limits, clock Clock) (*Orchestrator, error) {
+	if strings.TrimSpace(organizationID) == "" || registry == nil || tasks == nil || contexts == nil || assignments == nil || models == nil || completion == nil || decisions == nil || authz == nil {
 		return nil, errors.New("executive orchestrator dependencies are incomplete")
 	}
 	if limits.MaxDepartments <= 0 {
@@ -46,7 +47,7 @@ func NewOrchestrator(organizationID string, registry RegistryResolver, tasks Tas
 	if err != nil {
 		return nil, err
 	}
-	return &Orchestrator{organizationID: strings.TrimSpace(organizationID), registry: registry, tasks: tasks, contexts: contexts, assignments: assignments, models: models, completion: completion, validator: validator, limits: limits, clock: clock, leases: map[int64]LeaseRecord{}}, nil
+	return &Orchestrator{organizationID: strings.TrimSpace(organizationID), registry: registry, tasks: tasks, contexts: contexts, assignments: assignments, models: models, completion: completion, decisions: decisions, validator: validator, limits: limits, clock: clock, leases: map[int64]LeaseRecord{}}, nil
 }
 
 func (o *Orchestrator) Submit(ctx context.Context, request SubmitRequest) (Run, bool, error) {
@@ -636,6 +637,9 @@ func (o *Orchestrator) gatedComplete(ctx context.Context, task TaskRecord) (Task
 	verified, err := o.completion.Verify(ctx, task.ID, attemptID)
 	if err != nil {
 		return task, err
+	}
+	if err := o.decisions.RecordAttemptDecision(ctx, AttemptDecisionRecord{TaskID: task.ID, AttemptID: attemptID, Verdict: verified.Verdict, Detail: verified.Detail}); err != nil {
+		return task, fmt.Errorf("record decision trace: %w", err)
 	}
 	switch verified.Verdict {
 	case CompletionPass:

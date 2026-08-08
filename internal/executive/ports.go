@@ -100,6 +100,21 @@ type CompletionGate interface {
 	Verify(context.Context, int64, int64) (CompletionResult, error)
 }
 
+// DecisionRecorder durably records the completion verdict for one finished
+// task attempt as a decision-graph trace (internal/decisiongraph), so
+// internal/evaluation and internal/improvement have a real trace to act on
+// instead of the orchestrator's decision leaving no evidence behind.
+type DecisionRecorder interface {
+	RecordAttemptDecision(context.Context, AttemptDecisionRecord) error
+}
+
+type AttemptDecisionRecord struct {
+	TaskID    int64
+	AttemptID int64
+	Verdict   CompletionVerdict
+	Detail    string
+}
+
 type AuthorizationGate interface {
 	Evaluate(context.Context, AuthorizationRequest) (AuthorizationDecision, error)
 }

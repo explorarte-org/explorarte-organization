@@ -9,6 +9,8 @@ import (
 	completionpostgres "github.com/Mireuz13/explorarte-organization/internal/completion/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/config"
 	contextbootstrap "github.com/Mireuz13/explorarte-organization/internal/contextengine/bootstrap"
+	"github.com/Mireuz13/explorarte-organization/internal/decisiongraph"
+	decisiongraphpostgres "github.com/Mireuz13/explorarte-organization/internal/decisiongraph/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/executive"
 	"github.com/Mireuz13/explorarte-organization/internal/executive/runtimeadapter"
 	modelbootstrap "github.com/Mireuz13/explorarte-organization/internal/modelruntime/bootstrap"
@@ -84,6 +86,14 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 	if err = runtimeadapter.ValidateStaticDependencies(registryRepository, modelRuntime.Dispatcher.Store, completionService, authorizationRuntime.Service); err != nil {
 		return nil, err
 	}
+	decisionGraphStore, err := decisiongraphpostgres.New(store, cfg.Tasks.OrganizationID)
+	if err != nil {
+		return nil, fmt.Errorf("create executive decision graph store: %w", err)
+	}
+	decisionGraphService, err := decisiongraph.NewService(decisionGraphStore, decisiongraph.SystemClock{})
+	if err != nil {
+		return nil, fmt.Errorf("create executive decision graph service: %w", err)
+	}
 
 	limits := executive.DefaultLimits()
 	baseTasks := runtimeadapter.Tasks{Service: taskService, OrganizationID: cfg.Tasks.OrganizationID}
@@ -92,6 +102,10 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 	evidenceTasks := runtimeadapter.EvidenceTasks{Tasks: baseTasks, Models: baseModels, Completion: completionGate, Limits: limits}
 	dagTasks := runtimeadapter.DAGTasks{TaskCoordinator: evidenceTasks}
 	budgetModels := runtimeadapter.BudgetModels{Models: baseModels, Tasks: dagTasks, Limits: limits}
+	decisionRecorder := runtimeadapter.DecisionGraph{
+		Service: decisionGraphService, Canonical: contextRuntime.Canonical,
+		Limits: limits, Clock: executive.ClockFunc(time.Now),
+	}
 
 	orchestrator, err := executive.NewOrchestrator(
 		cfg.Tasks.OrganizationID,
@@ -101,6 +115,7 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 		runtimeadapter.Assignment{Resolver: modelRuntime.Dispatcher.Store, OrganizationID: cfg.Tasks.OrganizationID},
 		budgetModels,
 		completionGate,
+		decisionRecorder,
 		runtimeadapter.Authorization{Service: authorizationRuntime.Service, OrganizationID: cfg.Tasks.OrganizationID},
 		limits,
 		executive.ClockFunc(time.Now),

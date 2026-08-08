@@ -21,7 +21,7 @@ func testOrchestratorForPorts(t *testing.T, tasksPort *memoryTasks, models *fake
 		leaders: map[string]RoleRef{"ingenieria_ia": leader},
 	}
 	value, err := NewOrchestrator(
-		"explorarte", registry, tasksPort, &fakeContexts{}, fakeAssignments{}, models, completion,
+		"explorarte", registry, tasksPort, &fakeContexts{}, fakeAssignments{}, models, completion, &fakeDecisionRecorder{},
 		allowAuthz{}, DefaultLimits(), ClockFunc(func() time.Time { return time.Unix(1000, 0) }),
 	)
 	if err != nil {

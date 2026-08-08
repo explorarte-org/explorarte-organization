@@ -225,6 +225,7 @@ INSERT INTO decision_budget_events (
 	if err := tx.Commit(ctx); err != nil {
 		return decisiongraph.GraphVersion{}, fmt.Errorf("commit append graph: %w", err)
 	}
+	version.NodeIDs = nodeIDs
 	return version, nil
 }
 
