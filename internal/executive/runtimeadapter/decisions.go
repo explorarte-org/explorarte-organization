@@ -143,8 +143,22 @@ func (a DecisionGraph) RecordAttemptDecision(ctx context.Context, record executi
 	if label != decisiongraph.VerificationVerified && label != decisiongraph.VerificationInferred {
 		// A fail/inconclusive completion verdict has no terminal *selection*
 		// to record — decisiongraph.Service.RecordTerminalDecision requires a
-		// verified or inferred label. The verification above already made the
-		// outcome durable and queryable.
+		// verified or inferred label, and decision_records exists solely for
+		// that kind of selection. The verification above already made the
+		// outcome durable and queryable, but the run itself still needs to
+		// leave 'running' — otherwise a finished, rejected task attempt
+		// leaves its decision graph run active forever.
+		runStatus, reasonCode := decisiongraph.RunAmbiguous, "completion_verdict_inconclusive"
+		if record.Verdict == executive.CompletionFail {
+			runStatus, reasonCode = decisiongraph.RunFailed, "completion_verdict_fail"
+		}
+		if err := a.Service.CloseUnselectedRun(ctx, decisiongraph.CloseUnselectedRunRequest{
+			RunID: run.ID, DecisionNodeID: decisionNodeID, CandidateNodeID: candidateNodeID,
+			Status: runStatus, BranchState: verdictBranchState(record.Verdict),
+			ReasonCode: reasonCode, CreatedBy: serviceActor,
+		}); err != nil {
+			return fmt.Errorf("close unselected decision graph run: %w", err)
+		}
 		return nil
 	}
 

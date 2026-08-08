@@ -49,6 +49,9 @@ func (*fakeLedger) RecordVerification(context.Context, VerificationRecord, time.
 func (f *fakeLedger) RecordTerminalDecision(context.Context, TerminalDecisionRequest, time.Time) error {
 	return f.terminalErr
 }
+func (f *fakeLedger) CloseUnselectedRun(context.Context, CloseUnselectedRunRequest, time.Time) error {
+	return f.terminalErr
+}
 func (f *fakeLedger) RecoverExpiredExecutions(context.Context, int, time.Time) (int, error) {
 	f.recoveryCalls++
 	return 2, nil

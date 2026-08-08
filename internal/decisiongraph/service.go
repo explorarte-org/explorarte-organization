@@ -120,6 +120,16 @@ func (s *Service) RecordTerminalDecision(ctx context.Context, request TerminalDe
 	return nil
 }
 
+func (s *Service) CloseUnselectedRun(ctx context.Context, request CloseUnselectedRunRequest) error {
+	if err := request.Validate(); err != nil {
+		return err
+	}
+	if err := s.ledger.CloseUnselectedRun(ctx, request, postgresTimestamp(s.clock.Now())); err != nil {
+		return fmt.Errorf("close unselected run: %w", err)
+	}
+	return nil
+}
+
 func (s *Service) RecoverExpiredExecutions(ctx context.Context, limit int) (int, error) {
 	if limit < 1 || limit > 256 {
 		return 0, fmt.Errorf("%w: recovery limit must be between 1 and 256", ErrInvalidExecution)

@@ -270,6 +270,41 @@ func (r TerminalDecisionRequest) Validate() error {
 	return nil
 }
 
+// CloseUnselectedRunRequest terminates a run whose candidate action was
+// rejected by evidence or left inconclusive — the completion verdict was
+// fail or inconclusive, so there is no terminal *selection* to record via
+// RecordTerminalDecision (that requires a verified or inferred label). Without
+// this, such runs never leave 'running': the task attempt is finished, but
+// the decision graph never learns that.
+type CloseUnselectedRunRequest struct {
+	RunID           int64
+	DecisionNodeID  int64
+	CandidateNodeID int64
+	Status          RunStatus
+	BranchState     BranchState
+	ReasonCode      string
+	CreatedBy       string
+}
+
+func (r CloseUnselectedRunRequest) Validate() error {
+	if r.RunID <= 0 || r.DecisionNodeID <= 0 || r.CandidateNodeID <= 0 {
+		return fmt.Errorf("%w: invalid run/node identity", ErrInvalidDecision)
+	}
+	if r.Status != RunFailed && r.Status != RunAmbiguous {
+		return fmt.Errorf("%w: closing an unselected run requires a failed or ambiguous status", ErrInvalidDecision)
+	}
+	if r.BranchState != BranchRejectedByEvidence && r.BranchState != BranchInconclusive {
+		return fmt.Errorf("%w: closing an unselected run requires a rejected or inconclusive branch state", ErrInvalidDecision)
+	}
+	if strings.TrimSpace(r.ReasonCode) == "" || len(r.ReasonCode) > 120 {
+		return fmt.Errorf("%w: invalid reason code", ErrInvalidDecision)
+	}
+	if strings.TrimSpace(r.CreatedBy) == "" || len(r.CreatedBy) > 200 {
+		return fmt.Errorf("%w: invalid created-by identity", ErrInvalidDecision)
+	}
+	return nil
+}
+
 type BranchTransitionRequest struct {
 	RunID        int64
 	NodeID       int64

@@ -54,9 +54,12 @@ func (r *PostgresReader) ListEligible(ctx context.Context, organizationID string
 	// decision_verifications, not decision_records, is the authoritative
 	// completion-label source. R25 intentionally creates decision_records only
 	// for verified/inferred selections; contradicted/unknown outcomes remain
-	// durable solely as completion verifier rows and their run stays running.
-	// Filtering those rows out would erase exactly the contradictory evidence
-	// consolidation must preserve.
+	// durable solely as completion verifier rows. Their run now closes to a
+	// real terminal status ('failed' for a fail verdict, 'ambiguous' for
+	// inconclusive) instead of staying 'running' forever — both must stay in
+	// this filter alongside 'succeeded'/'running', or this query would start
+	// silently dropping exactly the contradictory evidence consolidation
+	// must preserve the moment a run's status closure catches up with it.
 	rows, err := r.pool.Query(ctx, `
 SELECT
     r.id,
@@ -102,7 +105,7 @@ LEFT JOIN decision_records dr
   ON dr.run_id = r.id
  AND dr.organization_id = r.organization_id
 WHERE r.organization_id = $1
-  AND r.status IN ('succeeded','running')
+  AND r.status IN ('succeeded','running','failed','ambiguous')
   AND ta.state = 'finished'
   AND t.status IN ('completed','no_action','failed','blocked','dead_letter','rejected','cancelled')
   AND verification.created_at >= $2

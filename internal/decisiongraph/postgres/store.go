@@ -874,6 +874,86 @@ WHERE id=$1 AND organization_id=$2 AND status IN ('running','waiting')`, request
 	return nil
 }
 
+// CloseUnselectedRun terminates a run whose candidate action was rejected by
+// evidence or left inconclusive. It never touches decision_records — that
+// table exists solely for a verified/inferred terminal selection — it only
+// closes the decision/candidate node branch states and the run's own status
+// so a fail/inconclusive completion verdict doesn't leave the run 'running'
+// forever.
+func (s *Store) CloseUnselectedRun(ctx context.Context, request decisiongraph.CloseUnselectedRunRequest, now time.Time) error {
+	if err := request.Validate(); err != nil {
+		return err
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return fmt.Errorf("begin close unselected run: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var runStatus decisiongraph.RunStatus
+	if err := tx.QueryRow(ctx, `
+SELECT status FROM decision_graph_runs
+WHERE id=$1 AND organization_id=$2
+FOR UPDATE`, request.RunID, s.organizationID).Scan(&runStatus); err != nil {
+		return mapNotFound("run", err)
+	}
+	if runStatus != decisiongraph.RunRunning && runStatus != decisiongraph.RunWaiting {
+		return decisiongraph.ErrRunNotActive
+	}
+
+	var graphVersionID int64
+	var decisionType, candidateType decisiongraph.NodeType
+	var decisionExecution, candidateExecution decisiongraph.ExecutionState
+	var decisionBranch, candidateBranch decisiongraph.BranchState
+	if err := tx.QueryRow(ctx, `
+SELECT d.graph_version_id, d.node_type, d.execution_state, d.branch_state, c.node_type, c.execution_state, c.branch_state
+FROM decision_graph_nodes d
+JOIN decision_graph_nodes c
+  ON c.id=$4
+ AND c.graph_version_id=d.graph_version_id
+ AND c.run_id=d.run_id
+ AND c.organization_id=d.organization_id
+WHERE d.id=$3 AND d.run_id=$1 AND d.organization_id=$2
+FOR UPDATE OF d,c`, request.RunID, s.organizationID, request.DecisionNodeID, request.CandidateNodeID).Scan(
+		&graphVersionID, &decisionType, &decisionExecution, &decisionBranch, &candidateType, &candidateExecution, &candidateBranch,
+	); err != nil {
+		return mapNotFound("decision nodes", err)
+	}
+	if decisionType != decisiongraph.NodeDecision || decisionExecution != decisiongraph.ExecutionSucceeded || decisionBranch != decisiongraph.BranchActive {
+		return decisiongraph.ErrInvalidDecision
+	}
+	if candidateType != decisiongraph.NodeCandidateAction || candidateExecution != decisiongraph.ExecutionSucceeded || candidateBranch != request.BranchState {
+		return decisiongraph.ErrInvalidDecision
+	}
+
+	decisionBranchEventHash := eventDigest("branch_transitioned", request.RunID, request.DecisionNodeID, decisiongraph.BranchActive, request.BranchState, "", request.ReasonCode, request.CreatedBy)
+	if _, err := tx.Exec(ctx, `
+INSERT INTO decision_branch_events(
+    organization_id,run_id,graph_version_id,node_id,from_branch_state,to_branch_state,
+    reason_code,actor,event_hash,created_at
+) VALUES($1,$2,$3,$4,'active',$5,$6,$7,$8,$9)`,
+		s.organizationID, request.RunID, graphVersionID, request.DecisionNodeID, string(request.BranchState), request.ReasonCode, request.CreatedBy, decisionBranchEventHash, now); err != nil {
+		return fmt.Errorf("record close-unselected branch transition: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+UPDATE decision_graph_nodes
+SET branch_state=$2, updated_at=$3
+WHERE id=$1`, request.DecisionNodeID, string(request.BranchState), now); err != nil {
+		return fmt.Errorf("close decision node: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+UPDATE decision_graph_runs
+SET status=$3, terminal_at=$4, terminal_reason_code=$5, updated_at=$4
+WHERE id=$1 AND organization_id=$2 AND status IN ('running','waiting')`,
+		request.RunID, s.organizationID, string(request.Status), now, request.ReasonCode); err != nil {
+		return fmt.Errorf("close unselected run: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit close unselected run: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) RecoverExpiredExecutions(ctx context.Context, limit int, now time.Time) (int, error) {
 	if limit < 1 || limit > 256 {
 		return 0, decisiongraph.ErrInvalidExecution

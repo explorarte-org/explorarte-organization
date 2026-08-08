@@ -15,6 +15,7 @@ type Ledger interface {
 	RecordObservation(context.Context, ObservationRecord, time.Time) error
 	RecordVerification(context.Context, VerificationRecord, time.Time) error
 	RecordTerminalDecision(context.Context, TerminalDecisionRequest, time.Time) error
+	CloseUnselectedRun(context.Context, CloseUnselectedRunRequest, time.Time) error
 	RecoverExpiredExecutions(context.Context, int, time.Time) (int, error)
 	TraceRef(context.Context, int64) (TraceRef, error)
 }

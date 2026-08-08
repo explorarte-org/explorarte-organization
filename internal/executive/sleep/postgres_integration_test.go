@@ -143,6 +143,25 @@ func TestOrganizationalSleepAgainstRealPostgres(t *testing.T) {
 		runIDs = append(runIDs, runID)
 	}
 
+	// A fail verdict must not leave its decision graph run 'running' forever
+	// — the task attempt finished, so the run must reach a real terminal
+	// status too, even though nothing was selected.
+	for index, verdict := range labels {
+		var status string
+		var terminalAt *time.Time
+		var reasonCode *string
+		if err := store.Pool().QueryRow(ctx, `SELECT status, terminal_at, terminal_reason_code FROM decision_graph_runs WHERE id=$1 AND organization_id=$2`, runIDs[index], sleepIntegrationOrg).Scan(&status, &terminalAt, &reasonCode); err != nil {
+			t.Fatal(err)
+		}
+		wantStatus := "succeeded"
+		if verdict == executive.CompletionFail {
+			wantStatus = "failed"
+		}
+		if status != wantStatus || terminalAt == nil || reasonCode == nil {
+			t.Fatalf("run %d (verdict=%s) status=%s terminal_at=%v reason_code=%v, want status=%s with terminal_at and reason_code set", runIDs[index], verdict, status, terminalAt, reasonCode, wantStatus)
+		}
+	}
+
 	ragRuntime, err := ragbootstrap.Open(cfg, store)
 	if err != nil {
 		t.Fatalf("open RAG runtime: %v", err)
