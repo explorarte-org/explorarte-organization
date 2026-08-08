@@ -2,6 +2,8 @@ package sleep
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,9 +25,13 @@ func (f *fakeExperienceReader) ListEligible(_ context.Context, _ string, from, t
 type fakeCandidateProposer struct {
 	requests []rag.ProposeRequest
 	seen     map[string]struct{}
+	failWhen func(rag.ProposeRequest) bool
 }
 
 func (f *fakeCandidateProposer) Propose(_ context.Context, request rag.ProposeRequest) (rag.KnowledgeVersion, bool, error) {
+	if f.failWhen != nil && f.failWhen(request) {
+		return rag.KnowledgeVersion{}, false, errors.New("simulated proposer failure")
+	}
 	if f.seen == nil {
 		f.seen = map[string]struct{}{}
 	}
@@ -74,6 +80,44 @@ func TestRunCycleProposesRecurringObservedCandidate(t *testing.T) {
 	}
 	if second.CandidatesReused != 1 || second.CandidatesProposed != 0 {
 		t.Fatalf("second=%+v", second)
+	}
+}
+
+func TestRunCycleIsolatesOneCandidateFailureFromOthers(t *testing.T) {
+	now := time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)
+	groupA := []Experience{
+		testExperience(1, VerificationVerified, "deepseek", now.Add(-5*time.Hour)),
+		testExperience(2, VerificationVerified, "deepseek", now.Add(-4*time.Hour)),
+		testExperience(3, VerificationVerified, "deepseek", now.Add(-3*time.Hour)),
+	}
+	groupB := []Experience{
+		testExperience(11, VerificationVerified, "gemini", now.Add(-2*time.Hour)),
+		testExperience(12, VerificationVerified, "gemini", now.Add(-time.Hour)),
+		testExperience(13, VerificationVerified, "gemini", now.Add(-30*time.Minute)),
+	}
+	reader := &fakeExperienceReader{values: append(append([]Experience(nil), groupA...), groupB...)}
+	proposer := &fakeCandidateProposer{failWhen: func(request rag.ProposeRequest) bool {
+		return strings.Contains(request.Command.Title, "deepseek")
+	}}
+	service, err := NewService(reader, proposer, ClockFunc(func() time.Time { return now }), DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.RunCycle(context.Background(), "explorarte", 24*time.Hour)
+	if err != nil {
+		t.Fatalf("RunCycle must isolate a single candidate's failure, not abort the cycle: %v", err)
+	}
+	if len(result.Failures) != 1 {
+		t.Fatalf("failures=%+v want exactly 1", result.Failures)
+	}
+	if result.Failures[0].Group.ProviderID != "deepseek" {
+		t.Fatalf("failure group=%+v want provider=deepseek", result.Failures[0].Group)
+	}
+	if result.CandidatesProposed != 1 || len(result.Proposals) != 1 {
+		t.Fatalf("result=%+v want the gemini group still successfully proposed", result)
+	}
+	if result.Proposals[0].Group.ProviderID != "gemini" {
+		t.Fatalf("surviving proposal group=%+v want provider=gemini", result.Proposals[0].Group)
 	}
 }
 

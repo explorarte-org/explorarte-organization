@@ -45,7 +45,7 @@ func (s *Service) RunCycle(ctx context.Context, organizationID string, window ti
 
 	end := s.clock.Now().UTC()
 	start := end.Add(-window)
-	result := CycleResult{WindowStart: start, WindowEnd: end, Proposals: []ProposalResult{}}
+	result := CycleResult{WindowStart: start, WindowEnd: end, Proposals: []ProposalResult{}, Failures: []ProposalFailure{}}
 
 	experiences, err := s.reader.ListEligible(ctx, organizationID, start, end, s.config.MaxExperiences)
 	if err != nil {
@@ -76,12 +76,14 @@ func (s *Service) RunCycle(ctx context.Context, organizationID string, window ti
 
 		candidate, err := BuildCandidate(group, recurring, analysis, s.config)
 		if err != nil {
-			return result, fmt.Errorf("sleep: build candidate for %s: %w", group.Key.String(), err)
+			result.Failures = append(result.Failures, ProposalFailure{Group: group.Key, Error: err.Error()})
+			continue
 		}
 		candidate.Request.Command.OrganizationID = organizationID
 		version, reused, err := s.proposer.Propose(ctx, candidate.Request)
 		if err != nil {
-			return result, fmt.Errorf("sleep: propose candidate for %s: %w", group.Key.String(), err)
+			result.Failures = append(result.Failures, ProposalFailure{Group: group.Key, Error: err.Error()})
+			continue
 		}
 		proposal := ProposalResult{
 			Group: group.Key, VersionID: version.ID, DocumentID: version.DocumentID,

@@ -89,7 +89,8 @@ func BuildCandidate(primary Group, recurring []Group, analysis GroupAnalysis, co
 	runIDs := make([]int64, 0, len(evidence))
 	latestObserved := time.Time{}
 	for _, experience := range evidence {
-		primaryMember := experience.UnitID == primary.Key.UnitID && experience.RoleID == primary.Key.RoleID && experience.ProviderID == primary.Key.ProviderID
+		primaryMember := experience.UnitID == primary.Key.UnitID && experience.RoleID == primary.Key.RoleID &&
+			experience.ProviderID == primary.Key.ProviderID && experience.ProviderModelID == primary.Key.ProviderModelID
 		sources = append(sources, CandidateSource{
 			RunID: experience.RunID, TaskID: experience.TaskID, AttemptID: experience.AttemptID,
 			UnitID: experience.UnitID, RoleID: experience.RoleID, ProviderID: experience.ProviderID, ProviderModelID: experience.ProviderModelID,
@@ -106,12 +107,13 @@ func BuildCandidate(primary Group, recurring []Group, analysis GroupAnalysis, co
 	sort.Slice(refs, func(i, j int) bool { return refs[i].Reference < refs[j].Reference })
 	sort.Slice(runIDs, func(i, j int) bool { return runIDs[i] < runIDs[j] })
 
-	claim := fmt.Sprintf("Observed completion pattern for %s in %s via %s: %d/%d successful verified-or-inferred outcomes (pass_rate=%.6f).",
-		primary.Key.RoleID, primary.Key.UnitID, primary.Key.ProviderID, analysis.SuccessCount, analysis.Total, analysis.PassRate)
+	claim := fmt.Sprintf("Observed completion pattern for %s in %s via %s/%s: %d/%d successful verified-or-inferred outcomes (pass_rate=%.6f).",
+		primary.Key.RoleID, primary.Key.UnitID, primary.Key.ProviderID, primary.Key.ProviderModelID, analysis.SuccessCount, analysis.Total, analysis.PassRate)
 	conditions := []string{
 		"unit_id=" + primary.Key.UnitID,
 		"role_id=" + primary.Key.RoleID,
 		"provider_id=" + primary.Key.ProviderID,
+		"provider_model_id=" + primary.Key.ProviderModelID,
 	}
 	if analysis.Contradiction {
 		conditions = append(conditions, "mixed_outcomes_observed=true; this is not an unconditional success claim")
@@ -143,7 +145,7 @@ func BuildCandidate(primary Group, recurring []Group, analysis GroupAnalysis, co
 	evidenceHash := evidenceSetHash(evidence)
 	documentID := "sleep-" + groupHash[:16] + "-" + evidenceHash[:16]
 	versionID := documentID + "-v1"
-	title := compactTitle("Observed completion pattern: "+primary.Key.RoleID+" via "+primary.Key.ProviderID, groupHash)
+	title := compactTitle("Observed completion pattern: "+primary.Key.RoleID+" via "+primary.Key.ProviderID+"/"+primary.Key.ProviderModelID, groupHash)
 	sourceReference := "organizational-sleep:evidence-set:" + evidenceHash
 	evidenceRef := "decisiongraph:evidence-set:" + evidenceHash
 
@@ -173,8 +175,8 @@ func evidenceSetHash(experiences []Experience) string {
 	var b strings.Builder
 	b.WriteString("organizational-sleep-evidence.v1\n")
 	for _, experience := range values {
-		fmt.Fprintf(&b, "%d|%d|%d|%s|%s|%s|%s|%s\n", experience.RunID, experience.TaskID, experience.AttemptID,
-			experience.UnitID, experience.RoleID, experience.ProviderID, experience.VerificationLabel, experience.EvidenceDigest)
+		fmt.Fprintf(&b, "%d|%d|%d|%s|%s|%s|%s|%s|%s\n", experience.RunID, experience.TaskID, experience.AttemptID,
+			experience.UnitID, experience.RoleID, experience.ProviderID, experience.ProviderModelID, experience.VerificationLabel, experience.EvidenceDigest)
 	}
 	return sha256Hex(b.String())
 }

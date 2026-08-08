@@ -16,7 +16,7 @@ func GroupExperiences(experiences []Experience) ([]Group, error) {
 		if err := experience.Validate(); err != nil {
 			return nil, err
 		}
-		key := GroupKey{UnitID: experience.UnitID, RoleID: experience.RoleID, ProviderID: experience.ProviderID}
+		key := GroupKey{UnitID: experience.UnitID, RoleID: experience.RoleID, ProviderID: experience.ProviderID, ProviderModelID: experience.ProviderModelID}
 		grouped[key] = append(grouped[key], experience)
 	}
 	keys := make([]GroupKey, 0, len(grouped))
@@ -68,6 +68,11 @@ func RecurringGroups(groups []Group, minGroupSize int) []Group {
 }
 
 func PortabilityFor(primary Group, recurring []Group, minGroupSize int) (Portability, []Experience) {
+	// Grouping keys now include ProviderModelID, so a single provider can
+	// contribute more than one group here (one per distinct model). The
+	// portability signal is about the provider boundary, not the
+	// provider+model combination, so ProvidersSeen must count distinct
+	// ProviderID values rather than the number of groups collected.
 	providerGroups := make([]Group, 0)
 	for _, group := range recurring {
 		if len(group.Experiences) < minGroupSize {
@@ -77,9 +82,19 @@ func PortabilityFor(primary Group, recurring []Group, minGroupSize int) (Portabi
 			providerGroups = append(providerGroups, group.Sorted())
 		}
 	}
-	sort.Slice(providerGroups, func(i, j int) bool { return providerGroups[i].Key.ProviderID < providerGroups[j].Key.ProviderID })
+	sort.Slice(providerGroups, func(i, j int) bool {
+		if providerGroups[i].Key.ProviderID != providerGroups[j].Key.ProviderID {
+			return providerGroups[i].Key.ProviderID < providerGroups[j].Key.ProviderID
+		}
+		return providerGroups[i].Key.ProviderModelID < providerGroups[j].Key.ProviderModelID
+	})
 
-	portability := Portability{ProvidersSeen: len(providerGroups)}
+	distinctProviders := make(map[string]struct{}, len(providerGroups))
+	for _, group := range providerGroups {
+		distinctProviders[group.Key.ProviderID] = struct{}{}
+	}
+
+	portability := Portability{ProvidersSeen: len(distinctProviders)}
 	allEvidence := make([]Experience, 0)
 	bands := map[string]struct{}{}
 	for _, group := range providerGroups {
@@ -87,7 +102,7 @@ func PortabilityFor(primary Group, recurring []Group, minGroupSize int) (Portabi
 		band := passBand(analysis.PassRate)
 		bands[band] = struct{}{}
 		portability.ProviderRates = append(portability.ProviderRates, ProviderRate{
-			ProviderID: group.Key.ProviderID, PassRate: analysis.PassRate, Count: analysis.Total, Band: band,
+			ProviderID: group.Key.ProviderID, ProviderModelID: group.Key.ProviderModelID, PassRate: analysis.PassRate, Count: analysis.Total, Band: band,
 		})
 		allEvidence = append(allEvidence, group.Experiences...)
 	}

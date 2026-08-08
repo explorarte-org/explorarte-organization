@@ -41,13 +41,20 @@ type modelBinding struct {
 	ProviderModelID  string
 }
 
-func TestOrganizationalSleepAgainstRealPostgres(t *testing.T) {
+type sleepIntegrationFixture struct {
+	store    *platformpostgres.Store
+	revision *registry.Revision
+	binding  modelBinding
+	recorder runtimeadapter.DecisionGraph
+	cfg      config.Config
+}
+
+func setupSleepIntegration(t *testing.T, ctx context.Context) sleepIntegrationFixture {
+	t.Helper()
 	databaseURL := os.Getenv("ORG_TEST_DATABASE_URL")
 	if databaseURL == "" {
 		t.Fatal("ORG_TEST_DATABASE_URL is required")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
-	defer cancel()
 	canonicalDir := filepath.Join("..", "..", "..", "docs", "canonical")
 	cfg, err := config.LoadFrom(func(key string) (string, bool) {
 		values := map[string]string{
@@ -67,7 +74,7 @@ func TestOrganizationalSleepAgainstRealPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	t.Cleanup(store.Close)
 	runner, err := platformmigrations.New(store.Pool(), rootmigrations.Files)
 	if err != nil {
 		t.Fatal(err)
@@ -126,6 +133,15 @@ func TestOrganizationalSleepAgainstRealPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	recorder := runtimeadapter.DecisionGraph{Service: graphService, Canonical: canonicalProvider, Limits: executive.DefaultLimits(), Clock: executive.ClockFunc(time.Now)}
+
+	return sleepIntegrationFixture{store: store, revision: revision, binding: binding, recorder: recorder, cfg: cfg}
+}
+
+func TestOrganizationalSleepAgainstRealPostgres(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	defer cancel()
+	fixture := setupSleepIntegration(t, ctx)
+	store, revision, binding, recorder, cfg := fixture.store, fixture.revision, fixture.binding, fixture.recorder, fixture.cfg
 
 	labels := []executive.CompletionVerdict{executive.CompletionPass, executive.CompletionPass, executive.CompletionFail}
 	runIDs := make([]int64, 0, len(labels))
@@ -252,6 +268,85 @@ WHERE organization_id=$1 AND version_id=$2`, sleepIntegrationOrg, proposal.Versi
 	}
 	if second.EligibleExperiences != 0 || second.CandidatesProposed != 0 || second.CandidatesReused != 0 {
 		t.Fatalf("second cycle should be a no-op after durable consumption: %+v", second)
+	}
+}
+
+// TestListEligiblePaginatesAcrossKeysetPageBoundaries proves ListEligible's
+// keyset cursor never truncates or duplicates results when the real result
+// set spans more than one page. pageFetchSize is shrunk to 2 so 7 real
+// fixture experiences force 4 page fetches instead of needing thousands of
+// rows to exceed a page in one query.
+func TestListEligiblePaginatesAcrossKeysetPageBoundaries(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	defer cancel()
+	fixture := setupSleepIntegration(t, ctx)
+	store, revision, binding, recorder, cfg := fixture.store, fixture.revision, fixture.binding, fixture.recorder, fixture.cfg
+
+	restore := sleep.SetPageFetchSizeForTest(2)
+	defer restore()
+
+	const total = 7
+	runIDs := make(map[int64]bool, total)
+	for index := 1; index <= total; index++ {
+		taskID, attemptID := insertObservedAttempt(t, ctx, store, revision.ID, binding, index, executive.CompletionPass)
+		if err := recorder.RecordAttemptDecision(ctx, executive.AttemptDecisionRecord{
+			TaskID: taskID, AttemptID: attemptID, Verdict: executive.CompletionPass, Detail: fmt.Sprintf("pagination fixture %d", index),
+		}); err != nil {
+			t.Fatalf("record decision %d: %v", index, err)
+		}
+		var runID int64
+		if err := store.Pool().QueryRow(ctx, `SELECT id FROM decision_graph_runs WHERE organization_id=$1 AND task_id=$2 AND attempt_id=$3`, sleepIntegrationOrg, taskID, attemptID).Scan(&runID); err != nil {
+			t.Fatal(err)
+		}
+		runIDs[runID] = true
+	}
+
+	ragRuntime, err := ragbootstrap.Open(cfg, store)
+	if err != nil {
+		t.Fatalf("open RAG runtime: %v", err)
+	}
+	reader, err := sleep.NewPostgresReader(store, ragRuntime.Manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	from := time.Now().UTC().Add(-time.Hour)
+	to := time.Now().UTC().Add(time.Hour)
+	got, err := reader.ListEligible(ctx, sleepIntegrationOrg, from, to, total)
+	if err != nil {
+		t.Fatalf("list eligible: %v", err)
+	}
+	if len(got) != total {
+		t.Fatalf("got %d experiences across paged fetches, want %d", len(got), total)
+	}
+	seen := make(map[int64]bool, total)
+	for i, experience := range got {
+		if !runIDs[experience.RunID] {
+			t.Fatalf("unexpected run id %d not among fixture runs", experience.RunID)
+		}
+		if seen[experience.RunID] {
+			t.Fatalf("run id %d returned more than once", experience.RunID)
+		}
+		seen[experience.RunID] = true
+		if i > 0 {
+			prev := got[i-1]
+			if experience.ObservedAt.Before(prev.ObservedAt) || (experience.ObservedAt.Equal(prev.ObservedAt) && experience.RunID < prev.RunID) {
+				t.Fatalf("results not in (observed_at, run_id) order at index %d: %+v after %+v", i, experience, prev)
+			}
+		}
+	}
+	if len(seen) != total {
+		t.Fatalf("collected %d distinct run ids, want %d", len(seen), total)
+	}
+
+	// A limit smaller than the full set must still page internally as
+	// needed and stop exactly at the requested count.
+	partial, err := reader.ListEligible(ctx, sleepIntegrationOrg, from, to, 3)
+	if err != nil {
+		t.Fatalf("list eligible partial: %v", err)
+	}
+	if len(partial) != 3 {
+		t.Fatalf("partial fetch returned %d experiences, want 3", len(partial))
 	}
 }
 

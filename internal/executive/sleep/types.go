@@ -75,12 +75,15 @@ func successfulLabel(value string) bool {
 }
 
 type GroupKey struct {
-	UnitID     string `json:"unit_id"`
-	RoleID     string `json:"role_id"`
-	ProviderID string `json:"provider_id"`
+	UnitID          string `json:"unit_id"`
+	RoleID          string `json:"role_id"`
+	ProviderID      string `json:"provider_id"`
+	ProviderModelID string `json:"provider_model_id"`
 }
 
-func (k GroupKey) String() string { return k.UnitID + "|" + k.RoleID + "|" + k.ProviderID }
+func (k GroupKey) String() string {
+	return k.UnitID + "|" + k.RoleID + "|" + k.ProviderID + "|" + k.ProviderModelID
+}
 
 type Group struct {
 	Key         GroupKey     `json:"key"`
@@ -113,10 +116,11 @@ type GroupAnalysis struct {
 }
 
 type ProviderRate struct {
-	ProviderID string  `json:"provider_id"`
-	PassRate   float64 `json:"pass_rate"`
-	Count      int     `json:"count"`
-	Band       string  `json:"band"`
+	ProviderID      string  `json:"provider_id"`
+	ProviderModelID string  `json:"provider_model_id"`
+	PassRate        float64 `json:"pass_rate"`
+	Count           int     `json:"count"`
+	Band            string  `json:"band"`
 }
 
 type Portability struct {
@@ -134,18 +138,29 @@ type ProposalResult struct {
 	EvidenceRunIDs []int64  `json:"evidence_run_ids"`
 }
 
+// ProposalFailure records a candidate that failed to build or propose. Each
+// group's candidate is consumed independently: one group's failure never
+// rolls back, blocks, or hides another group's already-durable proposal, so
+// the cycle always reports every group's true outcome instead of aborting
+// on the first error.
+type ProposalFailure struct {
+	Group GroupKey `json:"group"`
+	Error string   `json:"error"`
+}
+
 type CycleResult struct {
-	WindowStart              time.Time        `json:"window_start"`
-	WindowEnd                time.Time        `json:"window_end"`
-	EligibleExperiences      int              `json:"eligible_experiences"`
-	GroupsObserved           int              `json:"groups_observed"`
-	RecurringGroups          int              `json:"recurring_groups"`
-	MixedContradictionGroups int              `json:"mixed_contradiction_groups"`
-	SkippedInsufficientRuns  int              `json:"skipped_insufficient_runs"`
-	SkippedLowPassRate       int              `json:"skipped_low_pass_rate"`
-	CandidatesProposed       int              `json:"candidates_proposed"`
-	CandidatesReused         int              `json:"candidates_reused"`
-	Proposals                []ProposalResult `json:"proposals"`
+	WindowStart              time.Time         `json:"window_start"`
+	WindowEnd                time.Time         `json:"window_end"`
+	EligibleExperiences      int               `json:"eligible_experiences"`
+	GroupsObserved           int               `json:"groups_observed"`
+	RecurringGroups          int               `json:"recurring_groups"`
+	MixedContradictionGroups int               `json:"mixed_contradiction_groups"`
+	SkippedInsufficientRuns  int               `json:"skipped_insufficient_runs"`
+	SkippedLowPassRate       int               `json:"skipped_low_pass_rate"`
+	CandidatesProposed       int               `json:"candidates_proposed"`
+	CandidatesReused         int               `json:"candidates_reused"`
+	Proposals                []ProposalResult  `json:"proposals"`
+	Failures                 []ProposalFailure `json:"failures"`
 }
 
 type Config struct {

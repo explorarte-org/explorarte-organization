@@ -17,12 +17,15 @@ import (
 // exactly this prefix + run ID when a run contributes to a proposed candidate.
 const evidenceReferencePrefix = "decisiongraph:run:"
 
-// rawFetchCeiling bounds how many window-matching runs are fetched from
-// decision_graph_runs before the already-consolidated exclusion is applied.
-// It must stay well above the largest allowed caller limit (10000, enforced
-// below) so that runs already consolidated within the window never truncate
-// the caller's requested page of truly-eligible experiences.
-const rawFetchCeiling = 50000
+// pageFetchSize bounds each keyset page fetched from decision_graph_runs.
+// ListEligible pages through the full window on (verification.created_at,
+// r.id) until it collects `limit` truly-eligible (not-yet-consolidated)
+// experiences or the window is exhausted, so no single fixed-size fetch can
+// truncate results out from under a window with more already-consolidated
+// runs than fit in one page. A var, not a const, solely so an integration
+// test can shrink it to force the multi-page path without needing
+// thousands of real fixture rows; see SetPageFetchSizeForTest.
+var pageFetchSize = 2000
 
 type PostgresReader struct {
 	pool   *pgxpool.Pool
@@ -51,16 +54,36 @@ func (r *PostgresReader) ListEligible(ctx context.Context, organizationID string
 		return nil, errors.New("sleep: experience limit outside allowed range")
 	}
 
-	// decision_verifications, not decision_records, is the authoritative
-	// completion-label source. R25 intentionally creates decision_records only
-	// for verified/inferred selections; contradicted/unknown outcomes remain
-	// durable solely as completion verifier rows. Their run now closes to a
-	// real terminal status ('failed' for a fail verdict, 'ambiguous' for
-	// inconclusive) instead of staying 'running' forever — both must stay in
-	// this filter alongside 'succeeded'/'running', or this query would start
-	// silently dropping exactly the contradictory evidence consolidation
-	// must preserve the moment a run's status closure catches up with it.
-	rows, err := r.pool.Query(ctx, `
+	// The "already consolidated" exclusion is answered through rag's own
+	// public API (never direct SQL against rag_knowledge_evidence_refs) so
+	// this reader stays inside internal/executive's persistence boundary.
+	consolidated, err := r.ledger.ExistingEvidenceReferences(ctx, organizationID, evidenceReferencePrefix)
+	if err != nil {
+		return nil, fmt.Errorf("sleep: check existing evidence references: %w", err)
+	}
+
+	experiences := make([]Experience, 0, limit)
+	cursorTime := from.UTC()
+	cursorID := int64(-1)
+	for len(experiences) < limit {
+		// decision_verifications, not decision_records, is the authoritative
+		// completion-label source. R25 intentionally creates decision_records
+		// only for verified/inferred selections; contradicted/unknown
+		// outcomes remain durable solely as completion verifier rows. Their
+		// run now closes to a real terminal status ('failed' for a fail
+		// verdict, 'ambiguous' for inconclusive) instead of staying
+		// 'running' forever — both must stay in this filter alongside
+		// 'succeeded'/'running', or this query would start silently
+		// dropping exactly the contradictory evidence consolidation must
+		// preserve the moment a run's status closure catches up with it.
+		//
+		// The page is ordered and filtered on (verification.created_at,
+		// r.id) as a keyset cursor, not a fixed-size offset/limit, so a
+		// window with more already-consolidated runs than fit in one page
+		// can never truncate the truly-eligible experiences that follow
+		// them — the loop keeps paging until it fills the caller's limit or
+		// the window itself is exhausted.
+		rows, err := r.pool.Query(ctx, `
 SELECT
     r.id,
     r.task_id,
@@ -108,56 +131,56 @@ WHERE r.organization_id = $1
   AND r.status IN ('succeeded','running','failed','ambiguous')
   AND ta.state = 'finished'
   AND t.status IN ('completed','no_action','failed','blocked','dead_letter','rejected','cancelled')
-  AND verification.created_at >= $2
-  AND verification.created_at < $3
+  AND verification.created_at < $2
+  AND (verification.created_at, r.id) > ($3, $4)
 ORDER BY verification.created_at ASC, r.id ASC
-LIMIT $4`, organizationID, from.UTC(), to.UTC(), rawFetchCeiling)
-	if err != nil {
-		return nil, fmt.Errorf("sleep: query eligible experiences: %w", err)
-	}
-	defer rows.Close()
+LIMIT $5`, organizationID, to.UTC(), cursorTime, cursorID, pageFetchSize)
+		if err != nil {
+			return nil, fmt.Errorf("sleep: query eligible experiences: %w", err)
+		}
 
-	candidates := make([]Experience, 0)
-	for rows.Next() {
-		var experience Experience
-		if err := rows.Scan(
-			&experience.RunID, &experience.TaskID, &experience.AttemptID,
-			&experience.UnitID, &experience.RoleID,
-			&experience.ProviderID, &experience.ProviderModelID,
-			&experience.VerificationLabel, &experience.EvidenceDigest,
-			&experience.DecisionHash, &experience.ObservedAt,
-		); err != nil {
-			return nil, fmt.Errorf("sleep: scan eligible experience: %w", err)
+		page := make([]Experience, 0, pageFetchSize)
+		for rows.Next() {
+			var experience Experience
+			if err := rows.Scan(
+				&experience.RunID, &experience.TaskID, &experience.AttemptID,
+				&experience.UnitID, &experience.RoleID,
+				&experience.ProviderID, &experience.ProviderModelID,
+				&experience.VerificationLabel, &experience.EvidenceDigest,
+				&experience.DecisionHash, &experience.ObservedAt,
+			); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("sleep: scan eligible experience: %w", err)
+			}
+			experience.ObservedAt = experience.ObservedAt.UTC()
+			if err := experience.Validate(); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("sleep: invalid durable experience run %d: %w", experience.RunID, err)
+			}
+			page = append(page, experience)
 		}
-		experience.ObservedAt = experience.ObservedAt.UTC()
-		if err := experience.Validate(); err != nil {
-			return nil, fmt.Errorf("sleep: invalid durable experience run %d: %w", experience.RunID, err)
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("sleep: iterate eligible experiences: %w", err)
 		}
-		candidates = append(candidates, experience)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("sleep: iterate eligible experiences: %w", err)
-	}
+		rows.Close()
 
-	// The "already consolidated" exclusion is answered through rag's own
-	// public API (never direct SQL against rag_knowledge_evidence_refs) so
-	// this reader stays inside internal/executive's persistence boundary.
-	// It is applied here, after the SQL query, rather than as a SQL-side
-	// NOT EXISTS, precisely because of that boundary; consolidated is
-	// applied against rawFetchCeiling candidates so the caller-requested
-	// limit is filled from truly-eligible runs, not truncated early by
-	// already-consolidated ones sharing the same page.
-	consolidated, err := r.ledger.ExistingEvidenceReferences(ctx, organizationID, evidenceReferencePrefix)
-	if err != nil {
-		return nil, fmt.Errorf("sleep: check existing evidence references: %w", err)
-	}
-	experiences := make([]Experience, 0, limit)
-	for _, experience := range candidates {
-		if consolidated[evidenceReferencePrefix+strconv.FormatInt(experience.RunID, 10)] {
-			continue
+		if len(page) == 0 {
+			break
 		}
-		experiences = append(experiences, experience)
-		if len(experiences) == limit {
+		last := page[len(page)-1]
+		cursorTime, cursorID = last.ObservedAt, last.RunID
+
+		for _, experience := range page {
+			if consolidated[evidenceReferencePrefix+strconv.FormatInt(experience.RunID, 10)] {
+				continue
+			}
+			experiences = append(experiences, experience)
+			if len(experiences) == limit {
+				break
+			}
+		}
+		if len(page) < pageFetchSize {
 			break
 		}
 	}

@@ -87,6 +87,62 @@ func TestPortabilityClassification(t *testing.T) {
 	}
 }
 
+func TestGroupExperiencesSplitsByProviderModelNotJustProvider(t *testing.T) {
+	now := time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)
+	sameProviderDifferentModel := func(runID int64, model string, at time.Time) Experience {
+		e := testExperience(runID, VerificationVerified, "openaicompat", at)
+		e.ProviderModelID = model
+		return e
+	}
+	experiences := []Experience{
+		sameProviderDifferentModel(1, "gpt-4o", now),
+		sameProviderDifferentModel(2, "gpt-4o", now.Add(time.Minute)),
+		sameProviderDifferentModel(3, "gpt-4o-mini", now.Add(2*time.Minute)),
+	}
+	groups, err := GroupExperiences(experiences)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 2 {
+		t.Fatalf("expected two groups split by provider_model_id, got %d: %+v", len(groups), groups)
+	}
+	byModel := make(map[string]int, len(groups))
+	for _, group := range groups {
+		if group.Key.ProviderID != "openaicompat" {
+			t.Fatalf("unexpected provider in group key: %+v", group.Key)
+		}
+		byModel[group.Key.ProviderModelID] = len(group.Experiences)
+	}
+	if byModel["gpt-4o"] != 2 || byModel["gpt-4o-mini"] != 1 {
+		t.Fatalf("group sizes by model=%v", byModel)
+	}
+}
+
+func TestPortabilityForCountsDistinctProvidersNotGroups(t *testing.T) {
+	now := time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)
+	group := func(provider, model string, runOffset int64, labels ...string) Group {
+		g := Group{Key: GroupKey{UnitID: "ingenieria_ia", RoleID: "ingenieria_ia/qa", ProviderID: provider, ProviderModelID: model}}
+		for i, label := range labels {
+			g.Experiences = append(g.Experiences, testExperience(runOffset+int64(i)+1, label, provider, now.Add(time.Duration(i)*time.Minute)))
+		}
+		return g
+	}
+	// Same provider, two different models: this must count as ONE provider
+	// seen, not two, even though it is two separate recurrence groups.
+	primary := group("openaicompat", "gpt-4o", 100, VerificationVerified, VerificationVerified, VerificationVerified)
+	sameProviderOtherModel := group("openaicompat", "gpt-4o-mini", 200, VerificationVerified, VerificationVerified, VerificationVerified)
+	portability, evidence := PortabilityFor(primary, []Group{primary, sameProviderOtherModel}, 3)
+	if portability.ProvidersSeen != 1 {
+		t.Fatalf("providers_seen=%d want 1 (same provider, different model): %+v", portability.ProvidersSeen, portability)
+	}
+	if len(evidence) != 6 {
+		t.Fatalf("evidence=%d want 6", len(evidence))
+	}
+	if len(portability.ProviderRates) != 2 {
+		t.Fatalf("provider_rates=%+v want 2 entries (one per model)", portability.ProviderRates)
+	}
+}
+
 func testExperience(runID int64, label, provider string, observedAt time.Time) Experience {
 	return Experience{
 		RunID: runID, TaskID: runID + 1000, AttemptID: runID + 2000,

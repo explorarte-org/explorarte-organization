@@ -74,6 +74,10 @@ func runSleep(args []string, stdout, stderr io.Writer) int {
 		return exitInternal
 	}
 	writeValue(stdout, *jsonOutput, result)
+	if len(result.Failures) > 0 {
+		fmt.Fprintf(stderr, "sleep cycle completed with %d candidate failure(s)\n", len(result.Failures))
+		return exitInternal
+	}
 	return exitOK
 }
 
