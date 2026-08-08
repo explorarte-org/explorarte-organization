@@ -204,7 +204,6 @@ func driveRunToSucceeded(t *testing.T, ctx context.Context, service *decisiongra
 			{FromNodeID: 2, ToNodeID: 1, Type: decisiongraph.EdgeDependsOn},
 			{FromNodeID: 3, ToNodeID: 2, Type: decisiongraph.EdgeDependsOn},
 		},
-		Depths:    map[int64]int{1: 0, 2: 1, 3: 2},
 		CreatedBy: "integration/planner",
 	}); err != nil {
 		t.Fatal(err)

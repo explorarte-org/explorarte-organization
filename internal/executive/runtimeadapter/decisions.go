@@ -114,7 +114,6 @@ func (a DecisionGraph) RecordAttemptDecision(ctx context.Context, record executi
 			{FromNodeID: decisionCandidateNodeID, ToNodeID: decisionGoalNodeID, Type: decisiongraph.EdgeSatisfies},
 			{FromNodeID: decisionDecisionNodeID, ToNodeID: decisionCandidateNodeID, Type: decisiongraph.EdgeDependsOn},
 		},
-		Depths:    map[int64]int{decisionGoalNodeID: 0, decisionCandidateNodeID: 1, decisionDecisionNodeID: 2},
 		CreatedBy: serviceActor,
 	})
 	if err != nil {

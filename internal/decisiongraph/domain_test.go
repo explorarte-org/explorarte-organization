@@ -88,6 +88,82 @@ func TestCanonicalHashIsOrderIndependent(t *testing.T) {
 	}
 }
 
+func TestGraphDepthsAreDerivedFromEdgeStructureNotCallerInput(t *testing.T) {
+	graph, err := NewGraph([]Node{
+		testNode(1, NodeGoal, BranchActive, ExecutionSucceeded),
+		testNode(2, NodeCandidateAction, BranchActive, ExecutionPending),
+		testNode(3, NodeDecision, BranchActive, ExecutionPending),
+	}, []Edge{
+		{FromNodeID: 2, ToNodeID: 1, Type: EdgeSatisfies},
+		{FromNodeID: 3, ToNodeID: 2, Type: EdgeDependsOn},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	depths, maxDepth, err := graph.Depths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[int64]int{1: 0, 2: 1, 3: 2}
+	for id, depth := range want {
+		if depths[id] != depth {
+			t.Fatalf("node %d depth=%d want %d (depths=%v)", id, depths[id], depth, depths)
+		}
+	}
+	if maxDepth != 2 {
+		t.Fatalf("maxDepth=%d want 2", maxDepth)
+	}
+}
+
+func TestGraphDepthsRejectsNodeDisconnectedFromGoal(t *testing.T) {
+	graph, err := NewGraph([]Node{
+		testNode(1, NodeGoal, BranchActive, ExecutionSucceeded),
+		testNode(2, NodeCandidateAction, BranchActive, ExecutionPending),
+		testNode(3, NodeCandidateAction, BranchRejectedByPolicy, ExecutionPending),
+	}, []Edge{
+		{FromNodeID: 2, ToNodeID: 1, Type: EdgeSatisfies},
+		// node 3 has no edge to the rest of the graph.
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := graph.Depths(); !errors.Is(err, ErrInvalidGraph) {
+		t.Fatalf("expected ErrInvalidGraph for a node disconnected from goal, got %v", err)
+	}
+}
+
+func TestCanonicalHashChangesWithDepth(t *testing.T) {
+	shallow, err := NewGraph([]Node{
+		testNode(1, NodeGoal, BranchActive, ExecutionSucceeded),
+		testNode(2, NodeCandidateAction, BranchActive, ExecutionPending),
+	}, []Edge{{FromNodeID: 2, ToNodeID: 1, Type: EdgeDependsOn}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deep, err := NewGraph([]Node{
+		testNode(1, NodeGoal, BranchActive, ExecutionSucceeded),
+		testNode(2, NodeCandidateAction, BranchActive, ExecutionPending),
+		testNode(3, NodeDecision, BranchActive, ExecutionPending),
+	}, []Edge{
+		{FromNodeID: 2, ToNodeID: 1, Type: EdgeDependsOn},
+		{FromNodeID: 3, ToNodeID: 2, Type: EdgeDependsOn},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shallowHash, err := shallow.CanonicalHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	deepHash, err := deep.CanonicalHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shallowHash == deepHash {
+		t.Fatal("hash must differ when depth structure differs")
+	}
+}
+
 func TestRejectedBranchRequiresNewEvidenceToReopen(t *testing.T) {
 	if err := ValidateBranchTransition(BranchRejectedByEvidence, BranchActive, false); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("expected invalid transition, got %v", err)

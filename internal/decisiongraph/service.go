@@ -36,10 +36,11 @@ func (s *Service) CreateRun(ctx context.Context, request CreateRunRequest) (Run,
 }
 
 func (s *Service) AppendGraph(ctx context.Context, request AppendGraphRequest) (GraphVersion, error) {
-	if _, _, _, err := request.Validate(); err != nil {
+	_, _, depths, _, err := request.Validate()
+	if err != nil {
 		return GraphVersion{}, err
 	}
-	version, err := s.ledger.AppendGraph(ctx, request, s.clock.Now().UTC())
+	version, err := s.ledger.AppendGraph(ctx, request, depths, s.clock.Now().UTC())
 	if err != nil {
 		return GraphVersion{}, fmt.Errorf("append decision graph: %w", err)
 	}

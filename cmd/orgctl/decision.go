@@ -61,7 +61,6 @@ type decisionAppendInput struct {
 	RunID     int64               `json:"run_id"`
 	Nodes     []decisionNodeInput `json:"nodes"`
 	Edges     []decisionEdgeInput `json:"edges"`
-	Depths    map[int64]int       `json:"depths"`
 	CreatedBy string              `json:"created_by"`
 }
 
@@ -212,7 +211,7 @@ func runDecision(args []string, stdout, stderr io.Writer) int {
 			edges = append(edges, decisiongraph.Edge{FromNodeID: item.FromNodeID, ToNodeID: item.ToNodeID, Type: item.Type})
 		}
 		value, err := service.AppendGraph(ctx, decisiongraph.AppendGraphRequest{
-			RunID: input.RunID, Nodes: nodes, Edges: edges, Depths: input.Depths, CreatedBy: input.CreatedBy,
+			RunID: input.RunID, Nodes: nodes, Edges: edges, CreatedBy: input.CreatedBy,
 		})
 		if err != nil {
 			return decisionCommandError(stderr, err)

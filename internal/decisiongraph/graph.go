@@ -104,6 +104,47 @@ func (g *Graph) ReadyNodeIDs() []int64 {
 	return result
 }
 
+// Depths computes each node's distance from the single goal node, treating
+// every edge (both depends_on and satisfies) as an undirected connection —
+// this is a structural property of the graph, never something a caller
+// supplies. Every node must be reachable from the goal; NewGraph's acyclic
+// depends_on check does not by itself guarantee connectivity.
+func (g *Graph) Depths() (map[int64]int, int, error) {
+	adjacency := make(map[int64][]int64, len(g.nodes))
+	for _, edge := range g.edges {
+		adjacency[edge.FromNodeID] = append(adjacency[edge.FromNodeID], edge.ToNodeID)
+		adjacency[edge.ToNodeID] = append(adjacency[edge.ToNodeID], edge.FromNodeID)
+	}
+	var goalID int64
+	for id, node := range g.nodes {
+		if node.Type == NodeGoal {
+			goalID = id
+			break
+		}
+	}
+	depths := map[int64]int{goalID: 0}
+	queue := []int64{goalID}
+	maxDepth := 0
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		for _, next := range adjacency[current] {
+			if _, visited := depths[next]; visited {
+				continue
+			}
+			depths[next] = depths[current] + 1
+			if depths[next] > maxDepth {
+				maxDepth = depths[next]
+			}
+			queue = append(queue, next)
+		}
+	}
+	if len(depths) != len(g.nodes) {
+		return nil, 0, fmt.Errorf("%w: graph is not fully connected to the goal node", ErrInvalidGraph)
+	}
+	return depths, maxDepth, nil
+}
+
 func (g *Graph) hasDependencyCycle() bool {
 	adjacency := make(map[int64][]int64)
 	for _, edge := range g.edges {

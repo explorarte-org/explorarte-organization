@@ -26,7 +26,7 @@ func (f *fakeLedger) CreateRun(_ context.Context, request CreateRunRequest, now 
 	}
 	return Run{ID: 1, TaskID: request.TaskID, AttemptID: request.AttemptID, Status: RunPlanned, Deadline: request.Deadline, CreatedAt: now}, nil
 }
-func (f *fakeLedger) AppendGraph(context.Context, AppendGraphRequest, time.Time) (GraphVersion, error) {
+func (f *fakeLedger) AppendGraph(context.Context, AppendGraphRequest, map[int64]int, time.Time) (GraphVersion, error) {
 	f.appendCalls++
 	return GraphVersion{ID: 1, RunID: 1, VersionNumber: 1}, nil
 }

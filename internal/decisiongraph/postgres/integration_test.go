@@ -131,7 +131,6 @@ func TestDecisionGraphPostgresLedger(t *testing.T) {
 			{FromNodeID: 3, ToNodeID: 2, Type: decisiongraph.EdgeDependsOn},
 			{FromNodeID: 4, ToNodeID: 3, Type: decisiongraph.EdgeDependsOn},
 		},
-		Depths:    map[int64]int{1: 0, 2: 1, 3: 2, 4: 3},
 		CreatedBy: "integration/planner",
 	})
 	if err != nil {
@@ -429,7 +428,6 @@ func createSimpleRun(t *testing.T, ctx context.Context, service *decisiongraph.S
 			node(2, decisiongraph.NodeCandidateAction, decisiongraph.BranchActive, decisiongraph.ExecutionPending),
 		},
 		Edges:     []decisiongraph.Edge{{FromNodeID: 2, ToNodeID: 1, Type: decisiongraph.EdgeDependsOn}},
-		Depths:    map[int64]int{1: 0, 2: 1},
 		CreatedBy: "integration/planner",
 	})
 	if err != nil {

@@ -7,7 +7,7 @@ import (
 
 type Ledger interface {
 	CreateRun(context.Context, CreateRunRequest, time.Time) (Run, error)
-	AppendGraph(context.Context, AppendGraphRequest, time.Time) (GraphVersion, error)
+	AppendGraph(context.Context, AppendGraphRequest, map[int64]int, time.Time) (GraphVersion, error)
 	StartRun(context.Context, int64, time.Time) error
 	TransitionBranch(context.Context, BranchTransitionRequest, time.Time) error
 	ClaimReadyNode(context.Context, ClaimNodeRequest, time.Time) (NodeClaim, error)

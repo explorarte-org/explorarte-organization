@@ -106,10 +106,18 @@ VALUES ($1,$2,$3)`, run.ID, s.organizationID, now); err != nil {
 	return run, nil
 }
 
-func (s *Store) AppendGraph(ctx context.Context, request decisiongraph.AppendGraphRequest, now time.Time) (decisiongraph.GraphVersion, error) {
-	graph, snapshotHash, maxDepth, err := request.Validate()
+func (s *Store) AppendGraph(ctx context.Context, request decisiongraph.AppendGraphRequest, depths map[int64]int, now time.Time) (decisiongraph.GraphVersion, error) {
+	graph, snapshotHash, validatedDepths, maxDepth, err := request.Validate()
 	if err != nil {
 		return decisiongraph.GraphVersion{}, err
+	}
+	if len(depths) != len(validatedDepths) {
+		return decisiongraph.GraphVersion{}, fmt.Errorf("%w: depths do not match the validated graph", decisiongraph.ErrInvalidGraph)
+	}
+	for id, depth := range validatedDepths {
+		if depths[id] != depth {
+			return decisiongraph.GraphVersion{}, fmt.Errorf("%w: depths do not match the validated graph", decisiongraph.ErrInvalidGraph)
+		}
 	}
 	now = now.UTC()
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
@@ -186,7 +194,7 @@ INSERT INTO decision_graph_nodes (
 RETURNING id`,
 			s.organizationID, request.RunID, version.ID, node.ID,
 			node.Type, node.BranchState, node.ExecutionState, node.PayloadSchemaVersion,
-			node.PayloadHash, node.ContextSnapshotID, request.Depths[node.ID], node.CreatedBy, now, terminalAt,
+			node.PayloadHash, node.ContextSnapshotID, depths[node.ID], node.CreatedBy, now, terminalAt,
 		).Scan(&databaseID); err != nil {
 			return decisiongraph.GraphVersion{}, fmt.Errorf("insert graph node %d: %w", node.ID, err)
 		}

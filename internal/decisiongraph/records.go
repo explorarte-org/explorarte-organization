@@ -81,39 +81,34 @@ type AppendGraphRequest struct {
 	RunID     int64
 	Nodes     []Node
 	Edges     []Edge
-	Depths    map[int64]int
 	CreatedBy string
 }
 
-func (r AppendGraphRequest) Validate() (*Graph, string, int, error) {
+// Validate derives per-node depth from the graph's own edge structure — see
+// Graph.Depths — instead of accepting it from the caller. A caller
+// controlling depth could set every node to depth 0 and evade the
+// max_depth budget entirely; depth is a structural property of the
+// committed graph, not caller-supplied input.
+func (r AppendGraphRequest) Validate() (*Graph, string, map[int64]int, int, error) {
 	if r.RunID <= 0 {
-		return nil, "", 0, fmt.Errorf("%w: invalid run id", ErrInvalidGraph)
+		return nil, "", nil, 0, fmt.Errorf("%w: invalid run id", ErrInvalidGraph)
 	}
 	if strings.TrimSpace(r.CreatedBy) == "" || len(r.CreatedBy) > 200 {
-		return nil, "", 0, fmt.Errorf("%w: invalid created-by identity", ErrInvalidGraph)
+		return nil, "", nil, 0, fmt.Errorf("%w: invalid created-by identity", ErrInvalidGraph)
 	}
 	graph, err := NewGraph(r.Nodes, r.Edges)
 	if err != nil {
-		return nil, "", 0, err
+		return nil, "", nil, 0, err
 	}
-	maxDepth := 0
-	for _, node := range r.Nodes {
-		depth, ok := r.Depths[node.ID]
-		if !ok || depth < 0 {
-			return nil, "", 0, fmt.Errorf("%w: missing or invalid depth for node %d", ErrInvalidGraph, node.ID)
-		}
-		if depth > maxDepth {
-			maxDepth = depth
-		}
-	}
-	if len(r.Depths) != len(r.Nodes) {
-		return nil, "", 0, fmt.Errorf("%w: depth map contains unknown nodes", ErrInvalidGraph)
+	depths, maxDepth, err := graph.Depths()
+	if err != nil {
+		return nil, "", nil, 0, err
 	}
 	hash, err := graph.CanonicalHash()
 	if err != nil {
-		return nil, "", 0, err
+		return nil, "", nil, 0, err
 	}
-	return graph, hash, maxDepth, nil
+	return graph, hash, depths, maxDepth, nil
 }
 
 type NodeClaim struct {
