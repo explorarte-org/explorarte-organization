@@ -7,13 +7,13 @@ import (
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 )
 
-func TestMigrationTipIs19AndContiguous(t *testing.T) {
+func TestMigrationTipIs20AndContiguous(t *testing.T) {
 	loaded, err := platformmigrations.Load(rootmigrations.Files)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded) != 19 {
-		t.Fatalf("migration count=%d want 19", len(loaded))
+	if len(loaded) != 20 {
+		t.Fatalf("migration count=%d want 20", len(loaded))
 	}
 	for index, migration := range loaded {
 		want := int64(index + 1)
@@ -21,7 +21,7 @@ func TestMigrationTipIs19AndContiguous(t *testing.T) {
 			t.Fatalf("migration[%d].version=%d want %d", index, migration.Version, want)
 		}
 	}
-	if loaded[len(loaded)-1].Name != "enforce_rag_document_version_namespace_match" {
-		t.Fatalf("migration 19 name=%q", loaded[len(loaded)-1].Name)
+	if loaded[len(loaded)-1].Name != "create_model_pricing" {
+		t.Fatalf("migration 20 name=%q", loaded[len(loaded)-1].Name)
 	}
 }
