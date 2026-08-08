@@ -20,6 +20,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/alibabaclaude"
+	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/deepseek"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/openaicompat"
 	modelpostgres "github.com/Mireuz13/explorarte-organization/internal/modelruntime/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
@@ -134,7 +135,11 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	if err != nil {
 		return nil, fmt.Errorf("load Alibaba Claude Code provider config: %w", err)
 	}
-	registeredAdapters := make([]modelruntime.ProviderAdapter, 0, 2)
+	deepseekConfig, err := deepseek.LoadConfig(os.LookupEnv, runtimeCfg.MaxResponseBytes)
+	if err != nil {
+		return nil, fmt.Errorf("load DeepSeek provider config: %w", err)
+	}
+	registeredAdapters := make([]modelruntime.ProviderAdapter, 0, 3)
 	if openAIConfig.Enabled {
 		providerAdapter, providerErr := openaicompat.New(openAIConfig)
 		if providerErr != nil {
@@ -146,6 +151,13 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 		providerAdapter, providerErr := alibabaclaude.New(alibabaConfig)
 		if providerErr != nil {
 			return nil, fmt.Errorf("open Alibaba Claude Code provider adapter: %w", providerErr)
+		}
+		registeredAdapters = append(registeredAdapters, providerAdapter)
+	}
+	if deepseekConfig.Enabled {
+		providerAdapter, providerErr := deepseek.New(deepseekConfig)
+		if providerErr != nil {
+			return nil, fmt.Errorf("open DeepSeek provider adapter: %w", providerErr)
 		}
 		registeredAdapters = append(registeredAdapters, providerAdapter)
 	}

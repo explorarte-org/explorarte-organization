@@ -25,9 +25,9 @@ func TestLoadCanonicalRoutingAndPlan(t *testing.T) {
 		t.Fatalf("unexpected plan sizes: %#v", plan)
 	}
 	for _, version := range plan.Versions {
-		if version.ProviderID == "openai_compatible" {
+		if version.ProviderID == "openai_compatible" || version.ProviderID == "deepseek" {
 			if !version.DispatchEnabled || version.AdapterStatus != AdapterAvailable || version.Transport != TransportHTTP {
-				t.Fatalf("compiled openai-compatible adapter was not materialized: %#v", version)
+				t.Fatalf("compiled %s adapter was not materialized: %#v", version.ProviderID, version)
 			}
 			continue
 		}
