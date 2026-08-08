@@ -3,7 +3,7 @@ package modelegress
 import "strings"
 
 const (
-	ScopeExecutiveCEO      = "scope.executive.ceo"
+	ScopeExecutiveCEO     = "scope.executive.ceo"
 	ScopeDepartmentLeader = "scope.executive.department_leader"
 	ScopeDepartmentWorker = "scope.executive.department_worker"
 )

@@ -55,6 +55,11 @@ func ProductiveLoadOptions(knownProviders []string) LoadOptions {
 	// independently requires a backend-derived executive scope for Alibaba and
 	// DeepSeek, and for OpenAI-compatible whenever organizational data is
 	// present. Secret and clinical remain hard-denied below this table.
+	//
+	// DeepSeek has no compiled ProviderAdapter (no HTTP transport) yet; its
+	// presence here is policy/scope-gate readiness only (see
+	// ValidateExecutiveScope), not a claim that dispatch actually works. Do
+	// not treat a green build as a productive DeepSeek smoke test.
 	return LoadOptions{
 		KnownProviders: append([]string(nil), knownProviders...),
 		ProductiveExplicitRules: map[string][]DataClassification{

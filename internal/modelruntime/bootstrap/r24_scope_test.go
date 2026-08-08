@@ -19,7 +19,9 @@ func (f r24ContextService) Get(context.Context, int64, bool) (contextengine.Snap
 func (f r24ContextService) List(context.Context, contextengine.ListFilter) ([]contextengine.Snapshot, error) {
 	return []contextengine.Snapshot{f.snapshot}, nil
 }
-func (f r24ContextService) Render(context.Context, int64) ([]byte, error) { return []byte("bounded"), nil }
+func (f r24ContextService) Render(context.Context, int64) ([]byte, error) {
+	return []byte("bounded"), nil
+}
 func (f r24ContextService) Validate(context.Context, int64) (contextengine.SnapshotValidation, error) {
 	return contextengine.SnapshotValidation{Valid: true}, nil
 }
@@ -33,7 +35,7 @@ func TestContextAdapterDerivesExecutiveScopeAndNormalizesTaskRef(t *testing.T) {
 		ActorRoleID: "empresa/ceo", Purpose: "executive_ceo_plan",
 		TaskRef: "task:123", CorrelationID: "executive:abc", Status: contextengine.SnapshotReady,
 		RenderedHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		Segments: []contextengine.Segment{{Included: true, DataClass: contextengine.DataOrganizational}},
+		Segments:     []contextengine.Segment{{Included: true, DataClass: contextengine.DataOrganizational}},
 	}
 	adapter := contextAdapter{service: r24ContextService{snapshot: snapshot}}
 	ref, err := adapter.GetContextSnapshot(context.Background(), snapshot.ID)

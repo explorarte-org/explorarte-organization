@@ -12,11 +12,18 @@ var (
 	reasonCodePattern = regexp.MustCompile(`^[a-z0-9]+([._-][a-z0-9]+)*$`)
 
 	// productiveEgressAllowRules mirrors internal/modelegress.ProductiveLoadOptions:
-	// the only provider/classification pairs Rama 12 compiled an adapter for.
-	// Any other allow rule in the productive policy is still rejected. Keep
-	// these two allowlists in sync when a future branch adds a provider.
+	// R24 compiles the provider/classification surface needed by executive
+	// orchestration, gated by a backend-derived executive scope
+	// (ValidateExecutiveScope) rather than by this allowlist alone. DeepSeek
+	// has no compiled ProviderAdapter (no working HTTP transport) yet —
+	// its presence here is policy/scope-gate readiness only, not a
+	// productive dispatch claim. Any other allow rule in the productive
+	// policy is still rejected. Keep these two allowlists in sync when a
+	// future branch adds or removes a provider.
 	productiveEgressAllowRules = map[string]map[string]struct{}{
-		"openai_compatible": {"public": {}, "sanitized": {}},
+		"alibaba_token_plan_via_claude_code": {"public": {}, "sanitized": {}, "organizational": {}},
+		"deepseek":                           {"public": {}, "sanitized": {}, "organizational": {}},
+		"openai_compatible":                  {"public": {}, "sanitized": {}, "organizational": {}},
 	}
 )
 

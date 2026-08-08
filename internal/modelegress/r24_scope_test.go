@@ -14,7 +14,7 @@ func r24Policy() ResolvedPolicy {
 		}
 	}
 	return ResolvedPolicy{
-		Version: PolicyVersion{ID: 1, PolicyVersion: 3, CanonicalHash: hash, Status: "materialized"},
+		Version:                PolicyVersion{ID: 1, PolicyVersion: 3, CanonicalHash: hash, Status: "materialized"},
 		OrganizationRevisionID: 7, CanonicalHash: hash, DefaultAction: EffectDeny, Rules: rules,
 	}
 }

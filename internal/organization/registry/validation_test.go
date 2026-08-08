@@ -36,7 +36,22 @@ func TestCrossValidationFailures(t *testing.T) {
 		{"unknown authority", "role.authority_class_unknown", func(d *parsedDocuments) { d.Roles.Roles[0].AuthorityClass = "missing" }},
 		{"counts", "counts.imported_profiles", func(d *parsedDocuments) { d.Organization.Counts.ImportedProfiles++ }},
 		{"model egress unknown provider", "model_egress.provider_unknown", func(d *parsedDocuments) { d.ModelEgress.Rules[0].ProviderID = "missing" }},
-		{"model egress productive allow", "model_egress.productive_allow_forbidden", func(d *parsedDocuments) { d.ModelEgress.Rules[0].Effect = "allow" }},
+		{"model egress productive allow", "model_egress.productive_allow_forbidden", func(d *parsedDocuments) {
+			// As of R24 every real provider (Alibaba, DeepSeek, OpenAI-
+			// compatible) is compiled/approved for all three non-hard-denied
+			// classifications, so no existing rule can be flipped to allow
+			// to exercise this rejection path anymore. Register a synthetic
+			// routing policy so the provider is "known" (avoids
+			// provider_unknown) but never add it to productiveEgressAllowRules,
+			// so its allow rule still hits productive_allow_forbidden.
+			trueVal := true
+			d.ModelRouting.Policies["test.uncompiled_provider"] = modelPolicyDoc{
+				Provider: "uncompiled_test_provider", Model: "test-model", Transport: "http", DirectHTTPForbidden: &trueVal,
+			}
+			d.ModelEgress.Rules = append(d.ModelEgress.Rules, modelEgressRuleDoc{
+				ProviderID: "uncompiled_test_provider", DataClassification: "public", Effect: "allow", ReasonCode: "test_uncompiled_provider",
+			})
+		}},
 		{"model egress hard deny duplicated as rule", "model_egress.hard_deny_rule_conflict", func(d *parsedDocuments) { d.ModelEgress.Rules[0].DataClassification = "secret" }},
 		{"model egress missing clinical hard deny", "model_egress.hard_deny_missing", func(d *parsedDocuments) { d.ModelEgress.HardDenies = d.ModelEgress.HardDenies[1:] }},
 		{"model invoke wrong grant", "capability.model_invoke_grant_invalid", func(d *parsedDocuments) {
