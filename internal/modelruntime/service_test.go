@@ -370,7 +370,7 @@ func serviceFixture() (*fakeStore, fakeCatalog, fakeTaskReader, *fakeContextRead
 
 func TestInvocationServiceCreatesFrozenInvocation(t *testing.T) {
 	store, catalog, task, contexts, assignments, _, now := serviceFixture()
-	service, err := NewInvocationService("explorarte", catalog, task, contexts, store, store, store, assignments, ClockFunc(func() time.Time { return now }), 10)
+	service, err := NewInvocationService("explorarte", catalog, task, contexts, store, store, store, assignments, ClockFunc(func() time.Time { return now }), 10, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -404,7 +404,7 @@ func TestInvocationServiceRejectsMalformedEgressPolicyMaterialization(t *testing
 			policy := fixtureEgressPolicy()
 			test.mutate(&policy)
 			store.egressPolicy = &policy
-			service, err := NewInvocationService("explorarte", catalog, task, contexts, store, store, store, assignments, ClockFunc(func() time.Time { return now }), 10)
+			service, err := NewInvocationService("explorarte", catalog, task, contexts, store, store, store, assignments, ClockFunc(func() time.Time { return now }), 10, false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -671,7 +671,7 @@ func TestDispatchCancellationRequiresDurableRequest(t *testing.T) {
 
 func TestInvocationCancellationRejectsDifferentActor(t *testing.T) {
 	store, catalog, task, contexts, assignments, _, now := serviceFixture()
-	service, err := NewInvocationService("explorarte", catalog, task, contexts, store, store, store, assignments, ClockFunc(func() time.Time { return now }), 10)
+	service, err := NewInvocationService("explorarte", catalog, task, contexts, store, store, store, assignments, ClockFunc(func() time.Time { return now }), 10, false)
 	if err != nil {
 		t.Fatal(err)
 	}

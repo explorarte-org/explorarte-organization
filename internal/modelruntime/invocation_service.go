@@ -11,26 +11,27 @@ import (
 )
 
 type InvocationService struct {
-	organizationID    string
-	catalog           OrganizationCatalog
-	tasks             TaskAttemptReader
-	contexts          ContextReader
-	store             Store
-	egress            EgressPolicyCatalog
-	identity          ExecutionIdentityPolicyCatalog
-	assignments       modeldispatch.AssignmentResolver
-	clock             Clock
-	outboxMaxAttempts int
+	organizationID         string
+	catalog                OrganizationCatalog
+	tasks                  TaskAttemptReader
+	contexts               ContextReader
+	store                  Store
+	egress                 EgressPolicyCatalog
+	identity               ExecutionIdentityPolicyCatalog
+	assignments            modeldispatch.AssignmentResolver
+	clock                  Clock
+	outboxMaxAttempts      int
+	singleProviderTestMode bool
 }
 
-func NewInvocationService(organizationID string, catalog OrganizationCatalog, tasks TaskAttemptReader, contexts ContextReader, store Store, egress EgressPolicyCatalog, identity ExecutionIdentityPolicyCatalog, assignments modeldispatch.AssignmentResolver, clock Clock, outboxMaxAttempts int) (*InvocationService, error) {
+func NewInvocationService(organizationID string, catalog OrganizationCatalog, tasks TaskAttemptReader, contexts ContextReader, store Store, egress EgressPolicyCatalog, identity ExecutionIdentityPolicyCatalog, assignments modeldispatch.AssignmentResolver, clock Clock, outboxMaxAttempts int, singleProviderTestMode bool) (*InvocationService, error) {
 	if catalog == nil || tasks == nil || contexts == nil || store == nil || egress == nil || identity == nil || assignments == nil {
 		return nil, fmt.Errorf("invocation service dependencies are incomplete")
 	}
 	if clock == nil {
 		clock = ClockFunc(time.Now)
 	}
-	return &InvocationService{organizationID: organizationID, catalog: catalog, tasks: tasks, contexts: contexts, store: store, egress: egress, identity: identity, assignments: assignments, clock: clock, outboxMaxAttempts: outboxMaxAttempts}, nil
+	return &InvocationService{organizationID: organizationID, catalog: catalog, tasks: tasks, contexts: contexts, store: store, egress: egress, identity: identity, assignments: assignments, clock: clock, outboxMaxAttempts: outboxMaxAttempts, singleProviderTestMode: singleProviderTestMode}, nil
 }
 
 func (s *InvocationService) Create(ctx context.Context, command CreateInvocationCommand) (CreateInvocationResult, error) {
@@ -98,6 +99,7 @@ func (s *InvocationService) Create(ctx context.Context, command CreateInvocation
 		string(binding.Version.Transport),
 		snapshot.DataClasses,
 		snapshot.ExecutiveScope,
+		s.singleProviderTestMode,
 	); !allowed {
 		return CreateInvocationResult{}, fmt.Errorf("%w: %s", ErrEgressDenied, reason)
 	}

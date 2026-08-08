@@ -1,0 +1,36 @@
+schema_version: 0.1.0
+document_status: branch_0_candidate
+characteristics:
+- id: canonical_consistency
+  target: One registry produces both declared and runtime organization.
+  fitness_function: All role/profile/leader references validate; no orphan runtime actor.
+- id: durability
+  target: No accepted task is lost on process restart.
+  fitness_function: Kill orgd during a leased task; reconciler reclaims or safely resumes it.
+- id: completion_integrity
+  target: Completed means obligations and artifacts are verified.
+  fitness_function: A zero-exit run with no artifact must end as no_action or blocked, never completed.
+- id: staging_isolation
+  target: Unapproved code never modifies the canonical checkout.
+  fitness_function: Worker writes are restricted to task worktree/staging; promotion is explicit.
+- id: cell_autonomy
+  target: ClinicaOnline books sessions when the organization VPS is unavailable.
+  fitness_function: Disable organization network; cell health and booking remain available.
+- id: clinical_isolation
+  target: Organizational services cannot retrieve clinical records.
+  fitness_function: Negative integration tests deny database, object, and API access.
+- id: policy_fidelity
+  target: Request JSON cannot self-assign roles, models, or tools.
+  fitness_function: Tampered role/model/capability fields are ignored or rejected.
+- id: logical_parity
+  target: Shadow logic verifier agrees with Go policy before enforcement.
+  fitness_function: Replay corpus reports zero unexplained policy divergences.
+- id: memory_provenance
+  target: Every canonical memory entry has evidence and reviewer.
+  fitness_function: Database constraint and integration test reject unreviewed publication.
+- id: resource_budget
+  target: Kernel fits the temporary 2 vCPU/8 GiB environment and final 2 vCPU/12 GiB VM.
+  fitness_function: Load test records CPU/RAM and enforces concurrency limits.
+- id: modular_boundaries
+  target: Modules depend through declared interfaces, not internal tables.
+  fitness_function: Static dependency test rejects forbidden internal imports.

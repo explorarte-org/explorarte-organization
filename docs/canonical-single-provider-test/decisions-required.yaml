@@ -1,0 +1,34 @@
+branch: docs/00-canonical-spec
+status: requires_owner_approval_before_branch_01
+accepted_from_owner:
+- Seven operational departments.
+- Empresa and Investigación are transversal units.
+- Research is leaderless.
+- CEO target is Qwen 3.6 Flash.
+- Department leaders use GPT Luna.
+- Workers default to DeepSeek V4 Flash.
+- Cells run independently from the organization.
+- The kernel is primarily Go and uses goroutines for concurrency, not durability.
+open:
+- id: D-001
+  question: 'Confirm observer model: Qwen 3.6 Flash or another model.'
+  blocks: model adapter and CEO/observer branch
+- id: D-002
+  question: Define the exact 24-hour cycle action and schedule.
+  blocks: scheduler daily workflow
+- id: D-003
+  question: Confirm whether the cell channel is outbound-only from cell to organization.
+  blocks: cell gateway contract
+- id: D-004
+  question: Choose one repository with two deployment targets or two repositories.
+  blocks: repository governance, not branch 01 bootstrap
+- id: D-005
+  question: Confirm the exact provider/API identity behind gpt-5.6-luna.
+  blocks: leader model adapter
+- id: D-006
+  question: Approve creation of research_worker_hourly and razonamiento_logico profiles.
+  blocks: organization registry activation
+- id: D-007
+  question: 'Choose production logic implementation after shadow phase: embedded Go Datalog subset, external Prolog,
+    or hybrid.'
+  blocks: logic enforcement, not shadow specification

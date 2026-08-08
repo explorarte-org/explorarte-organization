@@ -89,6 +89,7 @@ func OpenCoordinator(cfg config.Config, platformStore *platformpostgres.Store) (
 		dispatchRuntime.Store,
 		modelruntime.ClockFunc(time.Now),
 		cfg.Tasks.OutboxMaxAttempts,
+		cfg.ModelRuntime.SingleProviderTestMode,
 	)
 	if err != nil {
 		return nil, err

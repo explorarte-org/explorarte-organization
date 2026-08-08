@@ -44,26 +44,33 @@ func TestExecutiveScopeMarkerRequiresDurableExecutiveMetadata(t *testing.T) {
 
 func TestValidateExecutiveScopeMatrix(t *testing.T) {
 	cases := []struct {
-		name      string
-		provider  string
-		transport string
-		classes   []string
-		scope     string
-		allowed   bool
-		reason    string
+		name               string
+		provider           string
+		transport          string
+		classes            []string
+		scope              string
+		singleProviderTest bool
+		allowed            bool
+		reason             string
 	}{
-		{"ceo alibaba", "alibaba_token_plan_via_claude_code", "cli_adapter", []string{"organizational", "public"}, ScopeExecutiveCEO, true, "executive_scope_verified_ceo"},
-		{"ceo missing scope", "alibaba_token_plan_via_claude_code", "cli_adapter", []string{"organizational"}, "", false, "executive_scope_required"},
-		{"ceo wrong transport", "alibaba_token_plan_via_claude_code", "http_adapter", []string{"organizational"}, ScopeExecutiveCEO, false, "executive_scope_required"},
-		{"leader openai organizational", "openai_compatible", "http_adapter", []string{"organizational"}, ScopeDepartmentLeader, true, "executive_scope_verified_department_leader"},
-		{"leader wrong scope", "openai_compatible", "http_adapter", []string{"organizational"}, ScopeDepartmentWorker, false, "executive_scope_required"},
-		{"openai public legacy", "openai_compatible", "http_adapter", []string{"public"}, "", true, "executive_scope_not_required"},
-		{"worker deepseek", "deepseek", "http_adapter", []string{"sanitized", "organizational"}, ScopeDepartmentWorker, true, "executive_scope_verified_department_worker"},
-		{"worker deepseek no scope", "deepseek", "http_adapter", []string{"public"}, "", false, "executive_scope_required"},
+		{"ceo alibaba", "alibaba_token_plan_via_claude_code", "cli_adapter", []string{"organizational", "public"}, ScopeExecutiveCEO, false, true, "executive_scope_verified_ceo"},
+		{"ceo missing scope", "alibaba_token_plan_via_claude_code", "cli_adapter", []string{"organizational"}, "", false, false, "executive_scope_required"},
+		{"ceo wrong transport", "alibaba_token_plan_via_claude_code", "http_adapter", []string{"organizational"}, ScopeExecutiveCEO, false, false, "executive_scope_required"},
+		{"leader openai organizational", "openai_compatible", "http_adapter", []string{"organizational"}, ScopeDepartmentLeader, false, true, "executive_scope_verified_department_leader"},
+		{"leader wrong scope", "openai_compatible", "http_adapter", []string{"organizational"}, ScopeDepartmentWorker, false, false, "executive_scope_required"},
+		{"openai public legacy", "openai_compatible", "http_adapter", []string{"public"}, "", false, true, "executive_scope_not_required"},
+		{"worker deepseek", "deepseek", "http_adapter", []string{"sanitized", "organizational"}, ScopeDepartmentWorker, false, true, "executive_scope_verified_department_worker"},
+		{"worker deepseek no scope", "deepseek", "http_adapter", []string{"public"}, "", false, false, "executive_scope_required"},
+		// Single-provider test mode: same production data, but openai_compatible
+		// is now also accepted for CEO and worker scopes — never by default.
+		{"single-provider test: openai as ceo", "openai_compatible", "http_adapter", []string{"organizational"}, ScopeExecutiveCEO, true, true, "executive_scope_verified_ceo"},
+		{"single-provider test: openai as worker", "openai_compatible", "http_adapter", []string{"organizational"}, ScopeDepartmentWorker, true, true, "executive_scope_verified_department_worker"},
+		{"single-provider test flag off still denies openai as ceo", "openai_compatible", "http_adapter", []string{"organizational"}, ScopeExecutiveCEO, false, false, "executive_scope_required"},
+		{"single-provider test never grants deepseek as ceo", "deepseek", "http_adapter", []string{"organizational"}, ScopeExecutiveCEO, true, false, "executive_scope_required"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			reason, allowed := ValidateExecutiveScope(tc.provider, tc.transport, tc.classes, tc.scope)
+			reason, allowed := ValidateExecutiveScope(tc.provider, tc.transport, tc.classes, tc.scope, tc.singleProviderTest)
 			if allowed != tc.allowed || reason != tc.reason {
 				t.Fatalf("allowed=%v reason=%q want allowed=%v reason=%q", allowed, reason, tc.allowed, tc.reason)
 			}
@@ -98,7 +105,7 @@ func TestPolicyV3AllowDoesNotReplaceSeparateScopeGate(t *testing.T) {
 	if err != nil || decision.Effect != EffectAllow {
 		t.Fatalf("classification decision=%+v err=%v", decision, err)
 	}
-	if reason, allowed := ValidateExecutiveScope("deepseek", "http_adapter", decision.Classifications, ""); allowed || reason != "executive_scope_required" {
+	if reason, allowed := ValidateExecutiveScope("deepseek", "http_adapter", decision.Classifications, "", false); allowed || reason != "executive_scope_required" {
 		t.Fatalf("policy allow bypassed scope gate: allowed=%v reason=%q", allowed, reason)
 	}
 }

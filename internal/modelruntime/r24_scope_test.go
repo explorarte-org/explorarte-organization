@@ -29,7 +29,7 @@ func TestInvocationServiceRejectsAlibabaWithoutCEOScopeBeforeMaterialization(t *
 	store.binding.Provider.Transport = TransportCLI
 	contexts.ref.DataClasses = []string{"organizational"}
 	contexts.ref.ExecutiveScope = ""
-	service, err := NewInvocationService("explorarte", catalog, task, contexts, store, store, store, assignments, ClockFunc(func() time.Time { return now }), 10)
+	service, err := NewInvocationService("explorarte", catalog, task, contexts, store, store, store, assignments, ClockFunc(func() time.Time { return now }), 10, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestInvocationServiceAcceptsMatchingAlibabaCEOScope(t *testing.T) {
 	store.binding.Provider.Transport = TransportCLI
 	contexts.ref.DataClasses = []string{"organizational", "public"}
 	contexts.ref.ExecutiveScope = modelegress.ScopeExecutiveCEO
-	service, err := NewInvocationService("explorarte", catalog, task, contexts, store, store, store, assignments, ClockFunc(func() time.Time { return now }), 10)
+	service, err := NewInvocationService("explorarte", catalog, task, contexts, store, store, store, assignments, ClockFunc(func() time.Time { return now }), 10, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestInvocationServiceOpenAIOrganizationalRequiresLeaderScopeButPublicDoesNo
 			store.binding.Provider.Transport = TransportHTTP
 			contexts.ref.DataClasses = tc.classes
 			contexts.ref.ExecutiveScope = tc.scope
-			service, err := NewInvocationService("explorarte", catalog, task, contexts, store, store, store, assignments, ClockFunc(func() time.Time { return now }), 10)
+			service, err := NewInvocationService("explorarte", catalog, task, contexts, store, store, store, assignments, ClockFunc(func() time.Time { return now }), 10, false)
 			if err != nil {
 				t.Fatal(err)
 			}

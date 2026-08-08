@@ -1,0 +1,30 @@
+schema_version: 0.1.0
+document_status: branch_0_candidate
+principle: Cells are autonomous products, not goroutines or departments.
+cells:
+- id: clinicaonline
+  kind: clinical_product_cell
+  operates_without_organization: true
+  separate_runtime: true
+  separate_database: true
+  separate_credentials: true
+  organization_direct_database_access: false
+  organization_clinical_data_access: false
+  organization_dependency_for_booking: false
+  allowed_outbound_events_candidate:
+  - health.degraded
+  - deployment.completed
+  - aggregated_metric.available
+  allowed_inbound_runtime_commands: []
+  code_change_path: issue_or_pull_request_then_cell_owned_deployment
+transport_requirements:
+- authenticated
+- versioned
+- replay_protected
+- audited
+- minimal_payload
+- no_clinical_content
+open_decisions:
+- Exact outbound event schema.
+- Whether any non-clinical command is ever accepted by a cell.
+- Who performs cell-side deployment without exposing an inbound production key.
