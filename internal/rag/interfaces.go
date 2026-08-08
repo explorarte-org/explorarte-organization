@@ -48,6 +48,7 @@ type Repository interface {
 	Reindex(context.Context, ReindexCommand) (IndexGeneration, error)
 	Query(context.Context, QueryCommand) ([]QueryResult, error)
 	ActiveGeneration(context.Context, string, NamespaceKind, string) (IndexGeneration, bool, error)
+	ExistingEvidenceReferences(ctx context.Context, organizationID, referencePrefix string) (map[string]bool, error)
 }
 
 type AuthorizationRequest struct {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -11,15 +12,31 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// evidenceReferencePrefix identifies decision-graph run evidence in
+// rag_knowledge_evidence_refs. Kept in sync with candidate.go, which writes
+// exactly this prefix + run ID when a run contributes to a proposed candidate.
+const evidenceReferencePrefix = "decisiongraph:run:"
+
+// rawFetchCeiling bounds how many window-matching runs are fetched from
+// decision_graph_runs before the already-consolidated exclusion is applied.
+// It must stay well above the largest allowed caller limit (10000, enforced
+// below) so that runs already consolidated within the window never truncate
+// the caller's requested page of truly-eligible experiences.
+const rawFetchCeiling = 50000
+
 type PostgresReader struct {
-	pool *pgxpool.Pool
+	pool   *pgxpool.Pool
+	ledger EvidenceLedger
 }
 
-func NewPostgresReader(store *platformpostgres.Store) (*PostgresReader, error) {
+func NewPostgresReader(store *platformpostgres.Store, ledger EvidenceLedger) (*PostgresReader, error) {
 	if store == nil || store.Pool() == nil {
 		return nil, errors.New("sleep: PostgreSQL reader requires initialized store")
 	}
-	return &PostgresReader{pool: store.Pool()}, nil
+	if ledger == nil {
+		return nil, errors.New("sleep: PostgreSQL reader requires an evidence ledger")
+	}
+	return &PostgresReader{pool: store.Pool(), ledger: ledger}, nil
 }
 
 func (r *PostgresReader) ListEligible(ctx context.Context, organizationID string, from, to time.Time, limit int) ([]Experience, error) {
@@ -90,20 +107,14 @@ WHERE r.organization_id = $1
   AND t.status IN ('completed','no_action','failed','blocked','dead_letter','rejected','cancelled')
   AND verification.created_at >= $2
   AND verification.created_at < $3
-  AND NOT EXISTS (
-      SELECT 1
-      FROM rag_knowledge_evidence_refs existing
-      WHERE existing.organization_id = r.organization_id
-        AND existing.reference = 'decisiongraph:run:' || r.id::text
-  )
 ORDER BY verification.created_at ASC, r.id ASC
-LIMIT $4`, organizationID, from.UTC(), to.UTC(), limit)
+LIMIT $4`, organizationID, from.UTC(), to.UTC(), rawFetchCeiling)
 	if err != nil {
 		return nil, fmt.Errorf("sleep: query eligible experiences: %w", err)
 	}
 	defer rows.Close()
 
-	experiences := make([]Experience, 0)
+	candidates := make([]Experience, 0)
 	for rows.Next() {
 		var experience Experience
 		if err := rows.Scan(
@@ -119,10 +130,33 @@ LIMIT $4`, organizationID, from.UTC(), to.UTC(), limit)
 		if err := experience.Validate(); err != nil {
 			return nil, fmt.Errorf("sleep: invalid durable experience run %d: %w", experience.RunID, err)
 		}
-		experiences = append(experiences, experience)
+		candidates = append(candidates, experience)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("sleep: iterate eligible experiences: %w", err)
+	}
+
+	// The "already consolidated" exclusion is answered through rag's own
+	// public API (never direct SQL against rag_knowledge_evidence_refs) so
+	// this reader stays inside internal/executive's persistence boundary.
+	// It is applied here, after the SQL query, rather than as a SQL-side
+	// NOT EXISTS, precisely because of that boundary; consolidated is
+	// applied against rawFetchCeiling candidates so the caller-requested
+	// limit is filled from truly-eligible runs, not truncated early by
+	// already-consolidated ones sharing the same page.
+	consolidated, err := r.ledger.ExistingEvidenceReferences(ctx, organizationID, evidenceReferencePrefix)
+	if err != nil {
+		return nil, fmt.Errorf("sleep: check existing evidence references: %w", err)
+	}
+	experiences := make([]Experience, 0, limit)
+	for _, experience := range candidates {
+		if consolidated[evidenceReferencePrefix+strconv.FormatInt(experience.RunID, 10)] {
+			continue
+		}
+		experiences = append(experiences, experience)
+		if len(experiences) == limit {
+			break
+		}
 	}
 	return experiences, nil
 }

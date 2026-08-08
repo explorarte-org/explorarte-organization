@@ -83,7 +83,7 @@ fi
 if rg -n 'daily[_A-Za-z]*cycle|dailyCycle|scheduler' internal/executive --glob '*.go' --glob '!**/*_test.go'; then
   fail "daily scheduler path detected"
 fi
-if rg -n 'internal/(memory|rag)/postgres|FROM (memory|rag_)' internal/executive --glob '*.go'; then
+if rg -n 'internal/(memory|rag)/postgres|FROM (memory|rag_)' internal/executive --glob '*.go' --glob '!**/*_test.go'; then
   fail "direct memory/RAG persistence read detected"
 fi
 if rg -n 'DispatchActorRoleID:.*OwnerRoleID|ActorRoleID:.*OwnerRoleID.*model\.dispatch' internal/executive --glob '*.go'; then

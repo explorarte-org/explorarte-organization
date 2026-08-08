@@ -374,6 +374,41 @@ func (s *Store) ActiveGeneration(ctx context.Context, organizationID string, nam
 	return g, true, nil
 }
 
+// ExistingEvidenceReferences reports which references starting with
+// referencePrefix are already attached to some knowledge version for the
+// organization. Used for idempotency checks (e.g. "has this decision-graph
+// run already been consolidated into knowledge") by callers that must never
+// query rag_knowledge_evidence_refs directly.
+func (s *Store) ExistingEvidenceReferences(ctx context.Context, organizationID, referencePrefix string) (map[string]bool, error) {
+	organizationID = strings.TrimSpace(organizationID)
+	if organizationID != s.organizationID {
+		return nil, fmt.Errorf("%w: invalid evidence reference scope", rag.ErrInvalidGeneration)
+	}
+	rows, err := s.pool.Query(ctx, `SELECT DISTINCT reference FROM rag_knowledge_evidence_refs WHERE organization_id=$1 AND reference LIKE $2`,
+		organizationID, escapeLikePrefix(referencePrefix)+"%")
+	if err != nil {
+		return nil, mapError("list existing rag evidence references", err)
+	}
+	defer rows.Close()
+	existing := make(map[string]bool)
+	for rows.Next() {
+		var reference string
+		if err := rows.Scan(&reference); err != nil {
+			return nil, mapError("scan existing rag evidence reference", err)
+		}
+		existing[reference] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapError("iterate existing rag evidence references", err)
+	}
+	return existing, nil
+}
+
+func escapeLikePrefix(prefix string) string {
+	replacer := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return replacer.Replace(prefix)
+}
+
 type queryer interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 	Query(context.Context, string, ...any) (pgx.Rows, error)

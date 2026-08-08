@@ -3,6 +3,7 @@ package rag
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -114,6 +115,18 @@ func (r *fakeRepository) ActiveGeneration(_ context.Context, organizationID stri
 		return IndexGeneration{}, false, nil
 	}
 	return r.generations[id], true, nil
+}
+
+func (r *fakeRepository) ExistingEvidenceReferences(_ context.Context, _, referencePrefix string) (map[string]bool, error) {
+	existing := make(map[string]bool)
+	for _, version := range r.versions {
+		for _, ref := range version.EvidenceRefs {
+			if strings.HasPrefix(ref.Reference, referencePrefix) {
+				existing[ref.Reference] = true
+			}
+		}
+	}
+	return existing, nil
 }
 
 func newTestManager(t *testing.T, gate AuthorizationGate, namespaces NamespaceResolver) (*Manager, *fixedClock, *fakeRepository) {

@@ -120,11 +120,11 @@ func TestApprovedSleepCandidateBecomesContextEvidenceOnlyAfterHumanGovernance(t 
 		}
 	}
 
-	reader, err := sleep.NewPostgresReader(store)
+	ragRuntime, err := ragbootstrap.Open(cfg, store)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ragRuntime, err := ragbootstrap.Open(cfg, store)
+	reader, err := sleep.NewPostgresReader(store, ragRuntime.Manager)
 	if err != nil {
 		t.Fatal(err)
 	}

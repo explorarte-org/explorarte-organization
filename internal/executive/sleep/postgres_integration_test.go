@@ -143,13 +143,13 @@ func TestOrganizationalSleepAgainstRealPostgres(t *testing.T) {
 		runIDs = append(runIDs, runID)
 	}
 
-	reader, err := sleep.NewPostgresReader(store)
-	if err != nil {
-		t.Fatal(err)
-	}
 	ragRuntime, err := ragbootstrap.Open(cfg, store)
 	if err != nil {
 		t.Fatalf("open RAG runtime: %v", err)
+	}
+	reader, err := sleep.NewPostgresReader(store, ragRuntime.Manager)
+	if err != nil {
+		t.Fatal(err)
 	}
 	service, err := sleep.NewService(reader, ragRuntime.Manager, sleep.ClockFunc(time.Now), sleep.DefaultConfig())
 	if err != nil {

@@ -261,3 +261,14 @@ func (m *Manager) Query(ctx context.Context, request QueryRequest) ([]QueryResul
 func (m *Manager) ActiveGeneration(ctx context.Context, organizationID string, namespaceKind NamespaceKind, namespaceID string) (IndexGeneration, bool, error) {
 	return m.repository.ActiveGeneration(ctx, strings.TrimSpace(organizationID), namespaceKind, strings.TrimSpace(namespaceID))
 }
+
+// ExistingEvidenceReferences reports which evidence references starting with
+// referencePrefix are already attached to some knowledge version for the
+// organization. It exists so callers outside internal/rag (e.g. the
+// organizational sleep cycle's idempotency check) never need direct SQL
+// access to rag_knowledge_evidence_refs; like ActiveGeneration, this is
+// system bookkeeping metadata, not namespace-scoped content, so it carries
+// no authorization gate.
+func (m *Manager) ExistingEvidenceReferences(ctx context.Context, organizationID, referencePrefix string) (map[string]bool, error) {
+	return m.repository.ExistingEvidenceReferences(ctx, strings.TrimSpace(organizationID), referencePrefix)
+}

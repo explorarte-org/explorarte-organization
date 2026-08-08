@@ -53,14 +53,14 @@ func runSleep(args []string, stdout, stderr io.Writer) int {
 		return exitDrift
 	}
 
-	reader, err := sleep.NewPostgresReader(store)
-	if err != nil {
-		fmt.Fprintf(stderr, "create sleep experience reader: %v\n", err)
-		return exitInternal
-	}
 	ragRuntime, err := ragbootstrap.Open(cfg, store)
 	if err != nil {
 		fmt.Fprintf(stderr, "create RAG runtime: %v\n", err)
+		return exitInternal
+	}
+	reader, err := sleep.NewPostgresReader(store, ragRuntime.Manager)
+	if err != nil {
+		fmt.Fprintf(stderr, "create sleep experience reader: %v\n", err)
 		return exitInternal
 	}
 	service, err := sleep.NewService(reader, ragRuntime.Manager, sleep.ClockFunc(time.Now), sleep.DefaultConfig())

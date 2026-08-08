@@ -63,6 +63,9 @@ func (r stubRepository) Query(_ context.Context, _ rag.QueryCommand) ([]rag.Quer
 func (r stubRepository) ActiveGeneration(_ context.Context, _ string, _ rag.NamespaceKind, _ string) (rag.IndexGeneration, bool, error) {
 	return r.generation, r.hasActive, nil
 }
+func (stubRepository) ExistingEvidenceReferences(context.Context, string, string) (map[string]bool, error) {
+	return nil, nil
+}
 
 func newTestProvider(t *testing.T, repo rag.Repository, gate rag.AuthorizationGate) *Provider {
 	t.Helper()
