@@ -338,7 +338,54 @@ func (s *Store) Reindex(ctx context.Context, command rag.ReindexCommand) (rag.In
 		organizationID, generationID, string(command.NamespaceKind), namespaceID, nextGeneration, chunkerID, chunkerVersion, now); err != nil {
 		return rag.IndexGeneration{}, mapError("insert rag index generation", err)
 	}
+	// Chunks are caller-supplied (Manager.Reindex derives them fresh from
+	// version.Body immediately before calling this, but Store.Reindex is a
+	// Repository method — nothing at this layer independently confirmed a
+	// chunk's content actually matches its claimed hash, or that its
+	// version_id belongs to an approved version in *this* namespace rather
+	// than some other one. The existing rag_chunk_insert_guard trigger only
+	// checks the version's lifecycle is 'approved', not that it belongs to
+	// this generation's namespace at all.
+	approvedVersionIDs := make(map[string]bool)
+	if len(command.Chunks) > 0 {
+		versionIDSet := make(map[string]bool, len(command.Chunks))
+		versionIDs := make([]string, 0, len(command.Chunks))
+		for _, chunk := range command.Chunks {
+			if versionIDSet[chunk.VersionID] {
+				continue
+			}
+			versionIDSet[chunk.VersionID] = true
+			versionIDs = append(versionIDs, chunk.VersionID)
+		}
+		rows, err := tx.Query(ctx, `SELECT version_id FROM rag_knowledge_versions WHERE organization_id=$1 AND namespace_kind=$2 AND namespace_id=$3 AND lifecycle='approved' AND version_id = ANY($4)`,
+			organizationID, string(command.NamespaceKind), namespaceID, versionIDs)
+		if err != nil {
+			return rag.IndexGeneration{}, mapError("verify chunk versions belong to namespace", err)
+		}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return rag.IndexGeneration{}, mapError("scan approved chunk version", err)
+			}
+			approvedVersionIDs[id] = true
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return rag.IndexGeneration{}, mapError("iterate approved chunk versions", err)
+		}
+		rows.Close()
+	}
 	for _, chunk := range command.Chunks {
+		if !approvedVersionIDs[chunk.VersionID] {
+			return rag.IndexGeneration{}, fmt.Errorf("%w: chunk references a version that is not approved in this namespace: %s", rag.ErrInvalidRequest, chunk.VersionID)
+		}
+		if rag.ContentHash(chunk.Content) != chunk.ContentHash {
+			return rag.IndexGeneration{}, fmt.Errorf("%w: chunk content does not match its claimed content hash", rag.ErrInvalidRequest)
+		}
+		if chunk.StartOffset < 0 || chunk.EndOffset <= chunk.StartOffset {
+			return rag.IndexGeneration{}, fmt.Errorf("%w: chunk offsets are invalid", rag.ErrInvalidRequest)
+		}
 		chunkID := fmt.Sprintf("%s-%s-%d", generationID, chunk.VersionID, chunk.Ordinal)
 		if _, err := tx.Exec(ctx, `INSERT INTO rag_knowledge_chunks (organization_id,chunk_id,generation_id,version_id,chunker_id,chunker_version,ordinal,start_offset,end_offset,content,content_hash,embedding_model_id,embedding_model_version,embedding_dimension) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
 			organizationID, chunkID, generationID, chunk.VersionID, chunk.ChunkerID, chunk.ChunkerVersion, chunk.Ordinal, chunk.StartOffset, chunk.EndOffset, chunk.Content, chunk.ContentHash,

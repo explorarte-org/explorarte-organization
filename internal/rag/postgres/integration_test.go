@@ -148,7 +148,8 @@ func TestApprovedKnowledgeRAGPostgresRepository(t *testing.T) {
 	})
 
 	t.Run("reindex activation is atomic across generations", func(t *testing.T) {
-		version := proposeVersion(t, domain, clock, now.Add(15*time.Second), "know-generations")
+		const generationsNamespace = "ingenieria_ia_generations"
+		version := proposeVersionInNamespace(t, domain, clock, now.Add(15*time.Second), "know-generations", generationsNamespace)
 		created, _, err := store.CreateCandidate(ctx, rag.CreateCandidateCommand{Version: version, IdempotencyKey: "idem-generations"})
 		if err != nil {
 			t.Fatal(err)
@@ -166,11 +167,11 @@ func TestApprovedKnowledgeRAGPostgresRepository(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		first, err := store.Reindex(ctx, rag.ReindexCommand{OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceOwn, NamespaceID: ragIntegrationProposer, ChunkerID: rag.DefaultChunkerID, ChunkerVersion: rag.DefaultChunkerVersion, Chunks: chunks})
+		first, err := store.Reindex(ctx, rag.ReindexCommand{OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceDepartment, NamespaceID: generationsNamespace, ChunkerID: rag.DefaultChunkerID, ChunkerVersion: rag.DefaultChunkerVersion, Chunks: chunks})
 		if err != nil {
 			t.Fatal(err)
 		}
-		second, err := store.Reindex(ctx, rag.ReindexCommand{OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceOwn, NamespaceID: ragIntegrationProposer, ChunkerID: rag.DefaultChunkerID, ChunkerVersion: rag.DefaultChunkerVersion, Chunks: chunks})
+		second, err := store.Reindex(ctx, rag.ReindexCommand{OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceDepartment, NamespaceID: generationsNamespace, ChunkerID: rag.DefaultChunkerID, ChunkerVersion: rag.DefaultChunkerVersion, Chunks: chunks})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -178,14 +179,14 @@ func TestApprovedKnowledgeRAGPostgresRepository(t *testing.T) {
 			t.Fatalf("generation did not advance: first=%d second=%d", first.Generation, second.Generation)
 		}
 		var activeCount int
-		if err := platform.Pool().QueryRow(ctx, `SELECT count(*) FROM rag_index_generations WHERE organization_id=$1 AND namespace_kind='own' AND namespace_id=$2 AND status='active'`, ragIntegrationOrganization, ragIntegrationProposer).Scan(&activeCount); err != nil {
+		if err := platform.Pool().QueryRow(ctx, `SELECT count(*) FROM rag_index_generations WHERE organization_id=$1 AND namespace_kind='department' AND namespace_id=$2 AND status='active'`, ragIntegrationOrganization, generationsNamespace).Scan(&activeCount); err != nil {
 			t.Fatal(err)
 		}
 		if activeCount != 1 {
 			t.Fatalf("expected exactly one active generation, found %d", activeCount)
 		}
 		var supersededCount int
-		if err := platform.Pool().QueryRow(ctx, `SELECT count(*) FROM rag_index_generations WHERE organization_id=$1 AND namespace_kind='own' AND namespace_id=$2 AND status='superseded'`, ragIntegrationOrganization, ragIntegrationProposer).Scan(&supersededCount); err != nil {
+		if err := platform.Pool().QueryRow(ctx, `SELECT count(*) FROM rag_index_generations WHERE organization_id=$1 AND namespace_kind='department' AND namespace_id=$2 AND status='superseded'`, ragIntegrationOrganization, generationsNamespace).Scan(&supersededCount); err != nil {
 			t.Fatal(err)
 		}
 		if supersededCount != 1 {
@@ -299,9 +300,14 @@ func TestApprovedKnowledgeRAGPostgresRepository(t *testing.T) {
 
 func proposeVersion(t *testing.T, domain *rag.Service, clock *fixedClock, now time.Time, id string) rag.KnowledgeVersion {
 	t.Helper()
+	return proposeVersionInNamespace(t, domain, clock, now, id, ragIntegrationNamespace)
+}
+
+func proposeVersionInNamespace(t *testing.T, domain *rag.Service, clock *fixedClock, now time.Time, id string, namespaceID string) rag.KnowledgeVersion {
+	t.Helper()
 	clock.now = now
 	version, err := domain.Propose(rag.ProposeCommand{
-		ID: id, DocumentID: id, OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceDepartment, NamespaceID: ragIntegrationNamespace,
+		ID: id, DocumentID: id, OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceDepartment, NamespaceID: namespaceID,
 		Version: 1, Title: "Gestión de riesgos en despliegues de modelos", Body: "Antes de desplegar un modelo nuevo, valida la política de egress y el owner del dataset.\n\nRegistra la evidencia de validación en el ticket de staging.",
 		SourceKind: rag.SourceResearch, SourceReference: "investigacion:report:41", ProposedBy: ragIntegrationProposer,
 		EvidenceRefs: []rag.EvidenceRef{{Reference: "evidence:a", Digest: "aaa"}},
