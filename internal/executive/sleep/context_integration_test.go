@@ -38,6 +38,10 @@ func TestApprovedSleepCandidateBecomesContextEvidenceOnlyAfterHumanGovernance(t 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
 	canonicalDir := filepath.Join("..", "..", "..", "docs", "canonical")
+	repoRoot, err := filepath.Abs(filepath.Join("..", "..", ".."))
+	if err != nil {
+		t.Fatalf("resolve repository root: %v", err)
+	}
 	cfg, err := config.LoadFrom(func(key string) (string, bool) {
 		values := map[string]string{
 			"ORG_ENVIRONMENT":        "test",
@@ -52,6 +56,7 @@ func TestApprovedSleepCandidateBecomesContextEvidenceOnlyAfterHumanGovernance(t 
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg.Context.SourceRoot = repoRoot
 	store, err := platformpostgres.Open(ctx, cfg.Database, "sleep-context-integration-test")
 	if err != nil {
 		t.Fatal(err)
