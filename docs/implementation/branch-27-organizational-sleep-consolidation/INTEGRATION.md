@@ -5,11 +5,12 @@
 - Rama: `feat/27-organizational-sleep-consolidation`.
 - Base exacta: `feat/26-executive-closure-lesson-job` en `c84ac951ce73499dc2a4729edd24043a06583cf5`.
 - SHA de implementación antes de este handoff: `adecda5ef55951f34767db86349f7158b3433b68`.
+- SHA de handoff (`docs(r27)`): `6dc9ef1455607a4e08fc2a0cc29b9b2be6e1257c`.
 - Migración propia: **ninguna**.
 - Cambios canónicos: **ninguno**.
 - PR: ninguno.
 - Merge a `main`: ninguno.
-- Estado de verificación al escribir este documento: **implementación completa, pendiente de ejecutar el ciclo final de `gofmt`/build/tests y las integraciones contra el PostgreSQL 17 del VPS**. No se declara verde nada que no haya sido ejecutado desde un checkout real.
+- Estado de verificación: **ejecutado end-to-end en el VPS contra PostgreSQL 17 real** (`r23-integration-pg`, puerto 35432). `gofmt -l .`, `go vet ./...`, `go build ./...`, unit tests, race tests e integración real del paquete `internal/executive/sleep` corridos y en verde. Un bug real de integración fue encontrado y corregido durante esta verificación — ver "Verificación ejecutada en VPS" más abajo.
 
 ## Objetivo
 
@@ -497,6 +498,32 @@ export ORG_CANONICAL_DIR="$PWD/docs/canonical"
 ```
 
 La salida debe ser un `CycleResult`; un dataset sin recurrencia o ya consumido puede devolver cero proposals y eso no constituye un fallo.
+
+## Verificación ejecutada en VPS
+
+Ejecutado el 2026-08-08 contra `r23-integration-pg` (PostgreSQL 17 real, puerto 35432), siguiendo exactamente los pasos de la sección anterior.
+
+Resultado inicial: `gofmt`, `vet`, `build`, unit tests y race tests en verde. La integración real (`go test -tags=integration ./internal/executive/sleep -count=1 -v`) falló en `TestApprovedSleepCandidateBecomesContextEvidenceOnlyAfterHumanGovernance`:
+
+```
+context_integration_test.go:174: build context: context PostgreSQL constraint violation:
+ERROR: new row for relation "context_segments" violates check constraint
+"context_segments_source_version_check" (SQLSTATE 23514)
+```
+
+**Causa raíz** (no es un bug de R27, es un bug preexistente en `internal/rag/contextprovider/provider.go` que R27 fue la primera rama en ejercitar con un `document_id`/`version_id` real lo bastante largo para exponerlo): `encodeVersion` concatenaba seis campos separados por `:` — incluyendo el content hash del chunk (`chunkHash`, 64 hex chars) — en un único string persistido en `context_segments.source_version`, columna con `CHECK (length(trim(source_version)) BETWEEN 1 AND 240)` (`migrations/000006_create_context_engine.up.sql`). Con los IDs reales que genera `internal/executive/sleep/candidate.go` (`documentID = "sleep-" + groupHash[:16] + "-" + evidenceHash[:16] + "-v1"`, 42 chars) más `namespaceID`/`generationID` reales, el string codificado llegaba a 248 caracteres — 8 por encima del límite.
+
+`chunkHash` se parseaba de vuelta en `parseVersion` pero **nunca se leía** en `ValidateVersion` (que solo usa `versionID`, `canonicalHash`, `namespaceKind`, `namespaceID` y `generationID`). Se eliminó ese campo no usado de `encodeVersion`/`parseVersion`/`sourceRecord` (`internal/rag/contextprovider/provider.go`), reduciendo el string codificado en 65 caracteres sin perder ninguna verificación real. Tras el fix:
+
+```
+go build ./...                                                          # limpio
+go test ./internal/rag/... ./internal/contextengine/...                 # verde
+bash scripts/check-rag-fitness.sh                                       # PASS
+bash scripts/check-context-fitness.sh                                   # PASS
+go test -tags=integration ./internal/executive/sleep -count=1 -v        # 10/10 PASS, incluido el test que antes fallaba
+```
+
+Ningún archivo canónico, de migración, ni de `internal/rag`/`internal/contextengine` fuera de esta única función fue tocado. El fix vive en la misma rama `feat/27-organizational-sleep-consolidation`.
 
 ## Checks agregados al criterio de aceptación
 

@@ -120,32 +120,32 @@ type ProviderRate struct {
 }
 
 type Portability struct {
-	ProvidersSeen int            `json:"providers_seen"`
-	Classification string        `json:"classification"`
-	ProviderRates []ProviderRate `json:"provider_rates"`
+	ProvidersSeen  int            `json:"providers_seen"`
+	Classification string         `json:"classification"`
+	ProviderRates  []ProviderRate `json:"provider_rates"`
 }
 
 type ProposalResult struct {
-	Group       GroupKey `json:"group"`
-	VersionID   string   `json:"version_id"`
-	DocumentID  string   `json:"document_id"`
-	Reused      bool     `json:"reused"`
-	Confidence  float64  `json:"confidence"`
-	EvidenceRunIDs []int64 `json:"evidence_run_ids"`
+	Group          GroupKey `json:"group"`
+	VersionID      string   `json:"version_id"`
+	DocumentID     string   `json:"document_id"`
+	Reused         bool     `json:"reused"`
+	Confidence     float64  `json:"confidence"`
+	EvidenceRunIDs []int64  `json:"evidence_run_ids"`
 }
 
 type CycleResult struct {
-	WindowStart               time.Time        `json:"window_start"`
-	WindowEnd                 time.Time        `json:"window_end"`
-	EligibleExperiences       int              `json:"eligible_experiences"`
-	GroupsObserved            int              `json:"groups_observed"`
-	RecurringGroups           int              `json:"recurring_groups"`
-	MixedContradictionGroups  int              `json:"mixed_contradiction_groups"`
-	SkippedInsufficientRuns   int              `json:"skipped_insufficient_runs"`
-	SkippedLowPassRate        int              `json:"skipped_low_pass_rate"`
-	CandidatesProposed        int              `json:"candidates_proposed"`
-	CandidatesReused          int              `json:"candidates_reused"`
-	Proposals                 []ProposalResult `json:"proposals"`
+	WindowStart              time.Time        `json:"window_start"`
+	WindowEnd                time.Time        `json:"window_end"`
+	EligibleExperiences      int              `json:"eligible_experiences"`
+	GroupsObserved           int              `json:"groups_observed"`
+	RecurringGroups          int              `json:"recurring_groups"`
+	MixedContradictionGroups int              `json:"mixed_contradiction_groups"`
+	SkippedInsufficientRuns  int              `json:"skipped_insufficient_runs"`
+	SkippedLowPassRate       int              `json:"skipped_low_pass_rate"`
+	CandidatesProposed       int              `json:"candidates_proposed"`
+	CandidatesReused         int              `json:"candidates_reused"`
+	Proposals                []ProposalResult `json:"proposals"`
 }
 
 type Config struct {

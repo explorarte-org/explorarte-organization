@@ -129,7 +129,7 @@ func BuildCandidate(primary Group, recurring []Group, analysis GroupAnalysis, co
 		VerifiedCount: analysis.VerifiedCount, InferredCount: analysis.InferredCount, ContradictedCount: analysis.ContradictedCount, UnknownCount: analysis.UnknownCount,
 		PassRate: analysis.PassRate, Confidence: confidence,
 		ConfidenceTerms: ConfidenceTerms{RecurrenceFactor: recurrenceFactor, PassRate: analysis.PassRate, ProviderMultiplier: providerMultiplier, ContradictionPenalty: penalty},
-		Contradiction: analysis.Contradiction, Portability: portability, Sources: sources,
+		Contradiction:   analysis.Contradiction, Portability: portability, Sources: sources,
 	}
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {

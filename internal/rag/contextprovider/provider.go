@@ -124,19 +124,23 @@ type versionMeta struct {
 	versionID     string
 	canonicalHash string
 	generationID  string
-	chunkHash     string
 }
 
+// encodeVersion must fit within the context_segments.source_version column's
+// 240-character check constraint (see migrations/000006_create_context_engine.up.sql).
+// The chunk content hash is deliberately omitted: ValidateVersion never reads
+// it back, and including it left no safety margin for realistic namespace/
+// version/generation ID lengths (observed to overflow 240 chars in practice).
 func encodeVersion(m versionMeta) string {
-	return strings.Join([]string{"rag-knowledge-chunk.v1", string(m.namespaceKind), m.namespaceID, m.versionID, m.canonicalHash, m.generationID, m.chunkHash}, ":")
+	return strings.Join([]string{"rag-knowledge-chunk.v1", string(m.namespaceKind), m.namespaceID, m.versionID, m.canonicalHash, m.generationID}, ":")
 }
 
 func parseVersion(value string) (versionMeta, error) {
 	parts := strings.Split(value, ":")
-	if len(parts) != 7 || parts[0] != "rag-knowledge-chunk.v1" {
+	if len(parts) != 6 || parts[0] != "rag-knowledge-chunk.v1" {
 		return versionMeta{}, fmt.Errorf("rag version string is malformed: %q", value)
 	}
-	return versionMeta{namespaceKind: rag.NamespaceKind(parts[1]), namespaceID: parts[2], versionID: parts[3], canonicalHash: parts[4], generationID: parts[5], chunkHash: parts[6]}, nil
+	return versionMeta{namespaceKind: rag.NamespaceKind(parts[1]), namespaceID: parts[2], versionID: parts[3], canonicalHash: parts[4], generationID: parts[5]}, nil
 }
 
 func sourceRecord(result rag.QueryResult) (contextengine.SourceRecord, error) {
@@ -157,7 +161,7 @@ func sourceRecord(result rag.QueryResult) (contextengine.SourceRecord, error) {
 	if !ok {
 		return contextengine.SourceRecord{}, errors.New("rag evidence authority tier is not registered")
 	}
-	version := encodeVersion(versionMeta{namespaceKind: result.NamespaceKind, namespaceID: result.NamespaceID, versionID: result.Chunk.VersionID, canonicalHash: result.CanonicalHash, generationID: result.GenerationID, chunkHash: result.Chunk.ContentHash})
+	version := encodeVersion(versionMeta{namespaceKind: result.NamespaceKind, namespaceID: result.NamespaceID, versionID: result.Chunk.VersionID, canonicalHash: result.CanonicalHash, generationID: result.GenerationID})
 	record := contextengine.SourceRecord{
 		Kind: contextengine.SourceRAGEvidence, Reference: result.Chunk.ID, Version: version,
 		AuthorityTier: contextengine.TierRAGEvidence, AuthorityPriority: priority, InstructionClass: contextengine.InstructionData, TrustClass: contextengine.TrustUntrusted,
