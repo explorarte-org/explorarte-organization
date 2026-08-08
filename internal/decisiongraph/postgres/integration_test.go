@@ -272,9 +272,6 @@ UPDATE decision_graph_nodes SET branch_state='active', updated_at=$2 WHERE id=$1
 		RunID:                   run.ID,
 		DecisionNodeID:          decision.NodeID,
 		SelectedCandidateNodeID: candidate.NodeID,
-		EvidenceSetHash:         digest("terminal-evidence-set"),
-		VerificationSetHash:     digest("terminal-verification-set"),
-		DecisionHash:            digest("terminal-decision"),
 		VerificationLabel:       decisiongraph.VerificationVerified,
 		CreatedBy:               "integration/decider",
 	}); err != nil {

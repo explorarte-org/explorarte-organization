@@ -821,18 +821,53 @@ FOR UPDATE OF d,c`, request.RunID, s.organizationID, request.DecisionNodeID, req
 	if graphVersionID != latestGraphVersionID {
 		return decisiongraph.ErrInvalidDecision
 	}
-	var supportingVerifications int
-	if err := tx.QueryRow(ctx, `
-SELECT COUNT(*)
+	// Derive evidence/verification/decision hashes from decision_verifications
+	// rows already durably committed by RecordVerification for this node —
+	// the actual ledger — instead of trusting fresh hashes asserted by the
+	// caller at decision time. Without this, RecordVerification could commit
+	// real evidence and RecordTerminalDecision could then commit an entirely
+	// unrelated hash, with nothing tying the two together beyond both being
+	// syntactically valid sha256 hex strings.
+	rows, err := tx.Query(ctx, `
+SELECT id, label, evidence_set_hash
 FROM decision_verifications
 WHERE run_id=$1 AND organization_id=$2
   AND node_id=$3
-  AND label IN ('verified','inferred')`, request.RunID, s.organizationID, request.SelectedCandidateNodeID).Scan(&supportingVerifications); err != nil {
-		return fmt.Errorf("count supporting verifications: %w", err)
+  AND label IN ('verified','inferred')
+ORDER BY id ASC`, request.RunID, s.organizationID, request.SelectedCandidateNodeID)
+	if err != nil {
+		return fmt.Errorf("query supporting verifications: %w", err)
 	}
+	verificationSet := sha256.New()
+	var latestEvidenceHash string
+	supportingVerifications := 0
+	for rows.Next() {
+		var id int64
+		var label, evidenceHash string
+		if err := rows.Scan(&id, &label, &evidenceHash); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan supporting verification: %w", err)
+		}
+		fmt.Fprintf(verificationSet, "%d\n%s\n%s\n", id, label, evidenceHash)
+		latestEvidenceHash = evidenceHash
+		supportingVerifications++
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("iterate supporting verifications: %w", err)
+	}
+	rows.Close()
 	if supportingVerifications == 0 {
 		return decisiongraph.ErrInvalidDecision
 	}
+	evidenceSetHash := latestEvidenceHash
+	verificationSetHash := hex.EncodeToString(verificationSet.Sum(nil))
+	decisionHashSum := sha256.Sum256([]byte(fmt.Sprintf(
+		"decision-hash.v1\n%d\n%d\n%d\n%s\n%s\n%s",
+		request.RunID, request.DecisionNodeID, request.SelectedCandidateNodeID,
+		evidenceSetHash, verificationSetHash, request.VerificationLabel,
+	)))
+	decisionHash := hex.EncodeToString(decisionHashSum[:])
 	var activeExecutions int
 	if err := tx.QueryRow(ctx, `
 SELECT COUNT(*)
@@ -851,8 +886,8 @@ INSERT INTO decision_records (
     decision_hash, verification_label, created_by, created_at
 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
 		s.organizationID, request.RunID, graphVersionID, request.DecisionNodeID,
-		request.SelectedCandidateNodeID, request.EvidenceSetHash, request.VerificationSetHash,
-		request.DecisionHash, request.VerificationLabel, request.CreatedBy, now); err != nil {
+		request.SelectedCandidateNodeID, evidenceSetHash, verificationSetHash,
+		decisionHash, request.VerificationLabel, request.CreatedBy, now); err != nil {
 		return fmt.Errorf("insert terminal decision: %w", err)
 	}
 	decisionBranchEventHash := eventDigest("branch_transitioned", request.RunID, request.DecisionNodeID, decisiongraph.BranchActive, decisiongraph.BranchSelected, "", "terminal_decision_recorded", request.CreatedBy)

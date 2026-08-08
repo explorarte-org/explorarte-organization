@@ -258,9 +258,8 @@ func driveRunToSucceeded(t *testing.T, ctx context.Context, service *decisiongra
 
 	if err := service.RecordTerminalDecision(ctx, decisiongraph.TerminalDecisionRequest{
 		RunID: run.ID, DecisionNodeID: decision.NodeID, SelectedCandidateNodeID: candidate.NodeID,
-		EvidenceSetHash: digest("terminal-evidence-set"), VerificationSetHash: digest("terminal-verification-set"),
-		DecisionHash: digest("terminal-decision"), VerificationLabel: decisiongraph.VerificationVerified,
-		CreatedBy: "integration/decider",
+		VerificationLabel: decisiongraph.VerificationVerified,
+		CreatedBy:         "integration/decider",
 	}); err != nil {
 		t.Fatal(err)
 	}

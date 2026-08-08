@@ -163,7 +163,6 @@ func (a DecisionGraph) RecordAttemptDecision(ctx context.Context, record executi
 
 	if err := a.Service.RecordTerminalDecision(ctx, decisiongraph.TerminalDecisionRequest{
 		RunID: run.ID, DecisionNodeID: decisionNodeID, SelectedCandidateNodeID: candidateNodeID,
-		EvidenceSetHash: detailHash, VerificationSetHash: detailHash, DecisionHash: detailHash,
 		VerificationLabel: label, CreatedBy: serviceActor,
 	}); err != nil {
 		return fmt.Errorf("record terminal decision: %w", err)

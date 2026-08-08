@@ -69,7 +69,7 @@ func TestCompletionStorePostgreSQL17(t *testing.T) {
 		insertEvidence(t, ctx, platform, taskID, approvalReqID, "approval", fmt.Sprintf("%d", requestID), actionDigest)
 
 		decisionService := newCompletionDecisionService(t, platform)
-		driveRunToSucceeded(t, ctx, decisionService, taskID, attemptID, time.Now().UTC().Truncate(time.Microsecond))
+		driveRunToSucceeded(t, ctx, platform, decisionService, taskID, attemptID, time.Now().UTC().Truncate(time.Microsecond))
 
 		service, err := completion.NewService(store, store, store, store, store, nil)
 		if err != nil {
@@ -346,8 +346,9 @@ func node(id int64, kind decisiongraph.NodeType, branch decisiongraph.BranchStat
 // production code takes — rather than hand-crafting rows that could drift from
 // the schema's own invariants. Adapted from internal/decisiongraphtrace's own
 // integration test, which established this exact sequence first.
-func driveRunToSucceeded(t *testing.T, ctx context.Context, service *decisiongraph.Service, taskID, attemptID int64, now time.Time) decisiongraph.Run {
+func driveRunToSucceeded(t *testing.T, ctx context.Context, platform *platformpostgres.Store, service *decisiongraph.Service, taskID, attemptID int64, now time.Time) decisiongraph.Run {
 	t.Helper()
+	candidateEvidenceHash := digest("candidate-evidence-set")
 	run, err := service.CreateRun(ctx, decisiongraph.CreateRunRequest{
 		TaskID: taskID, AttemptID: attemptID,
 		ReasoningPolicySchemaVersion: "0.1.0",
@@ -397,7 +398,7 @@ func driveRunToSucceeded(t *testing.T, ctx context.Context, service *decisiongra
 	if err := service.RecordVerification(ctx, decisiongraph.VerificationRecord{
 		RunID: run.ID, NodeID: candidate.NodeID, ExecutionID: &candidateExecutionID,
 		Label: decisiongraph.VerificationVerified, VerifierRef: "integration/process-verifier",
-		VerifierVersion: "v1", EvidenceSetHash: digest("candidate-evidence-set"),
+		VerifierVersion: "v1", EvidenceSetHash: candidateEvidenceHash,
 		ReasonCodes: []string{"requirements_satisfied"},
 	}); err != nil {
 		t.Fatal(err)
@@ -424,11 +425,21 @@ func driveRunToSucceeded(t *testing.T, ctx context.Context, service *decisiongra
 
 	if err := service.RecordTerminalDecision(ctx, decisiongraph.TerminalDecisionRequest{
 		RunID: run.ID, DecisionNodeID: decision.NodeID, SelectedCandidateNodeID: candidate.NodeID,
-		EvidenceSetHash: digest("terminal-evidence-set"), VerificationSetHash: digest("terminal-verification-set"),
-		DecisionHash: digest("terminal-decision-" + fmt.Sprintf("%d", run.ID)), VerificationLabel: decisiongraph.VerificationVerified,
-		CreatedBy: "integration/decider",
+		VerificationLabel: decisiongraph.VerificationVerified,
+		CreatedBy:         "integration/decider",
 	}); err != nil {
 		t.Fatal(err)
+	}
+
+	// The decision must commit to the evidence that was actually verified,
+	// not an arbitrary caller-asserted value — RecordTerminalDecision no
+	// longer accepts one at all; it derives it from decision_verifications.
+	var storedEvidenceHash string
+	if err := platform.Pool().QueryRow(ctx, `SELECT evidence_set_hash FROM decision_records WHERE run_id=$1`, run.ID).Scan(&storedEvidenceHash); err != nil {
+		t.Fatalf("read stored terminal decision evidence hash: %v", err)
+	}
+	if storedEvidenceHash != candidateEvidenceHash {
+		t.Fatalf("decision_records.evidence_set_hash=%s want %s (the hash actually verified)", storedEvidenceHash, candidateEvidenceHash)
 	}
 	return run
 }

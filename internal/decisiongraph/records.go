@@ -240,21 +240,21 @@ type TerminalDecisionRequest struct {
 	RunID                   int64
 	DecisionNodeID          int64
 	SelectedCandidateNodeID int64
-	EvidenceSetHash         string
-	VerificationSetHash     string
-	DecisionHash            string
 	VerificationLabel       VerificationLabel
 	CreatedBy               string
 }
 
+// Validate deliberately does not accept EvidenceSetHash, VerificationSetHash,
+// or DecisionHash from the caller. Earlier, a caller could RecordVerification
+// against real evidence and then RecordTerminalDecision with completely
+// unrelated hashes — nothing tied the two together beyond both being
+// syntactically valid sha256 hex strings. The store now derives all three
+// from the decision_verifications rows already durably committed for the
+// selected candidate node — the actual ledger — so a terminal decision can
+// only ever commit to evidence that was really verified.
 func (r TerminalDecisionRequest) Validate() error {
 	if r.RunID <= 0 || r.DecisionNodeID <= 0 || r.SelectedCandidateNodeID <= 0 {
 		return fmt.Errorf("%w: invalid decision identity", ErrInvalidDecision)
-	}
-	for _, hash := range []string{r.EvidenceSetHash, r.VerificationSetHash, r.DecisionHash} {
-		if !sha256HexPattern.MatchString(hash) {
-			return fmt.Errorf("%w: invalid decision hash", ErrInvalidDecision)
-		}
 	}
 	if !r.VerificationLabel.Valid() {
 		return fmt.Errorf("%w: invalid verification label", ErrInvalidDecision)

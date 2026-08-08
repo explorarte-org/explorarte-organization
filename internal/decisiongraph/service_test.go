@@ -98,7 +98,6 @@ func TestServiceRejectsTerminalUnknownDecision(t *testing.T) {
 	}
 	request := TerminalDecisionRequest{
 		RunID: 1, DecisionNodeID: 2, SelectedCandidateNodeID: 3,
-		EvidenceSetHash: testHash, VerificationSetHash: testHash, DecisionHash: testHash,
 		VerificationLabel: VerificationUnknown, CreatedBy: "verifier",
 	}
 	if err := service.RecordTerminalDecision(context.Background(), request); !errors.Is(err, ErrInvalidDecision) {

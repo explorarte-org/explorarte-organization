@@ -113,9 +113,6 @@ type decisionTerminalInput struct {
 	RunID                   int64                           `json:"run_id"`
 	DecisionNodeID          int64                           `json:"decision_node_id"`
 	SelectedCandidateNodeID int64                           `json:"selected_candidate_node_id"`
-	EvidenceSetHash         string                          `json:"evidence_set_hash"`
-	VerificationSetHash     string                          `json:"verification_set_hash"`
-	DecisionHash            string                          `json:"decision_hash"`
 	VerificationLabel       decisiongraph.VerificationLabel `json:"verification_label"`
 	CreatedBy               string                          `json:"created_by"`
 }
@@ -323,8 +320,7 @@ func runDecision(args []string, stdout, stderr io.Writer) int {
 		err := service.RecordTerminalDecision(ctx, decisiongraph.TerminalDecisionRequest{
 			RunID: input.RunID, DecisionNodeID: input.DecisionNodeID,
 			SelectedCandidateNodeID: input.SelectedCandidateNodeID,
-			EvidenceSetHash:         input.EvidenceSetHash, VerificationSetHash: input.VerificationSetHash,
-			DecisionHash: input.DecisionHash, VerificationLabel: input.VerificationLabel, CreatedBy: input.CreatedBy,
+			VerificationLabel:       input.VerificationLabel, CreatedBy: input.CreatedBy,
 		})
 		if err != nil {
 			return decisionCommandError(stderr, err)
