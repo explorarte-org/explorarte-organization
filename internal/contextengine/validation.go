@@ -75,6 +75,17 @@ func ValidateSourceMetadata(source SourceRecord) error {
 	if strings.TrimSpace(source.Reference) == "" || len(source.Reference) > 500 || strings.ContainsRune(source.Reference, 0) {
 		return Reject(ReasonInvalidRequest, source.Reference, "source reference is invalid")
 	}
+	// Matches context_segments.source_version's CHECK (length(trim(...)) BETWEEN 1 AND 240)
+	// (migrations/000006_create_context_engine.up.sql). Rejecting here, at the
+	// shared validation choke point every source provider goes through, turns
+	// an overlong version string into a clear error at construction time
+	// instead of an opaque SQLSTATE 23514 from the database later — providers
+	// that encode structured metadata into Version (e.g. internal/rag/
+	// contextprovider) remain responsible for keeping their encoding compact,
+	// but can no longer silently produce a value the DB will reject.
+	if trimmed := strings.TrimSpace(source.Version); trimmed == "" || len(source.Version) > 240 {
+		return Reject(ReasonInvalidRequest, source.Reference, "source version is invalid")
+	}
 	if source.ContentHash == "" || !digestPattern.MatchString(source.ContentHash) {
 		return Reject(ReasonStructuredConflict, source.Reference, "source content hash is invalid")
 	}
