@@ -94,7 +94,7 @@ func TestEvidenceProjectionCarriesValidatedWorkerResultAndEvidence(t *testing.T)
 	adapter := EvidenceTasks{
 		Models: evidenceModels{
 			invocation: executive.InvocationRecord{ID: 77, Status: "succeeded"},
-			result: executive.InvocationResult{InvocationID: 77, JSONOutput: body, ResponseHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			result:     executive.InvocationResult{InvocationID: 77, JSONOutput: body, ResponseHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
 		},
 		Completion: passCompletion{}, Limits: executive.DefaultLimits(),
 	}

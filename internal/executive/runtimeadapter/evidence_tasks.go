@@ -74,7 +74,7 @@ type projectedReview struct {
 	DepartmentID        string                      `json:"department_id"`
 	Status              string                      `json:"status"`
 	Completion          executive.CompletionVerdict `json:"completion"`
-	Verdict             executive.ReviewVerdict    `json:"verdict"`
+	Verdict             executive.ReviewVerdict     `json:"verdict"`
 	Findings            []string                    `json:"findings"`
 	UnsatisfiedCriteria []string                    `json:"unsatisfied_criteria"`
 	EvidenceRefs        []string                    `json:"evidence_refs"`

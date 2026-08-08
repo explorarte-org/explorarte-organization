@@ -301,6 +301,17 @@ func (o *Orchestrator) createLeaderPlanTask(ctx context.Context, root TaskRecord
 	})
 }
 
+// driveInProgress signals that driveDepartments made partial progress this
+// cycle (drove a typed task, or is waiting on outstanding worker tasks) and
+// the caller must stop here and return the live status instead of falling
+// through to closure. Without this, the caller's `done` check never fires
+// mid-department and it attempts to create/drive the CEO closure task
+// before every department's review has actually completed.
+func (o *Orchestrator) driveInProgress(ctx context.Context, root TaskRecord) (Run, bool, error) {
+	run, err := o.Status(ctx, root.ID)
+	return run, true, err
+}
+
 func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, revision RevisionRef, plan ExecutivePlan, leaders map[string]RoleRef) (Run, bool, error) {
 	for _, req := range plan.DepartmentRequests {
 		leader := leaders[req.UnitID]
@@ -326,7 +337,7 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 			if err != nil {
 				return Run{}, false, err
 			}
-			return Run{}, false, nil
+			return o.driveInProgress(ctx, root)
 		}
 		planResult, ok := o.resultForCompletedTask(ctx, planTask)
 		if !ok {
@@ -360,7 +371,7 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 			if e != nil {
 				return Run{}, false, e
 			}
-			return Run{}, false, nil
+			return o.driveInProgress(ctx, root)
 		}
 
 		all, e = o.tasks.ListByCorrelation(ctx, root.CorrelationID)
@@ -368,7 +379,7 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 			return Run{}, false, e
 		}
 		if !allDepartmentWorkersTerminal(all, root.ID, req.UnitID) {
-			return Run{}, false, nil
+			return o.driveInProgress(ctx, root)
 		}
 		reviewTask, ok := latestReviewTask(all, root.ID, req.UnitID)
 		if !ok {
@@ -406,7 +417,7 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 			if e != nil {
 				return Run{}, false, e
 			}
-			return Run{}, false, nil
+			return o.driveInProgress(ctx, root)
 		}
 		reviewResult, ok := o.resultForCompletedTask(ctx, reviewTask)
 		if !ok {
@@ -432,14 +443,14 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 				return Run{}, false, e
 			}
 			if !allDepartmentWorkersTerminal(all, root.ID, req.UnitID) {
-				return Run{}, false, nil
+				return o.driveInProgress(ctx, root)
 			}
 			if _, exists := findTaskByKey(all, childKey(root.ID, "leader-review:"+req.UnitID+":replan:"+strconv.Itoa(ordinal))); !exists {
 				if _, _, e = o.createReviewTask(ctx, root, req, leader, all, ordinal); e != nil {
 					return Run{}, false, e
 				}
 			}
-			return Run{}, false, nil
+			return o.driveInProgress(ctx, root)
 		}
 		if review.Verdict != ReviewAccept {
 			return Run{}, false, fmt.Errorf("%w: department review %s", ErrCompletionFailed, review.Verdict)

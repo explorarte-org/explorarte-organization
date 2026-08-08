@@ -26,7 +26,13 @@ func (a Tasks) CreateTask(ctx context.Context, command executive.CreateTaskComma
 			Required:    &required,
 		})
 	}
-	value, reused, err := a.Service.CreateTask(ctx, tasks.CreateRequest{
+	// tasks.Service.CreateTask's second return value is "created" (true
+	// when a fresh row was inserted; see cmd/orgctl/tasks.go's identically
+	// shaped call, which names it `created`). The executive port's
+	// contract is the opposite: CreateTask's bool means "reused" (true
+	// when an existing task with this idempotency key was found). Invert
+	// here, once, at the adapter boundary, rather than at every caller.
+	value, created, err := a.Service.CreateTask(ctx, tasks.CreateRequest{
 		OrganizationID:     a.OrganizationID,
 		RequestedByRoleID:  command.RequestedByRoleID,
 		AssignedRoleID:     command.AssignedRoleID,
@@ -44,6 +50,7 @@ func (a Tasks) CreateTask(ctx context.Context, command executive.CreateTaskComma
 	if err != nil {
 		return executive.TaskRecord{}, false, err
 	}
+	reused := !created
 	detail, err := a.Service.GetTask(ctx, value.ID)
 	if err != nil {
 		return executive.TaskRecord{}, false, err
