@@ -64,6 +64,15 @@ const (
 	SourceProjectContext    SourceKind = "project_context"
 	SourceTaskContext       SourceKind = "task_context"
 	SourceRAGEvidence       SourceKind = "rag_evidence"
+	// SourceWebEvidence is R30.1-4's kind for internal/webevidence.Evidence
+	// rendered into a SourceRecord — see assembler.go's hard gate: exactly
+	// like SourceApprovedMemory/SourceRAGEvidence, it may never carry
+	// anything but InstructionData/TrustUntrusted/MayGrantCapabilities=
+	// false. No productive provider wires this kind into Service yet
+	// (internal/webevidencefixtures renders it directly for the
+	// evaluation harness) — that wiring is future work, not part of this
+	// fix.
+	SourceWebEvidence SourceKind = "web_evidence"
 )
 
 type SnapshotStatus string

@@ -7,10 +7,13 @@
 package webevidencefixtures
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
+	"github.com/Mireuz13/explorarte-organization/internal/contextengine"
 	"github.com/Mireuz13/explorarte-organization/internal/evaluation/fixtures"
 	"github.com/Mireuz13/explorarte-organization/internal/webevidence"
 )
@@ -21,6 +24,12 @@ type WebEvidenceScenario struct {
 	Body                   string
 	TTL                    time.Duration
 	ExpectedFindingPattern string
+	// InjectedInstructionPhrase is the literal hostile phrase Body carries
+	// (a substring of Body) — Run checks that this exact phrase, wherever
+	// it survives into the rendered payload delivered to a model (see
+	// contextengine.PortableRenderer.Render), only ever appears inside a
+	// segment classified instruction_class="data"/trust_class="untrusted".
+	InjectedInstructionPhrase string
 }
 
 type fakeFetcher struct{ page webevidence.RawPage }
@@ -78,13 +87,73 @@ func (WebEvidenceRunner) Run(ctx context.Context, f fixtures.Fixture, subjectID 
 	}
 	record("hostile_page_still_ingests_as_evidence", true)
 
-	// R30's hard gate: web evidence used as instruction must never occur.
-	// Structurally verified here because Evidence has no field that could
-	// carry an InstructionClass other than "data" (see internal/
-	// webevidence's types.go) — Validate succeeding on hostile content is
-	// itself the proof that ingestion never special-cased it into
-	// something more privileged.
-	record("web_evidence_used_as_instruction_never_occurs", evidence.Validate() == nil)
+	// Render every chunk into a real contextengine.SourceRecord and run it
+	// through the real DeterministicAssembler — R30's hard gate lives
+	// there (assembler.go), not in this package, so exercising it for
+	// real is what actually proves the classification instead of
+	// asserting a boolean about it.
+	records := make([]contextengine.SourceRecord, 0, len(evidence.Chunks))
+	for _, chunk := range evidence.Chunks {
+		rec, err := sourceRecord(evidence, chunk)
+		if err != nil {
+			record("web_evidence_renders_as_context_engine_source", false)
+			outcome.Notes = fmt.Sprintf("sourceRecord failed: %v", err)
+			outcome.Passed = false
+			return outcome, nil
+		}
+		records = append(records, rec)
+	}
+	record("web_evidence_renders_as_context_engine_source", true)
+
+	assembly, err := contextengine.NewAssembler().Assemble(ctx, contextengine.AssemblyInput{
+		Sources: records, MaxTotalBytes: 1 << 20, MaxSegmentBytes: 1 << 16, MaxSegments: len(records) + 1,
+	})
+	if err != nil {
+		record("web_evidence_used_as_instruction_never_occurs", false)
+		outcome.Notes = fmt.Sprintf("context engine assembly rejected legitimately-classified web evidence: %v", err)
+		outcome.Passed = false
+		return outcome, nil
+	}
+	stillUntrusted := len(assembly.Segments) > 0
+	for _, segment := range assembly.Segments {
+		if segment.SourceKind != contextengine.SourceWebEvidence {
+			continue
+		}
+		if segment.InstructionClass != contextengine.InstructionData || segment.TrustClass != contextengine.TrustUntrusted || segment.MayGrantCapabilities {
+			stillUntrusted = false
+		}
+	}
+	record("web_evidence_used_as_instruction_never_occurs", stillUntrusted)
+
+	// The hard gate itself must be real, not merely today's renderer
+	// happening to set the right constants: a source deliberately
+	// mislabeled as an instruction (as if a future, buggy provider
+	// promoted web content) must still be rejected by the same Assemble
+	// call — proving the gate would catch a regression, not just that
+	// nothing regressed yet.
+	adversarial := append([]contextengine.SourceRecord(nil), records...)
+	if len(adversarial) > 0 {
+		adversarial[0].InstructionClass = contextengine.InstructionOrganizational
+		adversarial[0].MayGrantCapabilities = true
+	}
+	_, adversarialErr := contextengine.NewAssembler().Assemble(ctx, contextengine.AssemblyInput{
+		Sources: adversarial, MaxTotalBytes: 1 << 20, MaxSegmentBytes: 1 << 16, MaxSegments: len(adversarial) + 1,
+	})
+	record("context_engine_rejects_web_evidence_relabeled_as_instruction", len(adversarial) > 0 && adversarialErr != nil)
+
+	// Check the literal bytes a model would actually receive
+	// (contextengine.PortableRenderer.Render is the real production
+	// serializer) — the injected hostile phrase must survive only inside
+	// a segment rendered with instruction_class="data"/trust_class=
+	// "untrusted", never anywhere else in the payload.
+	snapshot := contextengine.Snapshot{Status: contextengine.SnapshotReady, Segments: assembly.Segments}
+	rendered, renderErr := contextengine.NewRenderer().Render(ctx, snapshot)
+	if renderErr != nil {
+		record("rendered_model_payload_keeps_injected_text_classified_as_data", false)
+		outcome.Notes = fmt.Sprintf("render snapshot: %v", renderErr)
+	} else {
+		record("rendered_model_payload_keeps_injected_text_classified_as_data", injectedPhraseStaysClassifiedAsData(rendered, scenario.InjectedInstructionPhrase))
+	}
 
 	foundExpectedPattern := false
 	for _, finding := range evidence.SanitizationFindings {
@@ -99,12 +168,54 @@ func (WebEvidenceRunner) Run(ctx context.Context, f fixtures.Fixture, subjectID 
 	// occurs. This package imports neither internal/rag nor
 	// internal/memory (see this file's imports) — there is no function
 	// call this runner could even make to promote evidence.ID into either
-	// system, so the invariant holds by construction, not by a runtime
-	// check that could be forgotten.
+	// system, so the invariant holds by construction. That construction
+	// is now enforced, not merely asserted: scripts/check-webevidence-
+	// fitness.sh (wired into `make verify`) fails the build the moment
+	// internal/webevidence or internal/webevidencefixtures ever imports
+	// internal/rag or internal/memory, the same discipline check-rag-
+	// fitness.sh/check-memory-fitness.sh already apply to their own
+	// packages. This record is a true statement about a real gate, not
+	// just a hardcoded boolean.
 	record("automatic_rag_memory_promotion_never_occurs", true)
 
 	outcome.Passed = allPassed
 	return outcome, nil
+}
+
+// injectedPhraseStaysClassifiedAsData decodes the real
+// contextengine.PortableRenderer.Render output and confirms phrase — the
+// literal hostile text a web page tried to inject — appears only inside
+// segments the renderer marked instruction_class="data"/trust_class=
+// "untrusted". An empty result (renderer output does not parse, or the
+// phrase does not survive into any segment at all) is never treated as a
+// pass — this check exists to prove positive containment, not merely the
+// absence of a violation.
+func injectedPhraseStaysClassifiedAsData(rendered []byte, phrase string) bool {
+	if phrase == "" {
+		return false
+	}
+	var payload struct {
+		Segments []struct {
+			InstructionClass string `json:"instruction_class"`
+			TrustClass       string `json:"trust_class"`
+			Content          []byte `json:"content"`
+		} `json:"segments"`
+	}
+	if err := json.Unmarshal(rendered, &payload); err != nil {
+		return false
+	}
+	needle := bytes.ToLower([]byte(phrase))
+	found := false
+	for _, segment := range payload.Segments {
+		if !bytes.Contains(bytes.ToLower(segment.Content), needle) {
+			continue
+		}
+		found = true
+		if segment.InstructionClass != "data" || segment.TrustClass != "untrusted" {
+			return false
+		}
+	}
+	return found
 }
 
 // fixtureTaskID is a fixed, synthetic task id for fixture runs — web

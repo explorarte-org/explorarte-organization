@@ -29,9 +29,9 @@ func (a *DeterministicAssembler) Assemble(ctx context.Context, input AssemblyInp
 		if err := ValidateSourceMetadata(sources[index]); err != nil {
 			return Assembly{}, err
 		}
-		if sources[index].Kind == SourceApprovedMemory || sources[index].Kind == SourceRAGEvidence {
+		if sources[index].Kind == SourceApprovedMemory || sources[index].Kind == SourceRAGEvidence || sources[index].Kind == SourceWebEvidence {
 			if sources[index].InstructionClass != InstructionData || sources[index].TrustClass != TrustUntrusted || sources[index].MayGrantCapabilities {
-				return Assembly{}, Reject(ReasonUnsafeInstructionSource, sources[index].Reference, "memory and RAG must remain untrusted data without capability authority")
+				return Assembly{}, Reject(ReasonUnsafeInstructionSource, sources[index].Reference, "memory, RAG, and web evidence must remain untrusted data without capability authority")
 			}
 		}
 	}
@@ -167,7 +167,7 @@ func lessOmittable(left, right SourceRecord) bool {
 }
 
 func optionalSource(source SourceRecord) bool {
-	return source.Kind == SourceApprovedMemory || source.Kind == SourceRAGEvidence
+	return source.Kind == SourceApprovedMemory || source.Kind == SourceRAGEvidence || source.Kind == SourceWebEvidence
 }
 
 func includedBytes(sources []SourceRecord, omitted map[int]string) int {

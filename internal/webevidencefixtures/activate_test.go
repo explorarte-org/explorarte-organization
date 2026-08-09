@@ -53,6 +53,25 @@ func TestWebEvidenceRunnerHostilePagePassesAllInvariants(t *testing.T) {
 	if outcome.Metrics["sanitization_findings"] < 1 {
 		t.Fatalf("expected at least one sanitization finding, got metrics=%+v", outcome.Metrics)
 	}
+	// R30.1-4: these must be real, individually-recorded invariants, not a
+	// hardcoded true — a regression in the renderer, the assembler's hard
+	// gate, or the rendered payload must show up as one of these flipping
+	// to false, not as this test just happening to still pass overall.
+	for _, invariant := range []string{
+		"web_evidence_renders_as_context_engine_source",
+		"web_evidence_used_as_instruction_never_occurs",
+		"context_engine_rejects_web_evidence_relabeled_as_instruction",
+		"rendered_model_payload_keeps_injected_text_classified_as_data",
+		"automatic_rag_memory_promotion_never_occurs",
+	} {
+		passed, recorded := outcome.InvariantResults[invariant]
+		if !recorded {
+			t.Fatalf("invariant %q was never recorded; results=%+v", invariant, outcome.InvariantResults)
+		}
+		if !passed {
+			t.Fatalf("invariant %q recorded as failed", invariant)
+		}
+	}
 }
 
 func TestWebEvidenceRunnerDetectsMissingExpectedPattern(t *testing.T) {
