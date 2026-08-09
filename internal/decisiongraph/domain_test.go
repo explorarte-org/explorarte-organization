@@ -115,6 +115,65 @@ func TestGraphDepthsAreDerivedFromEdgeStructureNotCallerInput(t *testing.T) {
 	}
 }
 
+func TestGraphDepthsAreImmuneToShortcutEdges(t *testing.T) {
+	graph, err := NewGraph([]Node{
+		testNode(1, NodeGoal, BranchActive, ExecutionSucceeded),
+		testNode(2, NodeCandidateAction, BranchActive, ExecutionPending),
+		testNode(3, NodeDecision, BranchActive, ExecutionPending),
+		testNode(4, NodeDecision, BranchActive, ExecutionPending),
+		testNode(5, NodeDecision, BranchActive, ExecutionPending),
+	}, []Edge{
+		{FromNodeID: 2, ToNodeID: 1, Type: EdgeSatisfies},
+		{FromNodeID: 3, ToNodeID: 2, Type: EdgeDependsOn},
+		{FromNodeID: 4, ToNodeID: 3, Type: EdgeDependsOn},
+		{FromNodeID: 5, ToNodeID: 4, Type: EdgeDependsOn},
+		// Node 5's real depends_on chain to the goal is 4 hops
+		// (5->4->3->2->1). This extra edge is a shortcut straight to the
+		// goal that must not shrink node 5's — or any other node's —
+		// reported depth: a node's actual worst-case dependency chain is
+		// what max_depth budgets against, and an added shortcut can only
+		// make that chain shorter to walk, never shorter to have existed.
+		{FromNodeID: 5, ToNodeID: 1, Type: EdgeSatisfies},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	depths, maxDepth, err := graph.Depths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[int64]int{1: 0, 2: 1, 3: 2, 4: 3, 5: 4}
+	for id, depth := range want {
+		if depths[id] != depth {
+			t.Fatalf("node %d depth=%d want %d (depths=%v)", id, depths[id], depth, depths)
+		}
+	}
+	if maxDepth != 4 {
+		t.Fatalf("maxDepth=%d want 4", maxDepth)
+	}
+}
+
+func TestGraphDepthsRejectsCycleAcrossMixedEdgeTypes(t *testing.T) {
+	graph, err := NewGraph([]Node{
+		testNode(1, NodeGoal, BranchActive, ExecutionSucceeded),
+		testNode(2, NodeCandidateAction, BranchActive, ExecutionPending),
+		testNode(3, NodeDecision, BranchActive, ExecutionPending),
+	}, []Edge{
+		{FromNodeID: 2, ToNodeID: 1, Type: EdgeSatisfies},
+		// 3 depends_on 2, but 2 also "supports" 3 — a cycle that only
+		// exists once a non-depends_on edge type is mixed in, so
+		// NewGraph's depends_on-only cycle check does not catch it.
+		{FromNodeID: 3, ToNodeID: 2, Type: EdgeDependsOn},
+		{FromNodeID: 2, ToNodeID: 3, Type: EdgeSupports},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := graph.Depths(); !errors.Is(err, ErrInvalidGraph) {
+		t.Fatalf("expected ErrInvalidGraph for a cross-type cycle, got %v", err)
+	}
+}
+
 func TestGraphDepthsRejectsNodeDisconnectedFromGoal(t *testing.T) {
 	graph, err := NewGraph([]Node{
 		testNode(1, NodeGoal, BranchActive, ExecutionSucceeded),

@@ -104,16 +104,26 @@ func (g *Graph) ReadyNodeIDs() []int64 {
 	return result
 }
 
-// Depths computes each node's distance from the single goal node, treating
-// every edge (both depends_on and satisfies) as an undirected connection —
-// this is a structural property of the graph, never something a caller
-// supplies. Every node must be reachable from the goal; NewGraph's acyclic
-// depends_on check does not by itself guarantee connectivity.
+// Depths computes each node's distance from the single goal node — this is
+// a structural property of the graph, never something a caller supplies.
+// Every node must be reachable from the goal; NewGraph's acyclic depends_on
+// check does not by itself guarantee connectivity.
+//
+// Distance is the LONGEST directed path from a node to the goal, following
+// every edge in its FromNodeID -> ToNodeID direction (the same direction
+// depends_on already uses elsewhere: "From depends_on To" means To is the
+// closer-to-goal prerequisite). Shortest-path/undirected BFS was tried
+// first and rejected: a node with a real 4-hop depends_on chain to the
+// goal could add one extra edge of any type directly to the goal and have
+// its reported depth collapse to 1, undercutting max_depth for that node
+// and — since BFS from the goal outward assigns depths to whichever node
+// it reaches first — for its neighbors too. Longest path closes this: an
+// extra shortcut edge can only ever raise a node's minimum possible depth
+// bound, never lower the depth its genuinely deepest chain requires.
 func (g *Graph) Depths() (map[int64]int, int, error) {
-	adjacency := make(map[int64][]int64, len(g.nodes))
+	outgoing := make(map[int64][]int64, len(g.nodes))
 	for _, edge := range g.edges {
-		adjacency[edge.FromNodeID] = append(adjacency[edge.FromNodeID], edge.ToNodeID)
-		adjacency[edge.ToNodeID] = append(adjacency[edge.ToNodeID], edge.FromNodeID)
+		outgoing[edge.FromNodeID] = append(outgoing[edge.FromNodeID], edge.ToNodeID)
 	}
 	var goalID int64
 	for id, node := range g.nodes {
@@ -122,25 +132,51 @@ func (g *Graph) Depths() (map[int64]int, int, error) {
 			break
 		}
 	}
+
+	const (
+		unvisited = 0
+		visiting  = 1
+		resolved  = 2
+	)
+	state := make(map[int64]int, len(g.nodes))
 	depths := map[int64]int{goalID: 0}
-	queue := []int64{goalID}
+	state[goalID] = resolved
 	maxDepth := 0
-	for len(queue) > 0 {
-		current := queue[0]
-		queue = queue[1:]
-		for _, next := range adjacency[current] {
-			if _, visited := depths[next]; visited {
-				continue
-			}
-			depths[next] = depths[current] + 1
-			if depths[next] > maxDepth {
-				maxDepth = depths[next]
-			}
-			queue = append(queue, next)
+
+	var resolve func(id int64) (int, error)
+	resolve = func(id int64) (int, error) {
+		if depth, ok := depths[id]; ok {
+			return depth, nil
 		}
+		if state[id] == visiting {
+			return 0, fmt.Errorf("%w: cycle involving node %d", ErrInvalidGraph, id)
+		}
+		state[id] = visiting
+		best := -1
+		for _, next := range outgoing[id] {
+			depth, err := resolve(next)
+			if err != nil {
+				return 0, err
+			}
+			if depth+1 > best {
+				best = depth + 1
+			}
+		}
+		state[id] = resolved
+		if best < 0 {
+			return 0, fmt.Errorf("%w: graph is not fully connected to the goal node", ErrInvalidGraph)
+		}
+		depths[id] = best
+		if best > maxDepth {
+			maxDepth = best
+		}
+		return best, nil
 	}
-	if len(depths) != len(g.nodes) {
-		return nil, 0, fmt.Errorf("%w: graph is not fully connected to the goal node", ErrInvalidGraph)
+
+	for id := range g.nodes {
+		if _, err := resolve(id); err != nil {
+			return nil, 0, err
+		}
 	}
 	return depths, maxDepth, nil
 }
