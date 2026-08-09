@@ -89,6 +89,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runPostrun(args[1:], stdout, stderr)
 	case "sleep":
 		return runSleep(args[1:], stdout, stderr)
+	case "budget":
+		return runBudget(args[1:], stdout, stderr)
+	case "cost":
+		return runCost(args[1:], stdout, stderr)
+	case "agents":
+		return runAgents(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return exitOK
@@ -537,6 +543,9 @@ commands:
   shadow <verify|replay|report>
   postrun <propose-lesson>
   sleep <run>
+  budget <status|set-price|set-balance>
+  cost <calls|summary>
+  agents <tree|status>
 exit codes:
   0 success
   1 internal or operational failure

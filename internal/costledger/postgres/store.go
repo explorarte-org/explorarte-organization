@@ -26,6 +26,35 @@ func New(store *platformpostgres.Store) (*Store, error) {
 
 var _ costledger.Ledger = (*Store)(nil)
 
+func (s *Store) ListEvents(ctx context.Context, providerID string, limit int) ([]costledger.WalletEvent, error) {
+	rows, err := s.pool.Query(ctx, `
+SELECT id, provider_id, invocation_id, kind, amount_usd_nanos, created_at
+FROM provider_wallet_events
+WHERE provider_id=$1
+ORDER BY created_at DESC, id DESC
+LIMIT $2`, providerID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	events := make([]costledger.WalletEvent, 0, limit)
+	for rows.Next() {
+		var event costledger.WalletEvent
+		var kind string
+		if err := rows.Scan(&event.ID, &event.ProviderID, &event.InvocationID, &kind, &event.AmountUSD, &event.CreatedAt); err != nil {
+			return nil, err
+		}
+		event.Kind = costledger.EventKind(kind)
+		event.CreatedAt = event.CreatedAt.UTC()
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return events, nil
+}
+
 func (s *Store) GetWallet(ctx context.Context, providerID string) (costledger.ProviderWallet, error) {
 	var wallet costledger.ProviderWallet
 	wallet.ProviderID = providerID

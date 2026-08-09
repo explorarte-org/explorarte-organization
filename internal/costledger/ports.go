@@ -17,4 +17,7 @@ type Ledger interface {
 	Reserve(ctx context.Context, providerID string, invocationID int64, estimatedUSD modelpricing.USDNanos, now time.Time) error
 	Reconcile(ctx context.Context, providerID string, invocationID int64, actualUSD modelpricing.USDNanos, now time.Time) error
 	Release(ctx context.Context, providerID string, invocationID int64, now time.Time) error
+	// ListEvents returns a provider's most recent wallet events (reserved,
+	// committed, released), newest first, for auditing and the CLI.
+	ListEvents(ctx context.Context, providerID string, limit int) ([]WalletEvent, error)
 }
