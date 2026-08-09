@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -97,17 +98,56 @@ type BGEM3EmbeddingRepository interface {
 	NearestBGEM3Entries(ctx context.Context, organizationID, roleID string, queryVector []float32, limit int) ([]ScoredEntry, error)
 }
 
+// EmbeddingIdentity mirrors rag.EmbeddingIdentity exactly — see that
+// type's doc comment. internal/memory cannot import internal/rag, so this
+// is the same deliberate, small duplication as EntryEmbedding/
+// BGEM3EntryEmbedding.
+type EmbeddingIdentity struct {
+	ModelID           string
+	ModelVersion      string // Gemini: embedding_model_version. Empty for BGE-M3.
+	ModelRevision     string // BGE-M3: model_revision. Empty for Gemini.
+	ArtifactSHA256    string // BGE-M3 only.
+	TokenizerRevision string // BGE-M3 only.
+	Normalization     string // BGE-M3 only.
+	Pooling           string // BGE-M3 only.
+}
+
+func (id EmbeddingIdentity) Validate() error {
+	if id.ModelID == "" {
+		return fmt.Errorf("%w: embedding identity requires a model id", ErrInvalidRequest)
+	}
+	geminiShaped := id.ModelVersion != ""
+	bgeM3Shaped := id.ModelRevision != "" || id.ArtifactSHA256 != "" || id.TokenizerRevision != "" || id.Normalization != "" || id.Pooling != ""
+	if geminiShaped == bgeM3Shaped {
+		return fmt.Errorf("%w: embedding identity must set exactly one of model_version (gemini-shaped) or model_revision+artifact_sha256+tokenizer_revision+normalization+pooling (bge-m3-shaped)", ErrInvalidRequest)
+	}
+	if bgeM3Shaped && (id.ModelRevision == "" || len(id.ArtifactSHA256) != 64 || id.TokenizerRevision == "" || id.Normalization == "" || id.Pooling == "") {
+		return fmt.Errorf("%w: bge-m3-shaped embedding identity requires model_revision, a 64-character hex artifact_sha256, tokenizer_revision, normalization, and pooling all set", ErrInvalidRequest)
+	}
+	return nil
+}
+
 // EmbeddingRepository is the persistence boundary for the derived vector
 // index over approved memory entries — deliberately separate from
 // Repository, same reasoning as rag.EmbeddingRepository.
 type EmbeddingRepository interface {
 	InsertEntryEmbedding(ctx context.Context, embedding EntryEmbedding) error
 	// NearestEntries searches only within roleID's own memory — Search
-	// never crosses role boundaries in R29 (see Manager.Search).
+	// never crosses role boundaries in R29 (see Manager.Search). It does
+	// not filter by embedding identity — it exists for tests/direct
+	// access, not the production path (Manager.Search always goes through
+	// Search below, never this method).
 	NearestEntries(ctx context.Context, organizationID, roleID string, queryVector []float32, limit int) ([]ScoredEntry, error)
 	// Search fuses exact-identifier and (when queryVector is non-empty)
 	// vector channels by Reciprocal Rank Fusion, scoped to
 	// organizationID+roleID+status=approved, returning full Entry values
 	// ready to render — the equivalent of rag.Repository.Query for memory.
-	Search(ctx context.Context, organizationID, roleID, queryText string, queryVector []float32, limit int) ([]Entry, error)
+	// identity+promptTemplateVersion are required whenever queryVector is
+	// non-empty — see EmbeddingIdentity's doc comment for why: an entry's
+	// embedding table primary key allows more than one row per entry
+	// (re-embedding under a new revision is a new row), so without this
+	// filter the vector channel could return more than one row for the
+	// same entry, awarding it multiple RRF votes and potentially mixing
+	// incompatible embedding spaces that merely share a dimension.
+	Search(ctx context.Context, organizationID, roleID, queryText string, queryVector []float32, identity EmbeddingIdentity, promptTemplateVersion string, limit int) ([]Entry, error)
 }

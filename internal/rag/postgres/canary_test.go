@@ -138,8 +138,12 @@ func TestR30CanaryComparisonLexicalVsGeminiVsBGEM3(t *testing.T) {
 		return v
 	}
 
-	run := func(subject string, queryVector []float32) []string {
-		results, err := store.Query(ctx, rag.QueryCommand{OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceDepartment, NamespaceID: canaryNamespace, QueryText: "error 20", QueryVector: queryVector, Limit: 10})
+	run := func(subject string, queryVector []float32, identity rag.EmbeddingIdentity, promptTemplateVersion string) []string {
+		results, err := store.Query(ctx, rag.QueryCommand{
+			OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceDepartment, NamespaceID: canaryNamespace,
+			QueryText: "error 20", QueryVector: queryVector, Limit: 10,
+			EmbeddingIdentity: identity, EmbeddingPromptTemplateVersion: promptTemplateVersion,
+		})
 		if err != nil {
 			t.Fatalf("subject=%s: %v", subject, err)
 		}
@@ -161,7 +165,7 @@ func TestR30CanaryComparisonLexicalVsGeminiVsBGEM3(t *testing.T) {
 	}
 
 	// A) lexical-only: no vector channel at all.
-	lexical := run("lexical", nil)
+	lexical := run("lexical", nil, rag.EmbeddingIdentity{}, "")
 	report("lexical", lexical)
 
 	// B) gemini-hybrid: 768-dim synthetic embeddings for every document —
@@ -178,7 +182,7 @@ func TestR30CanaryComparisonLexicalVsGeminiVsBGEM3(t *testing.T) {
 			t.Fatalf("insert gemini embedding for %s: %v", d.id, err)
 		}
 	}
-	geminiHybrid := run("gemini-hybrid", syntheticVector(768, "close"))
+	geminiHybrid := run("gemini-hybrid", syntheticVector(768, "close"), rag.EmbeddingIdentity{ModelID: "gemini-embedding-2", ModelVersion: "v1"}, "prompt-template.v1")
 	report("gemini-hybrid", geminiHybrid)
 
 	// C) bge-m3-hybrid: 1024-dim synthetic embeddings, separate table, same
@@ -194,7 +198,10 @@ func TestR30CanaryComparisonLexicalVsGeminiVsBGEM3(t *testing.T) {
 			t.Fatalf("insert bge-m3 embedding for %s: %v", d.id, err)
 		}
 	}
-	bgeM3Hybrid := run("bge-m3-hybrid", syntheticVector(1024, "close"))
+	bgeM3Hybrid := run("bge-m3-hybrid", syntheticVector(1024, "close"), rag.EmbeddingIdentity{
+		ModelID: "bge-m3-local", ModelRevision: "bge-m3-2024-06", ArtifactSHA256: strings.Repeat("c", 64),
+		TokenizerRevision: "bge-m3-tokenizer-2024-06", Normalization: "l2", Pooling: "cls",
+	}, "bge-m3-prompt-template.v1")
 	report("bge-m3-hybrid", bgeM3Hybrid)
 
 	// Hard gate: lexical alone must never find the semantic-only document

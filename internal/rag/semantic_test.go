@@ -111,6 +111,7 @@ func testSemanticDeps(ledger *fakeEmbeddingLedger, adapter *fakeOnlineAdapter, b
 	return &SemanticSearchDeps{
 		OnlineAdapter: adapter, Pricing: newTestPricingService(t), Wallet: ledger, Budgets: budgets,
 		ProviderID: "gemini", ProviderModelID: "gemini-embedding-2", OutputDimensionality: 768, PromptTemplateVersion: "prompt-template.v1",
+		Identity: EmbeddingIdentity{ModelID: "gemini-embedding-2", ModelVersion: "v1"},
 	}
 }
 

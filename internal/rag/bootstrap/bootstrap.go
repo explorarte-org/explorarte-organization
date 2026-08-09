@@ -32,6 +32,13 @@ const (
 	ragEmbeddingModelID          = "gemini-embedding-2"
 	ragEmbeddingDimension        = 768
 	ragEmbeddingMaxResponseBytes = 1 << 20
+	// ragEmbeddingModelVersion is Gemini's identity column
+	// (embedding_model_version, migration 000028) — this system's own
+	// versioning scheme for Gemini embeddings, not a string Google
+	// assigns. Bumping it is a deliberate re-embedding decision (a new
+	// row per chunk, never an UPDATE), exactly like ModelRevision is for
+	// BGE-M3.
+	ragEmbeddingModelVersion = "v1"
 )
 
 // R30: exactly one embedding profile is active at a time — mirrors
@@ -178,14 +185,17 @@ func openGeminiSemanticSearch(platformStore *platformpostgres.Store) (*rag.Seman
 		Wallet: ledger, Budgets: budgets,
 		ProviderID: ragEmbeddingProviderID, ProviderModelID: ragEmbeddingModelID,
 		OutputDimensionality: ragEmbeddingDimension, PromptTemplateVersion: gemini.PromptTemplateV1,
+		Identity: rag.EmbeddingIdentity{ModelID: ragEmbeddingModelID, ModelVersion: ragEmbeddingModelVersion},
 	}, nil
 }
 
-// openBGEM3SemanticSearch activates R30's local, operational profile — see
-// internal/memory/bootstrap's function of the same name for the full
-// rationale on why pricing/wallet seeding is an operator step (`orgctl
-// budget set-price`/`set-balance`), not something this function does
-// itself.
+// openBGEM3SemanticSearch activates R30's local, operational profile.
+// LocalComputeOnly=true: no Pricing/Wallet/Budgets — a local, unbilled
+// process must never be forced through the monetary ledger (not even at
+// a seeded $0 price, which would distort that ledger and give this
+// profile a wallet-insufficient-balance failure mode it structurally
+// cannot have). The adapter's own MaxConcurrency/MaxQueueDepth are the
+// entire resource budget; Adapter.Metrics() is the accounting.
 func openBGEM3SemanticSearch(platformStore *platformpostgres.Store) (*rag.SemanticSearchDeps, error) {
 	embeddingConfig, err := bgem3.LoadConfig(os.LookupEnv)
 	if err != nil {
@@ -198,14 +208,13 @@ func openBGEM3SemanticSearch(platformStore *platformpostgres.Store) (*rag.Semant
 	if adapter == nil {
 		return nil, nil
 	}
-	pricingService, ledger, budgets, err := sharedSpendControls(platformStore)
-	if err != nil {
-		return nil, err
-	}
 	return &rag.SemanticSearchDeps{
-		OnlineAdapter: adapter, Pricing: pricingService,
-		Wallet: ledger, Budgets: budgets,
+		OnlineAdapter: adapter, LocalComputeOnly: true,
 		ProviderID: bgem3.ProviderID, ProviderModelID: embeddingConfig.ModelRevision,
 		OutputDimensionality: embeddingConfig.ExpectedDimension, PromptTemplateVersion: embeddingConfig.PromptTemplateVersion,
+		Identity: rag.EmbeddingIdentity{
+			ModelID: bgem3.ProviderID, ModelRevision: embeddingConfig.ModelRevision, ArtifactSHA256: embeddingConfig.ArtifactSHA256,
+			TokenizerRevision: embeddingConfig.TokenizerRevision, Normalization: embeddingConfig.Normalization, Pooling: embeddingConfig.Pooling,
+		},
 	}, nil
 }

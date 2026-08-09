@@ -35,7 +35,7 @@ func (r *searchableMemoryRepository) NearestEntries(context.Context, string, str
 	return nil, nil
 }
 
-func (r *searchableMemoryRepository) Search(context.Context, string, string, string, []float32, int) ([]Entry, error) {
+func (r *searchableMemoryRepository) Search(context.Context, string, string, string, []float32, EmbeddingIdentity, string, int) ([]Entry, error) {
 	return r.searchResult, r.searchErr
 }
 
@@ -135,6 +135,7 @@ func testSemanticDeps(t *testing.T, repo EmbeddingRepository, ledger *fakeEmbedd
 		},
 		OnlineAdapter: adapter, Pricing: newTestPricingService(t), Wallet: ledger, Budgets: budgets,
 		ProviderID: "gemini", ProviderModelID: "gemini-embedding-2", OutputDimensionality: 768, PromptTemplateVersion: "prompt-template.v1",
+		Identity: EmbeddingIdentity{ModelID: "gemini-embedding-2", ModelVersion: "v1"},
 	}
 }
 

@@ -702,7 +702,12 @@ func TestApprovedKnowledgeRAGPostgresRepository(t *testing.T) {
 		// vectorOnly even though it shares zero lexical/identifier overlap
 		// with the query text — RRF fusion, not replacement: the lexical
 		// hit must still be present too.
-		fused, err := store.Query(ctx, rag.QueryCommand{OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceDepartment, NamespaceID: hybridNamespace, QueryText: "overnight coolant pump", QueryVector: queryVector, Limit: 10})
+		fused, err := store.Query(ctx, rag.QueryCommand{
+			OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceDepartment, NamespaceID: hybridNamespace,
+			QueryText: "overnight coolant pump", QueryVector: queryVector, Limit: 10,
+			EmbeddingIdentity:              rag.EmbeddingIdentity{ModelID: "gemini-embedding-2", ModelVersion: "v1"},
+			EmbeddingPromptTemplateVersion: "prompt-template.v1",
+		})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -729,7 +734,15 @@ func TestApprovedKnowledgeRAGPostgresRepository(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		fusedBGEM3, err := store.Query(ctx, rag.QueryCommand{OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceDepartment, NamespaceID: hybridNamespace, QueryText: "overnight coolant pump", QueryVector: bgeM3Vector, Limit: 10})
+		fusedBGEM3, err := store.Query(ctx, rag.QueryCommand{
+			OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceDepartment, NamespaceID: hybridNamespace,
+			QueryText: "overnight coolant pump", QueryVector: bgeM3Vector, Limit: 10,
+			EmbeddingIdentity: rag.EmbeddingIdentity{
+				ModelID: "bge-m3-local", ModelRevision: "bge-m3-2024-06", ArtifactSHA256: strings.Repeat("b", 64),
+				TokenizerRevision: "bge-m3-tokenizer-2024-06", Normalization: "l2", Pooling: "cls",
+			},
+			EmbeddingPromptTemplateVersion: "bge-m3-prompt-template.v1",
+		})
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -290,7 +290,7 @@ func TestOrganizationalMemoryPostgresRepository(t *testing.T) {
 		// Exact identifier channel alone (no vector) still finds the
 		// error-77 entry — Search must not require the vector channel to
 		// be useful.
-		exactOnly, err := store.Search(ctx, memoryIntegrationOrganization, memoryIntegrationRole, "error 77", nil, 10)
+		exactOnly, err := store.Search(ctx, memoryIntegrationOrganization, memoryIntegrationRole, "error 77", nil, memory.EmbeddingIdentity{}, "", 10)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -306,7 +306,7 @@ func TestOrganizationalMemoryPostgresRepository(t *testing.T) {
 
 		// With the query vector supplied, the vector-only entry surfaces
 		// too, fused alongside the exact hit — RRF, not replacement.
-		fused, err := store.Search(ctx, memoryIntegrationOrganization, memoryIntegrationRole, "error 77", queryVector, 10)
+		fused, err := store.Search(ctx, memoryIntegrationOrganization, memoryIntegrationRole, "error 77", queryVector, memory.EmbeddingIdentity{ModelID: "gemini-embedding-2", ModelVersion: "v1"}, "prompt-template.v1", 10)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -321,7 +321,7 @@ func TestOrganizationalMemoryPostgresRepository(t *testing.T) {
 		// Search never crosses role boundaries at the store level either —
 		// a role with no approved entries gets nothing back, never another
 		// role's memory.
-		crossRole, err := store.Search(ctx, memoryIntegrationOrganization, "empresa/ceo", "error 77", nil, 10)
+		crossRole, err := store.Search(ctx, memoryIntegrationOrganization, "empresa/ceo", "error 77", nil, memory.EmbeddingIdentity{}, "", 10)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -395,7 +395,10 @@ func TestOrganizationalMemoryPostgresRepository(t *testing.T) {
 		// picks the bge-m3 table the moment the caller's vector is
 		// 1024-dimensional — proving the profile switch works through the
 		// real RRF path, not just the raw NearestBGEM3Entries helper above.
-		fusedBGEM3, err := store.Search(ctx, memoryIntegrationOrganization, memoryIntegrationRole, "no shared words with this entry at all", vector, 10)
+		fusedBGEM3, err := store.Search(ctx, memoryIntegrationOrganization, memoryIntegrationRole, "no shared words with this entry at all", vector, memory.EmbeddingIdentity{
+			ModelID: "bge-m3-local", ModelRevision: "bge-m3-2024-06", ArtifactSHA256: strings.Repeat("a", 64),
+			TokenizerRevision: "bge-m3-tokenizer-2024-06", Normalization: "l2", Pooling: "cls",
+		}, "bge-m3-prompt-template.v1", 10)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -411,7 +414,7 @@ func TestOrganizationalMemoryPostgresRepository(t *testing.T) {
 
 		// A query vector of any other dimension is a hard error, never a
 		// silent guess at which table to use.
-		if _, err := store.Search(ctx, memoryIntegrationOrganization, memoryIntegrationRole, "error 77", make([]float32, 5), 10); err == nil {
+		if _, err := store.Search(ctx, memoryIntegrationOrganization, memoryIntegrationRole, "error 77", make([]float32, 5), memory.EmbeddingIdentity{}, "", 10); err == nil {
 			t.Fatal("expected an unexpected-dimension query vector to be rejected")
 		}
 	})

@@ -2,6 +2,7 @@ package rag
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -45,7 +46,50 @@ type QueryCommand struct {
 	// exact+lexical results in that case, never treat a nil vector as an
 	// error.
 	QueryVector []float32
-	Limit       int
+	// EmbeddingIdentity and EmbeddingPromptTemplateVersion pin the exact
+	// vector space QueryVector was produced under — required whenever
+	// QueryVector is non-empty. A chunk table's primary key deliberately
+	// allows more than one embedding row per chunk (re-embedding under a
+	// new model revision is a new row, never an UPDATE — see migrations
+	// 000028/000032), so without this filter the vector channel could
+	// return more than one row for the same chunk (mixing incompatible
+	// embedding spaces and awarding it multiple RRF votes) the moment a
+	// second revision exists. See internal/rag/postgres/hybrid_query.go's
+	// vectorChannelTable.
+	EmbeddingIdentity              EmbeddingIdentity
+	EmbeddingPromptTemplateVersion string
+	Limit                          int
+}
+
+// EmbeddingIdentity is the full identity of the vector space an embedding
+// row belongs to, beyond just its dimension — every field that, if it
+// changed, would make an old vector incomparable to a new one. Exactly one
+// of ModelVersion (Gemini's shape) or
+// ModelRevision+ArtifactSHA256+TokenizerRevision+Normalization+Pooling
+// (BGE-M3's shape) must be set — see Validate.
+type EmbeddingIdentity struct {
+	ModelID           string
+	ModelVersion      string // Gemini: embedding_model_version. Empty for BGE-M3.
+	ModelRevision     string // BGE-M3: model_revision. Empty for Gemini.
+	ArtifactSHA256    string // BGE-M3 only.
+	TokenizerRevision string // BGE-M3 only.
+	Normalization     string // BGE-M3 only.
+	Pooling           string // BGE-M3 only.
+}
+
+func (id EmbeddingIdentity) Validate() error {
+	if id.ModelID == "" {
+		return fmt.Errorf("%w: embedding identity requires a model id", ErrInvalidRequest)
+	}
+	geminiShaped := id.ModelVersion != ""
+	bgeM3Shaped := id.ModelRevision != "" || id.ArtifactSHA256 != "" || id.TokenizerRevision != "" || id.Normalization != "" || id.Pooling != ""
+	if geminiShaped == bgeM3Shaped {
+		return fmt.Errorf("%w: embedding identity must set exactly one of model_version (gemini-shaped) or model_revision+artifact_sha256+tokenizer_revision+normalization+pooling (bge-m3-shaped)", ErrInvalidRequest)
+	}
+	if bgeM3Shaped && (id.ModelRevision == "" || len(id.ArtifactSHA256) != 64 || id.TokenizerRevision == "" || id.Normalization == "" || id.Pooling == "") {
+		return fmt.Errorf("%w: bge-m3-shaped embedding identity requires model_revision, a 64-character hex artifact_sha256, tokenizer_revision, normalization, and pooling all set", ErrInvalidRequest)
+	}
+	return nil
 }
 
 type Repository interface {

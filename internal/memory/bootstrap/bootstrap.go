@@ -30,6 +30,11 @@ const (
 	memoryEmbeddingModelID          = "gemini-embedding-2"
 	memoryEmbeddingDimension        = 768
 	memoryEmbeddingMaxResponseBytes = 1 << 20
+	// memoryEmbeddingModelVersion mirrors internal/rag/bootstrap's
+	// ragEmbeddingModelVersion exactly — this system's own versioning
+	// scheme for Gemini embeddings (embedding_model_version, migration
+	// 000028), not a string Google assigns.
+	memoryEmbeddingModelVersion = "v1"
 )
 
 // R30: exactly one embedding profile is active at a time — ORG_EMBEDDING_
@@ -170,18 +175,15 @@ func openGeminiSemanticSearch(platformStore *platformpostgres.Store, store *memo
 		OnlineAdapter: adapter, Pricing: pricingService, Wallet: ledger, Budgets: budgets,
 		ProviderID: memoryEmbeddingProviderID, ProviderModelID: memoryEmbeddingModelID,
 		OutputDimensionality: memoryEmbeddingDimension, PromptTemplateVersion: gemini.PromptTemplateV1,
+		Identity: memory.EmbeddingIdentity{ModelID: memoryEmbeddingModelID, ModelVersion: memoryEmbeddingModelVersion},
 	}, nil
 }
 
 // openBGEM3SemanticSearch activates R30's local, operational profile.
-// Before this resolves prices successfully in a real deployment, the
-// operator must seed a (typically zero-cost) price tier and wallet
-// balance for provider_id="bge-m3-local"/the configured model revision
-// via the existing `orgctl budget set-price`/`set-balance` commands — see
-// deployments/bgem3/RUNBOOK-deploy-sidecar.md. This function deliberately
-// does not seed those itself: it is generic, reusable machinery already
-// exercised for every other provider in this system, not something new
-// and BGE-M3-specific to trust.
+// LocalComputeOnly=true: no Pricing/Wallet/Budgets — mirrors
+// internal/rag/bootstrap's openBGEM3SemanticSearch exactly (see that
+// function's doc comment for why a local, unbilled process must never be
+// forced through the monetary ledger, not even at a seeded $0 price).
 func openBGEM3SemanticSearch(platformStore *platformpostgres.Store, store *memorypostgres.Store) (*memory.SemanticSearchDeps, error) {
 	embeddingConfig, err := bgem3.LoadConfig(os.LookupEnv)
 	if err != nil {
@@ -194,10 +196,6 @@ func openBGEM3SemanticSearch(platformStore *platformpostgres.Store, store *memor
 	if adapter == nil {
 		return nil, nil
 	}
-	pricingService, ledger, budgets, err := sharedSpendControls(platformStore)
-	if err != nil {
-		return nil, err
-	}
 	return &memory.SemanticSearchDeps{
 		InsertVector: func(ctx context.Context, organizationID, entryID, inputHash string, vector []float32, createdAt time.Time) error {
 			return store.InsertBGEM3EntryEmbedding(ctx, memory.BGEM3EntryEmbedding{
@@ -208,8 +206,12 @@ func openBGEM3SemanticSearch(platformStore *platformpostgres.Store, store *memor
 				PromptTemplateVersion: embeddingConfig.PromptTemplateVersion, InputHash: inputHash, Vector: vector, CreatedAt: createdAt,
 			})
 		},
-		OnlineAdapter: adapter, Pricing: pricingService, Wallet: ledger, Budgets: budgets,
+		OnlineAdapter: adapter, LocalComputeOnly: true,
 		ProviderID: bgem3.ProviderID, ProviderModelID: embeddingConfig.ModelRevision,
 		OutputDimensionality: embeddingConfig.ExpectedDimension, PromptTemplateVersion: embeddingConfig.PromptTemplateVersion,
+		Identity: memory.EmbeddingIdentity{
+			ModelID: bgem3.ProviderID, ModelRevision: embeddingConfig.ModelRevision, ArtifactSHA256: embeddingConfig.ArtifactSHA256,
+			TokenizerRevision: embeddingConfig.TokenizerRevision, Normalization: embeddingConfig.Normalization, Pooling: embeddingConfig.Pooling,
+		},
 	}, nil
 }

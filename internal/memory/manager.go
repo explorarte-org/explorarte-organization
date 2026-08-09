@@ -218,7 +218,16 @@ func (m *Manager) Search(ctx context.Context, request SearchRequest) ([]Entry, e
 		return m.ListApproved(ctx, organizationID, roleID, limit)
 	}
 	queryVector := m.embed(ctx, organizationID, actorRoleID, queryText, request.TaskID, embeddingruntime.TaskQuery, costledger.EmbeddingOperationMemorySearch)
-	results, err := embeddingRepo.Search(ctx, organizationID, roleID, queryText, queryVector, limit)
+	var identity EmbeddingIdentity
+	var promptTemplateVersion string
+	if len(queryVector) > 0 && m.semantic != nil {
+		// The identity travels with the vector so the store can filter the
+		// vector channel to rows produced under this exact space — see
+		// EmbeddingRepository.Search's doc comment.
+		identity = m.semantic.Identity
+		promptTemplateVersion = m.semantic.PromptTemplateVersion
+	}
+	results, err := embeddingRepo.Search(ctx, organizationID, roleID, queryText, queryVector, identity, promptTemplateVersion, limit)
 	if err != nil {
 		return nil, err
 	}

@@ -426,7 +426,7 @@ func (s *Store) Query(ctx context.Context, command rag.QueryCommand) ([]rag.Quer
 	if err != nil {
 		return nil, mapError("resolve active rag index generation", err)
 	}
-	rows, err := s.runHybridQuery(ctx, organizationID, activeGenerationID, queryText, command.QueryVector, limit)
+	rows, err := s.runHybridQuery(ctx, organizationID, activeGenerationID, queryText, command.QueryVector, command.EmbeddingIdentity, command.EmbeddingPromptTemplateVersion, limit)
 	if err != nil {
 		return nil, mapError("query rag knowledge chunks", err)
 	}

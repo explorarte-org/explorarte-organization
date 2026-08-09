@@ -10,21 +10,64 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// vectorChannelTable selects, from the query vector's own dimension, which
-// embeddings table and encoder the vector channel must use — 768 is
+// vectorChannelClause selects, from the query vector's own dimension,
+// which embeddings table and encoder the vector channel must use — 768 is
 // Gemini's frozen reference index (rag_chunk_embeddings), 1024 is BGE-M3's
-// local operational index (rag_chunk_embeddings_bge_m3). R30's "never
-// mixed" requirement is enforced structurally here: there is no code path
-// that can build a query joining both tables, and a vector of any other
-// length is a hard error rather than a silent guess at which table to use.
-func vectorChannelTable(queryVector []float32) (table string, encode func([]float32) (string, error), err error) {
+// local operational index (rag_chunk_embeddings_bge_m3). It also builds
+// the identity WHERE clause every vector-channel query must carry: a
+// chunk's embedding table primary key deliberately allows more than one
+// row per chunk (re-embedding under a new model revision is a new row,
+// never an UPDATE — see migrations 000028/000032), so without this filter
+// a chunk re-embedded under a second revision would contribute two rows
+// to vector_matches — two ranks, summed together by the fused CTE's
+// GROUP BY, i.e. two RRF votes for one chunk, and potentially comparing
+// the query vector against an incompatible embedding space that merely
+// happens to share a dimension. Every identity field the schema records
+// is part of this filter — not just model id/revision, but artifact
+// hash, tokenizer, normalization, and pooling for BGE-M3, and prompt
+// template version for both — because any of them changing means the
+// vector space changed, even if the dimension didn't.
+//
+// args is appended to in place; the returned clause references the
+// resulting positions ($N) directly, so callers never have to reason
+// about parameter offsets themselves.
+func vectorChannelClause(queryVector []float32, identity rag.EmbeddingIdentity, promptTemplateVersion string, args *[]any) (table string, encoded string, whereClause string, err error) {
+	if err := identity.Validate(); err != nil {
+		return "", "", "", fmt.Errorf("vector channel requires a valid embedding identity: %w", err)
+	}
+	if strings.TrimSpace(promptTemplateVersion) == "" {
+		return "", "", "", fmt.Errorf("%w: vector channel requires a prompt template version", rag.ErrInvalidRequest)
+	}
 	switch len(queryVector) {
 	case chunkEmbeddingDimension:
-		return "rag_chunk_embeddings", encodeVector, nil
+		if identity.ModelVersion == "" {
+			return "", "", "", fmt.Errorf("%w: a 768-dimensional query vector requires a gemini-shaped embedding identity (model_version set)", rag.ErrInvalidRequest)
+		}
+		encoded, encErr := encodeVector(queryVector)
+		if encErr != nil {
+			return "", "", "", encErr
+		}
+		*args = append(*args, identity.ModelID, identity.ModelVersion, promptTemplateVersion)
+		n := len(*args)
+		where := fmt.Sprintf("e.embedding_model_id=$%d AND e.embedding_model_version=$%d AND e.prompt_template_version=$%d", n-2, n-1, n)
+		return "rag_chunk_embeddings", encoded, where, nil
 	case bgeM3EmbeddingDimension:
-		return "rag_chunk_embeddings_bge_m3", encodeVectorBGEM3, nil
+		if identity.ModelRevision == "" {
+			return "", "", "", fmt.Errorf("%w: a 1024-dimensional query vector requires a bge-m3-shaped embedding identity (model_revision set)", rag.ErrInvalidRequest)
+		}
+		encoded, encErr := encodeVectorBGEM3(queryVector)
+		if encErr != nil {
+			return "", "", "", encErr
+		}
+		*args = append(*args, identity.ModelID, identity.ModelRevision, identity.ArtifactSHA256, identity.TokenizerRevision, identity.Normalization, identity.Pooling, promptTemplateVersion)
+		n := len(*args)
+		where := fmt.Sprintf(
+			"e.embedding_model_id=$%d AND e.model_revision=$%d AND e.artifact_sha256=$%d AND e.tokenizer_revision=$%d AND e.normalization=$%d AND e.pooling=$%d AND e.prompt_template_version=$%d",
+			n-6, n-5, n-4, n-3, n-2, n-1, n,
+		)
+		return "rag_chunk_embeddings_bge_m3", encoded, where, nil
 	default:
-		return "", nil, fmt.Errorf("%w: query vector has unexpected dimension %d (want %d or %d)", rag.ErrInvalidRequest, len(queryVector), chunkEmbeddingDimension, bgeM3EmbeddingDimension)
+		return "", "", "", fmt.Errorf("%w: query vector has unexpected dimension %d (want %d or %d)", rag.ErrInvalidRequest, len(queryVector), chunkEmbeddingDimension, bgeM3EmbeddingDimension)
 	}
 }
 
@@ -60,27 +103,24 @@ func rrfCandidatePoolSize(limit int) int {
 //     attaching a leading hyphen to a trailing number.
 //   - lexical: ts_rank/plainto_tsquery, exactly as Query used before R29.
 //   - vector: cosine distance against exactly one embeddings table, chosen
-//     by queryVector's own dimension (see vectorChannelTable) —
-//     rag_chunk_embeddings (768, Gemini) or rag_chunk_embeddings_bge_m3
-//     (1024, BGE-M3 local), never both in the same query. Exact/brute-force
-//     search (no ANN index yet — see migrations 000028/000032). Included
-//     only when queryVector is non-empty; a chunk with no embedding row yet
-//     simply cannot appear via this channel, which is the intended
-//     graceful degradation (whether from no embedding having been computed,
-//     or from Manager.embedQuery skipping the call entirely — e.g. the
-//     active profile's provider being unavailable), not a bug to work
-//     around.
-func (s *Store) runHybridQuery(ctx context.Context, organizationID, generationID, queryText string, queryVector []float32, limit int) (pgx.Rows, error) {
+//     by queryVector's own dimension, filtered to rows matching the exact
+//     embedding identity supplied (see vectorChannelClause) — never both
+//     tables in the same query, and never more than one row per chunk even
+//     when a chunk has been re-embedded under more than one revision.
+//     Exact/brute-force search (no ANN index yet — see migrations
+//     000028/000032). Included only when queryVector is non-empty; a chunk
+//     with no embedding row yet simply cannot appear via this channel,
+//     which is the intended graceful degradation (whether from no
+//     embedding having been computed, or from Manager.embedQuery skipping
+//     the call entirely — e.g. the active profile's provider being
+//     unavailable), not a bug to work around.
+func (s *Store) runHybridQuery(ctx context.Context, organizationID, generationID, queryText string, queryVector []float32, identity rag.EmbeddingIdentity, promptTemplateVersion string, limit int) (pgx.Rows, error) {
 	poolSize := rrfCandidatePoolSize(limit)
 	args := []any{organizationID, generationID, queryText, poolSize, limit}
 	vectorCTE := ""
 	vectorUnion := ""
 	if len(queryVector) > 0 {
-		table, encode, err := vectorChannelTable(queryVector)
-		if err != nil {
-			return nil, err
-		}
-		encoded, err := encode(queryVector)
+		table, encoded, identityWhere, err := vectorChannelClause(queryVector, identity, promptTemplateVersion, &args)
 		if err != nil {
 			return nil, err
 		}
@@ -91,7 +131,7 @@ vector_matches AS (
     SELECT e.chunk_id, ROW_NUMBER() OVER (ORDER BY e.embedding <=> ` + vectorParam + `::vector ASC) AS rnk
     FROM ` + table + ` e
     JOIN rag_knowledge_chunks c ON c.organization_id=e.organization_id AND c.chunk_id=e.chunk_id
-    WHERE e.organization_id=$1 AND c.generation_id=$2
+    WHERE e.organization_id=$1 AND c.generation_id=$2 AND ` + identityWhere + `
     ORDER BY e.embedding <=> ` + vectorParam + `::vector ASC
     LIMIT $4
 )`

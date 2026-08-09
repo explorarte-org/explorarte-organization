@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -30,7 +31,10 @@ type SemanticSearchDeps struct {
 	// select, at bootstrap time, which underlying table/metadata shape to
 	// write to; this call site only ever supplies what is genuinely
 	// per-entry (which entry, its input hash, its vector).
-	InsertVector          func(ctx context.Context, organizationID, entryID, inputHash string, vector []float32, createdAt time.Time) error
+	InsertVector func(ctx context.Context, organizationID, entryID, inputHash string, vector []float32, createdAt time.Time) error
+	// LocalComputeOnly mirrors rag.SemanticSearchDeps.LocalComputeOnly
+	// exactly — see that field's doc comment.
+	LocalComputeOnly      bool
 	OnlineAdapter         embeddingruntime.OnlineAdapter
 	Pricing               *modelpricing.Service
 	Wallet                costledger.Ledger
@@ -39,17 +43,29 @@ type SemanticSearchDeps struct {
 	ProviderModelID       string
 	OutputDimensionality  int
 	PromptTemplateVersion string
+	// Identity mirrors rag.SemanticSearchDeps.Identity exactly.
+	Identity EmbeddingIdentity
 }
 
 func (d *SemanticSearchDeps) validate() error {
 	if d == nil {
 		return nil
 	}
-	if d.InsertVector == nil || d.OnlineAdapter == nil || d.Pricing == nil || d.Wallet == nil {
-		return errors.New("memory semantic search deps require InsertVector, OnlineAdapter, Pricing, and Wallet together")
+	if d.InsertVector == nil || d.OnlineAdapter == nil {
+		return errors.New("memory semantic search deps require InsertVector and OnlineAdapter")
+	}
+	if d.LocalComputeOnly {
+		if d.Pricing != nil || d.Wallet != nil {
+			return errors.New("memory semantic search deps: a local-compute profile must not set Pricing or Wallet")
+		}
+	} else if d.Pricing == nil || d.Wallet == nil {
+		return errors.New("memory semantic search deps require Pricing and Wallet together unless LocalComputeOnly")
 	}
 	if strings.TrimSpace(d.ProviderID) == "" || strings.TrimSpace(d.ProviderModelID) == "" || d.OutputDimensionality <= 0 || strings.TrimSpace(d.PromptTemplateVersion) == "" {
 		return errors.New("memory semantic search deps require provider id, model id, dimension, and prompt template version")
+	}
+	if err := d.Identity.Validate(); err != nil {
+		return fmt.Errorf("memory semantic search deps: %w", err)
 	}
 	return nil
 }
@@ -72,6 +88,19 @@ func (m *Manager) embed(ctx context.Context, organizationID, actorRoleID, text s
 	if finding := dataclassifier.Detect(text); finding.Any() {
 		slog.Default().Warn("memory embedding skipped: text matched a forbidden data pattern", "organization_id", organizationID, "operation", operation)
 		return nil
+	}
+
+	if deps.LocalComputeOnly {
+		response, err := deps.OnlineAdapter.Embed(ctx, embeddingruntime.EmbedRequest{
+			ProviderID: deps.ProviderID, ProviderModelID: deps.ProviderModelID,
+			OutputDimensionality: deps.OutputDimensionality, PromptTemplateVersion: deps.PromptTemplateVersion,
+			Items: []embeddingruntime.EmbedItem{{Key: "text", Text: text, Task: task}},
+		})
+		if err != nil || len(response.Results) != 1 {
+			slog.Default().Warn("memory embedding skipped: local compute provider call failed", "error", err, "operation", operation)
+			return nil
+		}
+		return response.Results[0].Vector
 	}
 
 	now := time.Now().UTC()

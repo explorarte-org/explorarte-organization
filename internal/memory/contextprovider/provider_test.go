@@ -160,7 +160,7 @@ func (r *searchCapableFakeRepository) InsertEntryEmbedding(context.Context, memo
 func (r *searchCapableFakeRepository) NearestEntries(context.Context, string, string, []float32, int) ([]memory.ScoredEntry, error) {
 	return nil, nil
 }
-func (r *searchCapableFakeRepository) Search(context.Context, string, string, string, []float32, int) ([]memory.Entry, error) {
+func (r *searchCapableFakeRepository) Search(context.Context, string, string, string, []float32, memory.EmbeddingIdentity, string, int) ([]memory.Entry, error) {
 	return r.searchResult, nil
 }
 

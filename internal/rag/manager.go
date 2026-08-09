@@ -322,7 +322,16 @@ func (m *Manager) Query(ctx context.Context, request QueryRequest) ([]QueryResul
 		limit = 100
 	}
 	queryVector := m.embedQuery(ctx, organizationID, actorRoleID, queryText, request.TaskID)
-	return m.repository.Query(ctx, QueryCommand{OrganizationID: organizationID, NamespaceKind: request.Scope, NamespaceID: namespaceID, QueryText: queryText, QueryVector: queryVector, Limit: limit})
+	command := QueryCommand{OrganizationID: organizationID, NamespaceKind: request.Scope, NamespaceID: namespaceID, QueryText: queryText, QueryVector: queryVector, Limit: limit}
+	if len(queryVector) > 0 && m.semantic != nil {
+		// The identity travels with the vector so the store can filter the
+		// vector channel to rows produced under this exact space — never
+		// rows from a different model revision/artifact/prompt template
+		// that happen to share a dimension (see QueryCommand.EmbeddingIdentity).
+		command.EmbeddingIdentity = m.semantic.Identity
+		command.EmbeddingPromptTemplateVersion = m.semantic.PromptTemplateVersion
+	}
+	return m.repository.Query(ctx, command)
 }
 
 func (m *Manager) ActiveGeneration(ctx context.Context, organizationID string, namespaceKind NamespaceKind, namespaceID string) (IndexGeneration, bool, error) {
