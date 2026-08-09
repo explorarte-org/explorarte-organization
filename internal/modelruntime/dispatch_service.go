@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -553,6 +554,11 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64) (Dis
 				}
 				return DispatchResult{Invocation: failed}, adapterErr
 			case AdapterFailureAmbiguous:
+				// The provider may or may not have processed (and billed)
+				// this call — releasing the reservation here would hand
+				// back money that was possibly already spent. Leave it
+				// reserved for reconciliation rather than releasing it.
+				reservationSettled = true
 				eventType := AuditInvocationAmbiguous
 				if errors.Is(adapterErr, context.DeadlineExceeded) {
 					eventType = AuditInvocationTimedOut
@@ -590,6 +596,11 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64) (Dis
 				return DispatchResult{Invocation: cancelled}, ErrCancellationRequested
 			}
 		}
+		// Same reasoning as the AdapterFailureAmbiguous case above: the
+		// request reached the provider through some path this classifier
+		// doesn't recognize as definitively unsent, so the reservation
+		// must not be auto-released.
+		reservationSettled = true
 		errorCode := "adapter_error_after_send"
 		eventType := AuditInvocationAmbiguous
 		if errors.Is(adapterErr, context.DeadlineExceeded) {
@@ -627,10 +638,18 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64) (Dis
 	if err != nil {
 		// The provider returned, so this process must never issue another call. A later
 		// reconcile classifies the durable send_started state without dispatching.
+		// The provider is now known to have processed this call, so the
+		// reservation must not be released even though persisting that
+		// fact failed.
+		reservationSettled = true
 		return DispatchResult{}, err
 	}
 	normalized, err := s.normalizer.Normalize(invocation, dispatchAttemptID, rawResponse)
 	if err != nil {
+		// The provider already responded (and normalization is the only
+		// thing that failed), so the call is likely billable — do not
+		// release the reservation.
+		reservationSettled = true
 		failed, persistErr := s.store.FailAfterResponse(persistCtx, FailureCommand{
 			InvocationID:          invocation.ID,
 			DispatchAttemptID:     dispatchAttemptID,
@@ -684,7 +703,11 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64) (Dis
 		// above never fires after a reconciliation attempt — retrying
 		// reconciliation, not releasing, is the correct recovery for a
 		// call that did happen.
-		_ = s.costGate.Reconcile(persistCtx, costReservation, normalized.Usage.InputTokens, 0, normalized.Usage.OutputTokens, s.clock.Now())
+		if reconcileErr := s.costGate.Reconcile(persistCtx, costReservation, normalized.Usage.InputTokens, 0, normalized.Usage.OutputTokens, s.clock.Now()); reconcileErr != nil {
+			slog.Default().Error("cost gate reconciliation failed after a successful provider call",
+				"invocation_id", costReservation.InvocationID, "provider_id", costReservation.ProviderID,
+				"provider_model_id", costReservation.ProviderModelID, "error", reconcileErr)
+		}
 		reservationSettled = true
 	}
 	return s.store.CompleteInvocation(persistCtx, CompletionCommand{

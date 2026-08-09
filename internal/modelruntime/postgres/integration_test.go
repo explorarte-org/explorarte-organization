@@ -414,6 +414,43 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		if _, err := budgetStore.ResolveBudgetForTask(ctx, unbudgetedTaskRef.TaskID); !errors.Is(err, agentbudget.ErrBudgetNotFound) {
 			t.Fatalf("this task must genuinely have no budget for the test to be meaningful: err=%v", err)
 		}
+
+		// A genuinely ambiguous provider outcome (timeout, transport
+		// failure) must never release the wallet reservation: the
+		// provider may have already processed and billed the call, so
+		// releasing would hand back money that might not actually be
+		// there. The reservation must stay parked until it is reconciled
+		// by other means.
+		ambiguousCommand := validInvocationCommand(taskRef, snapshotRef, "ingenieria_ia/code-runner", "cost-gate-ambiguous")
+		ambiguousCreated, createErr := invocations.Create(ctx, ambiguousCommand)
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		if _, err := walletStore.SetBalance(ctx, "test.fake", modelpricing.USDFromDollars(10), time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+		walletBeforeAmbiguous, err := walletStore.GetWallet(ctx, "test.fake")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ambiguousProvider := &classifiedAdapter{phase: modelruntime.AdapterFailureAmbiguous, outcome: modelruntime.ProviderOutcome{OutcomeClassification: modelruntime.ProviderOutcomeAmbiguous, ErrorClass: "transport", ErrorCode: "transport_timeout", Retryable: true, ResponseSchemaVersion: "test.fake.response.v1"}}
+		ambiguousDispatch, err := modelruntime.NewDispatchService(modelIntegrationOrganization, cfg, fakeCatalog, tasks, contexts, capabilityEvaluator, egressStore, modelegress.NewEvaluator(), store, principals, assignments, identityService, store, adapter.NewRegistry(ambiguousProvider), modelruntime.ClockFunc(time.Now), modelruntime.WithCostBudgetGate(gate))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, dispatchErr := ambiguousDispatch.Dispatch(ctx, ambiguousCreated.Invocation.ID); !errors.Is(dispatchErr, modelruntime.ErrAmbiguousOutcome) {
+			t.Fatalf("expected an ambiguous outcome error, got %v", dispatchErr)
+		}
+		walletAfterAmbiguous, err := walletStore.GetWallet(ctx, "test.fake")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if walletAfterAmbiguous.BalanceUSD != walletBeforeAmbiguous.BalanceUSD {
+			t.Fatalf("an ambiguous outcome must not debit the wallet: before=%d after=%d", walletBeforeAmbiguous.BalanceUSD, walletAfterAmbiguous.BalanceUSD)
+		}
+		if walletAfterAmbiguous.ReservedUSD <= walletBeforeAmbiguous.ReservedUSD {
+			t.Fatalf("an ambiguous outcome must not release the reservation: before=%d after=%d", walletBeforeAmbiguous.ReservedUSD, walletAfterAmbiguous.ReservedUSD)
+		}
 	})
 
 	t.Run("classified provider outcomes are immutable and terminal", func(t *testing.T) {
