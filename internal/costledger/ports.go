@@ -32,3 +32,10 @@ type Ledger interface {
 	// something this method does on its own.
 	ListOrphanedReservations(ctx context.Context, olderThan time.Time, limit int) ([]WalletEvent, error)
 }
+
+// CallReader is the read-only attribution view used by operator tooling. It is
+// separate from Ledger so the dispatch path depends only on wallet mutations,
+// not on reporting queries.
+type CallReader interface {
+	ListCallBreakdowns(ctx context.Context, organizationID, providerID string, limit int) ([]CallBreakdown, error)
+}

@@ -364,6 +364,74 @@ func TestListOrphanedReservationsFindsOnlyReservationsWithoutATerminalEvent(t *t
 	}
 }
 
+func TestListCallBreakdownsAttributesCostModelAgentAndUsage(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	fixture := openLedgerFixture(t, ctx)
+	ledger, err := costledgerpostgres.New(fixture.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocationID := fixture.insertInvocation(t, ctx)
+	// Keep every synthetic dispatch timestamp strictly after the invocation's
+	// own created_at so the fixture also exercises the production constraints.
+	now := time.Now().UTC().Add(time.Second).Truncate(time.Microsecond)
+	if _, err := ledger.SetBalance(ctx, fixture.providerID, modelpricing.USDFromDollars(10), now); err != nil {
+		t.Fatal(err)
+	}
+
+	var dispatchAttemptID int64
+	if err := fixture.store.Pool().QueryRow(ctx, `
+INSERT INTO model_dispatch_attempts (
+ invocation_id,attempt_number,status,claim_token_hash,claimed_by,claimed_at,claim_expires_at,
+ send_started_at,response_received_at,provider_idempotency_key_hash,retry_safety,outcome_classification,
+ created_at,finished_at
+) VALUES ($1,1,'completed',$2,'cost-breakdown-worker',$3,$4,$5,$6,$7,'not_retryable','success',$3,$8)
+RETURNING id`, invocationID, digest("cost-breakdown-claim"), now, now.Add(time.Minute), now.Add(time.Millisecond),
+		now.Add(2*time.Millisecond), digest("cost-breakdown-provider-key"), now.Add(3*time.Millisecond)).Scan(&dispatchAttemptID); err != nil {
+		t.Fatalf("insert dispatch attempt: %v", err)
+	}
+	if _, err := fixture.store.Pool().Exec(ctx, `
+INSERT INTO model_invocation_usage (invocation_id,dispatch_attempt_id,input_tokens,output_tokens,total_tokens,provider_reported,created_at)
+VALUES ($1,$2,120,30,150,TRUE,$3)`, invocationID, dispatchAttemptID, now.Add(3*time.Millisecond)); err != nil {
+		t.Fatalf("insert usage: %v", err)
+	}
+	if _, err := fixture.store.Pool().Exec(ctx, `
+UPDATE model_invocations SET status='succeeded',updated_at=$2,terminal_at=$2 WHERE id=$1`, invocationID, now.Add(3*time.Millisecond)); err != nil {
+		t.Fatalf("terminalize invocation: %v", err)
+	}
+	if err := ledger.Reserve(ctx, fixture.providerID, invocationID, modelpricing.USDFromDollars(1), now.Add(4*time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.Reconcile(ctx, fixture.providerID, invocationID, modelpricing.USDFromDollars(0.25), now.Add(5*time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+
+	calls, err := ledger.ListCallBreakdowns(ctx, ledgerIntegrationOrg, fixture.providerID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("calls=%+v want exactly one", calls)
+	}
+	call := calls[0]
+	if call.InvocationID != invocationID || call.OrganizationID != ledgerIntegrationOrg || call.SubjectRoleID != ledgerIntegrationRole {
+		t.Fatalf("identity attribution=%+v", call)
+	}
+	if call.WalletProviderID != fixture.providerID || call.InvocationProviderID != fixture.providerID || call.ProviderModelID != fixture.providerModelID || call.ProviderMismatch {
+		t.Fatalf("provider attribution=%+v", call)
+	}
+	if call.InvocationStatus != "succeeded" || call.Settlement != costledger.SettlementCommitted {
+		t.Fatalf("statuses=%+v", call)
+	}
+	if call.EstimatedUSD != modelpricing.USDFromDollars(1) || call.ChargedUSD != modelpricing.USDFromDollars(0.25) || call.ReleasedUSD != 0 {
+		t.Fatalf("cost attribution=%+v", call)
+	}
+	if call.InputTokens != 120 || call.OutputTokens != 30 || call.TotalTokens != 150 || !call.ProviderReported {
+		t.Fatalf("usage attribution=%+v", call)
+	}
+}
+
 func TestReserveFailsClosedOnInsufficientBalanceAndUnknownWallet(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/costledger"
@@ -36,6 +37,105 @@ func New(store *platformpostgres.Store) (*Store, error) {
 }
 
 var _ costledger.Ledger = (*Store)(nil)
+var _ costledger.CallReader = (*Store)(nil)
+
+func (s *Store) ListCallBreakdowns(ctx context.Context, organizationID, providerID string, limit int) ([]costledger.CallBreakdown, error) {
+	organizationID = strings.TrimSpace(organizationID)
+	providerID = strings.TrimSpace(providerID)
+	if organizationID == "" || providerID == "" || limit <= 0 || limit > 1000 {
+		return nil, fmt.Errorf("%w: organization, provider, and limit between 1 and 1000 are required", costledger.ErrInvalidRequest)
+	}
+	rows, err := s.pool.Query(ctx, `
+WITH calls AS (
+    SELECT
+        e.provider_id AS wallet_provider_id,
+        e.invocation_id,
+        MAX(e.amount_usd_nanos) FILTER (WHERE e.kind='reserved') AS estimated_usd_nanos,
+        MAX(e.amount_usd_nanos) FILTER (WHERE e.kind='committed') AS charged_usd_nanos,
+        MAX(e.amount_usd_nanos) FILTER (WHERE e.kind='released') AS released_usd_nanos,
+        MAX(e.created_at) AS last_ledger_at
+    FROM provider_wallet_events e
+    JOIN model_invocations scoped
+      ON scoped.id=e.invocation_id
+     AND scoped.organization_id=$1
+    WHERE e.provider_id=$2
+    GROUP BY e.provider_id, e.invocation_id
+    ORDER BY MAX(e.created_at) DESC, e.invocation_id DESC
+    LIMIT $3
+)
+SELECT
+    calls.invocation_id,
+    invocation.organization_id,
+    invocation.task_id,
+    invocation.attempt_id,
+    invocation.dispatch_actor_role_id,
+    invocation.subject_role_id,
+    calls.wallet_provider_id,
+    invocation.provider_id,
+    invocation.provider_model_id,
+    invocation.status,
+    COALESCE(invocation.error_code,''),
+    calls.estimated_usd_nanos,
+    calls.charged_usd_nanos,
+    calls.released_usd_nanos,
+    COALESCE(usage.input_tokens,0),
+    COALESCE(usage.output_tokens,0),
+    COALESCE(usage.total_tokens,0),
+    COALESCE(usage.provider_reported,FALSE),
+    invocation.created_at,
+    invocation.terminal_at,
+    calls.last_ledger_at
+FROM calls
+JOIN model_invocations invocation ON invocation.id=calls.invocation_id
+LEFT JOIN model_invocation_usage usage ON usage.invocation_id=calls.invocation_id
+ORDER BY calls.last_ledger_at DESC, calls.invocation_id DESC`, organizationID, providerID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	values := make([]costledger.CallBreakdown, 0, limit)
+	for rows.Next() {
+		var value costledger.CallBreakdown
+		var estimated, charged, released *int64
+		if err := rows.Scan(
+			&value.InvocationID, &value.OrganizationID, &value.TaskID, &value.AttemptID,
+			&value.DispatchActorRoleID, &value.SubjectRoleID,
+			&value.WalletProviderID, &value.InvocationProviderID, &value.ProviderModelID,
+			&value.InvocationStatus, &value.InvocationErrorCode,
+			&estimated, &charged, &released,
+			&value.InputTokens, &value.OutputTokens, &value.TotalTokens, &value.ProviderReported,
+			&value.InvocationCreatedAt, &value.InvocationTerminalAt, &value.LastLedgerAt,
+		); err != nil {
+			return nil, err
+		}
+		if estimated != nil {
+			value.EstimatedUSD = modelpricing.USDNanos(*estimated)
+		}
+		switch {
+		case charged != nil:
+			value.Settlement = costledger.SettlementCommitted
+			value.ChargedUSD = modelpricing.USDNanos(*charged)
+		case released != nil:
+			value.Settlement = costledger.SettlementReleased
+			value.ReleasedUSD = modelpricing.USDNanos(*released)
+		default:
+			value.Settlement = costledger.SettlementReserved
+		}
+		value.ProviderMismatch = value.WalletProviderID != value.InvocationProviderID
+		value.InvocationCreatedAt = value.InvocationCreatedAt.UTC()
+		value.LastLedgerAt = value.LastLedgerAt.UTC()
+		if value.InvocationTerminalAt != nil {
+			terminalAt := value.InvocationTerminalAt.UTC()
+			value.InvocationTerminalAt = &terminalAt
+		}
+		values = append(values, value)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return values, nil
+}
 
 func (s *Store) ListEvents(ctx context.Context, providerID string, limit int) ([]costledger.WalletEvent, error) {
 	rows, err := s.pool.Query(ctx, `
