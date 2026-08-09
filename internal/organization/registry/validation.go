@@ -24,6 +24,7 @@ var (
 		"alibaba_token_plan_via_claude_code": {"public": {}, "sanitized": {}, "organizational": {}},
 		"deepseek":                           {"public": {}, "sanitized": {}, "organizational": {}},
 		"openai_compatible":                  {"public": {}, "sanitized": {}, "organizational": {}},
+		"gemini":                             {"public": {}, "sanitized": {}, "organizational": {}},
 	}
 )
 

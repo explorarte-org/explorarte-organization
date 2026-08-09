@@ -45,3 +45,15 @@ rules:
   data_classification: sanitized
   effect: allow
   reason_code: sanitized_egress_approved_for_openai_compatible_v3
+- provider_id: gemini
+  data_classification: organizational
+  effect: allow
+  reason_code: executive_scope_gate_required_v3
+- provider_id: gemini
+  data_classification: public
+  effect: allow
+  reason_code: executive_scope_gate_required_v3
+- provider_id: gemini
+  data_classification: sanitized
+  effect: allow
+  reason_code: executive_scope_gate_required_v3

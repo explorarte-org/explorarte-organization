@@ -60,12 +60,19 @@ func ProductiveLoadOptions(knownProviders []string) LoadOptions {
 	// presence here is policy/scope-gate readiness only (see
 	// ValidateExecutiveScope), not a claim that dispatch actually works. Do
 	// not treat a green build as a productive DeepSeek smoke test.
+	//
+	// Gemini does have a compiled HTTP ProviderAdapter
+	// (internal/modelruntime/adapter/gemini) and is routed to
+	// research.worker in model-routing.yaml; omitting it here left every
+	// real research.worker call denied by default (fail-closed) with no
+	// allow rule ever reaching this far.
 	return LoadOptions{
 		KnownProviders: append([]string(nil), knownProviders...),
 		ProductiveExplicitRules: map[string][]DataClassification{
 			"alibaba_token_plan_via_claude_code": {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
 			"deepseek":                           {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
 			"openai_compatible":                  {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
+			"gemini":                             {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
 		},
 	}
 }

@@ -92,6 +92,17 @@ func TestModelPricingSeedIsRealAndResolvable(t *testing.T) {
 		t.Fatalf("gemini-2.5-pro long tier=%+v", geminiPro)
 	}
 
+	// model-routing.yaml routes research.worker to exactly this model; a
+	// missing row here means every real research.worker call fails closed
+	// at the cost gate before ever reaching the provider.
+	geminiFlash, err := service.Resolve(ctx, "gemini", "gemini-2.5-flash", 1_000, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if geminiFlash.InputPriceNanosPerMillion != 300_000_000 || geminiFlash.OutputPriceNanosPerMillion != 2_500_000_000 {
+		t.Fatalf("gemini-2.5-flash tier=%+v", geminiFlash)
+	}
+
 	if _, err := service.Resolve(ctx, "unknown_provider", "no-such-model", 100, now); !errors.Is(err, modelpricing.ErrNoPricingResolved) {
 		t.Fatalf("unknown provider err=%v want ErrNoPricingResolved", err)
 	}

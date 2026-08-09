@@ -53,7 +53,7 @@ func TestModelEgressPostgreSQL17(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	canonical, err := modelegress.LoadCanonicalPolicy(filepath.Join("..", "..", "..", "docs", "canonical"), modelegress.ProductiveLoadOptions([]string{"alibaba_token_plan_via_claude_code", "deepseek", "openai_compatible"}))
+	canonical, err := modelegress.LoadCanonicalPolicy(filepath.Join("..", "..", "..", "docs", "canonical"), modelegress.ProductiveLoadOptions([]string{"alibaba_token_plan_via_claude_code", "deepseek", "openai_compatible", "gemini"}))
 	if err != nil {
 		t.Fatal(err)
 	}

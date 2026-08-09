@@ -7,13 +7,13 @@ import (
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 )
 
-func TestMigrationTipIs25AndContiguous(t *testing.T) {
+func TestMigrationTipIs26AndContiguous(t *testing.T) {
 	loaded, err := platformmigrations.Load(rootmigrations.Files)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded) != 25 {
-		t.Fatalf("migration count=%d want 25", len(loaded))
+	if len(loaded) != 26 {
+		t.Fatalf("migration count=%d want 26", len(loaded))
 	}
 	for index, migration := range loaded {
 		want := int64(index + 1)
@@ -21,7 +21,7 @@ func TestMigrationTipIs25AndContiguous(t *testing.T) {
 			t.Fatalf("migration[%d].version=%d want %d", index, migration.Version, want)
 		}
 	}
-	if loaded[len(loaded)-1].Name != "enforce_wallet_single_terminal" {
-		t.Fatalf("migration 25 name=%q", loaded[len(loaded)-1].Name)
+	if loaded[len(loaded)-1].Name != "add_gemini_flash_pricing" {
+		t.Fatalf("migration 26 name=%q", loaded[len(loaded)-1].Name)
 	}
 }
