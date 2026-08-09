@@ -7,13 +7,13 @@ import (
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 )
 
-func TestMigrationTipIs30AndContiguous(t *testing.T) {
+func TestMigrationTipIs31AndContiguous(t *testing.T) {
 	loaded, err := platformmigrations.Load(rootmigrations.Files)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded) != 30 {
-		t.Fatalf("migration count=%d want 30", len(loaded))
+	if len(loaded) != 31 {
+		t.Fatalf("migration count=%d want 31", len(loaded))
 	}
 	for index, migration := range loaded {
 		want := int64(index + 1)
@@ -21,7 +21,7 @@ func TestMigrationTipIs30AndContiguous(t *testing.T) {
 			t.Fatalf("migration[%d].version=%d want %d", index, migration.Version, want)
 		}
 	}
-	if loaded[len(loaded)-1].Name != "extend_wallet_for_embedding_invocations" {
-		t.Fatalf("migration 30 name=%q", loaded[len(loaded)-1].Name)
+	if loaded[len(loaded)-1].Name != "create_evaluation_runs" {
+		t.Fatalf("migration 31 name=%q", loaded[len(loaded)-1].Name)
 	}
 }

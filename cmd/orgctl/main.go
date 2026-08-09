@@ -85,6 +85,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runCompletion(args[1:], stdout, stderr)
 	case "shadow":
 		return runShadow(args[1:], stdout, stderr)
+	case "evaluation":
+		return runEvaluation(args[1:], stdout, stderr)
 	case "postrun":
 		return runPostrun(args[1:], stdout, stderr)
 	case "sleep":
@@ -541,6 +543,7 @@ commands:
   improvement <propose|get|validate|begin-evaluation|verdict|promote-canary|promote-active|deprecate|rollback|trace>
   completion <verify>
   shadow <verify|replay|report>
+  evaluation <seed|run|compare|report>
   postrun <propose-lesson>
   sleep <run>
   budget <status|set-price|set-balance>

@@ -68,3 +68,19 @@ Los 11 restantes quedan con `Status: pending` y `PendingPhase` explícito (nunca
 - `r30-14` (extremo a extremo): compone todos los anteriores, solo puede ejecutarse en la fase 8.
 
 `RunSuite` salta silenciosamente los fixtures que un `Runner` dado no soporta (`Runner.Supports`), en vez de fallar — así una corrida parcial contra el motor disponible hoy no se confunde con una corrida completa de las 14.
+
+## Fase 3 — métricas, almacenamiento durable y CLI
+
+`internal/evaluation/metrics` agrega las medidas de calidad de retrieval que R30 exige (Recall@K, nDCG@K, MRR, precisión de identificadores, tasa de falsos positivos numéricos) como funciones puras, listas para que los runners de retrieval de la fase 3-en-adelante las usen sobre resultados reales.
+
+`internal/evaluation/postgres` (migración 000031, `evaluation_runs`/`evaluation_run_outcomes`) es el almacenamiento durable: cada `run` fija suite+subject(modo), y sus `outcomes` son append-only por `(run_id, fixture_id)` — nunca se sobreescribe un resultado ya grabado, así una comparación entre dos runs no puede verse alterada por un resultado que cambia por debajo. Aislamiento por organización verificado con test de integración real (una organización nunca puede leer los runs de otra).
+
+`cmd/orgctl/evaluation.go` agrega `orgctl evaluation <seed|run|compare|report>`:
+- `seed --suite r30`: valida y lista el catálogo (hoy: 14 fixtures, 3 runner-ready).
+- `run --suite r30 --mode <subject>`: corre cada `Runner` disponible (`evaluationRunners()`, hoy solo `DecisionGraphRunner`) contra el catálogo, persiste cada outcome, y falla el proceso (`exitCompletionFailed`) si algún fixture ejecutado no pasó.
+- `report <run-id>`: imprime un run persistido y sus outcomes.
+- `compare <run-a> <run-b>`: diferencia dos runs persistidos por fixture, marcando cambios de pass/fail.
+
+**Corrección durante esta fase**: el primer intento de esta fase reconstruyó un puente `decisiongraph`→`evaluation.TraceSource` desde cero (`TracePayload` nuevo en `internal/decisiongraph`, paquete `internal/evaluation/decisiongraphtrace`) sin revisar antes si ya existía uno — **sí existía**: `internal/decisiongraphtrace` (de una rama anterior, ya conectado en `cmd/orgctl/improvement.go`, con su propia cobertura de integración) resuelve exactamente este puente, con una decisión de diseño deliberada de no depender del hash interno no exportado de `decisiongraph.Store.TraceRef` sino generar su propio payload canónico autoverificable. La reconstrucción se revirtió por completo (`git checkout` sobre los archivos de `internal/decisiongraph` tocados, borrado del paquete duplicado) antes de commitear nada. `internal/evaluation/postgres` (almacenamiento de outcomes de fixtures) es independiente de ese puente y no se vio afectado.
+
+Sigue pendiente para fases futuras: wirear un `Runner` de retrieval real (contra `internal/rag.Manager`/`internal/memory.Manager`) para los 5 fixtures de retrieval, y usar `internal/decisiongraphtrace` + `internal/evaluation.Service` (comparación baseline/candidato ya existente) cuando haya runs reales que comparar por trace en vez de por outcome crudo.
