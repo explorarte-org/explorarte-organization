@@ -21,12 +21,16 @@ import (
 // scripts/check-memory-fitness.sh), so this is deliberately duplicated
 // rather than shared.
 type SemanticSearchDeps struct {
-	// Embeddings persists the vector Review computes for a newly-approved
+	// InsertVector persists the vector Review computes for a newly-approved
 	// entry — unlike rag (where embeddings are filled by a separate async
 	// batch process this branch never wires into Manager), memory embeds
-	// synchronously and best-effort at approval time, so Manager needs a
-	// direct handle to insert the result.
-	Embeddings            EmbeddingRepository
+	// synchronously and best-effort at approval time. It is a closure
+	// rather than a fixed EmbeddingRepository so R30's active embedding
+	// profile (Gemini vector(768) vs BGE-M3 vector(1024) — never both) can
+	// select, at bootstrap time, which underlying table/metadata shape to
+	// write to; this call site only ever supplies what is genuinely
+	// per-entry (which entry, its input hash, its vector).
+	InsertVector          func(ctx context.Context, organizationID, entryID, inputHash string, vector []float32, createdAt time.Time) error
 	OnlineAdapter         embeddingruntime.OnlineAdapter
 	Pricing               *modelpricing.Service
 	Wallet                costledger.Ledger
@@ -41,8 +45,8 @@ func (d *SemanticSearchDeps) validate() error {
 	if d == nil {
 		return nil
 	}
-	if d.Embeddings == nil || d.OnlineAdapter == nil || d.Pricing == nil || d.Wallet == nil {
-		return errors.New("memory semantic search deps require Embeddings, OnlineAdapter, Pricing, and Wallet together")
+	if d.InsertVector == nil || d.OnlineAdapter == nil || d.Pricing == nil || d.Wallet == nil {
+		return errors.New("memory semantic search deps require InsertVector, OnlineAdapter, Pricing, and Wallet together")
 	}
 	if strings.TrimSpace(d.ProviderID) == "" || strings.TrimSpace(d.ProviderModelID) == "" || d.OutputDimensionality <= 0 || strings.TrimSpace(d.PromptTemplateVersion) == "" {
 		return errors.New("memory semantic search deps require provider id, model id, dimension, and prompt template version")
@@ -54,12 +58,17 @@ func (d *SemanticSearchDeps) validate() error {
 // embedApprovedEntry (Review) — every failure mode degrades to "no vector"
 // rather than propagating an error, for the same reason
 // rag.Manager.embedQuery does: an embedding is an enrichment, never a hard
-// dependency of the operation it's attached to.
-func (m *Manager) embed(ctx context.Context, organizationID, actorRoleID, text string, taskID *int64, task embeddingruntime.TaskKind, operation costledger.EmbeddingOperation) []float32 {
+// dependency of the operation it's attached to. See that function's doc
+// comment for why the deferred status log below is R30's "degraded"
+// signal.
+func (m *Manager) embed(ctx context.Context, organizationID, actorRoleID, text string, taskID *int64, task embeddingruntime.TaskKind, operation costledger.EmbeddingOperation) (vector []float32) {
 	deps := m.semantic
 	if deps == nil {
 		return nil
 	}
+	defer func() {
+		slog.Default().Info("memory embedding channel status", "provider_id", deps.ProviderID, "provider_model_id", deps.ProviderModelID, "operation", operation, "degraded", vector == nil)
+	}()
 	if finding := dataclassifier.Detect(text); finding.Any() {
 		slog.Default().Warn("memory embedding skipped: text matched a forbidden data pattern", "organization_id", organizationID, "operation", operation)
 		return nil
@@ -156,11 +165,7 @@ func (m *Manager) embedApprovedEntry(ctx context.Context, entry Entry) {
 	if err != nil {
 		return
 	}
-	if err := deps.Embeddings.InsertEntryEmbedding(ctx, EntryEmbedding{
-		OrganizationID: entry.OrganizationID, EntryID: entry.ID,
-		EmbeddingModelID: deps.ProviderModelID, EmbeddingModelVersion: "v1", EmbeddingDimension: deps.OutputDimensionality,
-		PromptTemplateVersion: deps.PromptTemplateVersion, InputHash: canonicalHash, Vector: vector, CreatedAt: time.Now().UTC(),
-	}); err != nil {
+	if err := deps.InsertVector(ctx, entry.OrganizationID, entry.ID, canonicalHash, vector, time.Now().UTC()); err != nil {
 		slog.Default().Error("memory embedding: failed to persist entry embedding after a successful embed call", "error", err)
 	}
 }

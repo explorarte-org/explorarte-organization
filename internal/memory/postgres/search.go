@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -11,6 +12,21 @@ import (
 // rrfK mirrors internal/rag/postgres/hybrid_query.go's constant exactly —
 // see that file's doc comment for why RRF over a weighted sum.
 const rrfK = 60
+
+// vectorChannelTable mirrors internal/rag/postgres's function of the same
+// name exactly — same dimension-selects-table discipline, same "never
+// mixed" guarantee, same deliberate small duplication internal/memory
+// already accepts elsewhere (it cannot import internal/rag).
+func vectorChannelTable(queryVector []float32) (table string, encode func([]float32) (string, error), err error) {
+	switch len(queryVector) {
+	case entryEmbeddingDimension:
+		return "organizational_memory_embeddings", encodeVector, nil
+	case bgeM3EntryEmbeddingDimension:
+		return "organizational_memory_embeddings_bge_m3", encodeVectorBGEM3, nil
+	default:
+		return "", nil, fmt.Errorf("%w: query vector has unexpected dimension %d (want %d or %d)", memory.ErrInvalidRequest, len(queryVector), entryEmbeddingDimension, bgeM3EntryEmbeddingDimension)
+	}
+}
 
 func rrfCandidatePoolSize(limit int) int {
 	pool := limit * 5
@@ -43,7 +59,11 @@ func (s *Store) Search(ctx context.Context, organizationID, roleID, queryText st
 	vectorCTE := ""
 	vectorUnion := ""
 	if len(queryVector) > 0 {
-		encoded, err := encodeVector(queryVector)
+		table, encode, err := vectorChannelTable(queryVector)
+		if err != nil {
+			return nil, err
+		}
+		encoded, err := encode(queryVector)
 		if err != nil {
 			return nil, err
 		}
@@ -52,7 +72,7 @@ func (s *Store) Search(ctx context.Context, organizationID, roleID, queryText st
 		vectorCTE = `,
 vector_matches AS (
     SELECT e.entry_key, ROW_NUMBER() OVER (ORDER BY e.embedding <=> ` + vectorParam + `::vector ASC) AS rnk
-    FROM organizational_memory_embeddings e
+    FROM ` + table + ` e
     JOIN organizational_memory_versions v ON v.organization_id=e.organization_id AND v.entry_key=e.entry_key
     WHERE e.organization_id=$1 AND v.role_id=$2
     ORDER BY e.embedding <=> ` + vectorParam + `::vector ASC

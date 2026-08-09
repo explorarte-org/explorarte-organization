@@ -127,7 +127,13 @@ func (a *fakeOnlineAdapter) Embed(_ context.Context, request embeddingruntime.Em
 func testSemanticDeps(t *testing.T, repo EmbeddingRepository, ledger *fakeEmbeddingLedger, adapter *fakeOnlineAdapter, budgets agentbudget.Ledger) *SemanticSearchDeps {
 	t.Helper()
 	return &SemanticSearchDeps{
-		Embeddings: repo, OnlineAdapter: adapter, Pricing: newTestPricingService(t), Wallet: ledger, Budgets: budgets,
+		InsertVector: func(ctx context.Context, organizationID, entryID, inputHash string, vector []float32, createdAt time.Time) error {
+			return repo.InsertEntryEmbedding(ctx, EntryEmbedding{
+				OrganizationID: organizationID, EntryID: entryID, EmbeddingModelID: "gemini-embedding-2", EmbeddingModelVersion: "v1",
+				EmbeddingDimension: 768, PromptTemplateVersion: "prompt-template.v1", InputHash: inputHash, Vector: vector, CreatedAt: createdAt,
+			})
+		},
+		OnlineAdapter: adapter, Pricing: newTestPricingService(t), Wallet: ledger, Budgets: budgets,
 		ProviderID: "gemini", ProviderModelID: "gemini-embedding-2", OutputDimensionality: 768, PromptTemplateVersion: "prompt-template.v1",
 	}
 }

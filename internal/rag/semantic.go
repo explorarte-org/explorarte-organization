@@ -54,11 +54,18 @@ func (d *SemanticSearchDeps) validate() error {
 // it, and Query worked without them before this package existed. Each skip
 // is logged at Warn so the condition stays observable without breaking
 // retrieval for a caller who has no way to fix a transient provider issue.
-func (m *Manager) embedQuery(ctx context.Context, organizationID, actorRoleID, queryText string, taskID *int64) []float32 {
+// A single structured status line on exit (see the deferred log below) is
+// R30's "degraded" metric: whichever profile is active (deps.ProviderID),
+// this is the one place that ever knows, in one call, whether the vector
+// channel actually ran for a given query — never silently.
+func (m *Manager) embedQuery(ctx context.Context, organizationID, actorRoleID, queryText string, taskID *int64) (vector []float32) {
 	deps := m.semantic
 	if deps == nil {
 		return nil
 	}
+	defer func() {
+		slog.Default().Info("rag query embedding channel status", "provider_id", deps.ProviderID, "provider_model_id", deps.ProviderModelID, "degraded", vector == nil)
+	}()
 	if finding := dataclassifier.Detect(queryText); finding.Any() {
 		slog.Default().Warn("rag query embedding skipped: query text matched a forbidden data pattern", "organization_id", organizationID)
 		return nil

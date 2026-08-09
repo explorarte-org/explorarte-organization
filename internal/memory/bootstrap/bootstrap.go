@@ -1,14 +1,18 @@
 package bootstrap
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"strings"
+	"time"
 
 	agentbudgetpostgres "github.com/Mireuz13/explorarte-organization/internal/agentbudget/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/authorization"
 	authorizationpostgres "github.com/Mireuz13/explorarte-organization/internal/authorization/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/config"
 	costledgerpostgres "github.com/Mireuz13/explorarte-organization/internal/costledger/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/embeddingruntime/adapter/bgem3"
 	"github.com/Mireuz13/explorarte-organization/internal/embeddingruntime/adapter/gemini"
 	"github.com/Mireuz13/explorarte-organization/internal/memory"
 	memoryauthz "github.com/Mireuz13/explorarte-organization/internal/memory/authz"
@@ -27,6 +31,29 @@ const (
 	memoryEmbeddingDimension        = 768
 	memoryEmbeddingMaxResponseBytes = 1 << 20
 )
+
+// R30: exactly one embedding profile is active at a time — ORG_EMBEDDING_
+// ACTIVE_PROFILE selects it, defaulting to Gemini (R29's already-vetted
+// behavior) when unset, so an existing deployment's configuration keeps
+// working unchanged. "gemini-768" and "bge-m3-local-1024" are the only
+// two valid values; anything else is a hard startup error, never a silent
+// fallback — an operator who misspells the profile must find out at
+// process start, not by an unexplained absence of the vector channel.
+const (
+	embeddingProfileGemini768  = "gemini-768"
+	embeddingProfileBGEM3Local = "bge-m3-local-1024"
+)
+
+func activeEmbeddingProfile() (string, error) {
+	profile := strings.TrimSpace(os.Getenv("ORG_EMBEDDING_ACTIVE_PROFILE"))
+	if profile == "" {
+		return embeddingProfileGemini768, nil
+	}
+	if profile != embeddingProfileGemini768 && profile != embeddingProfileBGEM3Local {
+		return "", fmt.Errorf("unknown ORG_EMBEDDING_ACTIVE_PROFILE %q (want %q or %q)", profile, embeddingProfileGemini768, embeddingProfileBGEM3Local)
+	}
+	return profile, nil
+}
 
 type Runtime struct {
 	Manager        *memory.Manager
@@ -78,13 +105,45 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	}, nil
 }
 
-// openSemanticSearch mirrors internal/rag/bootstrap's function of the same
-// name — see that file's doc comment for the full rationale. Disabled by
-// default via the same ORG_EMBEDDING_PROVIDER_GEMINI_ENABLED flag; memory
-// and rag each construct their own adapter/circuit-breaker instance rather
-// than sharing one, consistent with internal/memory never importing
-// internal/rag.
-func openSemanticSearch(platformStore *platformpostgres.Store, embeddings memory.EmbeddingRepository) (*memory.SemanticSearchDeps, error) {
+// openSemanticSearch wires the optional vector retrieval channel under
+// whichever embedding profile is active. It returns (nil, nil) — Search
+// degrades to exact+recency only — unless that profile's provider is
+// explicitly enabled, exactly the same disabled-by-default behavior each
+// adapter's own LoadConfig already gives it.
+func openSemanticSearch(platformStore *platformpostgres.Store, store *memorypostgres.Store) (*memory.SemanticSearchDeps, error) {
+	profile, err := activeEmbeddingProfile()
+	if err != nil {
+		return nil, err
+	}
+	switch profile {
+	case embeddingProfileBGEM3Local:
+		return openBGEM3SemanticSearch(platformStore, store)
+	default:
+		return openGeminiSemanticSearch(platformStore, store)
+	}
+}
+
+func sharedSpendControls(platformStore *platformpostgres.Store) (*modelpricing.Service, *costledgerpostgres.Store, *agentbudgetpostgres.Store, error) {
+	pricingStore, err := modelpricingpostgres.New(platformStore)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("create model pricing store: %w", err)
+	}
+	pricingService, err := modelpricing.NewService(pricingStore)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("create model pricing service: %w", err)
+	}
+	ledger, err := costledgerpostgres.New(platformStore)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("create cost ledger store: %w", err)
+	}
+	budgets, err := agentbudgetpostgres.New(platformStore)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("create agent budget store: %w", err)
+	}
+	return pricingService, ledger, budgets, nil
+}
+
+func openGeminiSemanticSearch(platformStore *platformpostgres.Store, store *memorypostgres.Store) (*memory.SemanticSearchDeps, error) {
 	embeddingConfig, err := gemini.LoadConfig(os.LookupEnv, memoryEmbeddingMaxResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("load embedding provider config: %w", err)
@@ -96,28 +155,61 @@ func openSemanticSearch(platformStore *platformpostgres.Store, embeddings memory
 	if adapter == nil {
 		return nil, nil
 	}
-
-	pricingStore, err := modelpricingpostgres.New(platformStore)
+	pricingService, ledger, budgets, err := sharedSpendControls(platformStore)
 	if err != nil {
-		return nil, fmt.Errorf("create model pricing store: %w", err)
+		return nil, err
 	}
-	pricingService, err := modelpricing.NewService(pricingStore)
-	if err != nil {
-		return nil, fmt.Errorf("create model pricing service: %w", err)
-	}
-	ledger, err := costledgerpostgres.New(platformStore)
-	if err != nil {
-		return nil, fmt.Errorf("create cost ledger store: %w", err)
-	}
-	budgets, err := agentbudgetpostgres.New(platformStore)
-	if err != nil {
-		return nil, fmt.Errorf("create agent budget store: %w", err)
-	}
-
 	return &memory.SemanticSearchDeps{
-		Embeddings: embeddings, OnlineAdapter: adapter, Pricing: pricingService,
-		Wallet: ledger, Budgets: budgets,
+		InsertVector: func(ctx context.Context, organizationID, entryID, inputHash string, vector []float32, createdAt time.Time) error {
+			return store.InsertEntryEmbedding(ctx, memory.EntryEmbedding{
+				OrganizationID: organizationID, EntryID: entryID,
+				EmbeddingModelID: memoryEmbeddingModelID, EmbeddingModelVersion: "v1", EmbeddingDimension: memoryEmbeddingDimension,
+				PromptTemplateVersion: gemini.PromptTemplateV1, InputHash: inputHash, Vector: vector, CreatedAt: createdAt,
+			})
+		},
+		OnlineAdapter: adapter, Pricing: pricingService, Wallet: ledger, Budgets: budgets,
 		ProviderID: memoryEmbeddingProviderID, ProviderModelID: memoryEmbeddingModelID,
 		OutputDimensionality: memoryEmbeddingDimension, PromptTemplateVersion: gemini.PromptTemplateV1,
+	}, nil
+}
+
+// openBGEM3SemanticSearch activates R30's local, operational profile.
+// Before this resolves prices successfully in a real deployment, the
+// operator must seed a (typically zero-cost) price tier and wallet
+// balance for provider_id="bge-m3-local"/the configured model revision
+// via the existing `orgctl budget set-price`/`set-balance` commands — see
+// deployments/bgem3/RUNBOOK-deploy-sidecar.md. This function deliberately
+// does not seed those itself: it is generic, reusable machinery already
+// exercised for every other provider in this system, not something new
+// and BGE-M3-specific to trust.
+func openBGEM3SemanticSearch(platformStore *platformpostgres.Store, store *memorypostgres.Store) (*memory.SemanticSearchDeps, error) {
+	embeddingConfig, err := bgem3.LoadConfig(os.LookupEnv)
+	if err != nil {
+		return nil, fmt.Errorf("load bge-m3 embedding provider config: %w", err)
+	}
+	adapter, err := bgem3.New(embeddingConfig)
+	if err != nil {
+		return nil, fmt.Errorf("create bge-m3 embedding provider adapter: %w", err)
+	}
+	if adapter == nil {
+		return nil, nil
+	}
+	pricingService, ledger, budgets, err := sharedSpendControls(platformStore)
+	if err != nil {
+		return nil, err
+	}
+	return &memory.SemanticSearchDeps{
+		InsertVector: func(ctx context.Context, organizationID, entryID, inputHash string, vector []float32, createdAt time.Time) error {
+			return store.InsertBGEM3EntryEmbedding(ctx, memory.BGEM3EntryEmbedding{
+				OrganizationID: organizationID, EntryID: entryID, EmbeddingModelID: bgem3.ProviderID,
+				ModelRevision: embeddingConfig.ModelRevision, ArtifactSHA256: embeddingConfig.ArtifactSHA256,
+				TokenizerRevision: embeddingConfig.TokenizerRevision, EmbeddingDimension: embeddingConfig.ExpectedDimension,
+				Normalization: embeddingConfig.Normalization, Pooling: embeddingConfig.Pooling,
+				PromptTemplateVersion: embeddingConfig.PromptTemplateVersion, InputHash: inputHash, Vector: vector, CreatedAt: createdAt,
+			})
+		},
+		OnlineAdapter: adapter, Pricing: pricingService, Wallet: ledger, Budgets: budgets,
+		ProviderID: bgem3.ProviderID, ProviderModelID: embeddingConfig.ModelRevision,
+		OutputDimensionality: embeddingConfig.ExpectedDimension, PromptTemplateVersion: embeddingConfig.PromptTemplateVersion,
 	}, nil
 }

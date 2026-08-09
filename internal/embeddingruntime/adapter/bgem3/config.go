@@ -72,6 +72,15 @@ type Config struct {
 	// never given the pinned artifact, is treated as unhealthy, never used.
 	ModelRevision  string
 	ArtifactSHA256 string
+	// TokenizerRevision, Normalization, and Pooling are recorded per row in
+	// rag_chunk_embeddings_bge_m3/organizational_memory_embeddings_bge_m3
+	// (migration 000032) — R30 requires them as part of a BGE-M3 row's
+	// identity, since a self-hosted model has no provider-assigned version
+	// string covering tokenizer/pooling/normalization choices the way a
+	// remote API implicitly fixes for its callers.
+	TokenizerRevision string
+	Normalization     string
+	Pooling           string
 	// ExpectedDimension is 1024 for BAAI/bge-m3 dense output — fixed here,
 	// not read from the sidecar, so a dimension mismatch is caught as a
 	// hard local error rather than silently propagating a wrong-shaped
@@ -100,6 +109,7 @@ func LoadConfig(lookup LookupEnv) (Config, error) {
 	cfg := Config{
 		RequestTimeout: defaultRequestTimeout, ExpectedDimension: 1024, PromptTemplateVersion: PromptTemplateV1,
 		MaxConcurrency: 1, MaxQueueDepth: 1, MaxInputBytes: 32 * 1024, MaxItemsPerRequest: 16, MaxResponseBytes: 8 << 20,
+		Normalization: "l2", Pooling: "cls",
 	}
 	var err error
 	if cfg.Enabled, err = envBool(lookup, "ORG_EMBEDDING_PROVIDER_BGE_M3_ENABLED", false); err != nil {
@@ -113,6 +123,15 @@ func LoadConfig(lookup LookupEnv) (Config, error) {
 	}
 	if raw, ok := lookup("ORG_EMBEDDING_PROVIDER_BGE_M3_ARTIFACT_SHA256"); ok {
 		cfg.ArtifactSHA256 = strings.ToLower(strings.TrimSpace(raw))
+	}
+	if raw, ok := lookup("ORG_EMBEDDING_PROVIDER_BGE_M3_TOKENIZER_REVISION"); ok {
+		cfg.TokenizerRevision = strings.TrimSpace(raw)
+	}
+	if raw, ok := lookup("ORG_EMBEDDING_PROVIDER_BGE_M3_NORMALIZATION"); ok {
+		cfg.Normalization = strings.TrimSpace(raw)
+	}
+	if raw, ok := lookup("ORG_EMBEDDING_PROVIDER_BGE_M3_POOLING"); ok {
+		cfg.Pooling = strings.TrimSpace(raw)
 	}
 	if cfg.RequestTimeout, err = envDuration(lookup, "ORG_EMBEDDING_PROVIDER_BGE_M3_REQUEST_TIMEOUT", cfg.RequestTimeout); err != nil {
 		return Config{}, err
@@ -168,6 +187,15 @@ func (c Config) Validate() error {
 	}
 	if len(c.ArtifactSHA256) != sha256HexLength || !artifactSHA256Pattern.MatchString(c.ArtifactSHA256) {
 		return fmt.Errorf("embeddingruntime bge-m3 artifact sha256 must be a 64-character lowercase hex digest, pinned at provisioning time, never auto-resolved")
+	}
+	if strings.TrimSpace(c.TokenizerRevision) == "" {
+		return fmt.Errorf("embeddingruntime bge-m3 tokenizer revision is required when enabled")
+	}
+	if c.Normalization != "l2" && c.Normalization != "none" {
+		return fmt.Errorf("embeddingruntime bge-m3 normalization must be 'l2' or 'none'")
+	}
+	if c.Pooling != "cls" && c.Pooling != "mean" {
+		return fmt.Errorf("embeddingruntime bge-m3 pooling must be 'cls' or 'mean'")
 	}
 	if err := validateLoopbackURL(c.BaseURL); err != nil {
 		return fmt.Errorf("embeddingruntime bge-m3 base url: %w", err)

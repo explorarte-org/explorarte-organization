@@ -713,6 +713,39 @@ func TestApprovedKnowledgeRAGPostgresRepository(t *testing.T) {
 		if !documents["know-hybrid-lexical"] || !documents["know-hybrid-vector"] {
 			t.Fatalf("fused query documents=%v want both know-hybrid-lexical and know-hybrid-vector", documents)
 		}
+
+		// R30: the same fused Query() entry point Manager.Query uses picks
+		// the bge-m3 table instead of gemini's the moment the caller's
+		// vector is 1024-dimensional — proving the profile switch works
+		// through the real RRF path, not just the raw NearestBGEM3Chunks
+		// helper already covered by the earlier bge-m3 subtest.
+		bgeM3Vector := make([]float32, 1024)
+		bgeM3Vector[7] = 1
+		if err := store.InsertBGEM3ChunkEmbedding(ctx, rag.BGEM3ChunkEmbedding{
+			OrganizationID: ragIntegrationOrganization, ChunkID: vectorChunkID, EmbeddingModelID: "bge-m3-local",
+			ModelRevision: "bge-m3-2024-06", ArtifactSHA256: strings.Repeat("b", 64), TokenizerRevision: "bge-m3-tokenizer-2024-06",
+			EmbeddingDimension: 1024, Normalization: "l2", Pooling: "cls", PromptTemplateVersion: "bge-m3-prompt-template.v1",
+			InputHash: fmt.Sprintf("%064x", 10), Vector: bgeM3Vector, CreatedAt: clock.now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		fusedBGEM3, err := store.Query(ctx, rag.QueryCommand{OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceDepartment, NamespaceID: hybridNamespace, QueryText: "overnight coolant pump", QueryVector: bgeM3Vector, Limit: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		bgeM3Documents := make(map[string]bool, len(fusedBGEM3))
+		for _, result := range fusedBGEM3 {
+			bgeM3Documents[result.DocumentID] = true
+		}
+		if !bgeM3Documents["know-hybrid-lexical"] || !bgeM3Documents["know-hybrid-vector"] {
+			t.Fatalf("bge-m3 fused query documents=%v want both know-hybrid-lexical and know-hybrid-vector", bgeM3Documents)
+		}
+
+		// A query vector of any other dimension is a hard error, never a
+		// silent guess at which table to use.
+		if _, err := store.Query(ctx, rag.QueryCommand{OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceDepartment, NamespaceID: hybridNamespace, QueryText: "overnight coolant pump", QueryVector: make([]float32, 5), Limit: 10}); err == nil {
+			t.Fatal("expected an unexpected-dimension query vector to be rejected")
+		}
 	})
 }
 

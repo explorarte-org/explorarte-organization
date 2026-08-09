@@ -24,6 +24,7 @@ const (
 func baseTestConfig(baseURL string) Config {
 	return Config{
 		Enabled: true, BaseURL: baseURL, ModelRevision: testModelRevision, ArtifactSHA256: testArtifactSHA256,
+		TokenizerRevision: "bge-m3-tokenizer-2024-06", Normalization: "l2", Pooling: "cls",
 		ExpectedDimension: testDimension, PromptTemplateVersion: PromptTemplateV1, RequestTimeout: 2 * time.Second,
 		MaxConcurrency: 1, MaxQueueDepth: 0, MaxInputBytes: 1024, MaxItemsPerRequest: 4, MaxResponseBytes: 1 << 16,
 	}

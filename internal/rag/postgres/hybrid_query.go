@@ -2,11 +2,31 @@ package postgres
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 
+	"github.com/Mireuz13/explorarte-organization/internal/rag"
 	"github.com/jackc/pgx/v5"
 )
+
+// vectorChannelTable selects, from the query vector's own dimension, which
+// embeddings table and encoder the vector channel must use — 768 is
+// Gemini's frozen reference index (rag_chunk_embeddings), 1024 is BGE-M3's
+// local operational index (rag_chunk_embeddings_bge_m3). R30's "never
+// mixed" requirement is enforced structurally here: there is no code path
+// that can build a query joining both tables, and a vector of any other
+// length is a hard error rather than a silent guess at which table to use.
+func vectorChannelTable(queryVector []float32) (table string, encode func([]float32) (string, error), err error) {
+	switch len(queryVector) {
+	case chunkEmbeddingDimension:
+		return "rag_chunk_embeddings", encodeVector, nil
+	case bgeM3EmbeddingDimension:
+		return "rag_chunk_embeddings_bge_m3", encodeVectorBGEM3, nil
+	default:
+		return "", nil, fmt.Errorf("%w: query vector has unexpected dimension %d (want %d or %d)", rag.ErrInvalidRequest, len(queryVector), chunkEmbeddingDimension, bgeM3EmbeddingDimension)
+	}
+}
 
 // rrfK is the standard Reciprocal Rank Fusion constant (score = 1/(k+rank)).
 // Chosen over a weighted sum of raw channel scores because ts_rank and
@@ -39,18 +59,28 @@ func rrfCandidatePoolSize(limit int) int {
 //     distinguish "20" from "2000" or survive PostgreSQL's tokenizer
 //     attaching a leading hyphen to a trailing number.
 //   - lexical: ts_rank/plainto_tsquery, exactly as Query used before R29.
-//   - vector: cosine distance against rag_chunk_embeddings, exact/
-//     brute-force search (no ANN index yet — see migration 000028).
-//     Included only when queryVector is non-empty; a chunk with no
-//     embedding row yet simply cannot appear via this channel, which is
-//     the intended graceful degradation, not a bug to work around.
+//   - vector: cosine distance against exactly one embeddings table, chosen
+//     by queryVector's own dimension (see vectorChannelTable) —
+//     rag_chunk_embeddings (768, Gemini) or rag_chunk_embeddings_bge_m3
+//     (1024, BGE-M3 local), never both in the same query. Exact/brute-force
+//     search (no ANN index yet — see migrations 000028/000032). Included
+//     only when queryVector is non-empty; a chunk with no embedding row yet
+//     simply cannot appear via this channel, which is the intended
+//     graceful degradation (whether from no embedding having been computed,
+//     or from Manager.embedQuery skipping the call entirely — e.g. the
+//     active profile's provider being unavailable), not a bug to work
+//     around.
 func (s *Store) runHybridQuery(ctx context.Context, organizationID, generationID, queryText string, queryVector []float32, limit int) (pgx.Rows, error) {
 	poolSize := rrfCandidatePoolSize(limit)
 	args := []any{organizationID, generationID, queryText, poolSize, limit}
 	vectorCTE := ""
 	vectorUnion := ""
 	if len(queryVector) > 0 {
-		encoded, err := encodeVector(queryVector)
+		table, encode, err := vectorChannelTable(queryVector)
+		if err != nil {
+			return nil, err
+		}
+		encoded, err := encode(queryVector)
 		if err != nil {
 			return nil, err
 		}
@@ -59,7 +89,7 @@ func (s *Store) runHybridQuery(ctx context.Context, organizationID, generationID
 		vectorCTE = `,
 vector_matches AS (
     SELECT e.chunk_id, ROW_NUMBER() OVER (ORDER BY e.embedding <=> ` + vectorParam + `::vector ASC) AS rnk
-    FROM rag_chunk_embeddings e
+    FROM ` + table + ` e
     JOIN rag_knowledge_chunks c ON c.organization_id=e.organization_id AND c.chunk_id=e.chunk_id
     WHERE e.organization_id=$1 AND c.generation_id=$2
     ORDER BY e.embedding <=> ` + vectorParam + `::vector ASC

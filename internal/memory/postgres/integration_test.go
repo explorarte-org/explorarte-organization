@@ -390,6 +390,30 @@ func TestOrganizationalMemoryPostgresRepository(t *testing.T) {
 		if _, err := platform.Pool().Exec(ctx, `UPDATE organizational_memory_embeddings_bge_m3 SET embedding_dimension=1024 WHERE organization_id=$1 AND entry_key=$2`, memoryIntegrationOrganization, approved.ID); err == nil {
 			t.Fatal("expected organizational_memory_embeddings_bge_m3 to reject UPDATE the same way canonical memory tables do")
 		}
+
+		// R30: the same fused Search() entry point Manager.Search uses
+		// picks the bge-m3 table the moment the caller's vector is
+		// 1024-dimensional — proving the profile switch works through the
+		// real RRF path, not just the raw NearestBGEM3Entries helper above.
+		fusedBGEM3, err := store.Search(ctx, memoryIntegrationOrganization, memoryIntegrationRole, "no shared words with this entry at all", vector, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		foundFused := false
+		for _, e := range fusedBGEM3 {
+			if e.ID == approved.ID {
+				foundFused = true
+			}
+		}
+		if !foundFused {
+			t.Fatalf("bge-m3 fused search=%+v missing %s", fusedBGEM3, approved.ID)
+		}
+
+		// A query vector of any other dimension is a hard error, never a
+		// silent guess at which table to use.
+		if _, err := store.Search(ctx, memoryIntegrationOrganization, memoryIntegrationRole, "error 77", make([]float32, 5), 10); err == nil {
+			t.Fatal("expected an unexpected-dimension query vector to be rejected")
+		}
 	})
 }
 
