@@ -260,3 +260,88 @@ func TestNackRetriesUntilMaxAttemptsThenDeadLetters(t *testing.T) {
 		t.Fatalf("claimed dead message: %+v err=%v", claimed, err)
 	}
 }
+
+func TestExpiredClaimIsRecoveredAndOldTokenCannotSettle(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	fixture := openMessagingFixture(t, ctx)
+	ledger, err := agentmessagingpostgres.New(fixture.store, 100, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	ceoTaskID := fixture.insertTask(t, ctx, "empresa/ceo", 5)
+	sent, _, err := ledger.Send(ctx, agentmessaging.SendCommand{
+		OrganizationID: messagingIntegrationOrg, SenderRoleID: "empresa/ceo", SenderTaskID: ceoTaskID,
+		RecipientRoleID: "ingenieria_ia/orquestador", CorrelationID: "executive:expired", CausationID: fmt.Sprintf("task:%d", ceoTaskID),
+		MessageType: agentmessaging.MessageDelegation, Payload: json.RawMessage(`{"expired":true}`),
+		IdempotencyKey: "expired-recovery", MaxAttempts: 3,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := ledger.ClaimNext(ctx, messagingIntegrationOrg, "ingenieria_ia/orquestador", "consumer-old", 1, time.Minute, now)
+	if err != nil || len(first) != 1 {
+		t.Fatalf("first claim=%+v err=%v", first, err)
+	}
+	expiredAt := now.Add(2 * time.Minute)
+	if err := ledger.Ack(ctx, agentmessaging.Disposition{MessageID: sent.ID, ConsumerID: "consumer-old", ClaimToken: first[0].ClaimToken}, expiredAt); !errors.Is(err, agentmessaging.ErrClaimExpired) {
+		t.Fatalf("late ack err=%v want ErrClaimExpired", err)
+	}
+
+	second, err := ledger.ClaimNext(ctx, messagingIntegrationOrg, "ingenieria_ia/orquestador", "consumer-new", 1, time.Minute, expiredAt)
+	if err != nil || len(second) != 1 {
+		t.Fatalf("recovered claim=%+v err=%v", second, err)
+	}
+	if second[0].Message.ID != sent.ID || second[0].Message.AttemptCount != 2 || second[0].ClaimToken == first[0].ClaimToken {
+		t.Fatalf("recovered message=%+v old_token_reused=%v", second[0].Message, second[0].ClaimToken == first[0].ClaimToken)
+	}
+	if err := ledger.Ack(ctx, agentmessaging.Disposition{MessageID: sent.ID, ConsumerID: "consumer-old", ClaimToken: first[0].ClaimToken}, expiredAt.Add(time.Second)); !errors.Is(err, agentmessaging.ErrConflict) {
+		t.Fatalf("old owner/token after reclaim err=%v want ErrConflict", err)
+	}
+	if err := ledger.Ack(ctx, agentmessaging.Disposition{MessageID: sent.ID, ConsumerID: "consumer-new", ClaimToken: second[0].ClaimToken}, expiredAt.Add(time.Second)); err != nil {
+		t.Fatalf("ack recovered claim: %v", err)
+	}
+}
+
+func TestExpiredFinalAttemptDeadLettersInsteadOfRequeue(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	fixture := openMessagingFixture(t, ctx)
+	ledger, err := agentmessagingpostgres.New(fixture.store, 100, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	ceoTaskID := fixture.insertTask(t, ctx, "empresa/ceo", 6)
+	sent, _, err := ledger.Send(ctx, agentmessaging.SendCommand{
+		OrganizationID: messagingIntegrationOrg, SenderRoleID: "empresa/ceo", SenderTaskID: ceoTaskID,
+		RecipientRoleID: "ingenieria_ia/orquestador", CorrelationID: "executive:expired-dead", CausationID: fmt.Sprintf("task:%d", ceoTaskID),
+		MessageType: agentmessaging.MessageDelegation, Payload: json.RawMessage(`{"expired":"dead"}`),
+		IdempotencyKey: "expired-dead-letter", MaxAttempts: 1,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := ledger.ClaimNext(ctx, messagingIntegrationOrg, "ingenieria_ia/orquestador", "consumer-crashed", 1, time.Minute, now)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claim=%+v err=%v", claimed, err)
+	}
+
+	reclaimed, err := ledger.ClaimNext(ctx, messagingIntegrationOrg, "ingenieria_ia/orquestador", "consumer-next", 1, time.Minute, now.Add(2*time.Minute))
+	if err != nil || len(reclaimed) != 0 {
+		t.Fatalf("max-attempt expired message was redelivered: %+v err=%v", reclaimed, err)
+	}
+	var status string
+	var attempts int
+	var claimedBy, claimTokenHash, lastError *string
+	var claimExpiresAt *time.Time
+	if err := fixture.store.Pool().QueryRow(ctx, `SELECT status,attempt_count,claimed_by,claim_token_hash,claim_expires_at,last_error FROM agent_messages WHERE id=$1`, sent.ID).
+		Scan(&status, &attempts, &claimedBy, &claimTokenHash, &claimExpiresAt, &lastError); err != nil {
+		t.Fatal(err)
+	}
+	if status != string(agentmessaging.StatusDead) || attempts != 1 || claimedBy != nil || claimTokenHash != nil || claimExpiresAt != nil || lastError == nil || *lastError != "claim lease expired" {
+		t.Fatalf("dead-letter state status=%s attempts=%d claimed_by=%v token=%v expiry=%v error=%v", status, attempts, claimedBy, claimTokenHash, claimExpiresAt, lastError)
+	}
+}

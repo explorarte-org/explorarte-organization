@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/agentmessaging"
@@ -106,12 +107,50 @@ RETURNING `+messageColumns,
 }
 
 func (s *Store) ClaimNext(ctx context.Context, organizationID, recipientRoleID, consumerID string, batchSize int, claimDuration time.Duration, now time.Time) ([]agentmessaging.ClaimedMessage, error) {
+	organizationID = strings.TrimSpace(organizationID)
+	recipientRoleID = strings.TrimSpace(recipientRoleID)
+	consumerID = strings.TrimSpace(consumerID)
+	if organizationID == "" || recipientRoleID == "" || consumerID == "" || batchSize <= 0 || batchSize > 1000 || claimDuration <= 0 || now.IsZero() {
+		return nil, fmt.Errorf("%w: organization, recipient, consumer, batch size, claim duration, and now are required", agentmessaging.ErrInvalidRequest)
+	}
 	now = now.UTC()
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("begin claim next: %w", err)
 	}
 	defer tx.Rollback(ctx)
+
+	// Recovery is part of claiming rather than a separate janitor contract:
+	// any live consumer heals work abandoned by a crashed predecessor before
+	// selecting new pending messages. FOR UPDATE SKIP LOCKED makes concurrent
+	// consumers partition expired rows, while the surrounding transaction
+	// prevents a recovered row from being claimed twice. attempt_count was
+	// already incremented by the expired claim, so max-attempt messages become
+	// dead instead of receiving one extra delivery.
+	recoveryLimit := batchSize
+	if recoveryLimit < 100 {
+		recoveryLimit = 100
+	}
+	if _, err := tx.Exec(ctx, `
+WITH expired AS (
+    SELECT id
+    FROM agent_messages
+    WHERE organization_id=$1 AND recipient_role_id=$2 AND status='claimed'
+      AND claim_expires_at<=$3
+    ORDER BY claim_expires_at, id
+    FOR UPDATE SKIP LOCKED
+    LIMIT $4
+)
+UPDATE agent_messages AS m
+SET status=CASE WHEN m.attempt_count>=m.max_attempts THEN 'dead' ELSE 'pending' END,
+    claim_token_hash=NULL, claimed_by=NULL, claim_expires_at=NULL,
+    last_error='claim lease expired',
+    available_at=CASE WHEN m.attempt_count>=m.max_attempts THEN m.available_at ELSE $3 END,
+    updated_at=$3
+FROM expired
+WHERE m.id=expired.id`, organizationID, recipientRoleID, now, recoveryLimit); err != nil {
+		return nil, fmt.Errorf("recover expired claims: %w", err)
+	}
 
 	rows, err := tx.Query(ctx, `
 SELECT id FROM agent_messages
@@ -164,7 +203,7 @@ func (s *Store) Ack(ctx context.Context, disposition agentmessaging.Disposition,
 	}
 	defer tx.Rollback(ctx)
 
-	if err := verifyClaim(ctx, tx, disposition); err != nil {
+	if err := verifyClaim(ctx, tx, disposition, now); err != nil {
 		return err
 	}
 	tag, err := tx.Exec(ctx, `
@@ -189,7 +228,7 @@ func (s *Store) Nack(ctx context.Context, disposition agentmessaging.Disposition
 	}
 	defer tx.Rollback(ctx)
 
-	if err := verifyClaim(ctx, tx, disposition); err != nil {
+	if err := verifyClaim(ctx, tx, disposition, now); err != nil {
 		return err
 	}
 	tag, err := tx.Exec(ctx, `
@@ -208,7 +247,7 @@ WHERE id=$1 AND status='claimed'`, disposition.MessageID, now, nullableString(di
 	return tx.Commit(ctx)
 }
 
-func verifyClaim(ctx context.Context, tx pgx.Tx, disposition agentmessaging.Disposition) error {
+func verifyClaim(ctx context.Context, tx pgx.Tx, disposition agentmessaging.Disposition, now time.Time) error {
 	var status string
 	var claimedBy *string
 	var claimExpiresAt *time.Time
@@ -222,6 +261,9 @@ func verifyClaim(ctx context.Context, tx pgx.Tx, disposition agentmessaging.Disp
 	}
 	if status != string(agentmessaging.StatusClaimed) || claimedBy == nil || *claimedBy != disposition.ConsumerID || claimExpiresAt == nil {
 		return agentmessaging.ErrConflict
+	}
+	if !claimExpiresAt.After(now) {
+		return agentmessaging.ErrClaimExpired
 	}
 	provided := hashToken(disposition.ClaimToken)
 	if subtle.ConstantTimeCompare([]byte(tokenHash), []byte(provided)) != 1 {
