@@ -10,6 +10,10 @@ type Ledger interface {
 	// CreateRootBudget starts a new budget tree for a root execution task.
 	CreateRootBudget(ctx context.Context, organizationID string, rootTaskID int64, roleID string, limits Limits, now time.Time) (Budget, error)
 	GetBudget(ctx context.Context, budgetID int64) (Budget, error)
+	// ResolveBudgetForTask returns the budget any given task in the tree
+	// should consume against — its own row if it was given an explicit
+	// allocation, or the shared ancestor row otherwise.
+	ResolveBudgetForTask(ctx context.Context, taskID int64) (Budget, error)
 	// InheritForChild attaches childTaskID to a budget scope descended from
 	// parentBudgetID. childDepth is the child's depth in the execution
 	// tree as the caller (which already builds that tree) knows it — the

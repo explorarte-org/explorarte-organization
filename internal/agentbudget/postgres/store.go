@@ -87,6 +87,9 @@ INSERT INTO agent_budget_events (budget_id, kind, idempotency_ref, usd_nanos_del
 VALUES ($1,'created',$2,0,0,0,0,1,0,0,$3)`, budgetID, rootTaskID, now); err != nil {
 			return agentbudget.Budget{}, err
 		}
+		if _, err := tx.Exec(ctx, `INSERT INTO task_budgets (task_id, budget_id, created_at) VALUES ($1,$2,$3) ON CONFLICT (task_id) DO NOTHING`, rootTaskID, budgetID, now); err != nil {
+			return agentbudget.Budget{}, err
+		}
 	}
 	b, err := scanBudget(tx.QueryRow(ctx, `SELECT `+budgetColumns+` FROM agent_budgets WHERE task_id=$1`, rootTaskID))
 	if err != nil {
@@ -159,6 +162,9 @@ ON CONFLICT (budget_id, kind, idempotency_ref) DO NOTHING`, parentBudgetID, chil
 		if _, err := tx.Exec(ctx, `UPDATE agent_budgets SET depth=$1, used_subagents=used_subagents+1, version=version+1, updated_at=$2 WHERE id=$3`, newDepth, now, parentBudgetID); err != nil {
 			return agentbudget.Budget{}, err
 		}
+		if _, err := tx.Exec(ctx, `INSERT INTO task_budgets (task_id, budget_id, created_at) VALUES ($1,$2,$3) ON CONFLICT (task_id) DO NOTHING`, childTaskID, parentBudgetID, now); err != nil {
+			return agentbudget.Budget{}, err
+		}
 		result, err := scanBudget(tx.QueryRow(ctx, `SELECT `+budgetColumns+` FROM agent_budgets WHERE id=$1`, parentBudgetID))
 		if err != nil {
 			return agentbudget.Budget{}, err
@@ -207,6 +213,9 @@ RETURNING id`,
 		int64(allocation.MaxUSD), allocation.MaxTokens, allocation.MaxModelCalls, allocation.MaxWallTimeMS, allocation.MaxDepth, allocation.MaxRetries, allocation.MaxSubagents,
 		childDepth, now,
 	).Scan(&childBudgetID); err != nil {
+		return agentbudget.Budget{}, err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO task_budgets (task_id, budget_id, created_at) VALUES ($1,$2,$3)`, childTaskID, childBudgetID, now); err != nil {
 		return agentbudget.Budget{}, err
 	}
 
@@ -272,4 +281,15 @@ WHERE id=$7`,
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+func (s *Store) ResolveBudgetForTask(ctx context.Context, taskID int64) (agentbudget.Budget, error) {
+	var budgetID int64
+	if err := s.pool.QueryRow(ctx, `SELECT budget_id FROM task_budgets WHERE task_id=$1`, taskID).Scan(&budgetID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return agentbudget.Budget{}, agentbudget.ErrBudgetNotFound
+		}
+		return agentbudget.Budget{}, err
+	}
+	return s.GetBudget(ctx, budgetID)
 }

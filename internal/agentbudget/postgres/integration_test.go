@@ -369,6 +369,51 @@ func TestConsumeModelCallEnforcesLimitsAndIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestResolveBudgetForTaskFollowsSharedAndCarvedOutModes(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	fixture := openBudgetFixture(t, ctx)
+	ledger, err := agentbudgetpostgres.New(fixture.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	rootTaskID := fixture.insertTask(t, ctx, "empresa/ceo")
+	root, err := ledger.CreateRootBudget(ctx, budgetIntegrationOrg, rootTaskID, "empresa/ceo", testLimits(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedRoot, err := ledger.ResolveBudgetForTask(ctx, rootTaskID)
+	if err != nil || resolvedRoot.ID != root.ID {
+		t.Fatalf("resolve root: budget=%+v err=%v", resolvedRoot, err)
+	}
+
+	sharedChildTaskID := fixture.insertTask(t, ctx, budgetIntegrationRole)
+	if _, err := ledger.InheritForChild(ctx, root.ID, sharedChildTaskID, budgetIntegrationRole, 2, nil, now); err != nil {
+		t.Fatal(err)
+	}
+	resolvedShared, err := ledger.ResolveBudgetForTask(ctx, sharedChildTaskID)
+	if err != nil || resolvedShared.ID != root.ID {
+		t.Fatalf("resolve shared child: budget=%+v err=%v want id=%d", resolvedShared, err, root.ID)
+	}
+
+	allocation := agentbudget.Limits{MaxUSD: modelpricing.USDFromDollars(1), MaxTokens: 1000, MaxModelCalls: 1, MaxWallTimeMS: 1000, MaxDepth: 3, MaxRetries: 1, MaxSubagents: 1}
+	carvedChildTaskID := fixture.insertTask(t, ctx, budgetIntegrationRole)
+	carvedChild, err := ledger.InheritForChild(ctx, root.ID, carvedChildTaskID, budgetIntegrationRole, 2, &allocation, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedCarved, err := ledger.ResolveBudgetForTask(ctx, carvedChildTaskID)
+	if err != nil || resolvedCarved.ID != carvedChild.ID {
+		t.Fatalf("resolve carved-out child: budget=%+v err=%v want id=%d", resolvedCarved, err, carvedChild.ID)
+	}
+
+	unknownTaskID := fixture.insertTask(t, ctx, budgetIntegrationRole)
+	if _, err := ledger.ResolveBudgetForTask(ctx, unknownTaskID); !errors.Is(err, agentbudget.ErrBudgetNotFound) {
+		t.Fatalf("resolve unattached task: err=%v want ErrBudgetNotFound", err)
+	}
+}
+
 func TestConcurrentConsumeNeverExceedsModelCallLimit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
