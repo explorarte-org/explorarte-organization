@@ -841,6 +841,7 @@ ORDER BY id ASC`, request.RunID, s.organizationID, request.SelectedCandidateNode
 	verificationSet := sha256.New()
 	var latestEvidenceHash string
 	supportingVerifications := 0
+	hasVerified := false
 	for rows.Next() {
 		var id int64
 		var label, evidenceHash string
@@ -851,6 +852,9 @@ ORDER BY id ASC`, request.RunID, s.organizationID, request.SelectedCandidateNode
 		fmt.Fprintf(verificationSet, "%d\n%s\n%s\n", id, label, evidenceHash)
 		latestEvidenceHash = evidenceHash
 		supportingVerifications++
+		if decisiongraph.VerificationLabel(label) == decisiongraph.VerificationVerified {
+			hasVerified = true
+		}
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
@@ -858,6 +862,24 @@ ORDER BY id ASC`, request.RunID, s.organizationID, request.SelectedCandidateNode
 	}
 	rows.Close()
 	if supportingVerifications == 0 {
+		return decisiongraph.ErrInvalidDecision
+	}
+	// request.VerificationLabel must match the strongest label the ledger
+	// actually recorded for this candidate, not just be A or B in the
+	// abstract: the hash derivation above already stops a caller from
+	// pointing a decision at unrelated evidence, but without this check a
+	// candidate with only an 'inferred' verification could still be
+	// terminally decided as 'verified' — a stronger claim than anything
+	// that was ever really verified.
+	// The query above only ever selects rows already filtered to
+	// label IN ('verified','inferred'), so supportingVerifications > 0
+	// guarantees the actual label is verified or (falling through)
+	// inferred here.
+	actualLabel := decisiongraph.VerificationInferred
+	if hasVerified {
+		actualLabel = decisiongraph.VerificationVerified
+	}
+	if request.VerificationLabel != actualLabel {
 		return decisiongraph.ErrInvalidDecision
 	}
 	evidenceSetHash := latestEvidenceHash

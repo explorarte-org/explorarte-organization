@@ -422,6 +422,102 @@ WHERE run_id=$1 AND status IN ('claimed','running','waiting_verification')`, cla
 		}
 		clock.Set(now)
 	})
+
+	t.Run("terminal decision label must match the strongest recorded verification", func(t *testing.T) {
+		labelRun, err := service.CreateRun(ctx, decisiongraph.CreateRunRequest{
+			TaskID: taskID, AttemptID: attemptID,
+			ReasoningPolicySchemaVersion: "0.1.0",
+			ReasoningPolicyHash:          digest("reasoning-policy"),
+			IdempotencyKey:               "decisiongraph-label-mismatch",
+			BudgetLimits:                 limits,
+			Deadline:                     clock.Now().Add(5 * time.Minute),
+			CreatedBy:                    "integration/worker",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.AppendGraph(ctx, decisiongraph.AppendGraphRequest{
+			RunID: labelRun.ID,
+			Nodes: []decisiongraph.Node{
+				node(1, decisiongraph.NodeGoal, decisiongraph.BranchActive, decisiongraph.ExecutionSucceeded),
+				node(2, decisiongraph.NodeCandidateAction, decisiongraph.BranchActive, decisiongraph.ExecutionPending),
+				node(3, decisiongraph.NodeDecision, decisiongraph.BranchActive, decisiongraph.ExecutionPending),
+			},
+			Edges: []decisiongraph.Edge{
+				{FromNodeID: 2, ToNodeID: 1, Type: decisiongraph.EdgeDependsOn},
+				{FromNodeID: 3, ToNodeID: 2, Type: decisiongraph.EdgeDependsOn},
+			},
+			CreatedBy: "integration/planner",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := service.StartRun(ctx, labelRun.ID); err != nil {
+			t.Fatal(err)
+		}
+
+		candidateClaim, err := service.ClaimReadyNode(ctx, decisiongraph.ClaimNodeRequest{
+			RunID: labelRun.ID, ClaimedBy: "integration/label-worker", LeaseDuration: time.Minute,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := service.FinishExecution(ctx, decisiongraph.FinishExecutionRequest{
+			ExecutionID: candidateClaim.ExecutionID, ClaimToken: candidateClaim.ClaimToken,
+			FinalState: decisiongraph.ExecutionWaitingVerification,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		candidateExecutionID := candidateClaim.ExecutionID
+		// Only ever record a weak (inferred) verification for this
+		// candidate — no 'verified' row exists in the ledger.
+		if err := service.RecordVerification(ctx, decisiongraph.VerificationRecord{
+			RunID: labelRun.ID, NodeID: candidateClaim.NodeID, ExecutionID: &candidateExecutionID,
+			Label:       decisiongraph.VerificationInferred,
+			VerifierRef: "integration/label-verifier", VerifierVersion: "v1",
+			EvidenceSetHash: digest("label-evidence-set"),
+			ReasonCodes:     []string{"weak_evidence_only"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := service.TransitionBranch(ctx, decisiongraph.BranchTransitionRequest{
+			RunID: labelRun.ID, NodeID: candidateClaim.NodeID, ToState: decisiongraph.BranchSelected,
+			ReasonCode: "candidate_selected", Actor: "integration/label-decider",
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		decisionClaim, err := service.ClaimReadyNode(ctx, decisiongraph.ClaimNodeRequest{
+			RunID: labelRun.ID, ClaimedBy: "integration/label-worker", LeaseDuration: time.Minute,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := service.FinishExecution(ctx, decisiongraph.FinishExecutionRequest{
+			ExecutionID: decisionClaim.ExecutionID, ClaimToken: decisionClaim.ClaimToken,
+			FinalState: decisiongraph.ExecutionSucceeded,
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		// Claiming 'verified' when the ledger only ever recorded
+		// 'inferred' for this candidate must be rejected — the caller
+		// cannot assert a stronger verification outcome than what was
+		// actually durably verified.
+		if err := service.RecordTerminalDecision(ctx, decisiongraph.TerminalDecisionRequest{
+			RunID: labelRun.ID, DecisionNodeID: decisionClaim.NodeID, SelectedCandidateNodeID: candidateClaim.NodeID,
+			VerificationLabel: decisiongraph.VerificationVerified, CreatedBy: "integration/label-decider",
+		}); !errors.Is(err, decisiongraph.ErrInvalidDecision) {
+			t.Fatalf("overclaiming verified over an inferred-only ledger: err=%v want ErrInvalidDecision", err)
+		}
+
+		// The label that actually matches the ledger succeeds.
+		if err := service.RecordTerminalDecision(ctx, decisiongraph.TerminalDecisionRequest{
+			RunID: labelRun.ID, DecisionNodeID: decisionClaim.NodeID, SelectedCandidateNodeID: candidateClaim.NodeID,
+			VerificationLabel: decisiongraph.VerificationInferred, CreatedBy: "integration/label-decider",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 func createSimpleRun(t *testing.T, ctx context.Context, service *decisiongraph.Service, taskID, attemptID int64, limits decisiongraph.BudgetLimits, suffix string, now time.Time) decisiongraph.Run {
