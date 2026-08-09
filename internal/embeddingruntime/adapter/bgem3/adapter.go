@@ -78,9 +78,14 @@ func (a *Adapter) Metrics() MetricsSnapshot { return a.metrics.Snapshot() }
 // Embed validates the request against the pinned configuration (provider
 // id, model revision, dimension, item/byte bounds), reserves a bounded
 // queue slot (failing fast with ErrQueueFull rather than blocking
-// unboundedly), and rejects the sidecar's response unless every returned
-// vector matches by key, has the exact expected dimension, and contains no
-// NaN/Inf component — R30's explicit requirement, not an incidental check.
+// unboundedly), and rejects the sidecar's response unless: the sidecar's
+// reported model_revision AND artifact_sha256 both match the pinned
+// Config (not just model_revision — a sidecar could serve different
+// weights under the same revision string), the sidecar's reported
+// prompt_template_version matches what the request asked for, and every
+// returned vector matches by key, has the exact expected dimension, and
+// contains no NaN/Inf component — R30's explicit requirement, not an
+// incidental check.
 func (a *Adapter) Embed(ctx context.Context, request embeddingruntime.EmbedRequest) (embeddingruntime.EmbedResponse, error) {
 	if a == nil {
 		return embeddingruntime.EmbedResponse{}, ErrDisabled
@@ -122,9 +127,13 @@ func (a *Adapter) Embed(ctx context.Context, request embeddingruntime.EmbedReque
 		a.metrics.recordCall(len(request.Items), wall, true)
 		return embeddingruntime.EmbedResponse{}, err
 	}
-	if decoded.ModelRevision != a.config.ModelRevision {
+	if decoded.ModelRevision != a.config.ModelRevision || decoded.ArtifactSHA256 != a.config.ArtifactSHA256 {
 		a.metrics.recordCall(len(request.Items), wall, true)
 		return embeddingruntime.EmbedResponse{}, ErrModelIdentityDrift
+	}
+	if decoded.PromptTemplateVersion != request.PromptTemplateVersion {
+		a.metrics.recordCall(len(request.Items), wall, true)
+		return embeddingruntime.EmbedResponse{}, fmt.Errorf("%w: sidecar used prompt template %q, request asked for %q", ErrModelIdentityDrift, decoded.PromptTemplateVersion, request.PromptTemplateVersion)
 	}
 	if decoded.Dimension != a.config.ExpectedDimension {
 		a.metrics.recordCall(len(request.Items), wall, true)

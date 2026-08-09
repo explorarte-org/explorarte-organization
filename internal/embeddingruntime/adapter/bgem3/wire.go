@@ -24,11 +24,20 @@ type wireResult struct {
 }
 
 type embedWireResponse struct {
-	ModelRevision string       `json:"model_revision"`
-	Dimension     int          `json:"dimension"`
-	Results       []wireResult `json:"results"`
-	TextCount     int          `json:"text_count"`
-	CPUTimeMS     int64        `json:"cpu_time_ms"`
+	ModelRevision string `json:"model_revision"`
+	// ArtifactSHA256 and PromptTemplateVersion are the sidecar's own report
+	// of which pinned weights and which prompt template it actually used
+	// for this call — Embed verifies both against the adapter's Config,
+	// the same identity check Healthy already performs against
+	// /v1/health. Without this, a sidecar could serve wrong weights (or a
+	// stale prompt template) under a matching model_revision and produce
+	// vectors this adapter would accept as if nothing were wrong.
+	ArtifactSHA256        string       `json:"artifact_sha256"`
+	PromptTemplateVersion string       `json:"prompt_template_version"`
+	Dimension             int          `json:"dimension"`
+	Results               []wireResult `json:"results"`
+	TextCount             int          `json:"text_count"`
+	CPUTimeMS             int64        `json:"cpu_time_ms"`
 }
 
 // Health is the sidecar's readiness report — a separate endpoint from

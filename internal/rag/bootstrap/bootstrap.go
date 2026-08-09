@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -196,6 +197,15 @@ func openGeminiSemanticSearch(platformStore *platformpostgres.Store) (*rag.Seman
 // profile a wallet-insufficient-balance failure mode it structurally
 // cannot have). The adapter's own MaxConcurrency/MaxQueueDepth are the
 // entire resource budget; Adapter.Metrics() is the accounting.
+//
+// R30.1-6: readiness is mandatory at startup, not merely available —
+// Adapter.Healthy already verifies the sidecar's reported model_revision
+// and artifact_sha256 against Config, but nothing called it in the
+// productive path before this. Every bootstrap of the BGE-M3 profile now
+// calls it once here: a sidecar that is up but serving the wrong weights
+// (or simply not ready yet) fails this Open call outright instead of
+// silently going on to embed queries and documents against whatever the
+// sidecar actually happens to be running.
 func openBGEM3SemanticSearch(platformStore *platformpostgres.Store) (*rag.SemanticSearchDeps, error) {
 	embeddingConfig, err := bgem3.LoadConfig(os.LookupEnv)
 	if err != nil {
@@ -207,6 +217,11 @@ func openBGEM3SemanticSearch(platformStore *platformpostgres.Store) (*rag.Semant
 	}
 	if adapter == nil {
 		return nil, nil
+	}
+	healthCtx, cancel := context.WithTimeout(context.Background(), embeddingConfig.RequestTimeout)
+	defer cancel()
+	if _, err := adapter.Healthy(healthCtx); err != nil {
+		return nil, fmt.Errorf("bge-m3 sidecar readiness check failed at startup: %w", err)
 	}
 	return &rag.SemanticSearchDeps{
 		OnlineAdapter: adapter, LocalComputeOnly: true,

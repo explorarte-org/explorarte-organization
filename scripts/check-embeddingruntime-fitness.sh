@@ -27,6 +27,22 @@ require 'ErrModelIdentityDrift' internal/embeddingruntime/adapter/bgem3/health.g
 require 'PeakRSSBytes' internal/embeddingruntime/adapter/bgem3/wire.go
 require 'CPUTimeMS' internal/embeddingruntime/adapter/bgem3/wire.go
 
+# R30.1-6: Embed must verify the sidecar's artifact hash and prompt
+# template on every call, not just model_revision/dimension — a matching
+# revision string is not proof of matching weights, and a matching
+# revision+hash says nothing about which prompt template produced the
+# vectors.
+require 'ArtifactSHA256' internal/embeddingruntime/adapter/bgem3/wire.go
+require 'PromptTemplateVersion' internal/embeddingruntime/adapter/bgem3/wire.go
+require 'decoded\.ArtifactSHA256' internal/embeddingruntime/adapter/bgem3/adapter.go
+require 'decoded\.PromptTemplateVersion' internal/embeddingruntime/adapter/bgem3/adapter.go
+
+# R30.1-6: readiness is mandatory at startup — Healthy must actually be
+# called from the productive bootstrap path for both rag and memory, not
+# merely exist and go unconnected.
+require 'adapter\.Healthy\(healthCtx\)' internal/rag/bootstrap/bootstrap.go
+require 'adapter\.Healthy\(healthCtx\)' internal/memory/bootstrap/bootstrap.go
+
 # No subprocess/exec anywhere in internal/embeddingruntime: BGE-M3 is a
 # separate, independently hardened process this package only ever talks to
 # over HTTP (loopback or Unix socket) — orgd must never spawn or embed the

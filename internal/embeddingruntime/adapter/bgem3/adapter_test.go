@@ -3,6 +3,7 @@ package bgem3
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -115,7 +116,10 @@ func TestEmbedHappyPath(t *testing.T) {
 		for i, item := range req.Items {
 			results[i] = wireResult{Key: item.Key, Vector: flatVector(testDimension, 0.5)}
 		}
-		return http.StatusOK, embedWireResponse{ModelRevision: testModelRevision, Dimension: testDimension, Results: results, TextCount: len(req.Items)}
+		return http.StatusOK, embedWireResponse{
+			ModelRevision: testModelRevision, ArtifactSHA256: testArtifactSHA256, PromptTemplateVersion: req.PromptTemplateVersion,
+			Dimension: testDimension, Results: results, TextCount: len(req.Items),
+		}
 	}))
 	defer server.Close()
 
@@ -214,12 +218,50 @@ func TestEmbedRejectsMissingKeyInResponse(t *testing.T) {
 
 func TestEmbedRejectsModelIdentityDrift(t *testing.T) {
 	server := httptest.NewServer(fakeEmbedHandler(t, func(req embedWireRequest) (int, embedWireResponse) {
-		return http.StatusOK, embedWireResponse{ModelRevision: "some-other-revision", Dimension: testDimension, Results: []wireResult{{Key: req.Items[0].Key, Vector: flatVector(testDimension, 0.1)}}}
+		return http.StatusOK, embedWireResponse{ModelRevision: "some-other-revision", ArtifactSHA256: testArtifactSHA256, PromptTemplateVersion: req.PromptTemplateVersion, Dimension: testDimension, Results: []wireResult{{Key: req.Items[0].Key, Vector: flatVector(testDimension, 0.1)}}}
 	}))
 	defer server.Close()
 	adapter, _ := New(baseTestConfig(server.URL))
 	if _, err := adapter.Embed(context.Background(), validEmbedRequest(embeddingruntime.EmbedItem{Key: "a", Text: "x", Task: embeddingruntime.TaskDocument})); err == nil {
 		t.Fatal("expected model identity drift to be rejected")
+	}
+}
+
+// TestEmbedRejectsArtifactHashDrift is R30.1-6: a sidecar reporting the
+// pinned model_revision but different weights (artifact_sha256) must be
+// rejected exactly like a model_revision mismatch — matching revision
+// alone is not proof of matching weights.
+func TestEmbedRejectsArtifactHashDrift(t *testing.T) {
+	server := httptest.NewServer(fakeEmbedHandler(t, func(req embedWireRequest) (int, embedWireResponse) {
+		return http.StatusOK, embedWireResponse{
+			ModelRevision: testModelRevision, ArtifactSHA256: strings.Repeat("b", 64), PromptTemplateVersion: req.PromptTemplateVersion,
+			Dimension: testDimension, Results: []wireResult{{Key: req.Items[0].Key, Vector: flatVector(testDimension, 0.1)}},
+		}
+	}))
+	defer server.Close()
+	adapter, _ := New(baseTestConfig(server.URL))
+	_, err := adapter.Embed(context.Background(), validEmbedRequest(embeddingruntime.EmbedItem{Key: "a", Text: "x", Task: embeddingruntime.TaskDocument}))
+	if err != ErrModelIdentityDrift {
+		t.Fatalf("err=%v, want ErrModelIdentityDrift", err)
+	}
+}
+
+// TestEmbedRejectsPromptTemplateDrift is R30.1-6's other half: a sidecar
+// that used a different prompt template than the one the request asked
+// for must be rejected — a matching model_revision/artifact_sha256 says
+// nothing about which prompt template actually produced the vectors.
+func TestEmbedRejectsPromptTemplateDrift(t *testing.T) {
+	server := httptest.NewServer(fakeEmbedHandler(t, func(req embedWireRequest) (int, embedWireResponse) {
+		return http.StatusOK, embedWireResponse{
+			ModelRevision: testModelRevision, ArtifactSHA256: testArtifactSHA256, PromptTemplateVersion: "some-other-prompt-template.v9",
+			Dimension: testDimension, Results: []wireResult{{Key: req.Items[0].Key, Vector: flatVector(testDimension, 0.1)}},
+		}
+	}))
+	defer server.Close()
+	adapter, _ := New(baseTestConfig(server.URL))
+	_, err := adapter.Embed(context.Background(), validEmbedRequest(embeddingruntime.EmbedItem{Key: "a", Text: "x", Task: embeddingruntime.TaskDocument}))
+	if !errors.Is(err, ErrModelIdentityDrift) {
+		t.Fatalf("err=%v, want wrapping ErrModelIdentityDrift", err)
 	}
 }
 
@@ -256,7 +298,10 @@ func TestEmbedBoundedQueueRejectsBeyondCapacity(t *testing.T) {
 	server := httptest.NewServer(fakeEmbedHandler(t, func(req embedWireRequest) (int, embedWireResponse) {
 		atomic.AddInt32(&inFlight, 1)
 		<-release
-		return http.StatusOK, embedWireResponse{ModelRevision: testModelRevision, Dimension: testDimension, Results: []wireResult{{Key: req.Items[0].Key, Vector: flatVector(testDimension, 0.1)}}}
+		return http.StatusOK, embedWireResponse{
+			ModelRevision: testModelRevision, ArtifactSHA256: testArtifactSHA256, PromptTemplateVersion: req.PromptTemplateVersion,
+			Dimension: testDimension, Results: []wireResult{{Key: req.Items[0].Key, Vector: flatVector(testDimension, 0.1)}},
+		}
 	}))
 	defer server.Close()
 

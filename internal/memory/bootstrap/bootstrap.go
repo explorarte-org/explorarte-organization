@@ -184,6 +184,10 @@ func openGeminiSemanticSearch(platformStore *platformpostgres.Store, store *memo
 // internal/rag/bootstrap's openBGEM3SemanticSearch exactly (see that
 // function's doc comment for why a local, unbilled process must never be
 // forced through the monetary ledger, not even at a seeded $0 price).
+//
+// R30.1-6: readiness is mandatory at startup — see
+// internal/rag/bootstrap's openBGEM3SemanticSearch doc comment for why
+// Adapter.Healthy is called here rather than left unconnected.
 func openBGEM3SemanticSearch(platformStore *platformpostgres.Store, store *memorypostgres.Store) (*memory.SemanticSearchDeps, error) {
 	embeddingConfig, err := bgem3.LoadConfig(os.LookupEnv)
 	if err != nil {
@@ -195,6 +199,11 @@ func openBGEM3SemanticSearch(platformStore *platformpostgres.Store, store *memor
 	}
 	if adapter == nil {
 		return nil, nil
+	}
+	healthCtx, cancel := context.WithTimeout(context.Background(), embeddingConfig.RequestTimeout)
+	defer cancel()
+	if _, err := adapter.Healthy(healthCtx); err != nil {
+		return nil, fmt.Errorf("bge-m3 sidecar readiness check failed at startup: %w", err)
 	}
 	return &memory.SemanticSearchDeps{
 		InsertVector: func(ctx context.Context, organizationID, entryID, inputHash string, vector []float32, createdAt time.Time) error {
