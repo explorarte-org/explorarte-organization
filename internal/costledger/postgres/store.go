@@ -139,7 +139,7 @@ ORDER BY calls.last_ledger_at DESC, calls.invocation_id DESC`, organizationID, p
 
 func (s *Store) ListEvents(ctx context.Context, providerID string, limit int) ([]costledger.WalletEvent, error) {
 	rows, err := s.pool.Query(ctx, `
-SELECT id, provider_id, invocation_id, kind, amount_usd_nanos, created_at
+SELECT id, provider_id, invocation_id, embedding_invocation_id, kind, amount_usd_nanos, created_at
 FROM provider_wallet_events
 WHERE provider_id=$1
 ORDER BY created_at DESC, id DESC
@@ -148,32 +148,19 @@ LIMIT $2`, providerID, limit)
 		return nil, err
 	}
 	defer rows.Close()
-
-	events := make([]costledger.WalletEvent, 0, limit)
-	for rows.Next() {
-		var event costledger.WalletEvent
-		var kind string
-		if err := rows.Scan(&event.ID, &event.ProviderID, &event.InvocationID, &kind, &event.AmountUSD, &event.CreatedAt); err != nil {
-			return nil, err
-		}
-		event.Kind = costledger.EventKind(kind)
-		event.CreatedAt = event.CreatedAt.UTC()
-		events = append(events, event)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return events, nil
+	return scanWalletEvents(rows, limit)
 }
 
 func (s *Store) ListOrphanedReservations(ctx context.Context, olderThan time.Time, limit int) ([]costledger.WalletEvent, error) {
 	rows, err := s.pool.Query(ctx, `
-SELECT r.id, r.provider_id, r.invocation_id, r.kind, r.amount_usd_nanos, r.created_at
+SELECT r.id, r.provider_id, r.invocation_id, r.embedding_invocation_id, r.kind, r.amount_usd_nanos, r.created_at
 FROM provider_wallet_events r
 WHERE r.kind = 'reserved' AND r.created_at < $1
   AND NOT EXISTS (
       SELECT 1 FROM provider_wallet_events t
-      WHERE t.provider_id = r.provider_id AND t.invocation_id = r.invocation_id
+      WHERE t.provider_id = r.provider_id
+        AND t.invocation_id IS NOT DISTINCT FROM r.invocation_id
+        AND t.embedding_invocation_id IS NOT DISTINCT FROM r.embedding_invocation_id
         AND t.kind IN ('committed', 'released')
   )
 ORDER BY r.created_at ASC, r.id ASC
@@ -182,12 +169,15 @@ LIMIT $2`, olderThan.UTC(), limit)
 		return nil, err
 	}
 	defer rows.Close()
+	return scanWalletEvents(rows, limit)
+}
 
+func scanWalletEvents(rows pgx.Rows, limit int) ([]costledger.WalletEvent, error) {
 	events := make([]costledger.WalletEvent, 0, limit)
 	for rows.Next() {
 		var event costledger.WalletEvent
 		var kind string
-		if err := rows.Scan(&event.ID, &event.ProviderID, &event.InvocationID, &kind, &event.AmountUSD, &event.CreatedAt); err != nil {
+		if err := rows.Scan(&event.ID, &event.ProviderID, &event.InvocationID, &event.EmbeddingInvocationID, &kind, &event.AmountUSD, &event.CreatedAt); err != nil {
 			return nil, err
 		}
 		event.Kind = costledger.EventKind(kind)
@@ -264,7 +254,7 @@ func (s *Store) Reserve(ctx context.Context, providerID string, invocationID int
 	tag, err := tx.Exec(ctx, `
 INSERT INTO provider_wallet_events (provider_id, invocation_id, kind, amount_usd_nanos, created_at)
 VALUES ($1,$2,'reserved',$3,$4)
-ON CONFLICT (provider_id, invocation_id, kind) DO NOTHING`,
+ON CONFLICT (provider_id, invocation_id, kind) WHERE invocation_id IS NOT NULL DO NOTHING`,
 		providerID, invocationID, int64(estimatedUSD), now)
 	if err != nil {
 		return err
@@ -318,7 +308,7 @@ func (s *Store) Reconcile(ctx context.Context, providerID string, invocationID i
 	tag, err := tx.Exec(ctx, `
 INSERT INTO provider_wallet_events (provider_id, invocation_id, kind, amount_usd_nanos, created_at)
 VALUES ($1,$2,'committed',$3,$4)
-ON CONFLICT (provider_id, invocation_id, kind) DO NOTHING`,
+ON CONFLICT (provider_id, invocation_id, kind) WHERE invocation_id IS NOT NULL DO NOTHING`,
 		providerID, invocationID, int64(actualUSD), now)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -363,7 +353,7 @@ func (s *Store) Release(ctx context.Context, providerID string, invocationID int
 	tag, err := tx.Exec(ctx, `
 INSERT INTO provider_wallet_events (provider_id, invocation_id, kind, amount_usd_nanos, created_at)
 VALUES ($1,$2,'released',0,$3)
-ON CONFLICT (provider_id, invocation_id, kind) DO NOTHING`,
+ON CONFLICT (provider_id, invocation_id, kind) WHERE invocation_id IS NOT NULL DO NOTHING`,
 		providerID, invocationID, now)
 	if err != nil {
 		if isUniqueViolation(err) {

@@ -354,7 +354,10 @@ func TestListOrphanedReservationsFindsOnlyReservationsWithoutATerminalEvent(t *t
 		if event.ProviderID != "test.orphan" {
 			continue
 		}
-		found = append(found, event.InvocationID)
+		if event.InvocationID == nil {
+			t.Fatalf("chat reservation event has nil InvocationID: %+v", event)
+		}
+		found = append(found, *event.InvocationID)
 		if event.Kind != costledger.EventReserved {
 			t.Fatalf("orphan event kind=%q want reserved", event.Kind)
 		}
@@ -700,5 +703,171 @@ func TestConcurrentReservationsNeverOverspendTheWallet(t *testing.T) {
 	}
 	if wallet.ReservedUSD != modelpricing.USDFromDollars(1) {
 		t.Fatalf("reserved=%d want exactly the full balance reserved, no overspend", wallet.ReservedUSD)
+	}
+}
+
+func (f ledgerFixture) createEmbeddingInvocation(t *testing.T, ctx context.Context, ledger *costledgerpostgres.Store, providerID string, operation costledger.EmbeddingOperation) int64 {
+	t.Helper()
+	invocation, err := ledger.CreateEmbeddingInvocation(ctx, costledger.EmbeddingInvocation{
+		OrganizationID: ledgerIntegrationOrg, ActorRoleID: ledgerIntegrationRole,
+		ProviderID: providerID, ProviderModelID: "gemini-embedding-2",
+		BillingMode: modelpricing.BillingOnline, Operation: operation,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if invocation.ID == 0 {
+		t.Fatal("expected a generated embedding invocation id")
+	}
+	return invocation.ID
+}
+
+// TestEmbeddingReserveReconcileRoundTripAdjustsWalletCorrectly mirrors
+// TestReserveReconcileRoundTripAdjustsWalletCorrectly exactly, but through
+// the embedding_invocation_id path — proving the two paths debit the same
+// provider_wallets row correctly and independently.
+func TestEmbeddingReserveReconcileRoundTripAdjustsWalletCorrectly(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	fixture := openLedgerFixture(t, ctx)
+	ledger, err := costledgerpostgres.New(fixture.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if _, err := ledger.SetBalance(ctx, "test.embedding.roundtrip", modelpricing.USDFromDollars(10), now); err != nil {
+		t.Fatal(err)
+	}
+	embeddingInvocationID := fixture.createEmbeddingInvocation(t, ctx, ledger, "test.embedding.roundtrip", costledger.EmbeddingOperationRAGQuery)
+
+	if err := ledger.ReserveEmbedding(ctx, "test.embedding.roundtrip", embeddingInvocationID, modelpricing.USDFromDollars(1), now); err != nil {
+		t.Fatal(err)
+	}
+	wallet, err := ledger.GetWallet(ctx, "test.embedding.roundtrip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wallet.ReservedUSD != modelpricing.USDFromDollars(1) {
+		t.Fatalf("reserved=%d want $1 reserved", wallet.ReservedUSD)
+	}
+	if err := ledger.ReconcileEmbedding(ctx, "test.embedding.roundtrip", embeddingInvocationID, modelpricing.USDFromDollars(0.7), now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	wallet, err = ledger.GetWallet(ctx, "test.embedding.roundtrip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wallet.ReservedUSD != 0 {
+		t.Fatalf("reserved=%d want 0 after reconcile", wallet.ReservedUSD)
+	}
+	if wallet.BalanceUSD != modelpricing.USDFromDollars(10)-modelpricing.USDFromDollars(0.7) {
+		t.Fatalf("balance=%d want $9.30 after charging the real $0.70", wallet.BalanceUSD)
+	}
+
+	events, err := ledger.ListEvents(ctx, "test.embedding.roundtrip", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.InvocationID != nil {
+			t.Fatalf("embedding-path event carries a non-nil chat InvocationID: %+v", event)
+		}
+		if event.EmbeddingInvocationID == nil || *event.EmbeddingInvocationID != embeddingInvocationID {
+			t.Fatalf("event EmbeddingInvocationID=%v want %d", event.EmbeddingInvocationID, embeddingInvocationID)
+		}
+	}
+}
+
+// TestEmbeddingReserveFailsClosedOnInsufficientBalance mirrors the chat
+// path's insufficient-balance guarantee — an embedding call must never
+// spend past what the provider wallet actually has.
+func TestEmbeddingReserveFailsClosedOnInsufficientBalance(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	fixture := openLedgerFixture(t, ctx)
+	ledger, err := costledgerpostgres.New(fixture.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if _, err := ledger.SetBalance(ctx, "test.embedding.insufficient", modelpricing.USDFromDollars(1), now); err != nil {
+		t.Fatal(err)
+	}
+	embeddingInvocationID := fixture.createEmbeddingInvocation(t, ctx, ledger, "test.embedding.insufficient", costledger.EmbeddingOperationMemorySearch)
+	if err := ledger.ReserveEmbedding(ctx, "test.embedding.insufficient", embeddingInvocationID, modelpricing.USDFromDollars(5), now); !errors.Is(err, costledger.ErrInsufficientBalance) {
+		t.Fatalf("err=%v want ErrInsufficientBalance", err)
+	}
+	wallet, err := ledger.GetWallet(ctx, "test.embedding.insufficient")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wallet.ReservedUSD != 0 {
+		t.Fatalf("reserved=%d want 0 — a rejected reservation must never touch the wallet", wallet.ReservedUSD)
+	}
+}
+
+// TestEmbeddingAndChatPathsShareTheSameWalletButNeverCrossTerminals proves
+// the two invocation paths are truly independent settlement lanes against
+// one shared balance: a chat reservation's terminal state must never
+// satisfy an embedding reservation's ON CONFLICT/unique-terminal check or
+// vice versa, even for the same provider_id.
+func TestEmbeddingAndChatPathsShareTheSameWalletButNeverCrossTerminals(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	fixture := openLedgerFixture(t, ctx)
+	ledger, err := costledgerpostgres.New(fixture.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if _, err := ledger.SetBalance(ctx, "test.embedding.shared", modelpricing.USDFromDollars(10), now); err != nil {
+		t.Fatal(err)
+	}
+
+	chatInvocationID := fixture.insertInvocation(t, ctx)
+	if err := ledger.Reserve(ctx, "test.embedding.shared", chatInvocationID, modelpricing.USDFromDollars(2), now); err != nil {
+		t.Fatal(err)
+	}
+	embeddingInvocationID := fixture.createEmbeddingInvocation(t, ctx, ledger, "test.embedding.shared", costledger.EmbeddingOperationRAGReindex)
+	if err := ledger.ReserveEmbedding(ctx, "test.embedding.shared", embeddingInvocationID, modelpricing.USDFromDollars(3), now); err != nil {
+		t.Fatal(err)
+	}
+
+	wallet, err := ledger.GetWallet(ctx, "test.embedding.shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wallet.ReservedUSD != modelpricing.USDFromDollars(5) {
+		t.Fatalf("reserved=%d want $5 total across both paths", wallet.ReservedUSD)
+	}
+
+	// Reconciling the chat reservation must not disturb the embedding
+	// reservation's outstanding amount, and vice versa.
+	if err := ledger.Reconcile(ctx, "test.embedding.shared", chatInvocationID, modelpricing.USDFromDollars(2), now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	wallet, err = ledger.GetWallet(ctx, "test.embedding.shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wallet.ReservedUSD != modelpricing.USDFromDollars(3) {
+		t.Fatalf("reserved=%d want $3 (only the embedding reservation still outstanding)", wallet.ReservedUSD)
+	}
+	if err := ledger.ReleaseEmbedding(ctx, "test.embedding.shared", embeddingInvocationID, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	wallet, err = ledger.GetWallet(ctx, "test.embedding.shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wallet.ReservedUSD != 0 {
+		t.Fatalf("reserved=%d want 0 after both settle", wallet.ReservedUSD)
+	}
+
+	// Terminal exclusivity still holds per-path: reconciling the already-
+	// released embedding invocation must fail exactly like the chat path
+	// already does.
+	if err := ledger.ReconcileEmbedding(ctx, "test.embedding.shared", embeddingInvocationID, modelpricing.USDFromDollars(1), now.Add(3*time.Second)); !errors.Is(err, costledger.ErrAlreadyTerminal) {
+		t.Fatalf("err=%v want ErrAlreadyTerminal", err)
 	}
 }

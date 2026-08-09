@@ -31,6 +31,22 @@ type Ledger interface {
 	// judgment call for a human or an explicit reconciliation job, not
 	// something this method does on its own.
 	ListOrphanedReservations(ctx context.Context, olderThan time.Time, limit int) ([]WalletEvent, error)
+
+	// CreateEmbeddingInvocation persists the identity row an embedding
+	// call's wallet events (ReserveEmbedding/ReconcileEmbedding/
+	// ReleaseEmbedding) attach to. It must be called before ReserveEmbedding
+	// — there is no "reserve first, attribute later" path for embeddings
+	// the way chat's model_invocations already exists before Reserve runs.
+	CreateEmbeddingInvocation(ctx context.Context, invocation EmbeddingInvocation) (EmbeddingInvocation, error)
+	// ReserveEmbedding/ReconcileEmbedding/ReleaseEmbedding mirror
+	// Reserve/Reconcile/Release exactly (same idempotency, same
+	// insufficient-balance/already-terminal semantics), keyed by
+	// embeddingInvocationID against the same provider_wallets row instead
+	// of invocationID — an embedding call and a chat call against the same
+	// provider draw from one real dollar balance.
+	ReserveEmbedding(ctx context.Context, providerID string, embeddingInvocationID int64, estimatedUSD modelpricing.USDNanos, now time.Time) error
+	ReconcileEmbedding(ctx context.Context, providerID string, embeddingInvocationID int64, actualUSD modelpricing.USDNanos, now time.Time) error
+	ReleaseEmbedding(ctx context.Context, providerID string, embeddingInvocationID int64, now time.Time) error
 }
 
 // CallReader is the read-only attribution view used by operator tooling. It is

@@ -35,13 +35,60 @@ func (k EventKind) Valid() bool {
 	}
 }
 
+// WalletEvent.InvocationID and EmbeddingInvocationID are mutually
+// exclusive and exactly one is always set — a chat dispatch call sets
+// InvocationID (FK to model_invocations), an embedding call sets
+// EmbeddingInvocationID (FK to embedding_invocations). Enforced at the
+// database level by provider_wallet_events_exactly_one_invocation
+// (migration 000030).
 type WalletEvent struct {
-	ID           int64
-	ProviderID   string
-	InvocationID int64
-	Kind         EventKind
-	AmountUSD    modelpricing.USDNanos
-	CreatedAt    time.Time
+	ID                    int64
+	ProviderID            string
+	InvocationID          *int64
+	EmbeddingInvocationID *int64
+	Kind                  EventKind
+	AmountUSD             modelpricing.USDNanos
+	CreatedAt             time.Time
+}
+
+// EmbeddingOperation names the caller-side reason an embedding call was
+// made, for attribution/auditing — not used for any authorization or
+// pricing decision.
+type EmbeddingOperation string
+
+const (
+	EmbeddingOperationRAGQuery      EmbeddingOperation = "rag_query"
+	EmbeddingOperationRAGReindex    EmbeddingOperation = "rag_reindex"
+	EmbeddingOperationMemoryPropose EmbeddingOperation = "memory_propose"
+	EmbeddingOperationMemorySearch  EmbeddingOperation = "memory_search"
+)
+
+func (o EmbeddingOperation) Valid() bool {
+	switch o {
+	case EmbeddingOperationRAGQuery, EmbeddingOperationRAGReindex, EmbeddingOperationMemoryPropose, EmbeddingOperationMemorySearch:
+		return true
+	default:
+		return false
+	}
+}
+
+// EmbeddingInvocation is the lightweight identity row an embedding call's
+// wallet events attach to — deliberately not model_invocations, which
+// requires a task_attempt/context_snapshot/model_profile an embedding call
+// has no equivalent of. Unlike model_invocations, it carries no dispatch/
+// claim state machine: success or failure of the spend itself is recorded
+// entirely by which wallet event kind lands (reserved-only vs
+// reserved+committed vs reserved+released), same as the chat path.
+type EmbeddingInvocation struct {
+	ID              int64
+	OrganizationID  string
+	ActorRoleID     string
+	TaskID          *int64
+	ProviderID      string
+	ProviderModelID string
+	BillingMode     modelpricing.BillingMode
+	Operation       EmbeddingOperation
+	CreatedAt       time.Time
 }
 
 type SettlementStatus string
