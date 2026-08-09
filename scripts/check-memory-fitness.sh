@@ -46,7 +46,7 @@ if grep -R -E 'cell\.read_clinical_data|clinical_records|patient_records' intern
 # derived table. internal/memory must still never import internal/rag
 # directly — they stay independent domains, wired together only through
 # internal/contextengine.
-if grep -R -E 'internal/rag' internal/memory --include='*.go'; then fail 'R18 introduced a direct dependency on internal/rag forbidden by domain boundaries'; fi
+if grep -R -E '"github.com/Mireuz13/explorarte-organization/internal/rag' internal/memory --include='*.go'; then fail 'R18 introduced a direct dependency on internal/rag forbidden by domain boundaries'; fi
 if grep -R -E 'MayGrantCapabilities:[[:space:]]*true' internal/memory/contextprovider --include='*.go'; then fail 'approved memory may grant capabilities'; fi
 require 'StatusCandidate:[[:space:]]*\{' internal/memory/transitions.go
 require 'StatusArchived:[[:space:]]*\{\}' internal/memory/transitions.go

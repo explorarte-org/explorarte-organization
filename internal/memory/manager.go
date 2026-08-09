@@ -8,6 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/Mireuz13/explorarte-organization/internal/costledger"
+	"github.com/Mireuz13/explorarte-organization/internal/embeddingruntime"
 )
 
 const (
@@ -32,9 +35,12 @@ type Manager struct {
 	domain     *Service
 	repository Repository
 	gate       AuthorizationGate
+	semantic   *SemanticSearchDeps
 }
 
-func NewManager(domain *Service, repository Repository, gate AuthorizationGate) (*Manager, error) {
+// NewManager's semantic parameter may be nil — see SemanticSearchDeps for
+// what that degrades to.
+func NewManager(domain *Service, repository Repository, gate AuthorizationGate, semantic *SemanticSearchDeps) (*Manager, error) {
 	if domain == nil {
 		return nil, errors.New("memory manager requires domain service")
 	}
@@ -44,7 +50,10 @@ func NewManager(domain *Service, repository Repository, gate AuthorizationGate) 
 	if gate == nil {
 		return nil, errors.New("memory manager requires authorization gate")
 	}
-	return &Manager{domain: domain, repository: repository, gate: gate}, nil
+	if err := semantic.validate(); err != nil {
+		return nil, err
+	}
+	return &Manager{domain: domain, repository: repository, gate: gate, semantic: semantic}, nil
 }
 
 type ProposeRequest struct {
@@ -102,12 +111,22 @@ func (m *Manager) Review(ctx context.Context, request ReviewRequest) (Entry, err
 	if err := m.authorizeMutation(ctx, request.Mutation, current, updated); err != nil {
 		return Entry{}, err
 	}
-	return m.repository.Save(ctx, SaveCommand{
+	saved, err := m.repository.Save(ctx, SaveCommand{
 		Entry:            updated,
 		ExpectedRevision: request.Mutation.ExpectedRevision,
 		ActorID:          strings.TrimSpace(request.Mutation.ActorRoleID),
 		Reason:           strings.TrimSpace(request.Mutation.Reason),
 	})
+	if err != nil {
+		return Entry{}, err
+	}
+	// Embedding happens only after the approval is already durably saved —
+	// never before, and never for a rejected entry. Best-effort: a failed
+	// embed here must not undo or fail an approval that already succeeded.
+	if saved.Status == StatusApproved {
+		m.embedApprovedEntry(ctx, saved)
+	}
+	return saved, nil
 }
 
 func (m *Manager) Deprecate(ctx context.Context, request MutationRequest) (Entry, error) {
@@ -153,6 +172,67 @@ func (m *Manager) List(ctx context.Context, filter ListFilter) ([]Entry, error) 
 		return nil, fmt.Errorf("%w: organization_id is required", ErrInvalidRequest)
 	}
 	return m.repository.List(ctx, filter)
+}
+
+type SearchRequest struct {
+	OrganizationID string
+	ActorRoleID    string
+	// RoleID is the memory namespace being searched — R29 only supports
+	// RoleID == ActorRoleID (search your own role's memory). Get/List
+	// today have no gate at all (see internal/memory/manager.go's existing
+	// methods above); Search deliberately does not inherit that gap by
+	// widening to cross-role reads without a real capability behind it —
+	// that is left for a future branch to add deliberately, not defaulted
+	// into here.
+	RoleID    string
+	QueryText string
+	TaskID    *int64
+	Limit     int
+}
+
+// Search requires ActorRoleID == RoleID and falls back to ListApproved's
+// recency ordering when neither the exact-identifier nor the vector
+// channel is available (semantic search not configured, or the query
+// embedded to nothing) — Search is strictly additive over what already
+// existed, never worse.
+func (m *Manager) Search(ctx context.Context, request SearchRequest) ([]Entry, error) {
+	organizationID := strings.TrimSpace(request.OrganizationID)
+	actorRoleID := strings.TrimSpace(request.ActorRoleID)
+	roleID := strings.TrimSpace(request.RoleID)
+	queryText := strings.TrimSpace(request.QueryText)
+	if organizationID == "" || actorRoleID == "" || roleID == "" || queryText == "" {
+		return nil, fmt.Errorf("%w: organization_id, actor_role_id, role_id, and query_text are required", ErrInvalidRequest)
+	}
+	if actorRoleID != roleID {
+		return nil, fmt.Errorf("%w: search is limited to the actor's own role memory", ErrInvalidRequest)
+	}
+	limit := request.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	embeddingRepo, ok := m.repository.(EmbeddingRepository)
+	if !ok {
+		return m.ListApproved(ctx, organizationID, roleID, limit)
+	}
+	queryVector := m.embed(ctx, organizationID, actorRoleID, queryText, request.TaskID, embeddingruntime.TaskQuery, costledger.EmbeddingOperationMemorySearch)
+	results, err := embeddingRepo.Search(ctx, organizationID, roleID, queryText, queryVector, limit)
+	if err != nil {
+		return nil, err
+	}
+	if len(results) == 0 {
+		return m.ListApproved(ctx, organizationID, roleID, limit)
+	}
+	return results, nil
+}
+
+// ListApproved is the same recency-ordered read this package has always
+// had (see internal/memory/contextprovider), exposed as a Manager method so
+// Search can fall back to it without duplicating the ordering rule.
+func (m *Manager) ListApproved(ctx context.Context, organizationID, roleID string, limit int) ([]Entry, error) {
+	return m.repository.ListApproved(ctx, ApprovedFilter{OrganizationID: organizationID, RoleID: roleID, Limit: limit})
 }
 
 func (m *Manager) loadMutationTarget(ctx context.Context, request MutationRequest) (Entry, error) {

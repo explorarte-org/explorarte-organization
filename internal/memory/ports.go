@@ -1,6 +1,9 @@
 package memory
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 type ApprovedFilter struct {
 	OrganizationID string
@@ -37,4 +40,44 @@ type Repository interface {
 	Save(context.Context, SaveCommand) (Entry, error)
 	List(context.Context, ListFilter) ([]Entry, error)
 	ListApproved(context.Context, ApprovedFilter) ([]Entry, error)
+}
+
+// EntryEmbedding is one derived vector for an already-approved, immutable
+// memory version — stored in the separate organizational_memory_embeddings
+// table (migration 000028), never as a column mutation on the version
+// itself. Mirrors rag.ChunkEmbedding exactly; internal/memory cannot import
+// internal/rag (see scripts/check-memory-fitness.sh), so this is a
+// deliberate, small duplication rather than a shared type.
+type EntryEmbedding struct {
+	OrganizationID        string
+	EntryID               string
+	EmbeddingModelID      string
+	EmbeddingModelVersion string
+	EmbeddingDimension    int
+	PromptTemplateVersion string
+	InputHash             string
+	Vector                []float32
+	CreatedAt             time.Time
+}
+
+// ScoredEntry is one nearest-neighbor hit: EntryID plus the raw pgvector
+// cosine distance (<=>) — lower is more similar.
+type ScoredEntry struct {
+	EntryID  string
+	Distance float64
+}
+
+// EmbeddingRepository is the persistence boundary for the derived vector
+// index over approved memory entries — deliberately separate from
+// Repository, same reasoning as rag.EmbeddingRepository.
+type EmbeddingRepository interface {
+	InsertEntryEmbedding(ctx context.Context, embedding EntryEmbedding) error
+	// NearestEntries searches only within roleID's own memory — Search
+	// never crosses role boundaries in R29 (see Manager.Search).
+	NearestEntries(ctx context.Context, organizationID, roleID string, queryVector []float32, limit int) ([]ScoredEntry, error)
+	// Search fuses exact-identifier and (when queryVector is non-empty)
+	// vector channels by Reciprocal Rank Fusion, scoped to
+	// organizationID+roleID+status=approved, returning full Entry values
+	// ready to render — the equivalent of rag.Repository.Query for memory.
+	Search(ctx context.Context, organizationID, roleID, queryText string, queryVector []float32, limit int) ([]Entry, error)
 }

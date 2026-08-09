@@ -171,6 +171,24 @@ func runMemory(args []string, stdout, stderr io.Writer) int {
 		}
 		writeValue(stdout, *jsonOutput, entries)
 		return exitOK
+	case "search":
+		flags := flag.NewFlagSet("memory search", flag.ContinueOnError)
+		flags.SetOutput(stderr)
+		actor := flags.String("actor", "", "actor role id (must equal --role — search is limited to your own role's memory)")
+		role := flags.String("role", "", "role id whose memory to search")
+		query := flags.String("query", "", "search text")
+		limit := flags.Int("limit", 10, "maximum entries")
+		jsonOutput := flags.Bool("json", false, "emit JSON")
+		if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 || strings.TrimSpace(*actor) == "" || strings.TrimSpace(*role) == "" || strings.TrimSpace(*query) == "" {
+			fmt.Fprintln(stderr, "usage: orgctl memory search --actor <role> --role <role> --query <text> [--limit 10] [--json]")
+			return exitUsage
+		}
+		entries, err := runtime.Manager.Search(ctx, memory.SearchRequest{OrganizationID: runtime.OrganizationID, ActorRoleID: *actor, RoleID: *role, QueryText: *query, Limit: *limit})
+		if err != nil {
+			return memoryCommandError(stderr, err)
+		}
+		writeValue(stdout, *jsonOutput, entries)
+		return exitOK
 	default:
 		printMemoryUsage(stderr)
 		return exitUsage
@@ -233,5 +251,5 @@ func memoryCommandError(stderr io.Writer, err error) int {
 	}
 }
 func printMemoryUsage(out io.Writer) {
-	fmt.Fprintln(out, "usage: orgctl memory <propose|review|deprecate|archive|get|list> [options]")
+	fmt.Fprintln(out, "usage: orgctl memory <propose|review|deprecate|archive|get|list|search> [options]")
 }

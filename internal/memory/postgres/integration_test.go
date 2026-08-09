@@ -5,6 +5,7 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -231,6 +232,100 @@ func TestOrganizationalMemoryPostgresRepository(t *testing.T) {
 		}
 		if matchedByExactID != "mem-identifier-hyphenated" {
 			t.Fatalf("searching for identifier '20' matched %q, want mem-identifier-hyphenated (never mem-identifier-larger's '2000')", matchedByExactID)
+		}
+	})
+
+	t.Run("Search fuses exact and vector channels, never crosses roles, and vectors never block lexical-free recency", func(t *testing.T) {
+		clock.now = now.Add(50 * time.Second)
+		exactEntry, err := domain.Propose(memory.ProposeCommand{
+			ID: "mem-search-exact", OrganizationID: memoryIntegrationOrganization, RoleID: memoryIntegrationRole,
+			Category: "incident_learning", Problem: "agent hit error-77 during dispatch", Correction: "retried with backoff",
+			SourceKind: memory.SourceOperational, SourceRunID: 2001, EvidenceRefs: []memory.EvidenceRef{{Reference: "evidence:search-exact", Digest: "aaa"}},
+			ProposedBy: memoryIntegrationRole, Admission: memory.AdmissionAttestation{DataClass: memory.DataOrganizational, AttestedBy: memoryIntegrationRole, SourceBoundary: "organization", EvidenceRef: "admission:mem-search-exact", AttestedAt: clock.now.Add(-time.Second)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		exactCreated, _, err := store.CreateCandidate(ctx, memory.CreateCandidateCommand{Entry: exactEntry, IdempotencyKey: "idem-search-exact"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		clock.now = clock.now.Add(time.Second)
+		exactApproved, err := domain.Review(exactCreated, memory.Review{Outcome: memory.ReviewApprove, ReviewerID: memoryIntegrationReviewer})
+		if err != nil {
+			t.Fatal(err)
+		}
+		exactApproved, err = store.Save(ctx, memory.SaveCommand{Entry: exactApproved, ExpectedRevision: 1, ActorID: memoryIntegrationReviewer, Reason: "ok"})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		clock.now = clock.now.Add(time.Second)
+		vectorEntry := proposeEntry(t, domain, clock, clock.now, "mem-search-vector", memory.SourceOperational, memory.DataOrganizational, "")
+		vectorCreated, _, err := store.CreateCandidate(ctx, memory.CreateCandidateCommand{Entry: vectorEntry, IdempotencyKey: "idem-search-vector"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		clock.now = clock.now.Add(time.Second)
+		vectorApproved, err := domain.Review(vectorCreated, memory.Review{Outcome: memory.ReviewApprove, ReviewerID: memoryIntegrationReviewer})
+		if err != nil {
+			t.Fatal(err)
+		}
+		vectorApproved, err = store.Save(ctx, memory.SaveCommand{Entry: vectorApproved, ExpectedRevision: 1, ActorID: memoryIntegrationReviewer, Reason: "ok"})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		queryVector := make([]float32, 768)
+		queryVector[9] = 1
+		if err := store.InsertEntryEmbedding(ctx, memory.EntryEmbedding{
+			OrganizationID: memoryIntegrationOrganization, EntryID: vectorApproved.ID,
+			EmbeddingModelID: "gemini-embedding-2", EmbeddingModelVersion: "v1", EmbeddingDimension: 768,
+			PromptTemplateVersion: "prompt-template.v1", InputHash: fmt.Sprintf("%064x", 11), Vector: queryVector, CreatedAt: clock.now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		// Exact identifier channel alone (no vector) still finds the
+		// error-77 entry — Search must not require the vector channel to
+		// be useful.
+		exactOnly, err := store.Search(ctx, memoryIntegrationOrganization, memoryIntegrationRole, "error 77", nil, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		foundExact := false
+		for _, entry := range exactOnly {
+			if entry.ID == exactApproved.ID {
+				foundExact = true
+			}
+		}
+		if !foundExact {
+			t.Fatalf("exact-only search=%+v missing %s", exactOnly, exactApproved.ID)
+		}
+
+		// With the query vector supplied, the vector-only entry surfaces
+		// too, fused alongside the exact hit — RRF, not replacement.
+		fused, err := store.Search(ctx, memoryIntegrationOrganization, memoryIntegrationRole, "error 77", queryVector, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids := make(map[string]bool, len(fused))
+		for _, entry := range fused {
+			ids[entry.ID] = true
+		}
+		if !ids[exactApproved.ID] || !ids[vectorApproved.ID] {
+			t.Fatalf("fused search ids=%v want both %s and %s", ids, exactApproved.ID, vectorApproved.ID)
+		}
+
+		// Search never crosses role boundaries at the store level either —
+		// a role with no approved entries gets nothing back, never another
+		// role's memory.
+		crossRole, err := store.Search(ctx, memoryIntegrationOrganization, "empresa/ceo", "error 77", nil, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(crossRole) != 0 {
+			t.Fatalf("cross-role search leaked entries: %+v", crossRole)
 		}
 	})
 }

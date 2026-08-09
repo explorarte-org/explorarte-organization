@@ -106,7 +106,7 @@ func TestManagerDoesNotPersistUnauthorizedProposal(t *testing.T) {
 	repository := newMemoryRepository()
 	denied := errors.New("denied")
 	gate := &recordingGate{err: denied}
-	manager, err := NewManager(NewService(&fixedClock{now: now}), repository, gate)
+	manager, err := NewManager(NewService(&fixedClock{now: now}), repository, gate, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestManagerProposalAndReviewUseSeparateCapabilities(t *testing.T) {
 	clock := &fixedClock{now: now}
 	repository := newMemoryRepository()
 	gate := &recordingGate{}
-	manager, err := NewManager(NewService(clock), repository, gate)
+	manager, err := NewManager(NewService(clock), repository, gate, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +174,7 @@ func TestManagerRejectsStaleRevisionBeforeAuthorization(t *testing.T) {
 	clock := &fixedClock{now: now}
 	repository := newMemoryRepository()
 	gate := &recordingGate{}
-	manager, err := NewManager(NewService(clock), repository, gate)
+	manager, err := NewManager(NewService(clock), repository, gate, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +216,7 @@ func TestManagerRequiresMutationReason(t *testing.T) {
 	now := time.Date(2026, 8, 7, 5, 0, 0, 0, time.UTC)
 	repository := newMemoryRepository()
 	gate := &recordingGate{}
-	manager, err := NewManager(NewService(&fixedClock{now: now}), repository, gate)
+	manager, err := NewManager(NewService(&fixedClock{now: now}), repository, gate, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +234,7 @@ func TestManagerExactDuplicateCanBeIdempotent(t *testing.T) {
 	now := time.Date(2026, 8, 7, 5, 0, 0, 0, time.UTC)
 	repository := newMemoryRepository()
 	gate := &recordingGate{}
-	manager, err := NewManager(NewService(&fixedClock{now: now}), repository, gate)
+	manager, err := NewManager(NewService(&fixedClock{now: now}), repository, gate, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +255,7 @@ func TestManagerSameIdempotencyKeyDifferentContentConflicts(t *testing.T) {
 	now := time.Date(2026, 8, 7, 5, 0, 0, 0, time.UTC)
 	repository := newMemoryRepository()
 	gate := &recordingGate{}
-	manager, err := NewManager(NewService(&fixedClock{now: now}), repository, gate)
+	manager, err := NewManager(NewService(&fixedClock{now: now}), repository, gate, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
