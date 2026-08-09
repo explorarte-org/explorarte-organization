@@ -44,3 +44,27 @@ Evaluación canaria (lexical vs. Gemini-híbrido vs. BGE-M3-híbrido) sobre 14 p
 8. R30: comparación canaria y reporte final.
 
 No se mezclan arreglos incidentales fuera de estas fases; si aparece un bug no relacionado se documenta y se detiene esa línea salvo que bloquee R30 (mismo criterio que R29).
+
+## Fase 2 — estado real de los 14 proyectos (no todos tienen runner todavía)
+
+`internal/evaluation/fixtures` define los 14 proyectos requeridos (`CatalogR30()`), cada uno con ID+versión, objetivo, organización/roles, datos iniciales (`Scenario`), resultado esperado, invariantes duros, evidencia esperada, presupuesto máximo, reintentos/replans máximos, timeout y seed determinístico — campos obligatorios verificados por `Fixture.Validate()`.
+
+`internal/evaluation` (ya existente, de una rama anterior) resuelve trazas ya grabadas vía `TraceSource`/`Evaluator`; no ejecuta nada por sí mismo. `fixtures.Runner` es el contrato nuevo que sí ejecuta un fixture — separado a propósito, porque cada tipo de proyecto necesita un motor distinto (grafo de decisión puro en memoria, retrieval contra Postgres real, sandbox de ejecución de código, etc.).
+
+Honestidad de alcance — de los 14, **3 tienen un `Runner` real hoy** (`DecisionGraphRunner`, sin dependencia de Postgres, sobre el dominio puro de `internal/decisiongraph`):
+
+- `r30-08-budget-exhaustion`
+- `r30-11-dag-cycles-depth-terminal-evidence`
+- `r30-12-contradictory-evidence-non-selection`
+
+Los 11 restantes quedan con `Status: pending` y `PendingPhase` explícito (nunca `pending` sin decir qué fase lo resuelve):
+
+- `r30-03/04/05/06/07` (identificadores, paráfrasis semántica, memoria vieja-relevante, denegación cross-namespace, candidato rechazado): fase 3, reutilizando `internal/rag.Manager`/`internal/memory.Manager` contra Postgres real.
+- `r30-09` (reserva huérfana): fase 3, reutilizando `internal/costledger`.
+- `r30-10` (recuperación de lease de mensajería): fase 3, reutilizando `internal/agentmessaging.Store.ClaimNext`.
+- `r30-04` semántico y perfil `bge-m3-hybrid`: además depende de la fase 6 (perfil BGE-M3).
+- `r30-13` (página web hostil): fase 7 (harness de evidencia web efímera, aún no existe).
+- `r30-01`/`r30-02` (bug-fix de Go / migración de Postgres): requieren un sandbox real de ejecución de código, fuera del alcance de las fases 1-8 tal como están definidas; candidatas a rama futura o a la fase 8 si el tiempo lo permite.
+- `r30-14` (extremo a extremo): compone todos los anteriores, solo puede ejecutarse en la fase 8.
+
+`RunSuite` salta silenciosamente los fixtures que un `Runner` dado no soporta (`Runner.Supports`), en vez de fallar — así una corrida parcial contra el motor disponible hoy no se confunde con una corrida completa de las 14.
