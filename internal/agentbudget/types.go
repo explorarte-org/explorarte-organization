@@ -27,6 +27,18 @@ func (l Limits) Validate() error {
 	return nil
 }
 
+// DefaultLimits is a conservative starting ceiling for one CEO->leader->
+// worker execution tree: $5, 500K tokens, 100 model calls, 1 hour of wall
+// time, depth 5 (root + a few delegation levels of headroom), 10 retries,
+// 20 subagents. Adjustable per organization later; not tuned from any
+// real usage data yet.
+func DefaultLimits() Limits {
+	return Limits{
+		MaxUSD: modelpricing.USDFromDollars(5), MaxTokens: 500_000, MaxModelCalls: 100,
+		MaxWallTimeMS: 3_600_000, MaxDepth: 5, MaxRetries: 10, MaxSubagents: 20,
+	}
+}
+
 // Usage is both a running total (current consumption of a budget) and, when
 // passed to Reserve as a delta, the amount one operation wants to consume.
 // Depth is the exception: it is not cumulative, it is the current depth in

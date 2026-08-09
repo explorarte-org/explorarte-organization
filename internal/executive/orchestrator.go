@@ -28,12 +28,32 @@ type Orchestrator struct {
 	validator      *Validator
 	limits         Limits
 	clock          Clock
+	budgets        AgentBudgetProvider
+	messages       AgentMessagingProvider
 
 	mu     sync.Mutex
 	leases map[int64]LeaseRecord
 }
 
-func NewOrchestrator(organizationID string, registry RegistryResolver, tasks TaskCoordinator, contexts ContextCoordinator, assignments DispatchProvisioner, models ModelCoordinator, completion CompletionGate, decisions DecisionRecorder, authz AuthorizationGate, limits Limits, clock Clock) (*Orchestrator, error) {
+// OrchestratorOption configures optional Orchestrator behavior that most
+// callers (in particular every existing test) don't need to set up.
+type OrchestratorOption func(*Orchestrator)
+
+// WithAgentBudgets wires multidimensional budget tracking into every task
+// the orchestrator creates. Without this option, Orchestrator behaves
+// exactly as it did before AgentBudgetProvider existed.
+func WithAgentBudgets(budgets AgentBudgetProvider) OrchestratorOption {
+	return func(o *Orchestrator) { o.budgets = budgets }
+}
+
+// WithAgentMessaging wires durable delegation/completion messaging into
+// every task the orchestrator creates. Without this option, Orchestrator
+// behaves exactly as it did before AgentMessagingProvider existed.
+func WithAgentMessaging(messages AgentMessagingProvider) OrchestratorOption {
+	return func(o *Orchestrator) { o.messages = messages }
+}
+
+func NewOrchestrator(organizationID string, registry RegistryResolver, tasks TaskCoordinator, contexts ContextCoordinator, assignments DispatchProvisioner, models ModelCoordinator, completion CompletionGate, decisions DecisionRecorder, authz AuthorizationGate, limits Limits, clock Clock, opts ...OrchestratorOption) (*Orchestrator, error) {
 	if strings.TrimSpace(organizationID) == "" || registry == nil || tasks == nil || contexts == nil || assignments == nil || models == nil || completion == nil || decisions == nil || authz == nil {
 		return nil, errors.New("executive orchestrator dependencies are incomplete")
 	}
@@ -47,7 +67,11 @@ func NewOrchestrator(organizationID string, registry RegistryResolver, tasks Tas
 	if err != nil {
 		return nil, err
 	}
-	return &Orchestrator{organizationID: strings.TrimSpace(organizationID), registry: registry, tasks: tasks, contexts: contexts, assignments: assignments, models: models, completion: completion, decisions: decisions, validator: validator, limits: limits, clock: clock, leases: map[int64]LeaseRecord{}}, nil
+	orchestrator := &Orchestrator{organizationID: strings.TrimSpace(organizationID), registry: registry, tasks: tasks, contexts: contexts, assignments: assignments, models: models, completion: completion, decisions: decisions, validator: validator, limits: limits, clock: clock, leases: map[int64]LeaseRecord{}}
+	for _, opt := range opts {
+		opt(orchestrator)
+	}
+	return orchestrator, nil
 }
 
 func (o *Orchestrator) Submit(ctx context.Context, request SubmitRequest) (Run, bool, error) {
@@ -102,6 +126,11 @@ func (o *Orchestrator) Submit(ctx context.Context, request SubmitRequest) (Run, 
 	})
 	if err != nil {
 		return Run{}, false, err
+	}
+	if o.budgets != nil {
+		if err := o.budgets.CreateRootBudget(ctx, root, o.clock.Now()); err != nil {
+			return Run{}, false, fmt.Errorf("create root agent budget for task %d: %w", root.ID, err)
+		}
 	}
 	children, err := o.tasks.ListByCorrelation(ctx, root.CorrelationID)
 	if err != nil {
@@ -292,7 +321,7 @@ func (o *Orchestrator) createCEOPlanTask(ctx context.Context, root TaskRecord) (
 
 func (o *Orchestrator) createLeaderPlanTask(ctx context.Context, root TaskRecord, req DepartmentRequest, leader RoleRef) (TaskRecord, bool, error) {
 	instructions := boundedJSON(map[string]any{"department_id": req.UnitID, "objective": req.Objective, "deliverable": req.Deliverable, "constraints": req.Constraints, "priority": req.Priority}, o.limits.MaxInstructionsBytes)
-	return o.tasks.CreateTask(ctx, CreateTaskCommand{
+	task, reused, err := o.tasks.CreateTask(ctx, CreateTaskCommand{
 		RequestedByRoleID: CEORoleID, AssignedRoleID: leader.ID,
 		IdempotencyKey: childKey(root.ID, "leader-plan:"+req.UnitID), Title: "Department planning: " + req.UnitID,
 		Instructions:       "Produce only DepartmentPlan JSON for this bounded request: " + instructions,
@@ -300,6 +329,35 @@ func (o *Orchestrator) createLeaderPlanTask(ctx context.Context, root TaskRecord
 		Priority:           req.Priority, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID),
 		Requirements: []RequirementProposal{{Key: "typed_plan", Type: "result", Description: "Validated DepartmentPlan invocation result", Required: true}},
 	})
+	if err != nil {
+		return TaskRecord{}, false, err
+	}
+	if err := o.attachChildCoordination(ctx, root, root, task, 2); err != nil {
+		return TaskRecord{}, false, err
+	}
+	return task, reused, nil
+}
+
+// attachChildCoordination inherits child's budget from root's tree and
+// sends a durable delegation message from sender to child, when the
+// orchestrator has those optional providers configured. Both are
+// independently optional and independently best-effort against
+// already-created tasks: a budget/messaging failure here must not undo a
+// task creation that already durably happened, so it is surfaced as a
+// wrapped error for the caller to decide on, not silently swallowed.
+func (o *Orchestrator) attachChildCoordination(ctx context.Context, root, sender, child TaskRecord, depth int64) error {
+	now := o.clock.Now()
+	if o.budgets != nil {
+		if err := o.budgets.InheritForChild(ctx, root, child, depth, now); err != nil {
+			return fmt.Errorf("inherit agent budget for task %d: %w", child.ID, err)
+		}
+	}
+	if o.messages != nil {
+		if err := o.messages.SendDelegation(ctx, sender, child, now); err != nil {
+			return fmt.Errorf("send delegation message for task %d: %w", child.ID, err)
+		}
+	}
+	return nil
 }
 
 // driveInProgress signals that driveDepartments made partial progress this
@@ -469,6 +527,9 @@ func (o *Orchestrator) materializeWorkerTasks(ctx context.Context, root, source 
 		}
 		t, _, err := o.tasks.CreateTask(ctx, CreateTaskCommand{RequestedByRoleID: source.AssignedRoleID, AssignedRoleID: p.AssignedRoleID, IdempotencyKey: childKey(root.ID, suffix), Title: p.Title, Instructions: p.Instructions, AcceptanceCriteria: p.AcceptanceCriteria, Priority: p.Priority, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(source.ID), Requirements: appendResultRequirement(p.Requirements)})
 		if err != nil {
+			return err
+		}
+		if err := o.attachChildCoordination(ctx, root, source, t, 3); err != nil {
 			return err
 		}
 		created[p.ClientKey] = t

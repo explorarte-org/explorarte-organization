@@ -135,6 +135,28 @@ type AuthorizationRequest struct {
 	ApprovalRequestID      *int64
 }
 
+// AgentBudgetProvider creates and inherits multidimensional budgets across
+// an execution tree. It is optional on Orchestrator (see
+// WithAgentBudgets) — a nil provider means no budget tracking, existing
+// behavior is unaffected.
+type AgentBudgetProvider interface {
+	CreateRootBudget(ctx context.Context, root TaskRecord, now time.Time) error
+	// InheritForChild attaches child to root's budget tree at depth. It
+	// shares root's remaining budget outright — it never carves out a
+	// separate sub-allocation, since the orchestrator has no per-child
+	// limits of its own to hand out.
+	InheritForChild(ctx context.Context, root, child TaskRecord, depth int64, now time.Time) error
+}
+
+// AgentMessagingProvider sends durable delegation/completion messages
+// between agents (CEO<->coordinador, coordinador<->worker). It is optional
+// on Orchestrator (see WithAgentMessaging) — a nil provider means no
+// messaging, existing behavior is unaffected.
+type AgentMessagingProvider interface {
+	SendDelegation(ctx context.Context, sender, recipient TaskRecord, now time.Time) error
+	SendCompletion(ctx context.Context, sender, recipient TaskRecord, now time.Time) error
+}
+
 type Clock interface{ Now() time.Time }
 type ClockFunc func() time.Time
 

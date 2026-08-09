@@ -14,6 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Mireuz13/explorarte-organization/internal/agentbudget"
+	agentbudgetpostgres "github.com/Mireuz13/explorarte-organization/internal/agentbudget/postgres"
+	agentmessagingpostgres "github.com/Mireuz13/explorarte-organization/internal/agentmessaging/postgres"
 	authorizationbootstrap "github.com/Mireuz13/explorarte-organization/internal/authorization/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/completion"
 	completionpostgres "github.com/Mireuz13/explorarte-organization/internal/completion/postgres"
@@ -318,7 +321,7 @@ func (c *countingCompletion) Verify(ctx context.Context, taskID, attemptID int64
 	return c.delegate.Verify(ctx, taskID, attemptID)
 }
 
-func newOrchestrator(t *testing.T, h *integrationHarness, models *integrationModelRuntime, assignments integrationAssignments, completionGate executive.CompletionGate) *executive.Orchestrator {
+func newOrchestrator(t *testing.T, h *integrationHarness, models *integrationModelRuntime, assignments integrationAssignments, completionGate executive.CompletionGate, opts ...executive.OrchestratorOption) *executive.Orchestrator {
 	t.Helper()
 	value, err := executive.NewOrchestrator(
 		"explorarte",
@@ -326,6 +329,7 @@ func newOrchestrator(t *testing.T, h *integrationHarness, models *integrationMod
 		runtimeadapter.Tasks{Service: h.tasks, OrganizationID: "explorarte"},
 		&integrationContext{}, assignments, models, completionGate, h.decisions, h.authz,
 		executive.DefaultLimits(), executive.ClockFunc(time.Now),
+		opts...,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -394,6 +398,109 @@ func TestExecutivePostgreSQL17EndToEndAndRestart(t *testing.T) {
 		if task.ID != rootID && (task.CausationID == nil || *task.CausationID == "") {
 			t.Fatalf("missing causation task=%+v", task)
 		}
+	}
+}
+
+// TestExecutivePostgreSQL17AgentBudgetsAndMessagingAreWiredThroughDelegation
+// runs the same real CEO->leader->worker flow with
+// WithAgentBudgets/WithAgentMessaging configured, and asserts the root task
+// gets a real agent_budgets row, both delegation hops (CEO->leader,
+// leader->worker) get a real durable delegation message, and the delegated
+// tasks resolve to the root's shared budget rather than a budget of their
+// own — the default "no explicit allocation" path.
+func TestExecutivePostgreSQL17AgentBudgetsAndMessagingAreWiredThroughDelegation(t *testing.T) {
+	h := newIntegrationHarness(t)
+	defer h.close()
+	models := newIntegrationModelRuntime()
+	completionGate := &countingCompletion{delegate: h.completion}
+
+	budgetLedger, err := agentbudgetpostgres.New(h.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	messageLedger, err := agentmessagingpostgres.New(h.store, 200, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orchestrator := newOrchestrator(t, h, models, integrationAssignments{}, completionGate,
+		executive.WithAgentBudgets(runtimeadapter.AgentBudgets{Ledger: budgetLedger, Limits: agentbudget.DefaultLimits()}),
+		executive.WithAgentMessaging(runtimeadapter.AgentMessages{Ledger: messageLedger, MaxAttempts: 10}),
+	)
+
+	run, reused, err := orchestrator.Submit(h.ctx, executive.SubmitRequest{
+		ActorRoleID: executive.OwnerRoleID, IdempotencyKey: "integration-executive-agent-coordination",
+		Goal: executive.OwnerGoal{Goal: "Analyze the organization and return a one-area plan without external actions.", AcceptanceCriteria: []string{"one department reviewed", "closure verified"}},
+	})
+	if err != nil || reused {
+		t.Fatalf("submit: run=%+v reused=%v err=%v", run, reused, err)
+	}
+	rootID := run.RootTaskID
+	run, err = runUntilTerminalOrError(t, h.ctx, orchestrator, rootID, 20)
+	if err != nil || run.State != executive.StateCompleted {
+		t.Fatalf("run=%+v err=%v", run, err)
+	}
+
+	var rootBudgetID int64
+	var parentBudgetID *int64
+	if err := h.store.Pool().QueryRow(h.ctx, `SELECT id, parent_budget_id FROM agent_budgets WHERE task_id=$1`, rootID).Scan(&rootBudgetID, &parentBudgetID); err != nil {
+		t.Fatalf("root budget: %v", err)
+	}
+	if parentBudgetID != nil {
+		t.Fatalf("root budget must have no parent: %v", *parentBudgetID)
+	}
+
+	root, err := h.tasks.GetTask(h.ctx, rootID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	correlated, err := h.tasks.ListTasks(h.ctx, tasks.TaskFilter{OrganizationID: "explorarte", CorrelationID: *root.Task.CorrelationID, Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var leaderTask, workerTask *tasks.Task
+	for i := range correlated {
+		task := correlated[i]
+		if task.AssignedRoleID == "ingenieria_ia/orquestador" {
+			leaderTask = &task
+		}
+		if task.AssignedRoleID == "ingenieria_ia/qa" {
+			workerTask = &task
+		}
+	}
+	if leaderTask == nil || workerTask == nil {
+		t.Fatalf("expected a leader and a worker task among correlated tasks: leader=%v worker=%v", leaderTask, workerTask)
+	}
+
+	for _, delegatedTaskID := range []int64{leaderTask.ID, workerTask.ID} {
+		var budgetID int64
+		if err := h.store.Pool().QueryRow(h.ctx, `SELECT budget_id FROM task_budgets WHERE task_id=$1`, delegatedTaskID).Scan(&budgetID); err != nil {
+			t.Fatalf("task_budgets for %d: %v", delegatedTaskID, err)
+		}
+		if budgetID != rootBudgetID {
+			t.Fatalf("task %d shares a different budget than root: got=%d want=%d", delegatedTaskID, budgetID, rootBudgetID)
+		}
+		var messageType, recipientRoleID string
+		if err := h.store.Pool().QueryRow(h.ctx, `SELECT message_type, recipient_role_id FROM agent_messages WHERE recipient_task_id=$1`, delegatedTaskID).Scan(&messageType, &recipientRoleID); err != nil {
+			t.Fatalf("agent_messages for %d: %v", delegatedTaskID, err)
+		}
+		if messageType != "delegation" {
+			t.Fatalf("task %d message_type=%s want delegation", delegatedTaskID, messageType)
+		}
+	}
+
+	var ceoToLeader int
+	if err := h.store.Pool().QueryRow(h.ctx, `SELECT count(*) FROM agent_messages WHERE sender_task_id=$1 AND recipient_task_id=$2 AND message_type='delegation'`, rootID, leaderTask.ID).Scan(&ceoToLeader); err != nil {
+		t.Fatal(err)
+	}
+	if ceoToLeader != 1 {
+		t.Fatalf("ceo->leader delegation messages=%d want 1", ceoToLeader)
+	}
+	var leaderToWorker int
+	if err := h.store.Pool().QueryRow(h.ctx, `SELECT count(*) FROM agent_messages WHERE sender_task_id=$1 AND recipient_task_id=$2 AND message_type='delegation'`, leaderTask.ID, workerTask.ID).Scan(&leaderToWorker); err != nil {
+		t.Fatal(err)
+	}
+	if leaderToWorker != 1 {
+		t.Fatalf("leader->worker delegation messages=%d want 1", leaderToWorker)
 	}
 }
 

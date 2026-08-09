@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Mireuz13/explorarte-organization/internal/agentbudget"
+	agentbudgetpostgres "github.com/Mireuz13/explorarte-organization/internal/agentbudget/postgres"
+	agentmessagingpostgres "github.com/Mireuz13/explorarte-organization/internal/agentmessaging/postgres"
 	authorizationbootstrap "github.com/Mireuz13/explorarte-organization/internal/authorization/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/completion"
 	completionpostgres "github.com/Mireuz13/explorarte-organization/internal/completion/postgres"
@@ -107,6 +110,15 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 		Limits: limits, Clock: executive.ClockFunc(time.Now),
 	}
 
+	agentBudgetLedger, err := agentbudgetpostgres.New(store)
+	if err != nil {
+		return nil, fmt.Errorf("create executive agent budget ledger: %w", err)
+	}
+	agentMessageLedger, err := agentmessagingpostgres.New(store, agentMessageRateLimitMax, agentMessageRateLimitWindow)
+	if err != nil {
+		return nil, fmt.Errorf("create executive agent message ledger: %w", err)
+	}
+
 	orchestrator, err := executive.NewOrchestrator(
 		cfg.Tasks.OrganizationID,
 		runtimeadapter.Registry{Reader: registryRepository, OrganizationID: cfg.Tasks.OrganizationID},
@@ -119,9 +131,17 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 		runtimeadapter.Authorization{Service: authorizationRuntime.Service, OrganizationID: cfg.Tasks.OrganizationID},
 		limits,
 		executive.ClockFunc(time.Now),
+		executive.WithAgentBudgets(runtimeadapter.AgentBudgets{Ledger: agentBudgetLedger, Limits: agentbudget.DefaultLimits()}),
+		executive.WithAgentMessaging(runtimeadapter.AgentMessages{Ledger: agentMessageLedger, MaxAttempts: agentMessageMaxAttempts}),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create executive orchestrator: %w", err)
 	}
 	return &Runtime{Orchestrator: orchestrator, Tasks: taskService, Models: modelRuntime}, nil
 }
+
+const (
+	agentMessageRateLimitMax    = 200
+	agentMessageRateLimitWindow = time.Hour
+	agentMessageMaxAttempts     = 10
+)
