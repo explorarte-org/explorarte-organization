@@ -66,6 +66,40 @@ LIMIT $2`, providerID, limit)
 	return events, nil
 }
 
+func (s *Store) ListOrphanedReservations(ctx context.Context, olderThan time.Time, limit int) ([]costledger.WalletEvent, error) {
+	rows, err := s.pool.Query(ctx, `
+SELECT r.id, r.provider_id, r.invocation_id, r.kind, r.amount_usd_nanos, r.created_at
+FROM provider_wallet_events r
+WHERE r.kind = 'reserved' AND r.created_at < $1
+  AND NOT EXISTS (
+      SELECT 1 FROM provider_wallet_events t
+      WHERE t.provider_id = r.provider_id AND t.invocation_id = r.invocation_id
+        AND t.kind IN ('committed', 'released')
+  )
+ORDER BY r.created_at ASC, r.id ASC
+LIMIT $2`, olderThan.UTC(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	events := make([]costledger.WalletEvent, 0, limit)
+	for rows.Next() {
+		var event costledger.WalletEvent
+		var kind string
+		if err := rows.Scan(&event.ID, &event.ProviderID, &event.InvocationID, &kind, &event.AmountUSD, &event.CreatedAt); err != nil {
+			return nil, err
+		}
+		event.Kind = costledger.EventKind(kind)
+		event.CreatedAt = event.CreatedAt.UTC()
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return events, nil
+}
+
 func (s *Store) GetWallet(ctx context.Context, providerID string) (costledger.ProviderWallet, error) {
 	var wallet costledger.ProviderWallet
 	wallet.ProviderID = providerID

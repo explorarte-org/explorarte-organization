@@ -306,6 +306,64 @@ func TestReserveReconcileRoundTripAdjustsWalletCorrectly(t *testing.T) {
 	}
 }
 
+func TestListOrphanedReservationsFindsOnlyReservationsWithoutATerminalEvent(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	fixture := openLedgerFixture(t, ctx)
+	ledger, err := costledgerpostgres.New(fixture.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ledger.SetBalance(ctx, "test.orphan", modelpricing.USDFromDollars(10), time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().UTC().Add(-time.Hour)
+
+	orphanID := fixture.insertInvocation(t, ctx)
+	if err := ledger.Reserve(ctx, "test.orphan", orphanID, modelpricing.USDFromDollars(1), old); err != nil {
+		t.Fatal(err)
+	}
+
+	reconciledID := fixture.insertInvocation(t, ctx)
+	if err := ledger.Reserve(ctx, "test.orphan", reconciledID, modelpricing.USDFromDollars(1), old); err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.Reconcile(ctx, "test.orphan", reconciledID, modelpricing.USDFromDollars(1), old.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	releasedID := fixture.insertInvocation(t, ctx)
+	if err := ledger.Reserve(ctx, "test.orphan", releasedID, modelpricing.USDFromDollars(1), old); err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.Release(ctx, "test.orphan", releasedID, old.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	tooRecentID := fixture.insertInvocation(t, ctx)
+	if err := ledger.Reserve(ctx, "test.orphan", tooRecentID, modelpricing.USDFromDollars(1), time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	orphans, err := ledger.ListOrphanedReservations(ctx, time.Now().UTC().Add(-30*time.Minute), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found []int64
+	for _, event := range orphans {
+		if event.ProviderID != "test.orphan" {
+			continue
+		}
+		found = append(found, event.InvocationID)
+		if event.Kind != costledger.EventReserved {
+			t.Fatalf("orphan event kind=%q want reserved", event.Kind)
+		}
+	}
+	if len(found) != 1 || found[0] != orphanID {
+		t.Fatalf("orphans=%v want=[%d]", found, orphanID)
+	}
+}
+
 func TestReserveFailsClosedOnInsufficientBalanceAndUnknownWallet(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

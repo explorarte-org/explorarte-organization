@@ -20,4 +20,15 @@ type Ledger interface {
 	// ListEvents returns a provider's most recent wallet events (reserved,
 	// committed, released), newest first, for auditing and the CLI.
 	ListEvents(ctx context.Context, providerID string, limit int) ([]WalletEvent, error)
+	// ListOrphanedReservations returns "reserved" events created before
+	// olderThan that never reached a terminal event (committed or
+	// released), oldest first. A dispatch that crashes or is killed
+	// between reserving and settling (see modelruntime's
+	// AdapterFailureAmbiguous handling, which deliberately leaves an
+	// ambiguous outcome's reservation parked rather than releasing it)
+	// leaves exactly this kind of row behind. This is read-only: deciding
+	// whether to commit or release an orphan is a financial-policy
+	// judgment call for a human or an explicit reconciliation job, not
+	// something this method does on its own.
+	ListOrphanedReservations(ctx context.Context, olderThan time.Time, limit int) ([]WalletEvent, error)
 }
