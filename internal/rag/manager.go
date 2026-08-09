@@ -19,9 +19,12 @@ type Manager struct {
 	repository Repository
 	gate       AuthorizationGate
 	namespaces NamespaceResolver
+	semantic   *SemanticSearchDeps
 }
 
-func NewManager(domain *Service, repository Repository, gate AuthorizationGate, namespaces NamespaceResolver) (*Manager, error) {
+// NewManager's semantic parameter may be nil — see SemanticSearchDeps for
+// what that degrades to.
+func NewManager(domain *Service, repository Repository, gate AuthorizationGate, namespaces NamespaceResolver, semantic *SemanticSearchDeps) (*Manager, error) {
 	if domain == nil {
 		return nil, errors.New("rag manager requires domain service")
 	}
@@ -34,7 +37,10 @@ func NewManager(domain *Service, repository Repository, gate AuthorizationGate, 
 	if namespaces == nil {
 		return nil, errors.New("rag manager requires namespace resolver")
 	}
-	return &Manager{domain: domain, repository: repository, gate: gate, namespaces: namespaces}, nil
+	if err := semantic.validate(); err != nil {
+		return nil, err
+	}
+	return &Manager{domain: domain, repository: repository, gate: gate, namespaces: namespaces, semantic: semantic}, nil
 }
 
 type ProposeRequest struct {
@@ -277,6 +283,13 @@ type QueryRequest struct {
 	Scope          NamespaceKind
 	QueryText      string
 	Limit          int
+	// TaskID attributes an embedding call (if the vector channel is
+	// configured, see SemanticSearchDeps) to the agent budget tree that
+	// task belongs to. nil means budget tracking is skipped for this
+	// query's embedding cost even if a wallet gate still applies —
+	// mirrors modelruntime's costgate, where budget tracking is
+	// independently optional per task.
+	TaskID *int64
 }
 
 func (m *Manager) Query(ctx context.Context, request QueryRequest) ([]QueryResult, error) {
@@ -308,7 +321,8 @@ func (m *Manager) Query(ctx context.Context, request QueryRequest) ([]QueryResul
 	if limit > 100 {
 		limit = 100
 	}
-	return m.repository.Query(ctx, QueryCommand{OrganizationID: organizationID, NamespaceKind: request.Scope, NamespaceID: namespaceID, QueryText: queryText, Limit: limit})
+	queryVector := m.embedQuery(ctx, organizationID, actorRoleID, queryText, request.TaskID)
+	return m.repository.Query(ctx, QueryCommand{OrganizationID: organizationID, NamespaceKind: request.Scope, NamespaceID: namespaceID, QueryText: queryText, QueryVector: queryVector, Limit: limit})
 }
 
 func (m *Manager) ActiveGeneration(ctx context.Context, organizationID string, namespaceKind NamespaceKind, namespaceID string) (IndexGeneration, bool, error) {

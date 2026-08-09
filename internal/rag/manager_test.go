@@ -41,6 +41,7 @@ type fakeRepository struct {
 	chunksByGen      map[string][]Chunk
 	activeGeneration map[string]string
 	queryResults     []QueryResult
+	lastQueryCommand QueryCommand
 }
 
 func newFakeRepository() *fakeRepository {
@@ -111,6 +112,7 @@ func (r *fakeRepository) Reindex(_ context.Context, command ReindexCommand) (Ind
 }
 
 func (r *fakeRepository) Query(_ context.Context, command QueryCommand) ([]QueryResult, error) {
+	r.lastQueryCommand = command
 	return r.queryResults, nil
 }
 
@@ -139,7 +141,7 @@ func newTestManager(t *testing.T, gate AuthorizationGate, namespaces NamespaceRe
 	t.Helper()
 	clock := &fixedClock{now: time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)}
 	repo := newFakeRepository()
-	manager, err := NewManager(NewService(clock), repo, gate, namespaces)
+	manager, err := NewManager(NewService(clock), repo, gate, namespaces, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +328,7 @@ func TestManagerReindexRejectsNonApprovedVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := misbehavingApprovedRepository{fakeRepository: newFakeRepository(), version: candidate}
-	manager, err := NewManager(NewService(clock), repo, &recordingGate{}, &fakeNamespaces{})
+	manager, err := NewManager(NewService(clock), repo, &recordingGate{}, &fakeNamespaces{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

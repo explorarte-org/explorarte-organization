@@ -426,14 +426,7 @@ func (s *Store) Query(ctx context.Context, command rag.QueryCommand) ([]rag.Quer
 	if err != nil {
 		return nil, mapError("resolve active rag index generation", err)
 	}
-	rows, err := s.pool.Query(ctx, `SELECT c.chunk_id,c.version_id,c.chunker_id,c.chunker_version,c.ordinal,c.start_offset,c.end_offset,c.content,c.content_hash,
- v.document_id,v.title,v.source_reference,v.data_class,v.canonical_hash,
- ts_rank(c.content_tsv, plainto_tsquery('simple', $3)) AS score
-FROM rag_knowledge_chunks c
-JOIN rag_knowledge_versions v ON v.organization_id=c.organization_id AND v.version_id=c.version_id AND v.lifecycle='approved'
-WHERE c.organization_id=$1 AND c.generation_id=$2 AND c.content_tsv @@ plainto_tsquery('simple', $3)
-ORDER BY score DESC, c.chunk_id ASC
-LIMIT $4`, organizationID, activeGenerationID, queryText, limit)
+	rows, err := s.runHybridQuery(ctx, organizationID, activeGenerationID, queryText, command.QueryVector, limit)
 	if err != nil {
 		return nil, mapError("query rag knowledge chunks", err)
 	}

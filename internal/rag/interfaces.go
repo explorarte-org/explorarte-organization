@@ -39,7 +39,13 @@ type QueryCommand struct {
 	NamespaceKind  NamespaceKind
 	NamespaceID    string
 	QueryText      string
-	Limit          int
+	// QueryVector is nil when the vector channel is unavailable for this
+	// call (semantic search disabled, or embedding the query failed/was
+	// skipped — see Manager.embedQuery) — Query must still return correct
+	// exact+lexical results in that case, never treat a nil vector as an
+	// error.
+	QueryVector []float32
+	Limit       int
 }
 
 type Repository interface {

@@ -69,7 +69,7 @@ func (stubRepository) ExistingEvidenceReferences(context.Context, string, string
 
 func newTestProvider(t *testing.T, repo rag.Repository, gate rag.AuthorizationGate) *Provider {
 	t.Helper()
-	manager, err := rag.NewManager(rag.NewService(nil), repo, gate, stubNamespaces{})
+	manager, err := rag.NewManager(rag.NewService(nil), repo, gate, stubNamespaces{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

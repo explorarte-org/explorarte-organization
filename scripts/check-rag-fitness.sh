@@ -25,8 +25,8 @@ require 'maxChunkBytes' internal/rag/chunking.go
 require 'canonical_hash' internal/rag/postgres/store.go
 require 'rag_knowledge_lifecycle_events' internal/rag/postgres/store.go
 require 'FOR UPDATE' internal/rag/postgres/store.go
-require 'ts_rank' internal/rag/postgres/store.go
-require 'plainto_tsquery' internal/rag/postgres/store.go
+require 'ts_rank' internal/rag/postgres/hybrid_query.go
+require 'plainto_tsquery' internal/rag/postgres/hybrid_query.go
 require "lifecycle='approved'" internal/rag/postgres/store.go
 require 'lifecycle TEXT NOT NULL CHECK' migrations/000017_create_approved_knowledge_rag.up.sql
 require "'candidate', 'approved', 'rejected', 'deprecated', 'archived'" migrations/000017_create_approved_knowledge_rag.up.sql

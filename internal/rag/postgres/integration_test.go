@@ -538,6 +538,115 @@ func TestApprovedKnowledgeRAGPostgresRepository(t *testing.T) {
 			t.Fatalf("searching for identifier '20' matched document %q, want know-identifier-hyphenated (never know-identifier-larger's '2000')", matchedDocument)
 		}
 	})
+
+	t.Run("Query fuses exact, lexical, and vector channels by RRF", func(t *testing.T) {
+		const hybridNamespace = "ingenieria_ia_hybrid"
+		clock.now = now.Add(75 * time.Second)
+
+		// lexicalOnly is findable by plain full-text search (shares words
+		// with the query) but has no embedding and no shared identifier —
+		// it must still surface with QueryVector set, proving the lexical
+		// channel keeps contributing even when the vector channel is
+		// active, not just when it's the only channel available.
+		lexicalOnly := proposeVersionInNamespace(t, domain, clock, clock.now, "know-hybrid-lexical", hybridNamespace)
+		lexicalOnly.Title = "hybrid fixture"
+		lexicalOnly.Body = "the coolant pump failed during the overnight shift"
+		lexicalOnly = mustReconanonicalize(t, lexicalOnly)
+		lexicalCreated, _, err := store.CreateCandidate(ctx, rag.CreateCandidateCommand{Version: lexicalOnly, IdempotencyKey: "idem-hybrid-lexical"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		clock.now = clock.now.Add(time.Second)
+		lexicalApproved, err := domain.Review(lexicalCreated, rag.ReviewApprove, ragIntegrationReviewer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lexicalApproved, err = store.Save(ctx, rag.SaveCommand{Version: lexicalApproved, ExpectedRevision: 1, ActorID: ragIntegrationReviewer, Reason: "ok"})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// vectorOnly shares no words and no digits with the query text — a
+		// pure lexical+exact search must never find it. It is only
+		// reachable through a chunk embedding placed at ~0 distance from
+		// the query vector.
+		clock.now = clock.now.Add(time.Second)
+		vectorOnly := proposeVersionInNamespace(t, domain, clock, clock.now, "know-hybrid-vector", hybridNamespace)
+		vectorOnly.Title = "hybrid fixture"
+		vectorOnly.Body = "reactor core temperature exceeded the safety threshold"
+		vectorOnly = mustReconanonicalize(t, vectorOnly)
+		vectorCreated, _, err := store.CreateCandidate(ctx, rag.CreateCandidateCommand{Version: vectorOnly, IdempotencyKey: "idem-hybrid-vector"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		clock.now = clock.now.Add(time.Second)
+		vectorApproved, err := domain.Review(vectorCreated, rag.ReviewApprove, ragIntegrationReviewer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		vectorApproved, err = store.Save(ctx, rag.SaveCommand{Version: vectorApproved, ExpectedRevision: 1, ActorID: ragIntegrationReviewer, Reason: "ok"})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// A single Reindex call replaces the whole active generation with
+		// exactly the chunks it's given — it does not merge into whatever
+		// generation already existed. Both documents' chunks must be
+		// gathered and indexed together in one call, or the second call
+		// would supersede the first document clean out of the active
+		// generation Query() reads from.
+		var hybridChunks []rag.Chunk
+		for _, approved := range []rag.KnowledgeVersion{lexicalApproved, vectorApproved} {
+			chunks, err := rag.ChunkBody(approved.ID, rag.DefaultChunkerID, rag.DefaultChunkerVersion, approved.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			hybridChunks = append(hybridChunks, chunks...)
+		}
+		if _, err := store.Reindex(ctx, rag.ReindexCommand{OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceDepartment, NamespaceID: hybridNamespace, ChunkerID: rag.DefaultChunkerID, ChunkerVersion: rag.DefaultChunkerVersion, Chunks: hybridChunks}); err != nil {
+			t.Fatal(err)
+		}
+
+		var vectorChunkID string
+		if err := platform.Pool().QueryRow(ctx, `SELECT c.chunk_id FROM rag_knowledge_chunks c JOIN rag_knowledge_versions v ON v.organization_id=c.organization_id AND v.version_id=c.version_id WHERE c.organization_id=$1 AND v.document_id=$2`, ragIntegrationOrganization, "know-hybrid-vector").Scan(&vectorChunkID); err != nil {
+			t.Fatal(err)
+		}
+		queryVector := make([]float32, 768)
+		queryVector[5] = 1
+		if err := store.InsertChunkEmbedding(ctx, rag.ChunkEmbedding{
+			OrganizationID: ragIntegrationOrganization, ChunkID: vectorChunkID,
+			EmbeddingModelID: "gemini-embedding-2", EmbeddingModelVersion: "v1", EmbeddingDimension: 768,
+			PromptTemplateVersion: "prompt-template.v1", InputHash: fmt.Sprintf("%064x", 9), Vector: queryVector, CreatedAt: clock.now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		// Without a query vector, only the lexical channel can find
+		// anything — vectorOnly shares no words with the query.
+		lexicalOnlyResults, err := store.Query(ctx, rag.QueryCommand{OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceDepartment, NamespaceID: hybridNamespace, QueryText: "overnight coolant pump", Limit: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(lexicalOnlyResults) != 1 || lexicalOnlyResults[0].DocumentID != "know-hybrid-lexical" {
+			t.Fatalf("lexical-only query results=%+v", lexicalOnlyResults)
+		}
+
+		// With the query vector supplied, the vector channel surfaces
+		// vectorOnly even though it shares zero lexical/identifier overlap
+		// with the query text — RRF fusion, not replacement: the lexical
+		// hit must still be present too.
+		fused, err := store.Query(ctx, rag.QueryCommand{OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceDepartment, NamespaceID: hybridNamespace, QueryText: "overnight coolant pump", QueryVector: queryVector, Limit: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		documents := make(map[string]bool, len(fused))
+		for _, result := range fused {
+			documents[result.DocumentID] = true
+		}
+		if !documents["know-hybrid-lexical"] || !documents["know-hybrid-vector"] {
+			t.Fatalf("fused query documents=%v want both know-hybrid-lexical and know-hybrid-vector", documents)
+		}
+	})
 }
 
 func proposeVersion(t *testing.T, domain *rag.Service, clock *fixedClock, now time.Time, id string) rag.KnowledgeVersion {
