@@ -12,6 +12,15 @@ import (
 // estimatedInputTokens — i.e. the most specific context-length band that
 // still applies. A candidate set with no tier at all, or none whose
 // threshold the estimate clears, fails closed.
+//
+// Price rows are an immutable, append-only rate card (see migration
+// 000020): a price change for the same context band is a new row with a
+// later EffectiveAt, never a mutation of the old one. The caller's
+// point-in-time filter can therefore legitimately return several rows for
+// the same MinInputTokens band (its full price history up to that point),
+// and MinInputTokens alone cannot break that tie deterministically. Ties
+// are broken by the latest EffectiveAt — the currently valid version of
+// that band — so which row wins never depends on undefined SQL row order.
 func Resolve(candidates []PriceTier, estimatedInputTokens int64) (PriceTier, error) {
 	if estimatedInputTokens < 0 {
 		return PriceTier{}, fmt.Errorf("%w: estimated input tokens must be non-negative", ErrInvalidPriceTier)
@@ -22,7 +31,9 @@ func Resolve(candidates []PriceTier, estimatedInputTokens int64) (PriceTier, err
 		if candidate.MinInputTokens > estimatedInputTokens {
 			continue
 		}
-		if !found || candidate.MinInputTokens > best.MinInputTokens {
+		if !found ||
+			candidate.MinInputTokens > best.MinInputTokens ||
+			(candidate.MinInputTokens == best.MinInputTokens && candidate.EffectiveAt.After(best.EffectiveAt)) {
 			best = candidate
 			found = true
 		}

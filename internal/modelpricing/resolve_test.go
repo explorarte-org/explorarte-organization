@@ -32,6 +32,25 @@ func TestResolvePicksMostSpecificContextTierBelowThreshold(t *testing.T) {
 	}
 }
 
+func TestResolveBreaksSameThresholdTiesByLatestEffectiveAt(t *testing.T) {
+	older := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	newer := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	stale := PriceTier{ProviderID: "p", ProviderModelID: "m", ContextTierName: "default", MinInputTokens: 0, InputPriceNanosPerMillion: 100, OutputPriceNanosPerMillion: 100, EffectiveAt: older}
+	current := PriceTier{ProviderID: "p", ProviderModelID: "m", ContextTierName: "default", MinInputTokens: 0, InputPriceNanosPerMillion: 999, OutputPriceNanosPerMillion: 999, EffectiveAt: newer}
+
+	// Both orderings must resolve to the same (newer) row: which one wins
+	// must never depend on the slice/SQL row order the caller happened to
+	// get back for this immutable, append-only price history.
+	got, err := Resolve([]PriceTier{stale, current}, 10)
+	if err != nil || got.InputPriceNanosPerMillion != 999 {
+		t.Fatalf("stale-first order: got=%+v err=%v", got, err)
+	}
+	got, err = Resolve([]PriceTier{current, stale}, 10)
+	if err != nil || got.InputPriceNanosPerMillion != 999 {
+		t.Fatalf("current-first order: got=%+v err=%v", got, err)
+	}
+}
+
 func TestResolveFailsClosedWithoutAnyTier(t *testing.T) {
 	if _, err := Resolve(nil, 100); !errors.Is(err, ErrNoPricingResolved) {
 		t.Fatalf("empty candidates err=%v want ErrNoPricingResolved", err)
