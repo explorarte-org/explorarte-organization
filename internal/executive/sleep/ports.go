@@ -15,9 +15,11 @@ type CandidateProposer interface {
 	Propose(ctx context.Context, request rag.ProposeRequest) (rag.KnowledgeVersion, bool, error)
 }
 
-// EvidenceLedger reports which decision-graph runs have already been
-// consolidated into knowledge, so ListEligible never needs direct SQL access
-// to rag's own tables. Satisfied by *rag.Manager.
+// EvidenceLedger reports which decision-graph runs have already been consumed
+// as primary evidence by their own candidate, so ListEligible never needs
+// direct SQL access to rag's own tables. Supporting portability evidence uses
+// a distinct prefix and deliberately does not consume another primary group's
+// retry opportunity. Satisfied by *rag.Manager.
 type EvidenceLedger interface {
 	ExistingEvidenceReferences(ctx context.Context, organizationID, referencePrefix string) (map[string]bool, error)
 }

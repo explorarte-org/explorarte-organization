@@ -2,6 +2,7 @@ package sleep
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -12,7 +13,7 @@ import (
 
 func TestBuildCandidateIsDeterministicAndObservedOnly(t *testing.T) {
 	now := time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)
-	primary := Group{Key: GroupKey{UnitID: "ingenieria_ia", RoleID: "ingenieria_ia/qa", ProviderID: "deepseek"}, Experiences: []Experience{
+	primary := Group{Key: GroupKey{UnitID: "ingenieria_ia", RoleID: "ingenieria_ia/qa", ProviderID: "deepseek", ProviderModelID: "deepseek-model"}, Experiences: []Experience{
 		testExperience(3, VerificationVerified, "deepseek", now.Add(2*time.Minute)),
 		testExperience(1, VerificationVerified, "deepseek", now),
 		testExperience(2, VerificationContradicted, "deepseek", now.Add(time.Minute)),
@@ -61,12 +62,12 @@ func TestBuildCandidateIsDeterministicAndObservedOnly(t *testing.T) {
 
 func TestBuildCandidateCommitsPrimaryGroupIntoIdempotency(t *testing.T) {
 	now := time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)
-	groupA := Group{Key: GroupKey{UnitID: "ingenieria_ia", RoleID: "ingenieria_ia/qa", ProviderID: "provider-a"}, Experiences: []Experience{
+	groupA := Group{Key: GroupKey{UnitID: "ingenieria_ia", RoleID: "ingenieria_ia/qa", ProviderID: "provider-a", ProviderModelID: "provider-a-model"}, Experiences: []Experience{
 		testExperience(1, VerificationVerified, "provider-a", now),
 		testExperience(2, VerificationVerified, "provider-a", now.Add(time.Minute)),
 		testExperience(3, VerificationVerified, "provider-a", now.Add(2*time.Minute)),
 	}}
-	groupB := Group{Key: GroupKey{UnitID: "ingenieria_ia", RoleID: "ingenieria_ia/qa", ProviderID: "provider-b"}, Experiences: []Experience{
+	groupB := Group{Key: GroupKey{UnitID: "ingenieria_ia", RoleID: "ingenieria_ia/qa", ProviderID: "provider-b", ProviderModelID: "provider-b-model"}, Experiences: []Experience{
 		testExperience(4, VerificationVerified, "provider-b", now.Add(3*time.Minute)),
 		testExperience(5, VerificationVerified, "provider-b", now.Add(4*time.Minute)),
 		testExperience(6, VerificationVerified, "provider-b", now.Add(5*time.Minute)),
@@ -86,4 +87,26 @@ func TestBuildCandidateCommitsPrimaryGroupIntoIdempotency(t *testing.T) {
 	if a.Request.IdempotencyKey == b.Request.IdempotencyKey {
 		t.Fatal("different primary claims collided under one idempotency key")
 	}
+	assertEvidenceRole := func(candidate BuiltCandidate, primaryRunIDs, portabilityRunIDs []int64) {
+		t.Helper()
+		refs := make(map[string]bool, len(candidate.Request.Command.EvidenceRefs))
+		for _, ref := range candidate.Request.Command.EvidenceRefs {
+			refs[ref.Reference] = true
+		}
+		for _, runID := range primaryRunIDs {
+			if !refs[fmt.Sprintf("%s%d", primaryEvidenceReferencePrefix, runID)] {
+				t.Fatalf("candidate %s did not mark run %d as its primary evidence: %+v", candidate.Request.Command.ID, runID, refs)
+			}
+		}
+		for _, runID := range portabilityRunIDs {
+			if !refs[fmt.Sprintf("%s%d", portabilityEvidenceReferencePrefix, runID)] {
+				t.Fatalf("candidate %s did not mark run %d as portability-only evidence: %+v", candidate.Request.Command.ID, runID, refs)
+			}
+			if refs[fmt.Sprintf("%s%d", primaryEvidenceReferencePrefix, runID)] {
+				t.Fatalf("candidate %s consumed another group's primary run %d", candidate.Request.Command.ID, runID)
+			}
+		}
+	}
+	assertEvidenceRole(a, []int64{1, 2, 3}, []int64{4, 5, 6})
+	assertEvidenceRole(b, []int64{4, 5, 6}, []int64{1, 2, 3})
 }

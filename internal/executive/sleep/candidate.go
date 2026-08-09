@@ -12,6 +12,16 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/rag"
 )
 
+const (
+	// primaryEvidenceReferencePrefix marks a run as consumed only by the
+	// candidate whose GroupKey actually owns that run. ListEligible uses this
+	// prefix for deduplication.
+	primaryEvidenceReferencePrefix = "decisiongraph:run:"
+	// portabilityEvidenceReferencePrefix preserves supporting cross-provider
+	// provenance without consuming another primary group's retry opportunity.
+	portabilityEvidenceReferencePrefix = "decisiongraph:portability-run:"
+)
+
 type CandidateBody struct {
 	SchemaVersion           string            `json:"schema_version"`
 	Claim                   string            `json:"claim"`
@@ -97,7 +107,11 @@ func BuildCandidate(primary Group, recurring []Group, analysis GroupAnalysis, co
 			VerificationLabel: experience.VerificationLabel, EvidenceDigest: experience.EvidenceDigest, DecisionHash: experience.DecisionHash,
 			ObservedAt: experience.ObservedAt.UTC(), PrimaryGroup: primaryMember,
 		})
-		refs = append(refs, rag.EvidenceRef{Reference: fmt.Sprintf("decisiongraph:run:%d", experience.RunID), Digest: experience.EvidenceDigest})
+		referencePrefix := portabilityEvidenceReferencePrefix
+		if primaryMember {
+			referencePrefix = primaryEvidenceReferencePrefix
+		}
+		refs = append(refs, rag.EvidenceRef{Reference: fmt.Sprintf("%s%d", referencePrefix, experience.RunID), Digest: experience.EvidenceDigest})
 		runIDs = append(runIDs, experience.RunID)
 		if latestObserved.IsZero() || experience.ObservedAt.After(latestObserved) {
 			latestObserved = experience.ObservedAt.UTC()

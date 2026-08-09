@@ -12,11 +12,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// evidenceReferencePrefix identifies decision-graph run evidence in
-// rag_knowledge_evidence_refs. Kept in sync with candidate.go, which writes
-// exactly this prefix + run ID when a run contributes to a proposed candidate.
-const evidenceReferencePrefix = "decisiongraph:run:"
-
 // pageFetchSize bounds each keyset page fetched from decision_graph_runs.
 // ListEligible pages through the full window on (verification.created_at,
 // r.id) until it collects `limit` truly-eligible (not-yet-consolidated)
@@ -57,7 +52,7 @@ func (r *PostgresReader) ListEligible(ctx context.Context, organizationID string
 	// The "already consolidated" exclusion is answered through rag's own
 	// public API (never direct SQL against rag_knowledge_evidence_refs) so
 	// this reader stays inside internal/executive's persistence boundary.
-	consolidated, err := r.ledger.ExistingEvidenceReferences(ctx, organizationID, evidenceReferencePrefix)
+	consolidated, err := r.ledger.ExistingEvidenceReferences(ctx, organizationID, primaryEvidenceReferencePrefix)
 	if err != nil {
 		return nil, fmt.Errorf("sleep: check existing evidence references: %w", err)
 	}
@@ -172,7 +167,7 @@ LIMIT $5`, organizationID, to.UTC(), cursorTime, cursorID, pageFetchSize)
 		cursorTime, cursorID = last.ObservedAt, last.RunID
 
 		for _, experience := range page {
-			if consolidated[evidenceReferencePrefix+strconv.FormatInt(experience.RunID, 10)] {
+			if consolidated[primaryEvidenceReferencePrefix+strconv.FormatInt(experience.RunID, 10)] {
 				continue
 			}
 			experiences = append(experiences, experience)
