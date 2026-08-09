@@ -34,13 +34,13 @@ El objetivo no es alcanzar un porcentaje publicitario. Es reducir tokens frescos
 R30.1 cerró sus seis hallazgos correctivos, pero no convirtió R30 en una plataforma completamente ejercitada:
 
 - BGE-M3 real no está instalado ni medido; solo existe el adapter Go probado contra servidor fake.
-- 4 de 14 fixtures tienen runner real y 10 continúan declarados `pending`.
+- 9 de 14 fixtures tienen runner real tras el primer slice ejecutable de R31; 5 continúan declarados `pending`.
 
 Estos pendientes bloquean cosas distintas:
 
 | Acción | BGE-M3 real | 14/14 runners |
 |---|---:|---:|
-| Abrir R31 y medir tokens/caché actuales | no bloquea | no bloquea, pero el reporte debe decir 4/14 |
+| Abrir R31 y medir tokens/caché actuales | no bloquea | no bloquea, pero el reporte debe decir 9/14 mientras queden cinco pendientes |
 | Cambiar renderer/contexto y promoverlo globalmente | no bloquea | exige runners específicos de contexto más la suite existente; no puede llamarse validación total |
 | Ingerir el corpus AI en el espacio BGE-M3 | **bloquea** | exige al menos todos los runners RAG/Memory/namespace relacionados |
 | Habilitar autoauditoría/autoterminación organizacional | **bloquea** para flujos que dependan del corpus | **bloquea: requiere 14/14** |
@@ -153,8 +153,8 @@ Cada fase debe ser tocable end-to-end, tener un comando real de verificación y 
 - Crear `docs/implementation/branch-31-token-context-governance/{DESIGN.md,EVIDENCE.md,HANDOFF.md}`.
 - Registrar para cada técnica del informe: fuente primaria, madurez, aplicabilidad, decisión y test requerido.
 - Corregir explícitamente TOON: **Token-Oriented Object Notation**, no “Targeted Output Optimization Network”.
-- Sembrar una suite baseline con los roles/modelos reales y los 4 fixtures actualmente ejecutables; ampliar la misma suite a medida que cada runner pendiente se vuelva real.
-- Registrar explícitamente `executed/runner_ready/catalog_total`; al inicio se espera 4/4/14, nunca “14 aprobados”.
+- Sembrar una suite baseline con los roles/modelos reales y los fixtures actualmente ejecutables; ampliar la misma suite a medida que cada runner pendiente se vuelva real.
+- Registrar explícitamente `executed/runner_ready/catalog_total`; tras el primer slice de runners se espera 9/9/14, nunca “14 aprobados”.
 - Definir la secuencia para implementar los 10 runners pendientes como slices separados. Los runners RAG/Memory/namespace son requisito previo del canario de ingesta; 14/14 es requisito previo de la autoauditoría final.
 - Registrar bytes del snapshot, bytes renderizados, tokens reservados, tokens reportados, coste y resultado de calidad.
 

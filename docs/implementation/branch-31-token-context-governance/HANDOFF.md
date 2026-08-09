@@ -21,9 +21,27 @@ No contiene cambios de Go, SQL, configuración viva, routing, secretos ni adapte
 - Los seis hallazgos correctivos quedaron cerrados y documentados.
 - Cada commit de R30.1 pasó `gofmt`, `go vet`, `go build`, unit tests, integración completa contra PostgreSQL real y `make verify`.
 - BGE-M3 real sigue sin instalarse ni medirse; el adapter fue verificado con servidor fake.
-- El catálogo contiene 14 fixtures, de los cuales 4 tienen runner real y 10 permanecen `pending`.
+- El catálogo contiene 14 fixtures. El primer slice ejecutable de R31 elevó la cobertura de 4 a 9 runners reales; 5 permanecen `pending`.
 
-R31 conserva esos pendientes de forma explícita. No considera 4/14 equivalente a aprobación total.
+R31 conserva los cinco pendientes de forma explícita. No considera 9/14 equivalente a aprobación total.
+
+## Slice ejecutable: retrieval 03–07
+
+- Se añadió `internal/retrievalfixtures`, conectado a los managers productivos de RAG y Memory y a sus repositorios PostgreSQL reales.
+- Los fixtures cubren identificadores `20`/`2000`, paráfrasis semántica, memoria vieja relevante, denegación cross-namespace/cross-role y candidatos rechazados no recuperables.
+- Los vectores son sintéticos y deterministas. Prueban el cableado exacto/léxico/RRF/pgvector y las invariantes de autorización; no prueban que el sidecar BGE-M3 real esté instalado o sano.
+- `internal/evaluationdb.RequireDisposable` rechaza cualquier base cuyo nombre no contenga `test`, `fixture` o `integration`, usando `current_database()` del servidor. Los fixtures nunca pueden mutar el Postgres vivo por una variable de entorno engañosa.
+- Se verificó replay sobre el mismo Postgres: el orden de documentos y los instantes de admisión son deterministas incluso cuando un candidato ya estaba aprobado.
+
+Canarios observados contra PostgreSQL 17 real con pgvector:
+
+| Perfil | Ejecutados | Aprobados | Resultado relevante |
+|---|---:|---:|---|
+| `gemini-hybrid` de referencia, vectores sintéticos | 9/9 | 9 | PASS |
+| `bge-m3-hybrid`, vectores sintéticos | 9/9 | 9 | PASS |
+| `lexical` | 9/9 | 8 | falla únicamente memoria vieja relevante frente a reciente irrelevante, la brecha esperada |
+
+Quedan pendientes los runners 01, 02, 09, 10 y 14.
 
 ## Corpus AI transferido, no ingerido
 
@@ -68,9 +86,9 @@ Se rechazan o difieren:
 
 ## Bloqueadores y orden siguiente
 
-1. Fase 0: baseline reproducible y cobertura honesta `executed/runner_ready/catalog_total`.
+1. Completar los runners 01, 02, 09, 10 y 14 manteniendo cobertura honesta `executed/runner_ready/catalog_total`.
 2. Fases 1–4: telemetría real, renderer dual, caché y divulgación progresiva.
-3. Implementar primero los runners RAG/Memory/namespace pendientes necesarios para evaluar ingesta.
+3. Los runners RAG/Memory/namespace necesarios para evaluar ingesta ya están activos; falta el smoke de hardware BGE-M3.
 4. Instalar y medir BGE-M3 real con identidad fijada; el disco actual obliga a verificar tamaño/margen antes de descargar pesos.
 5. Ingerir un canario estratificado del corpus AI y ejecutar recuperación en español.
 6. Completar 14/14 runners.

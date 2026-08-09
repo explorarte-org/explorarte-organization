@@ -12,6 +12,8 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/decisiongraphfixtures"
 	"github.com/Mireuz13/explorarte-organization/internal/evaluation/fixtures"
 	evaluationpostgres "github.com/Mireuz13/explorarte-organization/internal/evaluation/postgres"
+	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/retrievalfixtures"
 	"github.com/Mireuz13/explorarte-organization/internal/webevidencefixtures"
 )
 
@@ -29,8 +31,12 @@ commands:
 // runner for the RAG/memory fixtures, ...) — orgctl evaluation run/seed
 // never need to change again when they do, since RunSuite already skips
 // whatever a given Runner does not support.
-func evaluationRunners() []fixtures.Runner {
-	return []fixtures.Runner{decisiongraphfixtures.DecisionGraphRunner{}, webevidencefixtures.WebEvidenceRunner{}}
+func evaluationRunners(store *platformpostgres.Store) []fixtures.Runner {
+	return []fixtures.Runner{
+		decisiongraphfixtures.DecisionGraphRunner{},
+		webevidencefixtures.WebEvidenceRunner{},
+		retrievalfixtures.Runner{Store: store},
+	}
 }
 
 func runEvaluation(args []string, stdout, stderr io.Writer) int {
@@ -62,6 +68,7 @@ func fixturesForSuite(suite string) ([]fixtures.Fixture, error) {
 	case "r30":
 		catalog := decisiongraphfixtures.Activate(fixtures.CatalogR30())
 		catalog = webevidencefixtures.Activate(catalog)
+		catalog = retrievalfixtures.Activate(catalog)
 		return catalog, nil
 	default:
 		return nil, fmt.Errorf("unknown suite %q", suite)
@@ -171,7 +178,7 @@ func evaluationRun(args []string, stdout, stderr io.Writer) int {
 	}
 
 	var allOutcomes []fixtures.RunOutcome
-	for _, r := range evaluationRunners() {
+	for _, r := range evaluationRunners(store) {
 		outcomes, runErr := fixtures.RunSuite(ctx, r, catalog, *mode)
 		if runErr != nil {
 			fmt.Fprintf(stderr, "run suite: %v\n", runErr)

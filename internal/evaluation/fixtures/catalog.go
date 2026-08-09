@@ -3,12 +3,11 @@ package fixtures
 import "time"
 
 // CatalogR30 is the 14 synthetic evaluation projects required to compare
-// lexical, Gemini-hybrid and (once Phase 4-6 land) BGE-M3-hybrid retrieval,
-// plus the organizational machinery around them. Fixtures marked
-// StatusRunnerReady execute today via DecisionGraphRunner; the rest are
-// fully specified but wait on the R30 phase named in PendingPhase, which
-// adds the subsystem (or the Postgres-backed runner) they need. No fixture
-// here claims a runner it does not have.
+// lexical, Gemini-hybrid and BGE-M3-hybrid retrieval, plus the organizational
+// machinery around them. The base catalog intentionally keeps every fixture
+// pending: bridge packages attach typed scenarios and mark only the fixtures
+// they can really execute as runner-ready. No fixture here claims a runner it
+// does not have.
 func CatalogR30() []Fixture {
 	return []Fixture{
 		fixtureGoBugFix(),

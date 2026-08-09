@@ -19,13 +19,12 @@ import (
 )
 
 // TestEvaluationRunReportsFullCoverageForTodaysActivatedFixtures exercises
-// the real CLI path (runEvaluation, real Postgres) for R30.1-3: a run over
-// suite r30 today only ever activates the decisiongraph and web-evidence
-// fixtures (see evaluationRunners) — every other fixture is honestly
-// fixtures.StatusPending for a future R30 phase. That must show up as
-// skipped>0 (the pending gap is real and must never be hidden) while still
-// reporting coverage_complete=true and exiting exitOK, because every
-// fixture the catalog claims is runner-ready today was actually executed.
+// the real CLI path (runEvaluation, real Postgres): the bridge packages wired
+// in evaluationRunners activate the fixtures they genuinely implement, while
+// unfinished fixtures remain fixtures.StatusPending. That must show up as
+// skipped>0 until the final runner lands, while still reporting
+// coverage_complete=true and exiting exitOK because every fixture the catalog
+// currently claims is runner-ready was actually executed.
 func TestEvaluationRunReportsFullCoverageForTodaysActivatedFixtures(t *testing.T) {
 	seedEvaluationOrganization(t)
 	var stdout, stderr bytes.Buffer
@@ -54,7 +53,7 @@ func TestEvaluationRunReportsFullCoverageForTodaysActivatedFixtures(t *testing.T
 		t.Fatalf("result=%+v want failed=0", result)
 	}
 	if result.Skipped == 0 {
-		t.Fatalf("result=%+v want skipped>0 — most R30 fixtures are still honestly pending a future phase, and this test would stop meaning anything if that ever became false silently", result)
+		t.Fatalf("result=%+v want skipped>0 until all R30 bridge runners land; a zero here must be introduced deliberately with the final runner", result)
 	}
 
 	// A run compared against itself must succeed — same, complete fixture
