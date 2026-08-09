@@ -185,9 +185,40 @@ func evaluationRun(args []string, stdout, stderr io.Writer) int {
 		}
 		allOutcomes = append(allOutcomes, outcomes...)
 	}
-	if err := evalStore.CompleteRun(ctx, runID, time.Now().UTC()); err != nil {
-		fmt.Fprintf(stderr, "complete evaluation run: %v\n", err)
-		return exitInternal
+
+	// expectedReady is how many fixtures the catalog itself claims are
+	// runner-ready right now — as opposed to len(catalog), which also
+	// counts fixtures honestly marked fixtures.StatusPending for a future
+	// R30 phase that has not landed yet (see internal/evaluation/fixtures.
+	// Fixture's doc comment). Those are an expected, structural gap, not a
+	// coverage failure, and this run is never held responsible for them.
+	// executed < expectedReady, by contrast, means a fixture the catalog
+	// claims is ready today was NOT actually run — e.g. its RunnerKind has
+	// no matching Runner wired into evaluationRunners(), or a Runner
+	// regressed Supports() — exactly the silent-partial-coverage failure
+	// mode this check exists to catch, indistinguishable from a clean
+	// pending gap unless counted separately like this.
+	expectedReady := 0
+	for _, f := range catalog {
+		if f.Status == fixtures.StatusRunnerReady {
+			expectedReady++
+		}
+	}
+	executed := len(allOutcomes)
+	skipped := len(catalog) - executed
+	coverageComplete := executed == expectedReady
+
+	// CompleteRun's own doc comment already promises "an incomplete canary
+	// run must never be reported as if it were a full comparison" — this
+	// is that promise actually enforced: completed_at stays NULL whenever
+	// coverage fell short, so evaluationCompare (and any other consumer of
+	// GetRun) can reject it outright instead of trusting a skipped count
+	// nobody is required to check.
+	if coverageComplete {
+		if err := evalStore.CompleteRun(ctx, runID, time.Now().UTC()); err != nil {
+			fmt.Fprintf(stderr, "complete evaluation run: %v\n", err)
+			return exitInternal
+		}
 	}
 
 	passed, failed := 0, 0
@@ -199,9 +230,17 @@ func evaluationRun(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	if *jsonOutput {
-		writeValue(stdout, true, map[string]any{"run_id": runID, "suite": *suite, "mode": *mode, "executed": len(allOutcomes), "passed": passed, "failed": failed, "skipped": len(catalog) - len(allOutcomes)})
+		writeValue(stdout, true, map[string]any{
+			"run_id": runID, "suite": *suite, "mode": *mode, "executed": executed, "passed": passed, "failed": failed,
+			"skipped": skipped, "expected_ready": expectedReady, "coverage_complete": coverageComplete,
+		})
 	} else {
-		fmt.Fprintf(stdout, "run %d: suite=%s mode=%s executed=%d passed=%d failed=%d skipped=%d\n", runID, *suite, *mode, len(allOutcomes), passed, failed, len(catalog)-len(allOutcomes))
+		fmt.Fprintf(stdout, "run %d: suite=%s mode=%s executed=%d passed=%d failed=%d skipped=%d expected_ready=%d coverage_complete=%v\n",
+			runID, *suite, *mode, executed, passed, failed, skipped, expectedReady, coverageComplete)
+	}
+	if !coverageComplete {
+		fmt.Fprintf(stderr, "evaluation run %d executed only %d/%d runner-ready fixtures — left incomplete (completed_at unset), never treat this as a full pass\n", runID, executed, expectedReady)
+		return exitCompletionInconclusive
 	}
 	if failed > 0 {
 		return exitCompletionFailed
@@ -306,6 +345,30 @@ func evaluationCompare(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "create evaluation store: %v\n", err)
 		return exitInternal
 	}
+
+	// A run whose completed_at is unset was left incomplete on purpose (see
+	// evaluationRun) — comparing it would silently treat a partial run as
+	// if it had full coverage, exactly the "4/14 read as total approval"
+	// risk this gate exists to close. Fail closed instead of guessing.
+	runA, err := evalStore.GetRun(ctx, runAID)
+	if err != nil {
+		fmt.Fprintf(stderr, "load run %d: %v\n", runAID, err)
+		return exitInvalid
+	}
+	runB, err := evalStore.GetRun(ctx, runBID)
+	if err != nil {
+		fmt.Fprintf(stderr, "load run %d: %v\n", runBID, err)
+		return exitInvalid
+	}
+	if runA.CompletedAt == nil {
+		fmt.Fprintf(stderr, "run %d is incomplete (left unfinished by evaluation run — see coverage_complete) and cannot be compared\n", runAID)
+		return exitCompletionInconclusive
+	}
+	if runB.CompletedAt == nil {
+		fmt.Fprintf(stderr, "run %d is incomplete (left unfinished by evaluation run — see coverage_complete) and cannot be compared\n", runBID)
+		return exitCompletionInconclusive
+	}
+
 	outcomesA, err := evalStore.ListOutcomes(ctx, runAID)
 	if err != nil {
 		fmt.Fprintf(stderr, "load run %d: %v\n", runAID, err)
@@ -316,6 +379,27 @@ func evaluationCompare(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "load run %d: %v\n", runBID, err)
 		return exitInvalid
 	}
+
+	// Two complete runs can still cover different fixture sets — e.g. one
+	// suite was extended with new fixtures between runs, or the two runs
+	// used different suite ids. Comparing across a mismatched set would
+	// misreport genuinely-missing fixtures as unchanged, so this is
+	// rejected outright rather than compared with gaps papered over.
+	if len(outcomesA) != len(outcomesB) {
+		fmt.Fprintf(stderr, "run %d covers %d fixtures, run %d covers %d — refusing to compare runs with different fixture sets\n", runAID, len(outcomesA), runBID, len(outcomesB))
+		return exitInvalid
+	}
+	fixtureIDsA := make(map[string]bool, len(outcomesA))
+	for _, o := range outcomesA {
+		fixtureIDsA[o.FixtureID] = true
+	}
+	for _, o := range outcomesB {
+		if !fixtureIDsA[o.FixtureID] {
+			fmt.Fprintf(stderr, "run %d and run %d cover different fixture sets (e.g. %s only appears in run %d) — refusing to compare\n", runAID, runBID, o.FixtureID, runBID)
+			return exitInvalid
+		}
+	}
+
 	byFixtureA := make(map[string]fixtures.RunOutcome, len(outcomesA))
 	for _, o := range outcomesA {
 		byFixtureA[o.FixtureID] = o
