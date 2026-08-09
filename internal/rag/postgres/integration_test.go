@@ -440,6 +440,111 @@ func TestApprovedKnowledgeRAGPostgresRepository(t *testing.T) {
 		}
 	})
 
+	t.Run("R30.1-2: PendingChunkEmbeddings drives a resumable, idempotent backfill", func(t *testing.T) {
+		const namespace = "ingenieria_ia_backfill"
+		var chunks []rag.Chunk
+		for i, id := range []string{"know-backfill-1", "know-backfill-2", "know-backfill-3"} {
+			version := proposeVersionInNamespace(t, domain, clock, now.Add(time.Duration(60+i)*time.Second), id, namespace)
+			created, _, err := store.CreateCandidate(ctx, rag.CreateCandidateCommand{Version: version, IdempotencyKey: "idem-" + id})
+			if err != nil {
+				t.Fatal(err)
+			}
+			clock.now = created.UpdatedAt.Add(time.Second)
+			approved, err := domain.Review(created, rag.ReviewApprove, ragIntegrationReviewer)
+			if err != nil {
+				t.Fatal(err)
+			}
+			approved, err = store.Save(ctx, rag.SaveCommand{Version: approved, ExpectedRevision: 1, ActorID: ragIntegrationReviewer, Reason: "ok"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			docChunks, err := rag.ChunkBody(approved.ID, rag.DefaultChunkerID, rag.DefaultChunkerVersion, approved.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			chunks = append(chunks, docChunks...)
+		}
+		if _, err := store.Reindex(ctx, rag.ReindexCommand{OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceDepartment, NamespaceID: namespace, ChunkerID: rag.DefaultChunkerID, ChunkerVersion: rag.DefaultChunkerVersion, Chunks: chunks}); err != nil {
+			t.Fatal(err)
+		}
+		if len(chunks) != 3 {
+			t.Fatalf("chunks=%d want 3 (one document per chunk)", len(chunks))
+		}
+
+		geminiIdentity := rag.EmbeddingIdentity{ModelID: "gemini-embedding-2", ModelVersion: "v1"}
+
+		// A page smaller than the total pending set proves paging works —
+		// the caller must be able to make progress in bounded steps.
+		firstPage, err := store.PendingChunkEmbeddings(ctx, ragIntegrationOrganization, rag.NamespaceDepartment, namespace, geminiIdentity, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(firstPage) != 2 {
+			t.Fatalf("first page=%d want 2", len(firstPage))
+		}
+		for i, chunk := range firstPage {
+			vector := make([]float32, 768)
+			vector[i] = 1
+			if err := store.InsertChunkEmbedding(ctx, rag.ChunkEmbedding{
+				OrganizationID: ragIntegrationOrganization, ChunkID: chunk.ID,
+				EmbeddingModelID: "gemini-embedding-2", EmbeddingModelVersion: "v1", EmbeddingDimension: 768,
+				PromptTemplateVersion: "prompt-template.v1", InputHash: fmt.Sprintf("%064x", 100+i), Vector: vector, CreatedAt: clock.now,
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		// The chunks just embedded must never come back — this is the whole
+		// resumability contract: a caller that crashed after this point and
+		// restarted must only ever see genuinely remaining work.
+		secondPage, err := store.PendingChunkEmbeddings(ctx, ragIntegrationOrganization, rag.NamespaceDepartment, namespace, geminiIdentity, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(secondPage) != 1 {
+			t.Fatalf("second page=%d want 1 (the one chunk not yet embedded)", len(secondPage))
+		}
+		for _, embedded := range firstPage {
+			for _, stillPending := range secondPage {
+				if embedded.ID == stillPending.ID {
+					t.Fatalf("chunk %s was already embedded but is still reported pending", embedded.ID)
+				}
+			}
+		}
+		if err := store.InsertChunkEmbedding(ctx, rag.ChunkEmbedding{
+			OrganizationID: ragIntegrationOrganization, ChunkID: secondPage[0].ID,
+			EmbeddingModelID: "gemini-embedding-2", EmbeddingModelVersion: "v1", EmbeddingDimension: 768,
+			PromptTemplateVersion: "prompt-template.v1", InputHash: fmt.Sprintf("%064x", 199), Vector: make([]float32, 768), CreatedAt: clock.now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		// Nothing left pending under the gemini identity.
+		done, err := store.PendingChunkEmbeddings(ctx, ragIntegrationOrganization, rag.NamespaceDepartment, namespace, geminiIdentity, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(done) != 0 {
+			t.Fatalf("pending after full backfill=%+v want none", done)
+		}
+
+		// A different embedding identity (bge-m3, 1024-dim) is an entirely
+		// separate vector space — none of these chunks have a bge-m3 row, so
+		// every one of them must still be pending under that identity, even
+		// though they are fully embedded under gemini's.
+		bgeM3Identity := rag.EmbeddingIdentity{
+			ModelID: "bge-m3-local", ModelRevision: "bge-m3-2024-06", ArtifactSHA256: strings.Repeat("e", 64),
+			TokenizerRevision: "bge-m3-tokenizer-2024-06", Normalization: "l2", Pooling: "cls",
+		}
+		pendingBGEM3, err := store.PendingChunkEmbeddings(ctx, ragIntegrationOrganization, rag.NamespaceDepartment, namespace, bgeM3Identity, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(pendingBGEM3) != 3 {
+			t.Fatalf("pending under bge-m3 identity=%d want 3 (gemini completion must not satisfy a different vector space)", len(pendingBGEM3))
+		}
+	})
+
 	t.Run("embedding batch job bookkeeping tracks per-item outcomes", func(t *testing.T) {
 		const batchNamespace = "ingenieria_ia_batch"
 		version := proposeVersionInNamespace(t, domain, clock, now.Add(55*time.Second), "know-batch", batchNamespace)

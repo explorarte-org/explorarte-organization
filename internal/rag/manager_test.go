@@ -3,6 +3,7 @@ package rag
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -35,18 +36,83 @@ func (f *fakeNamespaces) ResolveNamespace(_ context.Context, _, _ string, kind N
 }
 
 type fakeRepository struct {
-	versions         map[string]KnowledgeVersion
-	idempotency      map[string]string
-	generations      map[string]IndexGeneration
-	chunksByGen      map[string][]Chunk
-	activeGeneration map[string]string
-	queryResults     []QueryResult
-	lastQueryCommand QueryCommand
+	versions             map[string]KnowledgeVersion
+	idempotency          map[string]string
+	generations          map[string]IndexGeneration
+	chunksByGen          map[string][]Chunk
+	activeGeneration     map[string]string
+	queryResults         []QueryResult
+	lastQueryCommand     QueryCommand
+	chunkEmbeddings      map[string]ChunkEmbedding
+	bgeM3ChunkEmbeddings map[string]BGEM3ChunkEmbedding
 }
 
 func newFakeRepository() *fakeRepository {
-	return &fakeRepository{versions: map[string]KnowledgeVersion{}, idempotency: map[string]string{}, generations: map[string]IndexGeneration{}, chunksByGen: map[string][]Chunk{}, activeGeneration: map[string]string{}}
+	return &fakeRepository{
+		versions: map[string]KnowledgeVersion{}, idempotency: map[string]string{}, generations: map[string]IndexGeneration{},
+		chunksByGen: map[string][]Chunk{}, activeGeneration: map[string]string{},
+		chunkEmbeddings: map[string]ChunkEmbedding{}, bgeM3ChunkEmbeddings: map[string]BGEM3ChunkEmbedding{},
+	}
 }
+
+// PendingChunkEmbeddings mirrors postgres's real query well enough for
+// Manager.BackfillEmbeddings unit tests: chunks in namespaceKind/
+// namespaceID's active generation that have no row yet in whichever fake
+// map identity's shape selects.
+func (r *fakeRepository) PendingChunkEmbeddings(_ context.Context, _ string, namespaceKind NamespaceKind, namespaceID string, identity EmbeddingIdentity, limit int) ([]Chunk, error) {
+	scope := string(namespaceKind) + ":" + namespaceID
+	generationID, ok := r.activeGeneration[scope]
+	if !ok {
+		return nil, nil
+	}
+	pending := make([]Chunk, 0)
+	for _, chunk := range r.chunksByGen[generationID] {
+		embedded := false
+		if identity.ModelVersion != "" {
+			_, embedded = r.chunkEmbeddings[chunk.ID]
+		} else {
+			_, embedded = r.bgeM3ChunkEmbeddings[chunk.ID]
+		}
+		if embedded {
+			continue
+		}
+		pending = append(pending, chunk)
+		if len(pending) >= limit {
+			break
+		}
+	}
+	return pending, nil
+}
+
+func (r *fakeRepository) InsertChunkEmbedding(_ context.Context, embedding ChunkEmbedding) error {
+	r.chunkEmbeddings[embedding.ChunkID] = embedding
+	return nil
+}
+func (r *fakeRepository) NearestChunks(context.Context, string, string, []float32, int) ([]ScoredChunk, error) {
+	return nil, nil
+}
+func (r *fakeRepository) CreateEmbeddingBatchJob(context.Context, EmbeddingBatchJob, []EmbeddingBatchJobItem) (EmbeddingBatchJob, error) {
+	return EmbeddingBatchJob{}, nil
+}
+func (r *fakeRepository) RecordEmbeddingBatchJobItemResult(context.Context, int64, string, *ChunkEmbedding, string) error {
+	return nil
+}
+func (r *fakeRepository) CompleteEmbeddingBatchJob(context.Context, int64, string, time.Time, int) error {
+	return nil
+}
+func (r *fakeRepository) InsertBGEM3ChunkEmbedding(_ context.Context, embedding BGEM3ChunkEmbedding) error {
+	r.bgeM3ChunkEmbeddings[embedding.ChunkID] = embedding
+	return nil
+}
+func (r *fakeRepository) NearestBGEM3Chunks(context.Context, string, string, []float32, int) ([]ScoredChunk, error) {
+	return nil, nil
+}
+
+var (
+	_ EmbeddingBackfillRepository = (*fakeRepository)(nil)
+	_ EmbeddingRepository         = (*fakeRepository)(nil)
+	_ BGEM3EmbeddingRepository    = (*fakeRepository)(nil)
+)
 
 func (r *fakeRepository) CreateCandidate(_ context.Context, command CreateCandidateCommand) (KnowledgeVersion, bool, error) {
 	if existingID, ok := r.idempotency[command.IdempotencyKey]; ok {
@@ -350,5 +416,158 @@ func TestManagerPropagatesAuthorizationDenial(t *testing.T) {
 	manager, clock, _ := newTestManager(t, gate, &fakeNamespaces{})
 	if _, _, err := manager.Propose(context.Background(), ProposeRequest{Command: validProposeCommand(clock.now), IdempotencyKey: "key-1"}); err == nil {
 		t.Fatal("expected authorization denial to propagate")
+	}
+}
+
+func newBackfillTestManager(t *testing.T, semantic *SemanticSearchDeps, chunkCount int) (*Manager, *fakeRepository, *recordingGate) {
+	t.Helper()
+	repo := newFakeRepository()
+	repo.activeGeneration["department:ingenieria_ia"] = "gen-1"
+	repo.generations["gen-1"] = IndexGeneration{ID: "gen-1", Status: GenerationActive}
+	chunks := make([]Chunk, 0, chunkCount)
+	for i := 0; i < chunkCount; i++ {
+		chunks = append(chunks, Chunk{ID: fmt.Sprintf("chunk-%d", i), GenerationID: "gen-1", Content: fmt.Sprintf("content %d", i)})
+	}
+	repo.chunksByGen["gen-1"] = chunks
+	gate := &recordingGate{}
+	manager, err := NewManager(NewService(nil), repo, gate, &fakeNamespaces{}, semantic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return manager, repo, gate
+}
+
+func TestManagerBackfillEmbeddingsRequiresSemanticConfigured(t *testing.T) {
+	manager, _, _ := newBackfillTestManager(t, nil, 3)
+	_, err := manager.BackfillEmbeddings(context.Background(), BackfillEmbeddingsRequest{
+		OrganizationID: "explorarte", NamespaceKind: NamespaceDepartment, NamespaceID: "ingenieria_ia", ActorRoleID: "empresa/human",
+	})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("err=%v want ErrInvalidRequest", err)
+	}
+}
+
+func TestManagerBackfillEmbeddingsPropagatesAuthorizationDenial(t *testing.T) {
+	ledger := &fakeEmbeddingLedger{balanceOK: true}
+	adapter := &fakeOnlineAdapter{vector: []float32{0.1, 0.2}, tokens: 5}
+	manager, _, gate := newBackfillTestManager(t, testSemanticDeps(ledger, adapter, nil, t), 3)
+	gate.err = errors.New("denied")
+	if _, err := manager.BackfillEmbeddings(context.Background(), BackfillEmbeddingsRequest{
+		OrganizationID: "explorarte", NamespaceKind: NamespaceDepartment, NamespaceID: "ingenieria_ia", ActorRoleID: "empresa/human",
+	}); err == nil {
+		t.Fatal("expected authorization denial to propagate")
+	}
+	if adapter.entered != 0 {
+		t.Fatalf("adapter entered=%d want 0 — must never embed before authorization succeeds", adapter.entered)
+	}
+}
+
+func TestManagerBackfillEmbeddingsEmbedsPendingChunksAndReportsDone(t *testing.T) {
+	ledger := &fakeEmbeddingLedger{balanceOK: true}
+	adapter := &fakeOnlineAdapter{vector: []float32{0.1, 0.2}, tokens: 5}
+	manager, repo, _ := newBackfillTestManager(t, testSemanticDeps(ledger, adapter, nil, t), 3)
+
+	result, err := manager.BackfillEmbeddings(context.Background(), BackfillEmbeddingsRequest{
+		OrganizationID: "explorarte", NamespaceKind: NamespaceDepartment, NamespaceID: "ingenieria_ia", ActorRoleID: "empresa/human", BatchSize: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Embedded != 3 || result.Skipped != 0 || !result.Done {
+		t.Fatalf("result=%+v want Embedded=3 Skipped=0 Done=true", result)
+	}
+	if len(repo.chunkEmbeddings) != 3 {
+		t.Fatalf("chunkEmbeddings=%d want 3", len(repo.chunkEmbeddings))
+	}
+
+	// A second call finds nothing left pending — proving the "already has a
+	// row" check actually works, not just that the first call didn't error.
+	result, err = manager.BackfillEmbeddings(context.Background(), BackfillEmbeddingsRequest{
+		OrganizationID: "explorarte", NamespaceKind: NamespaceDepartment, NamespaceID: "ingenieria_ia", ActorRoleID: "empresa/human", BatchSize: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Embedded != 0 || !result.Done {
+		t.Fatalf("second call result=%+v want Embedded=0 Done=true", result)
+	}
+}
+
+func TestManagerBackfillEmbeddingsPagesWithBatchSizeAndDoneFlag(t *testing.T) {
+	ledger := &fakeEmbeddingLedger{balanceOK: true}
+	adapter := &fakeOnlineAdapter{vector: []float32{0.1, 0.2}, tokens: 5}
+	manager, _, _ := newBackfillTestManager(t, testSemanticDeps(ledger, adapter, nil, t), 5)
+
+	first, err := manager.BackfillEmbeddings(context.Background(), BackfillEmbeddingsRequest{
+		OrganizationID: "explorarte", NamespaceKind: NamespaceDepartment, NamespaceID: "ingenieria_ia", ActorRoleID: "empresa/human", BatchSize: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Embedded != 2 || first.Done {
+		t.Fatalf("first page=%+v want Embedded=2 Done=false", first)
+	}
+	second, err := manager.BackfillEmbeddings(context.Background(), BackfillEmbeddingsRequest{
+		OrganizationID: "explorarte", NamespaceKind: NamespaceDepartment, NamespaceID: "ingenieria_ia", ActorRoleID: "empresa/human", BatchSize: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Embedded != 2 || second.Done {
+		t.Fatalf("second page=%+v want Embedded=2 Done=false", second)
+	}
+	third, err := manager.BackfillEmbeddings(context.Background(), BackfillEmbeddingsRequest{
+		OrganizationID: "explorarte", NamespaceKind: NamespaceDepartment, NamespaceID: "ingenieria_ia", ActorRoleID: "empresa/human", BatchSize: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.Embedded != 1 || !third.Done {
+		t.Fatalf("third page=%+v want Embedded=1 Done=true", third)
+	}
+}
+
+func TestManagerBackfillEmbeddingsSkipsChunksThatFailToEmbedWithoutFailingTheCall(t *testing.T) {
+	ledger := &fakeEmbeddingLedger{balanceOK: true}
+	adapter := &fakeOnlineAdapter{err: errors.New("provider unavailable")}
+	manager, repo, _ := newBackfillTestManager(t, testSemanticDeps(ledger, adapter, nil, t), 2)
+
+	result, err := manager.BackfillEmbeddings(context.Background(), BackfillEmbeddingsRequest{
+		OrganizationID: "explorarte", NamespaceKind: NamespaceDepartment, NamespaceID: "ingenieria_ia", ActorRoleID: "empresa/human", BatchSize: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Embedded != 0 || result.Skipped != 2 || !result.Done {
+		t.Fatalf("result=%+v want Embedded=0 Skipped=2 Done=true", result)
+	}
+	if len(repo.chunkEmbeddings) != 0 {
+		t.Fatalf("chunkEmbeddings=%d want 0 — a failed embed must never be inserted", len(repo.chunkEmbeddings))
+	}
+}
+
+func TestManagerBackfillEmbeddingsSelectsBGEM3TableForBGEM3Identity(t *testing.T) {
+	adapter := &fakeOnlineAdapter{vector: make([]float32, 1024), tokens: 5}
+	semantic := &SemanticSearchDeps{
+		OnlineAdapter: adapter, LocalComputeOnly: true,
+		ProviderID: "bge-m3-local", ProviderModelID: "bge-m3-2024-06", OutputDimensionality: 1024, PromptTemplateVersion: "bge-m3-prompt-template.v1",
+		Identity: EmbeddingIdentity{
+			ModelID: "bge-m3-local", ModelRevision: "bge-m3-2024-06", ArtifactSHA256: strings.Repeat("d", 64),
+			TokenizerRevision: "bge-m3-tokenizer-2024-06", Normalization: "l2", Pooling: "cls",
+		},
+	}
+	manager, repo, _ := newBackfillTestManager(t, semantic, 2)
+
+	result, err := manager.BackfillEmbeddings(context.Background(), BackfillEmbeddingsRequest{
+		OrganizationID: "explorarte", NamespaceKind: NamespaceDepartment, NamespaceID: "ingenieria_ia", ActorRoleID: "empresa/human", BatchSize: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Embedded != 2 || !result.Done {
+		t.Fatalf("result=%+v want Embedded=2 Done=true", result)
+	}
+	if len(repo.bgeM3ChunkEmbeddings) != 2 || len(repo.chunkEmbeddings) != 0 {
+		t.Fatalf("bgeM3ChunkEmbeddings=%d chunkEmbeddings=%d want 2 and 0 — must never write the gemini table for a bge-m3 identity", len(repo.bgeM3ChunkEmbeddings), len(repo.chunkEmbeddings))
 	}
 }

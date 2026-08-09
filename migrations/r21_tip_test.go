@@ -7,13 +7,13 @@ import (
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 )
 
-func TestMigrationTipIs33AndContiguous(t *testing.T) {
+func TestMigrationTipIs34AndContiguous(t *testing.T) {
 	loaded, err := platformmigrations.Load(rootmigrations.Files)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded) != 33 {
-		t.Fatalf("migration count=%d want 33", len(loaded))
+	if len(loaded) != 34 {
+		t.Fatalf("migration count=%d want 34", len(loaded))
 	}
 	for index, migration := range loaded {
 		want := int64(index + 1)
@@ -21,7 +21,7 @@ func TestMigrationTipIs33AndContiguous(t *testing.T) {
 			t.Fatalf("migration[%d].version=%d want %d", index, migration.Version, want)
 		}
 	}
-	if loaded[len(loaded)-1].Name != "create_web_evidence" {
-		t.Fatalf("migration 33 name=%q", loaded[len(loaded)-1].Name)
+	if loaded[len(loaded)-1].Name != "add_memory_backfill_embedding_operation" {
+		t.Fatalf("migration 34 name=%q", loaded[len(loaded)-1].Name)
 	}
 }

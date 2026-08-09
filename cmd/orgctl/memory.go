@@ -189,6 +189,35 @@ func runMemory(args []string, stdout, stderr io.Writer) int {
 		}
 		writeValue(stdout, *jsonOutput, entries)
 		return exitOK
+	case "backfill-embeddings":
+		flags := flag.NewFlagSet("memory backfill-embeddings", flag.ContinueOnError)
+		flags.SetOutput(stderr)
+		actor := flags.String("actor", "", "actor role id (must equal --role — backfill is limited to your own role's memory)")
+		role := flags.String("role", "", "role id whose memory to backfill")
+		batchSize := flags.Int("batch-size", 0, "entries embedded per call (default 50, max 500)")
+		maxBatches := flags.Int("max-batches", 1, "how many batches to run in this invocation before stopping (each batch is one authorized, ledger-attributed call)")
+		jsonOutput := flags.Bool("json", false, "emit JSON")
+		if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 || strings.TrimSpace(*actor) == "" || strings.TrimSpace(*role) == "" || *maxBatches <= 0 {
+			fmt.Fprintln(stderr, "usage: orgctl memory backfill-embeddings --actor <role> --role <role> [--batch-size N] [--max-batches N] [--json]")
+			return exitUsage
+		}
+		totals := memory.BackfillEmbeddingsResult{}
+		for batch := 0; batch < *maxBatches; batch++ {
+			result, err := runtime.Manager.BackfillEmbeddings(ctx, memory.BackfillEmbeddingsRequest{
+				OrganizationID: runtime.OrganizationID, ActorRoleID: *actor, RoleID: *role, BatchSize: *batchSize,
+			})
+			if err != nil {
+				return memoryCommandError(stderr, err)
+			}
+			totals.Embedded += result.Embedded
+			totals.Skipped += result.Skipped
+			totals.Done = result.Done
+			if result.Done {
+				break
+			}
+		}
+		writeValue(stdout, *jsonOutput, totals)
+		return exitOK
 	default:
 		printMemoryUsage(stderr)
 		return exitUsage
@@ -251,5 +280,5 @@ func memoryCommandError(stderr io.Writer, err error) int {
 	}
 }
 func printMemoryUsage(out io.Writer) {
-	fmt.Fprintln(out, "usage: orgctl memory <propose|review|deprecate|archive|get|list|search> [options]")
+	fmt.Fprintln(out, "usage: orgctl memory <propose|review|deprecate|archive|get|list|search|backfill-embeddings> [options]")
 }

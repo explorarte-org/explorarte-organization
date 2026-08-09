@@ -418,6 +418,94 @@ func TestOrganizationalMemoryPostgresRepository(t *testing.T) {
 			t.Fatal("expected an unexpected-dimension query vector to be rejected")
 		}
 	})
+
+	t.Run("R30.1-2: PendingEntryEmbeddings drives a resumable, idempotent backfill", func(t *testing.T) {
+		// Earlier subtests in this shared role/organization may already have
+		// approved entries with no gemini embedding of their own — this
+		// subtest only asserts about the 3 entries it creates itself, never
+		// about the total pending count, so it stays correct regardless of
+		// what state prior subtests left behind.
+		ids := map[string]bool{"mem-backfill-1": true, "mem-backfill-2": true, "mem-backfill-3": true}
+		for i, id := range []string{"mem-backfill-1", "mem-backfill-2", "mem-backfill-3"} {
+			entry := proposeEntry(t, domain, clock, now.Add(time.Duration(70+i)*time.Second), id, memory.SourceOperational, memory.DataOrganizational, "")
+			created, _, err := store.CreateCandidate(ctx, memory.CreateCandidateCommand{Entry: entry, IdempotencyKey: "idem-" + id})
+			if err != nil {
+				t.Fatal(err)
+			}
+			clock.now = clock.now.Add(time.Second)
+			approved, err := domain.Review(created, memory.Review{Outcome: memory.ReviewApprove, ReviewerID: memoryIntegrationReviewer})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Save(ctx, memory.SaveCommand{Entry: approved, ExpectedRevision: 1, ActorID: memoryIntegrationReviewer, Reason: "ok"}); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		geminiIdentity := memory.EmbeddingIdentity{ModelID: "gemini-embedding-2", ModelVersion: "v1"}
+		oursOf := func(entryKeys []string) []string {
+			ours := make([]string, 0, len(entryKeys))
+			for _, key := range entryKeys {
+				if ids[key] {
+					ours = append(ours, key)
+				}
+			}
+			return ours
+		}
+
+		// A page large enough to see all of ours, but paged one at a time to
+		// prove paging actually removes an entry from what comes back next
+		// (mixed in with however many other pending entries already exist).
+		remaining := map[string]bool{"mem-backfill-1": true, "mem-backfill-2": true, "mem-backfill-3": true}
+		for step := 0; step < 3; step++ {
+			pending, err := store.PendingEntryEmbeddings(ctx, memoryIntegrationOrganization, memoryIntegrationRole, geminiIdentity, 500)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ours := oursOf(pending)
+			if len(ours) != len(remaining) {
+				t.Fatalf("step=%d ours=%v want exactly %v still pending", step, ours, remaining)
+			}
+			for _, key := range ours {
+				if !remaining[key] {
+					t.Fatalf("step=%d entry %s was already embedded but is still reported pending", step, key)
+				}
+			}
+			embedKey := ours[0]
+			if err := store.InsertEntryEmbedding(ctx, memory.EntryEmbedding{
+				OrganizationID: memoryIntegrationOrganization, EntryID: embedKey,
+				EmbeddingModelID: "gemini-embedding-2", EmbeddingModelVersion: "v1", EmbeddingDimension: 768,
+				PromptTemplateVersion: "prompt-template.v1", InputHash: fmt.Sprintf("%064x", 200+step), Vector: make([]float32, 768), CreatedAt: clock.now,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			delete(remaining, embedKey)
+		}
+
+		done, err := store.PendingEntryEmbeddings(ctx, memoryIntegrationOrganization, memoryIntegrationRole, geminiIdentity, 500)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ours := oursOf(done); len(ours) != 0 {
+			t.Fatalf("pending after full backfill=%v want none of ours left", ours)
+		}
+
+		// A different embedding identity (bge-m3, 1024-dim) is an entirely
+		// separate vector space — every entry this subtest created must
+		// still be pending under it, even though gemini's backfill is
+		// complete.
+		bgeM3Identity := memory.EmbeddingIdentity{
+			ModelID: "bge-m3-local", ModelRevision: "bge-m3-2024-06", ArtifactSHA256: strings.Repeat("f", 64),
+			TokenizerRevision: "bge-m3-tokenizer-2024-06", Normalization: "l2", Pooling: "cls",
+		}
+		pendingBGEM3, err := store.PendingEntryEmbeddings(ctx, memoryIntegrationOrganization, memoryIntegrationRole, bgeM3Identity, 500)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ours := oursOf(pendingBGEM3); len(ours) != 3 {
+			t.Fatalf("pending under bge-m3 identity=%v want all 3 of ours (gemini completion must not satisfy a different vector space)", ours)
+		}
+	})
 }
 
 func proposeEntry(t *testing.T, domain *memory.Service, clock *fixedClock, now time.Time, id string, kind memory.SourceKind, class memory.DataClass, sanitizationRef string) memory.Entry {

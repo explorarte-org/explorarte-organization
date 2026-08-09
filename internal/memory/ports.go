@@ -151,3 +151,17 @@ type EmbeddingRepository interface {
 	// incompatible embedding spaces that merely share a dimension.
 	Search(ctx context.Context, organizationID, roleID, queryText string, queryVector []float32, identity EmbeddingIdentity, promptTemplateVersion string, limit int) ([]Entry, error)
 }
+
+// EmbeddingBackfillRepository mirrors rag.EmbeddingBackfillRepository — the
+// read side of Manager.BackfillEmbeddings (R30.1-2): which approved
+// entries for roleID still lack an embedding row under a specific
+// identity. Table selection (organizational_memory_embeddings vs
+// organizational_memory_embeddings_bge_m3) follows identity's shape
+// exactly like vectorChannelClause in postgres/search.go. Returns entry
+// keys only, not full Entry values — Manager.BackfillEmbeddings fetches
+// each one's full Entry via Repository.Get, the same as Search already
+// does, since computing InputHash (Entry.CanonicalHash) needs fields this
+// read does not otherwise touch.
+type EmbeddingBackfillRepository interface {
+	PendingEntryEmbeddings(ctx context.Context, organizationID, roleID string, identity EmbeddingIdentity, limit int) ([]string, error)
+}

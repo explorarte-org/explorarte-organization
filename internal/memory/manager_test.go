@@ -3,6 +3,8 @@ package memory
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -268,5 +270,181 @@ func TestManagerSameIdempotencyKeyDifferentContentConflicts(t *testing.T) {
 	_, _, err = manager.Propose(context.Background(), ProposeRequest{Command: changed, IdempotencyKey: "proposal-1"})
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("error=%v want ErrConflict", err)
+	}
+}
+
+func newBackfillTestEntries(t *testing.T, clock *fixedClock, gate AuthorizationGate, repo Repository, count int) []Entry {
+	t.Helper()
+	manager, err := NewManager(NewService(clock), repo, gate, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := make([]Entry, 0, count)
+	for i := 0; i < count; i++ {
+		command := validCommand(clock.now)
+		command.ID = fmt.Sprintf("mem-backfill-%d", i)
+		entry, _, err := manager.Propose(context.Background(), ProposeRequest{Command: command, IdempotencyKey: fmt.Sprintf("idem-backfill-%d", i)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		approved, err := manager.Review(context.Background(), ReviewRequest{
+			Mutation: MutationRequest{OrganizationID: entry.OrganizationID, EntryID: entry.ID, ExpectedRevision: entry.Revision, ActorRoleID: "empresa/human", Reason: "reviewed evidence and admission provenance"},
+			Outcome:  ReviewApprove,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		entries = append(entries, approved)
+	}
+	return entries
+}
+
+func TestManagerBackfillEmbeddingsRequiresSemanticConfigured(t *testing.T) {
+	clock := &fixedClock{now: time.Date(2026, 8, 7, 5, 0, 0, 0, time.UTC)}
+	repo := newSearchableMemoryRepository()
+	newBackfillTestEntries(t, clock, &recordingGate{}, repo, 2)
+	manager, err := NewManager(NewService(clock), repo, &recordingGate{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = manager.BackfillEmbeddings(context.Background(), BackfillEmbeddingsRequest{OrganizationID: "explorarte", ActorRoleID: "ingenieria_ia/orquestador", RoleID: "ingenieria_ia/orquestador"})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("err=%v want ErrInvalidRequest", err)
+	}
+}
+
+func TestManagerBackfillEmbeddingsRejectsCrossRoleRequests(t *testing.T) {
+	clock := &fixedClock{now: time.Date(2026, 8, 7, 5, 0, 0, 0, time.UTC)}
+	repo := newSearchableMemoryRepository()
+	gate := &recordingGate{}
+	newBackfillTestEntries(t, clock, gate, repo, 1)
+	ledger := &fakeEmbeddingLedger{balanceOK: true}
+	adapter := &fakeOnlineAdapter{vector: []float32{0.1, 0.2}}
+	manager, err := NewManager(NewService(clock), repo, gate, testSemanticDeps(t, repo, ledger, adapter, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = manager.BackfillEmbeddings(context.Background(), BackfillEmbeddingsRequest{OrganizationID: "explorarte", ActorRoleID: "ingenieria_ia/orquestador", RoleID: "empresa/ceo"})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("cross-role backfill err=%v want ErrInvalidRequest", err)
+	}
+}
+
+func TestManagerBackfillEmbeddingsPropagatesAuthorizationDenial(t *testing.T) {
+	clock := &fixedClock{now: time.Date(2026, 8, 7, 5, 0, 0, 0, time.UTC)}
+	repo := newSearchableMemoryRepository()
+	gate := &recordingGate{}
+	newBackfillTestEntries(t, clock, gate, repo, 2)
+	ledger := &fakeEmbeddingLedger{balanceOK: true}
+	adapter := &fakeOnlineAdapter{vector: []float32{0.1, 0.2}}
+	manager, err := NewManager(NewService(clock), repo, gate, testSemanticDeps(t, repo, ledger, adapter, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate.err = errors.New("denied")
+	if _, err := manager.BackfillEmbeddings(context.Background(), BackfillEmbeddingsRequest{OrganizationID: "explorarte", ActorRoleID: "ingenieria_ia/orquestador", RoleID: "ingenieria_ia/orquestador"}); err == nil {
+		t.Fatal("expected authorization denial to propagate")
+	}
+	if adapter.entered != 0 {
+		t.Fatalf("adapter entered=%d want 0 — must never embed before authorization succeeds", adapter.entered)
+	}
+}
+
+func TestManagerBackfillEmbeddingsEmbedsPendingEntriesAndReportsDone(t *testing.T) {
+	clock := &fixedClock{now: time.Date(2026, 8, 7, 5, 0, 0, 0, time.UTC)}
+	repo := newSearchableMemoryRepository()
+	gate := &recordingGate{}
+	newBackfillTestEntries(t, clock, gate, repo, 3)
+	ledger := &fakeEmbeddingLedger{balanceOK: true}
+	adapter := &fakeOnlineAdapter{vector: []float32{0.1, 0.2}}
+	manager, err := NewManager(NewService(clock), repo, gate, testSemanticDeps(t, repo, ledger, adapter, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := manager.BackfillEmbeddings(context.Background(), BackfillEmbeddingsRequest{
+		OrganizationID: "explorarte", ActorRoleID: "ingenieria_ia/orquestador", RoleID: "ingenieria_ia/orquestador", BatchSize: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Embedded != 3 || result.Skipped != 0 || !result.Done {
+		t.Fatalf("result=%+v want Embedded=3 Skipped=0 Done=true", result)
+	}
+	if len(repo.embeddings) != 3 {
+		t.Fatalf("embeddings=%d want 3", len(repo.embeddings))
+	}
+
+	// A second call finds nothing left pending.
+	result, err = manager.BackfillEmbeddings(context.Background(), BackfillEmbeddingsRequest{
+		OrganizationID: "explorarte", ActorRoleID: "ingenieria_ia/orquestador", RoleID: "ingenieria_ia/orquestador", BatchSize: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Embedded != 0 || !result.Done {
+		t.Fatalf("second call result=%+v want Embedded=0 Done=true", result)
+	}
+}
+
+func TestManagerBackfillEmbeddingsSkipsEntriesThatFailToEmbedWithoutFailingTheCall(t *testing.T) {
+	clock := &fixedClock{now: time.Date(2026, 8, 7, 5, 0, 0, 0, time.UTC)}
+	repo := newSearchableMemoryRepository()
+	gate := &recordingGate{}
+	newBackfillTestEntries(t, clock, gate, repo, 2)
+	ledger := &fakeEmbeddingLedger{balanceOK: true}
+	adapter := &fakeOnlineAdapter{err: errors.New("provider unavailable")}
+	manager, err := NewManager(NewService(clock), repo, gate, testSemanticDeps(t, repo, ledger, adapter, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := manager.BackfillEmbeddings(context.Background(), BackfillEmbeddingsRequest{
+		OrganizationID: "explorarte", ActorRoleID: "ingenieria_ia/orquestador", RoleID: "ingenieria_ia/orquestador", BatchSize: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Embedded != 0 || result.Skipped != 2 || !result.Done {
+		t.Fatalf("result=%+v want Embedded=0 Skipped=2 Done=true", result)
+	}
+	if len(repo.embeddings) != 0 {
+		t.Fatalf("embeddings=%d want 0 — a failed embed must never be inserted", len(repo.embeddings))
+	}
+}
+
+func TestManagerBackfillEmbeddingsSelectsBGEM3TableForBGEM3Identity(t *testing.T) {
+	clock := &fixedClock{now: time.Date(2026, 8, 7, 5, 0, 0, 0, time.UTC)}
+	repo := newSearchableMemoryRepository()
+	gate := &recordingGate{}
+	newBackfillTestEntries(t, clock, gate, repo, 2)
+	adapter := &fakeOnlineAdapter{vector: make([]float32, 1024)}
+	semantic := &SemanticSearchDeps{
+		InsertVector: func(ctx context.Context, organizationID, entryID, inputHash string, vector []float32, createdAt time.Time) error {
+			return repo.InsertEntryEmbedding(ctx, EntryEmbedding{OrganizationID: organizationID, EntryID: entryID, InputHash: inputHash, Vector: vector, CreatedAt: createdAt})
+		},
+		OnlineAdapter: adapter, LocalComputeOnly: true,
+		ProviderID: "bge-m3-local", ProviderModelID: "bge-m3-2024-06", OutputDimensionality: 1024, PromptTemplateVersion: "bge-m3-prompt-template.v1",
+		Identity: EmbeddingIdentity{
+			ModelID: "bge-m3-local", ModelRevision: "bge-m3-2024-06", ArtifactSHA256: strings.Repeat("d", 64),
+			TokenizerRevision: "bge-m3-tokenizer-2024-06", Normalization: "l2", Pooling: "cls",
+		},
+	}
+	manager, err := NewManager(NewService(clock), repo, gate, semantic)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := manager.BackfillEmbeddings(context.Background(), BackfillEmbeddingsRequest{
+		OrganizationID: "explorarte", ActorRoleID: "ingenieria_ia/orquestador", RoleID: "ingenieria_ia/orquestador", BatchSize: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Embedded != 2 || !result.Done {
+		t.Fatalf("result=%+v want Embedded=2 Done=true", result)
+	}
+	if len(repo.bgeM3Embeddings) != 2 || len(repo.embeddings) != 0 {
+		t.Fatalf("bgeM3Embeddings=%d embeddings=%d want 2 and 0 — must never write the gemini table for a bge-m3 identity", len(repo.bgeM3Embeddings), len(repo.embeddings))
 	}
 }

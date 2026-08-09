@@ -17,17 +17,21 @@ import (
 // fake so tests that don't care about search keep using the simpler one.
 type searchableMemoryRepository struct {
 	*memoryRepository
-	embeddings   []EntryEmbedding
-	searchResult []Entry
-	searchErr    error
+	embeddings      []EntryEmbedding
+	bgeM3Embeddings []BGEM3EntryEmbedding
+	embeddedIDs     map[string]bool
+	bgeM3EmbeddedID map[string]bool
+	searchResult    []Entry
+	searchErr       error
 }
 
 func newSearchableMemoryRepository() *searchableMemoryRepository {
-	return &searchableMemoryRepository{memoryRepository: newMemoryRepository()}
+	return &searchableMemoryRepository{memoryRepository: newMemoryRepository(), embeddedIDs: map[string]bool{}, bgeM3EmbeddedID: map[string]bool{}}
 }
 
 func (r *searchableMemoryRepository) InsertEntryEmbedding(_ context.Context, embedding EntryEmbedding) error {
 	r.embeddings = append(r.embeddings, embedding)
+	r.embeddedIDs[embedding.EntryID] = true
 	return nil
 }
 
@@ -39,7 +43,46 @@ func (r *searchableMemoryRepository) Search(context.Context, string, string, str
 	return r.searchResult, r.searchErr
 }
 
-var _ EmbeddingRepository = (*searchableMemoryRepository)(nil)
+func (r *searchableMemoryRepository) InsertBGEM3EntryEmbedding(_ context.Context, embedding BGEM3EntryEmbedding) error {
+	r.bgeM3Embeddings = append(r.bgeM3Embeddings, embedding)
+	r.bgeM3EmbeddedID[embedding.EntryID] = true
+	return nil
+}
+
+func (r *searchableMemoryRepository) NearestBGEM3Entries(context.Context, string, string, []float32, int) ([]ScoredEntry, error) {
+	return nil, nil
+}
+
+// PendingEntryEmbeddings mirrors postgres's real query well enough for
+// Manager.BackfillEmbeddings unit tests: approved entries for roleID that
+// have no row yet in whichever fake map identity's shape selects.
+func (r *searchableMemoryRepository) PendingEntryEmbeddings(ctx context.Context, organizationID, roleID string, identity EmbeddingIdentity, limit int) ([]string, error) {
+	approved, err := r.ListApproved(ctx, ApprovedFilter{OrganizationID: organizationID, RoleID: roleID, Limit: 0})
+	if err != nil {
+		return nil, err
+	}
+	pending := make([]string, 0)
+	for _, entry := range approved {
+		embedded := r.embeddedIDs[entry.ID]
+		if identity.ModelRevision != "" {
+			embedded = r.bgeM3EmbeddedID[entry.ID]
+		}
+		if embedded {
+			continue
+		}
+		pending = append(pending, entry.ID)
+		if len(pending) >= limit {
+			break
+		}
+	}
+	return pending, nil
+}
+
+var (
+	_ EmbeddingRepository         = (*searchableMemoryRepository)(nil)
+	_ BGEM3EmbeddingRepository    = (*searchableMemoryRepository)(nil)
+	_ EmbeddingBackfillRepository = (*searchableMemoryRepository)(nil)
+)
 
 type fakePricingStore struct{ tier modelpricing.PriceTier }
 

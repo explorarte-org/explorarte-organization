@@ -201,6 +201,36 @@ func runRAG(args []string, stdout, stderr io.Writer) int {
 		}
 		writeValue(stdout, jsonOutput, generation)
 		return exitOK
+	case "backfill-embeddings":
+		flags := flag.NewFlagSet("rag backfill-embeddings", flag.ContinueOnError)
+		flags.SetOutput(stderr)
+		namespaceKind := flags.String("namespace-kind", "", "department|own")
+		namespaceID := flags.String("namespace-id", "", "namespace id")
+		actorRoleID := flags.String("actor", "", "actor role id")
+		batchSize := flags.Int("batch-size", 0, "chunks embedded per call (default 50, max 500)")
+		maxBatches := flags.Int("max-batches", 1, "how many batches to run in this invocation before stopping (each batch is one authorized, ledger-attributed call)")
+		jsonOutput := flags.Bool("json", false, "emit JSON")
+		if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 || strings.TrimSpace(*namespaceKind) == "" || strings.TrimSpace(*namespaceID) == "" || strings.TrimSpace(*actorRoleID) == "" || *maxBatches <= 0 {
+			return exitUsage
+		}
+		totals := rag.BackfillEmbeddingsResult{}
+		for batch := 0; batch < *maxBatches; batch++ {
+			result, err := runtime.Manager.BackfillEmbeddings(ctx, rag.BackfillEmbeddingsRequest{
+				OrganizationID: runtime.OrganizationID, NamespaceKind: rag.NamespaceKind(*namespaceKind), NamespaceID: *namespaceID,
+				ActorRoleID: *actorRoleID, BatchSize: *batchSize,
+			})
+			if err != nil {
+				return ragCommandError(stderr, err)
+			}
+			totals.Embedded += result.Embedded
+			totals.Skipped += result.Skipped
+			totals.Done = result.Done
+			if result.Done {
+				break
+			}
+		}
+		writeValue(stdout, *jsonOutput, totals)
+		return exitOK
 	case "query":
 		var input ragQueryInput
 		jsonOutput, code := parseRAGFile(args[1:], stderr, &input)
@@ -275,8 +305,9 @@ func ragCommandError(stderr io.Writer, err error) int {
 	}
 }
 func printRAGUsage(out io.Writer) {
-	fmt.Fprintln(out, `usage: orgctl rag <propose|review|get|list|reindex|query> [options]
+	fmt.Fprintln(out, `usage: orgctl rag <propose|review|get|list|reindex|backfill-embeddings|query> [options]
 
   get --id VERSION_ID --actor ROLE_ID [--json]
-  list --namespace-kind department|own --namespace-id ID --actor ROLE_ID [--lifecycle LIFECYCLE] [--limit N] [--json]`)
+  list --namespace-kind department|own --namespace-id ID --actor ROLE_ID [--lifecycle LIFECYCLE] [--limit N] [--json]
+  backfill-embeddings --namespace-kind department|own --namespace-id ID --actor ROLE_ID [--batch-size N] [--max-batches N] [--json]`)
 }

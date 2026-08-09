@@ -5,6 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
+
+	"github.com/Mireuz13/explorarte-organization/internal/costledger"
+	"github.com/Mireuz13/explorarte-organization/internal/embeddingruntime"
 )
 
 const (
@@ -275,6 +279,119 @@ func (m *Manager) Reindex(ctx context.Context, request ReindexRequest) (IndexGen
 		OrganizationID: organizationID, NamespaceKind: namespaceKind, NamespaceID: namespaceID,
 		ChunkerID: DefaultChunkerID, ChunkerVersion: DefaultChunkerVersion, Chunks: chunks,
 	})
+}
+
+const defaultBackfillBatchSize = 50
+const maxBackfillBatchSize = 500
+
+type BackfillEmbeddingsRequest struct {
+	OrganizationID string
+	NamespaceKind  NamespaceKind
+	NamespaceID    string
+	ActorRoleID    string
+	// BatchSize caps how many chunks a single call embeds — a backfill is
+	// deliberately paged rather than looping to exhaustion internally, so
+	// a chunk that permanently fails to embed (e.g. it matches
+	// dataclassifier.Detect) can never turn a single call into an infinite
+	// loop: the caller (see cmd/orgctl) simply keeps calling until Done is
+	// true, and each call's own page always terminates.
+	BatchSize         int
+	ApprovalRequestID *int64
+}
+
+type BackfillEmbeddingsResult struct {
+	Embedded int
+	Skipped  int
+	// Done is true once a call found fewer pending chunks than BatchSize —
+	// the only reliable "nothing left" signal, since a chunk that failed
+	// to embed this call (Skipped) is not retried within the same call,
+	// but is not gone either: it is still pending and will be returned
+	// again by the next call.
+	Done bool
+}
+
+// BackfillEmbeddings is R30.1-2's resumable, idempotent fill for chunks
+// that predate the active embedding profile (or a re-embedding under a new
+// identity) — Reindex only ever produces chunk rows, never embeddings (see
+// its doc comment), so without this, activating BGE-M3 embeds new queries
+// against a document index that stays permanently empty. Safe to call
+// repeatedly and concurrently with itself: each call reads whichever
+// chunks currently lack a row for the active identity and inserts them
+// with an idempotent (ON CONFLICT DO NOTHING) insert, so a crash or a
+// second concurrent caller can only ever re-do work, never corrupt state.
+func (m *Manager) BackfillEmbeddings(ctx context.Context, request BackfillEmbeddingsRequest) (BackfillEmbeddingsResult, error) {
+	organizationID := strings.TrimSpace(request.OrganizationID)
+	namespaceID := strings.TrimSpace(request.NamespaceID)
+	actorRoleID := strings.TrimSpace(request.ActorRoleID)
+	namespaceKind := request.NamespaceKind
+	if organizationID == "" || namespaceID == "" || actorRoleID == "" || !namespaceKind.Valid() {
+		return BackfillEmbeddingsResult{}, fmt.Errorf("%w: organization_id, namespace, and actor_role_id are required", ErrInvalidRequest)
+	}
+	if m.semantic == nil {
+		return BackfillEmbeddingsResult{}, fmt.Errorf("%w: semantic search is not configured, nothing to backfill", ErrInvalidRequest)
+	}
+	pendingRepo, ok := m.repository.(EmbeddingBackfillRepository)
+	if !ok {
+		return BackfillEmbeddingsResult{}, fmt.Errorf("%w: repository does not support embedding backfill", ErrInvalidRequest)
+	}
+	if err := m.gate.Authorize(ctx, AuthorizationRequest{
+		OrganizationID: organizationID, ActorRoleID: actorRoleID, CapabilityID: CapabilityPublish,
+		ResourceType: "knowledge_index", ResourceID: string(namespaceKind) + ":" + namespaceID,
+		ActionDigest: ContentHash("rag-embedding-backfill.v1|" + organizationID + "|" + string(namespaceKind) + "|" + namespaceID), ApprovalRequestID: request.ApprovalRequestID,
+	}); err != nil {
+		return BackfillEmbeddingsResult{}, err
+	}
+
+	batchSize := request.BatchSize
+	if batchSize <= 0 {
+		batchSize = defaultBackfillBatchSize
+	}
+	if batchSize > maxBackfillBatchSize {
+		batchSize = maxBackfillBatchSize
+	}
+	identity := m.semantic.Identity
+	promptTemplateVersion := m.semantic.PromptTemplateVersion
+	pending, err := pendingRepo.PendingChunkEmbeddings(ctx, organizationID, namespaceKind, namespaceID, identity, batchSize)
+	if err != nil {
+		return BackfillEmbeddingsResult{}, err
+	}
+	result := BackfillEmbeddingsResult{Done: len(pending) < batchSize}
+	now := time.Now().UTC()
+	for _, chunk := range pending {
+		vector := m.embed(ctx, organizationID, actorRoleID, chunk.Content, nil, embeddingruntime.TaskDocument, costledger.EmbeddingOperationRAGReindex)
+		if vector == nil {
+			result.Skipped++
+			continue
+		}
+		inputHash := ContentHash(chunk.Content)
+		if identity.ModelVersion != "" {
+			emb, ok := m.repository.(EmbeddingRepository)
+			if !ok {
+				return result, fmt.Errorf("%w: repository does not support gemini chunk embeddings", ErrInvalidRequest)
+			}
+			if err := emb.InsertChunkEmbedding(ctx, ChunkEmbedding{
+				OrganizationID: organizationID, ChunkID: chunk.ID, EmbeddingModelID: identity.ModelID, EmbeddingModelVersion: identity.ModelVersion,
+				EmbeddingDimension: len(vector), PromptTemplateVersion: promptTemplateVersion, InputHash: inputHash, Vector: vector, CreatedAt: now,
+			}); err != nil {
+				return result, err
+			}
+		} else {
+			emb, ok := m.repository.(BGEM3EmbeddingRepository)
+			if !ok {
+				return result, fmt.Errorf("%w: repository does not support bge-m3 chunk embeddings", ErrInvalidRequest)
+			}
+			if err := emb.InsertBGEM3ChunkEmbedding(ctx, BGEM3ChunkEmbedding{
+				OrganizationID: organizationID, ChunkID: chunk.ID, EmbeddingModelID: identity.ModelID,
+				ModelRevision: identity.ModelRevision, ArtifactSHA256: identity.ArtifactSHA256, TokenizerRevision: identity.TokenizerRevision,
+				EmbeddingDimension: len(vector), Normalization: identity.Normalization, Pooling: identity.Pooling,
+				PromptTemplateVersion: promptTemplateVersion, InputHash: inputHash, Vector: vector, CreatedAt: now,
+			}); err != nil {
+				return result, err
+			}
+		}
+		result.Embedded++
+	}
+	return result, nil
 }
 
 type QueryRequest struct {

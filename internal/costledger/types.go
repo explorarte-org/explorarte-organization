@@ -57,15 +57,16 @@ type WalletEvent struct {
 type EmbeddingOperation string
 
 const (
-	EmbeddingOperationRAGQuery      EmbeddingOperation = "rag_query"
-	EmbeddingOperationRAGReindex    EmbeddingOperation = "rag_reindex"
-	EmbeddingOperationMemoryPropose EmbeddingOperation = "memory_propose"
-	EmbeddingOperationMemorySearch  EmbeddingOperation = "memory_search"
+	EmbeddingOperationRAGQuery       EmbeddingOperation = "rag_query"
+	EmbeddingOperationRAGReindex     EmbeddingOperation = "rag_reindex"
+	EmbeddingOperationMemoryPropose  EmbeddingOperation = "memory_propose"
+	EmbeddingOperationMemorySearch   EmbeddingOperation = "memory_search"
+	EmbeddingOperationMemoryBackfill EmbeddingOperation = "memory_backfill"
 )
 
 func (o EmbeddingOperation) Valid() bool {
 	switch o {
-	case EmbeddingOperationRAGQuery, EmbeddingOperationRAGReindex, EmbeddingOperationMemoryPropose, EmbeddingOperationMemorySearch:
+	case EmbeddingOperationRAGQuery, EmbeddingOperationRAGReindex, EmbeddingOperationMemoryPropose, EmbeddingOperationMemorySearch, EmbeddingOperationMemoryBackfill:
 		return true
 	default:
 		return false

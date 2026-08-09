@@ -244,3 +244,17 @@ type BGEM3EmbeddingRepository interface {
 	// rag_chunk_embeddings_bge_m3, never rag_chunk_embeddings.
 	NearestBGEM3Chunks(ctx context.Context, organizationID, generationID string, queryVector []float32, limit int) ([]ScoredChunk, error)
 }
+
+// EmbeddingBackfillRepository is the read side of Manager.BackfillEmbeddings
+// (R30.1-2): which chunks in a namespace's active generation still lack an
+// embedding row under a specific identity. Table selection
+// (rag_chunk_embeddings vs rag_chunk_embeddings_bge_m3) follows identity's
+// shape exactly like vectorChannelClause in postgres/hybrid_query.go.
+// Deliberately its own interface, not folded into EmbeddingRepository or
+// BGEM3EmbeddingRepository: it spans both tables depending on identity, and
+// a Repository implementation with no vector support at all (a plain test
+// fake) simply does not implement it — BackfillEmbeddings degrades to a
+// clean error, not a nil-method panic.
+type EmbeddingBackfillRepository interface {
+	PendingChunkEmbeddings(ctx context.Context, organizationID string, namespaceKind NamespaceKind, namespaceID string, identity EmbeddingIdentity, limit int) ([]Chunk, error)
+}

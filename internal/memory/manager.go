@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/costledger"
 	"github.com/Mireuz13/explorarte-organization/internal/embeddingruntime"
@@ -235,6 +236,128 @@ func (m *Manager) Search(ctx context.Context, request SearchRequest) ([]Entry, e
 		return m.ListApproved(ctx, organizationID, roleID, limit)
 	}
 	return results, nil
+}
+
+const defaultBackfillBatchSize = 50
+const maxBackfillBatchSize = 500
+
+type BackfillEmbeddingsRequest struct {
+	OrganizationID string
+	ActorRoleID    string
+	RoleID         string
+	// BatchSize caps how many entries a single call embeds — mirrors
+	// rag.BackfillEmbeddingsRequest.BatchSize exactly, same reasoning: an
+	// entry that permanently fails to embed can never turn one call into
+	// an infinite loop, since each call's own page always terminates.
+	BatchSize int
+}
+
+type BackfillEmbeddingsResult struct {
+	Embedded int
+	Skipped  int
+	// Done is true once a call found fewer pending entries than
+	// BatchSize — see rag.BackfillEmbeddingsResult.Done for why this, and
+	// not "Skipped==0", is the reliable "nothing left" signal.
+	Done bool
+}
+
+func backfillDigest(organizationID, roleID string) string {
+	sum := sha256.Sum256([]byte("memory-embedding-backfill.v1|" + organizationID + "|" + roleID))
+	return hex.EncodeToString(sum[:])
+}
+
+// BackfillEmbeddings is R30.1-2's resumable, idempotent fill for entries
+// approved before the active embedding profile existed (or before a
+// re-embedding under a new identity) — unlike RAG's Reindex, Review
+// already embeds every entry it approves going forward (see
+// embedApprovedEntry), so this only ever has work to do for entries
+// approved before semantic search was configured, or after switching the
+// active profile (e.g. Gemini to BGE-M3). Safe to call repeatedly and
+// concurrently with itself, same idempotency argument as
+// rag.Manager.BackfillEmbeddings: each call reads whichever entries
+// currently lack a row for the active identity and inserts them with an
+// idempotent (ON CONFLICT DO NOTHING) insert.
+func (m *Manager) BackfillEmbeddings(ctx context.Context, request BackfillEmbeddingsRequest) (BackfillEmbeddingsResult, error) {
+	organizationID := strings.TrimSpace(request.OrganizationID)
+	actorRoleID := strings.TrimSpace(request.ActorRoleID)
+	roleID := strings.TrimSpace(request.RoleID)
+	if organizationID == "" || actorRoleID == "" || roleID == "" {
+		return BackfillEmbeddingsResult{}, fmt.Errorf("%w: organization_id, actor_role_id, and role_id are required", ErrInvalidRequest)
+	}
+	if actorRoleID != roleID {
+		return BackfillEmbeddingsResult{}, fmt.Errorf("%w: backfill is limited to the actor's own role memory", ErrInvalidRequest)
+	}
+	if m.semantic == nil {
+		return BackfillEmbeddingsResult{}, fmt.Errorf("%w: semantic search is not configured, nothing to backfill", ErrInvalidRequest)
+	}
+	pendingRepo, ok := m.repository.(EmbeddingBackfillRepository)
+	if !ok {
+		return BackfillEmbeddingsResult{}, fmt.Errorf("%w: repository does not support embedding backfill", ErrInvalidRequest)
+	}
+	if err := m.gate.Authorize(ctx, AuthorizationRequest{
+		OrganizationID: organizationID, ActorRoleID: actorRoleID, CapabilityID: CapabilityApprove,
+		ResourceType: "organizational_memory", ResourceID: roleID, ActionDigest: backfillDigest(organizationID, roleID),
+	}); err != nil {
+		return BackfillEmbeddingsResult{}, err
+	}
+
+	batchSize := request.BatchSize
+	if batchSize <= 0 {
+		batchSize = defaultBackfillBatchSize
+	}
+	if batchSize > maxBackfillBatchSize {
+		batchSize = maxBackfillBatchSize
+	}
+	identity := m.semantic.Identity
+	promptTemplateVersion := m.semantic.PromptTemplateVersion
+	entryKeys, err := pendingRepo.PendingEntryEmbeddings(ctx, organizationID, roleID, identity, batchSize)
+	if err != nil {
+		return BackfillEmbeddingsResult{}, err
+	}
+	result := BackfillEmbeddingsResult{Done: len(entryKeys) < batchSize}
+	now := time.Now().UTC()
+	for _, entryKey := range entryKeys {
+		entry, err := m.repository.Get(ctx, organizationID, entryKey)
+		if err != nil {
+			return result, err
+		}
+		vector := m.embed(ctx, organizationID, actorRoleID, entry.Problem+"\n\n"+entry.Correction, nil, embeddingruntime.TaskDocument, costledger.EmbeddingOperationMemoryBackfill)
+		if vector == nil {
+			result.Skipped++
+			continue
+		}
+		inputHash, err := entry.CanonicalHash()
+		if err != nil {
+			return result, err
+		}
+		if identity.ModelVersion != "" {
+			emb, ok := m.repository.(EmbeddingRepository)
+			if !ok {
+				return result, fmt.Errorf("%w: repository does not support gemini entry embeddings", ErrInvalidRequest)
+			}
+			if err := emb.InsertEntryEmbedding(ctx, EntryEmbedding{
+				OrganizationID: organizationID, EntryID: entry.ID, EmbeddingModelID: identity.ModelID, EmbeddingModelVersion: identity.ModelVersion,
+				EmbeddingDimension: len(vector), PromptTemplateVersion: promptTemplateVersion, InputHash: inputHash, Vector: vector, CreatedAt: now,
+			}); err != nil {
+				return result, err
+			}
+		} else {
+			emb, ok := m.repository.(BGEM3EmbeddingRepository)
+			if !ok {
+				return result, fmt.Errorf("%w: repository does not support bge-m3 entry embeddings", ErrInvalidRequest)
+			}
+			if err := emb.InsertBGEM3EntryEmbedding(ctx, BGEM3EntryEmbedding{
+				OrganizationID: organizationID, EntryID: entry.ID, EmbeddingModelID: identity.ModelID,
+				ModelRevision: identity.ModelRevision, ArtifactSHA256: identity.ArtifactSHA256, TokenizerRevision: identity.TokenizerRevision,
+				EmbeddingDimension: len(vector), Normalization: identity.Normalization, Pooling: identity.Pooling,
+				PromptTemplateVersion: promptTemplateVersion, InputHash: inputHash, Vector: vector, CreatedAt: now,
+			}); err != nil {
+				return result, err
+			}
+		}
+		result.Embedded++
+	}
+	return result, nil
 }
 
 // ListApproved is the same recency-ordered read this package has always
