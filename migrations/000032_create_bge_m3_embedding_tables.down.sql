@@ -1,0 +1,5 @@
+DROP TRIGGER IF EXISTS organizational_memory_embeddings_bge_m3_no_update ON organizational_memory_embeddings_bge_m3;
+DROP TABLE IF EXISTS organizational_memory_embeddings_bge_m3;
+DROP TRIGGER IF EXISTS rag_chunk_embeddings_bge_m3_no_update ON rag_chunk_embeddings_bge_m3;
+DROP TABLE IF EXISTS rag_chunk_embeddings_bge_m3;
+DROP FUNCTION IF EXISTS reject_bge_m3_embedding_update();

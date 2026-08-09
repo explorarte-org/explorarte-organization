@@ -172,6 +172,19 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("down migration 000029: %v", err)
 	}
+	// R30's 000032 adds rag_chunk_embeddings_bge_m3, FK'd to
+	// rag_knowledge_chunks exactly like 000028's rag_chunk_embeddings — same
+	// gap, same fix: it must come down before 000017's DROP TABLE
+	// rag_knowledge_chunks.
+	if err := store.UnitOfWork().WithinTransaction(ctx, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, loaded[31].DownSQL); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `DELETE FROM schema_migrations WHERE version=32`)
+		return err
+	}); err != nil {
+		t.Fatalf("down migration 000032: %v", err)
+	}
 	if err := store.UnitOfWork().WithinTransaction(ctx, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, loaded[27].DownSQL); err != nil {
 			return err
@@ -207,10 +220,10 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Up() walks migrations in ascending order, applying whichever versions
-	// are missing from schema_migrations — 17/18/19/28/29 in that order
-	// (20-27 and 30 were never rolled back above, so Up() skips them).
-	if len(restored.Applied) != 5 || restored.Applied[0] != 17 || restored.Applied[1] != 18 || restored.Applied[2] != 19 || restored.Applied[3] != 28 || restored.Applied[4] != 29 || restored.Current != tip {
-		t.Fatalf("restore=%+v want 000017+000018+000019+000028+000029", restored)
+	// are missing from schema_migrations — 17/18/19/28/29/32 in that order
+	// (20-27, 30, and 31 were never rolled back above, so Up() skips them).
+	if len(restored.Applied) != 6 || restored.Applied[0] != 17 || restored.Applied[1] != 18 || restored.Applied[2] != 19 || restored.Applied[3] != 28 || restored.Applied[4] != 29 || restored.Applied[5] != 32 || restored.Current != tip {
+		t.Fatalf("restore=%+v want 000017+000018+000019+000028+000029+000032", restored)
 	}
 	var identifierTokensExists bool
 	if err := store.Pool().QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='rag_knowledge_chunks' AND column_name='identifier_tokens')`).Scan(&identifierTokensExists); err != nil || !identifierTokensExists {
@@ -219,5 +232,9 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	var embeddingTableExists bool
 	if err := store.Pool().QueryRow(ctx, `SELECT to_regclass('public.rag_chunk_embeddings') IS NOT NULL`).Scan(&embeddingTableExists); err != nil || !embeddingTableExists {
 		t.Fatalf("rag_chunk_embeddings missing after reapply: exists=%v err=%v", embeddingTableExists, err)
+	}
+	var bgeM3TableExists bool
+	if err := store.Pool().QueryRow(ctx, `SELECT to_regclass('public.rag_chunk_embeddings_bge_m3') IS NOT NULL`).Scan(&bgeM3TableExists); err != nil || !bgeM3TableExists {
+		t.Fatalf("rag_chunk_embeddings_bge_m3 missing after reapply: exists=%v err=%v", bgeM3TableExists, err)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -326,6 +327,68 @@ func TestOrganizationalMemoryPostgresRepository(t *testing.T) {
 		}
 		if len(crossRole) != 0 {
 			t.Fatalf("cross-role search leaked entries: %+v", crossRole)
+		}
+	})
+
+	t.Run("R30: bge-m3 entry embeddings live in their own vector(1024) table, never mixed with gemini's vector(768) table", func(t *testing.T) {
+		clock.now = clock.now.Add(time.Second)
+		entry := proposeEntry(t, domain, clock, clock.now, "mem-bge-m3", memory.SourceOperational, memory.DataOrganizational, "")
+		created, _, err := store.CreateCandidate(ctx, memory.CreateCandidateCommand{Entry: entry, IdempotencyKey: "idem-bge-m3"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		clock.now = clock.now.Add(time.Second)
+		approved, err := domain.Review(created, memory.Review{Outcome: memory.ReviewApprove, ReviewerID: memoryIntegrationReviewer})
+		if err != nil {
+			t.Fatal(err)
+		}
+		approved, err = store.Save(ctx, memory.SaveCommand{Entry: approved, ExpectedRevision: 1, ActorID: memoryIntegrationReviewer, Reason: "ok"})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		vector := make([]float32, 1024)
+		vector[0] = 1
+		if err := store.InsertBGEM3EntryEmbedding(ctx, memory.BGEM3EntryEmbedding{
+			OrganizationID: memoryIntegrationOrganization, EntryID: approved.ID, EmbeddingModelID: "bge-m3-local",
+			ModelRevision: "bge-m3-2024-06", ArtifactSHA256: strings.Repeat("a", 64), TokenizerRevision: "bge-m3-tokenizer-2024-06",
+			EmbeddingDimension: 1024, Normalization: "l2", Pooling: "cls", PromptTemplateVersion: "bge-m3-prompt-template.v1",
+			InputHash: fmt.Sprintf("%064x", 12), Vector: vector, CreatedAt: clock.now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		nearest, err := store.NearestBGEM3Entries(ctx, memoryIntegrationOrganization, memoryIntegrationRole, vector, 5)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, hit := range nearest {
+			if hit.EntryID == approved.ID {
+				found = true
+				if hit.Distance > 0.0001 {
+					t.Fatalf("distance=%v want ~0 for an exact self-match", hit.Distance)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("nearest=%+v missing %s", nearest, approved.ID)
+		}
+
+		// The bge-m3 table is genuinely separate: an entry with only a
+		// bge-m3 embedding must never surface through the gemini path.
+		geminiSideResults, err := store.NearestEntries(ctx, memoryIntegrationOrganization, memoryIntegrationRole, make([]float32, 768), 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, hit := range geminiSideResults {
+			if hit.EntryID == approved.ID {
+				t.Fatalf("entry %s leaked into the gemini vector(768) index via its bge-m3 embedding", approved.ID)
+			}
+		}
+
+		if _, err := platform.Pool().Exec(ctx, `UPDATE organizational_memory_embeddings_bge_m3 SET embedding_dimension=1024 WHERE organization_id=$1 AND entry_key=$2`, memoryIntegrationOrganization, approved.ID); err == nil {
+			t.Fatal("expected organizational_memory_embeddings_bge_m3 to reject UPDATE the same way canonical memory tables do")
 		}
 	})
 }

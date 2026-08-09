@@ -67,6 +67,36 @@ type ScoredEntry struct {
 	Distance float64
 }
 
+// BGEM3EntryEmbedding is R30's local, operational counterpart to
+// EntryEmbedding — stored in organizational_memory_embeddings_bge_m3
+// (migration 000032, vector(1024)), never organizational_memory_embeddings
+// (vector(768), R29's frozen Gemini reference index). Mirrors
+// rag.BGEM3ChunkEmbedding; internal/memory cannot import internal/rag, so
+// this is the same deliberate, small duplication as EntryEmbedding itself.
+type BGEM3EntryEmbedding struct {
+	OrganizationID        string
+	EntryID               string
+	EmbeddingModelID      string
+	ModelRevision         string
+	ArtifactSHA256        string
+	TokenizerRevision     string
+	EmbeddingDimension    int
+	Normalization         string
+	Pooling               string
+	PromptTemplateVersion string
+	InputHash             string
+	Vector                []float32
+	CreatedAt             time.Time
+}
+
+// BGEM3EmbeddingRepository is the persistence boundary for R30's local
+// vector index over approved memory entries — additive and separate from
+// EmbeddingRepository, never sharing a table or query path with it.
+type BGEM3EmbeddingRepository interface {
+	InsertBGEM3EntryEmbedding(ctx context.Context, embedding BGEM3EntryEmbedding) error
+	NearestBGEM3Entries(ctx context.Context, organizationID, roleID string, queryVector []float32, limit int) ([]ScoredEntry, error)
+}
+
 // EmbeddingRepository is the persistence boundary for the derived vector
 // index over approved memory entries — deliberately separate from
 // Repository, same reasoning as rag.EmbeddingRepository.

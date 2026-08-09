@@ -162,3 +162,41 @@ type EmbeddingRepository interface {
 	RecordEmbeddingBatchJobItemResult(ctx context.Context, jobID int64, itemKey string, embedding *ChunkEmbedding, errorMessage string) error
 	CompleteEmbeddingBatchJob(ctx context.Context, jobID int64, status string, completedAt time.Time, failedItemCount int) error
 }
+
+// BGEM3ChunkEmbedding is R30's local, operational counterpart to
+// ChunkEmbedding — stored in rag_chunk_embeddings_bge_m3 (migration
+// 000032, vector(1024)), never rag_chunk_embeddings (vector(768), R29's
+// frozen Gemini reference index). The two are never mixed: this type has
+// no field that could be confused with a Gemini row, and a query against
+// one table can never return rows from the other.
+//
+// A self-hosted model has no provider-assigned version string the way
+// Gemini does — ModelRevision+ArtifactSHA256 (the pinned weights hash) is
+// what actually identifies which model produced a given vector, so both
+// are part of the row's identity, not just informational metadata.
+type BGEM3ChunkEmbedding struct {
+	OrganizationID        string
+	ChunkID               string
+	EmbeddingModelID      string
+	ModelRevision         string
+	ArtifactSHA256        string
+	TokenizerRevision     string
+	EmbeddingDimension    int
+	Normalization         string
+	Pooling               string
+	PromptTemplateVersion string
+	InputHash             string
+	Vector                []float32
+	CreatedAt             time.Time
+}
+
+// BGEM3EmbeddingRepository is the persistence boundary for R30's local
+// vector index — additive and separate from EmbeddingRepository, never
+// implemented by the same table or sharing a query path with it.
+type BGEM3EmbeddingRepository interface {
+	InsertBGEM3ChunkEmbedding(ctx context.Context, embedding BGEM3ChunkEmbedding) error
+	// NearestBGEM3Chunks searches only within generationID, same scoping
+	// discipline as NearestChunks — and only ever against
+	// rag_chunk_embeddings_bge_m3, never rag_chunk_embeddings.
+	NearestBGEM3Chunks(ctx context.Context, organizationID, generationID string, queryVector []float32, limit int) ([]ScoredChunk, error)
+}

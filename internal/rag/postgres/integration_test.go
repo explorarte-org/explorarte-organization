@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -370,6 +371,72 @@ func TestApprovedKnowledgeRAGPostgresRepository(t *testing.T) {
 
 		if _, err := platform.Pool().Exec(ctx, `UPDATE rag_chunk_embeddings SET embedding_dimension=768 WHERE organization_id=$1 AND chunk_id=$2`, ragIntegrationOrganization, chunkID); err == nil {
 			t.Fatal("expected rag_chunk_embeddings to reject UPDATE the same way canonical rag tables do")
+		}
+	})
+
+	t.Run("R30: bge-m3 chunk embeddings live in their own vector(1024) table, never mixed with gemini's vector(768) table", func(t *testing.T) {
+		const namespace = "ingenieria_ia_bge_m3"
+		version := proposeVersionInNamespace(t, domain, clock, now.Add(46*time.Second), "know-bge-m3", namespace)
+		created, _, err := store.CreateCandidate(ctx, rag.CreateCandidateCommand{Version: version, IdempotencyKey: "idem-bge-m3"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		clock.now = created.UpdatedAt.Add(time.Second)
+		approved, err := domain.Review(created, rag.ReviewApprove, ragIntegrationReviewer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		approved, err = store.Save(ctx, rag.SaveCommand{Version: approved, ExpectedRevision: 1, ActorID: ragIntegrationReviewer, Reason: "ok"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		chunks, err := rag.ChunkBody(approved.ID, rag.DefaultChunkerID, rag.DefaultChunkerVersion, approved.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		generation, err := store.Reindex(ctx, rag.ReindexCommand{OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceDepartment, NamespaceID: namespace, ChunkerID: rag.DefaultChunkerID, ChunkerVersion: rag.DefaultChunkerVersion, Chunks: chunks})
+		if err != nil {
+			t.Fatal(err)
+		}
+		results, err := store.Query(ctx, rag.QueryCommand{OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceDepartment, NamespaceID: namespace, QueryText: "egress", Limit: 10})
+		if err != nil || len(results) == 0 {
+			t.Fatalf("lexical query before any embedding exists: results=%+v err=%v", results, err)
+		}
+		chunkID := results[0].Chunk.ID
+
+		vector := make([]float32, 1024)
+		vector[0] = 1
+		if err := store.InsertBGEM3ChunkEmbedding(ctx, rag.BGEM3ChunkEmbedding{
+			OrganizationID: ragIntegrationOrganization, ChunkID: chunkID, EmbeddingModelID: "bge-m3-local",
+			ModelRevision: "bge-m3-2024-06", ArtifactSHA256: strings.Repeat("a", 64), TokenizerRevision: "bge-m3-tokenizer-2024-06",
+			EmbeddingDimension: 1024, Normalization: "l2", Pooling: "cls", PromptTemplateVersion: "bge-m3-prompt-template.v1",
+			InputHash: fmt.Sprintf("%064x", 3), Vector: vector, CreatedAt: clock.now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		nearest, err := store.NearestBGEM3Chunks(ctx, ragIntegrationOrganization, generation.ID, vector, 5)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(nearest) != 1 || nearest[0].ChunkID != chunkID || nearest[0].Distance > 0.0001 {
+			t.Fatalf("nearest=%+v want exactly chunkID=%s at ~0 distance", nearest, chunkID)
+		}
+
+		// The bge-m3 table is genuinely separate: a chunk with only a bge-m3
+		// embedding must never surface through the gemini (vector(768)) path.
+		geminiSideResults, err := store.NearestChunks(ctx, ragIntegrationOrganization, generation.ID, make([]float32, 768), 5)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, hit := range geminiSideResults {
+			if hit.ChunkID == chunkID {
+				t.Fatalf("chunk %s leaked into the gemini vector(768) index via its bge-m3 embedding", chunkID)
+			}
+		}
+
+		if _, err := platform.Pool().Exec(ctx, `UPDATE rag_chunk_embeddings_bge_m3 SET embedding_dimension=1024 WHERE organization_id=$1 AND chunk_id=$2`, ragIntegrationOrganization, chunkID); err == nil {
+			t.Fatal("expected rag_chunk_embeddings_bge_m3 to reject UPDATE the same way canonical rag tables do")
 		}
 	})
 
