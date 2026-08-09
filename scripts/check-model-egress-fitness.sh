@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 BASE_SHA="${MODEL_EGRESS_BASE_SHA:-07cc8eac1330816ee755366f61be15991f7de4b6}"
+R23_TIP_SHA="${MODEL_EGRESS_R23_TIP_SHA:-f19c2b4bede1b255e05a71f9de62093eb078b68e}"
+R24_TIP_SHA="${MODEL_EGRESS_R24_TIP_SHA:-c1d15c09e065996b8b6e3a184a59276409a38b17}"
 
 fail() {
   echo "model-egress fitness: $*" >&2
@@ -12,6 +14,10 @@ fail() {
 
 command -v rg >/dev/null 2>&1 || fail "ripgrep is required"
 git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null || fail "base commit ${BASE_SHA} is unavailable"
+git cat-file -e "${R23_TIP_SHA}^{commit}" 2>/dev/null || fail "R23 tip ${R23_TIP_SHA} is unavailable"
+git cat-file -e "${R24_TIP_SHA}^{commit}" 2>/dev/null || fail "R24 tip ${R24_TIP_SHA} is unavailable"
+git merge-base --is-ancestor "$R23_TIP_SHA" "$R24_TIP_SHA" || fail "pinned R23/R24 history is not linear"
+git merge-base --is-ancestor "$R24_TIP_SHA" HEAD || fail "pinned R24 tip is not an ancestor of HEAD"
 
 test -f docs/canonical/model-egress-policy.yaml || fail "canonical model egress policy is missing"
 test -f migrations/000008_create_model_egress_authorization.up.sql || fail "migration 000008 up is missing"
@@ -85,20 +91,20 @@ for raw in text:
         current[key.strip()]=value.strip()
 if current:
     rules.append(current)
-if policy_version != 3:
-    raise SystemExit(f"R24 model egress policy_version must be 3, got {policy_version}")
+if policy_version != 4:
+    raise SystemExit(f"API-only model egress policy_version must be 4, got {policy_version}")
 allows={(r.get("provider_id"), r.get("data_classification")) for r in rules if r.get("effect") == "allow"}
-providers=("alibaba_token_plan_via_claude_code","deepseek","openai_compatible")
+providers=("deepseek","gemini","openai_compatible")
 classes=("public","sanitized","organizational")
 expected={(provider, cls) for provider in providers for cls in classes}
 if allows != expected:
-    print(f"R24 productive allow table must be exactly {sorted(expected)}, got {sorted(allows)}", file=sys.stderr)
+    print(f"API-only productive allow table must be exactly {sorted(expected)}, got {sorted(allows)}", file=sys.stderr)
     sys.exit(1)
 for provider in providers:
     for cls in classes:
         matches=[r for r in rules if r.get("provider_id")==provider and r.get("data_classification")==cls]
         if len(matches)!=1 or matches[0].get("effect")!="allow":
-            raise SystemExit(f"{provider}/{cls} must be explicit allow behind the R24 creation scope gate")
+            raise SystemExit(f"{provider}/{cls} must be an explicit API-only productive allow")
 PYPOLICY
 if rg -n 'provider_id:[[:space:]]*test\.fake' docs/canonical/model-egress-policy.yaml; then fail "test.fake leaked into productive policy"; fi
 for class in secret clinical; do
@@ -120,8 +126,8 @@ rg -q 'strings\.HasPrefix\(taskRef, "task:"\)' internal/modelegress/executive_sc
 if rg -n 'ScopeExecutiveCEO|ScopeDepartmentLeader|ScopeDepartmentWorker' docs/canonical; then
   fail "internal scope markers must not become model-controlled canonical instructions"
 fi
-if git diff --name-only feat/23-executive-evidence-recovery-layer...HEAD -- migrations | grep -q .; then
-  fail "R24 must not change migrations; scope is metadata, not a new data classification"
+if git diff --name-only "$R23_TIP_SHA..$R24_TIP_SHA" -- migrations | grep -q .; then
+  fail "R24 changed migrations; scope must remain backend-derived metadata, not a data classification"
 fi
 
 if rg -n 'adapter\.NewFake\(' internal/modelruntime/bootstrap cmd/orgd; then fail "product runtime registers FakeAdapter"; fi

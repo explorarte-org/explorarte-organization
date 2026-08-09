@@ -2,28 +2,25 @@ package modelruntime
 
 const (
 	alibabaTokenPlanProviderID = "alibaba_token_plan_via_claude_code"
-	r21CEOProfileID            = "ceo-primary"
 )
 
-// applyR21CompiledAvailability decorates a canonical registry plan with the
-// Alibaba CLI adapter compiled by R21. Provider availability and profile
-// dispatchability are deliberately separate: R21 makes the transport known to
-// the binary, but only the owner-confirmed CEO profile becomes dispatchable.
-// executive.observer and research.audit keep their canonical candidate status
-// and remain unavailable until their own governance decisions are resolved.
+// applyR21CompiledAvailability now acts as a retirement barrier for the legacy
+// Alibaba Token Plan route. The adapter package remains in the repository for
+// historical compatibility, but productive plans must never make its provider
+// or profile versions dispatchable again.
 func applyR21CompiledAvailability(plan RegistryPlan) RegistryPlan {
 	for i := range plan.Providers {
 		provider := &plan.Providers[i]
-		if provider.ID == alibabaTokenPlanProviderID && provider.Transport == TransportCLI && provider.DirectHTTPForbidden {
-			provider.AdapterStatus = AdapterAvailable
-			provider.DispatchEnabled = true
+		if provider.ID == alibabaTokenPlanProviderID {
+			provider.AdapterStatus = AdapterUnavailable
+			provider.DispatchEnabled = false
 		}
 	}
 	for i := range plan.Versions {
 		version := &plan.Versions[i]
-		if version.ProfileID == r21CEOProfileID && version.ProviderID == alibabaTokenPlanProviderID && version.Transport == TransportCLI {
-			version.AdapterStatus = AdapterAvailable
-			version.DispatchEnabled = true
+		if version.ProviderID == alibabaTokenPlanProviderID {
+			version.AdapterStatus = AdapterUnavailable
+			version.DispatchEnabled = false
 		}
 	}
 	return plan

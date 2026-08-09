@@ -37,7 +37,7 @@ func TestCrossValidationFailures(t *testing.T) {
 		{"counts", "counts.imported_profiles", func(d *parsedDocuments) { d.Organization.Counts.ImportedProfiles++ }},
 		{"model egress unknown provider", "model_egress.provider_unknown", func(d *parsedDocuments) { d.ModelEgress.Rules[0].ProviderID = "missing" }},
 		{"model egress productive allow", "model_egress.productive_allow_forbidden", func(d *parsedDocuments) {
-			// As of R24 every real provider (Alibaba, DeepSeek, OpenAI-
+			// Every current API provider (DeepSeek, Gemini and OpenAI-
 			// compatible) is compiled/approved for all three non-hard-denied
 			// classifications, so no existing rule can be flipped to allow
 			// to exercise this rejection path anymore. Register a synthetic

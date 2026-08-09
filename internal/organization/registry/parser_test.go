@@ -39,7 +39,7 @@ func TestLoadCurrentCanonicalDocuments(t *testing.T) {
 	if documentHashes["model-egress-policy.yaml"] == "" || documentHashes["capability-matrix.yaml"] == "" {
 		t.Fatalf("missing branch 09 document hashes: %+v", documentHashes)
 	}
-	egress, err := modelegress.LoadCanonicalPolicy(canonicalDirForTest(t), modelegress.ProductiveLoadOptions([]string{"alibaba_token_plan_via_claude_code", "deepseek", "openai_compatible", "gemini"}))
+	egress, err := modelegress.LoadCanonicalPolicy(canonicalDirForTest(t), modelegress.ProductiveLoadOptions([]string{"deepseek", "openai_compatible", "gemini"}))
 	if err != nil {
 		t.Fatal(err)
 	}

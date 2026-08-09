@@ -4,9 +4,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 BASE_SHA="${CELLWORKER_BASE_SHA:-73b2b612e002b90f04ef3c4230a22560d65ef0ca}"
+TIP_SHA="${CELLWORKER_TIP_SHA:-3584d9e7a2e44bbe9d953556704df5e84afd8cf3}"
 fail() { echo "cellworker fitness: $*" >&2; exit 1; }
 command -v rg >/dev/null 2>&1 || fail "ripgrep is required"
 git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null || fail "base commit ${BASE_SHA} is unavailable"
+git cat-file -e "${TIP_SHA}^{commit}" 2>/dev/null || fail "tip commit ${TIP_SHA} is unavailable"
+git merge-base --is-ancestor "$BASE_SHA" "$TIP_SHA" || fail "pinned R12/R13 history is not linear"
+git merge-base --is-ancestor "$TIP_SHA" HEAD || fail "pinned R13 tip is not an ancestor of HEAD"
 
 for path in \
   internal/cellworker/interfaces.go \
@@ -23,7 +27,7 @@ done
 # of its own. Eligibility, claims and dispatch quota stay owned by Ramas
 # 08-11's tables; this branch only reads them.
 mapfile -t canonical_changes < <({
-  git diff --name-only "$BASE_SHA" -- docs/canonical
+  git diff --name-only "$BASE_SHA..$TIP_SHA" -- docs/canonical
   git ls-files --others --exclude-standard -- docs/canonical
 } | sort -u)
 if [[ ${#canonical_changes[@]} -gt 0 ]]; then
@@ -44,7 +48,7 @@ fi
 # a change to orgd's always-on loop or Rama 12's adapter boundary. Rama 21's
 # sandboxed Alibaba Claude Code CLI adapter is a separately governed, opt-in
 # addition (see check-alibaba-cli-fitness.sh) and is excluded here.
-git diff --exit-code "$BASE_SHA" -- cmd/orgd internal/app internal/modelruntime/adapter \
+git diff --exit-code "$BASE_SHA..$TIP_SHA" -- cmd/orgd internal/app internal/modelruntime/adapter \
   ':!internal/modelruntime/adapter/alibabaclaude' >/dev/null \
   || fail "orgd, application composition, or the provider adapter changed"
 

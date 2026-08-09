@@ -53,7 +53,7 @@ func TestModelEgressPostgreSQL17(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	canonical, err := modelegress.LoadCanonicalPolicy(filepath.Join("..", "..", "..", "docs", "canonical"), modelegress.ProductiveLoadOptions([]string{"alibaba_token_plan_via_claude_code", "deepseek", "openai_compatible", "gemini"}))
+	canonical, err := modelegress.LoadCanonicalPolicy(filepath.Join("..", "..", "..", "docs", "canonical"), modelegress.ProductiveLoadOptions([]string{"deepseek", "openai_compatible", "gemini"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestModelEgressPostgreSQL17(t *testing.T) {
 			t.Fatal(err)
 		}
 		if allowRules != wantAllow {
-			t.Fatalf("productive materialization has %d allow rules, want %d compiled-in (Rama 12: openai_compatible public+sanitized)", allowRules, wantAllow)
+			t.Fatalf("productive materialization has %d allow rules, want %d API-only rules", allowRules, wantAllow)
 		}
 		if _, err := platform.Pool().Exec(ctx, `UPDATE model_egress_policy_versions SET canonical_hash=$1 WHERE id=$2`, modelegress.SHA256Bytes([]byte("mutated")), first.PolicyVersionID); err == nil {
 			t.Fatal("historical policy version was mutable")

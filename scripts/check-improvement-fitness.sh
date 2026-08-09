@@ -4,9 +4,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 BASE_SHA="${IMPROVEMENT_BASE_SHA:-3584d9e7a2e44bbe9d953556704df5e84afd8cf3}"
+TIP_SHA="${IMPROVEMENT_TIP_SHA:-30b6f0b7a6dbc79c5bc740c7dad290abf9f0ecb9}"
 fail() { echo "improvement fitness: $*" >&2; exit 1; }
 command -v rg >/dev/null 2>&1 || fail "ripgrep is required"
 git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null || fail "base commit ${BASE_SHA} is unavailable"
+git cat-file -e "${TIP_SHA}^{commit}" 2>/dev/null || fail "tip commit ${TIP_SHA} is unavailable"
+git merge-base --is-ancestor "$BASE_SHA" "$TIP_SHA" || fail "pinned pre-R15/R15 history is not linear"
+git merge-base --is-ancestor "$TIP_SHA" HEAD || fail "pinned R15 tip is not an ancestor of HEAD"
 
 for path in \
   internal/evaluation/types.go \
@@ -28,7 +32,7 @@ done
 # Rama 15 implements the candidate lifecycle the owner specified; it does not
 # redefine canonical vocabulary while adding evaluation/promotion durability.
 mapfile -t canonical_changes < <({
-  git diff --name-only "$BASE_SHA" -- docs/canonical
+  git diff --name-only "$BASE_SHA..$TIP_SHA" -- docs/canonical
   git ls-files --others --exclude-standard -- docs/canonical
 } | sort -u)
 if [[ ${#canonical_changes[@]} -gt 0 ]]; then

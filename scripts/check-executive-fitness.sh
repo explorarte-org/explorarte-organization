@@ -7,12 +7,18 @@ cd "$ROOT"
 # R23 starts from the integrated R21/R22 main tip. New executive hardening must
 # not smuggle in migrations, authority widening or provider coupling.
 base=3090966772da048a6245200dcef4bcfe42c9d22c
+tip=f19c2b4bede1b255e05a71f9de62093eb078b68e
 core=(internal/executive/*.go)
 
 fail() {
   echo "executive fitness: $*" >&2
   exit 1
 }
+
+git cat-file -e "${base}^{commit}" 2>/dev/null || fail "R23 base commit is unavailable"
+git cat-file -e "${tip}^{commit}" 2>/dev/null || fail "R23 tip commit is unavailable"
+git merge-base --is-ancestor "$base" "$tip" || fail "pinned pre-R23/R23 history is not linear"
+git merge-base --is-ancestor "$tip" HEAD || fail "pinned R23 tip is not an ancestor of HEAD"
 
 for pattern in \
   'internal/modelruntime/adapter' \
@@ -90,13 +96,13 @@ if rg -n 'DispatchActorRoleID:.*OwnerRoleID|ActorRoleID:.*OwnerRoleID.*model\.di
   fail "raw owner impersonation detected"
 fi
 
-if git diff --name-only "$base"...HEAD -- docs/canonical/capability-matrix.yaml | grep -q .; then
+if git diff --name-only "$base..$tip" -- docs/canonical/capability-matrix.yaml | grep -q .; then
   fail "capability-matrix widening/change is forbidden in R23"
 fi
-if git diff --name-only "$base"...HEAD -- internal/decisiongraph | grep -q .; then
+if git diff --name-only "$base..$tip" -- internal/decisiongraph | grep -q .; then
   fail "R14 internals changed by R23"
 fi
-if git diff --name-only "$base"...HEAD -- migrations | grep -q .; then
+if git diff --name-only "$base..$tip" -- migrations | grep -q .; then
   fail "R23 must not add or reserve persistence migrations"
 fi
 

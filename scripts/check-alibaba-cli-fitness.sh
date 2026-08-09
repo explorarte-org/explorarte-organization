@@ -10,6 +10,8 @@ BOOTSTRAP="$ROOT/internal/modelruntime/bootstrap/runtime.go"
 AVAILABILITY="$ROOT/internal/modelruntime/compiled_availability_r21.go"
 MIGRATION="$ROOT/migrations/000018_make_provider_outcomes_transport_aware.up.sql"
 POLICY="$ROOT/docs/canonical/model-egress-policy.yaml"
+ROUTING="$ROOT/docs/canonical/model-routing.yaml"
+ENV_EXAMPLE="$ROOT/.env.example"
 
 fail() { printf 'R21 Alibaba CLI fitness: %s\n' "$*" >&2; exit 1; }
 
@@ -45,14 +47,13 @@ grep -Fq 'syscall.SIGTERM' "$PROCESS" || fail "SIGTERM cancellation stage missin
 grep -Fq 'syscall.SIGKILL' "$PROCESS" || fail "SIGKILL escalation missing"
 
 grep -Fq 'SingaporeTokenPlanEndpoint' "$CONFIG" || fail "fixed Token Plan endpoint pin missing"
-grep -Fq 'ORG_MODEL_PROVIDER_ALIBABA_CLAUDE_ENABLED' "$CONFIG" || fail "explicit opt-in flag missing"
-grep -Fq 'alibabaclaude.LoadConfig' "$BOOTSTRAP" || fail "Alibaba adapter not wired in bootstrap"
-grep -Fq 'if alibabaConfig.Enabled' "$BOOTSTRAP" || fail "Alibaba adapter registration is not opt-in"
-
-grep -Fq 'r21CEOProfileID            = "ceo-primary"' "$AVAILABILITY" || fail "R21 CEO profile pin missing"
-if grep -Eq 'executive\.observer.*AdapterAvailable|research\.audit.*AdapterAvailable' "$AVAILABILITY"; then
-  fail "R21 must not activate observer or research audit profiles"
+grep -Fq 'ORG_MODEL_PROVIDER_ALIBABA_CLAUDE_ENABLED' "$CONFIG" || fail "historical package lost its explicit opt-in boundary"
+if grep -Eq 'alibabaclaude|ORG_MODEL_PROVIDER_ALIBABA_CLAUDE' "$BOOTSTRAP" "$ENV_EXAMPLE"; then
+  fail "retired Alibaba adapter remains product-wired or configurable"
 fi
+
+grep -Fq 'provider.AdapterStatus = AdapterUnavailable' "$AVAILABILITY" || fail "provider retirement barrier missing"
+grep -Fq 'version.AdapterStatus = AdapterUnavailable' "$AVAILABILITY" || fail "profile retirement barrier missing"
 
 grep -Fq 'ADD COLUMN transport' "$MIGRATION" || fail "provider outcome transport column missing"
 grep -Fq 'ADD COLUMN process_exit_code' "$MIGRATION" || fail "provider process exit evidence missing"
@@ -60,14 +61,11 @@ grep -Fq 'model_provider_outcomes_transport_derivation' "$MIGRATION" || fail "tr
 grep -Fq 'process_exit_' "$MIGRATION" || fail "known CLI exit-code derivation missing"
 grep -Fq 'model_provider_outcomes_no_mutation' "$MIGRATION" || fail "outcome immutability is not restored after backfill"
 
-grep -Fq 'provider_id: alibaba_token_plan_via_claude_code' "$POLICY" || fail "canonical Alibaba egress rules missing"
-if awk '
-  $0 ~ /provider_id: alibaba_token_plan_via_claude_code/ { inrule=1; next }
-  inrule && $0 ~ /provider_id:/ { inrule=0 }
-  inrule && $0 ~ /effect: allow/ { found=1 }
-  END { exit(found ? 0 : 1) }
-' "$POLICY"; then
-  fail "R21 must not silently widen Alibaba egress while plan terms/policy remain unresolved"
+if grep -Fq 'provider_id: alibaba_token_plan_via_claude_code' "$POLICY"; then
+  fail "retired Alibaba provider remains in productive egress policy"
+fi
+if grep -Eq '^[[:space:]]+provider:[[:space:]]+alibaba_token_plan_via_claude_code$' "$ROUTING"; then
+  fail "retired Alibaba provider remains in canonical routing"
 fi
 
-printf 'R21 Alibaba CLI fitness: ok\n'
+printf 'R21 Alibaba CLI retirement fitness: ok\n'

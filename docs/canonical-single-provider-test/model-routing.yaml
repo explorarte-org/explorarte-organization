@@ -15,11 +15,11 @@ policies:
     transport: http_adapter
     source_of_decision: single_provider_test_override
   executive.observer:
-    provider: alibaba_token_plan_via_claude_code
-    model: qwen3.6-flash
-    transport: cli_adapter
-    direct_http_forbidden: true
-    source_of_decision: provisional_same_family_as_ceo
+    provider: openai_compatible
+    model: gpt-5.6-luna
+    reasoning_effort: medium
+    transport: http_adapter
+    source_of_decision: single_provider_test_override
     decision_status: owner_confirmation_required
   department.leader:
     provider: openai_compatible
@@ -34,10 +34,11 @@ policies:
     transport: http_adapter
     source_of_decision: single_provider_test_override
   research.audit:
-    provider: alibaba_token_plan_via_claude_code
-    model: qwen3.6-flash
-    transport: cli_adapter
-    direct_http_forbidden: true
+    provider: openai_compatible
+    model: gpt-5.6-luna
+    reasoning_effort: medium
+    transport: http_adapter
+    source_of_decision: single_provider_test_override
     decision_status: candidate_preserves_high_level_audit_role
   research.worker:
     provider: deepseek

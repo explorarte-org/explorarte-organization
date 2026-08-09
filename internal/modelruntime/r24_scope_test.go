@@ -42,7 +42,7 @@ func TestInvocationServiceRejectsAlibabaWithoutCEOScopeBeforeMaterialization(t *
 	}
 }
 
-func TestInvocationServiceAcceptsMatchingAlibabaCEOScope(t *testing.T) {
+func TestInvocationServiceRejectsRetiredAlibabaEvenWithHistoricalCEOScope(t *testing.T) {
 	store, catalog, task, contexts, assignments, _, now := serviceFixture()
 	store.binding.Version.ProviderID = "alibaba_token_plan_via_claude_code"
 	store.binding.Version.Transport = TransportCLI
@@ -54,11 +54,12 @@ func TestInvocationServiceAcceptsMatchingAlibabaCEOScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = service.Create(context.Background(), r24CreateCommand(now)); err != nil {
-		t.Fatal(err)
+	_, err = service.Create(context.Background(), r24CreateCommand(now))
+	if !errors.Is(err, ErrEgressDenied) {
+		t.Fatalf("error=%v", err)
 	}
-	if !store.created {
-		t.Fatal("matching CEO scoped invocation was not materialized")
+	if store.created {
+		t.Fatal("retired Alibaba invocation was materialized")
 	}
 }
 

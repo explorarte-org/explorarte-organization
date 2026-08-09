@@ -4,9 +4,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 BASE_SHA="${COMPLETION_BASE_SHA:-76ad1e04b9f06108233bc5b6b7f4f486b0a99d82}"
+TIP_SHA="${COMPLETION_TIP_SHA:-292495132d69757a87e1e86aff57f62dadb72fcc}"
 fail() { echo "completion fitness: $*" >&2; exit 1; }
 command -v rg >/dev/null 2>&1 || fail "ripgrep is required"
 git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null || fail "base commit ${BASE_SHA} is unavailable"
+git cat-file -e "${TIP_SHA}^{commit}" 2>/dev/null || fail "tip commit ${TIP_SHA} is unavailable"
+git merge-base --is-ancestor "$BASE_SHA" "$TIP_SHA" || fail "pinned pre-R16/R16 history is not linear"
+git merge-base --is-ancestor "$TIP_SHA" HEAD || fail "pinned R16 tip is not an ancestor of HEAD"
 
 for path in \
   internal/completion/types.go \
@@ -20,7 +24,7 @@ done
 
 # R16 must not redefine canonical vocabulary.
 mapfile -t canonical_changes < <({
-  git diff --name-only "$BASE_SHA" -- docs/canonical
+  git diff --name-only "$BASE_SHA..$TIP_SHA" -- docs/canonical
   git ls-files --others --exclude-standard -- docs/canonical
 } | sort -u)
 if [[ ${#canonical_changes[@]} -gt 0 ]]; then

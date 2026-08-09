@@ -61,7 +61,9 @@ func scopeRequired(provider string, dataClasses []string) bool {
 func scopeAllows(provider, transport, scope string, singleProviderTest bool) bool {
 	switch provider {
 	case "alibaba_token_plan_via_claude_code":
-		return transport == "cli_adapter" && scope == ScopeExecutiveCEO
+		// Retired provider: even a stale policy allow plus a valid historical
+		// CEO marker must remain fail-closed.
+		return false
 	case "openai_compatible":
 		if transport != "http_adapter" {
 			return false

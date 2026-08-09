@@ -12,8 +12,8 @@ test -f migrations/000007_create_model_runtime_gateway.down.sql || fail "migrati
 
 # Network is isolated to the single approved provider adapter. Subprocesses,
 # shell execution and background model daemons remain forbidden everywhere
-# outside the sandboxed Alibaba Claude Code CLI adapter, which is separately
-# governed by check-alibaba-cli-fitness.sh.
+# outside the retired, unlinked Alibaba CLI package, which remains only for
+# historical source compatibility and is governed by its retirement check.
 if rg -n --glob '*.go' --glob '!internal/modelruntime/adapter/openaicompat/**' --glob '!internal/modelruntime/adapter/deepseek/**' --glob '!internal/modelruntime/adapter/gemini/**' '"net/http"' internal/modelruntime; then
   fail "network client found outside the approved openai-compatible, DeepSeek, or Gemini adapters"
 fi
@@ -36,14 +36,13 @@ if rg -n 'internal/modelruntime|modelruntime' cmd/orgd internal/app; then
 fi
 
 # Provider credentials remain file references. Raw API keys/tokens and generic
-# caller-selectable URLs are forbidden; only the exact Rama 12 variables exist.
-# The Alibaba Claude Code adapter's token-plan URL is excluded here because it
-# is pinned to SingaporeTokenPlanEndpoint and validated at load time, enforced
-# separately by check-alibaba-cli-fitness.sh.
+# caller-selectable URLs are forbidden. The retired Alibaba source package is
+# excluded from production configuration scanning because bootstrap no longer
+# imports it and .env.example exposes no activation variables.
 if rg -n --glob '!**/*_test.go' --glob '!internal/modelruntime/adapter/alibabaclaude/**' '(API[_-]?KEY|ACCESS[_-]?TOKEN|PROVIDER[_-]?TOKEN|BASE[_-]?URL|ORG_MODEL_.*PRIVATE_KEY)' internal/modelruntime cmd/orgctl; then
   fail "raw provider credential or generic endpoint configuration found"
 fi
-if rg -n --glob '!**/*_test.go' '(API[_-]?KEY|ACCESS[_-]?TOKEN|PROVIDER[_-]?TOKEN|BASE[_-]?URL|ORG_MODEL_.*PRIVATE_KEY)' .env.example | grep -v ':ORG_MODEL_PROVIDER_ALIBABA_CLAUDE_TOKEN_PLAN_BASE_URL='; then
+if rg -n --glob '!**/*_test.go' '(API[_-]?KEY|ACCESS[_-]?TOKEN|PROVIDER[_-]?TOKEN|BASE[_-]?URL|ORG_MODEL_.*PRIVATE_KEY)' .env.example; then
   fail "raw provider credential or generic endpoint configuration found"
 fi
 python3 - <<'PYENV'
@@ -70,19 +69,6 @@ allowed = {
     "ORG_MODEL_PROVIDER_GEMINI_REQUEST_TIMEOUT",
     "ORG_MODEL_PROVIDER_GEMINI_CIRCUIT_FAILURE_THRESHOLD",
     "ORG_MODEL_PROVIDER_GEMINI_CIRCUIT_OPEN_DURATION",
-    "ORG_MODEL_PROVIDER_ALIBABA_CLAUDE_ENABLED",
-    "ORG_MODEL_PROVIDER_ALIBABA_CLAUDE_EXECUTABLE",
-    "ORG_MODEL_PROVIDER_ALIBABA_CLAUDE_EXECUTABLE_SHA256",
-    "ORG_MODEL_PROVIDER_ALIBABA_CLAUDE_EXPECTED_VERSION",
-    "ORG_MODEL_PROVIDER_ALIBABA_CLAUDE_KILL_GRACE",
-    "ORG_MODEL_PROVIDER_ALIBABA_CLAUDE_MAX_CONCURRENCY",
-    "ORG_MODEL_PROVIDER_ALIBABA_CLAUDE_MAX_STDERR_BYTES",
-    "ORG_MODEL_PROVIDER_ALIBABA_CLAUDE_REQUEST_TIMEOUT",
-    "ORG_MODEL_PROVIDER_ALIBABA_CLAUDE_RUNTIME_PATH",
-    "ORG_MODEL_PROVIDER_ALIBABA_CLAUDE_SETTINGS_FILE",
-    "ORG_MODEL_PROVIDER_ALIBABA_CLAUDE_SETTINGS_SHA256",
-    "ORG_MODEL_PROVIDER_ALIBABA_CLAUDE_TOKEN_PLAN_BASE_URL",
-    "ORG_MODEL_PROVIDER_ALIBABA_CLAUDE_WORK_DIR",
 }
 seen=set()
 for path in [Path("internal/modelruntime"), Path(".env.example")]:
@@ -90,12 +76,18 @@ for path in [Path("internal/modelruntime"), Path(".env.example")]:
     for item in paths:
         if item.name.endswith("_test.go"):
             continue
+        if "internal/modelruntime/adapter/alibabaclaude" in item.as_posix():
+            continue
         seen.update(re.findall(r"ORG_MODEL_(?:EXECUTION|PROVIDER)_[A-Z0-9_]+", item.read_text(encoding="utf-8")))
 extra={value for value in seen if ("KEY" in value or "TOKEN" in value or "URL" in value or value.startswith("ORG_MODEL_PROVIDER_")) and value not in allowed}
 if extra:
     print("unapproved provider configuration variables:", sorted(extra), file=sys.stderr)
     sys.exit(1)
 PYENV
+
+if rg -n 'alibabaclaude|ORG_MODEL_PROVIDER_ALIBABA_CLAUDE' internal/modelruntime/bootstrap .env.example; then
+  fail "retired Alibaba Token Plan adapter is still product-wired"
+fi
 
 # Context is consumed only through contextengine public interfaces.
 if rg -n --glob '*.go' --glob '!integration_test.go' '(context_snapshots|context_segments)' internal/modelruntime; then

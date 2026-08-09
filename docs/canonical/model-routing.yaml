@@ -1,5 +1,5 @@
 schema_version: 0.1.0
-document_status: branch_12_candidate
+document_status: api_only_candidate
 policies:
   executive.ceo:
     provider: openai_compatible
@@ -11,12 +11,14 @@ policies:
     - qwen3.8-max in current AGENT/PERFIL documents
     - alibaba_token_plan_via_claude_code/qwen3.6-flash in prior routing revision
   executive.observer:
-    provider: alibaba_token_plan_via_claude_code
-    model: qwen3.6-flash
-    transport: cli_adapter
-    direct_http_forbidden: true
-    source_of_decision: provisional_same_family_as_ceo
+    provider: openai_compatible
+    model: gpt-5.6-luna
+    reasoning_effort: xhigh
+    transport: http_adapter
+    source_of_decision: provisional_same_api_family_as_ceo
     decision_status: owner_confirmation_required
+    legacy_conflicts:
+    - alibaba_token_plan_via_claude_code/qwen3.6-flash retired by owner
   department.leader:
     provider: openai_compatible
     model: gpt-5.6-luna
@@ -31,11 +33,13 @@ policies:
     transport: http_adapter
     source_of_decision: global_agent_and_owner_description
   research.audit:
-    provider: alibaba_token_plan_via_claude_code
-    model: qwen3.6-flash
-    transport: cli_adapter
-    direct_http_forbidden: true
+    provider: gemini
+    model: gemini-2.5-flash
+    transport: http_adapter
+    source_of_decision: owner_retired_token_plan_api_only_replacement
     decision_status: candidate_preserves_high_level_audit_role
+    legacy_conflicts:
+    - alibaba_token_plan_via_claude_code/qwen3.6-flash retired by owner
   research.worker:
     provider: gemini
     model: gemini-2.5-flash

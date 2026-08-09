@@ -53,7 +53,7 @@ func TestValidateExecutiveScopeMatrix(t *testing.T) {
 		allowed            bool
 		reason             string
 	}{
-		{"ceo alibaba", "alibaba_token_plan_via_claude_code", "cli_adapter", []string{"organizational", "public"}, ScopeExecutiveCEO, false, true, "executive_scope_verified_ceo"},
+		{"retired alibaba stays denied with historical ceo scope", "alibaba_token_plan_via_claude_code", "cli_adapter", []string{"organizational", "public"}, ScopeExecutiveCEO, false, false, "executive_scope_required"},
 		{"ceo missing scope", "alibaba_token_plan_via_claude_code", "cli_adapter", []string{"organizational"}, "", false, false, "executive_scope_required"},
 		// CEO moved to openai_compatible/http_adapter (gpt-5.6-luna) in the
 		// canonical routing revision that superseded the alibaba-only CEO

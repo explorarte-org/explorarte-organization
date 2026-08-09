@@ -23,7 +23,6 @@ import (
 	modelpricingpostgres "github.com/Mireuz13/explorarte-organization/internal/modelpricing/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter"
-	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/alibabaclaude"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/deepseek"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/gemini"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/openaicompat"
@@ -137,10 +136,6 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	if err != nil {
 		return nil, fmt.Errorf("load openai-compatible provider config: %w", err)
 	}
-	alibabaConfig, err := alibabaclaude.LoadConfig(os.LookupEnv, runtimeCfg.MaxResponseBytes)
-	if err != nil {
-		return nil, fmt.Errorf("load Alibaba Claude Code provider config: %w", err)
-	}
 	deepseekConfig, err := deepseek.LoadConfig(os.LookupEnv, runtimeCfg.MaxResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("load DeepSeek provider config: %w", err)
@@ -149,18 +144,11 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	if err != nil {
 		return nil, fmt.Errorf("load Gemini provider config: %w", err)
 	}
-	registeredAdapters := make([]modelruntime.ProviderAdapter, 0, 4)
+	registeredAdapters := make([]modelruntime.ProviderAdapter, 0, 3)
 	if openAIConfig.Enabled {
 		providerAdapter, providerErr := openaicompat.New(openAIConfig)
 		if providerErr != nil {
 			return nil, fmt.Errorf("open openai-compatible provider adapter: %w", providerErr)
-		}
-		registeredAdapters = append(registeredAdapters, providerAdapter)
-	}
-	if alibabaConfig.Enabled {
-		providerAdapter, providerErr := alibabaclaude.New(alibabaConfig)
-		if providerErr != nil {
-			return nil, fmt.Errorf("open Alibaba Claude Code provider adapter: %w", providerErr)
 		}
 		registeredAdapters = append(registeredAdapters, providerAdapter)
 	}

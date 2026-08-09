@@ -52,27 +52,19 @@ type LoadOptions struct {
 func ProductiveLoadOptions(knownProviders []string) LoadOptions {
 	// R24 compiles the provider/classification surface needed by executive
 	// orchestration. These allows are necessary but not sufficient: Evaluator
-	// independently requires a backend-derived executive scope for Alibaba and
-	// DeepSeek, and for OpenAI-compatible whenever organizational data is
+	// independently requires a backend-derived executive scope for DeepSeek,
+	// and for OpenAI-compatible whenever organizational data is
 	// present. Secret and clinical remain hard-denied below this table.
 	//
-	// DeepSeek has no compiled ProviderAdapter (no HTTP transport) yet; its
-	// presence here is policy/scope-gate readiness only (see
-	// ValidateExecutiveScope), not a claim that dispatch actually works. Do
-	// not treat a green build as a productive DeepSeek smoke test.
-	//
-	// Gemini does have a compiled HTTP ProviderAdapter
-	// (internal/modelruntime/adapter/gemini) and is routed to
-	// research.worker in model-routing.yaml; omitting it here left every
-	// real research.worker call denied by default (fail-closed) with no
-	// allow rule ever reaching this far.
+	// Alibaba Token Plan is deliberately absent: the historical adapter is no
+	// longer wired into the product runtime, and a stale allow must fail closed.
+	// All entries below are compiled HTTP API adapters.
 	return LoadOptions{
 		KnownProviders: append([]string(nil), knownProviders...),
 		ProductiveExplicitRules: map[string][]DataClassification{
-			"alibaba_token_plan_via_claude_code": {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
-			"deepseek":                           {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
-			"openai_compatible":                  {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
-			"gemini":                             {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
+			"deepseek":          {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
+			"openai_compatible": {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
+			"gemini":            {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
 		},
 	}
 }

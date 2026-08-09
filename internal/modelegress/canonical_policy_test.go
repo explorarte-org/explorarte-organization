@@ -135,8 +135,8 @@ func TestPolicyHashIgnoresRuleOrder(t *testing.T) {
 	}
 }
 
-func TestProductivePolicyAllowsOnlyCompiledR24Classes(t *testing.T) {
-	providers := []string{"alibaba_token_plan_via_claude_code", "deepseek", "openai_compatible"}
+func TestProductivePolicyAllowsOnlyCurrentAPIProviders(t *testing.T) {
+	providers := []string{"deepseek", "gemini", "openai_compatible"}
 	options := ProductiveLoadOptions(providers)
 	for _, provider := range providers {
 		for _, classification := range []string{"public", "sanitized", "organizational"} {
@@ -159,5 +159,11 @@ func TestProductivePolicyAllowsOnlyCompiledR24Classes(t *testing.T) {
 	unknownProvider = strings.Replace(unknownProvider, "effect: deny", "effect: allow", 1)
 	if _, err := LoadCanonicalPolicy(writePolicy(t, unknownProvider), options); !errors.Is(err, ErrInvalidPolicy) {
 		t.Fatalf("unknown provider error=%v", err)
+	}
+	retiredProvider := strings.Replace(validPolicyBody(), "provider_id: test.fake", "provider_id: alibaba_token_plan_via_claude_code", 1)
+	retiredProvider = strings.Replace(retiredProvider, "effect: deny", "effect: allow", 1)
+	retiredOptions := ProductiveLoadOptions(append(providers, "alibaba_token_plan_via_claude_code"))
+	if _, err := LoadCanonicalPolicy(writePolicy(t, retiredProvider), retiredOptions); !errors.Is(err, ErrInvalidPolicy) {
+		t.Fatalf("retired Alibaba provider error=%v", err)
 	}
 }
