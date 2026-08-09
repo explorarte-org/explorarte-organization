@@ -15,14 +15,14 @@ import (
 )
 
 type Provider struct {
-	repository     memory.Repository
+	manager        *memory.Manager
 	organizationID string
 	maxEntries     int
 }
 
-func New(repository memory.Repository, organizationID string, maxEntries int) (*Provider, error) {
-	if repository == nil {
-		return nil, errors.New("memory context provider requires repository")
+func New(manager *memory.Manager, organizationID string, maxEntries int) (*Provider, error) {
+	if manager == nil {
+		return nil, errors.New("memory context provider requires manager")
 	}
 	organizationID = strings.TrimSpace(organizationID)
 	if organizationID == "" {
@@ -31,23 +31,50 @@ func New(repository memory.Repository, organizationID string, maxEntries int) (*
 	if maxEntries <= 0 {
 		return nil, errors.New("memory context provider requires positive max entries")
 	}
-	return &Provider{repository: repository, organizationID: organizationID, maxEntries: maxEntries}, nil
+	return &Provider{manager: manager, organizationID: organizationID, maxEntries: maxEntries}, nil
 }
 
+// ListApproved uses Manager.Search (exact-identifier + vector channels,
+// see internal/memory/semantic.go and postgres/search.go) when the build
+// request carries a usable query signal (request.Purpose); Search itself
+// falls back to plain recency when neither channel finds anything, so this
+// path is strictly additive over the pure-recency behavior this provider
+// had before R29 — never worse, sometimes better (a relevant older lesson
+// can now outrank an irrelevant recent one). Search enforces
+// ActorRoleID == RoleID, which already matches what this provider always
+// scoped to (the requesting role's own memory), so no behavior changes for
+// who can see what — only what gets prioritized among what they could
+// already see.
 func (p *Provider) ListApproved(ctx context.Context, request contextengine.BuildRequest) ([]contextengine.SourceRecord, error) {
 	if request.OrganizationID != p.organizationID {
 		return nil, fmt.Errorf("memory provider organization mismatch: request=%s configured=%s", request.OrganizationID, p.organizationID)
 	}
-	entries, err := p.repository.ListApproved(ctx, memory.ApprovedFilter{OrganizationID: p.organizationID, RoleID: request.ActorRoleID, Limit: p.maxEntries})
+	var entries []memory.Entry
+	var err error
+	if queryText := strings.TrimSpace(request.Purpose); queryText != "" {
+		// Search already returns its results ordered by relevance (RRF
+		// score, or its own recency fallback when no channel matched) — a
+		// second recency sort here would silently throw that ranking away
+		// and defeat the entire point of using Search instead of
+		// ListApproved. Only the no-query branch below needs an explicit
+		// recency sort, because ListApproved makes no ordering promise of
+		// its own.
+		entries, err = p.manager.Search(ctx, memory.SearchRequest{
+			OrganizationID: p.organizationID, ActorRoleID: request.ActorRoleID, RoleID: request.ActorRoleID,
+			QueryText: queryText, Limit: p.maxEntries,
+		})
+	} else {
+		entries, err = p.manager.ListApproved(ctx, p.organizationID, request.ActorRoleID, p.maxEntries)
+		sort.Slice(entries, func(i, j int) bool {
+			if entries[i].UpdatedAt.Equal(entries[j].UpdatedAt) {
+				return entries[i].ID < entries[j].ID
+			}
+			return entries[i].UpdatedAt.After(entries[j].UpdatedAt)
+		})
+	}
 	if err != nil {
 		return nil, err
 	}
-	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].UpdatedAt.Equal(entries[j].UpdatedAt) {
-			return entries[i].ID < entries[j].ID
-		}
-		return entries[i].UpdatedAt.After(entries[j].UpdatedAt)
-	})
 	if len(entries) > p.maxEntries {
 		entries = entries[:p.maxEntries]
 	}
@@ -72,7 +99,7 @@ func (p *Provider) ValidateVersion(ctx context.Context, expected contextengine.S
 	if expected.Kind != contextengine.SourceApprovedMemory {
 		return fmt.Errorf("memory version validation received source kind %s", expected.Kind)
 	}
-	entry, err := p.repository.Get(ctx, p.organizationID, expected.Reference)
+	entry, err := p.manager.Get(ctx, p.organizationID, expected.Reference)
 	if err != nil {
 		return err
 	}

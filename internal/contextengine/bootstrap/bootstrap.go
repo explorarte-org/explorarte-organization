@@ -8,8 +8,8 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/contextengine/canonical"
 	"github.com/Mireuz13/explorarte-organization/internal/contextengine/document"
 	contextpostgres "github.com/Mireuz13/explorarte-organization/internal/contextengine/postgres"
+	memorybootstrap "github.com/Mireuz13/explorarte-organization/internal/memory/bootstrap"
 	memorycontext "github.com/Mireuz13/explorarte-organization/internal/memory/contextprovider"
-	memorypostgres "github.com/Mireuz13/explorarte-organization/internal/memory/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
 	ragbootstrap "github.com/Mireuz13/explorarte-organization/internal/rag/bootstrap"
@@ -56,11 +56,11 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store, taskProvider
 	if err != nil {
 		return nil, err
 	}
-	memoryStore, err := memorypostgres.New(platformStore, cfg.Tasks.OrganizationID)
+	memoryRuntime, err := memorybootstrap.Open(cfg, platformStore)
 	if err != nil {
 		return nil, err
 	}
-	memoryProvider, err := memorycontext.New(memoryStore, cfg.Tasks.OrganizationID, cfg.Context.MaxMemorySegments)
+	memoryProvider, err := memorycontext.New(memoryRuntime.Manager, cfg.Tasks.OrganizationID, cfg.Context.MaxMemorySegments)
 	if err != nil {
 		return nil, err
 	}
