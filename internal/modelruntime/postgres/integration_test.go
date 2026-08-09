@@ -793,10 +793,30 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		// 000012 must come down before the earlier model migrations. 000021's
 		// provider_wallet_events FKs to model_invocations, so it must come
 		// down before 000007 too.
+		//
+		// Any later migration that ALTERs provider_wallet_events/
+		// provider_wallets (a table 000021 creates and whose down.sql DROPs
+		// outright) must ALSO be rolled back here before 000021, or this
+		// down/reapply cycle silently corrupts it: DROP TABLE removes every
+		// index/column on it regardless of which migration added them, and
+		// Up()'s loop skips re-running any migration whose schema_migrations
+		// row this test did not itself delete — so that migration's
+		// structure never comes back even though schema_migrations still
+		// claims it's applied. 000025 (the single-terminal-event unique
+		// index) and 000030 (the embedding invocation path) both do this
+		// today; this list was originally missing both, which is exactly
+		// what caused the mysterious "index/column does not exist" failures
+		// chased down while building R29 — 000025's gap predates R29
+		// entirely and had simply never been exercised by a full down/
+		// reapply cycle until this test file was extended with 000030.
+		// Any FUTURE migration that alters this table needs an entry here
+		// too, ordered before 000021.
 		versions := []struct {
 			version int
 			file    string
 		}{
+			{30, "000030_extend_wallet_for_embedding_invocations.down.sql"},
+			{25, "000025_enforce_wallet_single_terminal.down.sql"},
 			{21, "000021_create_provider_wallets.down.sql"},
 			{18, "000018_make_provider_outcomes_transport_aware.down.sql"},
 			{12, "000012_create_durable_decision_graph.down.sql"},
@@ -830,12 +850,30 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		}
 		tip := loadedForTip[len(loadedForTip)-1].Version
 		reapplied, upErr := runner.Up(ctx)
-		if upErr != nil || len(reapplied.Applied) != 8 || reapplied.Current != tip {
+		if upErr != nil || len(reapplied.Applied) != 10 || reapplied.Current != tip {
 			t.Fatalf("reapply=%+v err=%v want current=%d", reapplied, upErr, tip)
 		}
 		var exists bool
 		if err = platform.Pool().QueryRow(ctx, `SELECT to_regclass('public.model_invocations') IS NOT NULL AND to_regclass('public.model_dispatch_attempts') IS NOT NULL AND to_regclass('public.model_egress_policy_versions') IS NOT NULL AND to_regclass('public.model_dispatcher_assignments') IS NOT NULL AND to_regclass('public.model_execution_principals') IS NOT NULL AND to_regclass('public.model_execution_identity_policy_versions') IS NOT NULL AND to_regclass('public.model_provider_requests') IS NOT NULL AND to_regclass('public.model_provider_outcomes') IS NOT NULL`).Scan(&exists); err != nil || !exists {
 			t.Fatalf("reapply exists=%v err=%v", exists, err)
+		}
+		// Prove 000030's ALTER TABLE actually reran, not just that 000021's
+		// CREATE TABLE did — this is the exact regression this test's own
+		// omission of migration 30 from the down-list previously caused.
+		var embeddingInvocationIDNullable bool
+		if err = platform.Pool().QueryRow(ctx, `SELECT is_nullable='YES' FROM information_schema.columns WHERE table_schema='public' AND table_name='provider_wallet_events' AND column_name='embedding_invocation_id'`).Scan(&embeddingInvocationIDNullable); err != nil {
+			t.Fatalf("provider_wallet_events.embedding_invocation_id missing after reapply: %v", err)
+		}
+		if !embeddingInvocationIDNullable {
+			t.Fatal("embedding_invocation_id must be nullable")
+		}
+		var invocationIDNullable bool
+		if err = platform.Pool().QueryRow(ctx, `SELECT is_nullable='YES' FROM information_schema.columns WHERE table_schema='public' AND table_name='provider_wallet_events' AND column_name='invocation_id'`).Scan(&invocationIDNullable); err != nil || !invocationIDNullable {
+			t.Fatalf("provider_wallet_events.invocation_id must be nullable after reapply: nullable=%v err=%v", invocationIDNullable, err)
+		}
+		var embeddingInvocationsExists bool
+		if err = platform.Pool().QueryRow(ctx, `SELECT to_regclass('public.embedding_invocations') IS NOT NULL`).Scan(&embeddingInvocationsExists); err != nil || !embeddingInvocationsExists {
+			t.Fatalf("embedding_invocations missing after reapply: exists=%v err=%v", embeddingInvocationsExists, err)
 		}
 	})
 }
