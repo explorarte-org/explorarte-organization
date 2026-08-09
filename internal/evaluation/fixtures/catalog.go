@@ -1,28 +1,6 @@
 package fixtures
 
-import (
-	"crypto/sha256"
-	"encoding/hex"
-	"time"
-
-	"github.com/Mireuz13/explorarte-organization/internal/decisiongraph"
-)
-
-func hashOf(label string) string {
-	sum := sha256.Sum256([]byte(label))
-	return hex.EncodeToString(sum[:])
-}
-
-func node(id int64, kind decisiongraph.NodeType, branch decisiongraph.BranchState, exec decisiongraph.ExecutionState, label string) decisiongraph.Node {
-	return decisiongraph.Node{
-		ID: id, Type: kind, BranchState: branch, ExecutionState: exec,
-		PayloadSchemaVersion: "r30-fixture.v1", PayloadHash: hashOf(label), CreatedBy: "r30/evaluation-harness",
-	}
-}
-
-func edge(from, to int64, kind decisiongraph.EdgeType) decisiongraph.Edge {
-	return decisiongraph.Edge{FromNodeID: from, ToNodeID: to, Type: kind}
-}
+import "time"
 
 // CatalogR30 is the 14 synthetic evaluation projects required to compare
 // lexical, Gemini-hybrid and (once Phase 4-6 land) BGE-M3-hybrid retrieval,
@@ -156,30 +134,17 @@ func fixtureAdmissionCandidateRejectedNeverApproved() Fixture {
 }
 
 func fixtureBudgetExhaustion() Fixture {
-	limits := decisiongraph.BudgetLimits{MaxNodes: 100, MaxDepth: 20, MaxParallelNodes: 10, MaxModelCalls: 3, MaxInputTokens: 100000, MaxOutputTokens: 100000, MaxReplans: 5, MaxVerifications: 10, MaxWallTime: time.Hour}
 	return Fixture{
 		ID: "r30-08-budget-exhaustion", Version: 1, Title: "Agotamiento de presupuesto de agente",
 		Objective:      "Una secuencia de reservas de presupuesto (agentbudget/decisiongraph) que excede MaxModelCalls debe fallar exactamente en la reserva que la agota, sin corromper las reservas previas ni permitir que una llamada externa ocurra después del agotamiento.",
 		OrganizationID: "explorarte", Roles: []string{"ingenieria_ia/orquestador"},
-		Scenario: &DecisionGraphScenario{
-			AcyclicNodes: []decisiongraph.Node{
-				node(1, decisiongraph.NodeGoal, decisiongraph.BranchActive, decisiongraph.ExecutionPending, "goal"),
-			},
-			AcyclicEdges:     nil,
-			ExpectedMaxDepth: 0,
-			Budget:           &limits,
-			BudgetDeltas: []decisiongraph.BudgetUsage{
-				{ModelCalls: 1, Nodes: 1, Depth: 0},
-				{ModelCalls: 1, Nodes: 1, Depth: 0},
-				{ModelCalls: 2, Nodes: 1, Depth: 0}, // 1+1+2=4 > MaxModelCalls=3, must fail here
-			},
-			ExhaustingDeltaIndex: 2,
-		},
+		Scenario:         "pending: activated by internal/decisiongraphfixtures.Activate",
 		ExpectedResult:   "las reservas 0 y 1 tienen éxito; la reserva 2 falla con BudgetDimensionError en la dimensión model_calls.",
 		HardInvariants:   []string{"external call without prior reservation nunca ocurre.", "una reserva fallida nunca deja el presupuesto usado en un estado parcial."},
 		ExpectedEvidence: []string{"BudgetUsage acumulado tras cada reserva", "error de la reserva que agota"},
 		MaxBudgetUSD:     0.01, MaxRetries: 0, MaxReplans: 0, Timeout: 5 * time.Second, Seed: 3008,
-		Status: StatusRunnerReady, RunnerKind: "decisiongraph",
+		Status: StatusPending, PendingPhase: "R30 fase 4 (internal/decisiongraphfixtures.Activate da un runner real, sin que este paquete importe internal/decisiongraph)",
+		RunnerKind: "decisiongraph",
 	}
 }
 
@@ -214,73 +179,32 @@ func fixtureMessagingLeaseRecovery() Fixture {
 }
 
 func fixtureDAGCyclesDepthTerminalEvidence() Fixture {
-	nodes := []decisiongraph.Node{
-		node(1, decisiongraph.NodeGoal, decisiongraph.BranchActive, decisiongraph.ExecutionPending, "goal"),
-		node(2, decisiongraph.NodeRequirement, decisiongraph.BranchActive, decisiongraph.ExecutionSucceeded, "requirement"),
-		node(3, decisiongraph.NodeCandidateAction, decisiongraph.BranchSelected, decisiongraph.ExecutionSucceeded, "candidate"),
-		node(4, decisiongraph.NodeEvidence, decisiongraph.BranchActive, decisiongraph.ExecutionSucceeded, "evidence"),
-		node(5, decisiongraph.NodeVerification, decisiongraph.BranchActive, decisiongraph.ExecutionSucceeded, "verification"),
-		node(6, decisiongraph.NodeDecision, decisiongraph.BranchActive, decisiongraph.ExecutionPending, "decision"),
-	}
-	edges := []decisiongraph.Edge{
-		edge(2, 1, decisiongraph.EdgeDependsOn),
-		edge(3, 2, decisiongraph.EdgeDependsOn),
-		edge(4, 3, decisiongraph.EdgeSupports),
-		edge(5, 4, decisiongraph.EdgeSupports),
-		edge(6, 2, decisiongraph.EdgeDependsOn),
-	}
-	terminal := decisiongraph.DecisionRecord{
-		DecisionNodeID: 6, SelectedCandidateNodeID: 3, EvidenceNodeIDs: []int64{4}, VerificationNodeIDs: []int64{5},
-		Label: decisiongraph.VerificationUnknown,
-	}
 	return Fixture{
 		ID: "r30-11-dag-cycles-depth-terminal-evidence", Version: 1, Title: "DAG: ciclos, profundidad y evidencia terminal",
 		Objective:      "El DAG de decisión debe rechazar dependencias cíclicas, reportar la profundidad real (camino más largo al goal), y nunca permitir que una decisión terminal se registre con una etiqueta de verificación que no sea verified/inferred.",
 		OrganizationID: "explorarte", Roles: []string{"ingenieria_ia/orquestador"},
-		Scenario: &DecisionGraphScenario{
-			AcyclicNodes: nodes, AcyclicEdges: edges, ExpectedMaxDepth: 4,
-			CycleEdges:                 []decisiongraph.Edge{edge(1, 3, decisiongraph.EdgeDependsOn)},
-			TerminalDecision:           &terminal,
-			TerminalDecisionShouldPass: false,
-		},
+		Scenario:         "pending: activated by internal/decisiongraphfixtures.Activate",
 		ExpectedResult:   "NewGraph acepta el grafo acíclico, reporta profundidad máxima 4, rechaza el grafo con el edge cíclico añadido, y rechaza la decisión terminal etiquetada 'unknown'.",
 		HardInvariants:   []string{"missing DAG nodes/edges/events nunca pasa silenciosamente.", "DAG terminal sin evidencia real nunca se registra."},
 		ExpectedEvidence: []string{"grafo válido construido", "error ErrDependencyCycle sobre el grafo con el edge extra", "rechazo de la decisión terminal 'unknown'"},
 		MaxBudgetUSD:     0.01, MaxRetries: 0, MaxReplans: 0, Timeout: 5 * time.Second, Seed: 3011,
-		Status: StatusRunnerReady, RunnerKind: "decisiongraph",
+		Status: StatusPending, PendingPhase: "R30 fase 4 (internal/decisiongraphfixtures.Activate da un runner real, sin que este paquete importe internal/decisiongraph)",
+		RunnerKind: "decisiongraph",
 	}
 }
 
 func fixtureContradictoryEvidenceNonSelection() Fixture {
-	nodes := []decisiongraph.Node{
-		node(1, decisiongraph.NodeGoal, decisiongraph.BranchActive, decisiongraph.ExecutionPending, "goal"),
-		node(2, decisiongraph.NodeCandidateAction, decisiongraph.BranchRejectedByEvidence, decisiongraph.ExecutionFailed, "candidate"),
-		node(3, decisiongraph.NodeEvidence, decisiongraph.BranchActive, decisiongraph.ExecutionSucceeded, "contradicted-evidence"),
-		node(4, decisiongraph.NodeDecision, decisiongraph.BranchActive, decisiongraph.ExecutionPending, "decision"),
-	}
-	edges := []decisiongraph.Edge{
-		edge(2, 1, decisiongraph.EdgeDependsOn),
-		edge(3, 2, decisiongraph.EdgeContradicts),
-		edge(4, 1, decisiongraph.EdgeDependsOn),
-	}
-	terminal := decisiongraph.DecisionRecord{
-		DecisionNodeID: 4, SelectedCandidateNodeID: 2, EvidenceNodeIDs: []int64{3},
-		Label: decisiongraph.VerificationContradicted,
-	}
 	return Fixture{
 		ID: "r30-12-contradictory-evidence-non-selection", Version: 1, Title: "Evidencia contradictoria nunca selecciona",
 		Objective:      "Un candidato cuya única evidencia lo contradice no debe poder cerrarse como decisión terminal — la etiqueta 'contradicted' debe rechazarse por la misma regla que rechaza 'unknown', nunca tratarse como confirmación implícita.",
 		OrganizationID: "explorarte", Roles: []string{"ingenieria_ia/orquestador"},
-		Scenario: &DecisionGraphScenario{
-			AcyclicNodes: nodes, AcyclicEdges: edges, ExpectedMaxDepth: 2,
-			TerminalDecision:           &terminal,
-			TerminalDecisionShouldPass: false,
-		},
+		Scenario:         "pending: activated by internal/decisiongraphfixtures.Activate",
 		ExpectedResult:   "la decisión terminal etiquetada 'contradicted' se rechaza; el candidato permanece rejected_by_evidence.",
 		HardInvariants:   []string{"contradictory-evidence non-selection: una decisión nunca se cierra sobre evidencia que la contradice."},
 		ExpectedEvidence: []string{"rechazo de la decisión terminal 'contradicted'", "BranchState=rejected_by_evidence del candidato"},
 		MaxBudgetUSD:     0.01, MaxRetries: 0, MaxReplans: 0, Timeout: 5 * time.Second, Seed: 3012,
-		Status: StatusRunnerReady, RunnerKind: "decisiongraph",
+		Status: StatusPending, PendingPhase: "R30 fase 4 (internal/decisiongraphfixtures.Activate da un runner real, sin que este paquete importe internal/decisiongraph)",
+		RunnerKind: "decisiongraph",
 	}
 }
 

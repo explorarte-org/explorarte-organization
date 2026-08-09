@@ -26,6 +26,10 @@ mapfile -t canonical_changes < <({
 for path in "${canonical_changes[@]}"; do
   case "$path" in
     docs/canonical/model-routing.yaml|docs/canonical/model-egress-policy.yaml) ;;
+    # R30 resolves D-007 in docs/canonical/decisions-required.yaml:resolved
+    # (see docs/adr/ADR-0006-hybrid-logic-ir-shadow.md) — a deliberate,
+    # documented governance action, D-005 stays untouched.
+    docs/canonical/decisions-required.yaml) ;;
     *) fail "unauthorized canonical change: $path" ;;
   esac
 done
@@ -166,7 +170,10 @@ for raw in lines:
         k,v=line.split(":",1); current[k.strip()]=v.strip()
 if current: rules.append(current)
 allows={(r.get("provider_id"),r.get("data_classification")) for r in rules if r.get("effect")=="allow"}
-providers=("deepseek","gemini","openai_compatible")
+# R30 retired gemini from this table (see check-model-egress-fitness.sh for
+# the full rationale) — gemini remains a compiled provider adapter (still
+# used by internal/embeddingruntime), just no longer a chat egress allow.
+providers=("deepseek","openai_compatible")
 classes=("public","sanitized","organizational")
 expected={(provider, cls) for provider in providers for cls in classes}
 if allows != expected: raise SystemExit(f"unexpected productive allow set: {allows}")

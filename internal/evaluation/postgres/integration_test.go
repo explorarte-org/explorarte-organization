@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/config"
+	"github.com/Mireuz13/explorarte-organization/internal/decisiongraphfixtures"
 	"github.com/Mireuz13/explorarte-organization/internal/evaluation/fixtures"
 	evaluationpostgres "github.com/Mireuz13/explorarte-organization/internal/evaluation/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
@@ -51,8 +52,9 @@ func TestEvaluationPostgresStore(t *testing.T) {
 		t.Fatalf("run id=%d", runID)
 	}
 
-	runner2 := fixtures.DecisionGraphRunner{}
-	outcomes, err := fixtures.RunSuite(ctx, runner2, fixtures.CatalogR30(), "decisiongraph")
+	runner2 := decisiongraphfixtures.DecisionGraphRunner{}
+	activated := decisiongraphfixtures.Activate(fixtures.CatalogR30())
+	outcomes, err := fixtures.RunSuite(ctx, runner2, activated, "decisiongraph")
 	if err != nil {
 		t.Fatal(err)
 	}

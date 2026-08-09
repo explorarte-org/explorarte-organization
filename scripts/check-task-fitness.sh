@@ -19,6 +19,12 @@ if git cat-file -e "${BASE_COMMIT}^{commit}" 2>/dev/null; then
   for path in "${canonical_changes[@]}"; do
     case "$path" in
       docs/canonical/capability-matrix.yaml|docs/canonical/model-routing.yaml|docs/canonical/model-egress-policy.yaml|docs/canonical/model-execution-identity-policy.yaml) ;;
+      # R30 resolves D-007 (docs/canonical/decisions-required.yaml:resolved)
+      # with the owner's exact decision text and docs/adr/ADR-0006-hybrid-
+      # logic-ir-shadow.md — a deliberate, documented governance action,
+      # not an incidental edit. D-005 stays open/untouched in that same
+      # file.
+      docs/canonical/decisions-required.yaml) ;;
       *) fail "unauthorized canonical change: $path" ;;
     esac
   done

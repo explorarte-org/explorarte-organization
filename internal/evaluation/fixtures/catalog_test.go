@@ -19,31 +19,18 @@ func TestCatalogR30HasFourteenValidUniqueFixtures(t *testing.T) {
 	}
 }
 
-func TestCatalogR30RunnerReadyFixturesAreSupportedByDecisionGraphRunner(t *testing.T) {
-	runner := DecisionGraphRunner{}
-	found := 0
-	for _, f := range CatalogR30() {
-		if f.Status != StatusRunnerReady {
-			continue
-		}
-		found++
-		if !runner.Supports(f) {
-			t.Fatalf("fixture %s is marked runner_ready but DecisionGraphRunner.Supports returned false", f.ID)
-		}
-	}
-	if found == 0 {
-		t.Fatal("expected at least one runner_ready fixture in the R30 catalog")
-	}
-}
-
-func TestCatalogR30PendingFixturesAreNotSupportedByAnyRunnerYet(t *testing.T) {
-	runner := DecisionGraphRunner{}
+// TestCatalogR30BaseFixturesStartPending documents this package's own
+// boundary: internal/evaluation/fixtures never imports
+// internal/decisiongraph (see scripts/check-improvement-fitness.sh), so
+// CatalogR30 alone cannot mark any decisiongraph-backed fixture runner-
+// ready — only internal/decisiongraphfixtures.Activate can, by attaching
+// a real scenario from outside this package. A fixture flipping to
+// StatusRunnerReady here without an Activate call would be exactly the
+// architectural drift that check enforces.
+func TestCatalogR30BaseFixturesStartPending(t *testing.T) {
 	for _, f := range CatalogR30() {
 		if f.Status != StatusPending {
-			continue
-		}
-		if runner.Supports(f) {
-			t.Fatalf("fixture %s is marked pending but a runner claims to support it — Status is now a lie", f.ID)
+			t.Fatalf("fixture %s has status %q before any Activate call, want %q", f.ID, f.Status, StatusPending)
 		}
 	}
 }

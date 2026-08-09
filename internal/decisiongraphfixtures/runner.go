@@ -1,63 +1,34 @@
-package fixtures
+package decisiongraphfixtures
 
 import (
 	"context"
 	"fmt"
 
 	"github.com/Mireuz13/explorarte-organization/internal/decisiongraph"
+	"github.com/Mireuz13/explorarte-organization/internal/evaluation/fixtures"
 )
 
-// DecisionGraphScenario is the Scenario payload for RunnerKind
-// "decisiongraph". It exercises internal/decisiongraph's pure, in-memory
-// domain layer (Graph, BudgetLimits, DecisionRecord) directly — no
-// Postgres dependency — which is exactly what R30's DAG/budget/evidence
-// fixtures need to be reproducible without any external state.
-type DecisionGraphScenario struct {
-	// AcyclicNodes/AcyclicEdges must build a valid *decisiongraph.Graph.
-	AcyclicNodes []decisiongraph.Node
-	AcyclicEdges []decisiongraph.Edge
-	// ExpectedMaxDepth is the longest goal-distance the fixture expects
-	// Graph.Depths() to report for AcyclicNodes/AcyclicEdges.
-	ExpectedMaxDepth int
-	// CycleEdges, appended to AcyclicEdges, must make NewGraph fail with
-	// ErrDependencyCycle. Nil skips this check.
-	CycleEdges []decisiongraph.Edge
-
-	// TerminalDecision, if set, is checked against the same
-	// verified-or-inferred rule internal/decisiongraph's Service enforces
-	// (service.go: "terminal selection requires verified or inferred
-	// label") — independently re-derived here, not imported, because this
-	// evaluation harness exists to catch exactly this class of regression
-	// even if the library's own check were ever weakened.
-	TerminalDecision           *decisiongraph.DecisionRecord
-	TerminalDecisionShouldPass bool
-
-	// Budget, if set, drives a sequence of BudgetLimits.Reserve calls
-	// (BudgetDeltas, applied in order against a running BudgetUsage
-	// starting at zero) and asserts the call at ExhaustingDeltaIndex (0
-	// if unset, i.e. the first delta) is the first to fail with
-	// ErrBudgetExceeded, and every prior delta succeeds cleanly.
-	Budget               *decisiongraph.BudgetLimits
-	BudgetDeltas         []decisiongraph.BudgetUsage
-	ExhaustingDeltaIndex int
-}
-
-// DecisionGraphRunner implements Runner for RunnerKind "decisiongraph".
+// DecisionGraphRunner implements fixtures.Runner for RunnerKind
+// "decisiongraph", against fixtures activated by Activate in this package
+// (see activate.go) — internal/evaluation/fixtures itself never imports
+// internal/decisiongraph.
 type DecisionGraphRunner struct{}
 
-func (DecisionGraphRunner) Supports(f Fixture) bool {
-	return f.RunnerKind == "decisiongraph" && f.Status == StatusRunnerReady
+var _ fixtures.Runner = DecisionGraphRunner{}
+
+func (DecisionGraphRunner) Supports(f fixtures.Fixture) bool {
+	return f.RunnerKind == "decisiongraph" && f.Status == fixtures.StatusRunnerReady
 }
 
-func (DecisionGraphRunner) Run(ctx context.Context, f Fixture, subjectID string) (RunOutcome, error) {
+func (DecisionGraphRunner) Run(ctx context.Context, f fixtures.Fixture, subjectID string) (fixtures.RunOutcome, error) {
 	if ctx.Err() != nil {
-		return RunOutcome{}, ctx.Err()
+		return fixtures.RunOutcome{}, ctx.Err()
 	}
 	scenario, ok := f.Scenario.(*DecisionGraphScenario)
 	if !ok {
-		return RunOutcome{}, fmt.Errorf("fixture %s: scenario is not a *DecisionGraphScenario", f.ID)
+		return fixtures.RunOutcome{}, fmt.Errorf("fixture %s: scenario is not a *DecisionGraphScenario (was it activated via decisiongraphfixtures.Activate?)", f.ID)
 	}
-	outcome := RunOutcome{
+	outcome := fixtures.RunOutcome{
 		FixtureID:        f.ID,
 		SubjectID:        subjectID,
 		InvariantResults: make(map[string]bool, len(f.HardInvariants)),

@@ -30,6 +30,10 @@ mapfile -t canonical_changes < <({
 for path in "${canonical_changes[@]}"; do
   case "$path" in
     docs/canonical/capability-matrix.yaml|docs/canonical/model-routing.yaml|docs/canonical/model-egress-policy.yaml|docs/canonical/model-execution-identity-policy.yaml) ;;
+    # R30 resolves D-007 in docs/canonical/decisions-required.yaml:resolved
+    # (see docs/adr/ADR-0006-hybrid-logic-ir-shadow.md) — a deliberate,
+    # documented governance action, D-005 stays untouched.
+    docs/canonical/decisions-required.yaml) ;;
     *) fail "unauthorized canonical change: $path" ;;
   esac
 done
@@ -94,7 +98,14 @@ if current:
 if policy_version != 4:
     raise SystemExit(f"API-only model egress policy_version must be 4, got {policy_version}")
 allows={(r.get("provider_id"), r.get("data_classification")) for r in rules if r.get("effect") == "allow"}
-providers=("deepseek","gemini","openai_compatible")
+# R30 retired gemini from this table: model-routing.yaml no longer routes
+# any role to gemini for generation, and the embeddings path (R29,
+# internal/embeddingruntime) never consults this policy file — see
+# docs/implementation/branch-30-canary-evaluation-bge-m3/DESIGN.md. The
+# three gemini allow rules were removed from docs/canonical/model-egress-
+# policy.yaml accordingly; policy_version stays 4 since the surviving
+# rows/reason codes are unchanged.
+providers=("deepseek","openai_compatible")
 classes=("public","sanitized","organizational")
 expected={(provider, cls) for provider in providers for cls in classes}
 if allows != expected:

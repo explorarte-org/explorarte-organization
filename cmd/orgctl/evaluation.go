@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/config"
+	"github.com/Mireuz13/explorarte-organization/internal/decisiongraphfixtures"
 	"github.com/Mireuz13/explorarte-organization/internal/evaluation/fixtures"
 	evaluationpostgres "github.com/Mireuz13/explorarte-organization/internal/evaluation/postgres"
 )
@@ -22,14 +23,14 @@ commands:
    report  <run-id> [--json]                         print a persisted run and its outcomes`)
 }
 
-// runnersFor returns every fixtures.Runner this build can execute, in a
-// fixed order. Later R30 phases append to this list (a retrieval runner in
-// phase 3's retrieval fixtures, a BGE-M3-aware runner once phase 4-6 land,
-// ...) — orgctl evaluation run/seed never need to change again when they
-// do, since RunSuite already skips whatever a given Runner does not
-// support.
+// evaluationRunners returns every fixtures.Runner this build can execute,
+// in a fixed order. Later R30 phases append to this list (a retrieval
+// runner for the RAG/memory fixtures, a BGE-M3-aware runner once phase
+// 4-6 land, ...) — orgctl evaluation run/seed never need to change again
+// when they do, since RunSuite already skips whatever a given Runner does
+// not support.
 func evaluationRunners() []fixtures.Runner {
-	return []fixtures.Runner{fixtures.DecisionGraphRunner{}}
+	return []fixtures.Runner{decisiongraphfixtures.DecisionGraphRunner{}}
 }
 
 func runEvaluation(args []string, stdout, stderr io.Writer) int {
@@ -52,10 +53,13 @@ func runEvaluation(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
+// fixturesForSuite returns the suite's fixtures already activated by
+// every known Runner-attaching package (today: decisiongraphfixtures) —
+// the single place seed/run/report agree on what "runner-ready" means.
 func fixturesForSuite(suite string) ([]fixtures.Fixture, error) {
 	switch suite {
 	case "r30":
-		return fixtures.CatalogR30(), nil
+		return decisiongraphfixtures.Activate(fixtures.CatalogR30()), nil
 	default:
 		return nil, fmt.Errorf("unknown suite %q", suite)
 	}

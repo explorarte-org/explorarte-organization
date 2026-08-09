@@ -1,7 +1,7 @@
 schema_version: 0.1.0
 document_status: api_only_candidate
 policy_id: model-egress
-policy_version: 5
+policy_version: 4
 default_action: deny
 hard_denies:
 - data_classification: clinical
