@@ -7,13 +7,13 @@ import (
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 )
 
-func TestMigrationTipIs27AndContiguous(t *testing.T) {
+func TestMigrationTipIs28AndContiguous(t *testing.T) {
 	loaded, err := platformmigrations.Load(rootmigrations.Files)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded) != 27 {
-		t.Fatalf("migration count=%d want 27", len(loaded))
+	if len(loaded) != 28 {
+		t.Fatalf("migration count=%d want 28", len(loaded))
 	}
 	for index, migration := range loaded {
 		want := int64(index + 1)
@@ -21,7 +21,7 @@ func TestMigrationTipIs27AndContiguous(t *testing.T) {
 			t.Fatalf("migration[%d].version=%d want %d", index, migration.Version, want)
 		}
 	}
-	if loaded[len(loaded)-1].Name != "add_model_pricing_billing_mode" {
-		t.Fatalf("migration 27 name=%q", loaded[len(loaded)-1].Name)
+	if loaded[len(loaded)-1].Name != "create_embedding_derived_tables" {
+		t.Fatalf("migration 28 name=%q", loaded[len(loaded)-1].Name)
 	}
 }

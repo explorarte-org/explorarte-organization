@@ -296,6 +296,166 @@ func TestApprovedKnowledgeRAGPostgresRepository(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("chunk embeddings live in a derived table and never block lexical retrieval", func(t *testing.T) {
+		const embeddingsNamespace = "ingenieria_ia_embeddings"
+		version := proposeVersionInNamespace(t, domain, clock, now.Add(45*time.Second), "know-embeddings", embeddingsNamespace)
+		created, _, err := store.CreateCandidate(ctx, rag.CreateCandidateCommand{Version: version, IdempotencyKey: "idem-embeddings"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		clock.now = created.UpdatedAt.Add(time.Second)
+		approved, err := domain.Review(created, rag.ReviewApprove, ragIntegrationReviewer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		approved, err = store.Save(ctx, rag.SaveCommand{Version: approved, ExpectedRevision: 1, ActorID: ragIntegrationReviewer, Reason: "ok"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		chunks, err := rag.ChunkBody(approved.ID, rag.DefaultChunkerID, rag.DefaultChunkerVersion, approved.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		generation, err := store.Reindex(ctx, rag.ReindexCommand{OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceDepartment, NamespaceID: embeddingsNamespace, ChunkerID: rag.DefaultChunkerID, ChunkerVersion: rag.DefaultChunkerVersion, Chunks: chunks})
+		if err != nil {
+			t.Fatal(err)
+		}
+		results, err := store.Query(ctx, rag.QueryCommand{OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceDepartment, NamespaceID: embeddingsNamespace, QueryText: "egress", Limit: 10})
+		if err != nil || len(results) == 0 {
+			t.Fatalf("lexical query before any embedding exists: results=%+v err=%v", results, err)
+		}
+		chunkID := results[0].Chunk.ID
+
+		vector := make([]float32, 768)
+		vector[0] = 1
+		if err := store.InsertChunkEmbedding(ctx, rag.ChunkEmbedding{
+			OrganizationID: ragIntegrationOrganization, ChunkID: chunkID,
+			EmbeddingModelID: "gemini-embedding-2", EmbeddingModelVersion: "v1", EmbeddingDimension: 768,
+			PromptTemplateVersion: "prompt-template.v1", InputHash: fmt.Sprintf("%064x", 1), Vector: vector, CreatedAt: clock.now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		// Inserting an embedding must never touch the immutable chunk row
+		// itself — this is the entire point of the derived-table design.
+		results, err = store.Query(ctx, rag.QueryCommand{OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceDepartment, NamespaceID: embeddingsNamespace, QueryText: "egress", Limit: 10})
+		if err != nil || len(results) == 0 || results[0].Chunk.ID != chunkID {
+			t.Fatalf("lexical query after embedding exists: results=%+v err=%v", results, err)
+		}
+
+		nearest, err := store.NearestChunks(ctx, ragIntegrationOrganization, generation.ID, vector, 5)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(nearest) != 1 || nearest[0].ChunkID != chunkID || nearest[0].Distance > 0.0001 {
+			t.Fatalf("nearest=%+v want exactly chunkID=%s at ~0 distance", nearest, chunkID)
+		}
+
+		// A second insert for the same (chunk, model, model version) must be
+		// a no-op (ON CONFLICT DO NOTHING) — re-embedding under a new
+		// version is a new row, never a silent overwrite of an existing one.
+		otherVector := make([]float32, 768)
+		otherVector[1] = 1
+		if err := store.InsertChunkEmbedding(ctx, rag.ChunkEmbedding{
+			OrganizationID: ragIntegrationOrganization, ChunkID: chunkID,
+			EmbeddingModelID: "gemini-embedding-2", EmbeddingModelVersion: "v1", EmbeddingDimension: 768,
+			PromptTemplateVersion: "prompt-template.v1", InputHash: fmt.Sprintf("%064x", 2), Vector: otherVector, CreatedAt: clock.now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		nearest, err = store.NearestChunks(ctx, ragIntegrationOrganization, generation.ID, vector, 5)
+		if err != nil || len(nearest) != 1 || nearest[0].Distance > 0.0001 {
+			t.Fatalf("second insert for the same model version must not have overwritten the first: nearest=%+v err=%v", nearest, err)
+		}
+
+		if _, err := platform.Pool().Exec(ctx, `UPDATE rag_chunk_embeddings SET embedding_dimension=768 WHERE organization_id=$1 AND chunk_id=$2`, ragIntegrationOrganization, chunkID); err == nil {
+			t.Fatal("expected rag_chunk_embeddings to reject UPDATE the same way canonical rag tables do")
+		}
+	})
+
+	t.Run("embedding batch job bookkeeping tracks per-item outcomes", func(t *testing.T) {
+		const batchNamespace = "ingenieria_ia_batch"
+		version := proposeVersionInNamespace(t, domain, clock, now.Add(55*time.Second), "know-batch", batchNamespace)
+		created, _, err := store.CreateCandidate(ctx, rag.CreateCandidateCommand{Version: version, IdempotencyKey: "idem-batch"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		clock.now = created.UpdatedAt.Add(time.Second)
+		approved, err := domain.Review(created, rag.ReviewApprove, ragIntegrationReviewer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		approved, err = store.Save(ctx, rag.SaveCommand{Version: approved, ExpectedRevision: 1, ActorID: ragIntegrationReviewer, Reason: "ok"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		chunks, err := rag.ChunkBody(approved.ID, rag.DefaultChunkerID, rag.DefaultChunkerVersion, approved.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		generation, err := store.Reindex(ctx, rag.ReindexCommand{OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceDepartment, NamespaceID: batchNamespace, ChunkerID: rag.DefaultChunkerID, ChunkerVersion: rag.DefaultChunkerVersion, Chunks: chunks})
+		if err != nil {
+			t.Fatal(err)
+		}
+		results, err := store.Query(ctx, rag.QueryCommand{OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceDepartment, NamespaceID: batchNamespace, QueryText: "egress", Limit: 10})
+		if err != nil || len(results) == 0 {
+			t.Fatal(err)
+		}
+		chunkID := results[0].Chunk.ID
+
+		job, err := store.CreateEmbeddingBatchJob(ctx, rag.EmbeddingBatchJob{
+			OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceDepartment, NamespaceID: batchNamespace,
+			GenerationID: generation.ID, ProviderID: "gemini", ProviderModelID: "gemini-embedding-2",
+			Status: "running", ShardIndex: 0, ItemCount: 2, CreatedAt: clock.now,
+		}, []rag.EmbeddingBatchJobItem{
+			{ItemKey: "item-ok", ChunkID: chunkID},
+			{ItemKey: "item-fail", ChunkID: chunkID},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if job.ID == 0 {
+			t.Fatal("expected a generated job id")
+		}
+
+		successVector := make([]float32, 768)
+		successVector[2] = 1
+		if err := store.RecordEmbeddingBatchJobItemResult(ctx, job.ID, "item-ok", &rag.ChunkEmbedding{
+			OrganizationID: ragIntegrationOrganization, ChunkID: chunkID,
+			EmbeddingModelID: "gemini-embedding-2", EmbeddingModelVersion: "batch-v1", EmbeddingDimension: 768,
+			PromptTemplateVersion: "prompt-template.v1", InputHash: fmt.Sprintf("%064x", 3), Vector: successVector, CreatedAt: clock.now,
+		}, ""); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.RecordEmbeddingBatchJobItemResult(ctx, job.ID, "item-fail", nil, "input token count exceeds the maximum limit"); err != nil {
+			t.Fatal(err)
+		}
+
+		var succeeded, failed int
+		if err := platform.Pool().QueryRow(ctx, `SELECT count(*) FILTER (WHERE status='succeeded'), count(*) FILTER (WHERE status='failed') FROM rag_embedding_batch_job_items WHERE job_id=$1`, job.ID).Scan(&succeeded, &failed); err != nil {
+			t.Fatal(err)
+		}
+		if succeeded != 1 || failed != 1 {
+			t.Fatalf("succeeded=%d failed=%d want 1/1", succeeded, failed)
+		}
+
+		nearest, err := store.NearestChunks(ctx, ragIntegrationOrganization, generation.ID, successVector, 5)
+		if err != nil || len(nearest) != 1 || nearest[0].Distance > 0.0001 {
+			t.Fatalf("batch-produced embedding not queryable: nearest=%+v err=%v", nearest, err)
+		}
+
+		if err := store.CompleteEmbeddingBatchJob(ctx, job.ID, "succeeded", clock.now.Add(time.Minute), 1); err != nil {
+			t.Fatal(err)
+		}
+		var status string
+		var failedCount int
+		if err := platform.Pool().QueryRow(ctx, `SELECT status, failed_item_count FROM rag_embedding_batch_jobs WHERE id=$1`, job.ID).Scan(&status, &failedCount); err != nil {
+			t.Fatal(err)
+		}
+		if status != "succeeded" || failedCount != 1 {
+			t.Fatalf("status=%q failedCount=%d", status, failedCount)
+		}
+	})
 }
 
 func proposeVersion(t *testing.T, domain *rag.Service, clock *fixedClock, now time.Time, id string) rag.KnowledgeVersion {
