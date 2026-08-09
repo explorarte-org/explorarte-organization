@@ -193,6 +193,55 @@ func TestProposeAllowsOrdinaryContentUnderDeclaredDataClass(t *testing.T) {
 	}
 }
 
+func TestChunkOffsetsMatchTheOriginalBody(t *testing.T) {
+	body := "First paragraph.\n\nSecond paragraph.\n\nThird paragraph, no extra blank lines."
+	chunks, err := ChunkBody("know-offsets", DefaultChunkerID, DefaultChunkerVersion, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) == 0 {
+		t.Fatal("expected at least one chunk")
+	}
+	for _, chunk := range chunks {
+		if chunk.StartOffset < 0 || chunk.EndOffset > len(body) || chunk.EndOffset <= chunk.StartOffset {
+			t.Fatalf("chunk offsets out of range: %+v (body len=%d)", chunk, len(body))
+		}
+		// Every separator here is exactly the normalized "\n\n", so with no
+		// extra blank lines to normalize away, the real body span and the
+		// chunk's (possibly multi-paragraph) Content must match exactly.
+		if got := body[chunk.StartOffset:chunk.EndOffset]; got != chunk.Content {
+			t.Fatalf("body[%d:%d]=%q want chunk content %q", chunk.StartOffset, chunk.EndOffset, got, chunk.Content)
+		}
+	}
+}
+
+func TestChunkOffsetsSkipExtraBlankLinesCorrectly(t *testing.T) {
+	// A running "offset += len(paragraph)" total (the original bug) never
+	// accounts for the "\n\n" bytes strings.Split silently discards, so it
+	// drifts short of the paragraph's real position — and an extra blank
+	// line (4 bytes instead of 2) would drift it even further. The
+	// clearest symptom: the final chunk's EndOffset falls short of
+	// len(body) even though the last paragraph genuinely ends there.
+	body := "First.\n\nSecond.\n\n\n\nThird after an extra blank line."
+	chunks, err := ChunkBody("know-offsets-blank", DefaultChunkerID, DefaultChunkerVersion, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) == 0 {
+		t.Fatal("expected at least one chunk")
+	}
+	prevEnd := 0
+	for _, chunk := range chunks {
+		if chunk.StartOffset < prevEnd || chunk.EndOffset > len(body) || chunk.EndOffset <= chunk.StartOffset {
+			t.Fatalf("chunk offsets out of range or overlapping: %+v (body len=%d, prevEnd=%d)", chunk, len(body), prevEnd)
+		}
+		prevEnd = chunk.EndOffset
+	}
+	if last := chunks[len(chunks)-1]; last.EndOffset != len(body) {
+		t.Fatalf("last chunk EndOffset=%d, want %d (len(body)) — offsets drifted short", last.EndOffset, len(body))
+	}
+}
+
 func TestChunkingBoundsLargeParagraphs(t *testing.T) {
 	long := ""
 	for i := 0; i < 2000; i++ {

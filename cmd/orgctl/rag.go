@@ -160,11 +160,12 @@ func runRAG(args []string, stdout, stderr io.Writer) int {
 		flags := flag.NewFlagSet("rag get", flag.ContinueOnError)
 		flags.SetOutput(stderr)
 		versionID := flags.String("id", "", "knowledge version id")
+		actorRoleID := flags.String("actor", "", "actor role id")
 		jsonOutput := flags.Bool("json", false, "emit JSON")
-		if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 || strings.TrimSpace(*versionID) == "" {
+		if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 || strings.TrimSpace(*versionID) == "" || strings.TrimSpace(*actorRoleID) == "" {
 			return exitUsage
 		}
-		version, err := runtime.Manager.Get(ctx, runtime.OrganizationID, *versionID)
+		version, err := runtime.Manager.Get(ctx, runtime.OrganizationID, *versionID, *actorRoleID)
 		if err != nil {
 			return ragCommandError(stderr, err)
 		}
@@ -175,13 +176,14 @@ func runRAG(args []string, stdout, stderr io.Writer) int {
 		flags.SetOutput(stderr)
 		namespaceKind := flags.String("namespace-kind", "", "department|own")
 		namespaceID := flags.String("namespace-id", "", "namespace id filter")
+		actorRoleID := flags.String("actor", "", "actor role id")
 		lifecycle := flags.String("lifecycle", "", "candidate|approved|rejected|deprecated|archived")
 		limit := flags.Int("limit", 100, "maximum versions")
 		jsonOutput := flags.Bool("json", false, "emit JSON")
-		if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 {
+		if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 || strings.TrimSpace(*actorRoleID) == "" || strings.TrimSpace(*namespaceKind) == "" || strings.TrimSpace(*namespaceID) == "" {
 			return exitUsage
 		}
-		versions, err := runtime.Manager.List(ctx, rag.ListFilter{OrganizationID: runtime.OrganizationID, NamespaceKind: rag.NamespaceKind(*namespaceKind), NamespaceID: *namespaceID, Lifecycle: rag.Lifecycle(*lifecycle), Limit: *limit})
+		versions, err := runtime.Manager.List(ctx, *actorRoleID, rag.ListFilter{OrganizationID: runtime.OrganizationID, NamespaceKind: rag.NamespaceKind(*namespaceKind), NamespaceID: *namespaceID, Lifecycle: rag.Lifecycle(*lifecycle), Limit: *limit})
 		if err != nil {
 			return ragCommandError(stderr, err)
 		}
@@ -273,5 +275,8 @@ func ragCommandError(stderr io.Writer, err error) int {
 	}
 }
 func printRAGUsage(out io.Writer) {
-	fmt.Fprintln(out, "usage: orgctl rag <propose|review|get|list|reindex|query> [options]")
+	fmt.Fprintln(out, `usage: orgctl rag <propose|review|get|list|reindex|query> [options]
+
+  get --id VERSION_ID --actor ROLE_ID [--json]
+  list --namespace-kind department|own --namespace-id ID --actor ROLE_ID [--lifecycle LIFECYCLE] [--limit N] [--json]`)
 }

@@ -139,7 +139,7 @@ func TestApprovedSleepCandidateBecomesContextEvidenceOnlyAfterHumanGovernance(t 
 	if cycle.CandidatesProposed != 1 || len(cycle.Proposals) != 1 {
 		t.Fatalf("cycle=%+v", cycle)
 	}
-	version, err := ragRuntime.Manager.Get(ctx, sleepIntegrationOrg, cycle.Proposals[0].VersionID)
+	version, err := ragRuntime.Manager.GetForRevalidation(ctx, sleepIntegrationOrg, cycle.Proposals[0].VersionID)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -122,19 +122,72 @@ func (m *Manager) Archive(ctx context.Context, request MutationRequest) (Knowled
 	return m.repository.Save(ctx, SaveCommand{Version: updated, ExpectedRevision: request.ExpectedRevision, ActorID: strings.TrimSpace(request.ActorRoleID), Reason: strings.TrimSpace(request.Reason)})
 }
 
-func (m *Manager) Get(ctx context.Context, organizationID, versionID string) (KnowledgeVersion, error) {
-	organizationID, versionID = strings.TrimSpace(organizationID), strings.TrimSpace(versionID)
+func (m *Manager) Get(ctx context.Context, organizationID, versionID, actorRoleID string) (KnowledgeVersion, error) {
+	organizationID = strings.TrimSpace(organizationID)
+	versionID = strings.TrimSpace(versionID)
+	actorRoleID = strings.TrimSpace(actorRoleID)
+	if organizationID == "" || versionID == "" || actorRoleID == "" {
+		return KnowledgeVersion{}, fmt.Errorf("%w: organization_id, version_id, and actor_role_id are required", ErrInvalidRequest)
+	}
+	version, err := m.repository.Get(ctx, organizationID, versionID)
+	if err != nil {
+		return KnowledgeVersion{}, err
+	}
+	if err := m.authorizeNamespaceRead(ctx, organizationID, actorRoleID, version.NamespaceKind, version.NamespaceID,
+		ContentHash("rag-get.v1|"+organizationID+"|"+version.ID+"|"+version.CanonicalHash)); err != nil {
+		return KnowledgeVersion{}, err
+	}
+	return version, nil
+}
+
+// GetForRevalidation is the deliberately narrow, authorization-free read used
+// by the context engine after an already-authorized RAG query has embedded a
+// version into a context snapshot. It must not be used for an actor-initiated
+// read: callers serving users or agents must use Get so namespace authorization
+// is evaluated against the version's persisted namespace.
+func (m *Manager) GetForRevalidation(ctx context.Context, organizationID, versionID string) (KnowledgeVersion, error) {
+	organizationID = strings.TrimSpace(organizationID)
+	versionID = strings.TrimSpace(versionID)
 	if organizationID == "" || versionID == "" {
 		return KnowledgeVersion{}, fmt.Errorf("%w: organization_id and version_id are required", ErrInvalidRequest)
 	}
 	return m.repository.Get(ctx, organizationID, versionID)
 }
 
-func (m *Manager) List(ctx context.Context, filter ListFilter) ([]KnowledgeVersion, error) {
-	if strings.TrimSpace(filter.OrganizationID) == "" {
-		return nil, fmt.Errorf("%w: organization_id is required", ErrInvalidRequest)
+func (m *Manager) List(ctx context.Context, actorRoleID string, filter ListFilter) ([]KnowledgeVersion, error) {
+	filter.OrganizationID = strings.TrimSpace(filter.OrganizationID)
+	filter.NamespaceID = strings.TrimSpace(filter.NamespaceID)
+	actorRoleID = strings.TrimSpace(actorRoleID)
+	if filter.OrganizationID == "" || actorRoleID == "" || !filter.NamespaceKind.Valid() || filter.NamespaceID == "" {
+		return nil, fmt.Errorf("%w: organization_id, actor_role_id, and an explicit namespace are required", ErrInvalidRequest)
+	}
+	if filter.Lifecycle != "" && !filter.Lifecycle.Valid() {
+		return nil, fmt.Errorf("%w: invalid lifecycle %q", ErrInvalidRequest, filter.Lifecycle)
+	}
+	if err := m.authorizeNamespaceRead(ctx, filter.OrganizationID, actorRoleID, filter.NamespaceKind, filter.NamespaceID,
+		ContentHash("rag-list.v1|"+filter.OrganizationID+"|"+string(filter.NamespaceKind)+"|"+filter.NamespaceID+"|"+string(filter.Lifecycle))); err != nil {
+		return nil, err
 	}
 	return m.repository.List(ctx, filter)
+}
+
+func (m *Manager) authorizeNamespaceRead(ctx context.Context, organizationID, actorRoleID string, namespaceKind NamespaceKind, namespaceID, actionDigest string) error {
+	resolvedNamespaceID, err := m.namespaces.ResolveNamespace(ctx, organizationID, actorRoleID, namespaceKind)
+	if err != nil {
+		return err
+	}
+	if resolvedNamespaceID != namespaceID {
+		return fmt.Errorf("%w: actor namespace %s does not match requested namespace %s", ErrInvalidNamespace, resolvedNamespaceID, namespaceID)
+	}
+	capability := CapabilityReadOwn
+	if namespaceKind == NamespaceDepartment {
+		capability = CapabilityReadDepartment
+	}
+	return m.gate.Authorize(ctx, AuthorizationRequest{
+		OrganizationID: organizationID, ActorRoleID: actorRoleID, CapabilityID: capability,
+		ResourceType: "knowledge_namespace", ResourceID: string(namespaceKind) + ":" + namespaceID,
+		ActionDigest: actionDigest,
+	})
 }
 
 func (m *Manager) loadMutationTarget(ctx context.Context, request MutationRequest) (KnowledgeVersion, error) {

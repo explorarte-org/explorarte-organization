@@ -79,6 +79,12 @@ func (r *fakeRepository) Save(_ context.Context, command SaveCommand) (Knowledge
 func (r *fakeRepository) List(_ context.Context, filter ListFilter) ([]KnowledgeVersion, error) {
 	values := []KnowledgeVersion{}
 	for _, version := range r.versions {
+		if filter.OrganizationID != "" && version.OrganizationID != filter.OrganizationID {
+			continue
+		}
+		if filter.NamespaceKind != "" && version.NamespaceKind != filter.NamespaceKind {
+			continue
+		}
 		if filter.NamespaceID != "" && version.NamespaceID != filter.NamespaceID {
 			continue
 		}
@@ -217,6 +223,86 @@ func TestManagerFullLifecycleAndReindexAndQuery(t *testing.T) {
 	}
 	if readRequests != 1 {
 		t.Fatalf("expected department read authorization to run, gate saw %+v", gate.requests)
+	}
+}
+
+func TestManagerGetAuthorizesPersistedNamespace(t *testing.T) {
+	gate := &recordingGate{}
+	manager, clock, repo := newTestManager(t, gate, &fakeNamespaces{department: "ingenieria_ia"})
+	version, err := NewService(clock).Propose(validProposeCommand(clock.now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo.versions[version.ID] = version
+
+	got, err := manager.Get(context.Background(), version.OrganizationID, version.ID, "ingenieria_ia/orquestador")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != version.ID || len(gate.requests) != 1 {
+		t.Fatalf("got=%+v authorization=%+v", got, gate.requests)
+	}
+	request := gate.requests[0]
+	if request.CapabilityID != CapabilityReadDepartment || request.ResourceID != "department:ingenieria_ia" {
+		t.Fatalf("authorization=%+v", request)
+	}
+}
+
+func TestManagerGetRejectsHorizontalNamespaceRead(t *testing.T) {
+	gate := &recordingGate{}
+	manager, clock, repo := newTestManager(t, gate, &fakeNamespaces{own: "ingenieria_ia/frontend"})
+	command := validProposeCommand(clock.now)
+	command.NamespaceKind = NamespaceOwn
+	command.NamespaceID = "ingenieria_ia/backend"
+	version, err := NewService(clock).Propose(command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo.versions[version.ID] = version
+
+	_, err = manager.Get(context.Background(), version.OrganizationID, version.ID, "ingenieria_ia/frontend")
+	if !errors.Is(err, ErrInvalidNamespace) {
+		t.Fatalf("horizontal read err=%v", err)
+	}
+	if len(gate.requests) != 0 {
+		t.Fatalf("mismatched namespace reached authorization gate: %+v", gate.requests)
+	}
+}
+
+func TestManagerListRequiresAndAuthorizesExplicitNamespace(t *testing.T) {
+	gate := &recordingGate{}
+	manager, clock, repo := newTestManager(t, gate, &fakeNamespaces{department: "ingenieria_ia"})
+	version, err := NewService(clock).Propose(validProposeCommand(clock.now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo.versions[version.ID] = version
+
+	if _, err := manager.List(context.Background(), "ingenieria_ia/orquestador", ListFilter{OrganizationID: version.OrganizationID}); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("unscoped list err=%v", err)
+	}
+	values, err := manager.List(context.Background(), "ingenieria_ia/orquestador", ListFilter{
+		OrganizationID: version.OrganizationID, NamespaceKind: NamespaceDepartment, NamespaceID: "ingenieria_ia", Limit: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(values) != 1 || len(gate.requests) != 1 || gate.requests[0].CapabilityID != CapabilityReadDepartment {
+		t.Fatalf("values=%+v authorization=%+v", values, gate.requests)
+	}
+}
+
+func TestManagerGetForRevalidationDoesNotInvokeActorGate(t *testing.T) {
+	gate := &recordingGate{err: errors.New("must not be called")}
+	manager, clock, repo := newTestManager(t, gate, &fakeNamespaces{})
+	version, err := NewService(clock).Propose(validProposeCommand(clock.now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo.versions[version.ID] = version
+	got, err := manager.GetForRevalidation(context.Background(), version.OrganizationID, version.ID)
+	if err != nil || got.ID != version.ID || len(gate.requests) != 0 {
+		t.Fatalf("got=%+v err=%v authorization=%+v", got, err, gate.requests)
 	}
 }
 

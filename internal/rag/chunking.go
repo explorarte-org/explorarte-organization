@@ -27,9 +27,15 @@ func ChunkBody(versionID, chunkerID, chunkerVersion, body string) ([]Chunk, erro
 	paragraphs := splitParagraphs(body)
 	chunks := make([]Chunk, 0, len(paragraphs))
 	ordinal := 1
-	offset := 0
 	var builder strings.Builder
 	builderStart := 0
+	// The builder's joined Content always uses a normalized 2-byte "\n\n"
+	// separator, even when the original body had extra blank lines
+	// between two paragraphs — so builderStart+len(content) is not
+	// necessarily this chunk's real end position in body. builderEnd
+	// tracks that real position directly from each paragraph's own span
+	// instead.
+	builderEnd := 0
 
 	flush := func() {
 		if builder.Len() == 0 {
@@ -38,29 +44,29 @@ func ChunkBody(versionID, chunkerID, chunkerVersion, body string) ([]Chunk, erro
 		content := builder.String()
 		chunks = append(chunks, Chunk{
 			VersionID: versionID, ChunkerID: chunkerID, ChunkerVersion: chunkerVersion,
-			Ordinal: ordinal, StartOffset: builderStart, EndOffset: builderStart + len(content),
+			Ordinal: ordinal, StartOffset: builderStart, EndOffset: builderEnd,
 			Content: content, ContentHash: ContentHash(content),
 		})
 		ordinal++
 		builder.Reset()
 	}
 
-	for _, paragraph := range paragraphs {
-		paragraphStart := offset
-		offset += len(paragraph)
+	for _, span := range paragraphs {
+		paragraph := span.text
+		paragraphStart := span.start
 
 		if len(paragraph) > maxChunkBytes {
 			flush()
+			pieceStart := paragraphStart
 			for _, piece := range splitBytes(paragraph, maxChunkBytes) {
 				chunks = append(chunks, Chunk{
 					VersionID: versionID, ChunkerID: chunkerID, ChunkerVersion: chunkerVersion,
-					Ordinal: ordinal, StartOffset: paragraphStart, EndOffset: paragraphStart + len(piece),
+					Ordinal: ordinal, StartOffset: pieceStart, EndOffset: pieceStart + len(piece),
 					Content: piece, ContentHash: ContentHash(piece),
 				})
 				ordinal++
-				paragraphStart += len(piece)
+				pieceStart += len(piece)
 			}
-			builderStart = offset
 			continue
 		}
 
@@ -75,6 +81,7 @@ func ChunkBody(versionID, chunkerID, chunkerVersion, body string) ([]Chunk, erro
 			builder.WriteString("\n\n")
 		}
 		builder.WriteString(paragraph)
+		builderEnd = paragraphStart + len(paragraph)
 	}
 	flush()
 	if len(chunks) == 0 {
@@ -83,18 +90,37 @@ func ChunkBody(versionID, chunkerID, chunkerVersion, body string) ([]Chunk, erro
 	return chunks, nil
 }
 
-func splitParagraphs(body string) []string {
-	raw := strings.Split(body, "\n\n")
-	values := make([]string, 0, len(raw))
-	for _, piece := range raw {
-		if piece != "" {
-			values = append(values, piece)
+// paragraphSpan pairs a paragraph's text with its real byte offset in the
+// original body — strings.Split alone discards position information the
+// moment it removes the "\n\n" separators, and a naive running total
+// (offset += len(paragraph)) never accounts for those stripped separator
+// bytes, drifting StartOffset/EndOffset away from where the paragraph
+// actually sits in body from the second paragraph onward.
+type paragraphSpan struct {
+	text  string
+	start int
+}
+
+func splitParagraphs(body string) []paragraphSpan {
+	spans := make([]paragraphSpan, 0, 4)
+	cursor := 0
+	for {
+		idx := strings.Index(body[cursor:], "\n\n")
+		if idx == -1 {
+			if piece := body[cursor:]; piece != "" {
+				spans = append(spans, paragraphSpan{text: piece, start: cursor})
+			}
+			break
 		}
+		if piece := body[cursor : cursor+idx]; piece != "" {
+			spans = append(spans, paragraphSpan{text: piece, start: cursor})
+		}
+		cursor += idx + 2
 	}
-	if len(values) == 0 {
-		values = append(values, body)
+	if len(spans) == 0 {
+		spans = append(spans, paragraphSpan{text: body, start: 0})
 	}
-	return values
+	return spans
 }
 
 func splitBytes(value string, size int) []string {

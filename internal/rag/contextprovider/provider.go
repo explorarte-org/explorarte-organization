@@ -84,7 +84,7 @@ func (p *Provider) ValidateVersion(ctx context.Context, expected contextengine.S
 	if err != nil {
 		return err
 	}
-	version, err := p.manager.Get(ctx, p.organizationID, meta.versionID)
+	version, err := p.manager.GetForRevalidation(ctx, p.organizationID, meta.versionID)
 	if err != nil {
 		return err
 	}
