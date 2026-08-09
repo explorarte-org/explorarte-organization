@@ -7,15 +7,20 @@ import (
 
 // CostReservation is an opaque handle returned by CostBudgetGate.Reserve,
 // passed back to Reconcile or Release once the call's outcome is known.
-// Applied is false when the gate deliberately did nothing — e.g. the task
-// was never attached to a budget tree — so Reconcile/Release can no-op
-// instead of erroring on a reservation that was never made.
+//
+// WalletApplied and BudgetApplied are independent: a task with no budget
+// tree attached still gets its real cost tracked in the provider's wallet
+// (WalletApplied=true, BudgetApplied=false, BudgetID=0) — untracked budget
+// is not a license to skip real-money accounting. WalletApplied is false
+// only when the gate itself is absent (nil CostBudgetGate on
+// DispatchService), never as a fallback for an untracked task.
 type CostReservation struct {
 	ProviderID      string
 	ProviderModelID string
 	InvocationID    int64
 	BudgetID        int64
-	Applied         bool
+	WalletApplied   bool
+	BudgetApplied   bool
 }
 
 // CostReservationRequest carries everything CostBudgetGate needs to

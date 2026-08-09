@@ -368,6 +368,52 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		}
 		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_provider_requests WHERE invocation_id=$1`, starvedCreated.Invocation.ID, 0)
 		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_provider_outcomes WHERE invocation_id=$1`, starvedCreated.Invocation.ID, 0)
+
+		// A task never attached to any budget tree (no CreateRootBudget,
+		// no InheritForChild) must still have its real cost tracked in the
+		// provider wallet — an untracked budget is not a license to skip
+		// real-money accounting. This is the CEO-plan/review/closure gap
+		// found in review: those tasks are created without ever calling
+		// attachChildCoordination, so ResolveBudgetForTask always fails
+		// ErrBudgetNotFound for them.
+		unbudgetedTaskRef, unbudgetedSnapshotRef := insertModelExecutionFixture(t, ctx, platform, fakeRevisionID, "ingenieria_ia/code-runner", "no-budget")
+		fixtureAssignmentForExistingPrincipal(t, ctx, dispatchStore, unbudgetedTaskRef, "ingenieria_ia/code-runner", "ingenieria_ia/code-runner", principal, "no-budget-fixture")
+		unbudgetedTasks := staticTaskReader{ref: unbudgetedTaskRef}
+		unbudgetedContexts := &staticContextReader{ref: unbudgetedSnapshotRef, rendered: []byte("safe integration context")}
+		unbudgetedInvocations, err := modelruntime.NewInvocationService(modelIntegrationOrganization, fakeCatalog, unbudgetedTasks, unbudgetedContexts, store, egressStore, identityStore, assignments, modelruntime.ClockFunc(time.Now), 10, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		unbudgetedDispatch, err := modelruntime.NewDispatchService(modelIntegrationOrganization, cfg, fakeCatalog, unbudgetedTasks, unbudgetedContexts, capabilityEvaluator, egressStore, modelegress.NewEvaluator(), store, principals, assignments, identityService, store, adapter.NewRegistry(adapter.NewFake()), modelruntime.ClockFunc(time.Now), modelruntime.WithCostBudgetGate(gate))
+		if err != nil {
+			t.Fatal(err)
+		}
+		unbudgetedCommand := validInvocationCommand(unbudgetedTaskRef, unbudgetedSnapshotRef, "ingenieria_ia/code-runner", "cost-gate-no-budget")
+		unbudgetedCreated, createErr := unbudgetedInvocations.Create(ctx, unbudgetedCommand)
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		if _, err := walletStore.SetBalance(ctx, "test.fake", modelpricing.USDFromDollars(10), time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+		walletBeforeUnbudgeted, err := walletStore.GetWallet(ctx, "test.fake")
+		if err != nil {
+			t.Fatal(err)
+		}
+		unbudgetedResult, dispatchErr := unbudgetedDispatch.Dispatch(ctx, unbudgetedCreated.Invocation.ID)
+		if dispatchErr != nil || unbudgetedResult.Invocation.Status != modelruntime.InvocationSucceeded {
+			t.Fatalf("unbudgeted dispatch: result=%+v err=%v", unbudgetedResult, dispatchErr)
+		}
+		walletAfterUnbudgeted, err := walletStore.GetWallet(ctx, "test.fake")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if walletAfterUnbudgeted.BalanceUSD >= walletBeforeUnbudgeted.BalanceUSD {
+			t.Fatalf("wallet must be debited even for a task with no budget attached: before=%d after=%d", walletBeforeUnbudgeted.BalanceUSD, walletAfterUnbudgeted.BalanceUSD)
+		}
+		if _, err := budgetStore.ResolveBudgetForTask(ctx, unbudgetedTaskRef.TaskID); !errors.Is(err, agentbudget.ErrBudgetNotFound) {
+			t.Fatalf("this task must genuinely have no budget for the test to be meaningful: err=%v", err)
+		}
 	})
 
 	t.Run("classified provider outcomes are immutable and terminal", func(t *testing.T) {
@@ -1178,6 +1224,29 @@ func fixturePrincipalAndAssignment(t *testing.T, ctx context.Context, store *dis
 		t.Fatal(err)
 	}
 	return principal, created.Assignment
+}
+
+func fixtureAssignmentForExistingPrincipal(t *testing.T, ctx context.Context, store *dispatchpostgres.Store, task modelruntime.TaskAttemptRef, subjectRoleID, dispatchActorRoleID string, principal modeldispatch.ExecutionPrincipal, suffix string) modeldispatch.DispatcherAssignment {
+	t.Helper()
+	validFrom := time.Now().UTC()
+	validUntil := task.LeaseExpiresAt
+	const maxInvocations = 50
+	assignmentHash, err := modeldispatch.AssignmentScopeHash(modelIntegrationOrganization, task.OrganizationRevisionID, task.TaskID, task.AttemptID, subjectRoleID, dispatchActorRoleID, principal.ID, maxInvocations, validFrom, validUntil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestHash, err := modeldispatch.AssignmentRequestHash(modelIntegrationOrganization, task.OrganizationRevisionID, task.TaskID, task.AttemptID, subjectRoleID, principal.ID, principal.PrincipalKey, dispatchActorRoleID, validFrom, validUntil, maxInvocations, "empresa/human")
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.CreateAssignment(ctx, modeldispatch.PreparedCreateAssignment{
+		Command:   modeldispatch.CreateAssignmentCommand{OrganizationID: modelIntegrationOrganization, TaskID: task.TaskID, AttemptID: task.AttemptID, SubjectRoleID: subjectRoleID, ExecutionPrincipalKey: principal.PrincipalKey, MaxInvocations: maxInvocations, IdempotencyKey: "assignment-" + suffix},
+		Principal: principal, OrganizationRevisionID: task.OrganizationRevisionID, ValidFrom: validFrom, ValidUntil: validUntil, AssignmentHash: assignmentHash, RequestHash: requestHash, CreatedByRoleID: "empresa/human",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return created.Assignment
 }
 
 func createModelInvocation(t *testing.T, ctx context.Context, service *modelruntime.InvocationService, command modelruntime.CreateInvocationCommand) modelruntime.Invocation {

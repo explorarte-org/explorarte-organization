@@ -32,14 +32,17 @@ func New(pricing *modelpricing.Service, ledger costledger.Ledger, budgets agentb
 var _ modelruntime.CostBudgetGate = (*Gate)(nil)
 
 func (g *Gate) Reserve(ctx context.Context, request modelruntime.CostReservationRequest, now time.Time) (modelruntime.CostReservation, error) {
+	// Budget tracking is independently optional per task (not every task is
+	// attached to a budget tree — e.g. CEO planning/review/closure tasks
+	// today). Wallet tracking is NOT optional for any real call: real money
+	// gets spent regardless of whether anyone remembered to wire that task
+	// into a budget tree, so a missing budget must never silently skip the
+	// wallet reservation too.
 	budget, err := g.budgets.ResolveBudgetForTask(ctx, request.TaskID)
+	budgetTracked := true
 	if errors.Is(err, agentbudget.ErrBudgetNotFound) {
-		// This task was never attached to a budget tree — untracked,
-		// deliberately not an error. Group A/B backlog work and other
-		// tasks that predate this ledger must keep dispatching normally.
-		return modelruntime.CostReservation{Applied: false}, nil
-	}
-	if err != nil {
+		budgetTracked = false
+	} else if err != nil {
 		return modelruntime.CostReservation{}, fmt.Errorf("resolve budget for task: %w", err)
 	}
 
@@ -55,6 +58,14 @@ func (g *Gate) Reserve(ctx context.Context, request modelruntime.CostReservation
 	if err := g.ledger.Reserve(ctx, request.ProviderID, request.InvocationID, estimatedUSD, now); err != nil {
 		return modelruntime.CostReservation{}, err
 	}
+	reservation := modelruntime.CostReservation{
+		ProviderID: request.ProviderID, ProviderModelID: request.ProviderModelID,
+		InvocationID: request.InvocationID, WalletApplied: true,
+	}
+
+	if !budgetTracked {
+		return reservation, nil
+	}
 
 	delta := agentbudget.Usage{
 		UsedUSD:        estimatedUSD,
@@ -67,11 +78,9 @@ func (g *Gate) Reserve(ctx context.Context, request modelruntime.CostReservation
 		}
 		return modelruntime.CostReservation{}, err
 	}
-
-	return modelruntime.CostReservation{
-		ProviderID: request.ProviderID, ProviderModelID: request.ProviderModelID,
-		InvocationID: request.InvocationID, BudgetID: budget.ID, Applied: true,
-	}, nil
+	reservation.BudgetID = budget.ID
+	reservation.BudgetApplied = true
+	return reservation, nil
 }
 
 // Reconcile prices inputTokens entirely at the fresh (non-cached) rate: the
@@ -81,7 +90,7 @@ func (g *Gate) Reserve(ctx context.Context, request modelruntime.CostReservation
 // overestimate real cost in providers with cache pricing, never
 // underestimate it.
 func (g *Gate) Reconcile(ctx context.Context, reservation modelruntime.CostReservation, inputTokens, cachedInputTokens, outputTokens int64, now time.Time) error {
-	if !reservation.Applied {
+	if !reservation.WalletApplied {
 		return nil
 	}
 	tier, err := g.pricing.Resolve(ctx, reservation.ProviderID, reservation.ProviderModelID, inputTokens, now)
@@ -96,7 +105,7 @@ func (g *Gate) Reconcile(ctx context.Context, reservation modelruntime.CostReser
 }
 
 func (g *Gate) Release(ctx context.Context, reservation modelruntime.CostReservation, now time.Time) error {
-	if !reservation.Applied {
+	if !reservation.WalletApplied {
 		return nil
 	}
 	return g.ledger.Release(ctx, reservation.ProviderID, reservation.InvocationID, now)
