@@ -30,12 +30,30 @@ func TestReserveAppliesEveryDimension(t *testing.T) {
 func TestReserveDepthIsCurrentDepthNotCumulative(t *testing.T) {
 	limits := testLimits()
 	current := Usage{Depth: 2}
+	// delta.Depth is the tree depth this reservation operates at, not an
+	// increment: a lower value here must replace current.Depth, never add
+	// to it (that would make Depth grow without bound across repeated
+	// reservations at the same tree level, tripping MaxDepth for no
+	// reason).
 	next, err := Reserve(current, Usage{Depth: 1}, limits)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if next.Depth != 3 {
-		t.Fatalf("depth=%d want=3", next.Depth)
+	if next.Depth != 1 {
+		t.Fatalf("depth=%d want=1", next.Depth)
+	}
+
+	// Repeating the same depth across many reservations (e.g. several
+	// sibling model calls at the same tree level) must never accumulate.
+	repeated := current
+	for i := 0; i < 5; i++ {
+		repeated, err = Reserve(repeated, Usage{Depth: 2}, limits)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if repeated.Depth != 2 {
+		t.Fatalf("depth after repeated reservations=%d want=2", repeated.Depth)
 	}
 }
 

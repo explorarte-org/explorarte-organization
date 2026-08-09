@@ -58,13 +58,17 @@ type Usage struct {
 // would result from applying delta to current, or ErrBudgetExceeded if any
 // single dimension would cross its limit. It never partially applies —
 // either every dimension clears, or none of them do.
+//
+// Depth is the one exception, matching Usage's own doc comment: delta.Depth
+// is not added to current.Depth, it directly replaces it — a caller passes
+// the tree depth this reservation would operate at, not an increment.
 func Reserve(current, delta Usage, limits Limits) (Usage, error) {
 	next := Usage{
 		UsedUSD:        current.UsedUSD + delta.UsedUSD,
 		UsedTokens:     current.UsedTokens + delta.UsedTokens,
 		UsedModelCalls: current.UsedModelCalls + delta.UsedModelCalls,
 		UsedWallTimeMS: current.UsedWallTimeMS + delta.UsedWallTimeMS,
-		Depth:          current.Depth + delta.Depth,
+		Depth:          delta.Depth,
 		UsedRetries:    current.UsedRetries + delta.UsedRetries,
 		UsedSubagents:  current.UsedSubagents + delta.UsedSubagents,
 	}
@@ -72,7 +76,7 @@ func Reserve(current, delta Usage, limits Limits) (Usage, error) {
 	case delta.UsedUSD < 0 || delta.UsedTokens < 0 || delta.UsedModelCalls < 0 || delta.UsedWallTimeMS < 0 || delta.Depth < 0 || delta.UsedRetries < 0 || delta.UsedSubagents < 0:
 		return Usage{}, fmt.Errorf("%w: delta dimensions must be non-negative", ErrInvalidRequest)
 	case next.UsedUSD < current.UsedUSD || next.UsedTokens < current.UsedTokens || next.UsedModelCalls < current.UsedModelCalls ||
-		next.UsedWallTimeMS < current.UsedWallTimeMS || next.Depth < current.Depth || next.UsedRetries < current.UsedRetries || next.UsedSubagents < current.UsedSubagents:
+		next.UsedWallTimeMS < current.UsedWallTimeMS || next.UsedRetries < current.UsedRetries || next.UsedSubagents < current.UsedSubagents:
 		return Usage{}, fmt.Errorf("%w: budget usage overflowed", ErrInvalidRequest)
 	case next.UsedUSD > limits.MaxUSD:
 		return Usage{}, fmt.Errorf("%w: usd %s exceeds max %s", ErrBudgetExceeded, next.UsedUSD, limits.MaxUSD)
