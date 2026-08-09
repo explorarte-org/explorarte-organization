@@ -108,11 +108,16 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		if enabled != 6 || available != 6 {
 			t.Fatalf("compiled provider versions enabled=%d available=%d, want 6/6", enabled, available)
 		}
-		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id='openai_compatible' AND transport='http_adapter' AND dispatch_enabled AND adapter_status='available'`, revision.ID, 3)
+		// R30 retired every gemini routing policy (research.audit/research.worker
+		// moved to deepseek-v4-pro/flash, department.leader moved to
+		// deepseek-v4-pro) — gemini remains a compiled HTTP adapter (still used
+		// by internal/embeddingruntime, a separate dispatch path this registry
+		// sync does not touch) but now resolves zero profile versions here.
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id='openai_compatible' AND transport='http_adapter' AND dispatch_enabled AND adapter_status='available'`, revision.ID, 2)
 		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND profile_id='ceo-primary' AND provider_id='openai_compatible' AND transport='http_adapter' AND dispatch_enabled AND adapter_status='available'`, revision.ID, 1)
 		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id='alibaba_token_plan_via_claude_code' AND (dispatch_enabled OR adapter_status<>'unavailable')`, revision.ID, 0)
-		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id='deepseek' AND transport='http_adapter' AND dispatch_enabled AND adapter_status='available'`, revision.ID, 1)
-		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id='gemini' AND transport='http_adapter' AND dispatch_enabled AND adapter_status='available'`, revision.ID, 2)
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id='deepseek' AND transport='http_adapter' AND dispatch_enabled AND adapter_status='available'`, revision.ID, 4)
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id='gemini' AND transport='http_adapter' AND dispatch_enabled AND adapter_status='available'`, revision.ID, 0)
 		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id NOT IN ('openai_compatible','alibaba_token_plan_via_claude_code','deepseek','gemini') AND (dispatch_enabled OR adapter_status<>'unavailable')`, revision.ID, 0)
 	})
 

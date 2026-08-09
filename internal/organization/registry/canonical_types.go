@@ -203,12 +203,26 @@ type decisionsRequiredDocument struct {
 	Status            string             `yaml:"status" json:"status"`
 	AcceptedFromOwner []string           `yaml:"accepted_from_owner" json:"accepted_from_owner"`
 	Open              []decisionRequired `yaml:"open" json:"open"`
+	Resolved          []decisionResolved `yaml:"resolved,omitempty" json:"resolved,omitempty"`
 }
 
 type decisionRequired struct {
 	ID       string `yaml:"id" json:"id"`
 	Question string `yaml:"question" json:"question"`
 	Blocks   string `yaml:"blocks" json:"blocks"`
+}
+
+// decisionResolved records a decision that was open (decisionRequired) and
+// has since been settled by the owner. It is intentionally append-only and
+// keeps the exact decision text verbatim — this document is a governance
+// log, not a mutable summary, so a resolved entry is never edited or
+// removed once recorded, only appended to.
+type decisionResolved struct {
+	ID        string `yaml:"id" json:"id"`
+	Question  string `yaml:"question" json:"question"`
+	Decision  string `yaml:"decision" json:"decision"`
+	DecidedIn string `yaml:"decided_in" json:"decided_in"`
+	ADR       string `yaml:"adr" json:"adr"`
 }
 
 type sourceManifestDocument struct {

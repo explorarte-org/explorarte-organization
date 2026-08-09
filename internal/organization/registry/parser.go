@@ -290,6 +290,7 @@ func normalizeDocuments(documents *parsedDocuments) {
 	sort.Strings(documents.InstructionPrecedence.ConflictRules)
 	sort.Strings(documents.Decisions.AcceptedFromOwner)
 	sort.Slice(documents.Decisions.Open, func(i, j int) bool { return documents.Decisions.Open[i].ID < documents.Decisions.Open[j].ID })
+	sort.Slice(documents.Decisions.Resolved, func(i, j int) bool { return documents.Decisions.Resolved[i].ID < documents.Decisions.Resolved[j].ID })
 	for index := range documents.SourceManifest.Files {
 		documents.SourceManifest.Files[index].Path = stableSourceReference(documents.SourceManifest.Files[index].Path)
 	}

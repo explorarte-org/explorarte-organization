@@ -92,9 +92,11 @@ func TestModelPricingSeedIsRealAndResolvable(t *testing.T) {
 		t.Fatalf("gemini-2.5-pro long tier=%+v", geminiPro)
 	}
 
-	// model-routing.yaml routes research.worker to exactly this model; a
-	// missing row here means every real research.worker call fails closed
-	// at the cost gate before ever reaching the provider.
+	// R30 retired gemini-2.5-flash from model-routing.yaml (research.worker
+	// now routes to deepseek/deepseek-v4-flash; Gemini is generation-only
+	// history from here on, never a live routing target) — this row is kept
+	// seeded and resolvable on purpose, since historical prices are never
+	// deleted, but nothing productive depends on it resolving anymore.
 	geminiFlash, err := service.Resolve(ctx, "gemini", "gemini-2.5-flash", 1_000, modelpricing.BillingOnline, now)
 	if err != nil {
 		t.Fatal(err)

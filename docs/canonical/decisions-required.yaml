@@ -28,7 +28,12 @@ open:
 - id: D-006
   question: Approve creation of research_worker_hourly and razonamiento_logico profiles.
   blocks: organization registry activation
+resolved:
 - id: D-007
   question: 'Choose production logic implementation after shadow phase: embedded Go Datalog subset, external Prolog,
     or hybrid.'
-  blocks: logic enforcement, not shadow specification
+  decision: 'Arquitectura híbrida: Go es autoritativo; una representación intermedia tipada se compila hacia Prolog/Datalog
+    aislado en shadow. Ninguna divergencia cambia decisiones productivas hasta superar paridad, auditoría y promoción
+    explícita.'
+  decided_in: branch-30-canary-evaluation-bge-m3
+  adr: docs/adr/ADR-0006-hybrid-logic-ir-shadow.md
