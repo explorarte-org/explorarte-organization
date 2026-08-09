@@ -1,8 +1,18 @@
--- model_pricing rows are immutable by design (see 000020) — the seeded
--- gemini-embedding-2 rows are not deleted on rollback for the same reason
--- 000026's down migration leaves its seed data standing: a row a past call
--- may already have been priced against must never disappear out from under
--- it, even on rollback.
-ALTER TABLE model_pricing DROP CONSTRAINT model_pricing_unique_tier;
-ALTER TABLE model_pricing ADD CONSTRAINT model_pricing_unique_tier UNIQUE (provider_id, provider_model_id, context_tier_name, effective_at);
-ALTER TABLE model_pricing DROP COLUMN billing_mode;
+-- model_pricing rows are immutable by design (see 000020) and this
+-- migration's own seeded gemini-embedding-2 rows are not deleted on
+-- rollback, for the same reason 000026's down migration leaves its seed
+-- data standing.
+--
+-- Unlike 000026, that constraint makes a real schema rollback impossible
+-- here, not just undesirable: the two seeded rows share the exact same
+-- provider_id/provider_model_id/context_tier_name/effective_at (NOW() is
+-- stable within one INSERT statement, so both rows share one timestamp)
+-- and are only distinguished by billing_mode ('online' vs 'batch'). Restoring
+-- the pre-000027 4-column UNIQUE constraint — the actual bug this comment
+-- replaces, caught by a down/reapply integration test — would require either
+-- deleting one of those two rows (violates immutability) or leaving a
+-- UNIQUE constraint that the current data already violates (impossible:
+-- CREATE UNIQUE INDEX fails against existing duplicate rows). There is no
+-- correct way to undo this migration's schema change while keeping its
+-- data, so — same as 000026 — the row/column/constraint stand.
+SELECT 1;

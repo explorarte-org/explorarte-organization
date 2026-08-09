@@ -50,6 +50,16 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if _, err := store.Pool().Exec(ctx, `DROP SCHEMA public CASCADE; CREATE SCHEMA public;`); err != nil {
 		t.Fatalf("reset integration schema: %v", err)
 	}
+	// pgvector (R29) installs its types into the public schema by default —
+	// the reset above drops them along with everything else, so migration
+	// 000028 (the first to use the vector column type) would otherwise fail
+	// here and for every integration package that shares this database and
+	// runs after this one in the same `go test ./...` invocation. This is
+	// a no-op if the extension is already present (e.g. run standalone
+	// against a container that already has it).
+	if _, err := store.Pool().Exec(ctx, `CREATE EXTENSION IF NOT EXISTS vector;`); err != nil {
+		t.Fatalf("recreate pgvector extension after schema reset: %v", err)
+	}
 	runner, err := platformmigrations.New(store.Pool(), rootmigrations.Files)
 	if err != nil {
 		t.Fatal(err)
@@ -140,6 +150,38 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 		t.Fatalf("transport column still queryable after 000018 down: value=%v err=%v", transportColumn, err)
 	}
 
+	// R29's 000028 adds rag_chunk_embeddings/rag_embedding_batch_job_items,
+	// both FK'd to rag_knowledge_chunks (000017) — it must come down before
+	// 000017's DROP TABLE rag_knowledge_chunks, or that DROP fails outright
+	// with "other objects depend on it". 000029 adds the generated
+	// identifier_tokens column directly onto rag_knowledge_chunks — DROP
+	// TABLE removes it fine either way, but its schema_migrations row must
+	// also be deleted here, or Up() below skips reapplying it (it only
+	// reapplies rows this block itself deleted) and every later query
+	// against c.identifier_tokens breaks after 000017 comes back without
+	// it. Both gaps are the same class already found and fixed for
+	// 000021/000025/000030 in internal/modelruntime/postgres's own down/
+	// reapply test — this file's version of that test predates R29 and
+	// needed the same extension.
+	if err := store.UnitOfWork().WithinTransaction(ctx, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, loaded[28].DownSQL); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `DELETE FROM schema_migrations WHERE version=29`)
+		return err
+	}); err != nil {
+		t.Fatalf("down migration 000029: %v", err)
+	}
+	if err := store.UnitOfWork().WithinTransaction(ctx, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, loaded[27].DownSQL); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `DELETE FROM schema_migrations WHERE version=28`)
+		return err
+	}); err != nil {
+		t.Fatalf("down migration 000028: %v", err)
+	}
+
 	// Preserve the original R20 test: after R21 is gone, down 000017 and prove
 	// the approved-knowledge tables disappear.
 	if err := store.UnitOfWork().WithinTransaction(ctx, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
@@ -164,7 +206,18 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(restored.Applied) != 3 || restored.Applied[0] != 17 || restored.Applied[1] != 18 || restored.Applied[2] != 19 || restored.Current != tip {
-		t.Fatalf("restore=%+v want 000017+000018+000019", restored)
+	// Up() walks migrations in ascending order, applying whichever versions
+	// are missing from schema_migrations — 17/18/19/28/29 in that order
+	// (20-27 and 30 were never rolled back above, so Up() skips them).
+	if len(restored.Applied) != 5 || restored.Applied[0] != 17 || restored.Applied[1] != 18 || restored.Applied[2] != 19 || restored.Applied[3] != 28 || restored.Applied[4] != 29 || restored.Current != tip {
+		t.Fatalf("restore=%+v want 000017+000018+000019+000028+000029", restored)
+	}
+	var identifierTokensExists bool
+	if err := store.Pool().QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='rag_knowledge_chunks' AND column_name='identifier_tokens')`).Scan(&identifierTokensExists); err != nil || !identifierTokensExists {
+		t.Fatalf("rag_knowledge_chunks.identifier_tokens missing after reapply: exists=%v err=%v", identifierTokensExists, err)
+	}
+	var embeddingTableExists bool
+	if err := store.Pool().QueryRow(ctx, `SELECT to_regclass('public.rag_chunk_embeddings') IS NOT NULL`).Scan(&embeddingTableExists); err != nil || !embeddingTableExists {
+		t.Fatalf("rag_chunk_embeddings missing after reapply: exists=%v err=%v", embeddingTableExists, err)
 	}
 }
