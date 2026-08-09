@@ -456,6 +456,88 @@ func TestApprovedKnowledgeRAGPostgresRepository(t *testing.T) {
 			t.Fatalf("status=%q failedCount=%d", status, failedCount)
 		}
 	})
+
+	t.Run("identifier_tokens exact-match channel never conflates different numbers", func(t *testing.T) {
+		const identifierNamespace = "ingenieria_ia_identifiers"
+		clock.now = now.Add(65 * time.Second)
+		hyphenated, err := domain.Propose(rag.ProposeCommand{
+			ID: "know-identifier-hyphenated", DocumentID: "know-identifier-hyphenated", OrganizationID: ragIntegrationOrganization,
+			NamespaceKind: rag.NamespaceDepartment, NamespaceID: identifierNamespace, Version: 1,
+			Title: "identifier fixture", Body: "agent hit error-20 during dispatch", SourceKind: rag.SourceOperational,
+			SourceReference: "identifier:fixture", ProposedBy: ragIntegrationProposer,
+			EvidenceRefs: []rag.EvidenceRef{{Reference: "evidence:id20", Digest: "aaa"}},
+			Admission:    rag.AdmissionAttestation{DataClass: rag.DataOrganizational, AttestedBy: ragIntegrationProposer, SourceBoundary: "organization", EvidenceRef: "admission:know-identifier-hyphenated", AttestedAt: clock.now.Add(-time.Second)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		hyphenatedCreated, _, err := store.CreateCandidate(ctx, rag.CreateCandidateCommand{Version: hyphenated, IdempotencyKey: "idem-identifier-hyphenated"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		clock.now = clock.now.Add(time.Second)
+		hyphenatedApproved, err := domain.Review(hyphenatedCreated, rag.ReviewApprove, ragIntegrationReviewer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hyphenatedApproved, err = store.Save(ctx, rag.SaveCommand{Version: hyphenatedApproved, ExpectedRevision: 1, ActorID: ragIntegrationReviewer, Reason: "ok"})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		clock.now = clock.now.Add(time.Second)
+		larger, err := domain.Propose(rag.ProposeCommand{
+			ID: "know-identifier-larger", DocumentID: "know-identifier-larger", OrganizationID: ragIntegrationOrganization,
+			NamespaceKind: rag.NamespaceDepartment, NamespaceID: identifierNamespace, Version: 1,
+			Title: "identifier fixture", Body: "agent hit error 2000 during dispatch", SourceKind: rag.SourceOperational,
+			SourceReference: "identifier:fixture", ProposedBy: ragIntegrationProposer,
+			EvidenceRefs: []rag.EvidenceRef{{Reference: "evidence:id2000", Digest: "bbb"}},
+			Admission:    rag.AdmissionAttestation{DataClass: rag.DataOrganizational, AttestedBy: ragIntegrationProposer, SourceBoundary: "organization", EvidenceRef: "admission:know-identifier-larger", AttestedAt: clock.now.Add(-time.Second)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		largerCreated, _, err := store.CreateCandidate(ctx, rag.CreateCandidateCommand{Version: larger, IdempotencyKey: "idem-identifier-larger"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		clock.now = clock.now.Add(time.Second)
+		largerApproved, err := domain.Review(largerCreated, rag.ReviewApprove, ragIntegrationReviewer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		largerApproved, err = store.Save(ctx, rag.SaveCommand{Version: largerApproved, ExpectedRevision: 1, ActorID: ragIntegrationReviewer, Reason: "ok"})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		for _, approved := range []rag.KnowledgeVersion{hyphenatedApproved, largerApproved} {
+			chunks, err := rag.ChunkBody(approved.ID, rag.DefaultChunkerID, rag.DefaultChunkerVersion, approved.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Reindex(ctx, rag.ReindexCommand{OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceDepartment, NamespaceID: identifierNamespace, ChunkerID: rag.DefaultChunkerID, ChunkerVersion: rag.DefaultChunkerVersion, Chunks: chunks}); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		var tokens []string
+		if err := platform.Pool().QueryRow(ctx, `SELECT c.identifier_tokens FROM rag_knowledge_chunks c JOIN rag_knowledge_versions v ON v.organization_id=c.organization_id AND v.version_id=c.version_id WHERE c.organization_id=$1 AND v.document_id=$2`, ragIntegrationOrganization, "know-identifier-hyphenated").Scan(&tokens); err != nil {
+			t.Fatal(err)
+		}
+		if len(tokens) != 1 || tokens[0] != "20" {
+			t.Fatalf("hyphenated chunk identifier_tokens=%v want [20]", tokens)
+		}
+
+		var matchedDocument string
+		err = platform.Pool().QueryRow(ctx, `SELECT v.document_id FROM rag_knowledge_chunks c JOIN rag_knowledge_versions v ON v.organization_id=c.organization_id AND v.version_id=c.version_id WHERE c.organization_id=$1 AND c.identifier_tokens && ARRAY['20']`, ragIntegrationOrganization).Scan(&matchedDocument)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if matchedDocument != "know-identifier-hyphenated" {
+			t.Fatalf("searching for identifier '20' matched document %q, want know-identifier-hyphenated (never know-identifier-larger's '2000')", matchedDocument)
+		}
+	})
 }
 
 func proposeVersion(t *testing.T, domain *rag.Service, clock *fixedClock, now time.Time, id string) rag.KnowledgeVersion {

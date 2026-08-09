@@ -7,13 +7,13 @@ import (
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 )
 
-func TestMigrationTipIs28AndContiguous(t *testing.T) {
+func TestMigrationTipIs29AndContiguous(t *testing.T) {
 	loaded, err := platformmigrations.Load(rootmigrations.Files)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded) != 28 {
-		t.Fatalf("migration count=%d want 28", len(loaded))
+	if len(loaded) != 29 {
+		t.Fatalf("migration count=%d want 29", len(loaded))
 	}
 	for index, migration := range loaded {
 		want := int64(index + 1)
@@ -21,7 +21,7 @@ func TestMigrationTipIs28AndContiguous(t *testing.T) {
 			t.Fatalf("migration[%d].version=%d want %d", index, migration.Version, want)
 		}
 	}
-	if loaded[len(loaded)-1].Name != "create_embedding_derived_tables" {
-		t.Fatalf("migration 28 name=%q", loaded[len(loaded)-1].Name)
+	if loaded[len(loaded)-1].Name != "add_identifier_token_channel" {
+		t.Fatalf("migration 29 name=%q", loaded[len(loaded)-1].Name)
 	}
 }

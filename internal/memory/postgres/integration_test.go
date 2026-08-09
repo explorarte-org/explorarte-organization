@@ -186,6 +186,53 @@ func TestOrganizationalMemoryPostgresRepository(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+
+	t.Run("identifier_tokens exact-match channel never conflates different numbers", func(t *testing.T) {
+		clock.now = now.Add(40 * time.Second)
+		hyphenated, err := domain.Propose(memory.ProposeCommand{
+			ID: "mem-identifier-hyphenated", OrganizationID: memoryIntegrationOrganization, RoleID: memoryIntegrationRole,
+			Category: "incident_learning", Problem: "agent hit error-20 during dispatch", Correction: "retried with backoff",
+			SourceKind: memory.SourceOperational, SourceRunID: 1001, EvidenceRefs: []memory.EvidenceRef{{Reference: "evidence:id20", Digest: "aaa"}},
+			ProposedBy: memoryIntegrationRole, Admission: memory.AdmissionAttestation{DataClass: memory.DataOrganizational, AttestedBy: memoryIntegrationRole, SourceBoundary: "organization", EvidenceRef: "admission:mem-identifier-hyphenated", AttestedAt: clock.now.Add(-time.Second)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := store.CreateCandidate(ctx, memory.CreateCandidateCommand{Entry: hyphenated, IdempotencyKey: "idem-identifier-hyphenated"}); err != nil {
+			t.Fatal(err)
+		}
+
+		clock.now = clock.now.Add(time.Second)
+		larger, err := domain.Propose(memory.ProposeCommand{
+			ID: "mem-identifier-larger", OrganizationID: memoryIntegrationOrganization, RoleID: memoryIntegrationRole,
+			Category: "incident_learning", Problem: "agent hit error 2000 during dispatch", Correction: "escalated to on-call",
+			SourceKind: memory.SourceOperational, SourceRunID: 1002, EvidenceRefs: []memory.EvidenceRef{{Reference: "evidence:id2000", Digest: "bbb"}},
+			ProposedBy: memoryIntegrationRole, Admission: memory.AdmissionAttestation{DataClass: memory.DataOrganizational, AttestedBy: memoryIntegrationRole, SourceBoundary: "organization", EvidenceRef: "admission:mem-identifier-larger", AttestedAt: clock.now.Add(-time.Second)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := store.CreateCandidate(ctx, memory.CreateCandidateCommand{Entry: larger, IdempotencyKey: "idem-identifier-larger"}); err != nil {
+			t.Fatal(err)
+		}
+
+		var tokens []string
+		if err := platform.Pool().QueryRow(ctx, `SELECT identifier_tokens FROM organizational_memory_versions WHERE organization_id=$1 AND entry_key=$2`, memoryIntegrationOrganization, "mem-identifier-hyphenated").Scan(&tokens); err != nil {
+			t.Fatal(err)
+		}
+		if len(tokens) != 1 || tokens[0] != "20" {
+			t.Fatalf("hyphenated identifier_tokens=%v want [20]", tokens)
+		}
+
+		var matchedByExactID string
+		err = platform.Pool().QueryRow(ctx, `SELECT entry_key FROM organizational_memory_versions WHERE organization_id=$1 AND identifier_tokens && ARRAY['20']`, memoryIntegrationOrganization).Scan(&matchedByExactID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if matchedByExactID != "mem-identifier-hyphenated" {
+			t.Fatalf("searching for identifier '20' matched %q, want mem-identifier-hyphenated (never mem-identifier-larger's '2000')", matchedByExactID)
+		}
+	})
 }
 
 func proposeEntry(t *testing.T, domain *memory.Service, clock *fixedClock, now time.Time, id string, kind memory.SourceKind, class memory.DataClass, sanitizationRef string) memory.Entry {
