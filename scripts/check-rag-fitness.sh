@@ -52,7 +52,12 @@ require 'ragbootstrap\.Open' internal/contextengine/bootstrap/bootstrap.go
 
 if grep -R -E "publish-direct|PublishDirect" cmd/orgctl internal/rag --include='*.go'; then fail 'R20 introduced a direct-publish CLI path forbidden by organization.yaml'; fi
 if grep -R -E 'cell\.read_clinical_data|clinical_records|patient_records' internal/rag --include='*.go'; then fail 'rag reached into a clinical source boundary'; fi
-if grep -R -E 'pgvector|Pinecone|Qdrant|Weaviate' internal/rag migrations --include='*.go' --include='*.sql'; then fail 'R20 introduced an external vector backend forbidden at this stage'; fi
+# pgvector was deliberately forbidden through R20-R28 (see branch-20 DESIGN.md
+# Alcance D); branch-29 DESIGN.md explicitly supersedes that clause and
+# introduces it as the sole vector backend. Third-party hosted vector
+# databases remain forbidden — this system stays on PostgreSQL as the single
+# source of truth, no external vector store dependency.
+if grep -R -E 'Pinecone|Qdrant|Weaviate' internal/rag migrations --include='*.go' --include='*.sql'; then fail 'R20 introduced an external vector backend forbidden at this stage'; fi
 if grep -R -E 'MayGrantCapabilities:[[:space:]]*true' internal/rag/contextprovider --include='*.go'; then fail 'approved rag evidence may grant capabilities'; fi
 require 'LifecycleApproved:[[:space:]]*\{' internal/rag/transitions.go
 require 'LifecycleArchived:[[:space:]]*\{\}' internal/rag/transitions.go

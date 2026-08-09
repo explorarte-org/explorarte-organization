@@ -40,7 +40,13 @@ require 'multiple top-level JSON values are not allowed' cmd/orgctl/memory.go
 require 'memoryProvider' internal/contextengine/bootstrap/bootstrap.go
 
 if grep -R -E 'cell\.read_clinical_data|clinical_records|patient_records' internal/memory --include='*.go'; then fail 'organizational memory reached into a clinical source boundary'; fi
-if grep -R -E 'embedding|pgvector|semantic_search|internal/rag' internal/memory --include='*.go'; then fail 'R18 introduced retrieval/vector semantics that belong to a later layer'; fi
+# embedding/pgvector/semantic_search were deliberately forbidden through
+# R18-R28 (see branch-18 INTEGRATION.md); branch-29 DESIGN.md explicitly
+# supersedes that clause and introduces organizational_memory_embeddings as a
+# derived table. internal/memory must still never import internal/rag
+# directly — they stay independent domains, wired together only through
+# internal/contextengine.
+if grep -R -E 'internal/rag' internal/memory --include='*.go'; then fail 'R18 introduced a direct dependency on internal/rag forbidden by domain boundaries'; fi
 if grep -R -E 'MayGrantCapabilities:[[:space:]]*true' internal/memory/contextprovider --include='*.go'; then fail 'approved memory may grant capabilities'; fi
 require 'StatusCandidate:[[:space:]]*\{' internal/memory/transitions.go
 require 'StatusArchived:[[:space:]]*\{\}' internal/memory/transitions.go
