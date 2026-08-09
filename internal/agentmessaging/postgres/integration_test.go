@@ -1,0 +1,262 @@
+//go:build integration
+
+package postgres_test
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/Mireuz13/explorarte-organization/internal/agentmessaging"
+	agentmessagingpostgres "github.com/Mireuz13/explorarte-organization/internal/agentmessaging/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/config"
+	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
+	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
+	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
+	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
+)
+
+const (
+	messagingIntegrationOrg  = "explorarte"
+	messagingIntegrationUnit = "ingenieria_ia"
+)
+
+type messagingFixture struct {
+	store      *platformpostgres.Store
+	revisionID int64
+}
+
+func openMessagingFixture(t *testing.T, ctx context.Context) messagingFixture {
+	t.Helper()
+	databaseURL := os.Getenv("ORG_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Fatal("ORG_TEST_DATABASE_URL is required for integration tests")
+	}
+	canonicalDir := filepath.Join("..", "..", "..", "docs", "canonical")
+	cfg, err := config.LoadFrom(func(key string) (string, bool) {
+		values := map[string]string{"ORG_ENVIRONMENT": "test", "ORG_DATABASE_URL": databaseURL, "ORG_DATABASE_MAX_CONNS": "8", "ORG_DATABASE_MIN_CONNS": "0", "ORG_CANONICAL_DIR": canonicalDir}
+		v, ok := values[key]
+		return v, ok
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := platformpostgres.Open(ctx, cfg.Database, "agentmessaging-integration-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	runner, err := platformmigrations.New(store.Pool(), rootmigrations.Files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.Up(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if _, err := store.Pool().Exec(ctx, `TRUNCATE organizations, organization_registry_revisions RESTART IDENTITY CASCADE`); err != nil {
+		t.Fatalf("reset schema: %v", err)
+	}
+
+	registryRepo, err := registry.NewPostgresRepository(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loader, err := registry.NewLoader(canonicalDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registryService, err := registry.NewService(loader, registryRepo, messagingIntegrationOrg, 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	syncResult, err := registryService.SynchronizeCanonical(ctx, true)
+	if err != nil || !syncResult.Applied {
+		t.Fatalf("sync registry: result=%+v err=%v", syncResult, err)
+	}
+	revision, err := registryRepo.GetCurrentRevision(ctx, messagingIntegrationOrg)
+	if err != nil || revision == nil {
+		t.Fatalf("current registry revision=%+v err=%v", revision, err)
+	}
+	return messagingFixture{store: store, revisionID: revision.ID}
+}
+
+func (f messagingFixture) insertTask(t *testing.T, ctx context.Context, roleID string, ordinal int) int64 {
+	t.Helper()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	var taskID int64
+	if err := f.store.Pool().QueryRow(ctx, `
+INSERT INTO tasks (
+ organization_id,organization_revision_id,requested_by_role_id,assigned_role_id,assigned_unit_id,
+ idempotency_key,request_hash,title,instructions,acceptance_criteria,status,priority,available_at,
+ max_attempts,attempt_count,version,created_at,updated_at
+) VALUES ($1,$2,'empresa/ceo',$3,$4,$5,$6,$7,$8,'[]'::jsonb,'running',0,$9,1,1,1,$9,$9)
+RETURNING id`, messagingIntegrationOrg, f.revisionID, roleID, messagingIntegrationUnit,
+		fmt.Sprintf("agentmessaging-fixture-task-%d", ordinal), digest(fmt.Sprintf("agentmessaging-task-%d", ordinal)), fmt.Sprintf("Messaging fixture %d", ordinal), "durable messaging fixture", now,
+	).Scan(&taskID); err != nil {
+		t.Fatalf("insert task: %v", err)
+	}
+	return taskID
+}
+
+func digest(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
+func TestSendIsIdempotentPerOrganizationAndKey(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	fixture := openMessagingFixture(t, ctx)
+	ledger, err := agentmessagingpostgres.New(fixture.store, 100, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	ceoTaskID := fixture.insertTask(t, ctx, "empresa/ceo", 1)
+
+	command := agentmessaging.SendCommand{
+		OrganizationID: messagingIntegrationOrg, SenderRoleID: "empresa/ceo", SenderTaskID: ceoTaskID,
+		RecipientRoleID: "ingenieria_ia/orquestador", CorrelationID: "executive:abc", CausationID: fmt.Sprintf("task:%d", ceoTaskID),
+		MessageType: agentmessaging.MessageDelegation, Payload: json.RawMessage(`{"delegate":true}`),
+		IdempotencyKey: "delegation:ceo->leader", MaxAttempts: 5,
+	}
+	first, reused, err := ledger.Send(ctx, command, now)
+	if err != nil || reused {
+		t.Fatalf("first send: message=%+v reused=%v err=%v", first, reused, err)
+	}
+	if first.Status != agentmessaging.StatusPending {
+		t.Fatalf("status=%s want pending", first.Status)
+	}
+	second, reused, err := ledger.Send(ctx, command, now.Add(time.Second))
+	if err != nil || !reused || second.ID != first.ID {
+		t.Fatalf("second send: message=%+v reused=%v err=%v want id=%d", second, reused, err, first.ID)
+	}
+}
+
+func TestSendEnforcesRateLimit(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	fixture := openMessagingFixture(t, ctx)
+	ledger, err := agentmessagingpostgres.New(fixture.store, 2, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	ceoTaskID := fixture.insertTask(t, ctx, "empresa/ceo", 2)
+
+	for i := 0; i < 2; i++ {
+		command := agentmessaging.SendCommand{
+			OrganizationID: messagingIntegrationOrg, SenderRoleID: "empresa/ceo", SenderTaskID: ceoTaskID,
+			RecipientRoleID: "ingenieria_ia/orquestador", CorrelationID: "executive:rate", CausationID: fmt.Sprintf("task:%d", ceoTaskID),
+			MessageType: agentmessaging.MessageStatus, Payload: json.RawMessage(`{"n":true}`),
+			IdempotencyKey: fmt.Sprintf("status:%d", i), MaxAttempts: 5,
+		}
+		if _, _, err := ledger.Send(ctx, command, now); err != nil {
+			t.Fatalf("send %d: %v", i, err)
+		}
+	}
+	over := agentmessaging.SendCommand{
+		OrganizationID: messagingIntegrationOrg, SenderRoleID: "empresa/ceo", SenderTaskID: ceoTaskID,
+		RecipientRoleID: "ingenieria_ia/orquestador", CorrelationID: "executive:rate", CausationID: fmt.Sprintf("task:%d", ceoTaskID),
+		MessageType: agentmessaging.MessageStatus, Payload: json.RawMessage(`{"n":true}`),
+		IdempotencyKey: "status:over", MaxAttempts: 5,
+	}
+	if _, _, err := ledger.Send(ctx, over, now); !errors.Is(err, agentmessaging.ErrRateLimited) {
+		t.Fatalf("err=%v want ErrRateLimited", err)
+	}
+}
+
+func TestClaimAckDeliversMessageExactlyOnce(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	fixture := openMessagingFixture(t, ctx)
+	ledger, err := agentmessagingpostgres.New(fixture.store, 100, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	ceoTaskID := fixture.insertTask(t, ctx, "empresa/ceo", 3)
+	sent, _, err := ledger.Send(ctx, agentmessaging.SendCommand{
+		OrganizationID: messagingIntegrationOrg, SenderRoleID: "empresa/ceo", SenderTaskID: ceoTaskID,
+		RecipientRoleID: "ingenieria_ia/orquestador", CorrelationID: "executive:claim", CausationID: fmt.Sprintf("task:%d", ceoTaskID),
+		MessageType: agentmessaging.MessageDelegation, Payload: json.RawMessage(`{"claim":true}`),
+		IdempotencyKey: "claim-ack", MaxAttempts: 5,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	claimed, err := ledger.ClaimNext(ctx, messagingIntegrationOrg, "ingenieria_ia/orquestador", "leader-consumer-1", 10, time.Minute, now)
+	if err != nil || len(claimed) != 1 || claimed[0].Message.ID != sent.ID {
+		t.Fatalf("claimed=%+v err=%v", claimed, err)
+	}
+	if claimed[0].Message.Status != agentmessaging.StatusClaimed || claimed[0].Message.AttemptCount != 1 {
+		t.Fatalf("claimed message=%+v", claimed[0].Message)
+	}
+
+	// A second claim attempt must find nothing pending.
+	again, err := ledger.ClaimNext(ctx, messagingIntegrationOrg, "ingenieria_ia/orquestador", "leader-consumer-2", 10, time.Minute, now)
+	if err != nil || len(again) != 0 {
+		t.Fatalf("second claim=%+v err=%v want empty", again, err)
+	}
+
+	if err := ledger.Ack(ctx, agentmessaging.Disposition{MessageID: sent.ID, ConsumerID: "leader-consumer-1", ClaimToken: claimed[0].ClaimToken}, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	// A wrong claim token must be rejected.
+	if err := ledger.Ack(ctx, agentmessaging.Disposition{MessageID: sent.ID, ConsumerID: "leader-consumer-1", ClaimToken: "wrong-token"}, now); !errors.Is(err, agentmessaging.ErrConflict) {
+		t.Fatalf("err=%v want ErrConflict", err)
+	}
+}
+
+func TestNackRetriesUntilMaxAttemptsThenDeadLetters(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	fixture := openMessagingFixture(t, ctx)
+	ledger, err := agentmessagingpostgres.New(fixture.store, 100, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	ceoTaskID := fixture.insertTask(t, ctx, "empresa/ceo", 4)
+	sent, _, err := ledger.Send(ctx, agentmessaging.SendCommand{
+		OrganizationID: messagingIntegrationOrg, SenderRoleID: "empresa/ceo", SenderTaskID: ceoTaskID,
+		RecipientRoleID: "ingenieria_ia/orquestador", CorrelationID: "executive:nack", CausationID: fmt.Sprintf("task:%d", ceoTaskID),
+		MessageType: agentmessaging.MessageDelegation, Payload: json.RawMessage(`{"nack":true}`),
+		IdempotencyKey: "nack-dead-letter", MaxAttempts: 2,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		claimed, err := ledger.ClaimNext(ctx, messagingIntegrationOrg, "ingenieria_ia/orquestador", "leader-consumer", 10, time.Minute, now)
+		if err != nil || len(claimed) != 1 {
+			t.Fatalf("attempt %d: claimed=%+v err=%v", attempt, claimed, err)
+		}
+		if err := ledger.Nack(ctx, agentmessaging.Disposition{MessageID: sent.ID, ConsumerID: "leader-consumer", ClaimToken: claimed[0].ClaimToken, Error: "consumer failed"}, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var status string
+	var attemptCount int
+	if err := fixture.store.Pool().QueryRow(ctx, `SELECT status, attempt_count FROM agent_messages WHERE id=$1`, sent.ID).Scan(&status, &attemptCount); err != nil {
+		t.Fatal(err)
+	}
+	if status != string(agentmessaging.StatusDead) || attemptCount != 2 {
+		t.Fatalf("status=%s attempts=%d want dead/2", status, attemptCount)
+	}
+	// A dead message must never be claimable again.
+	claimed, err := ledger.ClaimNext(ctx, messagingIntegrationOrg, "ingenieria_ia/orquestador", "leader-consumer", 10, time.Minute, now)
+	if err != nil || len(claimed) != 0 {
+		t.Fatalf("claimed dead message: %+v err=%v", claimed, err)
+	}
+}

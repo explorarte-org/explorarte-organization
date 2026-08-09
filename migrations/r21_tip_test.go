@@ -7,13 +7,13 @@ import (
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 )
 
-func TestMigrationTipIs23AndContiguous(t *testing.T) {
+func TestMigrationTipIs24AndContiguous(t *testing.T) {
 	loaded, err := platformmigrations.Load(rootmigrations.Files)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded) != 23 {
-		t.Fatalf("migration count=%d want 23", len(loaded))
+	if len(loaded) != 24 {
+		t.Fatalf("migration count=%d want 24", len(loaded))
 	}
 	for index, migration := range loaded {
 		want := int64(index + 1)
@@ -21,7 +21,7 @@ func TestMigrationTipIs23AndContiguous(t *testing.T) {
 			t.Fatalf("migration[%d].version=%d want %d", index, migration.Version, want)
 		}
 	}
-	if loaded[len(loaded)-1].Name != "create_task_budgets" {
-		t.Fatalf("migration 23 name=%q", loaded[len(loaded)-1].Name)
+	if loaded[len(loaded)-1].Name != "create_agent_messaging" {
+		t.Fatalf("migration 24 name=%q", loaded[len(loaded)-1].Name)
 	}
 }
