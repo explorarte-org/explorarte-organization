@@ -8,21 +8,26 @@ import (
 	"strings"
 	"time"
 
+	agentbudgetpostgres "github.com/Mireuz13/explorarte-organization/internal/agentbudget/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/authorization"
 	authorizationbootstrap "github.com/Mireuz13/explorarte-organization/internal/authorization/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/config"
 	"github.com/Mireuz13/explorarte-organization/internal/contextengine"
 	contextbootstrap "github.com/Mireuz13/explorarte-organization/internal/contextengine/bootstrap"
+	costledgerpostgres "github.com/Mireuz13/explorarte-organization/internal/costledger/postgres"
 	dispatchbootstrap "github.com/Mireuz13/explorarte-organization/internal/modeldispatch/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/modelegress"
 	egressbootstrap "github.com/Mireuz13/explorarte-organization/internal/modelegress/bootstrap"
 	identitybootstrap "github.com/Mireuz13/explorarte-organization/internal/modelidentity/bootstrap"
+	"github.com/Mireuz13/explorarte-organization/internal/modelpricing"
+	modelpricingpostgres "github.com/Mireuz13/explorarte-organization/internal/modelpricing/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/alibabaclaude"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/deepseek"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/gemini"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/openaicompat"
+	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/costgate"
 	modelpostgres "github.com/Mireuz13/explorarte-organization/internal/modelruntime/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
@@ -174,7 +179,27 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 		registeredAdapters = append(registeredAdapters, providerAdapter)
 	}
 	adapters := adapter.NewRegistry(registeredAdapters...)
-	dispatchService, err := modelruntime.NewDispatchService(cfg.Tasks.OrganizationID, runtimeCfg, catalog, tasksAdapter, contexts, evaluator, egressRuntime.Store, egressRuntime.Evaluator, modelStore, dispatchRuntime.Store, dispatchRuntime.Store, identityRuntime.Challenges, modelStore, adapters, modelruntime.ClockFunc(time.Now))
+	pricingStore, err := modelpricingpostgres.New(platformStore)
+	if err != nil {
+		return nil, fmt.Errorf("create model pricing store: %w", err)
+	}
+	pricingService, err := modelpricing.NewService(pricingStore)
+	if err != nil {
+		return nil, fmt.Errorf("create model pricing service: %w", err)
+	}
+	walletLedger, err := costledgerpostgres.New(platformStore)
+	if err != nil {
+		return nil, fmt.Errorf("create provider wallet ledger: %w", err)
+	}
+	budgetLedger, err := agentbudgetpostgres.New(platformStore)
+	if err != nil {
+		return nil, fmt.Errorf("create agent budget ledger: %w", err)
+	}
+	gate, err := costgate.New(pricingService, walletLedger, budgetLedger)
+	if err != nil {
+		return nil, fmt.Errorf("create cost/budget gate: %w", err)
+	}
+	dispatchService, err := modelruntime.NewDispatchService(cfg.Tasks.OrganizationID, runtimeCfg, catalog, tasksAdapter, contexts, evaluator, egressRuntime.Store, egressRuntime.Evaluator, modelStore, dispatchRuntime.Store, dispatchRuntime.Store, identityRuntime.Challenges, modelStore, adapters, modelruntime.ClockFunc(time.Now), modelruntime.WithCostBudgetGate(gate))
 	if err != nil {
 		return nil, err
 	}

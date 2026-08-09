@@ -19,16 +19,22 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Mireuz13/explorarte-organization/internal/agentbudget"
+	agentbudgetpostgres "github.com/Mireuz13/explorarte-organization/internal/agentbudget/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/authorization"
 	"github.com/Mireuz13/explorarte-organization/internal/config"
+	costledgerpostgres "github.com/Mireuz13/explorarte-organization/internal/costledger/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/modeldispatch"
 	dispatchpostgres "github.com/Mireuz13/explorarte-organization/internal/modeldispatch/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/modelegress"
 	egresspostgres "github.com/Mireuz13/explorarte-organization/internal/modelegress/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/modelidentity"
 	identitypostgres "github.com/Mireuz13/explorarte-organization/internal/modelidentity/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/modelpricing"
+	modelpricingpostgres "github.com/Mireuz13/explorarte-organization/internal/modelpricing/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter"
+	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/costgate"
 	modelpostgres "github.com/Mireuz13/explorarte-organization/internal/modelruntime/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
@@ -272,6 +278,96 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		if leaked != 0 {
 			t.Fatalf("provider evidence leaked sensitive payload in %d rows", leaked)
 		}
+	})
+
+	t.Run("cost and budget reservation gates dispatch before the provider and reconciles after success", func(t *testing.T) {
+		pricingStore, err := modelpricingpostgres.New(platform)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pricingService, err := modelpricing.NewService(pricingStore)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pricingService.Upsert(ctx, modelpricing.PriceTier{
+			ProviderID: "test.fake", ProviderModelID: "deterministic-v1", ContextTierName: "default",
+			InputPriceNanosPerMillion: 1_000_000_000, OutputPriceNanosPerMillion: 2_000_000_000, EffectiveAt: time.Now().UTC().Add(-time.Minute),
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		walletStore, err := costledgerpostgres.New(platform)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := walletStore.SetBalance(ctx, "test.fake", modelpricing.USDFromDollars(10), time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+
+		budgetStore, err := agentbudgetpostgres.New(platform)
+		if err != nil {
+			t.Fatal(err)
+		}
+		limits := agentbudget.Limits{MaxUSD: modelpricing.USDFromDollars(10), MaxTokens: 100_000, MaxModelCalls: 10, MaxWallTimeMS: 3_600_000, MaxDepth: 3, MaxRetries: 3, MaxSubagents: 3}
+		if _, err := budgetStore.CreateRootBudget(ctx, modelIntegrationOrganization, taskRef.TaskID, "ingenieria_ia/code-runner", limits, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+
+		gate, err := costgate.New(pricingService, walletStore, budgetStore)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gatedDispatch, err := modelruntime.NewDispatchService(modelIntegrationOrganization, cfg, fakeCatalog, tasks, contexts, capabilityEvaluator, egressStore, modelegress.NewEvaluator(), store, principals, assignments, identityService, store, adapter.NewRegistry(adapter.NewFake()), modelruntime.ClockFunc(time.Now), modelruntime.WithCostBudgetGate(gate))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		command := validInvocationCommand(taskRef, snapshotRef, "ingenieria_ia/code-runner", "cost-gate-success")
+		created, createErr := invocations.Create(ctx, command)
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		walletBefore, err := walletStore.GetWallet(ctx, "test.fake")
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, dispatchErr := gatedDispatch.Dispatch(ctx, created.Invocation.ID)
+		if dispatchErr != nil || result.Invocation.Status != modelruntime.InvocationSucceeded {
+			t.Fatalf("result=%+v err=%v", result, dispatchErr)
+		}
+		walletAfter, err := walletStore.GetWallet(ctx, "test.fake")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if walletAfter.BalanceUSD >= walletBefore.BalanceUSD {
+			t.Fatalf("wallet was not debited by a successful call: before=%d after=%d", walletBefore.BalanceUSD, walletAfter.BalanceUSD)
+		}
+		if walletAfter.ReservedUSD != 0 {
+			t.Fatalf("reservation must be released once reconciled: reserved=%d", walletAfter.ReservedUSD)
+		}
+		budget, err := budgetStore.ResolveBudgetForTask(ctx, taskRef.TaskID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if budget.Usage.UsedModelCalls < 1 {
+			t.Fatalf("budget model call count not consumed: %+v", budget.Usage)
+		}
+
+		// A near-empty wallet must reject the next call before the
+		// provider is ever contacted — no request/outcome row at all.
+		if _, err := walletStore.SetBalance(ctx, "test.fake", 1, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+		starvedCommand := validInvocationCommand(taskRef, snapshotRef, "ingenieria_ia/code-runner", "cost-gate-starved")
+		starvedCreated, createErr := invocations.Create(ctx, starvedCommand)
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		if _, dispatchErr := gatedDispatch.Dispatch(ctx, starvedCreated.Invocation.ID); dispatchErr == nil {
+			t.Fatal("expected dispatch to be rejected by an exhausted wallet")
+		}
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_provider_requests WHERE invocation_id=$1`, starvedCreated.Invocation.ID, 0)
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_provider_outcomes WHERE invocation_id=$1`, starvedCreated.Invocation.ID, 0)
 	})
 
 	t.Run("classified provider outcomes are immutable and terminal", func(t *testing.T) {
@@ -616,11 +712,14 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 	t.Run("down migration and reapply in disposable integration database", func(t *testing.T) {
 		// R21 extends the R12 provider-outcome table, so 000018 must come down
 		// before 000011. R14 also references model invocations/attempts, so
-		// 000012 must come down before the earlier model migrations.
+		// 000012 must come down before the earlier model migrations. 000021's
+		// provider_wallet_events FKs to model_invocations, so it must come
+		// down before 000007 too.
 		versions := []struct {
 			version int
 			file    string
 		}{
+			{21, "000021_create_provider_wallets.down.sql"},
 			{18, "000018_make_provider_outcomes_transport_aware.down.sql"},
 			{12, "000012_create_durable_decision_graph.down.sql"},
 			{11, "000011_create_model_provider_adapter.down.sql"},
@@ -653,7 +752,7 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		}
 		tip := loadedForTip[len(loadedForTip)-1].Version
 		reapplied, upErr := runner.Up(ctx)
-		if upErr != nil || len(reapplied.Applied) != 7 || reapplied.Current != tip {
+		if upErr != nil || len(reapplied.Applied) != 8 || reapplied.Current != tip {
 			t.Fatalf("reapply=%+v err=%v want current=%d", reapplied, upErr, tip)
 		}
 		var exists bool

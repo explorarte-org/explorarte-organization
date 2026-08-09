@@ -33,6 +33,19 @@ type DispatchService struct {
 	adapters         AdapterRegistry
 	normalizer       Normalizer
 	clock            Clock
+	costGate         CostBudgetGate
+}
+
+// DispatchServiceOption configures optional DispatchService behavior that
+// most callers (in particular every existing test) don't need to set up.
+type DispatchServiceOption func(*DispatchService)
+
+// WithCostBudgetGate wires real-money and multidimensional-budget
+// reservation into every dispatch. Without this option, DispatchService
+// behaves exactly as it did before CostBudgetGate existed — no cost or
+// budget tracking, no new failure mode.
+func WithCostBudgetGate(gate CostBudgetGate) DispatchServiceOption {
+	return func(s *DispatchService) { s.costGate = gate }
 }
 
 type fileExecutionPrivateKeyLoader struct{}
@@ -41,7 +54,7 @@ func (fileExecutionPrivateKeyLoader) LoadExecutionPrivateKey(path string) (ed255
 	return secrets.LoadEd25519PrivateKey(path)
 }
 
-func NewDispatchService(organizationID string, config RuntimeConfig, catalog OrganizationCatalog, tasks TaskAttemptReader, contexts ContextReader, evaluator CapabilityEvaluator, policyCatalog EgressPolicyCatalog, egressEvaluator EgressDecisionEvaluator, egressStore EgressEvaluationStore, principals modeldispatch.ExecutionPrincipalResolver, assignments modeldispatch.AssignmentResolver, identity ExecutionIdentityService, store Store, adapters AdapterRegistry, clock Clock) (*DispatchService, error) {
+func NewDispatchService(organizationID string, config RuntimeConfig, catalog OrganizationCatalog, tasks TaskAttemptReader, contexts ContextReader, evaluator CapabilityEvaluator, policyCatalog EgressPolicyCatalog, egressEvaluator EgressDecisionEvaluator, egressStore EgressEvaluationStore, principals modeldispatch.ExecutionPrincipalResolver, assignments modeldispatch.AssignmentResolver, identity ExecutionIdentityService, store Store, adapters AdapterRegistry, clock Clock, opts ...DispatchServiceOption) (*DispatchService, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
@@ -55,7 +68,7 @@ func NewDispatchService(organizationID string, config RuntimeConfig, catalog Org
 	if injected, ok := identity.(ExecutionPrivateKeyLoader); ok {
 		privateKeyLoader = injected
 	}
-	return &DispatchService{
+	service := &DispatchService{
 		organizationID: organizationID,
 		config:         config, catalog: catalog, tasks: tasks, contexts: contexts,
 		evaluator: evaluator, policyCatalog: policyCatalog, egressEvaluator: egressEvaluator,
@@ -63,7 +76,11 @@ func NewDispatchService(organizationID string, config RuntimeConfig, catalog Org
 		store: store, adapters: adapters,
 		normalizer: Normalizer{MaxResponseBytes: config.MaxResponseBytes, MaxToolIntents: config.MaxToolIntents},
 		clock:      clock,
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(service)
+	}
+	return service, nil
 }
 
 func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64) (DispatchResult, error) {
@@ -437,6 +454,27 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64) (Dis
 	if renderedHash != snapshot.RenderedHash {
 		return failBeforeSend("context_render_hash_mismatch", ErrContextRejected, AuditInvocationFailed)
 	}
+
+	var costReservation CostReservation
+	reservationApplied, reservationSettled := false, false
+	if s.costGate != nil {
+		estimatedInputTokens := estimateTokenCount(renderedContext)
+		reserved, reserveErr := s.costGate.Reserve(ctx, CostReservationRequest{
+			OrganizationID: invocation.OrganizationID, TaskID: invocation.TaskID, InvocationID: invocation.ID,
+			ProviderID: invocation.ProviderID, ProviderModelID: invocation.ProviderModelID,
+			EstimatedInputTokens: estimatedInputTokens, MaxOutputTokens: int64(invocation.MaxOutputTokens),
+		}, s.clock.Now())
+		if reserveErr != nil {
+			return failBeforeSend("budget_exceeded", reserveErr, AuditInvocationFailed)
+		}
+		costReservation, reservationApplied = reserved, true
+		defer func() {
+			if reservationApplied && !reservationSettled {
+				_ = s.costGate.Release(context.WithoutCancel(ctx), costReservation, s.clock.Now())
+			}
+		}()
+	}
+
 	allowEvaluation.DecisionHash = modelegress.DecisionHash(allowEvaluation)
 	providerIdempotencyKeyHash := SHA256Bytes([]byte(fmt.Sprintf("%s:%d:%d", invocation.OrganizationID, invocation.ID, dispatchAttemptID)))
 	canonicalRequest := CanonicalRequest{
@@ -639,10 +677,32 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64) (Dis
 		}
 		return DispatchResult{Invocation: failed}, ErrResponseRejected
 	}
+	if reservationApplied {
+		// The provider already answered successfully; a reconciliation
+		// failure must never turn a successful call into a reported
+		// failure. Mark it settled either way so the deferred Release
+		// above never fires after a reconciliation attempt — retrying
+		// reconciliation, not releasing, is the correct recovery for a
+		// call that did happen.
+		_ = s.costGate.Reconcile(persistCtx, costReservation, normalized.Usage.InputTokens, 0, normalized.Usage.OutputTokens, s.clock.Now())
+		reservationSettled = true
+	}
 	return s.store.CompleteInvocation(persistCtx, CompletionCommand{
 		InvocationID:      invocation.ID,
 		DispatchAttemptID: dispatchAttemptID,
 		ClaimToken:        claimed.ClaimToken,
 		Response:          normalized,
 	}, s.config.OutboxMaxAttempts)
+}
+
+// estimateTokenCount is a deliberately conservative, provider-agnostic
+// approximation used only to size a pre-send worst-case cost reservation —
+// it is never used to compute the real, billable cost, which comes from
+// the provider's own reported token usage after the call completes. Three
+// bytes per token overestimates token count for most real text, which
+// overestimates the reservation, which can only reject a call the wallet
+// or budget couldn't truly afford, never let one through it couldn't.
+func estimateTokenCount(renderedContext []byte) int64 {
+	const conservativeBytesPerToken = 3
+	return int64(len(renderedContext))/conservativeBytesPerToken + 1
 }
