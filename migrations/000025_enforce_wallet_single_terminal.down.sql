@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS provider_wallet_events_one_terminal_idx;

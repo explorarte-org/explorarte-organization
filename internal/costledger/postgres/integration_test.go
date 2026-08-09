@@ -70,6 +70,24 @@ func openLedgerFixture(t *testing.T, ctx context.Context) ledgerFixture {
 	if _, err := store.Pool().Exec(ctx, `TRUNCATE organizations, organization_registry_revisions RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatalf("reset schema: %v", err)
 	}
+	// provider_wallets/provider_wallet_events are keyed by provider_id, not
+	// by organization — the CASCADE above wipes wallet EVENTS (they FK to
+	// model_invocations, which does cascade from organizations) but leaves
+	// provider_wallets' denormalized reserved_usd_nanos/balance_usd_nanos
+	// stale from whatever earlier test run last touched the same
+	// provider_id. Reset both explicitly, then re-seed the real starting
+	// balances migration 000021 only inserts once per database, so
+	// TestModelPricingSeedWallets still sees them.
+	if _, err := store.Pool().Exec(ctx, `TRUNCATE provider_wallets, provider_wallet_events`); err != nil {
+		t.Fatalf("reset wallet schema: %v", err)
+	}
+	if _, err := store.Pool().Exec(ctx, `
+INSERT INTO provider_wallets (provider_id, balance_usd_nanos, reserved_usd_nanos, updated_at) VALUES
+    ('deepseek', 8660000000, 0, NOW()),
+    ('gemini', 10000000000, 0, NOW()),
+    ('openai_compatible', 9700000000, 0, NOW())`); err != nil {
+		t.Fatalf("reseed wallets: %v", err)
+	}
 
 	registryRepo, err := registry.NewPostgresRepository(store)
 	if err != nil {
@@ -370,6 +388,111 @@ func TestReleaseFreesReservationWithoutDebitingBalance(t *testing.T) {
 	}
 	if after.ReservedUSD != 0 || after.BalanceUSD != before.BalanceUSD {
 		t.Fatalf("release should free the reservation without touching balance: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestReconcileThenReleaseIsRejectedNotDoubleApplied(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	fixture := openLedgerFixture(t, ctx)
+	ledger, err := costledgerpostgres.New(fixture.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if _, err := ledger.SetBalance(ctx, "test.oneterminal", modelpricing.USDFromDollars(5), now); err != nil {
+		t.Fatal(err)
+	}
+	invocationID := fixture.insertInvocation(t, ctx)
+	if err := ledger.Reserve(ctx, "test.oneterminal", invocationID, modelpricing.USDFromDollars(2), now); err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.Reconcile(ctx, "test.oneterminal", invocationID, modelpricing.USDFromDollars(1.5), now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	afterReconcile, err := ledger.GetWallet(ctx, "test.oneterminal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterReconcile.ReservedUSD != 0 {
+		t.Fatalf("reconcile did not release the reservation: %+v", afterReconcile)
+	}
+
+	// A Release for the same invocation after it was already reconciled
+	// must be rejected, not silently double-decrement reserved_usd_nanos.
+	if err := ledger.Release(ctx, "test.oneterminal", invocationID, now.Add(2*time.Second)); !errors.Is(err, costledger.ErrAlreadyTerminal) {
+		t.Fatalf("release after reconcile: err=%v want ErrAlreadyTerminal", err)
+	}
+	afterRelease, err := ledger.GetWallet(ctx, "test.oneterminal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterRelease.ReservedUSD != afterReconcile.ReservedUSD || afterRelease.BalanceUSD != afterReconcile.BalanceUSD {
+		t.Fatalf("rejected release must not change wallet state: before=%+v after=%+v", afterReconcile, afterRelease)
+	}
+}
+
+func TestReleaseThenReconcileIsRejected(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	fixture := openLedgerFixture(t, ctx)
+	ledger, err := costledgerpostgres.New(fixture.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if _, err := ledger.SetBalance(ctx, "test.oneterminal2", modelpricing.USDFromDollars(5), now); err != nil {
+		t.Fatal(err)
+	}
+	invocationID := fixture.insertInvocation(t, ctx)
+	if err := ledger.Reserve(ctx, "test.oneterminal2", invocationID, modelpricing.USDFromDollars(2), now); err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.Release(ctx, "test.oneterminal2", invocationID, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.Reconcile(ctx, "test.oneterminal2", invocationID, modelpricing.USDFromDollars(1), now.Add(2*time.Second)); !errors.Is(err, costledger.ErrAlreadyTerminal) {
+		t.Fatalf("reconcile after release: err=%v want ErrAlreadyTerminal", err)
+	}
+	wallet, err := ledger.GetWallet(ctx, "test.oneterminal2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wallet.BalanceUSD != modelpricing.USDFromDollars(5) {
+		t.Fatalf("rejected reconcile must not debit balance: %+v", wallet)
+	}
+}
+
+func TestReserveRetryWithDifferentAmountFailsClosed(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	fixture := openLedgerFixture(t, ctx)
+	ledger, err := costledgerpostgres.New(fixture.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if _, err := ledger.SetBalance(ctx, "test.amountmismatch", modelpricing.USDFromDollars(5), now); err != nil {
+		t.Fatal(err)
+	}
+	invocationID := fixture.insertInvocation(t, ctx)
+	if err := ledger.Reserve(ctx, "test.amountmismatch", invocationID, modelpricing.USDFromDollars(1), now); err != nil {
+		t.Fatal(err)
+	}
+	// Same amount again: idempotent no-op.
+	if err := ledger.Reserve(ctx, "test.amountmismatch", invocationID, modelpricing.USDFromDollars(1), now); err != nil {
+		t.Fatalf("same-amount retry must be idempotent: %v", err)
+	}
+	// Different amount: must fail, not silently keep the stale reservation.
+	if err := ledger.Reserve(ctx, "test.amountmismatch", invocationID, modelpricing.USDFromDollars(2), now); !errors.Is(err, costledger.ErrAmountMismatch) {
+		t.Fatalf("different-amount retry: err=%v want ErrAmountMismatch", err)
+	}
+	wallet, err := ledger.GetWallet(ctx, "test.amountmismatch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wallet.ReservedUSD != modelpricing.USDFromDollars(1) {
+		t.Fatalf("mismatched retry must not change the reserved amount: %+v", wallet)
 	}
 }
 

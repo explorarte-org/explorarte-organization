@@ -10,8 +10,19 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/modelpricing"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// isUniqueViolation reports whether err is a Postgres unique_violation
+// (23505) — used to detect a hit against
+// provider_wallet_events_one_terminal_idx (migration 000025), which
+// enforces at the database level that a reservation may become committed
+// or released, never both.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
 
 type Store struct {
 	pool *pgxpool.Pool
@@ -125,8 +136,17 @@ ON CONFLICT (provider_id, invocation_id, kind) DO NOTHING`,
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		// Already reserved by an earlier attempt of this same invocation —
-		// idempotent no-op, not a fresh reservation to apply again.
+		// Already reserved by an earlier attempt of this same invocation.
+		// Idempotent only if the amount matches — a retry that asks for a
+		// different amount than what's actually on the ledger must fail
+		// loudly rather than silently keep the stale reservation.
+		var existingAmount int64
+		if err := tx.QueryRow(ctx, `SELECT amount_usd_nanos FROM provider_wallet_events WHERE provider_id=$1 AND invocation_id=$2 AND kind='reserved'`, providerID, invocationID).Scan(&existingAmount); err != nil {
+			return err
+		}
+		if existingAmount != int64(estimatedUSD) {
+			return fmt.Errorf("%w: reserved %d, retried with %d", costledger.ErrAmountMismatch, existingAmount, int64(estimatedUSD))
+		}
 		return tx.Commit(ctx)
 	}
 
@@ -167,6 +187,9 @@ VALUES ($1,$2,'committed',$3,$4)
 ON CONFLICT (provider_id, invocation_id, kind) DO NOTHING`,
 		providerID, invocationID, int64(actualUSD), now)
 	if err != nil {
+		if isUniqueViolation(err) {
+			return costledger.ErrAlreadyTerminal
+		}
 		return err
 	}
 	if tag.RowsAffected() == 0 {
@@ -209,6 +232,9 @@ VALUES ($1,$2,'released',0,$3)
 ON CONFLICT (provider_id, invocation_id, kind) DO NOTHING`,
 		providerID, invocationID, now)
 	if err != nil {
+		if isUniqueViolation(err) {
+			return costledger.ErrAlreadyTerminal
+		}
 		return err
 	}
 	if tag.RowsAffected() == 0 {
