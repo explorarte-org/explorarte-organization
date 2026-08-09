@@ -7,27 +7,38 @@ import (
 )
 
 // Resolve picks the applicable tier from a set of candidates already
-// filtered to one provider+model+point-in-time by the caller. It selects
-// the tier with the largest MinInputTokens that does not exceed
-// estimatedInputTokens — i.e. the most specific context-length band that
-// still applies. A candidate set with no tier at all, or none whose
-// threshold the estimate clears, fails closed.
+// filtered to one provider+model+point-in-time by the caller. Candidates
+// whose BillingMode does not match billingMode are ignored entirely — a
+// batch-priced row must never be selected to price an online call or vice
+// versa, even if it would otherwise be the best MinInputTokens/EffectiveAt
+// match. Among the remaining candidates, Resolve selects the tier with the
+// largest MinInputTokens that does not exceed estimatedInputTokens — i.e.
+// the most specific context-length band that still applies. A candidate set
+// with no tier at all, or none whose billing mode and threshold the
+// estimate clears, fails closed.
 //
 // Price rows are an immutable, append-only rate card (see migration
 // 000020): a price change for the same context band is a new row with a
 // later EffectiveAt, never a mutation of the old one. The caller's
 // point-in-time filter can therefore legitimately return several rows for
-// the same MinInputTokens band (its full price history up to that point),
-// and MinInputTokens alone cannot break that tie deterministically. Ties
-// are broken by the latest EffectiveAt — the currently valid version of
-// that band — so which row wins never depends on undefined SQL row order.
-func Resolve(candidates []PriceTier, estimatedInputTokens int64) (PriceTier, error) {
+// the same billing mode + MinInputTokens band (its full price history up to
+// that point), and MinInputTokens alone cannot break that tie
+// deterministically. Ties are broken by the latest EffectiveAt — the
+// currently valid version of that band — so which row wins never depends on
+// undefined SQL row order.
+func Resolve(candidates []PriceTier, estimatedInputTokens int64, billingMode BillingMode) (PriceTier, error) {
 	if estimatedInputTokens < 0 {
 		return PriceTier{}, fmt.Errorf("%w: estimated input tokens must be non-negative", ErrInvalidPriceTier)
+	}
+	if !billingMode.Valid() {
+		return PriceTier{}, fmt.Errorf("%w: invalid billing mode %q", ErrInvalidPriceTier, billingMode)
 	}
 	var best PriceTier
 	found := false
 	for _, candidate := range candidates {
+		if candidate.BillingMode != billingMode {
+			continue
+		}
 		if candidate.MinInputTokens > estimatedInputTokens {
 			continue
 		}
@@ -39,7 +50,7 @@ func Resolve(candidates []PriceTier, estimatedInputTokens int64) (PriceTier, err
 		}
 	}
 	if !found {
-		return PriceTier{}, fmt.Errorf("%w: no tier at or below %d input tokens", ErrNoPricingResolved, estimatedInputTokens)
+		return PriceTier{}, fmt.Errorf("%w: no %s tier at or below %d input tokens", ErrNoPricingResolved, billingMode, estimatedInputTokens)
 	}
 	return best, nil
 }
@@ -55,12 +66,12 @@ func NewService(store Store) (*Service, error) {
 	return &Service{store: store}, nil
 }
 
-func (s *Service) Resolve(ctx context.Context, providerID, providerModelID string, estimatedInputTokens int64, asOf time.Time) (PriceTier, error) {
-	tiers, err := s.store.ListTiers(ctx, providerID, providerModelID, asOf)
+func (s *Service) Resolve(ctx context.Context, providerID, providerModelID string, estimatedInputTokens int64, billingMode BillingMode, asOf time.Time) (PriceTier, error) {
+	tiers, err := s.store.ListTiers(ctx, providerID, providerModelID, billingMode, asOf)
 	if err != nil {
 		return PriceTier{}, err
 	}
-	return Resolve(tiers, estimatedInputTokens)
+	return Resolve(tiers, estimatedInputTokens, billingMode)
 }
 
 func (s *Service) Upsert(ctx context.Context, tier PriceTier) (PriceTier, error) {

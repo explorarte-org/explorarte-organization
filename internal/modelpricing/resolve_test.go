@@ -10,57 +10,95 @@ func nanos(n int64) *USDNanos { v := USDNanos(n); return &v }
 
 func TestResolvePicksMostSpecificContextTierBelowThreshold(t *testing.T) {
 	now := time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC)
-	short := PriceTier{ProviderID: "openai_compatible", ProviderModelID: "gpt-5.6-luna", ContextTierName: "default", MinInputTokens: 0, InputPriceNanosPerMillion: 200_000_000, OutputPriceNanosPerMillion: 1_200_000_000, EffectiveAt: now}
-	long := PriceTier{ProviderID: "openai_compatible", ProviderModelID: "gpt-5.6-luna", ContextTierName: "long_context", MinInputTokens: 272_000, InputPriceNanosPerMillion: 400_000_000, OutputPriceNanosPerMillion: 1_800_000_000, EffectiveAt: now}
+	short := PriceTier{ProviderID: "openai_compatible", ProviderModelID: "gpt-5.6-luna", ContextTierName: "default", MinInputTokens: 0, InputPriceNanosPerMillion: 200_000_000, OutputPriceNanosPerMillion: 1_200_000_000, BillingMode: BillingOnline, EffectiveAt: now}
+	long := PriceTier{ProviderID: "openai_compatible", ProviderModelID: "gpt-5.6-luna", ContextTierName: "long_context", MinInputTokens: 272_000, InputPriceNanosPerMillion: 400_000_000, OutputPriceNanosPerMillion: 1_800_000_000, BillingMode: BillingOnline, EffectiveAt: now}
 	candidates := []PriceTier{short, long}
 
-	got, err := Resolve(candidates, 1_000)
+	got, err := Resolve(candidates, 1_000, BillingOnline)
 	if err != nil || got.ContextTierName != "default" {
 		t.Fatalf("below threshold: got=%+v err=%v", got, err)
 	}
-	got, err = Resolve(candidates, 271_999)
+	got, err = Resolve(candidates, 271_999, BillingOnline)
 	if err != nil || got.ContextTierName != "default" {
 		t.Fatalf("just below threshold: got=%+v err=%v", got, err)
 	}
-	got, err = Resolve(candidates, 272_000)
+	got, err = Resolve(candidates, 272_000, BillingOnline)
 	if err != nil || got.ContextTierName != "long_context" {
 		t.Fatalf("at threshold: got=%+v err=%v", got, err)
 	}
-	got, err = Resolve(candidates, 500_000)
+	got, err = Resolve(candidates, 500_000, BillingOnline)
 	if err != nil || got.ContextTierName != "long_context" {
 		t.Fatalf("above threshold: got=%+v err=%v", got, err)
+	}
+}
+
+// TestResolveNeverConflatesOnlineAndBatchAtTheSameThreshold guards the bug a
+// second-opinion review of R29's plan caught before any code existed:
+// billing_mode is a real pricing dimension, not something ContextTierName
+// can stand in for. Two rows sharing ContextTierName="default" and
+// MinInputTokens=0 (one priced for a synchronous online call, one for a
+// discounted asynchronous Batch API job) must resolve to exactly the row
+// matching the requested billing mode, never to whichever one happens to
+// win the EffectiveAt tie-break.
+func TestResolveNeverConflatesOnlineAndBatchAtTheSameThreshold(t *testing.T) {
+	now := time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC)
+	online := PriceTier{ProviderID: "gemini", ProviderModelID: "gemini-embedding-2", ContextTierName: "default", MinInputTokens: 0, InputPriceNanosPerMillion: 200_000_000, OutputPriceNanosPerMillion: 0, BillingMode: BillingOnline, EffectiveAt: now}
+	batch := PriceTier{ProviderID: "gemini", ProviderModelID: "gemini-embedding-2", ContextTierName: "default", MinInputTokens: 0, InputPriceNanosPerMillion: 100_000_000, OutputPriceNanosPerMillion: 0, BillingMode: BillingBatch, EffectiveAt: now}
+	candidates := []PriceTier{online, batch}
+
+	got, err := Resolve(candidates, 1_000, BillingOnline)
+	if err != nil || got.BillingMode != BillingOnline || got.InputPriceNanosPerMillion != 200_000_000 {
+		t.Fatalf("online request: got=%+v err=%v", got, err)
+	}
+	got, err = Resolve(candidates, 1_000, BillingBatch)
+	if err != nil || got.BillingMode != BillingBatch || got.InputPriceNanosPerMillion != 100_000_000 {
+		t.Fatalf("batch request: got=%+v err=%v", got, err)
+	}
+	// Order must not matter either — same guarantee as the EffectiveAt
+	// tie-break test below, now for billing mode.
+	got, err = Resolve([]PriceTier{batch, online}, 1_000, BillingOnline)
+	if err != nil || got.BillingMode != BillingOnline {
+		t.Fatalf("batch-first order, online request: got=%+v err=%v", got, err)
+	}
+}
+
+func TestResolveFailsClosedOnInvalidBillingMode(t *testing.T) {
+	now := time.Now()
+	candidates := []PriceTier{{ProviderID: "p", ProviderModelID: "m", ContextTierName: "default", InputPriceNanosPerMillion: 1, OutputPriceNanosPerMillion: 1, BillingMode: BillingOnline, EffectiveAt: now}}
+	if _, err := Resolve(candidates, 100, BillingMode("weekly")); !errors.Is(err, ErrInvalidPriceTier) {
+		t.Fatalf("err=%v want ErrInvalidPriceTier", err)
 	}
 }
 
 func TestResolveBreaksSameThresholdTiesByLatestEffectiveAt(t *testing.T) {
 	older := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	newer := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
-	stale := PriceTier{ProviderID: "p", ProviderModelID: "m", ContextTierName: "default", MinInputTokens: 0, InputPriceNanosPerMillion: 100, OutputPriceNanosPerMillion: 100, EffectiveAt: older}
-	current := PriceTier{ProviderID: "p", ProviderModelID: "m", ContextTierName: "default", MinInputTokens: 0, InputPriceNanosPerMillion: 999, OutputPriceNanosPerMillion: 999, EffectiveAt: newer}
+	stale := PriceTier{ProviderID: "p", ProviderModelID: "m", ContextTierName: "default", MinInputTokens: 0, InputPriceNanosPerMillion: 100, OutputPriceNanosPerMillion: 100, BillingMode: BillingOnline, EffectiveAt: older}
+	current := PriceTier{ProviderID: "p", ProviderModelID: "m", ContextTierName: "default", MinInputTokens: 0, InputPriceNanosPerMillion: 999, OutputPriceNanosPerMillion: 999, BillingMode: BillingOnline, EffectiveAt: newer}
 
 	// Both orderings must resolve to the same (newer) row: which one wins
 	// must never depend on the slice/SQL row order the caller happened to
 	// get back for this immutable, append-only price history.
-	got, err := Resolve([]PriceTier{stale, current}, 10)
+	got, err := Resolve([]PriceTier{stale, current}, 10, BillingOnline)
 	if err != nil || got.InputPriceNanosPerMillion != 999 {
 		t.Fatalf("stale-first order: got=%+v err=%v", got, err)
 	}
-	got, err = Resolve([]PriceTier{current, stale}, 10)
+	got, err = Resolve([]PriceTier{current, stale}, 10, BillingOnline)
 	if err != nil || got.InputPriceNanosPerMillion != 999 {
 		t.Fatalf("current-first order: got=%+v err=%v", got, err)
 	}
 }
 
 func TestResolveFailsClosedWithoutAnyTier(t *testing.T) {
-	if _, err := Resolve(nil, 100); !errors.Is(err, ErrNoPricingResolved) {
+	if _, err := Resolve(nil, 100, BillingOnline); !errors.Is(err, ErrNoPricingResolved) {
 		t.Fatalf("empty candidates err=%v want ErrNoPricingResolved", err)
 	}
 }
 
 func TestResolveFailsClosedWhenEstimateBelowEveryThreshold(t *testing.T) {
 	now := time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC)
-	onlyLong := []PriceTier{{ProviderID: "p", ProviderModelID: "m", ContextTierName: "long_context", MinInputTokens: 200_000, InputPriceNanosPerMillion: 1, OutputPriceNanosPerMillion: 1, EffectiveAt: now}}
-	if _, err := Resolve(onlyLong, 100); !errors.Is(err, ErrNoPricingResolved) {
+	onlyLong := []PriceTier{{ProviderID: "p", ProviderModelID: "m", ContextTierName: "long_context", MinInputTokens: 200_000, InputPriceNanosPerMillion: 1, OutputPriceNanosPerMillion: 1, BillingMode: BillingOnline, EffectiveAt: now}}
+	if _, err := Resolve(onlyLong, 100, BillingOnline); !errors.Is(err, ErrNoPricingResolved) {
 		t.Fatalf("err=%v want ErrNoPricingResolved", err)
 	}
 }

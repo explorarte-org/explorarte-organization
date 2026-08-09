@@ -60,7 +60,7 @@ func TestModelPricingSeedIsRealAndResolvable(t *testing.T) {
 	}
 	now := time.Now().UTC()
 
-	tier, err := service.Resolve(ctx, "deepseek", "deepseek-v4-flash", 500, now)
+	tier, err := service.Resolve(ctx, "deepseek", "deepseek-v4-flash", 500, modelpricing.BillingOnline, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,14 +69,14 @@ func TestModelPricingSeedIsRealAndResolvable(t *testing.T) {
 		t.Fatalf("deepseek-v4-flash cache-hit cost=%d err=%v want=2800000", cost, err)
 	}
 
-	short, err := service.Resolve(ctx, "openai_compatible", "gpt-5.6-luna", 1_000, now)
+	short, err := service.Resolve(ctx, "openai_compatible", "gpt-5.6-luna", 1_000, modelpricing.BillingOnline, now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if short.ContextTierName != "default" || short.InputPriceNanosPerMillion != 200_000_000 {
 		t.Fatalf("gpt-5.6-luna short tier=%+v", short)
 	}
-	long, err := service.Resolve(ctx, "openai_compatible", "gpt-5.6-luna", 300_000, now)
+	long, err := service.Resolve(ctx, "openai_compatible", "gpt-5.6-luna", 300_000, modelpricing.BillingOnline, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestModelPricingSeedIsRealAndResolvable(t *testing.T) {
 		t.Fatalf("gpt-5.6-luna long tier=%+v", long)
 	}
 
-	geminiPro, err := service.Resolve(ctx, "gemini", "gemini-2.5-pro", 250_000, now)
+	geminiPro, err := service.Resolve(ctx, "gemini", "gemini-2.5-pro", 250_000, modelpricing.BillingOnline, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestModelPricingSeedIsRealAndResolvable(t *testing.T) {
 	// model-routing.yaml routes research.worker to exactly this model; a
 	// missing row here means every real research.worker call fails closed
 	// at the cost gate before ever reaching the provider.
-	geminiFlash, err := service.Resolve(ctx, "gemini", "gemini-2.5-flash", 1_000, now)
+	geminiFlash, err := service.Resolve(ctx, "gemini", "gemini-2.5-flash", 1_000, modelpricing.BillingOnline, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,8 +103,44 @@ func TestModelPricingSeedIsRealAndResolvable(t *testing.T) {
 		t.Fatalf("gemini-2.5-flash tier=%+v", geminiFlash)
 	}
 
-	if _, err := service.Resolve(ctx, "unknown_provider", "no-such-model", 100, now); !errors.Is(err, modelpricing.ErrNoPricingResolved) {
+	if _, err := service.Resolve(ctx, "unknown_provider", "no-such-model", 100, modelpricing.BillingOnline, now); !errors.Is(err, modelpricing.ErrNoPricingResolved) {
 		t.Fatalf("unknown provider err=%v want ErrNoPricingResolved", err)
+	}
+}
+
+// TestModelPricingBillingModeNeverConflatesOnlineAndBatch verifies against
+// real PostgreSQL — not just the pure Resolve() unit tests — that R29's
+// seeded gemini-embedding-2 rows (000027) resolve to the row matching the
+// requested billing mode, and that Store.ListTiers' SQL-level billing_mode
+// filter and Resolve's own defensive re-check agree.
+func TestModelPricingBillingModeNeverConflatesOnlineAndBatch(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	platform := openPricingStore(t, ctx)
+	store, err := modelpricingpostgres.New(platform)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := modelpricing.NewService(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+
+	online, err := service.Resolve(ctx, "gemini", "gemini-embedding-2", 1_000, modelpricing.BillingOnline, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if online.BillingMode != modelpricing.BillingOnline || online.InputPriceNanosPerMillion != 200_000_000 {
+		t.Fatalf("online tier=%+v", online)
+	}
+
+	batch, err := service.Resolve(ctx, "gemini", "gemini-embedding-2", 1_000, modelpricing.BillingBatch, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batch.BillingMode != modelpricing.BillingBatch || batch.InputPriceNanosPerMillion != 100_000_000 {
+		t.Fatalf("batch tier=%+v", batch)
 	}
 }
 
@@ -125,7 +161,7 @@ func TestModelPricingUpsertIsImmutableAndVersioned(t *testing.T) {
 
 	inserted, err := service.Upsert(ctx, modelpricing.PriceTier{
 		ProviderID: "test.fake", ProviderModelID: "fixture-model", ContextTierName: "default",
-		InputPriceNanosPerMillion: 1_000, OutputPriceNanosPerMillion: 2_000, EffectiveAt: newer,
+		InputPriceNanosPerMillion: 1_000, OutputPriceNanosPerMillion: 2_000, BillingMode: modelpricing.BillingOnline, EffectiveAt: newer,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -136,10 +172,10 @@ func TestModelPricingUpsertIsImmutableAndVersioned(t *testing.T) {
 
 	// Before the new row's effective_at, resolution must fail closed — there
 	// is no prior fixture-model price to fall back to.
-	if _, err := service.Resolve(ctx, "test.fake", "fixture-model", 10, now); !errors.Is(err, modelpricing.ErrNoPricingResolved) {
+	if _, err := service.Resolve(ctx, "test.fake", "fixture-model", 10, modelpricing.BillingOnline, now); !errors.Is(err, modelpricing.ErrNoPricingResolved) {
 		t.Fatalf("before effective_at err=%v want ErrNoPricingResolved", err)
 	}
-	resolved, err := service.Resolve(ctx, "test.fake", "fixture-model", 10, newer.Add(time.Minute))
+	resolved, err := service.Resolve(ctx, "test.fake", "fixture-model", 10, modelpricing.BillingOnline, newer.Add(time.Minute))
 	if err != nil || resolved.InputPriceNanosPerMillion != 1_000 {
 		t.Fatalf("after effective_at resolved=%+v err=%v", resolved, err)
 	}

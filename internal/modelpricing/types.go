@@ -16,6 +16,29 @@ type USDNanos int64
 
 const usdNanosPerDollar = 1_000_000_000
 
+// BillingMode distinguishes a provider call charged at its synchronous,
+// interactive rate ("online") from one submitted as an asynchronous,
+// discounted Batch API job ("batch"). It is a real pricing dimension, not
+// something ContextTierName can stand in for: two rows sharing the same
+// ContextTierName and MinInputTokens (e.g. both "default"/0) but different
+// BillingMode price the same provider+model at two different rates for the
+// same context band, and Resolve must never conflate them.
+type BillingMode string
+
+const (
+	BillingOnline BillingMode = "online"
+	BillingBatch  BillingMode = "batch"
+)
+
+func (m BillingMode) Valid() bool {
+	switch m {
+	case BillingOnline, BillingBatch:
+		return true
+	default:
+		return false
+	}
+}
+
 // USD returns the amount as a float64 dollar value, for display only —
 // never for further money arithmetic.
 func (n USDNanos) USD() float64 { return float64(n) / usdNanosPerDollar }
@@ -43,6 +66,7 @@ type PriceTier struct {
 	CachedInputPriceNanosPerMillion *USDNanos
 	CacheWritePriceNanosPerMillion  *USDNanos
 	OutputPriceNanosPerMillion      USDNanos
+	BillingMode                     BillingMode
 	EffectiveAt                     time.Time
 	CreatedAt                       time.Time
 }
@@ -53,6 +77,9 @@ func (t PriceTier) Validate() error {
 	}
 	if strings.TrimSpace(t.ContextTierName) == "" {
 		return fmt.Errorf("%w: context tier name is required", ErrInvalidPriceTier)
+	}
+	if !t.BillingMode.Valid() {
+		return fmt.Errorf("%w: invalid billing mode %q", ErrInvalidPriceTier, t.BillingMode)
 	}
 	if t.MinInputTokens < 0 {
 		return fmt.Errorf("%w: min input tokens must be non-negative", ErrInvalidPriceTier)

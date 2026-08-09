@@ -95,6 +95,7 @@ func runBudgetSetPrice(args []string, stdout, stderr io.Writer) int {
 	providerID := flags.String("provider", "", "provider id")
 	providerModelID := flags.String("model", "", "provider model id")
 	contextTier := flags.String("context-tier", "default", "context tier name")
+	billingMode := flags.String("billing-mode", string(modelpricing.BillingOnline), "billing mode: online or batch")
 	minInputTokens := flags.Int64("min-input-tokens", 0, "minimum input tokens for this tier to apply")
 	inputUSD := flags.Float64("input", -1, "USD per 1,000,000 input tokens")
 	cachedInputUSD := flags.Float64("cached-input", -1, "USD per 1,000,000 cached-input tokens (omit if unpriced)")
@@ -103,8 +104,8 @@ func runBudgetSetPrice(args []string, stdout, stderr io.Writer) int {
 	if err := flags.Parse(args); err != nil {
 		return exitUsage
 	}
-	if *providerID == "" || *providerModelID == "" || *inputUSD < 0 || *outputUSD < 0 || flags.NArg() != 0 {
-		fmt.Fprintln(stderr, "usage: orgctl budget set-price --provider <id> --model <id> --input <usd_per_million> --output <usd_per_million> [--context-tier default] [--min-input-tokens 0] [--cached-input <usd_per_million>] [--cache-write <usd_per_million>] [--json]")
+	if *providerID == "" || *providerModelID == "" || *inputUSD < 0 || *outputUSD < 0 || flags.NArg() != 0 || !modelpricing.BillingMode(*billingMode).Valid() {
+		fmt.Fprintln(stderr, "usage: orgctl budget set-price --provider <id> --model <id> --input <usd_per_million> --output <usd_per_million> [--context-tier default] [--billing-mode online|batch] [--min-input-tokens 0] [--cached-input <usd_per_million>] [--cache-write <usd_per_million>] [--json]")
 		return exitUsage
 	}
 
@@ -143,7 +144,7 @@ func runBudgetSetPrice(args []string, stdout, stderr io.Writer) int {
 	tier := modelpricing.PriceTier{
 		ProviderID: *providerID, ProviderModelID: *providerModelID, ContextTierName: *contextTier,
 		MinInputTokens: *minInputTokens, InputPriceNanosPerMillion: modelpricing.USDFromDollars(*inputUSD),
-		OutputPriceNanosPerMillion: modelpricing.USDFromDollars(*outputUSD), EffectiveAt: time.Now().UTC(),
+		OutputPriceNanosPerMillion: modelpricing.USDFromDollars(*outputUSD), BillingMode: modelpricing.BillingMode(*billingMode), EffectiveAt: time.Now().UTC(),
 	}
 	if *cachedInputUSD >= 0 {
 		value := modelpricing.USDFromDollars(*cachedInputUSD)

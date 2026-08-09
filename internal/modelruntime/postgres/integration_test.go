@@ -286,7 +286,7 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		}
 		if _, err := pricingService.Upsert(ctx, modelpricing.PriceTier{
 			ProviderID: "test.fake", ProviderModelID: "deterministic-v1", ContextTierName: "default",
-			InputPriceNanosPerMillion: 1_000_000_000, OutputPriceNanosPerMillion: 2_000_000_000, EffectiveAt: time.Now().UTC().Add(-time.Minute),
+			InputPriceNanosPerMillion: 1_000_000_000, OutputPriceNanosPerMillion: 2_000_000_000, BillingMode: modelpricing.BillingOnline, EffectiveAt: time.Now().UTC().Add(-time.Minute),
 		}); err != nil {
 			t.Fatal(err)
 		}

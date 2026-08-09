@@ -46,7 +46,7 @@ func (g *Gate) Reserve(ctx context.Context, request modelruntime.CostReservation
 		return modelruntime.CostReservation{}, fmt.Errorf("resolve budget for task: %w", err)
 	}
 
-	tier, err := g.pricing.Resolve(ctx, request.ProviderID, request.ProviderModelID, request.EstimatedInputTokens, now)
+	tier, err := g.pricing.Resolve(ctx, request.ProviderID, request.ProviderModelID, request.EstimatedInputTokens, modelpricing.BillingOnline, now)
 	if err != nil {
 		return modelruntime.CostReservation{}, fmt.Errorf("resolve price tier: %w", err)
 	}
@@ -93,7 +93,7 @@ func (g *Gate) Reconcile(ctx context.Context, reservation modelruntime.CostReser
 	if !reservation.WalletApplied {
 		return nil
 	}
-	tier, err := g.pricing.Resolve(ctx, reservation.ProviderID, reservation.ProviderModelID, inputTokens, now)
+	tier, err := g.pricing.Resolve(ctx, reservation.ProviderID, reservation.ProviderModelID, inputTokens, modelpricing.BillingOnline, now)
 	if err != nil {
 		return fmt.Errorf("resolve price tier for reconciliation: %w", err)
 	}

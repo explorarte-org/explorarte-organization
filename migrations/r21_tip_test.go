@@ -7,13 +7,13 @@ import (
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 )
 
-func TestMigrationTipIs26AndContiguous(t *testing.T) {
+func TestMigrationTipIs27AndContiguous(t *testing.T) {
 	loaded, err := platformmigrations.Load(rootmigrations.Files)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded) != 26 {
-		t.Fatalf("migration count=%d want 26", len(loaded))
+	if len(loaded) != 27 {
+		t.Fatalf("migration count=%d want 27", len(loaded))
 	}
 	for index, migration := range loaded {
 		want := int64(index + 1)
@@ -21,7 +21,7 @@ func TestMigrationTipIs26AndContiguous(t *testing.T) {
 			t.Fatalf("migration[%d].version=%d want %d", index, migration.Version, want)
 		}
 	}
-	if loaded[len(loaded)-1].Name != "add_gemini_flash_pricing" {
-		t.Fatalf("migration 26 name=%q", loaded[len(loaded)-1].Name)
+	if loaded[len(loaded)-1].Name != "add_model_pricing_billing_mode" {
+		t.Fatalf("migration 27 name=%q", loaded[len(loaded)-1].Name)
 	}
 }
