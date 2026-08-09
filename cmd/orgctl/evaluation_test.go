@@ -15,7 +15,7 @@ func TestEvaluationSeedListsAllR30Fixtures(t *testing.T) {
 	if !strings.Contains(stdout.String(), "14 fixtures") {
 		t.Fatalf("stdout=%s", stdout.String())
 	}
-	if !strings.Contains(stdout.String(), "3 runner-ready") {
+	if !strings.Contains(stdout.String(), "4 runner-ready") {
 		t.Fatalf("stdout=%s", stdout.String())
 	}
 }
