@@ -96,8 +96,22 @@ services:
       ORG_STAGING_RECONCILE_INTERVAL: ${ORG_STAGING_RECONCILE_INTERVAL:-30s}
       ORG_STAGING_RECONCILE_BATCH_SIZE: ${ORG_STAGING_RECONCILE_BATCH_SIZE:-100}
       ORG_STAGING_GIT_BINARY: ${ORG_STAGING_GIT_BINARY:-git}
+      # OCI Object Storage (see model-worker for the fuller explanation) --
+      # mounted here too because the objectstorage CLI subcommands run via
+      # `docker compose run --rm --entrypoint orgctl orgd objectstorage ...`.
+      ORG_OBJECT_STORAGE_OCI_ENABLED: "true"
+      ORG_OBJECT_STORAGE_OCI_TENANCY_OCID: ocid1.tenancy.oc1..aaaaaaaa4fugjamty3gtjrjmdmmfomlivxabqpqsgprlxkhz6lebjgutumzq
+      ORG_OBJECT_STORAGE_OCI_USER_OCID: ocid1.user.oc1..aaaaaaaagdrjnpcecaqx7dzybkdvn5fvdelcm7a7fhrskywitssx5q74ezta
+      ORG_OBJECT_STORAGE_OCI_FINGERPRINT: "0b:a6:4b:35:a0:b2:19:73:ae:04:75:ca:17:dc:6c:ad"
+      ORG_OBJECT_STORAGE_OCI_REGION: sa-santiago-1
+      ORG_OBJECT_STORAGE_OCI_NAMESPACE: axkhdnwe6r1c
+      ORG_OBJECT_STORAGE_OCI_BUCKET: explorarte-org-knowledge-source
+      ORG_OBJECT_STORAGE_OCI_PRIVATE_KEY_FILE: /run/secrets/oci-object-storage-api-key.pem
     ports:
       - "127.0.0.1:${ORG_HTTP_PORT:-8080}:8080"
+    volumes:
+      - /etc/explorarte/secrets/oci-object-storage-api-key.pem:/run/secrets/oci-object-storage-api-key.pem:ro
+      - /home/ubuntu/rag_curado:/opt/explorarte/knowledge-source/rag_curado:ro
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=32m
@@ -214,10 +228,22 @@ services:
       ORG_MODEL_PROVIDER_OPENAI_RESPONSES_ENABLED: "true"
       ORG_MODEL_PROVIDER_OPENAI_RESPONSES_ENDPOINT_URL: https://api.openai.com/v1/responses
       ORG_MODEL_PROVIDER_OPENAI_RESPONSES_CREDENTIAL_FILE: /run/secrets/openai-compatible-api-key
+      # OCI Object Storage: source-of-truth bucket for the knowledge ingestion
+      # pipeline (raw/normalized/manifests/logs). Hand-rolled OCI Signing v1
+      # client (internal/objectstorage), no OCI SDK dependency.
+      ORG_OBJECT_STORAGE_OCI_ENABLED: "true"
+      ORG_OBJECT_STORAGE_OCI_TENANCY_OCID: ocid1.tenancy.oc1..aaaaaaaa4fugjamty3gtjrjmdmmfomlivxabqpqsgprlxkhz6lebjgutumzq
+      ORG_OBJECT_STORAGE_OCI_USER_OCID: ocid1.user.oc1..aaaaaaaagdrjnpcecaqx7dzybkdvn5fvdelcm7a7fhrskywitssx5q74ezta
+      ORG_OBJECT_STORAGE_OCI_FINGERPRINT: "0b:a6:4b:35:a0:b2:19:73:ae:04:75:ca:17:dc:6c:ad"
+      ORG_OBJECT_STORAGE_OCI_REGION: sa-santiago-1
+      ORG_OBJECT_STORAGE_OCI_NAMESPACE: axkhdnwe6r1c
+      ORG_OBJECT_STORAGE_OCI_BUCKET: explorarte-org-knowledge-source
+      ORG_OBJECT_STORAGE_OCI_PRIVATE_KEY_FILE: /run/secrets/oci-object-storage-api-key.pem
     volumes:
       - /etc/explorarte/secrets/model-execution-identity.pem:/run/secrets/model-execution-identity.pem:ro
       - /etc/explorarte/secrets/deepseek-api-key:/run/secrets/deepseek-api-key:ro
       - /etc/explorarte/secrets/openai-compatible-api-key:/run/secrets/openai-compatible-api-key:ro
+      - /etc/explorarte/secrets/oci-object-storage-api-key.pem:/run/secrets/oci-object-storage-api-key.pem:ro
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=32m

@@ -97,6 +97,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runCost(args[1:], stdout, stderr)
 	case "agents":
 		return runAgents(args[1:], stdout, stderr)
+	case "objectstorage":
+		return runObjectStorage(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return exitOK
