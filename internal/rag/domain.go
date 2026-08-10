@@ -124,6 +124,15 @@ type KnowledgeVersion struct {
 	UpdatedAt           time.Time            `json:"updated_at"`
 }
 
+// MediaSourceRef/MediaMimeType are both empty for a normal text chunk
+// (its embedding comes from Content, as always) or both set together for
+// a media-backed chunk (e.g. one PDF page): MediaSourceRef is an Object
+// Storage key pointing at the exact bytes to embed — always a single
+// self-contained item (one PDF page, one image, ...), never a multi-page
+// container, so embedding a media chunk never needs its own
+// page-splitting logic, only a fetch + Embed call. Content still holds
+// this item's extracted text (FTS, citations, snippets, debugging,
+// provenance) even when it is not what gets embedded.
 type Chunk struct {
 	ID                    string `json:"id"`
 	VersionID             string `json:"version_id"`
@@ -138,7 +147,13 @@ type Chunk struct {
 	EmbeddingModelID      string `json:"embedding_model_id,omitempty"`
 	EmbeddingModelVersion string `json:"embedding_model_version,omitempty"`
 	EmbeddingDimension    int    `json:"embedding_dimension,omitempty"`
+	MediaSourceRef        string `json:"media_source_ref,omitempty"`
+	MediaMimeType         string `json:"media_mime_type,omitempty"`
 }
+
+// IsMedia reports whether this chunk's embedding should come from
+// fetching MediaSourceRef's bytes rather than embedding Content directly.
+func (c Chunk) IsMedia() bool { return c.MediaSourceRef != "" }
 
 type GenerationStatus string
 

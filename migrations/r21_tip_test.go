@@ -7,13 +7,13 @@ import (
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 )
 
-func TestMigrationTipIs34AndContiguous(t *testing.T) {
+func TestMigrationTipIs35AndContiguous(t *testing.T) {
 	loaded, err := platformmigrations.Load(rootmigrations.Files)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded) != 34 {
-		t.Fatalf("migration count=%d want 34", len(loaded))
+	if len(loaded) != 35 {
+		t.Fatalf("migration count=%d want 35", len(loaded))
 	}
 	for index, migration := range loaded {
 		want := int64(index + 1)
@@ -21,7 +21,7 @@ func TestMigrationTipIs34AndContiguous(t *testing.T) {
 			t.Fatalf("migration[%d].version=%d want %d", index, migration.Version, want)
 		}
 	}
-	if loaded[len(loaded)-1].Name != "add_memory_backfill_embedding_operation" {
-		t.Fatalf("migration 34 name=%q", loaded[len(loaded)-1].Name)
+	if loaded[len(loaded)-1].Name != "add_chunk_media_source" {
+		t.Fatalf("migration 35 name=%q", loaded[len(loaded)-1].Name)
 	}
 }

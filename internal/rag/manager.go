@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -19,16 +20,18 @@ const (
 )
 
 type Manager struct {
-	domain     *Service
-	repository Repository
-	gate       AuthorizationGate
-	namespaces NamespaceResolver
-	semantic   *SemanticSearchDeps
+	domain       *Service
+	repository   Repository
+	gate         AuthorizationGate
+	namespaces   NamespaceResolver
+	semantic     *SemanticSearchDeps
+	mediaFetcher MediaFetcher
 }
 
 // NewManager's semantic parameter may be nil — see SemanticSearchDeps for
-// what that degrades to.
-func NewManager(domain *Service, repository Repository, gate AuthorizationGate, namespaces NamespaceResolver, semantic *SemanticSearchDeps) (*Manager, error) {
+// what that degrades to. mediaFetcher may also be nil — see MediaFetcher's
+// doc comment.
+func NewManager(domain *Service, repository Repository, gate AuthorizationGate, namespaces NamespaceResolver, semantic *SemanticSearchDeps, mediaFetcher MediaFetcher) (*Manager, error) {
 	if domain == nil {
 		return nil, errors.New("rag manager requires domain service")
 	}
@@ -44,7 +47,7 @@ func NewManager(domain *Service, repository Repository, gate AuthorizationGate, 
 	if err := semantic.validate(); err != nil {
 		return nil, err
 	}
-	return &Manager{domain: domain, repository: repository, gate: gate, namespaces: namespaces, semantic: semantic}, nil
+	return &Manager{domain: domain, repository: repository, gate: gate, namespaces: namespaces, semantic: semantic, mediaFetcher: mediaFetcher}, nil
 }
 
 type ProposeRequest struct {
@@ -358,7 +361,23 @@ func (m *Manager) BackfillEmbeddings(ctx context.Context, request BackfillEmbedd
 	result := BackfillEmbeddingsResult{Done: len(pending) < batchSize}
 	now := time.Now().UTC()
 	for _, chunk := range pending {
-		vector := m.embed(ctx, organizationID, actorRoleID, chunk.Content, nil, embeddingruntime.TaskDocument, costledger.EmbeddingOperationRAGReindex)
+		var vector []float32
+		if chunk.IsMedia() {
+			if m.mediaFetcher == nil {
+				slog.Default().Warn("rag embedding skipped: chunk is media-backed but no MediaFetcher is configured", "chunk_id", chunk.ID)
+				result.Skipped++
+				continue
+			}
+			data, err := m.mediaFetcher.FetchMedia(ctx, chunk.MediaSourceRef)
+			if err != nil {
+				slog.Default().Warn("rag embedding skipped: media fetch failed", "chunk_id", chunk.ID, "error", err)
+				result.Skipped++
+				continue
+			}
+			vector = m.embedMedia(ctx, organizationID, actorRoleID, chunk.Content, chunk.MediaMimeType, data, nil, embeddingruntime.TaskDocument, costledger.EmbeddingOperationRAGReindex)
+		} else {
+			vector = m.embed(ctx, organizationID, actorRoleID, chunk.Content, nil, embeddingruntime.TaskDocument, costledger.EmbeddingOperationRAGReindex)
+		}
 		if vector == nil {
 			result.Skipped++
 			continue

@@ -15,6 +15,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/embeddingruntime/adapter/gemini"
 	"github.com/Mireuz13/explorarte-organization/internal/modelpricing"
 	modelpricingpostgres "github.com/Mireuz13/explorarte-organization/internal/modelpricing/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/objectstorage"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/rag"
@@ -108,8 +109,12 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	if err != nil {
 		return nil, fmt.Errorf("create rag semantic search deps: %w", err)
 	}
+	mediaFetcher, err := openMediaFetcher()
+	if err != nil {
+		return nil, fmt.Errorf("create rag media fetcher: %w", err)
+	}
 	domain := rag.NewService(nil)
-	manager, err := rag.NewManager(domain, store, gate, namespaces, semantic)
+	manager, err := rag.NewManager(domain, store, gate, namespaces, semantic, mediaFetcher)
 	if err != nil {
 		return nil, fmt.Errorf("create rag manager: %w", err)
 	}
@@ -143,6 +148,38 @@ func openSemanticSearch(platformStore *platformpostgres.Store) (*rag.SemanticSea
 	default:
 		return openGeminiSemanticSearch(platformStore)
 	}
+}
+
+// objectStorageMediaFetcher adapts *objectstorage.Client to rag.MediaFetcher
+// -- the only place internal/rag's media-embedding path ever touches
+// Object Storage, kept out of the domain package itself the same way every
+// other external dependency here (postgres, the embedding adapters) is
+// wired at the boundary, not imported by internal/rag directly.
+type objectStorageMediaFetcher struct{ client *objectstorage.Client }
+
+func (f *objectStorageMediaFetcher) FetchMedia(ctx context.Context, ref string) ([]byte, error) {
+	return f.client.GetObject(ctx, ref)
+}
+
+// openMediaFetcher returns (nil, nil) when Object Storage is disabled --
+// the same "absent adapter, not an error" convention every other optional
+// dependency in this bootstrap package uses. A nil MediaFetcher is a fully
+// supported Manager configuration (see rag.MediaFetcher's doc comment); it
+// only matters once a media-backed chunk (rag_knowledge_chunks.
+// media_source_ref) actually exists to backfill.
+func openMediaFetcher() (rag.MediaFetcher, error) {
+	cfg, err := objectstorage.LoadConfig(os.LookupEnv)
+	if err != nil {
+		return nil, fmt.Errorf("load object storage config: %w", err)
+	}
+	if !cfg.Enabled {
+		return nil, nil
+	}
+	client, err := objectstorage.New(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("create object storage client: %w", err)
+	}
+	return &objectStorageMediaFetcher{client: client}, nil
 }
 
 func sharedSpendControls(platformStore *platformpostgres.Store) (*modelpricing.Service, *costledgerpostgres.Store, *agentbudgetpostgres.Store, error) {

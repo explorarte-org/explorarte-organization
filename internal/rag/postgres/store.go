@@ -387,9 +387,13 @@ func (s *Store) Reindex(ctx context.Context, command rag.ReindexCommand) (rag.In
 			return rag.IndexGeneration{}, fmt.Errorf("%w: chunk offsets are invalid", rag.ErrInvalidRequest)
 		}
 		chunkID := fmt.Sprintf("%s-%s-%d", generationID, chunk.VersionID, chunk.Ordinal)
-		if _, err := tx.Exec(ctx, `INSERT INTO rag_knowledge_chunks (organization_id,chunk_id,generation_id,version_id,chunker_id,chunker_version,ordinal,start_offset,end_offset,content,content_hash,embedding_model_id,embedding_model_version,embedding_dimension) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+		if (chunk.MediaSourceRef == "") != (chunk.MediaMimeType == "") {
+			return rag.IndexGeneration{}, fmt.Errorf("%w: chunk media_source_ref and media_mime_type must be set together", rag.ErrInvalidRequest)
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO rag_knowledge_chunks (organization_id,chunk_id,generation_id,version_id,chunker_id,chunker_version,ordinal,start_offset,end_offset,content,content_hash,embedding_model_id,embedding_model_version,embedding_dimension,media_source_ref,media_mime_type) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
 			organizationID, chunkID, generationID, chunk.VersionID, chunk.ChunkerID, chunk.ChunkerVersion, chunk.Ordinal, chunk.StartOffset, chunk.EndOffset, chunk.Content, chunk.ContentHash,
-			nullableString(chunk.EmbeddingModelID), nullableString(chunk.EmbeddingModelVersion), nullableInt(chunk.EmbeddingDimension)); err != nil {
+			nullableString(chunk.EmbeddingModelID), nullableString(chunk.EmbeddingModelVersion), nullableInt(chunk.EmbeddingDimension),
+			nullableString(chunk.MediaSourceRef), nullableString(chunk.MediaMimeType)); err != nil {
 			return rag.IndexGeneration{}, mapError("insert rag knowledge chunk", err)
 		}
 	}

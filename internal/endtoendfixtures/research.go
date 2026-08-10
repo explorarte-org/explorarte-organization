@@ -53,7 +53,7 @@ func seedResearchEvidence(ctx context.Context, platform *platformpostgres.Store,
 	// the same idempotency key (mirrors internal/retrievalfixtures'
 	// documented fix for the exact same class of bug).
 	base := clock.now
-	ragManager, err := rag.NewManager(rag.NewService(clock), ragStore, allowRAGGate{}, namespaceResolver{namespaceID: namespaceID}, nil)
+	ragManager, err := rag.NewManager(rag.NewService(clock), ragStore, allowRAGGate{}, namespaceResolver{namespaceID: namespaceID}, nil, nil)
 	if err != nil {
 		return researchEvidence{}, err
 	}
