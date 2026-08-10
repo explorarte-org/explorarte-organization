@@ -118,6 +118,91 @@ services:
     networks:
       - org-internal
 
+  model-worker:
+    # orgctl model worker run: the only process that consumes
+    # ORG_MODEL_EXECUTION_IDENTITY_* / dispatches real invocations (orgd
+    # never imports internal/modelruntime -- see
+    # cmd/orgctl/worker.go:runModelWorker doc comment). Same image as orgd,
+    # different entrypoint. Runs the full internal/config.Config the same
+    # way orgd does (openModelWorkerRuntime calls config.Load()), so it
+    # needs the same database/canonical/task/staging environment -- not
+    # because this process reads all of it, but because config.Load()
+    # validates the whole struct at once.
+    image: explorarte-organization:${ORG_VERSION:-dev}
+    entrypoint: ["/usr/local/bin/orgctl", "model", "worker", "run"]
+    environment:
+      ORG_APP_NAME: ${ORG_APP_NAME:-explorarte-organization}
+      ORG_ENVIRONMENT: ${ORG_ENVIRONMENT:-development}
+      ORG_LOG_LEVEL: ${ORG_LOG_LEVEL:-info}
+      ORG_LOG_FORMAT: ${ORG_LOG_FORMAT:-json}
+      ORG_DATABASE_HOST: postgres
+      ORG_DATABASE_PORT: 5432
+      ORG_DATABASE_NAME: ${ORG_POSTGRES_DATABASE:-explorarte_org}
+      ORG_DATABASE_USER: ${ORG_POSTGRES_USER:-explorarte_app}
+      ORG_DATABASE_PASSWORD: ${ORG_POSTGRES_PASSWORD:?set ORG_POSTGRES_PASSWORD in .env}
+      ORG_DATABASE_SSLMODE: disable
+      ORG_DATABASE_MAX_CONNS: ${ORG_DATABASE_MAX_CONNS:-8}
+      ORG_DATABASE_MIN_CONNS: ${ORG_DATABASE_MIN_CONNS:-1}
+      ORG_DATABASE_MAX_CONN_LIFETIME: ${ORG_DATABASE_MAX_CONN_LIFETIME:-30m}
+      ORG_DATABASE_MAX_CONN_IDLE_TIME: ${ORG_DATABASE_MAX_CONN_IDLE_TIME:-5m}
+      ORG_DATABASE_HEALTH_CHECK_PERIOD: ${ORG_DATABASE_HEALTH_CHECK_PERIOD:-30s}
+      ORG_DATABASE_CONNECT_TIMEOUT: ${ORG_DATABASE_CONNECT_TIMEOUT:-5s}
+      ORG_DATABASE_PING_TIMEOUT: ${ORG_DATABASE_PING_TIMEOUT:-2s}
+      ORG_DATABASE_STATEMENT_TIMEOUT: ${ORG_DATABASE_STATEMENT_TIMEOUT:-30s}
+      ORG_DATABASE_LOCK_TIMEOUT: ${ORG_DATABASE_LOCK_TIMEOUT:-5s}
+      ORG_DATABASE_AUTO_MIGRATE: ${ORG_DATABASE_AUTO_MIGRATE:-true}
+      ORG_DATABASE_MIGRATION_TIMEOUT: ${ORG_DATABASE_MIGRATION_TIMEOUT:-45s}
+      ORG_DATABASE_MIGRATION_RETRY: ${ORG_DATABASE_MIGRATION_RETRY:-5s}
+      ORG_CANONICAL_DIR: /opt/explorarte/docs/canonical
+      ORG_REGISTRY_SYNC_TIMEOUT: ${ORG_REGISTRY_SYNC_TIMEOUT:-30s}
+      ORG_TASK_ORGANIZATION_ID: ${ORG_TASK_ORGANIZATION_ID:-explorarte}
+      ORG_TASK_RECONCILER_ENABLED: ${ORG_TASK_RECONCILER_ENABLED:-true}
+      ORG_TASK_RECONCILE_INTERVAL: ${ORG_TASK_RECONCILE_INTERVAL:-5s}
+      ORG_TASK_RECONCILE_BATCH_SIZE: ${ORG_TASK_RECONCILE_BATCH_SIZE:-100}
+      ORG_TASK_DEFAULT_MAX_ATTEMPTS: ${ORG_TASK_DEFAULT_MAX_ATTEMPTS:-5}
+      ORG_TASK_DEFAULT_LEASE_DURATION: ${ORG_TASK_DEFAULT_LEASE_DURATION:-2m}
+      ORG_TASK_MAX_LEASE_DURATION: ${ORG_TASK_MAX_LEASE_DURATION:-15m}
+      ORG_TASK_RETRY_BASE_DELAY: ${ORG_TASK_RETRY_BASE_DELAY:-5s}
+      ORG_TASK_RETRY_MAX_DELAY: ${ORG_TASK_RETRY_MAX_DELAY:-10m}
+      ORG_TASK_OUTBOX_MAX_ATTEMPTS: ${ORG_TASK_OUTBOX_MAX_ATTEMPTS:-10}
+      ORG_TASK_OUTBOX_CLAIM_DURATION: ${ORG_TASK_OUTBOX_CLAIM_DURATION:-1m}
+      ORG_TASK_COMMAND_TIMEOUT: ${ORG_TASK_COMMAND_TIMEOUT:-30s}
+      ORG_STAGING_ENABLED: ${ORG_STAGING_ENABLED:-false}
+      ORG_STAGING_REPOSITORIES_FILE: ${ORG_STAGING_REPOSITORIES_FILE:-/etc/explorarte/repositories.yaml}
+      ORG_STAGING_WORKSPACE_ROOT: ${ORG_STAGING_WORKSPACE_ROOT:-/var/lib/explorarte/staging/workspaces}
+      ORG_STAGING_ARTIFACT_ROOT: ${ORG_STAGING_ARTIFACT_ROOT:-/var/lib/explorarte/staging/artifacts}
+      ORG_STAGING_QUARANTINE_ROOT: ${ORG_STAGING_QUARANTINE_ROOT:-/var/lib/explorarte/staging/quarantine}
+      ORG_STAGING_COMMAND_TIMEOUT: ${ORG_STAGING_COMMAND_TIMEOUT:-2m}
+      ORG_STAGING_MAX_ARTIFACT_BYTES: ${ORG_STAGING_MAX_ARTIFACT_BYTES:-67108864}
+      ORG_STAGING_MAX_CHANGED_FILES: ${ORG_STAGING_MAX_CHANGED_FILES:-500}
+      ORG_STAGING_STALE_AFTER: ${ORG_STAGING_STALE_AFTER:-30m}
+      ORG_STAGING_RECONCILE_INTERVAL: ${ORG_STAGING_RECONCILE_INTERVAL:-30s}
+      ORG_STAGING_RECONCILE_BATCH_SIZE: ${ORG_STAGING_RECONCILE_BATCH_SIZE:-100}
+      ORG_STAGING_GIT_BINARY: ${ORG_STAGING_GIT_BINARY:-git}
+      ORG_MODEL_RUNTIME_ENABLED: "true"
+      ORG_MODEL_EXECUTION_IDENTITY_ENABLED: "true"
+      ORG_MODEL_EXECUTION_IDENTITY_KEY_FILE: /run/secrets/model-execution-identity.pem
+      ORG_MODEL_EXECUTION_PRINCIPAL_KEY: oracle-org-01/model-runtime-01
+      ORG_MODEL_WORKER_BATCH_SIZE: ${ORG_MODEL_WORKER_BATCH_SIZE:-10}
+      ORG_MODEL_WORKER_CONCURRENCY: ${ORG_MODEL_WORKER_CONCURRENCY:-1}
+    volumes:
+      - /etc/explorarte/secrets/model-execution-identity.pem:/run/secrets/model-execution-identity.pem:ro
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    depends_on:
+      - postgres
+    networks:
+      - org-internal
+
 volumes:
   postgres-data:
     name: explorarte-org-postgres-data
