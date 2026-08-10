@@ -8,7 +8,9 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/Mireuz13/explorarte-organization/internal/agentmessagingfixtures"
 	"github.com/Mireuz13/explorarte-organization/internal/config"
+	"github.com/Mireuz13/explorarte-organization/internal/costledgerfixtures"
 	"github.com/Mireuz13/explorarte-organization/internal/decisiongraphfixtures"
 	"github.com/Mireuz13/explorarte-organization/internal/evaluation/fixtures"
 	evaluationpostgres "github.com/Mireuz13/explorarte-organization/internal/evaluation/postgres"
@@ -36,6 +38,8 @@ func evaluationRunners(store *platformpostgres.Store) []fixtures.Runner {
 		decisiongraphfixtures.DecisionGraphRunner{},
 		webevidencefixtures.WebEvidenceRunner{},
 		retrievalfixtures.Runner{Store: store},
+		costledgerfixtures.Runner{Store: store},
+		agentmessagingfixtures.Runner{Store: store},
 	}
 }
 
@@ -69,6 +73,8 @@ func fixturesForSuite(suite string) ([]fixtures.Fixture, error) {
 		catalog := decisiongraphfixtures.Activate(fixtures.CatalogR30())
 		catalog = webevidencefixtures.Activate(catalog)
 		catalog = retrievalfixtures.Activate(catalog)
+		catalog = costledgerfixtures.Activate(catalog)
+		catalog = agentmessagingfixtures.Activate(catalog)
 		return catalog, nil
 	default:
 		return nil, fmt.Errorf("unknown suite %q", suite)
