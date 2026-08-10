@@ -199,7 +199,14 @@ services:
       # /v1/responses/compact for native compaction) per owner decision --
       # that needs a new adapter/protocol, not just this env wiring, so it
       # stays disabled until that code exists.
-      ORG_MODEL_PROVIDER_OPENAI_COMPATIBLE_ENABLED: "false"
+      # OpenAI-compatible: enabled via Chat Completions (the adapter's only
+      # supported shape today). gpt-5.6-luna is documented to prefer
+      # Responses API (/v1/responses + native /v1/responses/compact) for
+      # agentic/multi-turn work -- that adapter does not exist yet, this is
+      # the interim path while it is built.
+      ORG_MODEL_PROVIDER_OPENAI_COMPATIBLE_ENABLED: "true"
+      ORG_MODEL_PROVIDER_OPENAI_COMPATIBLE_ENDPOINT_URL: https://api.openai.com/v1/chat/completions
+      ORG_MODEL_PROVIDER_OPENAI_COMPATIBLE_CREDENTIAL_FILE: /run/secrets/openai-compatible-api-key
     volumes:
       - /etc/explorarte/secrets/model-execution-identity.pem:/run/secrets/model-execution-identity.pem:ro
       - /etc/explorarte/secrets/deepseek-api-key:/run/secrets/deepseek-api-key:ro
