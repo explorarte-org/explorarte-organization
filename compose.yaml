@@ -116,11 +116,17 @@ services:
       ORG_OBJECT_STORAGE_OCI_NAMESPACE: axkhdnwe6r1c
       ORG_OBJECT_STORAGE_OCI_BUCKET: bucket-20260810-0027
       ORG_OBJECT_STORAGE_OCI_PRIVATE_KEY_FILE: /run/secrets/oci-object-storage-api-key.pem
+      # Gemini Embedding 2 -- billed, real API, used for multimodal (PDF page)
+      # and text chunk embeddings via internal/embeddingruntime/adapter/gemini.
+      ORG_EMBEDDING_PROVIDER_GEMINI_ENABLED: "true"
+      ORG_EMBEDDING_PROVIDER_GEMINI_BASE_URL: https://generativelanguage.googleapis.com
+      ORG_EMBEDDING_PROVIDER_GEMINI_CREDENTIAL_FILE: /run/secrets/gemini-embedding-api-key
     ports:
       - "127.0.0.1:${ORG_HTTP_PORT:-8080}:8080"
     volumes:
       - /etc/explorarte/secrets/oci-object-storage-api-key.pem:/run/secrets/oci-object-storage-api-key.pem:ro
       - /home/ubuntu/rag_curado:/opt/explorarte/knowledge-source/rag_curado:ro
+      - /etc/explorarte/secrets/gemini-embedding-api-key:/run/secrets/gemini-embedding-api-key:ro
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=32m

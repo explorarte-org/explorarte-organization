@@ -74,6 +74,14 @@ type ragReindexInput struct {
 	// Reindex (which may run much later): Object Storage is the shared
 	// durable point between the two commands, not a new database table.
 	PrecomputedChunksManifestRef string `json:"precomputed_chunks_manifest_ref,omitempty"`
+	// PrecomputedChunksManifestRefs is the plural form -- Reindex rebuilds
+	// every approved version in a namespace in a single call, so ingesting
+	// several PDF-sourced documents before a reindex requires supplying
+	// all of their manifests together: a document whose manifest is
+	// missing from this call falls through to the generic ChunkBody(text)
+	// path, which would silently discard its per-page media structure.
+	// Combined with the singular field above if both are set.
+	PrecomputedChunksManifestRefs []string `json:"precomputed_chunks_manifest_refs,omitempty"`
 }
 
 // pdfChunkManifest is the JSON shape `orgctl pdf ingest` writes to Object
@@ -396,23 +404,30 @@ func runRAG(args []string, stdout, stderr io.Writer) int {
 		if code != exitOK {
 			return code
 		}
-		var precomputed map[string][]rag.Chunk
+		refs := append([]string(nil), input.PrecomputedChunksManifestRefs...)
 		if strings.TrimSpace(input.PrecomputedChunksManifestRef) != "" {
+			refs = append(refs, input.PrecomputedChunksManifestRef)
+		}
+		var precomputed map[string][]rag.Chunk
+		if len(refs) > 0 {
 			osClient, code := openObjectStorageClient(stderr)
 			if code != exitOK {
 				return code
 			}
-			body, err := osClient.GetObject(ctx, input.PrecomputedChunksManifestRef)
-			if err != nil {
-				fmt.Fprintf(stderr, "fetch precomputed chunks manifest: %v\n", err)
-				return exitInternal
+			precomputed = make(map[string][]rag.Chunk, len(refs))
+			for _, ref := range refs {
+				body, err := osClient.GetObject(ctx, ref)
+				if err != nil {
+					fmt.Fprintf(stderr, "fetch precomputed chunks manifest %s: %v\n", ref, err)
+					return exitInternal
+				}
+				var manifest pdfChunkManifest
+				if err := json.Unmarshal(body, &manifest); err != nil {
+					fmt.Fprintf(stderr, "decode precomputed chunks manifest %s: %v\n", ref, err)
+					return exitInvalid
+				}
+				precomputed[manifest.VersionID] = manifest.Chunks
 			}
-			var manifest pdfChunkManifest
-			if err := json.Unmarshal(body, &manifest); err != nil {
-				fmt.Fprintf(stderr, "decode precomputed chunks manifest: %v\n", err)
-				return exitInvalid
-			}
-			precomputed = map[string][]rag.Chunk{manifest.VersionID: manifest.Chunks}
 		}
 		generation, err := runtime.Manager.Reindex(ctx, rag.ReindexRequest{
 			OrganizationID: runtime.OrganizationID, NamespaceKind: input.NamespaceKind, NamespaceID: input.NamespaceID,

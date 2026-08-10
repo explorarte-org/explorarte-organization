@@ -429,3 +429,29 @@ func TestCreateBatchSendsInlineDataForMediaItem(t *testing.T) {
 		t.Fatalf("part=%+v", part)
 	}
 }
+
+func TestEmbedSendsAPIKeyViaGoogHeaderNotBearer(t *testing.T) {
+	var gotGoogHeader, gotAuthHeader string
+	adapter := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		gotGoogHeader = r.Header.Get("x-goog-api-key")
+		gotAuthHeader = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(batchEmbedContentsResponse{
+			Embeddings: []embeddingValue{{Values: []float32{0.1}}},
+		})
+	})
+	_, err := adapter.Embed(t.Context(), embeddingruntime.EmbedRequest{
+		ProviderID: ProviderID, ProviderModelID: "gemini-embedding-2", OutputDimensionality: 768,
+		PromptTemplateVersion: PromptTemplateV1,
+		Items:                 []embeddingruntime.EmbedItem{{Key: "a", Text: "hola", Task: embeddingruntime.TaskDocument}},
+	})
+	if err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	if gotGoogHeader != "test-token" {
+		t.Fatalf("x-goog-api-key = %q, want the credential file's token", gotGoogHeader)
+	}
+	if gotAuthHeader != "" {
+		t.Fatalf("Authorization header must not be set for API-key auth, got %q", gotAuthHeader)
+	}
+}
