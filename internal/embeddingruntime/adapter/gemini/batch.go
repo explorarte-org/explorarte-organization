@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"strconv"
 	"strings"
@@ -118,21 +119,33 @@ func (a *Adapter) CreateBatch(ctx context.Context, request embeddingruntime.Crea
 	items := make([]batchRequestItem, 0, len(request.Items))
 	seenKeys := make(map[string]struct{}, len(request.Items))
 	for _, item := range request.Items {
-		if item.Key == "" || item.Text == "" || !item.Task.Valid() {
+		if !item.Valid() {
 			return embeddingruntime.CreateBatchResponse{}, embeddingruntime.ErrInvalidRequest
 		}
 		if _, exists := seenKeys[item.Key]; exists {
 			return embeddingruntime.CreateBatchResponse{}, fmt.Errorf("%w: duplicate item key %q", embeddingruntime.ErrInvalidRequest, item.Key)
 		}
 		seenKeys[item.Key] = struct{}{}
-		rendered, err := renderPrompt(request.PromptTemplateVersion, item.Task, item.Text)
-		if err != nil {
-			return embeddingruntime.CreateBatchResponse{}, err
+		var part contentPart
+		if item.IsMedia() {
+			if !SupportedMediaMimeTypes[item.MimeType] {
+				return embeddingruntime.CreateBatchResponse{}, fmt.Errorf("%w: unsupported media MIME type %q", embeddingruntime.ErrInvalidRequest, item.MimeType)
+			}
+			if len(item.Data) > maxMediaBytes {
+				return embeddingruntime.CreateBatchResponse{}, fmt.Errorf("%w: media item %q exceeds maximum inline size", embeddingruntime.ErrInvalidRequest, item.Key)
+			}
+			part = contentPart{InlineData: &inlineDataPart{MimeType: item.MimeType, Data: base64.StdEncoding.EncodeToString(item.Data)}}
+		} else {
+			rendered, err := renderPrompt(request.PromptTemplateVersion, item.Task, item.Text)
+			if err != nil {
+				return embeddingruntime.CreateBatchResponse{}, err
+			}
+			part = contentPart{Text: rendered}
 		}
 		items = append(items, batchRequestItem{
 			Request: embedContentRequest{
 				Model:   "models/" + request.ProviderModelID,
-				Content: content{Parts: []contentPart{{Text: rendered}}},
+				Content: content{Parts: []contentPart{part}},
 				EmbedContentConfig: embedContentConfig{
 					TaskType: taskTypeField(item.Task), OutputDimensionality: request.OutputDimensionality,
 				},

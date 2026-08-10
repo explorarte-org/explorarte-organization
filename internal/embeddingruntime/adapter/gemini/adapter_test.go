@@ -1,6 +1,7 @@
 package gemini
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -277,5 +278,154 @@ func TestDisabledConfigYieldsNilAdapter(t *testing.T) {
 	}
 	if adapter != nil {
 		t.Fatal("expected nil adapter for disabled config")
+	}
+}
+
+func TestEmbedSendsInlineDataForMediaItem(t *testing.T) {
+	var capturedBody batchEmbedContentsRequest
+	adapter := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&capturedBody); err != nil {
+			t.Fatal(err)
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(batchEmbedContentsResponse{
+			Embeddings: []embeddingValue{{Values: []float32{0.1, 0.2, 0.3}}},
+		})
+	})
+
+	pdfBytes := []byte("%PDF-1.4 fake pdf bytes for test")
+	response, err := adapter.Embed(t.Context(), embeddingruntime.EmbedRequest{
+		ProviderID: ProviderID, ProviderModelID: "gemini-embedding-2", OutputDimensionality: 768,
+		PromptTemplateVersion: PromptTemplateV1,
+		Items: []embeddingruntime.EmbedItem{
+			{Key: "paper-1-p1", MimeType: "application/pdf", Data: pdfBytes, Task: embeddingruntime.TaskDocument},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	if len(capturedBody.Requests) != 1 {
+		t.Fatalf("requests=%d", len(capturedBody.Requests))
+	}
+	sent := capturedBody.Requests[0]
+	if sent.Content.Parts[0].Text != "" {
+		t.Fatalf("expected empty text part for media item, got %q", sent.Content.Parts[0].Text)
+	}
+	if sent.Content.Parts[0].InlineData == nil {
+		t.Fatalf("expected inline_data part for media item")
+	}
+	if sent.Content.Parts[0].InlineData.MimeType != "application/pdf" {
+		t.Fatalf("mimeType=%q", sent.Content.Parts[0].InlineData.MimeType)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(sent.Content.Parts[0].InlineData.Data)
+	if err != nil {
+		t.Fatalf("decode base64: %v", err)
+	}
+	if string(decoded) != string(pdfBytes) {
+		t.Fatalf("round-tripped bytes = %q, want %q", decoded, pdfBytes)
+	}
+	if sent.EmbedContentConfig.TaskType != "RETRIEVAL_DOCUMENT" {
+		t.Fatalf("taskType=%q", sent.EmbedContentConfig.TaskType)
+	}
+	if len(response.Results) != 1 || response.Results[0].Key != "paper-1-p1" {
+		t.Fatalf("results=%+v", response.Results)
+	}
+}
+
+func TestEmbedRejectsUnsupportedMediaMimeType(t *testing.T) {
+	adapter := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("must not send a request for an invalid item")
+	})
+	_, err := adapter.Embed(t.Context(), embeddingruntime.EmbedRequest{
+		ProviderID: ProviderID, ProviderModelID: "gemini-embedding-2", OutputDimensionality: 768,
+		PromptTemplateVersion: PromptTemplateV1,
+		Items: []embeddingruntime.EmbedItem{
+			{Key: "x", MimeType: "application/zip", Data: []byte("PK\x03\x04"), Task: embeddingruntime.TaskDocument},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for unsupported MIME type")
+	}
+}
+
+func TestEmbedRejectsOversizedMediaItem(t *testing.T) {
+	adapter := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("must not send a request for an oversized item")
+	})
+	_, err := adapter.Embed(t.Context(), embeddingruntime.EmbedRequest{
+		ProviderID: ProviderID, ProviderModelID: "gemini-embedding-2", OutputDimensionality: 768,
+		PromptTemplateVersion: PromptTemplateV1,
+		Items: []embeddingruntime.EmbedItem{
+			{Key: "x", MimeType: "application/pdf", Data: make([]byte, maxMediaBytes+1), Task: embeddingruntime.TaskDocument},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for oversized media item")
+	}
+}
+
+func TestEmbedRejectsItemWithBothTextAndMedia(t *testing.T) {
+	adapter := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("must not send a request for an invalid item")
+	})
+	_, err := adapter.Embed(t.Context(), embeddingruntime.EmbedRequest{
+		ProviderID: ProviderID, ProviderModelID: "gemini-embedding-2", OutputDimensionality: 768,
+		PromptTemplateVersion: PromptTemplateV1,
+		Items: []embeddingruntime.EmbedItem{
+			{Key: "x", Text: "hola", MimeType: "application/pdf", Data: []byte("%PDF"), Task: embeddingruntime.TaskDocument},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for item with both text and media set")
+	}
+}
+
+func TestEmbedRejectsItemWithNeitherTextNorMedia(t *testing.T) {
+	adapter := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("must not send a request for an invalid item")
+	})
+	_, err := adapter.Embed(t.Context(), embeddingruntime.EmbedRequest{
+		ProviderID: ProviderID, ProviderModelID: "gemini-embedding-2", OutputDimensionality: 768,
+		PromptTemplateVersion: PromptTemplateV1,
+		Items: []embeddingruntime.EmbedItem{
+			{Key: "x", Task: embeddingruntime.TaskDocument},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for item with neither text nor media set")
+	}
+}
+
+func TestCreateBatchSendsInlineDataForMediaItem(t *testing.T) {
+	var capturedBody asyncBatchEmbedContentRequest
+	adapter := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&capturedBody); err != nil {
+			t.Fatal(err)
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(batchJobResource{Name: "batches/test-job-1"})
+	})
+
+	pdfBytes := []byte("%PDF-1.4 fake pdf bytes for batch test")
+	response, err := adapter.CreateBatch(t.Context(), embeddingruntime.CreateBatchRequest{
+		ProviderID: ProviderID, ProviderModelID: "gemini-embedding-2", OutputDimensionality: 768,
+		PromptTemplateVersion: PromptTemplateV1,
+		Items: []embeddingruntime.EmbedItem{
+			{Key: "paper-1-p1", MimeType: "application/pdf", Data: pdfBytes, Task: embeddingruntime.TaskDocument},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateBatch: %v", err)
+	}
+	if response.ProviderJobName != "batches/test-job-1" {
+		t.Fatalf("job name=%q", response.ProviderJobName)
+	}
+	requests := capturedBody.InputConfig.Requests.Requests
+	if len(requests) != 1 {
+		t.Fatalf("requests=%d", len(requests))
+	}
+	part := requests[0].Request.Content.Parts[0]
+	if part.InlineData == nil || part.InlineData.MimeType != "application/pdf" {
+		t.Fatalf("part=%+v", part)
 	}
 }
