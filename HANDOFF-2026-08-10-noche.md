@@ -43,3 +43,18 @@ Ambas se liberan solas corriendo `orgctl model invocation reconcile --json` desp
 ## Invariantes de seguridad respetados toda la noche
 
 Sin bypass de authorization/egress/execution identity/CostGate en ningún momento. Sin secrets impresos. Sin `docker compose config`. Sin mount del directorio completo de secrets. Sin auto-migrate. Sin staging habilitado. Sin tocar la private key de execution identity.
+
+---
+
+## Update — adapter de Responses API (agregado después del handoff original)
+
+Se construyó `internal/modelruntime/adapter/openairesponses` (commit `dab4eca`), un adapter nuevo y completo para `POST /v1/responses`, distinto del `openaicompat` (Chat Completions) que ya funciona con DeepSeek.
+
+**Estado: compilado, con 9 tests pasando, NO habilitado.** `ORG_MODEL_PROVIDER_OPENAI_RESPONSES_ENABLED` sigue en `false` en todos lados. `model-routing.yaml` sigue apuntando `executive.ceo` a `openai_compatible`. Nadie lo despachó contra la API real todavía — el shape del request/response se confirmó contra la documentación oficial y varios ejemplos de eventos `response.*` que pasó el owner durante la sesión (incluye una corrección real: el error top-level usa `code`, no `type`; `incomplete_details.reason` es `max_tokens`, no `max_output_tokens` — ambos corregidos antes de commitear).
+
+**Próximos pasos para usar esto mañana:**
+1. Crear `/etc/explorarte/secrets/openai-responses-api-key` (mismo patrón que los otros: `sudo install -m 600 -o 65532 -g 65532 /dev/null ...`) — puede ser la misma key de OpenAI que ya está en `openai-compatible-api-key`, o una nueva.
+2. Agregar al `compose.yaml` (servicio `model-worker`): `ORG_MODEL_PROVIDER_OPENAI_RESPONSES_ENABLED=true`, `ORG_MODEL_PROVIDER_OPENAI_RESPONSES_ENDPOINT_URL=https://api.openai.com/v1/responses`, `ORG_MODEL_PROVIDER_OPENAI_RESPONSES_CREDENTIAL_FILE=/run/secrets/openai-responses-api-key`, y el mount del secret.
+3. Decidir si `model-routing.yaml` (`executive.ceo`) pasa a `openai_responses` en vez de `openai_compatible` — eso es un cambio de canonical + `registry sync` + `model registry sync`, no solo env.
+4. Probar con un canary chico primero (no repetir el error de esta noche de ir directo a 200,000 tokens — usar algo como 20,000-30,000 para la primera prueba real).
+5. No está implementado: streaming, tools nativos (web_search, code_interpreter, computer_use, MCP), el beta de multi-agent, ni threading de `previous_response_id`/`conversation` — quedan fuera de alcance hasta que se necesiten.
