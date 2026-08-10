@@ -105,7 +105,7 @@ services:
       ORG_OBJECT_STORAGE_OCI_FINGERPRINT: "0b:a6:4b:35:a0:b2:19:73:ae:04:75:ca:17:dc:6c:ad"
       ORG_OBJECT_STORAGE_OCI_REGION: sa-santiago-1
       ORG_OBJECT_STORAGE_OCI_NAMESPACE: axkhdnwe6r1c
-      ORG_OBJECT_STORAGE_OCI_BUCKET: explorarte-org-knowledge-source
+      ORG_OBJECT_STORAGE_OCI_BUCKET: bucket-20260810-0027
       ORG_OBJECT_STORAGE_OCI_PRIVATE_KEY_FILE: /run/secrets/oci-object-storage-api-key.pem
     ports:
       - "127.0.0.1:${ORG_HTTP_PORT:-8080}:8080"
@@ -237,7 +237,7 @@ services:
       ORG_OBJECT_STORAGE_OCI_FINGERPRINT: "0b:a6:4b:35:a0:b2:19:73:ae:04:75:ca:17:dc:6c:ad"
       ORG_OBJECT_STORAGE_OCI_REGION: sa-santiago-1
       ORG_OBJECT_STORAGE_OCI_NAMESPACE: axkhdnwe6r1c
-      ORG_OBJECT_STORAGE_OCI_BUCKET: explorarte-org-knowledge-source
+      ORG_OBJECT_STORAGE_OCI_BUCKET: bucket-20260810-0027
       ORG_OBJECT_STORAGE_OCI_PRIVATE_KEY_FILE: /run/secrets/oci-object-storage-api-key.pem
     volumes:
       - /etc/explorarte/secrets/model-execution-identity.pem:/run/secrets/model-execution-identity.pem:ro

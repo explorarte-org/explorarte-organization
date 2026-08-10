@@ -4,7 +4,8 @@
 // from-scratch implementation of that provider's own request-signing
 // scheme). Object Storage is the source-of-truth bucket for the knowledge
 // ingestion pipeline (raw/normalized/manifests/logs) landed at
-// explorarte-org-knowledge-source, namespace axkhdnwe6r1c, region
+// bucket-20260810-0027 (intended name explorarte-org-knowledge-source,
+// but OCI does not allow renaming after creation), namespace axkhdnwe6r1c, region
 // sa-santiago-1.
 package objectstorage
 
