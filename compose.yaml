@@ -185,8 +185,25 @@ services:
       ORG_MODEL_EXECUTION_PRINCIPAL_KEY: oracle-org-01/model-runtime-01
       ORG_MODEL_WORKER_BATCH_SIZE: ${ORG_MODEL_WORKER_BATCH_SIZE:-10}
       ORG_MODEL_WORKER_CONCURRENCY: ${ORG_MODEL_WORKER_CONCURRENCY:-1}
+      # DeepSeek: official OpenAI-compatible Chat Completions interface,
+      # confirmed against DeepSeek's own docs (base https://api.deepseek.com,
+      # POST /chat/completions -- stateless, full history resent each turn).
+      ORG_MODEL_PROVIDER_DEEPSEEK_ENABLED: "true"
+      ORG_MODEL_PROVIDER_DEEPSEEK_ENDPOINT_URL: https://api.deepseek.com/chat/completions
+      ORG_MODEL_PROVIDER_DEEPSEEK_CREDENTIAL_FILE: /run/secrets/deepseek-api-key
+      # OpenAI-compatible: credential mounted and ready, but left disabled.
+      # The current adapter (internal/modelruntime/adapter/openaicompat)
+      # only speaks Chat Completions (AdapterID=openai_chat_completions,
+      # schema openai.chat.completions.request.v1). gpt-5.6-luna is meant to
+      # run over the Responses API (/v1/responses +
+      # /v1/responses/compact for native compaction) per owner decision --
+      # that needs a new adapter/protocol, not just this env wiring, so it
+      # stays disabled until that code exists.
+      ORG_MODEL_PROVIDER_OPENAI_COMPATIBLE_ENABLED: "false"
     volumes:
       - /etc/explorarte/secrets/model-execution-identity.pem:/run/secrets/model-execution-identity.pem:ro
+      - /etc/explorarte/secrets/deepseek-api-key:/run/secrets/deepseek-api-key:ro
+      - /etc/explorarte/secrets/openai-compatible-api-key:/run/secrets/openai-compatible-api-key:ro
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=32m
