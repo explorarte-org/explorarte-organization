@@ -26,6 +26,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/deepseek"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/gemini"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/openaicompat"
+	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/openairesponses"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/costgate"
 	modelpostgres "github.com/Mireuz13/explorarte-organization/internal/modelruntime/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
@@ -144,7 +145,11 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	if err != nil {
 		return nil, fmt.Errorf("load Gemini provider config: %w", err)
 	}
-	registeredAdapters := make([]modelruntime.ProviderAdapter, 0, 3)
+	openaiResponsesConfig, err := openairesponses.LoadConfig(os.LookupEnv, runtimeCfg.MaxResponseBytes)
+	if err != nil {
+		return nil, fmt.Errorf("load OpenAI Responses provider config: %w", err)
+	}
+	registeredAdapters := make([]modelruntime.ProviderAdapter, 0, 4)
 	if openAIConfig.Enabled {
 		providerAdapter, providerErr := openaicompat.New(openAIConfig)
 		if providerErr != nil {
@@ -163,6 +168,13 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 		providerAdapter, providerErr := gemini.New(geminiConfig)
 		if providerErr != nil {
 			return nil, fmt.Errorf("open Gemini provider adapter: %w", providerErr)
+		}
+		registeredAdapters = append(registeredAdapters, providerAdapter)
+	}
+	if openaiResponsesConfig.Enabled {
+		providerAdapter, providerErr := openairesponses.New(openaiResponsesConfig)
+		if providerErr != nil {
+			return nil, fmt.Errorf("open OpenAI Responses provider adapter: %w", providerErr)
 		}
 		registeredAdapters = append(registeredAdapters, providerAdapter)
 	}
