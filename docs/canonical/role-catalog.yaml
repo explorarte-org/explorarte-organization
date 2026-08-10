@@ -389,7 +389,7 @@ roles:
   canonical_leader: false
   legacy_frontmatter_leader: false
   model_policy: research.worker
-  profile_path: null
+  profile_path: investigacion/research_worker_hourly/PERFIL.md
   department_agent_path: investigacion/AGENT.md
   memory_domain: investigacion
   memory_path: null
@@ -398,7 +398,7 @@ roles:
   reports_to_source_text: Unidad transversal de Investigación; los hallazgos se entregan al auditor y se escalan al CEO o
     a Eduardo según riesgo.
   rag_topics_source_text: Vacíos de conocimiento derivados del registro organizacional, proyectos activos y perfiles aprobados.
-  status: proposed_profile_required
+  status: imported_source
   reports_to:
   - empresa/ceo
   - empresa/human

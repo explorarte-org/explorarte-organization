@@ -136,6 +136,9 @@ files:
 - path: /mnt/data/branch0_work/source/organizacion/investigacion/auditor_cerebro_empresa/PERFIL.md
   sha256: 3f95d05b844f0ed8638f8c938997a95910b8e63945221151741a2009686f02af
   bytes: 2152
+- path: /mnt/data/branch0_work/source/organizacion/investigacion/research_worker_hourly/PERFIL.md
+  sha256: d4e5a5d89eba6a6a5a7cc5b12e4f1598e2276801f3257ad69da8e475abb68655
+  bytes: 1725
 - path: /mnt/data/branch0_work/source/organizacion/marketing/AGENT.md
   sha256: 89a9492e94b53518a1cf1ad92e729adc206aba628f79024c87ccc23f8c237716
   bytes: 808
