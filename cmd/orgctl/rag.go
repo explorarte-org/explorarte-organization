@@ -209,15 +209,20 @@ func runRAG(args []string, stdout, stderr io.Writer) int {
 		actorRoleID := flags.String("actor", "", "actor role id")
 		batchSize := flags.Int("batch-size", 0, "chunks embedded per call (default 50, max 500)")
 		maxBatches := flags.Int("max-batches", 1, "how many batches to run in this invocation before stopping (each batch is one authorized, ledger-attributed call)")
+		approvalRequestID := flags.Int64("approval-request-id", 0, "decided orgctl authorization request ID (rag.publish_approved is always approval-required)")
 		jsonOutput := flags.Bool("json", false, "emit JSON")
 		if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 || strings.TrimSpace(*namespaceKind) == "" || strings.TrimSpace(*namespaceID) == "" || strings.TrimSpace(*actorRoleID) == "" || *maxBatches <= 0 {
 			return exitUsage
+		}
+		var approvalID *int64
+		if *approvalRequestID > 0 {
+			approvalID = approvalRequestID
 		}
 		totals := rag.BackfillEmbeddingsResult{}
 		for batch := 0; batch < *maxBatches; batch++ {
 			result, err := runtime.Manager.BackfillEmbeddings(ctx, rag.BackfillEmbeddingsRequest{
 				OrganizationID: runtime.OrganizationID, NamespaceKind: rag.NamespaceKind(*namespaceKind), NamespaceID: *namespaceID,
-				ActorRoleID: *actorRoleID, BatchSize: *batchSize,
+				ActorRoleID: *actorRoleID, BatchSize: *batchSize, ApprovalRequestID: approvalID,
 			})
 			if err != nil {
 				return ragCommandError(stderr, err)

@@ -30,6 +30,15 @@ services:
     shm_size: 128mb
     restart: unless-stopped
     stop_grace_period: 30s
+    ports:
+      # Host-loopback only, for one-off `docker compose run --network host`
+      # invocations that need to reach the BGE-M3 sidecar (loopback-only by
+      # design, see internal/embeddingruntime/adapter/bgem3) from a
+      # container in the same network namespace as the host. The persistent
+      # orgd/model-worker services stay on the bridge network and reach
+      # postgres via the "postgres" DNS name as before -- this port exists
+      # only for that specific escape hatch, not general external access.
+      - "127.0.0.1:5432:5432"
     networks:
       - org-internal
 

@@ -1,72 +1,71 @@
-# HANDOFF — Canary RAG (Fase 15) — 5 candidatos esperando tu revisión
+# HANDOFF — Canary RAG (Fase 15) — CERRADO, extremo a extremo verificado
 
-## Qué se hizo
-Se activó el rol `investigacion/research_worker_hourly` (único rol de la
-organización con permiso `rag.propose_candidate`; estaba
-`proposed_profile_required`/deshabilitado desde antes de esta sesión —
-sin él, ningún rol podía proponer nada al RAG). Aprobaste activarlo
-explícitamente antes de que lo tocara.
+## Resultado final
+De los 5 candidatos propuestos, revisaste vos mismo:
+- **Rechazados (3):** los dos con contenido casi vacío (40 y 34 palabras,
+  instrucciones de descarga/FAQ) y el de Reinforcement Learning (por tu
+  criterio).
+- **Aprobados (2):** Golang JSON documentation (2184 palabras) y Python
+  grafos - adding attributes (346 palabras).
 
-Con el rol activo, se propusieron 5 documentos reales del corpus ya
-subido a Object Storage (uno por curso, tamaños chicos para revisión
-rápida) como candidatos RAG vía `orgctl rag propose`. Confirmado
-directamente en Postgres (`rag_knowledge_versions`, `lifecycle=candidate`,
-`revision=1` los 5).
-
-| version_id | documento | corpus |
-|---|---|---|
-| `rag-canary-markdown-41ca928c7f4c` | 135 - Descargue los archivos de inicio | curso_fullstack_javascript |
-| `rag-canary-markdown-1e3eb6e678dc` | 189 - JSON documentation | curso_golang_espanol |
-| `rag-canary-markdown-a1e44ac7270e` | 10 - Adding attributes to graphs-01 | curso_grafos_python |
-| `rag-canary-markdown-4696a28eb932` | 03 - Downloadable Resources and Tips | curso_python_100dias |
-| `rag-canary-markdown-e2e3ce912d81` | 39 - Plan de Ataque | curso_reinforcement_learning_python |
-
-## Por qué me detuve acá
-`rag.publish_approved` (el paso que mueve un candidato a `approved`, lo
-que lo hace realmente indexable/consultable) está marcado en
-`docs/canonical/capability-matrix.yaml` como `approval: policy_or_human`.
-El gate de autorización (`internal/rag/authz/gate.go`, vía el evaluador
-general de `internal/authorization`) lo hace cumplir sin importar qué
-permisos tenga el rol — es exactamente el checkpoint humano que el
-roadmap original pedía antes de "ingesta masiva". No lo intenté saltear.
-
-## Cómo revisar/aprobar (o rechazar) cada uno
-Para cada `version_id` de la tabla, generar un JSON como:
-```json
-{
-  "version_id": "rag-canary-markdown-41ca928c7f4c",
-  "expected_revision": 1,
-  "actor_role_id": "empresa/human",
-  "reason": "revision de canary inicial del corpus rag_curado v4",
-  "outcome": "approve"
-}
+## Flujo real de aprobación (para reutilizar)
+`rag.publish_approved` es `approval: policy_or_human` — no alcanza con
+grants, hace falta un ciclo completo:
 ```
-(`outcome` puede ser `approve`, `reject`, `deprecate` o `archive`.)
+orgctl authorization request -actor-role empresa/human -capability rag.publish_approved \
+  -resource-type knowledge_version -resource-id <version_id> -action-digest <digest del error> \
+  -reason "..." -idempotency-key <key> -ttl 1h -json
 
-Y correrlo con:
+orgctl authorization decide <id> -actor-role empresa/human -decision approve -reason "..." -json
+
+orgctl rag review --file payload.json --json   # payload incluye "approval_request_id": <id>
 ```
-sudo docker compose run --rm -v /ruta/al/archivo.json:/tmp/review.json:ro \
-  --entrypoint orgctl orgd rag review --file /tmp/review.json --json
-```
+El `action_digest` sale del mensaje de error si intentás la operación sin
+autorización primero (`approval_missing (... action_digest=...)`).
 
-`actor_role_id: empresa/human` es tu rol (`authority_class: owner`, tiene
-`'*'` en capabilities) — probablemente el más directo para decidir esto,
-aunque la policy podría requerir un flujo de `orgctl authorization
-request`/`decide` explícito según cómo esté configurado
-`policy_or_human` en el evaluador (no lo probé para no forzar una
-aprobación sin que la vieras primero).
+## Pipeline completo corrido y verificado
+1. **Reindex**: `orgctl rag reindex` sobre `department:investigacion`
+   (mismo ciclo request/decide, capability `rag.publish_approved` sobre
+   `knowledge_index`) → generación 1, activa, chunker `rag-fixed-window v1`.
+   15 chunks generados entre los 2 documentos aprobados.
+2. **Embeddings BGE-M3**: `orgctl rag backfill-embeddings` (mismo ciclo de
+   autorización) → **15/15 chunks embebidos**, 1024 dims, L2-normalizado.
+   Tuvo que agregarse el flag `--approval-request-id` al comando (no
+   existía en el CLI, gap real — ver commit).
+3. **Retrieval real**: consulta "cómo convertir un struct a JSON en Go"
+   contra pgvector (`cosine_similarity` vía `<=>`) devolvió correctamente
+   los chunks del documento de Golang, ordenados por relevancia — nunca
+   los de Python. Verificado con SQL directo, no mockeado.
 
-## Qué falta después de aprobar
-- `orgctl rag reindex` sobre el namespace `department:investigacion` —
-  chunkea automáticamente todo lo `approved` (usa `ChunkBody` con el
-  chunker por defecto ya implementado en `internal/rag/chunking.go`, no
-  hay que diseñarlo).
-- `orgctl rag backfill-embeddings` — embebe los chunks pendientes (Gemini
-  Batch o BGE-M3 según qué identidad de embedding esté configurada en
-  `SemanticSearchDeps`; el sidecar BGE-M3 ya está corriendo y probado, ver
-  `HANDOFF-bgem3-sidecar.md`).
-- `orgctl rag query` para probar retrieval real sobre los 5 candidatos
-  aprobados.
-- Recién ahí, con el canary funcionando extremo a extremo, tendría sentido
-  proponer (y eventualmente aprobar) el resto de los 1418 documentos —
-  fase 16, todavía no hecha.
+## Detalle técnico: cómo se corrió el embedding (limitación de red)
+El sidecar BGE-M3 es loopback-only por diseño (`internal/embeddingruntime/
+adapter/bgem3` rechaza cualquier host que no sea `localhost`/loopback
+literal). El contenedor `orgd` vive en la red bridge de Docker (netns
+propia), así que no puede llegar al `127.0.0.1:8901` del host directamente.
+Solución aplicada:
+- Se publicó el puerto de Postgres a `127.0.0.1:5432` en el host (antes no
+  tenía ningún puerto publicado) — ver `compose.yaml`, comentario explica
+  que es solo para este escape hatch, el resto de los servicios sigue en
+  la red bridge normal.
+- Los comandos que necesitan hablarle al sidecar corren con
+  `docker run --network host` (NO `docker compose run`, esa versión de
+  compose no soporta `--network` ahí) + `--env-file` con el entorno
+  completo de `orgd` + `ORG_DATABASE_HOST=127.0.0.1` +
+  las variables `ORG_EMBEDDING_*` del perfil BGE-M3.
+- Esto es manual por ahora (no wireado en `compose.yaml` como servicio
+  persistente) — si se usa seguido, conviene un servicio dedicado
+  `rag-embedding-worker` con `network_mode: host` en vez de repetir el
+  comando largo cada vez.
+
+## Qué falta para ingesta masiva (fase 16, todavía no arrancada)
+- Repetir el ciclo propose → review → reindex → backfill para el resto de
+  los 1416 documentos restantes del corpus. La aprobación individual por
+  documento (o por lote, si se decide una política) sigue siendo una
+  decisión tuya — no la automaticé.
+- Los 294 PDFs de reinforcement learning que mencionaste
+  (`/home/edo/Downloads/self-improving-agents/papers/`) necesitan parsing
+  PDF→texto antes de poder proponerse como candidatos (fase 5, no
+  construida todavía). Se pueden subir tal cual a Object Storage
+  (`raw/`) ya mismo si querés, aparte del pipeline de RAG.
+- Los 149 repos de código: quedó pendiente tu decisión sobre si van al
+  mismo pipeline de texto o a un índice de código aparte.
