@@ -86,6 +86,48 @@ func ClassifySourceType(title, venue string) string {
 	return "paper"
 }
 
+// englishStopwords is deliberately small and high-frequency-only: words
+// so common in English prose that their density alone is a reasonable
+// discriminator, without needing a wordlist per candidate language (owner
+// decision re-run section 6: local, reproducible, method disclosed --
+// not a claim of general language identification).
+var englishStopwords = map[string]bool{
+	"the": true, "of": true, "and": true, "to": true, "in": true, "a": true, "is": true,
+	"that": true, "for": true, "on": true, "with": true, "as": true, "are": true, "this": true,
+	"we": true, "by": true, "an": true, "be": true, "from": true, "or": true, "which": true,
+	"our": true, "their": true, "it": true, "was": true, "has": true, "have": true, "can": true,
+	"these": true, "such": true, "not": true, "at": true, "its": true, "than": true, "using": true,
+}
+
+var wordPattern = regexp.MustCompile(`[A-Za-zÀ-ÿ]+`)
+
+// DetectLanguage implements method "stopword_density_v1": the fraction of
+// tokens in text that are common English stopwords. Above 0.08 -> "en"
+// with confidence scaled by density (capped at 1.0); a text with almost
+// no recognizable words at all (e.g. from a page that failed extraction)
+// reports "unknown" with confidence 0 rather than guessing.
+func DetectLanguage(text string) LanguageDetection {
+	words := wordPattern.FindAllString(strings.ToLower(text), -1)
+	if len(words) < 20 {
+		return LanguageDetection{Language: "unknown", Confidence: 0, Method: "stopword_density_v1"}
+	}
+	hits := 0
+	for _, w := range words {
+		if englishStopwords[w] {
+			hits++
+		}
+	}
+	density := float64(hits) / float64(len(words))
+	if density >= 0.08 {
+		confidence := density / 0.20 // 0.20 density ~ typical English prose; scale, cap below
+		if confidence > 1.0 {
+			confidence = 1.0
+		}
+		return LanguageDetection{Language: "en", Confidence: confidence, Method: "stopword_density_v1"}
+	}
+	return LanguageDetection{Language: "unknown", Confidence: 1.0 - (density / 0.08), Method: "stopword_density_v1"}
+}
+
 var referencesHeadingPattern = regexp.MustCompile(`(?im)^\s*(references|bibliography|works\s+cited)\s*$`)
 var citationDensityPattern = regexp.MustCompile(`(?i)\b(19|20)\d{2}\b|arxiv:\s*\d{4}\.\d{4,5}|et al\.|\bdoi:`)
 

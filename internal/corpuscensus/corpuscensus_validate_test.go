@@ -27,18 +27,26 @@ func newTestProcessor(t *testing.T) (*poppler.Processor, string) {
 
 func TestValidatePDFAcceptsValidTwoPagePDF(t *testing.T) {
 	processor, dir := newTestProcessor(t)
-	validation, decision, reason := ValidatePDF(context.Background(), processor, filepath.Join(dir, "two-page.pdf"), DefaultValidationConfig())
+	validation, decision, reason, lang := ValidatePDF(context.Background(), processor, filepath.Join(dir, "two-page.pdf"), DefaultValidationConfig())
 	if decision != DecisionAccepted {
 		t.Fatalf("decision=%s reason=%q", decision, reason)
 	}
 	if !validation.Valid || validation.Pages != 2 {
 		t.Fatalf("validation=%+v", validation)
 	}
+	// The fixture's text ("Page one content here" x2) is far too short
+	// (well under the 20-word floor) for stopword-density detection to
+	// have any signal -- this asserts the honest "unknown" outcome, not
+	// a forced "en", since DetectLanguage's own tests (in a dedicated
+	// test file) cover real English/short-text behavior directly.
+	if lang.Language != "unknown" || lang.Method != "stopword_density_v1" {
+		t.Fatalf("lang=%+v, expected unknown for this short a fixture", lang)
+	}
 }
 
 func TestValidatePDFQuarantinesEncryptedPDF(t *testing.T) {
 	processor, dir := newTestProcessor(t)
-	validation, decision, _ := ValidatePDF(context.Background(), processor, filepath.Join(dir, "encrypted.pdf"), DefaultValidationConfig())
+	validation, decision, _, _ := ValidatePDF(context.Background(), processor, filepath.Join(dir, "encrypted.pdf"), DefaultValidationConfig())
 	if decision != DecisionEncrypted {
 		t.Fatalf("decision=%s", decision)
 	}
@@ -49,7 +57,7 @@ func TestValidatePDFQuarantinesEncryptedPDF(t *testing.T) {
 
 func TestValidatePDFQuarantinesMalformedPDF(t *testing.T) {
 	processor, dir := newTestProcessor(t)
-	validation, decision, _ := ValidatePDF(context.Background(), processor, filepath.Join(dir, "malformed.pdf"), DefaultValidationConfig())
+	validation, decision, _, _ := ValidatePDF(context.Background(), processor, filepath.Join(dir, "malformed.pdf"), DefaultValidationConfig())
 	if decision != DecisionInvalid {
 		t.Fatalf("decision=%s", decision)
 	}
@@ -60,7 +68,7 @@ func TestValidatePDFQuarantinesMalformedPDF(t *testing.T) {
 
 func TestValidatePDFFlagsAllEmptyTextAsReviewRequired(t *testing.T) {
 	processor, dir := newTestProcessor(t)
-	validation, decision, reason := ValidatePDF(context.Background(), processor, filepath.Join(dir, "no-text.pdf"), DefaultValidationConfig())
+	validation, decision, reason, _ := ValidatePDF(context.Background(), processor, filepath.Join(dir, "no-text.pdf"), DefaultValidationConfig())
 	if decision != DecisionReviewRequired {
 		t.Fatalf("decision=%s reason=%q", decision, reason)
 	}

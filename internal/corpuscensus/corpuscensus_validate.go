@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/pdfingest"
@@ -30,33 +31,35 @@ func DefaultValidationConfig() ValidationConfig {
 // local file and reduces the result to a PDFValidation summary plus the
 // Decision this document warrants. It never uploads anything and never
 // keeps page bytes beyond this call's stack.
-func ValidatePDF(ctx context.Context, processor pdfingest.Processor, path string, cfg ValidationConfig) (PDFValidation, Decision, string) {
+func ValidatePDF(ctx context.Context, processor pdfingest.Processor, path string, cfg ValidationConfig) (PDFValidation, Decision, string, LanguageDetection) {
 	body, err := os.ReadFile(path)
 	if err != nil {
-		return PDFValidation{Valid: false, ParserStatus: "read_error"}, DecisionInvalid, "could not read file: " + err.Error()
+		return PDFValidation{Valid: false, ParserStatus: "read_error"}, DecisionInvalid, "could not read file: " + err.Error(), LanguageDetection{Language: "unknown", Method: "stopword_density_v1"}
 	}
 
 	result, timeoutPolicy, err := runWithTimeoutPolicy(ctx, processor, body, cfg)
 	if err != nil {
+		unknownLang := LanguageDetection{Language: "unknown", Method: "stopword_density_v1"}
 		var qerr *pdfingest.QuarantineError
 		if errors.As(err, &qerr) {
 			switch qerr.Reason {
 			case pdfingest.QuarantineEncrypted:
-				return PDFValidation{Valid: false, Encrypted: true, ParserStatus: "quarantined", QuarantineReason: string(qerr.Reason), TimeoutPolicy: TimeoutNone}, DecisionEncrypted, qerr.Detail
+				return PDFValidation{Valid: false, Encrypted: true, ParserStatus: "quarantined", QuarantineReason: string(qerr.Reason), TimeoutPolicy: TimeoutNone}, DecisionEncrypted, qerr.Detail, unknownLang
 			default:
-				return PDFValidation{Valid: false, ParserStatus: "quarantined", QuarantineReason: string(qerr.Reason), TimeoutPolicy: TimeoutNone}, DecisionInvalid, qerr.Detail
+				return PDFValidation{Valid: false, ParserStatus: "quarantined", QuarantineReason: string(qerr.Reason), TimeoutPolicy: TimeoutNone}, DecisionInvalid, qerr.Detail, unknownLang
 			}
 		}
 		if errors.Is(err, pdfingest.ErrTimeout) {
-			return PDFValidation{Valid: false, ParserStatus: "timeout", TimeoutPolicy: timeoutPolicy}, DecisionTimeout, "parser exceeded both the default and retry timeout bounds"
+			return PDFValidation{Valid: false, ParserStatus: "timeout", TimeoutPolicy: timeoutPolicy}, DecisionTimeout, "parser exceeded both the default and retry timeout bounds", unknownLang
 		}
 		if errors.Is(err, pdfingest.ErrEmptySource) {
-			return PDFValidation{Valid: false, ParserStatus: "empty_source"}, DecisionInvalid, "source file is empty"
+			return PDFValidation{Valid: false, ParserStatus: "empty_source"}, DecisionInvalid, "source file is empty", unknownLang
 		}
-		return PDFValidation{Valid: false, ParserStatus: "error"}, DecisionInvalid, err.Error()
+		return PDFValidation{Valid: false, ParserStatus: "error"}, DecisionInvalid, err.Error(), unknownLang
 	}
 
 	emptyPages, refPages := 0, 0
+	var textSample strings.Builder
 	for _, page := range result.Pages {
 		if page.TextExtractionStatus == pdfingest.TextExtractionEmpty {
 			emptyPages++
@@ -64,7 +67,12 @@ func ValidatePDF(ctx context.Context, processor pdfingest.Processor, path string
 		if LooksLikeReferencesPage(page.PageNumber, len(result.Pages), page.ExtractedText) {
 			refPages++
 		}
+		if textSample.Len() < 5000 && page.TextExtractionStatus == pdfingest.TextExtractionOK {
+			textSample.WriteString(page.ExtractedText)
+			textSample.WriteByte(' ')
+		}
 	}
+	language := DetectLanguage(textSample.String())
 
 	validation := PDFValidation{
 		Valid:           true,
@@ -78,9 +86,9 @@ func ValidatePDF(ctx context.Context, processor pdfingest.Processor, path string
 	}
 
 	if len(result.Pages) > 0 && emptyPages == len(result.Pages) {
-		return validation, DecisionReviewRequired, "all pages are visual/scanned with no extractable text -- valid PDF, flagged for review rather than auto-accepted since domain relevance cannot be text-verified yet"
+		return validation, DecisionReviewRequired, "all pages are visual/scanned with no extractable text -- valid PDF, flagged for review rather than auto-accepted since domain relevance cannot be text-verified yet", language
 	}
-	return validation, DecisionAccepted, ""
+	return validation, DecisionAccepted, "", language
 }
 
 // runWithTimeoutPolicy tries DefaultTimeout first; on ErrTimeout only

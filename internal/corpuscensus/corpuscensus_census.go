@@ -3,10 +3,11 @@ package corpuscensus
 import "sort"
 
 // Census is the aggregate report this package produces (owner decision,
-// Part B section 1 and the 35-point final report format). It is computed
-// purely from in-memory data (all Bronze rows plus all SilverRecords in
-// the StateStore, including ones resumed from a prior run) -- BuildCensus
-// never touches the network, the filesystem, or a subprocess itself.
+// Part B section 1 and the re-run's 46-point final report format). It is
+// computed purely from in-memory data (all Bronze rows plus all
+// SilverRecords in the StateStore, including ones resumed from a prior
+// run) -- BuildCensus never touches the network, the filesystem, or a
+// subprocess itself.
 type Census struct {
 	TotalReferencesDiscovered int
 	TotalPDFFilesPresent      int // bronze rows with status=downloaded
@@ -25,11 +26,24 @@ type Census struct {
 	UniqueTitleYear       int
 	NoCanonicalIdentifier int // artifacts with none of DOI/arXiv/ACL/OpenReview
 
-	ParserHealth ParserHealthCensus
-	Metadata     MetadataCensus
-	Topics       map[string]int
+	ParserHealth  ParserHealthCensus
+	Metadata      MetadataCensus
+	Topics        map[string]int
+	TopicCoverage []TopicCoverage
 
 	Decisions map[Decision]int
+	// FinalDecisionSum and ArtifactCountForSumCheck let a report reader
+	// verify SUM(final_decision counts) == total Artifacts directly from
+	// the JSON (owner decision, re-run section 7) instead of re-summing
+	// the Decisions map by hand.
+	FinalDecisionSum         int
+	ArtifactCountForSumCheck int
+	FinalDecisionSumMatches  bool
+
+	AuthorityTiers AuthorityTierCensus
+
+	AcceptedHighConfidence int // accepted, no metadata gaps
+	AcceptedWithGaps       int // accepted, HasMetadataGaps=true
 
 	SelfImprovingAgentsOverlap int // artifacts whose SHA-256 matched the separate seed corpus
 
@@ -40,9 +54,9 @@ type ParserHealthCensus struct {
 	Valid              int
 	Malformed          int
 	Encrypted          int
-	Timeout            int
-	RetryableTimeout   int
-	HardTimeout        int
+	InitialTimeout     int // documents whose FIRST parse attempt timed out (= RetrySuccess + PersistentTimeout)
+	RetrySuccess       int // timed out once, succeeded on the bounded retry
+	PersistentTimeout  int // timed out on both the default and retry bounds -- still not "corrupt" (owner decision)
 	EmptyTextDocuments int // ALL pages empty-text
 	SomeEmptyTextPages int // some but not all pages empty-text
 	ReviewRequired     int
@@ -51,7 +65,40 @@ type ParserHealthCensus struct {
 type MetadataCensus struct {
 	YearDistribution       map[int]int
 	CollectionDistribution map[string]int
-	LanguageDistribution   map[string]int
+	LanguageDistribution   map[string]int // keyed by LanguageDetection.Language
+}
+
+type AuthorityTierCensus struct {
+	TierA   int
+	TierB   int
+	TierC   int // conceptual only -- catalogs are discovery, never become SilverRecords, so this is always 0 from this package
+	TierD   int // conceptual only -- same as above
+	Unknown int
+}
+
+// TopicCoverage is a per-topic coverage-gap assessment (owner decision,
+// re-run section 12: do not infer coverage from count alone). Tier is a
+// deterministic, disclosed heuristic -- NOT a claim of true corpus
+// completeness, which requires a human/domain judgment this package does
+// not make.
+type TopicCoverage struct {
+	Topic           string
+	WorkCount       int
+	DistinctSources int    // distinct (repo_name or venue) contributing to this topic
+	Tier            string // "strong" | "adequate" | "weak" | "missing"
+}
+
+func classifyCoverageTier(workCount, distinctSources int) string {
+	switch {
+	case workCount == 0:
+		return "missing"
+	case workCount >= 40 && distinctSources >= 5:
+		return "strong"
+	case workCount >= 15 && distinctSources >= 3:
+		return "adequate"
+	default:
+		return "weak"
+	}
 }
 
 func BuildCensus(papers []BronzePaper, records []SilverRecord) Census {
@@ -100,18 +147,33 @@ func BuildCensus(papers []BronzePaper, records []SilverRecord) Census {
 	census.UniqueOpenReview = len(openReviewSet)
 	census.UniqueTitleYear = len(titleYearSet)
 
+	topicSources := make(map[string]map[string]bool) // topic -> set of distinct (repo_name|venue)
+
 	for _, r := range records {
 		census.UniqueArtifacts++
 		census.TotalBytesKnown += r.ArtifactBytes
 		workSet[r.WorkID] = true
 		census.Decisions[r.Decision]++
 		census.Metadata.CollectionDistribution[r.Collection]++
-		census.Metadata.LanguageDistribution[r.Language]++
+		census.Metadata.LanguageDistribution[r.Language.Language]++
 		if r.Year > 0 {
 			census.Metadata.YearDistribution[r.Year]++
 		}
 		for _, topic := range r.Topics {
 			census.Topics[topic]++
+			if topicSources[topic] == nil {
+				topicSources[topic] = make(map[string]bool)
+			}
+			sourceKey := r.CanonicalSource
+			if sourceKey == "" {
+				for _, dv := range r.DiscoveredVia {
+					sourceKey = dv.RepoName
+					break
+				}
+			}
+			if sourceKey != "" {
+				topicSources[topic][sourceKey] = true
+			}
 		}
 		if r.SHA256 != "" {
 			shaCounts[r.SHA256]++
@@ -123,16 +185,36 @@ func BuildCensus(papers []BronzePaper, records []SilverRecord) Census {
 			census.SelfImprovingAgentsOverlap++
 		}
 
+		switch r.AuthorityTier {
+		case TierA:
+			census.AuthorityTiers.TierA++
+		case TierB:
+			census.AuthorityTiers.TierB++
+		case TierC:
+			census.AuthorityTiers.TierC++
+		case TierD:
+			census.AuthorityTiers.TierD++
+		default:
+			census.AuthorityTiers.Unknown++
+		}
+
+		if r.Decision == DecisionAccepted {
+			if r.HasMetadataGaps {
+				census.AcceptedWithGaps++
+			} else {
+				census.AcceptedHighConfidence++
+			}
+		}
+
 		switch {
 		case r.Decision == DecisionEncrypted:
 			census.ParserHealth.Encrypted++
 		case r.Decision == DecisionTimeout:
-			census.ParserHealth.Timeout++
 			switch r.PDF.TimeoutPolicy {
 			case TimeoutRetryable:
-				census.ParserHealth.RetryableTimeout++
+				census.ParserHealth.RetrySuccess++
 			case TimeoutHard:
-				census.ParserHealth.HardTimeout++
+				census.ParserHealth.PersistentTimeout++
 			}
 		case r.Decision == DecisionInvalid && r.PDF.QuarantineReason == "malformed":
 			census.ParserHealth.Malformed++
@@ -147,6 +229,7 @@ func BuildCensus(papers []BronzePaper, records []SilverRecord) Census {
 			}
 		}
 	}
+	census.ParserHealth.InitialTimeout = census.ParserHealth.RetrySuccess + census.ParserHealth.PersistentTimeout
 
 	census.UniqueWorks = len(workSet)
 	for _, count := range shaCounts {
@@ -155,6 +238,22 @@ func BuildCensus(papers []BronzePaper, records []SilverRecord) Census {
 			census.DuplicateSHA256++
 		}
 	}
+
+	for _, topic := range AllTopics {
+		count := census.Topics[topic]
+		distinct := len(topicSources[topic])
+		census.TopicCoverage = append(census.TopicCoverage, TopicCoverage{
+			Topic: topic, WorkCount: count, DistinctSources: distinct,
+			Tier: classifyCoverageTier(count, distinct),
+		})
+	}
+	sort.Slice(census.TopicCoverage, func(i, j int) bool { return census.TopicCoverage[i].Topic < census.TopicCoverage[j].Topic })
+
+	for _, decision := range FinalDecisions {
+		census.FinalDecisionSum += census.Decisions[decision]
+	}
+	census.ArtifactCountForSumCheck = census.UniqueArtifacts
+	census.FinalDecisionSumMatches = census.FinalDecisionSum == census.UniqueArtifacts
 
 	return census
 }

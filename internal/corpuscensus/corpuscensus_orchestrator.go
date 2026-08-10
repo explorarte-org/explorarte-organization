@@ -167,12 +167,12 @@ func (o *Orchestrator) processOne(ctx context.Context, p BronzePaper, srcs []Bro
 		ArxivID:             p.str(p.ArxivID),
 		ACLID:               p.str(p.ACLID),
 		OpenReviewID:        p.str(p.OpenReviewID),
-		Language:            "en", // harvester's catalogs are English-language sources; not independently detected in V1, documented gap
 		SourceType:          sourceType,
 		Collection:          collection,
 		DiscoveredVia:       discovered,
 		CanonicalSource:     p.str(p.Venue),
-		Topics:              TopicsForCollection(collection),
+		Topics:              CombineTopics(collection, p.Title),
+		Language:            LanguageDetection{Language: "not_evaluated", Method: "pdf_not_validated"}, // overwritten below if ValidatePDF actually runs
 		AuthorityTier:       tier,
 		Quality:             DeterministicQuality(tier, groupSize),
 		IsCanonicalArtifact: isCanonical,
@@ -184,6 +184,8 @@ func (o *Orchestrator) processOne(ctx context.Context, p BronzePaper, srcs []Bro
 	if o.Config.SelfImprovingSHA256 != nil && record.SHA256 != "" {
 		record.SeenInSelfImprovingAgentsSeed = o.Config.SelfImprovingSHA256[strings.ToLower(record.SHA256)]
 	}
+	noCanonicalID := record.DOI == "" && record.ArxivID == "" && record.ACLID == "" && record.OpenReviewID == ""
+	record.HasMetadataGaps = noCanonicalID || record.Year == 0 || record.CanonicalSource == ""
 
 	if sourceType == "evaluation" {
 		record.Decision = DecisionLowRelevance
@@ -208,10 +210,11 @@ func (o *Orchestrator) processOne(ctx context.Context, p BronzePaper, srcs []Bro
 	if info, err := os.Stat(cleanPath); err == nil {
 		record.ArtifactBytes = info.Size()
 	}
-	validation, decision, reason := ValidatePDF(ctx, o.Processor, cleanPath, o.Config.Validation)
+	validation, decision, reason, language := ValidatePDF(ctx, o.Processor, cleanPath, o.Config.Validation)
 	record.PDF = validation
 	record.Decision = decision
 	record.DecisionReason = reason
+	record.Language = language
 	if record.SeenInSelfImprovingAgentsSeed && decision == DecisionAccepted {
 		record.Decision = DecisionDuplicate
 		record.DecisionReason = "SHA-256 matches an artifact already present in the self-improving-agents seed (Object Storage) -- not re-ingested by this corpus, per owner instruction"

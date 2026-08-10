@@ -49,6 +49,7 @@ type Decision string
 
 const (
 	DecisionAccepted       Decision = "accepted"
+	DecisionRetryPending   Decision = "retry_pending" // reserved for a future async pipeline; this package's retry is synchronous (see ValidatePDF), so it never actually persists this value today
 	DecisionReviewRequired Decision = "review_required"
 	DecisionDuplicate      Decision = "duplicate"
 	DecisionSuperseded     Decision = "superseded"
@@ -61,12 +62,23 @@ const (
 
 func (d Decision) Valid() bool {
 	switch d {
-	case DecisionAccepted, DecisionReviewRequired, DecisionDuplicate, DecisionSuperseded,
+	case DecisionAccepted, DecisionRetryPending, DecisionReviewRequired, DecisionDuplicate, DecisionSuperseded,
 		DecisionInvalid, DecisionEncrypted, DecisionTimeout, DecisionLowRelevance, DecisionQuarantine:
 		return true
 	default:
 		return false
 	}
+}
+
+// FinalDecisions is the exclusive set every SilverRecord.Decision must be
+// one of -- owner decision, section 7: SUM(final_decision counts) must
+// equal total Artifacts. Attributes like canonical-ID-missing, encrypted-
+// as-a-fact, language, or visual-pages are orthogonal signals that can
+// coexist with any of these; DecisionEncrypted itself stays because a
+// genuinely encrypted PDF has no other terminal home in this closed set.
+var FinalDecisions = []Decision{
+	DecisionAccepted, DecisionRetryPending, DecisionReviewRequired, DecisionDuplicate, DecisionSuperseded,
+	DecisionInvalid, DecisionEncrypted, DecisionTimeout, DecisionLowRelevance, DecisionQuarantine,
 }
 
 // TimeoutPolicy distinguishes "a slow but valid PDF" from "give up" (owner
@@ -94,8 +106,11 @@ const (
 type AuthorityTier string
 
 const (
-	TierA AuthorityTier = "A" // has a confirmed peer-reviewed venue/publication
-	TierB AuthorityTier = "B" // scholarly ID (DOI/arXiv/ACL/OpenReview) but no confirmed venue
+	TierA       AuthorityTier = "A" // has a confirmed peer-reviewed venue/publication
+	TierB       AuthorityTier = "B" // scholarly ID (DOI/arXiv/ACL/OpenReview) but no confirmed venue
+	TierC       AuthorityTier = "C" // surveys, Awesome lists, catalogs -- conceptual only, never assigned to a SilverRecord in this package
+	TierD       AuthorityTier = "D" // blogs, tutorials, community discussion -- conceptual only, never assigned to a SilverRecord in this package
+	TierUnknown AuthorityTier = "unknown"
 )
 
 // QualitySignals separates deterministic signals (computed here, cheap,
@@ -142,6 +157,23 @@ type PDFValidation struct {
 	QuarantineReason string        `json:"quarantine_reason,omitempty"`
 }
 
+// LanguageDetection records HOW a document's language was established
+// (owner decision, Part B re-run section 6: no hardcoded "en", detection
+// must be local, reproducible, and its method disclosed). Method is
+// always "stopword_density_v1" in this package today -- a deliberately
+// simple, deterministic, dependency-free heuristic (English-stopword
+// frequency in the extracted text sample), not a claim that this is a
+// general-purpose language identifier. It reliably tells English apart
+// from not-clearly-English; it does not reliably distinguish which
+// non-English language a document is in, and this package does not
+// pretend otherwise ("unknown" covers that case honestly rather than
+// guessing).
+type LanguageDetection struct {
+	Language   string  `json:"language"`
+	Confidence float64 `json:"confidence"`
+	Method     string  `json:"method"`
+}
+
 // SourceRef mirrors one row of the harvester's own `sources` table:
 // exactly which discovery catalog/README/line first surfaced this
 // canonical_id, kept as an array because the same Work is frequently
@@ -177,8 +209,8 @@ type SilverRecord struct {
 	ACLID        string `json:"acl_id,omitempty"`
 	OpenReviewID string `json:"openreview_id,omitempty"`
 
-	Language   string `json:"language"`
-	SourceType string `json:"source_type"` // "paper" | "evaluation" (owner decision, section 8)
+	Language   LanguageDetection `json:"language"`
+	SourceType string            `json:"source_type"` // "paper" | "evaluation" (owner decision, section 8)
 
 	Collection      string      `json:"collection"`
 	DiscoveredVia   []SourceRef `json:"discovered_via,omitempty"`
@@ -194,6 +226,14 @@ type SilverRecord struct {
 	DecisionReason      string   `json:"decision_reason,omitempty"`
 	IsCanonicalArtifact bool     `json:"is_canonical_artifact"`
 	SupersededBy        string   `json:"superseded_by,omitempty"` // WorkID's canonical ArtifactID, when Decision==superseded
+
+	// HasMetadataGaps is orthogonal to Decision (owner decision, section
+	// 11): an accepted record can still be missing a canonical scholarly
+	// ID, year, or confirmed venue -- true when any of those is missing,
+	// so BuildCensus can report "high-confidence accepted" separately
+	// from "accepted with metadata gaps" without inventing a new Decision
+	// state for what is really a data-completeness signal.
+	HasMetadataGaps bool `json:"has_metadata_gaps"`
 
 	SeenInSelfImprovingAgentsSeed bool `json:"seen_in_self_improving_agents_seed,omitempty"`
 
