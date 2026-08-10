@@ -29,7 +29,7 @@ func TestLiveSidecarHealthAndEmbed(t *testing.T) {
 		ArtifactSHA256:        "b5e0ce3470abf5ef3831aa1bd5553b486803e83251590ab7ff35a117cf6aad38",
 		TokenizerRevision:     "baai-bge-m3-5617a9f61b028005a4858fdac845db406aefb181",
 		Normalization:         "l2",
-		Pooling:                "cls",
+		Pooling:               "cls",
 		ExpectedDimension:     1024,
 		PromptTemplateVersion: bgem3.PromptTemplateV1,
 		RequestTimeout:        30 * time.Second,

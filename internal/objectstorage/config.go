@@ -70,7 +70,6 @@ func LoadConfig(lookup LookupEnv) (Config, error) {
 	return cfg, nil
 }
 
-
 func (c Config) Validate() error {
 	if c.RequestTimeout < time.Second || c.RequestTimeout > 10*time.Minute {
 		return fmt.Errorf("object-storage request timeout outside allowed range")

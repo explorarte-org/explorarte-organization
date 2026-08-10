@@ -45,8 +45,8 @@ type ObjectSummary struct {
 }
 
 type listObjectsResponse struct {
-	Objects      []ObjectSummary `json:"objects"`
-	NextStartWith string         `json:"nextStartWith"`
+	Objects       []ObjectSummary `json:"objects"`
+	NextStartWith string          `json:"nextStartWith"`
 }
 
 // ListObjects returns every object under prefix, following OCI's

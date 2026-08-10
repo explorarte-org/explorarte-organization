@@ -387,13 +387,19 @@ func (s *Store) Reindex(ctx context.Context, command rag.ReindexCommand) (rag.In
 			return rag.IndexGeneration{}, fmt.Errorf("%w: chunk offsets are invalid", rag.ErrInvalidRequest)
 		}
 		chunkID := fmt.Sprintf("%s-%s-%d", generationID, chunk.VersionID, chunk.Ordinal)
-		if (chunk.MediaSourceRef == "") != (chunk.MediaMimeType == "") {
-			return rag.IndexGeneration{}, fmt.Errorf("%w: chunk media_source_ref and media_mime_type must be set together", rag.ErrInvalidRequest)
+		mediaFieldsSet := chunk.MediaSourceRef != "" || chunk.MediaMimeType != "" || chunk.SourcePageNumber != 0 || chunk.MediaSHA256 != "" || chunk.MediaParser != "" || chunk.MediaParserVersion != "" || chunk.TextExtractionStatus != ""
+		mediaFieldsComplete := chunk.MediaSourceRef != "" && chunk.MediaMimeType != "" && chunk.SourcePageNumber != 0 && chunk.MediaSHA256 != "" && chunk.MediaParser != "" && chunk.MediaParserVersion != "" && chunk.TextExtractionStatus != ""
+		if mediaFieldsSet && !mediaFieldsComplete {
+			return rag.IndexGeneration{}, fmt.Errorf("%w: media-backed chunk requires media_source_ref, media_mime_type, source_page_number, media_sha256, media_parser, media_parser_version, and text_extraction_status all set together", rag.ErrInvalidRequest)
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO rag_knowledge_chunks (organization_id,chunk_id,generation_id,version_id,chunker_id,chunker_version,ordinal,start_offset,end_offset,content,content_hash,embedding_model_id,embedding_model_version,embedding_dimension,media_source_ref,media_mime_type) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+		if mediaFieldsComplete && !chunk.TextExtractionStatus.Valid() {
+			return rag.IndexGeneration{}, fmt.Errorf("%w: invalid text_extraction_status %q", rag.ErrInvalidRequest, chunk.TextExtractionStatus)
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO rag_knowledge_chunks (organization_id,chunk_id,generation_id,version_id,chunker_id,chunker_version,ordinal,start_offset,end_offset,content,content_hash,embedding_model_id,embedding_model_version,embedding_dimension,media_source_ref,media_mime_type,source_page_number,media_sha256,media_parser,media_parser_version,text_extraction_status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
 			organizationID, chunkID, generationID, chunk.VersionID, chunk.ChunkerID, chunk.ChunkerVersion, chunk.Ordinal, chunk.StartOffset, chunk.EndOffset, chunk.Content, chunk.ContentHash,
 			nullableString(chunk.EmbeddingModelID), nullableString(chunk.EmbeddingModelVersion), nullableInt(chunk.EmbeddingDimension),
-			nullableString(chunk.MediaSourceRef), nullableString(chunk.MediaMimeType)); err != nil {
+			nullableString(chunk.MediaSourceRef), nullableString(chunk.MediaMimeType),
+			nullableInt(chunk.SourcePageNumber), nullableString(chunk.MediaSHA256), nullableString(chunk.MediaParser), nullableString(chunk.MediaParserVersion), nullableString(string(chunk.TextExtractionStatus))); err != nil {
 			return rag.IndexGeneration{}, mapError("insert rag knowledge chunk", err)
 		}
 	}

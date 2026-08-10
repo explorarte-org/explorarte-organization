@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -17,21 +18,36 @@ import (
 )
 
 func openObjectStorageClient(stderr io.Writer) (*objectstorage.Client, int) {
-	cfg, err := objectstorage.LoadConfig(os.LookupEnv)
+	client, err := newObjectStorageClient()
 	if err != nil {
-		fmt.Fprintf(stderr, "load object storage config: %v\n", err)
-		return nil, exitUsage
-	}
-	if !cfg.Enabled {
-		fmt.Fprintln(stderr, "object storage is disabled (ORG_OBJECT_STORAGE_OCI_ENABLED is not true)")
-		return nil, exitUsage
-	}
-	client, err := objectstorage.New(cfg)
-	if err != nil {
-		fmt.Fprintf(stderr, "open object storage client: %v\n", err)
+		fmt.Fprintln(stderr, err)
+		if errors.Is(err, errObjectStorageDisabled) {
+			return nil, exitUsage
+		}
 		return nil, exitInternal
 	}
 	return client, exitOK
+}
+
+var errObjectStorageDisabled = errors.New("object storage is disabled (ORG_OBJECT_STORAGE_OCI_ENABLED is not true)")
+
+// newObjectStorageClient is the plain-error core openObjectStorageClient
+// wraps for CLI subcommands (which report via stderr/exit code) -- reused
+// directly by callers deeper in the stack (e.g. runRAGIngestPDF) that
+// don't have a stderr writer of their own to report through.
+func newObjectStorageClient() (*objectstorage.Client, error) {
+	cfg, err := objectstorage.LoadConfig(os.LookupEnv)
+	if err != nil {
+		return nil, fmt.Errorf("load object storage config: %w", err)
+	}
+	if !cfg.Enabled {
+		return nil, errObjectStorageDisabled
+	}
+	client, err := objectstorage.New(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("open object storage client: %w", err)
+	}
+	return client, nil
 }
 
 func runObjectStorage(args []string, stdout, stderr io.Writer) int {

@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -14,6 +16,9 @@ import (
 
 	"github.com/Mireuz13/explorarte-organization/internal/authorization"
 	"github.com/Mireuz13/explorarte-organization/internal/config"
+	"github.com/Mireuz13/explorarte-organization/internal/dataclassifier"
+	"github.com/Mireuz13/explorarte-organization/internal/pdfingest"
+	"github.com/Mireuz13/explorarte-organization/internal/pdfingest/poppler"
 	"github.com/Mireuz13/explorarte-organization/internal/rag"
 	ragbootstrap "github.com/Mireuz13/explorarte-organization/internal/rag/bootstrap"
 )
@@ -60,7 +65,191 @@ type ragReindexInput struct {
 	NamespaceID       string            `json:"namespace_id"`
 	ActorRoleID       string            `json:"actor_role_id"`
 	ApprovalRequestID *int64            `json:"approval_request_id,omitempty"`
+	// PrecomputedChunksManifestRef, if set, is an Object Storage key
+	// pointing at a JSON document (see pdfChunkManifest) this command
+	// fetches and decodes into rag.ReindexRequest.PrecomputedChunks --
+	// written by `orgctl pdf ingest`, consumed here once the document it
+	// describes has been reviewed/approved. Bridges the gap between
+	// ingestion (which computes chunks once, out of process) and
+	// Reindex (which may run much later): Object Storage is the shared
+	// durable point between the two commands, not a new database table.
+	PrecomputedChunksManifestRef string `json:"precomputed_chunks_manifest_ref,omitempty"`
 }
+
+// pdfChunkManifest is the JSON shape `orgctl pdf ingest` writes to Object
+// Storage and `orgctl rag reindex --file` (via
+// PrecomputedChunksManifestRef) reads back. VersionID is the document-
+// level KnowledgeVersion these chunks belong to; Chunks is exactly the
+// []rag.Chunk slice Reindex needs for that version (see
+// rag.ReindexRequest.PrecomputedChunks).
+type pdfChunkManifest struct {
+	VersionID string      `json:"version_id"`
+	Chunks    []rag.Chunk `json:"chunks"`
+}
+
+// ragIngestPDFInput drives `orgctl rag ingest-pdf` -- the owner-approved
+// PDF ingestion contract. LocalFile is read from local disk (matching
+// `orgctl objectstorage seed`'s pattern for one-off operator-driven
+// uploads); ObjectPrefix scopes where this document's pages/source land
+// in the bucket (e.g. "papers/self-improving-agents"); ManifestObject is
+// where the computed chunk list is written for a later `orgctl rag
+// reindex --file` (via PrecomputedChunksManifestRef) to pick up once the
+// proposed document has been reviewed and approved -- ingestion never
+// calls Reindex itself, the human-approval gate is unchanged.
+type ragIngestPDFInput struct {
+	LocalFile      string            `json:"local_file"`
+	ObjectPrefix   string            `json:"object_prefix"`
+	NamespaceKind  rag.NamespaceKind `json:"namespace_kind"`
+	NamespaceID    string            `json:"namespace_id"`
+	DocumentID     string            `json:"document_id,omitempty"`
+	Title          string            `json:"title"`
+	SourceKind     rag.SourceKind    `json:"source_kind"`
+	ProposedBy     string            `json:"proposed_by"`
+	Admission      ragAdmissionInput `json:"admission"`
+	IdempotencyKey string            `json:"idempotency_key"`
+	ManifestObject string            `json:"manifest_object"`
+}
+
+type ragIngestPDFResult struct {
+	Version        rag.KnowledgeVersion `json:"version"`
+	Reused         bool                 `json:"reused"`
+	PageCount      int                  `json:"page_count"`
+	EmptyTextPages int                  `json:"empty_text_pages"`
+	ParserName     string               `json:"parser_name"`
+	ParserVersion  string               `json:"parser_version"`
+	SourceSHA256   string               `json:"source_sha256"`
+	SourceObject   string               `json:"source_object"`
+	ManifestObject string               `json:"manifest_object"`
+}
+
+// runRAGIngestPDF is the whole owner-approved ingestion pipeline (steps
+// a-h of the contract) except review/approval and embedding, which stay
+// separate commands by design: split, extract, hash, upload, propose one
+// document-level candidate, write the chunk manifest. A *pdfingest.
+// QuarantineError from the processor is fail-closed -- this function
+// returns before ever calling Manager.Propose, so a malformed/encrypted/
+// unsupported PDF never produces a knowledge candidate.
+func runRAGIngestPDF(ctx context.Context, runtime *ragbootstrap.Runtime, input ragIngestPDFInput) (ragIngestPDFResult, error) {
+	if strings.TrimSpace(input.LocalFile) == "" || strings.TrimSpace(input.ObjectPrefix) == "" || strings.TrimSpace(input.ManifestObject) == "" {
+		return ragIngestPDFResult{}, fmt.Errorf("%w: local_file, object_prefix, and manifest_object are required", rag.ErrInvalidRequest)
+	}
+	sourceBytes, err := os.ReadFile(input.LocalFile)
+	if err != nil {
+		return ragIngestPDFResult{}, fmt.Errorf("read local pdf: %w", err)
+	}
+	sourceSHA := sha256.Sum256(sourceBytes)
+	sourceSHAHex := hex.EncodeToString(sourceSHA[:])
+
+	procCfg, err := poppler.DefaultConfig()
+	if err != nil {
+		return ragIngestPDFResult{}, fmt.Errorf("poppler config: %w", err)
+	}
+	processor, err := poppler.New(procCfg)
+	if err != nil {
+		return ragIngestPDFResult{}, fmt.Errorf("poppler processor: %w", err)
+	}
+	pdfResult, err := processor.Process(ctx, sourceBytes)
+	if err != nil {
+		var quarantine *pdfingest.QuarantineError
+		if errors.As(err, &quarantine) {
+			return ragIngestPDFResult{}, fmt.Errorf("pdf quarantined (%s): %s -- no knowledge candidate proposed", quarantine.Reason, quarantine.Detail)
+		}
+		return ragIngestPDFResult{}, fmt.Errorf("process pdf: %w", err)
+	}
+
+	osClient, err := newObjectStorageClient()
+	if err != nil {
+		return ragIngestPDFResult{}, err
+	}
+
+	documentID := strings.TrimSpace(input.DocumentID)
+	if documentID == "" {
+		documentID = "pdf-" + sourceSHAHex[:16]
+	}
+	versionID := documentID + "-v1"
+	prefix := strings.Trim(input.ObjectPrefix, "/")
+	shaPrefix := sourceSHAHex[:12]
+
+	sourceObject := fmt.Sprintf("raw/%s/%s/source.pdf", prefix, shaPrefix)
+	if err := osClient.PutObject(ctx, sourceObject, sourceBytes, "application/pdf"); err != nil {
+		return ragIngestPDFResult{}, fmt.Errorf("upload source pdf: %w", err)
+	}
+
+	var body strings.Builder
+	chunks := make([]rag.Chunk, 0, len(pdfResult.Pages))
+	emptyCount := 0
+	for _, page := range pdfResult.Pages {
+		pageObject := fmt.Sprintf("raw/%s/%s/page-%d.pdf", prefix, shaPrefix, page.PageNumber)
+		if err := osClient.PutObject(ctx, pageObject, page.PDFBytes, "application/pdf"); err != nil {
+			return ragIngestPDFResult{}, fmt.Errorf("upload page %d: %w", page.PageNumber, err)
+		}
+		content := page.ExtractedText
+		endOffset := len(content)
+		if endOffset == 0 {
+			endOffset = 1
+			emptyCount++
+		} else {
+			if body.Len() > 0 {
+				body.WriteString("\n\n")
+			}
+			body.WriteString(content)
+		}
+		chunks = append(chunks, rag.Chunk{
+			VersionID: versionID, ChunkerID: "pdf-page-v1", ChunkerVersion: "v1",
+			Ordinal: page.PageNumber, StartOffset: 0, EndOffset: endOffset,
+			Content: content, ContentHash: rag.ContentHash(content),
+			MediaSourceRef: pageObject, MediaMimeType: "application/pdf",
+			SourcePageNumber: page.PageNumber, MediaSHA256: page.SHA256,
+			MediaParser: pdfResult.ParserName, MediaParserVersion: pdfResult.ParserVersion,
+			TextExtractionStatus: rag.TextExtractionStatus(page.TextExtractionStatus),
+		})
+	}
+	bodyText := body.String()
+	if bodyText == "" {
+		bodyText = fmt.Sprintf("[PDF sin texto extraible: %d paginas, ver chunks media-backed para el contenido visual]", len(pdfResult.Pages))
+	}
+	if finding := dataclassifier.Detect(bodyText); finding.Any() {
+		return ragIngestPDFResult{}, fmt.Errorf("%w: extracted text matched a forbidden data pattern, refusing to propose", rag.ErrInvalidRequest)
+	}
+
+	attestedAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(input.Admission.AttestedAt))
+	if err != nil {
+		attestedAt = time.Now().UTC()
+	}
+	version, reused, err := runtime.Manager.Propose(ctx, rag.ProposeRequest{
+		Command: rag.ProposeCommand{
+			ID: versionID, DocumentID: documentID, OrganizationID: runtime.OrganizationID,
+			NamespaceKind: input.NamespaceKind, NamespaceID: input.NamespaceID, Version: 1,
+			Title: input.Title, Body: bodyText, SourceKind: input.SourceKind, SourceReference: sourceObject,
+			EvidenceRefs: []rag.EvidenceRef{{Reference: "objectstorage:" + sourceObject, Digest: sourceSHAHex}},
+			ProposedBy:   input.ProposedBy,
+			Admission: rag.AdmissionAttestation{
+				DataClass: input.Admission.DataClass, AttestedBy: input.Admission.AttestedBy,
+				SourceBoundary: input.Admission.SourceBoundary, EvidenceRef: input.Admission.EvidenceRef,
+				SanitizationEvidenceRef: input.Admission.SanitizationEvidenceRef, AttestedAt: attestedAt,
+			},
+		},
+		IdempotencyKey: input.IdempotencyKey,
+	})
+	if err != nil {
+		return ragIngestPDFResult{}, err
+	}
+
+	manifestBody, err := json.Marshal(pdfChunkManifest{VersionID: versionID, Chunks: chunks})
+	if err != nil {
+		return ragIngestPDFResult{}, fmt.Errorf("encode chunk manifest: %w", err)
+	}
+	if err := osClient.PutObject(ctx, input.ManifestObject, manifestBody, "application/json"); err != nil {
+		return ragIngestPDFResult{}, fmt.Errorf("upload chunk manifest: %w", err)
+	}
+
+	return ragIngestPDFResult{
+		Version: version, Reused: reused, PageCount: len(pdfResult.Pages), EmptyTextPages: emptyCount,
+		ParserName: pdfResult.ParserName, ParserVersion: pdfResult.ParserVersion,
+		SourceSHA256: sourceSHAHex, SourceObject: sourceObject, ManifestObject: input.ManifestObject,
+	}, nil
+}
+
 type ragQueryInput struct {
 	ActorRoleID string            `json:"actor_role_id"`
 	Scope       rag.NamespaceKind `json:"scope"`
@@ -100,6 +289,18 @@ func runRAG(args []string, stdout, stderr io.Writer) int {
 		return exitInternal
 	}
 	switch args[0] {
+	case "ingest-pdf":
+		var input ragIngestPDFInput
+		jsonOutput, code := parseRAGFile(args[1:], stderr, &input)
+		if code != exitOK {
+			return code
+		}
+		result, err := runRAGIngestPDF(ctx, runtime, input)
+		if err != nil {
+			return ragCommandError(stderr, err)
+		}
+		writeValue(stdout, jsonOutput, result)
+		return exitOK
 	case "propose":
 		var input ragProposeInput
 		jsonOutput, code := parseRAGFile(args[1:], stderr, &input)
@@ -195,7 +396,28 @@ func runRAG(args []string, stdout, stderr io.Writer) int {
 		if code != exitOK {
 			return code
 		}
-		generation, err := runtime.Manager.Reindex(ctx, rag.ReindexRequest{OrganizationID: runtime.OrganizationID, NamespaceKind: input.NamespaceKind, NamespaceID: input.NamespaceID, ActorRoleID: input.ActorRoleID, ApprovalRequestID: input.ApprovalRequestID})
+		var precomputed map[string][]rag.Chunk
+		if strings.TrimSpace(input.PrecomputedChunksManifestRef) != "" {
+			osClient, code := openObjectStorageClient(stderr)
+			if code != exitOK {
+				return code
+			}
+			body, err := osClient.GetObject(ctx, input.PrecomputedChunksManifestRef)
+			if err != nil {
+				fmt.Fprintf(stderr, "fetch precomputed chunks manifest: %v\n", err)
+				return exitInternal
+			}
+			var manifest pdfChunkManifest
+			if err := json.Unmarshal(body, &manifest); err != nil {
+				fmt.Fprintf(stderr, "decode precomputed chunks manifest: %v\n", err)
+				return exitInvalid
+			}
+			precomputed = map[string][]rag.Chunk{manifest.VersionID: manifest.Chunks}
+		}
+		generation, err := runtime.Manager.Reindex(ctx, rag.ReindexRequest{
+			OrganizationID: runtime.OrganizationID, NamespaceKind: input.NamespaceKind, NamespaceID: input.NamespaceID,
+			ActorRoleID: input.ActorRoleID, ApprovalRequestID: input.ApprovalRequestID, PrecomputedChunks: precomputed,
+		})
 		if err != nil {
 			return ragCommandError(stderr, err)
 		}
@@ -310,9 +532,17 @@ func ragCommandError(stderr io.Writer, err error) int {
 	}
 }
 func printRAGUsage(out io.Writer) {
-	fmt.Fprintln(out, `usage: orgctl rag <propose|review|get|list|reindex|backfill-embeddings|query> [options]
+	fmt.Fprintln(out, `usage: orgctl rag <propose|review|get|list|reindex|backfill-embeddings|query|ingest-pdf> [options]
 
   get --id VERSION_ID --actor ROLE_ID [--json]
   list --namespace-kind department|own --namespace-id ID --actor ROLE_ID [--lifecycle LIFECYCLE] [--limit N] [--json]
-  backfill-embeddings --namespace-kind department|own --namespace-id ID --actor ROLE_ID [--batch-size N] [--max-batches N] [--json]`)
+  backfill-embeddings --namespace-kind department|own --namespace-id ID --actor ROLE_ID [--batch-size N] [--max-batches N] [--json]
+  ingest-pdf --file INPUT.json [--json]
+      Splits a local PDF into per-page PDFs via poppler, uploads each page
+      plus the source PDF to Object Storage, and proposes one document-
+      level knowledge candidate. Fail-closed on malformed/encrypted/
+      unsupported PDFs (no candidate proposed). Writes a chunk manifest to
+      Object Storage for a later `+"`reindex --file`"+` (with
+      precomputed_chunks_manifest_ref set) to consume once the document is
+      reviewed and approved.`)
 }

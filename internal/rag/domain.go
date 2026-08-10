@@ -133,22 +133,57 @@ type KnowledgeVersion struct {
 // page-splitting logic, only a fetch + Embed call. Content still holds
 // this item's extracted text (FTS, citations, snippets, debugging,
 // provenance) even when it is not what gets embedded.
+// SourcePageNumber/MediaSHA256/MediaParser/MediaParserVersion/
+// TextExtractionStatus are reproducibility provenance, not retrieval
+// fields (owner decision point 9 of the PDF ingestion contract): all five
+// are set together exactly when MediaSourceRef/MediaMimeType are, never
+// independently. MediaSHA256 is the separated single-page PDF's own hash
+// -- recorded, not re-derivable on demand, because splitting the same
+// source PDF twice does not reliably reproduce identical page bytes (see
+// internal/pdfingest/poppler's idempotency test).
 type Chunk struct {
-	ID                    string `json:"id"`
-	VersionID             string `json:"version_id"`
-	GenerationID          string `json:"generation_id,omitempty"`
-	ChunkerID             string `json:"chunker_id"`
-	ChunkerVersion        string `json:"chunker_version"`
-	Ordinal               int    `json:"ordinal"`
-	StartOffset           int    `json:"start_offset"`
-	EndOffset             int    `json:"end_offset"`
-	Content               string `json:"content"`
-	ContentHash           string `json:"content_hash"`
-	EmbeddingModelID      string `json:"embedding_model_id,omitempty"`
-	EmbeddingModelVersion string `json:"embedding_model_version,omitempty"`
-	EmbeddingDimension    int    `json:"embedding_dimension,omitempty"`
-	MediaSourceRef        string `json:"media_source_ref,omitempty"`
-	MediaMimeType         string `json:"media_mime_type,omitempty"`
+	ID                    string               `json:"id"`
+	VersionID             string               `json:"version_id"`
+	GenerationID          string               `json:"generation_id,omitempty"`
+	ChunkerID             string               `json:"chunker_id"`
+	ChunkerVersion        string               `json:"chunker_version"`
+	Ordinal               int                  `json:"ordinal"`
+	StartOffset           int                  `json:"start_offset"`
+	EndOffset             int                  `json:"end_offset"`
+	Content               string               `json:"content"`
+	ContentHash           string               `json:"content_hash"`
+	EmbeddingModelID      string               `json:"embedding_model_id,omitempty"`
+	EmbeddingModelVersion string               `json:"embedding_model_version,omitempty"`
+	EmbeddingDimension    int                  `json:"embedding_dimension,omitempty"`
+	MediaSourceRef        string               `json:"media_source_ref,omitempty"`
+	MediaMimeType         string               `json:"media_mime_type,omitempty"`
+	SourcePageNumber      int                  `json:"source_page_number,omitempty"`
+	MediaSHA256           string               `json:"media_sha256,omitempty"`
+	MediaParser           string               `json:"media_parser,omitempty"`
+	MediaParserVersion    string               `json:"media_parser_version,omitempty"`
+	TextExtractionStatus  TextExtractionStatus `json:"text_extraction_status,omitempty"`
+}
+
+// TextExtractionStatus mirrors internal/pdfingest.TextExtractionStatus --
+// internal/rag cannot import internal/pdfingest (that would make the
+// domain package depend on a subprocess-touching ingestion detail), so
+// this is intentionally its own small, independently-defined type with
+// the same three values, not a shared one.
+type TextExtractionStatus string
+
+const (
+	TextExtractionOK          TextExtractionStatus = "ok"
+	TextExtractionEmpty       TextExtractionStatus = "empty"
+	TextExtractionUnavailable TextExtractionStatus = "unavailable"
+)
+
+func (s TextExtractionStatus) Valid() bool {
+	switch s {
+	case TextExtractionOK, TextExtractionEmpty, TextExtractionUnavailable:
+		return true
+	default:
+		return false
+	}
 }
 
 // IsMedia reports whether this chunk's embedding should come from

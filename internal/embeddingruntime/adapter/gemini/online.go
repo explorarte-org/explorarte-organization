@@ -21,10 +21,10 @@ var SupportedMediaMimeTypes = map[string]bool{
 	"application/pdf": true,
 	"image/png":       true,
 	"image/jpeg":      true,
-	"audio/mpeg":       true,
-	"audio/wav":        true,
-	"video/mp4":        true,
-	"video/quicktime":  true,
+	"audio/mpeg":      true,
+	"audio/wav":       true,
+	"video/mp4":       true,
+	"video/quicktime": true,
 }
 
 // maxMediaBytes bounds a single inline media item before base64 encoding.

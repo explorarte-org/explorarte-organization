@@ -70,9 +70,9 @@ func (s *signer) sign(req *http.Request, body []byte) error {
 	}
 	headers := []string{"date", "(request-target)", "host"}
 	values := map[string]string{
-		"date":              date,
-		"(request-target)":  strings.ToLower(req.Method) + " " + req.URL.RequestURI(),
-		"host":              req.URL.Host,
+		"date":             date,
+		"(request-target)": strings.ToLower(req.Method) + " " + req.URL.RequestURI(),
+		"host":             req.URL.Host,
 	}
 	if body != nil {
 		sum := sha256.Sum256(body)

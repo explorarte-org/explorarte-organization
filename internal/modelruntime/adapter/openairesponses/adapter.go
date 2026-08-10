@@ -62,13 +62,13 @@ type textConfig struct {
 }
 
 type responsesResponse struct {
-	ID     string             `json:"id"`
-	Object string             `json:"object"`
-	Model  string             `json:"model"`
-	Status string             `json:"status"`
-	Error  *responsesAPIError `json:"error"`
-	Output []responseOutput   `json:"output"`
-	Usage  responsesUsage     `json:"usage"`
+	ID                string             `json:"id"`
+	Object            string             `json:"object"`
+	Model             string             `json:"model"`
+	Status            string             `json:"status"`
+	Error             *responsesAPIError `json:"error"`
+	Output            []responseOutput   `json:"output"`
+	Usage             responsesUsage     `json:"usage"`
 	IncompleteDetails *struct {
 		Reason string `json:"reason"`
 	} `json:"incomplete_details"`
@@ -81,11 +81,11 @@ type responsesAPIError struct {
 }
 
 type responseOutput struct {
-	Type    string                 `json:"type"`
-	Content []responseOutputContent `json:"content,omitempty"`
-	Name    string                 `json:"name,omitempty"`
-	Arguments json.RawMessage      `json:"arguments,omitempty"`
-	CallID  string                 `json:"call_id,omitempty"`
+	Type      string                  `json:"type"`
+	Content   []responseOutputContent `json:"content,omitempty"`
+	Name      string                  `json:"name,omitempty"`
+	Arguments json.RawMessage         `json:"arguments,omitempty"`
+	CallID    string                  `json:"call_id,omitempty"`
 }
 
 type responseOutputContent struct {

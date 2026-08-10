@@ -244,6 +244,18 @@ type ReindexRequest struct {
 	NamespaceID       string
 	ActorRoleID       string
 	ApprovalRequestID *int64
+	// PrecomputedChunks, keyed by version ID, supplies the exact chunks to
+	// use for specific approved versions instead of recomputing them from
+	// version.Body via ChunkBody -- used by out-of-process ingestion
+	// pipelines (e.g. PDF page splitting via internal/pdfingest) that
+	// already did expensive, external work to produce these chunks and
+	// must not have Reindex silently redo it. A version with no entry
+	// here still goes through the normal ChunkBody path unchanged. The
+	// caller is responsible for each supplied chunk's Ordinal/VersionID/
+	// ContentHash being internally consistent -- the same validation the
+	// repository already applies to every chunk regardless of origin
+	// (see postgres Store.Reindex) is the actual enforcement point.
+	PrecomputedChunks map[string][]Chunk
 }
 
 // Reindex builds a new index generation over every approved, non-superseded
@@ -271,6 +283,10 @@ func (m *Manager) Reindex(ctx context.Context, request ReindexRequest) (IndexGen
 	for _, version := range versions {
 		if version.Lifecycle != LifecycleApproved {
 			return IndexGeneration{}, fmt.Errorf("%w: cannot index non-approved knowledge version %s", ErrVersionNotApproved, version.ID)
+		}
+		if precomputed, ok := request.PrecomputedChunks[version.ID]; ok {
+			chunks = append(chunks, precomputed...)
+			continue
 		}
 		versionChunks, err := ChunkBody(version.ID, DefaultChunkerID, DefaultChunkerVersion, version.Body)
 		if err != nil {
