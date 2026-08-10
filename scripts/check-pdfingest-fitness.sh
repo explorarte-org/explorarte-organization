@@ -19,6 +19,7 @@ fail() { printf 'pdfingest fitness: %s\n' "$*" >&2; exit 1; }
 # appearing outside the ones already deliberately reviewed.
 if rg -n --glob '*.go' \
   --glob '!internal/pdfingest/poppler/**' \
+  --glob '!internal/corpuscensus/**' \
   --glob '!internal/staging/gitexec/**' \
   --glob '!internal/staging/postgres/**' \
   --glob '!internal/modelruntime/adapter/alibabaclaude/**' \
@@ -28,14 +29,28 @@ if rg -n --glob '*.go' \
 fi
 
 # No shell strings, ever -- owner decision point 2 ("without sh -c").
-if rg -n --glob '*.go' '(/bin/(ba)?sh|sh -c|exec\.Command\([^,]*"sh"|CommandContext\([^,]+,[^,]*"sh")' internal/pdfingest >/dev/null 2>&1; then
-  fail "shell invocation found in internal/pdfingest"
+if rg -n --glob '*.go' '(/bin/(ba)?sh|sh -c|exec\.Command\([^,]*"sh"|CommandContext\([^,]+,[^,]*"sh")' internal/pdfingest internal/corpuscensus >/dev/null 2>&1; then
+  fail "shell invocation found in internal/pdfingest or internal/corpuscensus"
 fi
 
-# orgd and the generic application process must remain unaware PDFs exist.
+# orgd and the generic application process must remain unaware PDFs exist
+# -- internal/corpuscensus follows the same isolation, since it is the
+# other subprocess-touching (sqlite3 CLI) package in this codebase.
 if rg -n 'internal/pdfingest' cmd/orgd internal/app >/dev/null 2>&1; then
   fail "orgd or app imports internal/pdfingest"
 fi
+if rg -n 'internal/corpuscensus' cmd/orgd internal/app >/dev/null 2>&1; then
+  fail "orgd or app imports internal/corpuscensus"
+fi
+
+# sqlite3 is resolved by name via exec.LookPath, never a hardcoded path --
+# same reasoning as the three poppler-utils binaries below.
+grep -Fq 'exec.LookPath("sqlite3")' internal/corpuscensus/corpuscensus_bronze.go || fail "sqlite3 is not resolved via LookPath"
+
+# The harvester's SQLite DB is read-only from this package's perspective
+# (Bronze is immutable, owner decision Part B section 2) -- the CLI must
+# always be invoked with -readonly.
+grep -Fq '"-readonly", "-json"' internal/corpuscensus/corpuscensus_bronze.go || fail "sqlite3 is not invoked with -readonly"
 
 # The three poppler-utils binaries are resolved by name via exec.LookPath,
 # never hardcoded to a specific filesystem path -- keeps the package

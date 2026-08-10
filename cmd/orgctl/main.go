@@ -99,6 +99,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runAgents(args[1:], stdout, stderr)
 	case "objectstorage":
 		return runObjectStorage(args[1:], stdout, stderr)
+	case "corpus":
+		return runCorpus(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return exitOK
