@@ -19,14 +19,20 @@ import (
 )
 
 // TestEvaluationRunReportsFullCoverageForTodaysActivatedFixtures exercises
-// the real CLI path (runEvaluation, real Postgres): the bridge packages wired
-// in evaluationRunners activate the fixtures they genuinely implement, while
-// unfinished fixtures remain fixtures.StatusPending. That must show up as
-// skipped>0 until the final runner lands, while still reporting
-// coverage_complete=true and exiting exitOK because every fixture the catalog
-// currently claims is runner-ready was actually executed.
+// the real CLI path (runEvaluation, real Postgres): every bridge package
+// wired in evaluationRunners now activates a real fixture, so the catalog
+// is fully runner-ready (14/14) — skipped must be exactly 0, and this test
+// intentionally asserts that rather than tolerating it, so a future
+// regression that silently drops a runner shows up here immediately.
 func TestEvaluationRunReportsFullCoverageForTodaysActivatedFixtures(t *testing.T) {
 	seedEvaluationOrganization(t)
+	// endtoendfixtures.Runner (r30-14) drives a real internal/executive
+	// orchestration, which reads docs/canonical/capability-matrix.yaml via
+	// authorizationbootstrap.Open — unlike every other bridge runner here,
+	// it does not take a shortcut around config.Load()'s canonical dir
+	// resolution, so this test must point it at the real repo-root
+	// docs/canonical the same way seedEvaluationOrganization already does.
+	t.Setenv("ORG_CANONICAL_DIR", filepath.Join("..", "..", "docs", "canonical"))
 	var stdout, stderr bytes.Buffer
 	code := runEvaluation([]string{"run", "--suite", "r30", "--mode", "r30.1-3-coverage-smoke", "--json"}, &stdout, &stderr)
 	if code != exitOK {
@@ -52,8 +58,11 @@ func TestEvaluationRunReportsFullCoverageForTodaysActivatedFixtures(t *testing.T
 	if result.Failed != 0 {
 		t.Fatalf("result=%+v want failed=0", result)
 	}
-	if result.Skipped == 0 {
-		t.Fatalf("result=%+v want skipped>0 until all R30 bridge runners land; a zero here must be introduced deliberately with the final runner", result)
+	if result.Skipped != 0 {
+		t.Fatalf("result=%+v want skipped=0 — all 14 R30 fixtures now have a real runner", result)
+	}
+	if result.ExpectedReady != 14 || result.Executed != 14 {
+		t.Fatalf("result=%+v want expected_ready=14 executed=14", result)
 	}
 
 	// A run compared against itself must succeed — same, complete fixture

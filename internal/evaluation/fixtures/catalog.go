@@ -231,7 +231,7 @@ func fixtureEndToEnd() Fixture {
 	return Fixture{
 		ID: "r30-14-end-to-end", Version: 1, Title: "Extremo a extremo: worker -> auditor -> coordinador -> CEO",
 		Objective:      "Un caso completo que atraviesa research.worker -> research.audit -> department.leader -> executive.ceo, usando retrieval híbrido, presupuesto, DAG con evidencia terminal, y mensajería, debe cerrar con verificación real y sin violar ningún gate duro de R30.",
-		OrganizationID: "explorarte", Roles: []string{"investigacion/research_worker_hourly", "investigacion/razonamiento_logico", "ingenieria_ia/orquestador", "empresa/ceo"},
+		OrganizationID: "explorarte", Roles: []string{"investigacion/research_worker_hourly", "investigacion/auditor_cerebro_empresa", "ingenieria_ia/orquestador", "empresa/ceo"},
 		Scenario:         "pending: composes every other fixture's subsystem end to end; requires phases 3-7 complete first",
 		ExpectedResult:   "la tarea se cierra con VerificationVerified, evidencia real citada en cada etapa, y ningún gate duro violado.",
 		HardInvariants:   []string{"todos los gates duros de R30 se verifican juntos en este caso, no solo individualmente."},
