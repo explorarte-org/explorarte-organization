@@ -4,17 +4,15 @@ departments:
 - id: ingenieria_ia
   leader: ingenieria_ia/orquestador
   workers:
-  - ingenieria_ia/arquitecto_infraestructura
   - ingenieria_ia/arquitecto_software
   - ingenieria_ia/ciberseguridad
   - ingenieria_ia/code-runner
   - ingenieria_ia/data_engineer
   - ingenieria_ia/frontend
-  - ingenieria_ia/guardian_cloud
+  - ingenieria_ia/ingeniero_ia
   - ingenieria_ia/ml_data_scientist
-  - ingenieria_ia/project_manager
   - ingenieria_ia/qa
-  - ingenieria_ia/workflow_grafos
+  - ingenieria_ia/semantic_engineer
   - ingenieria_ia/razonamiento_logico
 - id: negocio
   leader: negocio/director_negocio

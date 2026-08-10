@@ -63,29 +63,6 @@ roles:
   rag_topics_source_text: null
   status: imported_source
   reports_to: []
-- id: ingenieria_ia/arquitecto_infraestructura
-  department: ingenieria_ia
-  role: arquitecto_infraestructura
-  display_name: Arquitecto de Infraestructura (Ingeniería de IA)
-  runtime_kind: worker_agent
-  authority_class: specialist
-  canonical_leader: false
-  legacy_frontmatter_leader: false
-  model_policy: department.worker
-  profile_path: ingenieria_ia/arquitecto_infraestructura/PERFIL.md
-  department_agent_path: ingenieria_ia/AGENT.md
-  memory_domain: ingenieria_ia
-  memory_path: null
-  summary: 'Dueño del diseño de la infraestructura donde vive todo lo demás: el VPS, k3s y sus servicios, cómo se nombran
-    y cómo se llega a ellos, y que cada pieza desplegada tenga fuente en el árbol y manifiesto versionado. Los riesgos latentes
-    que dejaron las auditorías son su cartera: ClusterIPs escritas a mano en unidades systemd que se rompen en silencio si
-    un Service se recrea, una ruta del gateway sin fuente que no se puede reconstruir, y manifiestos del disco que divergen
-    del clúster.'
-  reports_to_source_text: Al Orquestador, líder de Ingeniería de IA.
-  rag_topics_source_text: null
-  status: imported_source
-  reports_to:
-  - ingenieria_ia/orquestador
 - id: ingenieria_ia/arquitecto_software
   department: ingenieria_ia
   role: arquitecto_software
@@ -198,24 +175,27 @@ roles:
   status: imported_source
   reports_to:
   - ingenieria_ia/orquestador
-- id: ingenieria_ia/guardian_cloud
+- id: ingenieria_ia/ingeniero_ia
   department: ingenieria_ia
-  role: guardian_cloud
-  display_name: Guardián/Cloud-Infraestructura (Ingeniería de IA)
+  role: ingeniero_ia
+  display_name: Ingeniero de IA (Ingeniería de IA)
   runtime_kind: worker_agent
   authority_class: specialist
   canonical_leader: false
   legacy_frontmatter_leader: false
   model_policy: department.worker
-  profile_path: ingenieria_ia/guardian_cloud/PERFIL.md
+  profile_path: ingenieria_ia/ingeniero_ia/PERFIL.md
   department_agent_path: ingenieria_ia/AGENT.md
   memory_domain: ingenieria_ia
   memory_path: null
-  summary: 'Custodio de lo que corre: los pods de `psi-infra`, los contenedores de producción, el guardián determinista que
-    vigila recursos, procesos, colas, Kaggle y RAG, y los despliegues — cada binario desplegado con su fuente en el árbol,
-    cada manifiesto del disco comparado con el clúster antes de aplicar.'
+  summary: 'Dueño de cómo la organización consume modelos: proveedores, model runtime, ruteo y fallback, las adaptaciones
+    Responses/ChatCompletions, uso de herramientas, context engineering (compresión, caching, compactación de contexto) y
+    la integración de RAG hacia el Working Context de cada tarea. Conoce el RAG lo suficiente para consumirlo bien, pero
+    no es dueño de su tecnología de recuperación — eso es de `ingenieria_ia/semantic_engineer`. Cuando exista Memory OS,
+    es quien construye la interfaz entre memoria y modelo, no quien diseña la memoria misma.'
   reports_to_source_text: Al Orquestador, líder de Ingeniería de IA.
-  rag_topics_source_text: null
+  rag_topics_source_text: 'Model runtime, adaptadores de proveedor, tool use, context engineering, compresión de contexto,
+    caching y compactación, ingeniería de prompts.'
   status: imported_source
   reports_to:
   - ingenieria_ia/orquestador
@@ -253,9 +233,9 @@ roles:
   department_agent_path: ingenieria_ia/AGENT.md
   memory_domain: ingenieria_ia
   memory_path: null
-  summary: Coordinar el trabajo técnico de Ingeniería de IA (Arquitecto de Software, Frontend, Data Engineer, Data Scientist/ML,
-    QA, Guardián/Cloud-Infraestructura, Ciberseguridad, Project Manager, Workflow y Grafos) y decidir qué información del
-    departamento se sanitiza y publica hacia el Cerebro Empresa. No ejecuta el trabajo técnico de cada rol — dirige y prioriza.
+  summary: Coordinar el trabajo técnico de Ingeniería de IA (Arquitecto de Software, Ingeniero de IA, Semantic Engineer,
+    Data Engineer, Data Scientist/ML, Ciberseguridad, QA, Code-runner, Frontend) y decidir qué información del departamento
+    se sanitiza y publica hacia el Cerebro Empresa. No ejecuta el trabajo técnico de cada rol — dirige y prioriza.
   reports_to_source_text: Otro líder de departamento, Investigación, o directo a CEO — según lo que exige `organizacion/AGENT.md`.
     No tiene un superior fijo dentro de Ingeniería de IA (es el líder), pero sigue bajo supervisión humana de Eduardo como
     todo el resto de la organización.
@@ -267,28 +247,6 @@ roles:
   status: imported_source
   reports_to:
   - empresa/ceo
-- id: ingenieria_ia/project_manager
-  department: ingenieria_ia
-  role: project_manager
-  display_name: Project Manager (Ingeniería de IA)
-  runtime_kind: worker_agent
-  authority_class: specialist
-  canonical_leader: false
-  legacy_frontmatter_leader: false
-  model_policy: department.worker
-  profile_path: ingenieria_ia/project_manager/PERFIL.md
-  department_agent_path: ingenieria_ia/AGENT.md
-  memory_domain: ingenieria_ia
-  memory_path: null
-  summary: 'Dueño del ritmo de entrega: que el trabajo avance en ciclos cortos con checkpoint verificable — un test que pasa,
-    un endpoint que responde, un build que corre — y no en tramos largos sin retroalimentación, que es donde se esconden los
-    problemas más caros. Mantiene el registro único de cada tarea larga: ruta de origen, destino, total esperado, completados,
-    errores y fecha.'
-  reports_to_source_text: Al Orquestador, líder de Ingeniería de IA.
-  rag_topics_source_text: null
-  status: imported_source
-  reports_to:
-  - ingenieria_ia/orquestador
 - id: ingenieria_ia/qa
   department: ingenieria_ia
   role: qa
@@ -332,25 +290,29 @@ roles:
   status: proposed_profile_required
   reports_to:
   - ingenieria_ia/orquestador
-- id: ingenieria_ia/workflow_grafos
+- id: ingenieria_ia/semantic_engineer
   department: ingenieria_ia
-  role: workflow_grafos
-  display_name: Workflow y Grafos (Ingeniería de IA)
+  role: semantic_engineer
+  display_name: Semantic Engineer (Ingeniería de IA)
   runtime_kind: worker_agent
   authority_class: specialist
   canonical_leader: false
   legacy_frontmatter_leader: false
   model_policy: department.worker
-  profile_path: ingenieria_ia/workflow_grafos/PERFIL.md
+  profile_path: ingenieria_ia/semantic_engineer/PERFIL.md
   department_agent_path: ingenieria_ia/AGENT.md
   memory_domain: ingenieria_ia
   memory_path: null
-  summary: 'Mantiene y extiende el hook (mensajes, estados, deadlines, escalado) y el grafo real de comunicación entre roles:
-    quién habla con quién, por dónde, y qué pasa cuando un eslabón no tiene quien lo consuma del otro lado. Los fallos de
-    canal de hoy — seis departamentos sin consumidor, deadlines que no escalan, dieciséis fallos sin reintento — son su cartera
-    directa.'
+  summary: 'Dueño de la tecnología de retrieval y representación semántica de la organización: embeddings, recuperación
+    semántica e híbrida, RAG, GraphRAG, RAG jerárquico, árboles semánticos, ontologías, grafos de conocimiento, reranking,
+    evaluación de retrieval, retrieval cross-lingual, representación simbólica, Logic IR y la integración con Prolog en
+    modo sombra. Es la capa semántica de un futuro Memory OS. Evoluciona conceptualmente del antiguo rol Workflow y Grafos
+    (el trabajo real de grafos de comunicación entre roles no tenía historial durable de ejecución al momento de esta
+    reestructuración — ver commit de reestructuración de roles de Ingeniería de IA) hacia un rol con ownership mucho más
+    amplio: toda la tecnología de retrieval y representación semántica del departamento, no solo el grafo de mensajería.'
   reports_to_source_text: Al Orquestador, líder de Ingeniería de IA.
-  rag_topics_source_text: null
+  rag_topics_source_text: 'Embeddings, hybrid retrieval, RAG, GraphRAG, RAG jerárquico, ontologías, grafos de conocimiento,
+    reranking, evaluación de retrieval, retrieval cross-lingual, Logic IR, Prolog/Datalog.'
   status: imported_source
   reports_to:
   - ingenieria_ia/orquestador
