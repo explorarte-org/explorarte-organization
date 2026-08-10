@@ -45,8 +45,8 @@ func TestLoadLeaderWorkerMapFromCanonicalRepository(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(leaderMap.Departments) != 7 {
-		t.Fatalf("departments=%d want 7", len(leaderMap.Departments))
+	if len(leaderMap.Departments) != 4 {
+		t.Fatalf("departments=%d want 4", len(leaderMap.Departments))
 	}
 	for _, department := range leaderMap.Departments {
 		if department.Leader == "" || len(department.Workers) == 0 {
