@@ -64,6 +64,7 @@ func ProductiveLoadOptions(knownProviders []string) LoadOptions {
 		ProductiveExplicitRules: map[string][]DataClassification{
 			"deepseek":          {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
 			"openai_compatible": {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
+			"openai_responses":  {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
 			"gemini":            {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
 		},
 	}

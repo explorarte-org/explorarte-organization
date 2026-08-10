@@ -487,6 +487,8 @@ func compiledAdapterAvailability(policy routingPolicy) (AdapterStatus, bool) {
 		return AdapterAvailable, true
 	case policy.Transport == TransportHTTP && policy.Provider == "gemini":
 		return AdapterAvailable, true
+	case policy.Transport == TransportHTTP && policy.Provider == "openai_responses":
+		return AdapterAvailable, true
 	default:
 		return AdapterUnavailable, false
 	}

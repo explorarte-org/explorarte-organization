@@ -14,8 +14,8 @@ test -f migrations/000007_create_model_runtime_gateway.down.sql || fail "migrati
 # shell execution and background model daemons remain forbidden everywhere
 # outside the retired, unlinked Alibaba CLI package, which remains only for
 # historical source compatibility and is governed by its retirement check.
-if rg -n --glob '*.go' --glob '!internal/modelruntime/adapter/openaicompat/**' --glob '!internal/modelruntime/adapter/deepseek/**' --glob '!internal/modelruntime/adapter/gemini/**' '"net/http"' internal/modelruntime; then
-  fail "network client found outside the approved openai-compatible, DeepSeek, or Gemini adapters"
+if rg -n --glob '*.go' --glob '!internal/modelruntime/adapter/openaicompat/**' --glob '!internal/modelruntime/adapter/deepseek/**' --glob '!internal/modelruntime/adapter/gemini/**' --glob '!internal/modelruntime/adapter/openairesponses/**' '"net/http"' internal/modelruntime; then
+  fail "network client found outside the approved openai-compatible, DeepSeek, Gemini, or OpenAI Responses adapters"
 fi
 if rg -n --glob '*.go' --glob '!internal/modelruntime/adapter/alibabaclaude/**' '("os/exec"|exec\.Command|syscall\.|/bin/(ba)?sh|sh -c)' internal/modelruntime internal/secrets; then
   fail "subprocess or shell execution found in model runtime"
@@ -26,7 +26,7 @@ fi
 if find internal/modelruntime/adapter -maxdepth 1 -type f -name '*.go' ! -name 'fake.go' ! -name 'fake_test.go' ! -name 'registry.go' -print | grep -q .; then
   fail "unexpected top-level provider adapter implementation found"
 fi
-if find internal/modelruntime/adapter -mindepth 1 -maxdepth 1 -type d ! -name openaicompat ! -name alibabaclaude ! -name deepseek ! -name gemini -print | grep -q .; then
+if find internal/modelruntime/adapter -mindepth 1 -maxdepth 1 -type d ! -name openaicompat ! -name alibabaclaude ! -name deepseek ! -name gemini ! -name openairesponses -print | grep -q .; then
   fail "unexpected real provider adapter directory found"
 fi
 
@@ -69,6 +69,12 @@ allowed = {
     "ORG_MODEL_PROVIDER_GEMINI_REQUEST_TIMEOUT",
     "ORG_MODEL_PROVIDER_GEMINI_CIRCUIT_FAILURE_THRESHOLD",
     "ORG_MODEL_PROVIDER_GEMINI_CIRCUIT_OPEN_DURATION",
+    "ORG_MODEL_PROVIDER_OPENAI_RESPONSES_ENABLED",
+    "ORG_MODEL_PROVIDER_OPENAI_RESPONSES_ENDPOINT_URL",
+    "ORG_MODEL_PROVIDER_OPENAI_RESPONSES_CREDENTIAL_FILE",
+    "ORG_MODEL_PROVIDER_OPENAI_RESPONSES_REQUEST_TIMEOUT",
+    "ORG_MODEL_PROVIDER_OPENAI_RESPONSES_CIRCUIT_FAILURE_THRESHOLD",
+    "ORG_MODEL_PROVIDER_OPENAI_RESPONSES_CIRCUIT_OPEN_DURATION",
 }
 seen=set()
 for path in [Path("internal/modelruntime"), Path(".env.example")]:
@@ -152,6 +158,7 @@ required = {
     'policy.Transport == TransportHTTP && policy.Provider == "openai_compatible"',
     'policy.Transport == TransportHTTP && policy.Provider == "deepseek"',
     'policy.Transport == TransportHTTP && policy.Provider == "gemini"',
+    'policy.Transport == TransportHTTP && policy.Provider == "openai_responses"',
 }
 missing = [item for item in required if item not in routing]
 if missing:

@@ -2,7 +2,7 @@ schema_version: 0.1.0
 document_status: api_only_candidate
 policies:
   executive.ceo:
-    provider: openai_compatible
+    provider: openai_responses
     model: gpt-5.6-luna
     reasoning_effort: xhigh
     transport: http_adapter
@@ -10,6 +10,7 @@ policies:
     legacy_conflicts:
     - qwen3.8-max in current AGENT/PERFIL documents
     - alibaba_token_plan_via_claude_code/qwen3.6-flash in prior routing revision
+    - openai_compatible in prior routing revision (temporary latency canary, owner_conversation, adapter availability compiled 2026-08-10)
   executive.observer:
     provider: openai_compatible
     model: gpt-5.6-luna

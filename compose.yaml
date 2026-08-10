@@ -207,6 +207,13 @@ services:
       ORG_MODEL_PROVIDER_OPENAI_COMPATIBLE_ENABLED: "true"
       ORG_MODEL_PROVIDER_OPENAI_COMPATIBLE_ENDPOINT_URL: https://api.openai.com/v1/chat/completions
       ORG_MODEL_PROVIDER_OPENAI_COMPATIBLE_CREDENTIAL_FILE: /run/secrets/openai-compatible-api-key
+      # OpenAI Responses API: new adapter (internal/modelruntime/adapter/openairesponses),
+      # built and tested but not yet wired into model-routing.yaml. Enabled here only for a
+      # manual latency canary; reuses the existing openai-compatible-api-key secret (same
+      # OpenAI account/credential works for both Chat Completions and Responses endpoints).
+      ORG_MODEL_PROVIDER_OPENAI_RESPONSES_ENABLED: "true"
+      ORG_MODEL_PROVIDER_OPENAI_RESPONSES_ENDPOINT_URL: https://api.openai.com/v1/responses
+      ORG_MODEL_PROVIDER_OPENAI_RESPONSES_CREDENTIAL_FILE: /run/secrets/openai-compatible-api-key
     volumes:
       - /etc/explorarte/secrets/model-execution-identity.pem:/run/secrets/model-execution-identity.pem:ro
       - /etc/explorarte/secrets/deepseek-api-key:/run/secrets/deepseek-api-key:ro
