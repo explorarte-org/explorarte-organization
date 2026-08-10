@@ -250,10 +250,15 @@ func (a *Authorizer) evaluate(ctx context.Context, request EvaluationRequest) (E
 }
 
 func (a *Authorizer) Authorize(ctx context.Context, organizationID string, revisionID int64, roleID, capability string) error {
-	canonical := []byte(strings.Join([]string{"legacy", organizationID, fmt.Sprint(revisionID), roleID, capability}, "\x00"))
+	resourceType := "legacy"
+	if capability == "model.invoke" {
+		resourceType = "model_invocation"
+	}
+
+	canonical := []byte(strings.Join([]string{resourceType, organizationID, fmt.Sprint(revisionID), roleID, capability}, "\x00"))
 	result, err := a.Evaluate(ctx, EvaluationRequest{
 		OrganizationID: organizationID, OrganizationRevisionID: revisionID, ActorRoleID: roleID,
-		CapabilityID: capability, ResourceType: "legacy", ResourceID: roleID + ":" + capability,
+		CapabilityID: capability, ResourceType: resourceType, ResourceID: roleID + ":" + capability,
 		ActionDigest: DigestAction(canonical),
 	})
 	if err != nil {
