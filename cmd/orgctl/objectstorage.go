@@ -122,6 +122,43 @@ func runObjectStorage(args []string, stdout, stderr io.Writer) int {
 			"object": *object, "bytes": len(body), "sha256": hex.EncodeToString(sum[:]),
 		})
 		return exitOK
+	case "delete":
+		flags := flag.NewFlagSet("objectstorage delete", flag.ContinueOnError)
+		flags.SetOutput(stderr)
+		prefix := flags.String("prefix", "", "delete every object under this prefix instead of a single name")
+		all := flags.Bool("all", false, "delete every object in the bucket (prefix is ignored)")
+		if err := flags.Parse(args[1:]); err != nil {
+			return exitUsage
+		}
+		if *all || *prefix != "" {
+			objects, err := client.ListObjects(ctx, *prefix)
+			if err != nil {
+				fmt.Fprintf(stderr, "list objects: %v\n", err)
+				return exitInternal
+			}
+			deleted := 0
+			for _, object := range objects {
+				if err := client.DeleteObject(ctx, object.Name); err != nil {
+					fmt.Fprintf(stderr, "delete %s: %v\n", object.Name, err)
+					return exitInternal
+				}
+				deleted++
+				fmt.Fprintf(stderr, "deleted %s (%d/%d)\n", object.Name, deleted, len(objects))
+			}
+			fmt.Fprintf(stdout, "{\"prefix\":%q,\"deleted_count\":%d}\n", *prefix, deleted)
+			return exitOK
+		}
+		rest := flags.Args()
+		if len(rest) != 1 {
+			fmt.Fprintln(stderr, "usage: orgctl objectstorage delete <object-name> | delete --prefix <prefix>")
+			return exitUsage
+		}
+		if err := client.DeleteObject(ctx, rest[0]); err != nil {
+			fmt.Fprintf(stderr, "delete object: %v\n", err)
+			return exitInternal
+		}
+		fmt.Fprintf(stdout, "{\"deleted\":%q}\n", rest[0])
+		return exitOK
 	case "seed":
 		return objectStorageSeed(ctx, client, args[1:], stdout, stderr)
 	case "whoami":

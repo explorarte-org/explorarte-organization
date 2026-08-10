@@ -95,6 +95,19 @@ func (c *Client) PutObject(ctx context.Context, objectName string, body []byte, 
 	return err
 }
 
+// DeleteObject removes a single object. OCI Object Storage returns 204 on
+// success and treats deleting a nonexistent key as a no-op success (not
+// an error) -- this method mirrors that: a delete of something already
+// gone is not itself a failure.
+func (c *Client) DeleteObject(ctx context.Context, objectName string) error {
+	reqURL := c.objectURL(objectName, nil)
+	_, _, err := c.do(ctx, http.MethodDelete, reqURL, nil, "")
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	return err
+}
+
 // HeadObject checks whether objectName exists without downloading its body.
 func (c *Client) HeadObject(ctx context.Context, objectName string) (ObjectSummary, error) {
 	reqURL := c.objectURL(objectName, nil)

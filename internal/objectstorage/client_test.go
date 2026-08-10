@@ -167,3 +167,24 @@ func isNotFound(err error) bool {
 	}
 	return false
 }
+
+func TestDeleteObjectSucceeds(t *testing.T) {
+	client, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			t.Errorf("method = %q, want DELETE", r.Method)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	if err := client.DeleteObject(context.Background(), "raw/gone.pdf"); err != nil {
+		t.Fatalf("DeleteObject: %v", err)
+	}
+}
+
+func TestDeleteObjectTreatsNotFoundAsSuccess(t *testing.T) {
+	client, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	if err := client.DeleteObject(context.Background(), "raw/already-gone.pdf"); err != nil {
+		t.Fatalf("DeleteObject on missing key should not error, got: %v", err)
+	}
+}

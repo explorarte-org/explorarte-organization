@@ -13,7 +13,25 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.buildTime=${BUILD_TIME}" -o /out/orgd ./cmd/orgd
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.buildTime=${BUILD_TIME}" -o /out/orgctl ./cmd/orgctl
 
-FROM gcr.io/distroless/static-debian12:nonroot
+# Non-default target for `orgctl rag ingest-pdf` (owner decision: PDF
+# parsing must not live in orgd/core -- see internal/pdfingest's package
+# doc comment). Distroless/static below cannot run poppler-utils at all
+# (dynamically linked against several C libraries); this stage is the only
+# place in this Dockerfile poppler-utils is installed, and orgd never runs
+# from it. Deliberately placed BEFORE the orgd stage below (not merely
+# named): `docker build .` with no --target builds the LAST stage in the
+# file by default, and the orgd distroless image must always be that
+# default -- this stage is only ever built explicitly via
+# `docker build --target pdfingest`.
+FROM debian:bookworm-slim AS pdfingest
+RUN apt-get update && apt-get install -y --no-install-recommends poppler-utils ca-certificates && rm -rf /var/lib/apt/lists/* && useradd --system --no-create-home --shell /usr/sbin/nologin pdfingest
+COPY --from=build /out/orgctl /usr/local/bin/orgctl
+COPY --from=build /src/docs/canonical /opt/explorarte/docs/canonical
+ENV ORG_CANONICAL_DIR=/opt/explorarte/docs/canonical
+USER pdfingest
+ENTRYPOINT ["/usr/local/bin/orgctl"]
+
+FROM gcr.io/distroless/static-debian12:nonroot AS orgd
 COPY --from=build /out/orgd /usr/local/bin/orgd
 COPY --from=build /out/orgctl /usr/local/bin/orgctl
 COPY --from=build /src/docs/canonical /opt/explorarte/docs/canonical
@@ -39,18 +57,3 @@ USER 65532:65532
 EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=5 CMD ["/usr/local/bin/orgctl", "health", "--ready", "--url", "http://127.0.0.1:8080"]
 ENTRYPOINT ["/usr/local/bin/orgd"]
-
-# Separate final target for `orgctl rag ingest-pdf` (owner decision: PDF
-# parsing must not live in orgd/core -- see internal/pdfingest's package
-# doc comment). Distroless/static above cannot run poppler-utils at all
-# (dynamically linked against several C libraries); this stage is the only
-# place in this Dockerfile poppler-utils is installed, and orgd never runs
-# from it -- built with `docker build --target pdfingest`, never the
-# default target.
-FROM debian:bookworm-slim AS pdfingest
-RUN apt-get update && apt-get install -y --no-install-recommends poppler-utils ca-certificates && rm -rf /var/lib/apt/lists/* && useradd --system --no-create-home --shell /usr/sbin/nologin pdfingest
-COPY --from=build /out/orgctl /usr/local/bin/orgctl
-COPY --from=build /src/docs/canonical /opt/explorarte/docs/canonical
-ENV ORG_CANONICAL_DIR=/opt/explorarte/docs/canonical
-USER pdfingest
-ENTRYPOINT ["/usr/local/bin/orgctl"]
