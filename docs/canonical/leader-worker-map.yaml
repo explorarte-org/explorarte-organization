@@ -1,26 +1,6 @@
 schema_version: 0.1.0
 document_status: branch_0_candidate
 departments:
-- id: comunicaciones
-  leader: comunicaciones/editor_contenido_marca
-  workers:
-  - comunicaciones/analista_audiencias
-  - comunicaciones/community_manager
-  - comunicaciones/rrpp_alianzas
-- id: creativo
-  leader: creativo/disenador
-  workers:
-  - creativo/copywriter
-  - creativo/editor_video
-  - creativo/fotografo
-  - creativo/ilustrador
-- id: finanzas
-  leader: finanzas/administrador_financiero
-  workers:
-  - finanzas/analista_costos
-  - finanzas/analista_kpis
-  - finanzas/estratega_expansion
-  - finanzas/ingeniero_industrial
 - id: ingenieria_ia
   leader: ingenieria_ia/orquestador
   workers:
@@ -36,11 +16,26 @@ departments:
   - ingenieria_ia/qa
   - ingenieria_ia/workflow_grafos
   - ingenieria_ia/razonamiento_logico
-- id: marketing
-  leader: marketing/estratega_crecimiento
+- id: negocio
+  leader: negocio/director_negocio
   workers:
-  - marketing/analista_performance
-  - marketing/investigador_consumidor
+  - negocio/administrador_financiero
+  - negocio/analista_audiencias
+  - negocio/analista_costos
+  - negocio/analista_kpis
+  - negocio/analista_performance
+  - negocio/community_manager
+  - negocio/copywriter
+  - negocio/disenador
+  - negocio/editor_contenido_marca
+  - negocio/editor_video
+  - negocio/estratega_crecimiento
+  - negocio/estratega_expansion
+  - negocio/fotografo
+  - negocio/ilustrador
+  - negocio/ingeniero_industrial
+  - negocio/investigador_consumidor
+  - negocio/rrpp_alianzas
 - id: recursos_agenticos
   leader: recursos_agenticos/desarrollo_organizacional
   workers:

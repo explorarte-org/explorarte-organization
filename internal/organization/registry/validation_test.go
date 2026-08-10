@@ -11,15 +11,15 @@ func TestCrossValidationFailures(t *testing.T) {
 		name, code string
 		mutate     func(*parsedDocuments)
 	}{
-		{"seven departments", "organization.operational_department_count", func(d *parsedDocuments) {
-			d.Organization.OperationalDepartments = d.Organization.OperationalDepartments[:6]
+		{"wrong department count", "organization.operational_department_count", func(d *parsedDocuments) {
+			d.Organization.OperationalDepartments = d.Organization.OperationalDepartments[:3]
 		}},
 		{"missing leader", "unit.leader_role_missing", func(d *parsedDocuments) {
 			d.Organization.OperationalDepartments[0].LeaderRoleID = "comunicaciones/no_existe"
 		}},
 		{"leader other unit", "unit.leader_wrong_unit", func(d *parsedDocuments) {
-			d.Organization.OperationalDepartments[0].LeaderRoleID = "creativo/disenador"
-			d.LeaderWorker.Departments[0].Leader = "creativo/disenador"
+			d.Organization.OperationalDepartments[0].LeaderRoleID = "negocio/director_negocio"
+			d.LeaderWorker.Departments[0].Leader = "negocio/director_negocio"
 		}},
 		{"missing worker", "leader_map.worker_missing", func(d *parsedDocuments) {
 			d.LeaderWorker.Departments[0].Workers = append(d.LeaderWorker.Departments[0].Workers, "comunicaciones/no_existe")

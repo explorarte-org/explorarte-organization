@@ -72,7 +72,7 @@ func TestCanonicalRegistryAgainstPostgreSQL(t *testing.T) {
 		}
 		leaderless[unit.ID] = unit.Leaderless
 	}
-	if operational != 7 || !leaderless["empresa"] || !leaderless["investigacion"] {
+	if operational != 4 || !leaderless["empresa"] || !leaderless["investigacion"] {
 		t.Fatalf("units=%+v", units)
 	}
 	roles, err := service.ListRoles(ctx, registry.RoleFilter{})
