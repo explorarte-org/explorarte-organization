@@ -21,6 +21,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/tasks"
 	taskpostgres "github.com/Mireuz13/explorarte-organization/internal/tasks/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/tasks/registryadapter"
+	"github.com/Mireuz13/explorarte-organization/internal/testdbguard"
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 )
 
@@ -193,6 +194,10 @@ func openIntegrationStore(t *testing.T, ctx context.Context) *platformpostgres.S
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := testdbguard.RequireTestDatabase(ctx, os.Getenv("ORG_TEST_DATABASE_URL"), store.Pool()); err != nil {
+		store.Close()
+		t.Fatalf("refusing to run against unverified database: %v", err)
+	}
 	runner, err := platformmigrations.New(store.Pool(), rootmigrations.Files)
 	if err != nil {
 		store.Close()
@@ -207,6 +212,9 @@ func openIntegrationStore(t *testing.T, ctx context.Context) *platformpostgres.S
 
 func resetIntegrationSchema(t *testing.T, ctx context.Context, store *platformpostgres.Store) {
 	t.Helper()
+	if err := testdbguard.RequireDestructive(ctx, os.Getenv("ORG_TEST_DATABASE_URL"), store.Pool()); err != nil {
+		t.Fatalf("refusing destructive TRUNCATE: %v", err)
+	}
 	if _, err := store.Pool().Exec(ctx, `
 		TRUNCATE staging_events,staging_reviews,staging_promotions,staging_checks,
 		         staging_workspace_artifacts,staging_artifacts,staging_workspaces,

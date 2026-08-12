@@ -25,6 +25,7 @@ import (
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/rag"
 	ragbootstrap "github.com/Mireuz13/explorarte-organization/internal/rag/bootstrap"
+	"github.com/Mireuz13/explorarte-organization/internal/testdbguard"
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 )
 
@@ -75,12 +76,18 @@ func setupSleepIntegration(t *testing.T, ctx context.Context) sleepIntegrationFi
 		t.Fatal(err)
 	}
 	t.Cleanup(store.Close)
+	if err := testdbguard.RequireTestDatabase(ctx, databaseURL, store.Pool()); err != nil {
+		t.Fatalf("refusing to run against unverified database: %v", err)
+	}
 	runner, err := platformmigrations.New(store.Pool(), rootmigrations.Files)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err = runner.Up(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
+	}
+	if err := testdbguard.RequireDestructive(ctx, databaseURL, store.Pool()); err != nil {
+		t.Fatalf("refusing destructive TRUNCATE: %v", err)
 	}
 	if _, err = store.Pool().Exec(ctx, `TRUNCATE organizations, organization_registry_revisions RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatalf("reset schema: %v", err)

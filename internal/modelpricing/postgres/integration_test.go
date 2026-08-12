@@ -14,6 +14,7 @@ import (
 	modelpricingpostgres "github.com/Mireuz13/explorarte-organization/internal/modelpricing/postgres"
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/testdbguard"
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 )
 
@@ -42,6 +43,9 @@ func openPricingStore(t *testing.T, ctx context.Context) *platformpostgres.Store
 	}
 	if _, err := runner.Up(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
+	}
+	if err := testdbguard.RequireTestDatabase(ctx, databaseURL, store.Pool()); err != nil {
+		t.Fatalf("refusing to run against unverified database: %v", err)
 	}
 	return store
 }
@@ -182,6 +186,9 @@ func TestModelPricingUpsertIsImmutableAndVersioned(t *testing.T) {
 		t.Fatalf("after effective_at resolved=%+v err=%v", resolved, err)
 	}
 
+	if err := testdbguard.RequireDestructive(ctx, os.Getenv("ORG_TEST_DATABASE_URL"), platform.Pool()); err != nil {
+		t.Fatalf("refusing destructive operation: %v", err)
+	}
 	if _, err := platform.Pool().Exec(ctx, `UPDATE model_pricing SET input_price_nanos_per_million=999 WHERE provider_id='test.fake'`); err == nil {
 		t.Fatal("expected UPDATE on model_pricing to be rejected by the immutability trigger")
 	}

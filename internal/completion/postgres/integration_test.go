@@ -20,6 +20,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/testdbguard"
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 )
 
@@ -159,11 +160,18 @@ func openCompletionStore(t *testing.T, ctx context.Context) *platformpostgres.St
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := testdbguard.RequireTestDatabase(ctx, url, store.Pool()); err != nil {
+		store.Close()
+		t.Fatalf("refusing to run against unverified database: %v", err)
+	}
 	return store
 }
 
 func resetCompletionSchema(t *testing.T, ctx context.Context, store *platformpostgres.Store) {
 	t.Helper()
+	if err := testdbguard.RequireDestructive(ctx, os.Getenv("ORG_TEST_DATABASE_URL"), store.Pool()); err != nil {
+		t.Fatalf("refusing destructive TRUNCATE: %v", err)
+	}
 	resetCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if _, err := store.Pool().Exec(resetCtx, `

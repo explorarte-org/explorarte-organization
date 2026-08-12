@@ -20,6 +20,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/testdbguard"
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 )
 
@@ -311,6 +312,9 @@ func TestDurableCapabilityPolicyEngine(t *testing.T) {
 	})
 
 	t.Run("down migration removes only authorization schemas", func(t *testing.T) {
+		if err := testdbguard.RequireDestructive(ctx, os.Getenv("ORG_TEST_DATABASE_URL"), store.Pool()); err != nil {
+			t.Fatalf("refusing destructive operation: %v", err)
+		}
 		if _, err := store.Pool().Exec(ctx, `TRUNCATE authorization_uses,authorization_decisions,authorization_requests RESTART IDENTITY CASCADE`); err != nil {
 			t.Fatal(err)
 		}
@@ -424,11 +428,18 @@ func openIntegrationStore(t *testing.T, ctx context.Context) *platformpostgres.S
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := testdbguard.RequireTestDatabase(ctx, databaseURL, store.Pool()); err != nil {
+		store.Close()
+		t.Fatalf("refusing to run against unverified database: %v", err)
+	}
 	return store
 }
 
 func resetIntegrationSchema(t *testing.T, ctx context.Context, store *platformpostgres.Store) {
 	t.Helper()
+	if err := testdbguard.RequireDestructive(ctx, os.Getenv("ORG_TEST_DATABASE_URL"), store.Pool()); err != nil {
+		t.Fatalf("refusing destructive TRUNCATE: %v", err)
+	}
 	if _, err := store.Pool().Exec(ctx, `
 		TRUNCATE authorization_uses,authorization_decisions,authorization_requests,
 		         staging_events,staging_reviews,staging_promotions,staging_checks,

@@ -12,6 +12,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/config"
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
 	"github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/testdbguard"
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 	"github.com/jackc/pgx/v5"
 )
@@ -38,6 +39,9 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	defer store.Close()
 	if err := store.Ping(ctx); err != nil {
 		t.Fatal(err)
+	}
+	if err := testdbguard.RequireDestructive(ctx, databaseURL, store.Pool()); err != nil {
+		t.Fatalf("refusing destructive schema reset: %v", err)
 	}
 	// A hand-maintained per-table/function DROP list here previously went
 	// silently out of sync with the real migrations more than once — most

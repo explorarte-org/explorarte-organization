@@ -31,6 +31,8 @@ func (f fakeQuerier) QueryRow(_ context.Context, _ string, _ ...any) pgx.Row {
 	return f.row
 }
 
+// Required negative test: DSN names explorarte_org (the real development
+// database this package exists to protect) -> DENY.
 func TestRequireTestDatabase_RejectsWrongDSNName(t *testing.T) {
 	err := RequireTestDatabase(context.Background(), "postgres://user:pass@host:5432/explorarte_org?sslmode=disable", nil)
 	if err == nil {
@@ -38,6 +40,18 @@ func TestRequireTestDatabase_RejectsWrongDSNName(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "explorarte_org") {
 		t.Fatalf("expected error to name the rejected database, got: %v", err)
+	}
+}
+
+// Required negative test: a plausible production-shaped database name that
+// is NOT explorarte_org specifically -> DENY. This proves the check is an
+// allowlist of exactly one name (CanonicalDisposableDatabase), not a
+// blocklist of known-bad names -- a blocklist would miss this case.
+func TestRequireTestDatabase_RejectsProductionLikeDatabaseName(t *testing.T) {
+	pool := fakeQuerier{row: fakeRow{value: "explorarte_production"}}
+	err := RequireTestDatabase(context.Background(), "postgres://user:pass@host:5432/explorarte_production?sslmode=disable", pool)
+	if err == nil {
+		t.Fatal("expected error for a production-shaped database name never explicitly blocklisted, got nil")
 	}
 }
 
@@ -74,6 +88,9 @@ func TestRequireTestDatabase_PassesWhenDSNAndLiveDatabaseBothMatch(t *testing.T)
 	}
 }
 
+// Required negative test: *_test database (correctly named and verified
+// live), sentinel absent -> DENY. A correct database alone is never
+// sufficient to authorize a destructive operation.
 func TestRequireDestructive_BlocksWithoutSentinelEvenOnCorrectDatabase(t *testing.T) {
 	t.Setenv(DestructiveSentinelEnv, "")
 	pool := fakeQuerier{row: fakeRow{value: CanonicalDisposableDatabase}}
@@ -86,6 +103,9 @@ func TestRequireDestructive_BlocksWithoutSentinelEvenOnCorrectDatabase(t *testin
 	}
 }
 
+// Required negative test: sentinel set correctly, but the live database is
+// wrong -> DENY. The sentinel alone is never sufficient either; both
+// independent conditions must hold simultaneously.
 func TestRequireDestructive_BlocksOnWrongDatabaseEvenWithSentinelSet(t *testing.T) {
 	t.Setenv(DestructiveSentinelEnv, CanonicalDisposableDatabase)
 	pool := fakeQuerier{row: fakeRow{value: "explorarte_org"}}
@@ -95,6 +115,9 @@ func TestRequireDestructive_BlocksOnWrongDatabaseEvenWithSentinelSet(t *testing.
 	}
 }
 
+// Required positive test: correct database (DSN + live current_database()
+// both explorarte_test) AND the sentinel explicitly opted in -> ALLOW. This
+// is the only combination that should ever pass.
 func TestRequireDestructive_PassesWhenBothChecksPass(t *testing.T) {
 	t.Setenv(DestructiveSentinelEnv, CanonicalDisposableDatabase)
 	pool := fakeQuerier{row: fakeRow{value: CanonicalDisposableDatabase}}

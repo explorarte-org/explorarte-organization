@@ -8,6 +8,8 @@ services:
   # silently fall back to -- the shared development instance.
   postgres:
     ports: !reset []
+    volumes:
+      - ./deployments/postgres/init/002-integration-app-superuser.sh:/docker-entrypoint-initdb.d/002-integration-app-superuser.sh:ro
 
   integration-test:
     image: golang:1.25-bookworm

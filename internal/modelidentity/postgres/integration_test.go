@@ -20,6 +20,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/testdbguard"
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 )
 
@@ -169,11 +170,18 @@ func openIdentityStore(t *testing.T, ctx context.Context) *platformpostgres.Stor
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := testdbguard.RequireTestDatabase(ctx, os.Getenv("ORG_TEST_DATABASE_URL"), store.Pool()); err != nil {
+		store.Close()
+		t.Fatalf("refusing to run against unverified database: %v", err)
+	}
 	return store
 }
 
 func resetIdentitySchema(t *testing.T, ctx context.Context, store *platformpostgres.Store) {
 	t.Helper()
+	if err := testdbguard.RequireDestructive(ctx, os.Getenv("ORG_TEST_DATABASE_URL"), store.Pool()); err != nil {
+		t.Fatalf("refusing destructive TRUNCATE: %v", err)
+	}
 	_, err := store.Pool().Exec(ctx, `TRUNCATE model_provider_outcomes,model_provider_requests,model_execution_identity_assertions,model_execution_identity_challenges,model_execution_identity_keys,model_execution_identity_policy_versions,model_dispatcher_assignment_uses,model_dispatcher_assignments,model_execution_principals,model_egress_evaluations,model_invocation_usage,model_invocation_results,model_dispatch_attempts,model_invocations,model_egress_revision_bindings,model_egress_rules,model_egress_policy_versions,role_model_bindings,model_capability_snapshots,model_profile_versions,model_profiles,model_providers,context_segments,context_snapshots,authorization_uses,authorization_decisions,authorization_requests,staging_events,staging_reviews,staging_promotions,staging_checks,staging_workspace_artifacts,staging_artifacts,staging_workspaces,outbox_events,task_dead_letters,task_events,task_leases,task_attempts,task_evidence,task_requirements,task_dependencies,tasks,organization_reporting_lines,organization_registry_revision_documents,organization_roles,organizational_units,organizations,organization_registry_revisions,audit_events RESTART IDENTITY CASCADE`)
 	if err != nil {
 		t.Fatal(err)

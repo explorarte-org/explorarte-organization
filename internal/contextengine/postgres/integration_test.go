@@ -21,6 +21,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/testdbguard"
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 )
 
@@ -272,6 +273,9 @@ func TestContextEnginePostgreSQL17(t *testing.T) {
 	})
 
 	t.Run("down migration and reapply in disposable integration database", func(t *testing.T) {
+		if err := testdbguard.RequireDestructive(ctx, os.Getenv("ORG_TEST_DATABASE_URL"), platform.Pool()); err != nil {
+			t.Fatalf("refusing destructive migration DownSQL: %v", err)
+		}
 		loaded, err := platformmigrations.Load(rootmigrations.Files)
 		if err != nil {
 			t.Fatal(err)
@@ -315,10 +319,17 @@ func openStore(t *testing.T, ctx context.Context) *platformpostgres.Store {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := testdbguard.RequireTestDatabase(ctx, url, store.Pool()); err != nil {
+		store.Close()
+		t.Fatalf("refusing to run against unverified database: %v", err)
+	}
 	return store
 }
 func resetSchema(t *testing.T, ctx context.Context, store *platformpostgres.Store) {
 	t.Helper()
+	if err := testdbguard.RequireDestructive(ctx, os.Getenv("ORG_TEST_DATABASE_URL"), store.Pool()); err != nil {
+		t.Fatalf("refusing destructive TRUNCATE: %v", err)
+	}
 	_, err := store.Pool().Exec(ctx, `TRUNCATE context_segments,context_snapshots,authorization_uses,authorization_decisions,authorization_requests,staging_events,staging_reviews,staging_promotions,staging_checks,staging_workspace_artifacts,staging_artifacts,staging_workspaces,outbox_events,task_dead_letters,task_events,task_leases,task_attempts,task_evidence,task_requirements,task_dependencies,tasks,organization_reporting_lines,organization_registry_revision_documents,organization_roles,organizational_units,organizations,organization_registry_revisions,audit_events RESTART IDENTITY CASCADE`)
 	if err != nil {
 		t.Fatal(err)

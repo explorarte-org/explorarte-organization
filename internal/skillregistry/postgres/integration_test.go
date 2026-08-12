@@ -16,6 +16,7 @@ import (
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/skillregistry"
 	skillregistrypostgres "github.com/Mireuz13/explorarte-organization/internal/skillregistry/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/testdbguard"
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 )
 
@@ -214,11 +215,18 @@ func openSkillStore(t *testing.T, ctx context.Context) *platformpostgres.Store {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := testdbguard.RequireTestDatabase(ctx, os.Getenv("ORG_TEST_DATABASE_URL"), store.Pool()); err != nil {
+		store.Close()
+		t.Fatalf("refusing to run against unverified database: %v", err)
+	}
 	return store
 }
 
 func resetSkillSchema(t *testing.T, ctx context.Context, store *platformpostgres.Store) {
 	t.Helper()
+	if err := testdbguard.RequireDestructive(ctx, os.Getenv("ORG_TEST_DATABASE_URL"), store.Pool()); err != nil {
+		t.Fatalf("refusing destructive TRUNCATE: %v", err)
+	}
 	resetCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if _, err := store.Pool().Exec(resetCtx, `TRUNCATE organizations, organization_registry_revisions, audit_events RESTART IDENTITY CASCADE`); err != nil {

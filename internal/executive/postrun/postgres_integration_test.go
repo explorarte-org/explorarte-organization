@@ -29,6 +29,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/tasks"
 	taskpostgres "github.com/Mireuz13/explorarte-organization/internal/tasks/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/tasks/registryadapter"
+	"github.com/Mireuz13/explorarte-organization/internal/testdbguard"
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 )
 
@@ -245,11 +246,18 @@ func openPostrunStore(t *testing.T, ctx context.Context) *platformpostgres.Store
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := testdbguard.RequireTestDatabase(ctx, url, store.Pool()); err != nil {
+		store.Close()
+		t.Fatalf("refusing to run against unverified database: %v", err)
+	}
 	return store
 }
 
 func resetPostrunSchema(t *testing.T, ctx context.Context, store *platformpostgres.Store) {
 	t.Helper()
+	if err := testdbguard.RequireDestructive(ctx, os.Getenv("ORG_TEST_DATABASE_URL"), store.Pool()); err != nil {
+		t.Fatalf("refusing destructive TRUNCATE: %v", err)
+	}
 	if _, err := store.Pool().Exec(ctx, `
 TRUNCATE outbox_events,task_dead_letters,task_events,task_leases,task_attempts,task_evidence,
          task_requirements,task_dependencies,tasks,organization_reporting_lines,

@@ -20,6 +20,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/tasks"
 	taskpostgres "github.com/Mireuz13/explorarte-organization/internal/tasks/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/tasks/registryadapter"
+	"github.com/Mireuz13/explorarte-organization/internal/testdbguard"
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 )
 
@@ -445,6 +446,11 @@ func newHarness(t *testing.T) *harness {
 		cancel()
 		t.Fatal(err)
 	}
+	if err := testdbguard.RequireTestDatabase(ctx, databaseURL, platformStore.Pool()); err != nil {
+		platformStore.Close()
+		cancel()
+		t.Fatalf("refusing to run against unverified database: %v", err)
+	}
 	runner, err := platformmigrations.New(platformStore.Pool(), rootmigrations.Files)
 	if err != nil {
 		platformStore.Close()
@@ -455,6 +461,11 @@ func newHarness(t *testing.T) *harness {
 		platformStore.Close()
 		cancel()
 		t.Fatalf("migrate: %v", err)
+	}
+	if err := testdbguard.RequireDestructive(ctx, databaseURL, platformStore.Pool()); err != nil {
+		platformStore.Close()
+		cancel()
+		t.Fatalf("refusing destructive TRUNCATE: %v", err)
 	}
 	if _, err = platformStore.Pool().Exec(ctx, `
 		TRUNCATE outbox_events,task_dead_letters,task_events,task_leases,task_attempts,task_evidence,
@@ -520,6 +531,9 @@ func newHarness(t *testing.T) *harness {
 
 func (h *harness) resetTasks(t *testing.T) {
 	t.Helper()
+	if err := testdbguard.RequireDestructive(h.ctx, os.Getenv("ORG_TEST_DATABASE_URL"), h.store.Pool()); err != nil {
+		t.Fatalf("refusing destructive TRUNCATE: %v", err)
+	}
 	if _, err := h.store.Pool().Exec(h.ctx, `
 		TRUNCATE outbox_events,task_dead_letters,task_events,task_leases,task_attempts,
 		         task_evidence,task_requirements,task_dependencies,tasks RESTART IDENTITY CASCADE

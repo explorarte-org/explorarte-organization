@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	evaluationpostgres "github.com/Mireuz13/explorarte-organization/internal/evaluation/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/testdbguard"
 )
 
 // TestEvaluationRunReportsFullCoverageForTodaysActivatedFixtures exercises
@@ -95,6 +97,9 @@ func seedEvaluationOrganization(t *testing.T) config.Config {
 		t.Fatal(err)
 	}
 	defer store.Close()
+	if err := testdbguard.RequireTestDatabase(ctx, os.Getenv("ORG_DATABASE_URL"), store.Pool()); err != nil {
+		t.Fatalf("refusing to run against unverified database: %v", err)
+	}
 	repo, err := registry.NewPostgresRepository(store)
 	if err != nil {
 		t.Fatal(err)
@@ -131,6 +136,9 @@ func openEvaluationStoreForTest(t *testing.T) (*evaluationpostgres.Store, string
 		t.Fatal(err)
 	}
 	t.Cleanup(store.Close)
+	if err := testdbguard.RequireTestDatabase(ctx, os.Getenv("ORG_DATABASE_URL"), store.Pool()); err != nil {
+		t.Fatalf("refusing to run against unverified database: %v", err)
+	}
 	evalStore, err := evaluationpostgres.New(store, cfg.Tasks.OrganizationID)
 	if err != nil {
 		t.Fatal(err)

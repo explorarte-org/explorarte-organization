@@ -19,6 +19,7 @@ import (
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/shadowverifier"
 	shadowpostgres "github.com/Mireuz13/explorarte-organization/internal/shadowverifier/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/testdbguard"
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 )
 
@@ -204,6 +205,9 @@ WHERE organization_id=$1 AND role_id='empresa/human' AND reports_to_role_id='ing
 	})
 
 	t.Run("down migration drops shadow verifier tables", func(t *testing.T) {
+		if err := testdbguard.RequireDestructive(ctx, os.Getenv("ORG_TEST_DATABASE_URL"), platform.Pool()); err != nil {
+			t.Fatalf("refusing destructive migration DownSQL: %v", err)
+		}
 		down, err := rootmigrations.Files.ReadFile("000014_create_shadow_verifier.down.sql")
 		if err != nil {
 			t.Fatal(err)
@@ -251,11 +255,18 @@ func openShadowStore(t *testing.T, ctx context.Context) *platformpostgres.Store 
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := testdbguard.RequireTestDatabase(ctx, url, store.Pool()); err != nil {
+		store.Close()
+		t.Fatalf("refusing to run against unverified database: %v", err)
+	}
 	return store
 }
 
 func resetShadowSchema(t *testing.T, ctx context.Context, store *platformpostgres.Store) {
 	t.Helper()
+	if err := testdbguard.RequireDestructive(ctx, os.Getenv("ORG_TEST_DATABASE_URL"), store.Pool()); err != nil {
+		t.Fatalf("refusing destructive TRUNCATE: %v", err)
+	}
 	resetCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if _, err := store.Pool().Exec(resetCtx, `

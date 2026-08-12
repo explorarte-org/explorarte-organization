@@ -32,6 +32,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/tasks"
 	taskpostgres "github.com/Mireuz13/explorarte-organization/internal/tasks/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/tasks/registryadapter"
+	"github.com/Mireuz13/explorarte-organization/internal/testdbguard"
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 )
 
@@ -74,6 +75,11 @@ func newIntegrationHarness(t *testing.T) *integrationHarness {
 		cancel()
 		t.Fatal(err)
 	}
+	if err := testdbguard.RequireTestDatabase(ctx, databaseURL, store.Pool()); err != nil {
+		store.Close()
+		cancel()
+		t.Fatalf("refusing to run against unverified database: %v", err)
+	}
 	runner, err := platformmigrations.New(store.Pool(), rootmigrations.Files)
 	if err != nil {
 		store.Close()
@@ -84,6 +90,11 @@ func newIntegrationHarness(t *testing.T) *integrationHarness {
 		store.Close()
 		cancel()
 		t.Fatalf("migrate: %v", err)
+	}
+	if err := testdbguard.RequireDestructive(ctx, databaseURL, store.Pool()); err != nil {
+		store.Close()
+		cancel()
+		t.Fatalf("refusing destructive TRUNCATE: %v", err)
 	}
 	if _, err = store.Pool().Exec(ctx, `
 TRUNCATE outbox_events,task_dead_letters,task_events,task_leases,task_attempts,task_evidence,
