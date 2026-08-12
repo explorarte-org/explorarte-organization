@@ -73,6 +73,14 @@ capabilities:
   risk: forbidden
 - id: cell.direct_database_access
   risk: forbidden
+- id: agent.message.send
+  risk: medium
+- id: agent.message.claim
+  risk: high
+- id: agent.message.settle
+  risk: low
+- id: memory.read_own
+  risk: low
 grants:
   owner:
   - '*'
@@ -83,6 +91,9 @@ grants:
   - audit.read_sanitized_evidence
   - audit.publish_finding
   - deployment.request
+  - agent.message.send
+  - agent.message.claim
+  - agent.message.settle
   department_leadership:
   - organization.read_registry
   - project.delegate_department
@@ -90,20 +101,27 @@ grants:
   - task.review
   - rag.read_department
   - memory.propose
+  - agent.message.send
   specialist:
   - organization.read_registry
   - task.execute
   - rag.read_own_namespace
   - memory.propose
+  - agent.message.send
+  - agent.message.claim
+  - agent.message.settle
+  - memory.read_own
   transversal_audit:
   - organization.read_registry
   - audit.read_sanitized_evidence
   - audit.publish_finding
   - rag.propose_candidate
+  - memory.read_own
   research_execution:
   - organization.read_registry
   - rag.read_own_namespace
   - rag.propose_candidate
+  - memory.read_own
   execution_service:
   - model.invoke
   - code.stage_write

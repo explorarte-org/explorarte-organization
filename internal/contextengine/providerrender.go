@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // ProviderRenderVersion identifies the deterministic serialization contract
@@ -12,7 +13,10 @@ import (
 // stable/dynamic partition, or a provider-specific wrapper changes -- never
 // mutate the meaning of an already-shipped version in place (R10.4 section
 // 14).
-const ProviderRenderVersion = "research-corpus-curate-render/v1"
+const (
+	ProviderRenderVersionV1 = "research-corpus-curate-render/v1"
+	ProviderRenderVersionV2 = "research-corpus-curate-render/v2" // with structural wrapping for untrusted data
+)
 
 // providerRenderSeparator joins segment contents deterministically. A fixed
 // two-newline separator, never a random/timestamped boundary.
@@ -83,6 +87,24 @@ func (r ProviderRender) Bytes() []byte {
 	return append(append([]byte(nil), r.StablePrefix...), r.DynamicSuffix...)
 }
 
+// escapeUntrustedContent escapes content that may contain closing tags or
+// markup-like sequences. This prevents prompt injection via forged wrappers.
+// The escaped content CANNOT close/open wrapper delimiters after escaping.
+//
+// Escape rules (collision-safe):
+//   < → &lt;    > → &gt;    & → &amp;
+//   " → &quot;  ' → &#x27;  / → &#x2F;
+func escapeUntrustedContent(content string) string {
+	// Order matters: escape & FIRST, then other chars
+	content = strings.ReplaceAll(content, "&", "&amp;")
+	content = strings.ReplaceAll(content, "<", "&lt;")
+	content = strings.ReplaceAll(content, ">", "&gt;")
+	content = strings.ReplaceAll(content, "\"", "&quot;")
+	content = strings.ReplaceAll(content, "'", "&#x27;")
+	content = strings.ReplaceAll(content, "/", "&#x2F;")
+	return content
+}
+
 // providerHeader is the only StablePrefix content that does not come from a
 // Segment -- organization_id/actor_role_id/purpose are semantically
 // relevant to the model (R10.4 audit section "riesgos de autoridad") and
@@ -131,7 +153,7 @@ func BuildProviderRender(snapshot Snapshot) (ProviderRender, error) {
 	dynamicSuffix := bytes.Join(dynamicParts, providerRenderSeparator)
 
 	render := ProviderRender{
-		Version:            ProviderRenderVersion,
+		Version:            ProviderRenderVersionV1,
 		StablePrefix:       stablePrefix,
 		DynamicSuffix:      dynamicSuffix,
 		StablePrefixHash:   DigestCanonicalBytes(stablePrefix),
@@ -149,3 +171,100 @@ func BuildProviderRender(snapshot Snapshot) (ProviderRender, error) {
 	render.ProviderRenderHash = DigestCanonicalBytes(full)
 	return render, nil
 }
+
+// BuildProviderRenderV2 builds a ProviderRender using v2 serialization with
+// collision-safe structural wrappers around untrusted data sources (RAG, memory, web evidence).
+//
+// CRITICAL SECURITY CONSTRAINTS:
+//   1. Untrusted data is marked with explicit authority=none, may_grant_capabilities=false
+//   2. Content is HTML-escaped BEFORE being wrapped, preventing closing tag injection
+//   3. Wrapper delimiters use [ ] syntax not angle brackets (second layer of protection)
+//   4. Output is deterministic - same inputs always produce same bytes
+//   5. Stable/Dynamic boundary preserved (R10.4 invariant)
+//
+// The escaped content CANNOT close or forge wrapper delimiters after escaping.
+func BuildProviderRenderV2(snapshot Snapshot) (ProviderRender, error) {
+	if snapshot.Status == SnapshotInvalidated {
+		return ProviderRender{}, ErrSnapshotInvalidated
+	}
+	if snapshot.Status != "" && snapshot.Status != SnapshotReady {
+		return ProviderRender{}, errors.New("cannot render snapshot with unknown status")
+	}
+
+	stableParts := [][]byte{providerHeader(snapshot)}
+	var dynamicParts [][]byte
+
+	for _, segment := range snapshot.Segments {
+		if !segment.Included {
+			continue
+		}
+
+		content := string(segment.Content)
+
+		if dynamicAuthorityTiers[segment.AuthorityTier] {
+			// Apply structural wrapper based on tier level
+			wrappedContent := wrapUntrustedData(content, segment)
+			dynamicParts = append(dynamicParts, wrappedContent)
+		} else {
+			// Stable tiers don't need special wrapping
+			stableParts = append(stableParts, segment.Content)
+		}
+	}
+
+	stablePrefix := bytes.Join(stableParts, providerRenderSeparator)
+	dynamicSuffix := bytes.Join(dynamicParts, providerRenderSeparator)
+
+	render := ProviderRender{
+		Version:            ProviderRenderVersionV2,
+		StablePrefix:       stablePrefix,
+		DynamicSuffix:      dynamicSuffix,
+		StablePrefixHash:   DigestCanonicalBytes(stablePrefix),
+		StablePrefixBytes:  len(stablePrefix),
+		DynamicSuffixHash:  DigestCanonicalBytes(dynamicSuffix),
+		DynamicSuffixBytes: len(dynamicSuffix),
+	}
+	full := render.Bytes()
+	render.ProviderVisibleBytes = len(full)
+	render.ProviderRenderHash = DigestCanonicalBytes(full)
+	return render, nil
+}
+
+// wrapUntrustedData wraps a segment's content with collision-safe structural markers.
+// Authority tier determines the wrapper type; all untrusted tiers use authority=none
+// and explicit may_grant_capabilities=false.
+func wrapUntrustedData(content string, segment Segment) []byte {
+	// Escape content FIRST to neutralize any malicious markup
+	escaped := escapeUntrustedContent(content)
+
+	// Determine wrapper type based on AuthorityTier
+	var wrapperType string
+	switch segment.AuthorityTier {
+	case TierTask:
+		wrapperType = "task-context"
+	case TierProject:
+		wrapperType = "project-context"
+	case TierRAGEvidence:
+		wrapperType = "rag-evidence"
+	case TierApprovedMemory:
+		wrapperType = "memory-entry"
+	case TierApprovedSkill:
+		wrapperType = "approved-skill"
+	default:
+		// Fallback for unknown tiers
+		wrapperType = "untrusted-data"
+	}
+
+	// Use [ ] delimiter syntax for outer wrapper (not XML angle brackets)
+	// This provides defense in depth even if escaping somehow fails
+	var out bytes.Buffer
+	fmt.Fprintf(&out, "[authority:tier=%d trust=untrusted may_grant=false type=\"%s\"]\n",
+		segment.AuthorityTier, wrapperType)
+	fmt.Fprintf(&out, "<%s content=\"escaped\">%s</%s>\n",
+		wrapperType, escaped, wrapperType)
+	fmt.Fprintf(&out, "[/authority]\n\n")
+
+	return out.Bytes()
+}
+
+// Helper function that would check if AuthorityTier is trusted vs untrusted.
+// In current domain.go: TierRAGEvidence, TierApprovedMemory, TierTask/Project/Skill are untrusted.

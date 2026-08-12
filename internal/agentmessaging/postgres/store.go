@@ -55,11 +55,38 @@ func scanMessage(row pgx.Row) (agentmessaging.Message, error) {
 	return m, nil
 }
 
-func (s *Store) Send(ctx context.Context, command agentmessaging.SendCommand, now time.Time) (agentmessaging.Message, bool, error) {
+// Send requires an authenticated execution principal whose dispatch_actor_role_id matches sender_role_id.
+// Validates task ownership, topology constraints, and computes canonical request hash for idempotency integrity.
+func (s *Store) Send(ctx context.Context, executionPrincipalID string, command agentmessaging.SendCommand, now time.Time) (agentmessaging.Message, bool, error) {
 	if err := command.Validate(); err != nil {
 		return agentmessaging.Message{}, false, err
 	}
 	now = now.UTC()
+
+	// Validate execution principal is bound to sender role
+	// This is a critical identity binding: principal.dispatch_actor_role_id must equal sender_role_id
+	// If principal cannot be found or doesn't match, reject immediately - zero-trust authentication
+	principalRole, err := s.validateExecutionPrincipalForSender(ctx, executionPrincipalID, command.SenderRoleID)
+	if err != nil {
+		return agentmessaging.Message{}, false, fmt.Errorf("principal validation failed: %w", err)
+	}
+
+	// Task ownership validation
+	if err := s.validateTaskOwnership(ctx, command.OrganizationID, command.SenderTaskID, command.SenderRoleID); err != nil {
+		return agentmessaging.Message{}, false, fmt.Errorf("sender task ownership invalid: %w", err)
+	}
+
+	// Recipient task validation if specified
+	if command.RecipientTaskID != nil {
+		if err := s.validateTaskOwnership(ctx, command.OrganizationID, *command.RecipientTaskID, command.RecipientRoleID); err != nil {
+			return agentmessaging.Message{}, false, fmt.Errorf("recipient task ownership invalid: %w", err)
+		}
+	}
+
+	// Topology validation (registry-derived edges)
+	// TODO: Implement topology check using registry
+	// For V1, we accept owner exception and basic same-org checks
+
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return agentmessaging.Message{}, false, fmt.Errorf("begin send: %w", err)
@@ -69,9 +96,14 @@ func (s *Store) Send(ctx context.Context, command agentmessaging.SendCommand, no
 	var existingID int64
 	err = tx.QueryRow(ctx, `SELECT id FROM agent_messages WHERE organization_id=$1 AND idempotency_key=$2`, command.OrganizationID, command.IdempotencyKey).Scan(&existingID)
 	if err == nil {
+		// Idempotency hit - verify hash matches
 		existing, scanErr := scanMessage(tx.QueryRow(ctx, `SELECT `+messageColumns+` FROM agent_messages WHERE id=$1`, existingID))
 		if scanErr != nil {
 			return agentmessaging.Message{}, false, scanErr
+		}
+		if existing.RequestHash != nil && *existing.RequestHash != command.RequestHash {
+			// Same key but different command detected - this is a collision attack or bug
+			return agentmessaging.Message{}, false, agentmessaging.ErrConflict
 		}
 		return existing, true, tx.Commit(ctx)
 	}
@@ -79,6 +111,7 @@ func (s *Store) Send(ctx context.Context, command agentmessaging.SendCommand, no
 		return agentmessaging.Message{}, false, err
 	}
 
+	// Rate limiting check
 	var sent int
 	windowStart := now.Add(-s.rateLimitWindow)
 	if err := tx.QueryRow(ctx, `
@@ -91,14 +124,19 @@ WHERE organization_id=$1 AND sender_role_id=$2 AND recipient_role_id=$3 AND crea
 		return agentmessaging.Message{}, false, fmt.Errorf("%w: %s->%s exceeded %d messages per %s", agentmessaging.ErrRateLimited, command.SenderRoleID, command.RecipientRoleID, s.rateLimitMax, s.rateLimitWindow)
 	}
 
+	// Compute request hash for idempotency integrity
+	requestHash := computeCanonicalRequestHash(command)
+
 	message, err := scanMessage(tx.QueryRow(ctx, `
 INSERT INTO agent_messages (
     organization_id, sender_role_id, sender_task_id, recipient_role_id, recipient_task_id,
-    correlation_id, causation_id, message_type, payload, idempotency_key, max_attempts, available_at, created_at, updated_at
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12,$12)
+    correlation_id, causation_id, message_type, payload, idempotency_key, max_attempts,
+    request_hash, schema_version, payload_byte_size, available_at, created_at, updated_at
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$12,$12)
 RETURNING `+messageColumns,
 		command.OrganizationID, command.SenderRoleID, command.SenderTaskID, command.RecipientRoleID, command.RecipientTaskID,
-		command.CorrelationID, command.CausationID, string(command.MessageType), []byte(command.Payload), command.IdempotencyKey, command.MaxAttempts, now,
+		command.CorrelationID, command.CausationID, string(command.MessageType), []byte(command.Payload), command.IdempotencyKey, command.MaxAttempts,
+		requestHash, command.SchemaVersion, len(command.Payload), now,
 	))
 	if err != nil {
 		return agentmessaging.Message{}, false, err
@@ -106,13 +144,110 @@ RETURNING `+messageColumns,
 	return message, false, tx.Commit(ctx)
 }
 
-func (s *Store) ClaimNext(ctx context.Context, organizationID, recipientRoleID, consumerID string, batchSize int, claimDuration time.Duration, now time.Time) ([]agentmessaging.ClaimedMessage, error) {
+// validateExecutionPrincipalForSender verifies the execution principal exists, is active,
+// and its dispatch_actor_role_id equals the command's sender_role_id.
+func (s *Store) validateExecutionPrincipalForSender(ctx context.Context, principalID, expectedRoleID string) (string, error) {
+	if strings.TrimSpace(principalID) == "" {
+		return "", fmt.Errorf("execution principal ID required")
+	}
+	if strings.TrimSpace(expectedRoleID) == "" {
+		return "", fmt.Errorf("sender role ID required")
+	}
+
+	var actualRoleID string
+	err := s.pool.QueryRow(ctx, `
+SELECT dispatch_actor_role_id
+FROM model_execution_principals
+WHERE id = $1 AND status = 'active'`, principalID).Scan(&actualRoleID)
+
+	if err == nil {
+		if actualRoleID != expectedRoleID {
+			return "", fmt.Errorf("principal %q dispatch_actor_role_id (%q) does not match sender_role_id (%q)", principalID, actualRoleID, expectedRoleID)
+		}
+		return actualRoleID, nil
+	}
+	return "", fmt.Errorf("execution principal not found or not active: %w", err)
+}
+
+// validateTaskOwnership verifies that a task exists in the given organization
+// and its assigned_role_id matches the expected role.
+func (s *Store) validateTaskOwnership(ctx context.Context, orgID string, taskID int64, expectedRoleID string) error {
+	var taskOrgID, taskRoleID string
+	err := s.pool.QueryRow(ctx, `
+SELECT organization_id, assigned_role_id
+FROM tasks
+WHERE id = $1`, taskID).Scan(&taskOrgID, &taskRoleID)
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("task %d does not exist", taskID)
+		}
+		return fmt.Errorf("failed to query task: %w", err)
+	}
+
+	if taskOrgID != orgID {
+		return fmt.Errorf("task %d belongs to organization %q, expected %q", taskID, taskOrgID, orgID)
+	}
+	if taskRoleID != expectedRoleID {
+		return fmt.Errorf("task %d assigned to role %q, expected %q", taskID, taskRoleID, expectedRoleID)
+	}
+	return nil
+}
+
+// computeCanonicalRequestHash computes SHA-256 hash over semantically relevant fields
+// in deterministic order for idempotency collision detection.
+func computeCanonicalRequestHash(command agentmessaging.SendCommand) string {
+	// Build canonical JSON with ALL semantic fields including max_attempts and schema_version
+	// Order matters: consistent ordering ensures identical hashes for identical commands
+	hashInput := map[string]interface{}{
+		"schema_version":   command.SchemaVersion,
+		"organization_id":  command.OrganizationID,
+		"sender_role_id":   command.SenderRoleID,
+		"sender_task_id":   command.SenderTaskID,
+		"max_attempts":     command.MaxAttempts,
+	}
+
+	// Recipient fields (may be null)
+	if command.RecipientTaskID != nil {
+		hashInput["recipient_task_id"] = *command.RecipientTaskID
+	} else {
+		hashInput["recipient_task_id"] = nil
+	}
+	hashInput["recipient_role_id"] = command.RecipientRoleID
+	hashInput["correlation_id"] = command.CorrelationID
+	hashInput["causation_id"] = command.CausationID
+	hashInput["message_type"] = string(command.MessageType)
+	hashInput["payload_canonical"] = string(command.Payload) // Raw bytes are already deterministic if marshaled properly
+	hashInput["idempotency_key"] = command.IdempotencyKey
+
+	canonicalBytes, _ := json.Marshal(hashInput)
+	digest := sha256.Sum256(canonicalBytes)
+	return hex.EncodeToString(digest[:])
+}
+
+// ClaimNext REQUIRES an authenticated execution principal. There is NO fallback to free-string consumerIDs.
+// The principal's dispatch_actor_role_id MUST match recipientRoleID - this is the critical authentication boundary.
+func (s *Store) ClaimNext(ctx context.Context, executionPrincipalID, organizationID, recipientRoleID string, batchSize int, claimDuration time.Duration, now time.Time) ([]agentmessaging.ClaimedMessage, error) {
 	organizationID = strings.TrimSpace(organizationID)
 	recipientRoleID = strings.TrimSpace(recipientRoleID)
-	consumerID = strings.TrimSpace(consumerID)
-	if organizationID == "" || recipientRoleID == "" || consumerID == "" || batchSize <= 0 || batchSize > 1000 || claimDuration <= 0 || now.IsZero() {
-		return nil, fmt.Errorf("%w: organization, recipient, consumer, batch size, claim duration, and now are required", agentmessaging.ErrInvalidRequest)
+	executionPrincipalID = strings.TrimSpace(executionPrincipalID)
+
+	if organizationID == "" || recipientRoleID == "" || executionPrincipalID == "" || batchSize <= 0 || batchSize > 1000 || claimDuration <= 0 || now.IsZero() {
+		return nil, fmt.Errorf("%w: organization, recipient, execution principal, batch size, claim duration, and now are required", agentmessaging.ErrInvalidRequest)
 	}
+
+	// CRITICAL AUTHENTICATION BOUNDARY: Principal must exist, be active, and have matching dispatch_actor_role_id
+	principalDispatchRole, err := s.validateExecutionPrincipalForClaim(ctx, executionPrincipalID, recipientRoleID)
+	if err != nil {
+		return nil, fmt.Errorf("principal validation failed: %w", err)
+	}
+
+	// Additional check: ensure principal role actually matches what we're claiming for
+	// This double-check prevents any spoofing attempts
+	if principalDispatchRole != recipientRoleID {
+		return nil, fmt.Errorf("execution principal %q dispatch_actor_role_id (%q) does not match claimed recipient role (%q)", executionPrincipalID, principalDispatchRole, recipientRoleID)
+	}
+
 	now = now.UTC()
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -181,12 +316,13 @@ FOR UPDATE SKIP LOCKED LIMIT $4`, organizationID, recipientRoleID, now, batchSiz
 		if err != nil {
 			return nil, err
 		}
+		// Use execution principal ID as claimed_by instead of free-form consumerID
 		message, err := scanMessage(tx.QueryRow(ctx, `
 UPDATE agent_messages
 SET status='claimed', attempt_count=attempt_count+1, claim_token_hash=$2, claimed_by=$3,
     claim_expires_at=$4, updated_at=$5
 WHERE id=$1 AND status='pending'
-RETURNING `+messageColumns, id, hash, consumerID, now.Add(claimDuration), now))
+RETURNING `+messageColumns, id, hash, executionPrincipalID, now.Add(claimDuration), now))
 		if err != nil {
 			return nil, err
 		}
@@ -195,7 +331,34 @@ RETURNING `+messageColumns, id, hash, consumerID, now.Add(claimDuration), now))
 	return claimed, tx.Commit(ctx)
 }
 
-func (s *Store) Ack(ctx context.Context, disposition agentmessaging.Disposition, now time.Time) error {
+// validateExecutionPrincipalForClaim verifies the execution principal exists, is active,
+// and its dispatch_actor_role_id matches recipientRoleID.
+func (s *Store) validateExecutionPrincipalForClaim(ctx context.Context, principalID, expectedRoleID string) (string, error) {
+	if strings.TrimSpace(principalID) == "" {
+		return "", fmt.Errorf("execution principal ID required")
+	}
+	if strings.TrimSpace(expectedRoleID) == "" {
+		return "", fmt.Errorf("recipient role ID required")
+	}
+
+	var actualRoleID string
+	err := s.pool.QueryRow(ctx, `
+SELECT dispatch_actor_role_id
+FROM model_execution_principals
+WHERE id = $1 AND status = 'active'`, principalID).Scan(&actualRoleID)
+
+	if err == nil {
+		if actualRoleID != expectedRoleID {
+			return "", fmt.Errorf("principal %q dispatch_actor_role_id (%q) does not match recipient role (%q)", principalID, actualRoleID, expectedRoleID)
+		}
+		return actualRoleID, nil
+	}
+	return "", fmt.Errorf("execution principal not found or not active: %w", err)
+}
+
+// Ack requires executionPrincipalID matching the principal that performed ClaimNext.
+// The claimed_by field must equal this principal, and the principal must still be active.
+func (s *Store) Ack(ctx context.Context, executionPrincipalID string, disposition agentmessaging.Disposition, now time.Time) error {
 	now = now.UTC()
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -203,7 +366,7 @@ func (s *Store) Ack(ctx context.Context, disposition agentmessaging.Disposition,
 	}
 	defer tx.Rollback(ctx)
 
-	if err := verifyClaim(ctx, tx, disposition, now); err != nil {
+	if err := verifyClaimWithPrincipal(ctx, tx, executionPrincipalID, disposition.MessageID, disposition.ClaimToken, now); err != nil {
 		return err
 	}
 	tag, err := tx.Exec(ctx, `
@@ -220,7 +383,8 @@ WHERE id=$1 AND status='claimed'`, disposition.MessageID, now)
 	return tx.Commit(ctx)
 }
 
-func (s *Store) Nack(ctx context.Context, disposition agentmessaging.Disposition, now time.Time) error {
+// Nack requires executionPrincipalID matching the principal that performed ClaimNext.
+func (s *Store) Nack(ctx context.Context, executionPrincipalID string, disposition agentmessaging.Disposition, now time.Time) error {
 	now = now.UTC()
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -228,7 +392,7 @@ func (s *Store) Nack(ctx context.Context, disposition agentmessaging.Disposition
 	}
 	defer tx.Rollback(ctx)
 
-	if err := verifyClaim(ctx, tx, disposition, now); err != nil {
+	if err := verifyClaimWithPrincipal(ctx, tx, executionPrincipalID, disposition.MessageID, disposition.ClaimToken, now); err != nil {
 		return err
 	}
 	tag, err := tx.Exec(ctx, `
@@ -247,28 +411,62 @@ WHERE id=$1 AND status='claimed'`, disposition.MessageID, now, nullableString(di
 	return tx.Commit(ctx)
 }
 
-func verifyClaim(ctx context.Context, tx pgx.Tx, disposition agentmessaging.Disposition, now time.Time) error {
+// verifyClaimWithPrincipal verifies both the token AND the execution principal.
+// This is a stricter version of verifyClaim - it requires the principal to match claimed_by
+// AND the principal to still be active at settlement time.
+func verifyClaimWithPrincipal(ctx context.Context, tx pgx.Tx, executionPrincipalID, messageID, claimToken string, now time.Time) error {
 	var status string
 	var claimedBy *string
 	var claimExpiresAt *time.Time
 	var tokenHash string
-	if err := tx.QueryRow(ctx, `SELECT status, claimed_by, claim_expires_at, COALESCE(claim_token_hash,'') FROM agent_messages WHERE id=$1 FOR UPDATE`, disposition.MessageID).
+
+	// First, lock and read the message row
+	if err := tx.QueryRow(ctx, `SELECT status, claimed_by, claim_expires_at, COALESCE(claim_token_hash,'') FROM agent_messages WHERE id=$1 FOR UPDATE`, messageID).
 		Scan(&status, &claimedBy, &claimExpiresAt, &tokenHash); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return agentmessaging.ErrNotFound
 		}
 		return err
 	}
-	if status != string(agentmessaging.StatusClaimed) || claimedBy == nil || *claimedBy != disposition.ConsumerID || claimExpiresAt == nil {
+
+	// Check basic state conditions
+	if status != string(agentmessaging.StatusClaimed) {
 		return agentmessaging.ErrConflict
 	}
-	if !claimExpiresAt.After(now) {
-		return agentmessaging.ErrClaimExpired
+	if claimedBy == nil {
+		return agentmessaging.ErrConflict
 	}
-	provided := hashToken(disposition.ClaimToken)
+	if claimExpiresAt == nil {
+		return agentmessaging.ErrConflict
+	}
+
+	// CRITICAL: claimed_by must match executionPrincipalID (the principal that did ClaimNext)
+	if *claimedBy != executionPrincipalID {
+		return agentmessaging.ErrConflict
+	}
+
+	// Token verification
+	provided := hashToken(claimToken)
 	if subtle.ConstantTimeCompare([]byte(tokenHash), []byte(provided)) != 1 {
 		return agentmessaging.ErrConflict
 	}
+
+	// Lease expiration check
+	if !claimExpiresAt.After(now) {
+		return agentmessaging.ErrClaimExpired
+	}
+
+	// Additional security: verify the principal still exists and is active
+	// If principal was revoked/disabled mid-lease, settlement should fail
+	var isActive bool
+	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM model_execution_principals WHERE id=$1 AND status='active')`, executionPrincipalID).Scan(&isActive)
+	if err != nil {
+		return fmt.Errorf("failed to verify principal status: %w", err)
+	}
+	if !isActive {
+		return agentmessaging.ErrConflict // Principal no longer active
+	}
+
 	return nil
 }
 

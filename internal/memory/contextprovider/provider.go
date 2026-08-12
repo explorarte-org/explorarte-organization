@@ -64,7 +64,7 @@ func (p *Provider) ListApproved(ctx context.Context, request contextengine.Build
 			QueryText: queryText, Limit: p.maxEntries,
 		})
 	} else {
-		entries, err = p.manager.ListApproved(ctx, p.organizationID, request.ActorRoleID, p.maxEntries)
+		entries, err = memory.ApprovedFilter{OrganizationID: p.organizationID, RoleID: request.ActorRoleID}, p.maxEntries
 		sort.Slice(entries, func(i, j int) bool {
 			if entries[i].UpdatedAt.Equal(entries[j].UpdatedAt) {
 				return entries[i].ID < entries[j].ID
@@ -99,15 +99,10 @@ func (p *Provider) ValidateVersion(ctx context.Context, expected contextengine.S
 	if expected.Kind != contextengine.SourceApprovedMemory {
 		return fmt.Errorf("memory version validation received source kind %s", expected.Kind)
 	}
-	entry, err := p.manager.Get(ctx, p.organizationID, expected.Reference)
+	// Use narrow revalidation API that enforces expected org/role/status/data class
+	entry, err := p.manager.GetForRevalidation(ctx, p.organizationID, expected.RoleID, expected.Reference)
 	if err != nil {
 		return err
-	}
-	if entry.OrganizationID != p.organizationID {
-		return fmt.Errorf("memory entry %s crossed organization boundary", entry.ID)
-	}
-	if entry.Status != memory.StatusApproved {
-		return fmt.Errorf("memory entry %s is no longer approved", entry.ID)
 	}
 	current, err := sourceRecord(entry)
 	if err != nil {
