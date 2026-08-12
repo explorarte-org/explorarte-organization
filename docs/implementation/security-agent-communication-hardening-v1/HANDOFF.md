@@ -14,29 +14,78 @@
 ```
 Security Hardening V1
 
-STATUS:
-implementation        PASS
-build                 PASS
-vet                   PASS
-gofmt (ficheros de esta rama)  PASS
-race suite            PASS
-topology enforcement  PASS
-mutation evidence     PASS
-secret ingress        PASS
-owner separation      PASS
-disabled-role denial  PASS
-
-MERGE READY:
-NO — hasta rebasar sobre un main que contenga 000041
+CODE GATES:              PASS   (gofmt, build, vet, test, race)
+SECURITY GATES:          PASS   (topology, owner separation, disabled roles,
+                                 secret ingress, mutation evidence)
+SCHEMA-DRIFT MATRIX:     PASS   (new/old binary x new/old schema, 4 states)
+INTEGRATION:             BLOCKED BY PREEXISTING CANONICAL CONTRADICTION
+                                 (18 packages green; shadowverifier parity only)
+REGRESSION VS origin/main: NONE
+MERGE READY:             YES -- inherited-baseline exception
+PRODUCTION READY:        NO
 
 MIGRATIONS:
-000041 RAG integrity                      (rama de Worker A, ya aplicada en producción)
-000042 messaging authorization            (esta rama)
-000043 legacy MessageStatus retirement    (esta rama)
-
-PRODUCTION READY:
-NO — hasta suite post-rebase + integración + despliegue desde main inmutable
+000041 RAG integrity                   (main)
+000042 messaging authorization         (this branch)
+000043 legacy MessageStatus retirement (this branch)
 ```
+
+Deliberately not written as "integration green", because it is not.
+
+## The inherited-baseline exception
+
+`shadowverifier` reports that `leader-worker-map.yaml` places thirteen
+`negocio/*` roles directly under `negocio/director_negocio` while the live
+`reports_to` graph carries no such edges. It reproduces identically on
+`origin/main`; this branch did not introduce it.
+
+The merge is permitted under that exception for a specific reason, not for
+convenience: **the security control being merged does not read `reports_to`.**
+`TopologyValidator` resolves the leader through `CanonicalLeader` plus unit
+membership, and the Postgres repository implements `GetLeader` as the
+canonical leader of the unit and `ListWorkers` as every non-leader role in
+that unit. V1 therefore already enforces the consolidated model:
+
+```
+negocio/director_negocio  <->  every negocio/* worker
+```
+
+and never the superseded chain `director -> disenador -> copywriter`. The
+canonical contradiction cannot change a single ALLOW or DENY this branch
+computes.
+
+## Canonical consistency: production blocker, not minor debt
+
+Two organizational models are superimposed. `leader-worker-map.yaml` and
+`negocio/AGENT.md` describe the consolidated one: the four former areas are
+internal functions whose leads hold no department authority, and the whole
+department reports to the Director de Negocio. Some profiles still carry the
+old chain. `negocio/copywriter/PERFIL.md` states it reports to
+`negocio/disenador` and calls that role the leader of Creativo.
+
+Tracked as **canonical-business-reporting-reconciliation**, a separate front,
+and as a blocker for declaring production readiness rather than as minor
+debt. Memory OS, cartridges, delegation and messaging will all lean harder on
+the distinction between formal hierarchy and functional coordination. The
+likely resolution represents them separately (formal `reports_to` to the
+director; functional coordination as something like
+`functionally_coordinated_by`) rather than deleting coordination that
+genuinely exists.
+
+## Sequence from here
+
+```
+Worker B  ->  push  ->  merge (inherited-baseline exception)
+          ->  canonical reconciliation (separate front)
+          ->  full integration GREEN
+          ->  immutable main image
+          ->  deploy with 000042/000043
+```
+
+The integration harness aborting at the first failure (`set -e`) is a real CI
+observability defect: six broken packages were reachable only one at a time,
+so the trunk suite had been red for some time while showing a single fault.
+Deliberately NOT fixed here, to avoid widening the front again.
 
 ## CURRENT INTEGRATION STATE
 
