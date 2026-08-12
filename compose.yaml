@@ -1,4 +1,12 @@
-name: explorarte-organization
+# Worktree isolation: this worktree (feat/security-agent-communication-
+# hardening-v1, /home/ubuntu/explorarte-security-worktree) previously
+# shared the same Compose project name as the main checkout
+# (/opt/explorarte/organization). A docker compose up run from here would
+# recreate -- and silently replace -- the production containers with this
+# branch's build. Renamed so the two can never collide; change back only
+# if this worktree is retired and its containers are meant to become the
+# canonical ones.
+name: explorarte-security-worktree
 
 services:
   postgres:

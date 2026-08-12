@@ -325,8 +325,8 @@ func TestBuildProviderRender_OtherDynamicTiersRouteToSuffix(t *testing.T) {
 func TestBuildProviderRender_VersionSet(t *testing.T) {
 	s := baseSnapshotForRender()
 	r, _ := BuildProviderRender(s)
-	if r.Version != ProviderRenderVersion {
-		t.Fatalf("expected version %q, got %q", ProviderRenderVersion, r.Version)
+	if r.Version != ProviderRenderVersionV2 {
+		t.Fatalf("expected version %q, got %q", ProviderRenderVersionV2, r.Version)
 	}
 }
 

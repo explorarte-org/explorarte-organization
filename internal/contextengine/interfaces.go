@@ -57,12 +57,12 @@ type CanonicalPolicyProvider interface {
 
 type OwnerConstraintProvider interface {
 	ListApplicable(context.Context, BuildRequest) ([]SourceRecord, error)
-	ValidateVersion(context.Context, SourceRecord) error
+	ValidateVersion(context.Context, string, SourceRecord) error
 }
 
 type MemoryProvider interface {
 	ListApproved(context.Context, BuildRequest) ([]SourceRecord, error)
-	ValidateVersion(context.Context, SourceRecord) error
+	ValidateVersion(context.Context, string, SourceRecord) error
 }
 
 type SkillRecord struct {
@@ -87,17 +87,17 @@ type SkillProvider interface {
 
 type ProjectContextProvider interface {
 	GetProjectContext(context.Context, BuildRequest) (*SourceRecord, error)
-	ValidateVersion(context.Context, SourceRecord) error
+	ValidateVersion(context.Context, string, SourceRecord) error
 }
 
 type TaskContextProvider interface {
 	GetTaskContext(context.Context, BuildRequest) (*SourceRecord, error)
-	ValidateVersion(context.Context, SourceRecord) error
+	ValidateVersion(context.Context, string, SourceRecord) error
 }
 
 type RAGEvidenceProvider interface {
 	ListApprovedEvidence(context.Context, BuildRequest) ([]SourceRecord, error)
-	ValidateVersion(context.Context, SourceRecord) error
+	ValidateVersion(context.Context, string, SourceRecord) error
 }
 
 type AssemblyInput struct {

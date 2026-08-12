@@ -126,7 +126,7 @@ func TestValidateVersionDetectsDeprecationAndContentDrift(t *testing.T) {
 		t.Fatal(err)
 	}
 	expected := records[0]
-	if err := provider.ValidateVersion(context.Background(), expected); err != nil {
+	if err := provider.ValidateVersion(context.Background(), role, expected); err != nil {
 		t.Fatal(err)
 	}
 	deprecated := entry
@@ -134,13 +134,13 @@ func TestValidateVersionDetectsDeprecationAndContentDrift(t *testing.T) {
 	deprecated.Revision++
 	deprecated.UpdatedAt = deprecated.UpdatedAt.Add(time.Minute)
 	repo.entries[entry.ID] = deprecated
-	if err := provider.ValidateVersion(context.Background(), expected); err == nil {
+	if err := provider.ValidateVersion(context.Background(), role, expected); err == nil {
 		t.Fatal("deprecation not detected")
 	}
 	changed := entry
 	changed.Correction = "Different correction."
 	repo.entries[entry.ID] = changed
-	if err := provider.ValidateVersion(context.Background(), expected); err == nil {
+	if err := provider.ValidateVersion(context.Background(), role, expected); err == nil {
 		t.Fatal("content drift not detected")
 	}
 }

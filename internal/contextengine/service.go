@@ -380,23 +380,23 @@ func (s *contextService) revalidateResolved(ctx context.Context, request BuildRe
 				return Reject(driftForKind(source.Kind), source.Reference, "document changed during context build")
 			}
 		case SourceOwnerConstraint:
-			if err = s.owner.ValidateVersion(ctx, source); err != nil {
+			if err = s.owner.ValidateVersion(ctx, request.ActorRoleID, source); err != nil {
 				return err
 			}
 		case SourceApprovedMemory:
-			if err = s.memory.ValidateVersion(ctx, source); err != nil {
+			if err = s.memory.ValidateVersion(ctx, request.ActorRoleID, source); err != nil {
 				return err
 			}
 		case SourceProjectContext:
-			if err = s.projects.ValidateVersion(ctx, source); err != nil {
+			if err = s.projects.ValidateVersion(ctx, request.ActorRoleID, source); err != nil {
 				return err
 			}
 		case SourceTaskContext:
-			if err = s.tasks.ValidateVersion(ctx, source); err != nil {
+			if err = s.tasks.ValidateVersion(ctx, request.ActorRoleID, source); err != nil {
 				return err
 			}
 		case SourceRAGEvidence:
-			if err = s.rag.ValidateVersion(ctx, source); err != nil {
+			if err = s.rag.ValidateVersion(ctx, request.ActorRoleID, source); err != nil {
 				return err
 			}
 		}
@@ -502,28 +502,28 @@ func (s *contextService) Validate(ctx context.Context, id int64) (SnapshotValida
 				drift = append(drift, DriftFinding{ReasonCode: string(ReasonSkillSourceDrift), SourceKind: segment.SourceKind, Reference: segment.SourceReference, Expected: segment.ContentHash, Actual: record.SourceHash})
 			}
 		case SourceApprovedMemory:
-			if validateErr := s.memory.ValidateVersion(ctx, segmentToRecord(segment)); validateErr != nil {
+			if validateErr := s.memory.ValidateVersion(ctx, snapshot.ActorRoleID, segmentToRecord(segment)); validateErr != nil {
 				if IsOperational(validateErr) {
 					return SnapshotValidation{}, fmt.Errorf("validate memory %s: %w", segment.SourceReference, validateErr)
 				}
 				drift = append(drift, DriftFinding{ReasonCode: string(ReasonMemoryVersionDrift), SourceKind: segment.SourceKind, Reference: segment.SourceReference})
 			}
 		case SourceProjectContext:
-			if validateErr := s.projects.ValidateVersion(ctx, segmentToRecord(segment)); validateErr != nil {
+			if validateErr := s.projects.ValidateVersion(ctx, snapshot.ActorRoleID, segmentToRecord(segment)); validateErr != nil {
 				if IsOperational(validateErr) {
 					return SnapshotValidation{}, fmt.Errorf("validate project %s: %w", segment.SourceReference, validateErr)
 				}
 				drift = append(drift, DriftFinding{ReasonCode: string(ReasonProjectVersionDrift), SourceKind: segment.SourceKind, Reference: segment.SourceReference})
 			}
 		case SourceTaskContext:
-			if validateErr := s.tasks.ValidateVersion(ctx, segmentToRecord(segment)); validateErr != nil {
+			if validateErr := s.tasks.ValidateVersion(ctx, snapshot.ActorRoleID, segmentToRecord(segment)); validateErr != nil {
 				if IsOperational(validateErr) {
 					return SnapshotValidation{}, fmt.Errorf("validate task %s: %w", segment.SourceReference, validateErr)
 				}
 				drift = append(drift, DriftFinding{ReasonCode: string(ReasonTaskVersionDrift), SourceKind: segment.SourceKind, Reference: segment.SourceReference})
 			}
 		case SourceRAGEvidence:
-			if validateErr := s.rag.ValidateVersion(ctx, segmentToRecord(segment)); validateErr != nil {
+			if validateErr := s.rag.ValidateVersion(ctx, snapshot.ActorRoleID, segmentToRecord(segment)); validateErr != nil {
 				if IsOperational(validateErr) {
 					return SnapshotValidation{}, fmt.Errorf("validate RAG evidence %s: %w", segment.SourceReference, validateErr)
 				}

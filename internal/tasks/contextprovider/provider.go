@@ -43,7 +43,10 @@ func (p *Provider) GetTaskContext(ctx context.Context, request contextengine.Bui
 	return &record, nil
 }
 
-func (p *Provider) ValidateVersion(ctx context.Context, expected contextengine.SourceRecord) error {
+// The actor role is part of the SourceValidator contract but is not
+// consulted here: a task context record is scoped by task reference, and
+// the caller has already bound the task to the actor.
+func (p *Provider) ValidateVersion(ctx context.Context, _ string, expected contextengine.SourceRecord) error {
 	if expected.Kind != contextengine.SourceTaskContext {
 		return fmt.Errorf("task version validation received source kind %s", expected.Kind)
 	}

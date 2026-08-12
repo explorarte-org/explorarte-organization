@@ -1,9 +1,10 @@
 package agentmessaging
 
 import (
+	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 )
@@ -26,14 +27,15 @@ type MessageType string
 const (
 	MessageDelegation MessageType = "delegation"
 	MessageCompletion MessageType = "completion"
-	// MessageStatus deprecated - no productive consumer exists.
-	// Keep for backward-compat reads but reject new writes.
-	MessageStatus MessageType = "status"
+	// NOTE: MessageStatus was removed in security hardening v1.
+	// It posed a covert channel risk (arbitrary data in opaque JSONB) with no
+	// productive consumer identified. All agent messaging must use one of the
+	// two structured payload types with semantic invariant validation.
 )
 
 func (k MessageType) Valid() bool {
 	switch k {
-	case MessageDelegation, MessageCompletion, MessageStatus:
+	case MessageDelegation, MessageCompletion:
 		return true
 	default:
 		return false
@@ -133,6 +135,17 @@ func (c SendCommand) Validate() error {
 	if payloadSize > MaxPayloadBytes {
 		return fmt.Errorf("%w: payload size %d exceeds maximum %d bytes", ErrPayloadTooLarge, payloadSize, MaxPayloadBytes)
 	}
+	// Fail closed on duplicate JSON keys BEFORE any Unmarshal into a
+	// map/struct -- encoding/json silently keeps the LAST occurrence of a
+	// duplicate key for both map[string]interface{} and typed structs, it
+	// never rejects them. A duplicate key is exactly the kind of
+	// parser-differential a hostile payload could exploit (e.g. a review
+	// step that only inspects the first occurrence disagreeing with a
+	// consumer that applies the last one), so it must never reach the
+	// semantic-invariant checks below at all.
+	if err := rejectDuplicateJSONKeys(c.Payload); err != nil {
+		return err
+	}
 	// Decode into proper typed struct based on message type, then validate invariants
 	var rawData map[string]interface{}
 	if err := json.Unmarshal(c.Payload, &rawData); err != nil {
@@ -145,82 +158,79 @@ func (c SendCommand) Validate() error {
 	return nil
 }
 
-// ValidateBasic validates core fields common to all message types.
-func (c SendCommand) ValidateBasic() error {
-	if strings.TrimSpace(c.OrganizationID) == "" || strings.TrimSpace(c.SenderRoleID) == "" || strings.TrimSpace(c.RecipientRoleID) == "" {
-		return fmt.Errorf("%w: organization, sender, and recipient roles are required", ErrInvalidRequest)
-	}
-	if c.SenderTaskID <= 0 {
-		return fmt.Errorf("%w: sender task id must be positive", ErrInvalidRequest)
-	}
-	if c.RecipientTaskID != nil && *c.RecipientTaskID <= 0 {
-		return fmt.Errorf("%w: recipient task id must be positive when set", ErrInvalidRequest)
-	}
-	if strings.TrimSpace(c.CorrelationID) == "" || strings.TrimSpace(c.CausationID) == "" {
-		return fmt.Errorf("%w: correlation and causation ids are required", ErrInvalidRequest)
-	}
-	if !c.MessageType.Valid() {
-		return fmt.Errorf("%w: invalid message type %q", ErrInvalidRequest, c.MessageType)
-	}
-	if len(c.Payload) == 0 || !json.Valid(c.Payload) {
-		return fmt.Errorf("%w: payload must be valid, non-empty JSON", ErrInvalidRequest)
-	}
-	if strings.TrimSpace(c.IdempotencyKey) == "" {
-		return fmt.Errorf("%w: idempotency key is required", ErrInvalidRequest)
-	}
-	if c.MaxAttempts <= 0 || c.MaxAttempts > 100 {
-		return fmt.Errorf("%w: max attempts must be between 1 and 100", ErrInvalidRequest)
-	}
-	return nil
+// jsonKeyScanFrame tracks duplicate-key detection state for one currently
+// open JSON object or array while scanning a token stream. Only isObject
+// frames track a `seen` set and alternate expectKey; array frames exist
+// purely so the scanner knows values inside `[...]` are never object keys,
+// even when those values are themselves objects.
+type jsonKeyScanFrame struct {
+	isObject  bool
+	expectKey bool
+	seen      map[string]struct{}
 }
 
-// ValidateSchemaAndPayload validates schema version, payload structure, and semantic invariants.
-func (c SendCommand) ValidateSchemaAndPayload() error {
-	if strings.TrimSpace(c.SchemaVersion) != SchemaVersionV1 {
-		return fmt.Errorf("%w: unsupported schema version %q, expected %q", ErrInvalidRequest, c.SchemaVersion, SchemaVersionV1)
-	}
-
-	// Validate payload size
-	payloadSize := len(c.Payload)
-	if payloadSize > MaxPayloadBytes {
-		return fmt.Errorf("%w: payload size %d exceeds maximum %d bytes", ErrPayloadTooLarge, payloadSize, MaxPayloadBytes)
-	}
-
-	// Decode into proper typed struct based on message type, then validate invariants
-	var rawData map[string]interface{}
-	if err := json.Unmarshal(c.Payload, &rawData); err != nil {
-		return fmt.Errorf("%w: failed to decode payload: %v", ErrInvalidRequest, err)
-	}
-
-	// Reject duplicate keys by re-decoding with strict mode
-	if err := c.validateNoDuplicateKeys(rawData); err != nil {
-		return err
-	}
-
-	// Validate semantic invariants based on message type
-	if err := c.validateSemanticInvariants(rawData); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// validateNoDuplicateKeys checks if any field appears more than once at top level.
-// Uses JSON decoder in strict mode which rejects duplicate keys.
-func (c SendCommand) validateNoDuplicateKeys(data map[string]interface{}) error {
-	// Re-parse using a strict decoder that detects duplicates
-	decoder := json.NewDecoder(strings.NewReader(string(c.Payload)))
-	decoder.DisallowUnknownFields()
-
-	var parsed interface{}
-	// We need to detect duplicates before Unmarshal fully succeeds.
-	// Use raw message first to check length, then try strict parsing.
-	if err := json.Unmarshal(c.Payload, &parsed); err != nil {
-		// If we got here due to malformed JSON or unknown fields, report it
-		if strings.Contains(err.Error(), "unknown field") {
-			return fmt.Errorf("%w: payload contains unknown fields not matching schema", ErrInvalidRequest)
+// rejectDuplicateJSONKeys fails closed the instant the same key appears
+// twice within the same JSON object, at any nesting depth (including
+// objects nested inside arrays). encoding/json's Unmarshal does NOT do
+// this on its own for either map[string]interface{} or a typed struct --
+// a duplicate key is silently resolved to its last occurrence. This is a
+// pure json.Decoder.Token() stream scan: no external dependency, and it
+// never builds the ambiguous value itself, only the key set per open
+// object.
+func rejectDuplicateJSONKeys(payload []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(payload))
+	var stack []*jsonKeyScanFrame
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			break
 		}
-		return fmt.Errorf("%w: malformed JSON payload", ErrInvalidRequest)
+		if err != nil {
+			return fmt.Errorf("%w: malformed JSON payload: %v", ErrInvalidRequest, err)
+		}
+		if delim, ok := tok.(json.Delim); ok {
+			switch delim {
+			case '{':
+				stack = append(stack, &jsonKeyScanFrame{isObject: true, expectKey: true, seen: map[string]struct{}{}})
+			case '[':
+				stack = append(stack, &jsonKeyScanFrame{isObject: false})
+			case '}', ']':
+				if len(stack) == 0 {
+					return fmt.Errorf("%w: malformed JSON payload: unbalanced %v", ErrInvalidRequest, delim)
+				}
+				stack = stack[:len(stack)-1]
+				if len(stack) > 0 && stack[len(stack)-1].isObject {
+					// The object/array that just closed was the value for
+					// the key most recently seen in the parent object --
+					// the parent now expects its next key.
+					stack[len(stack)-1].expectKey = true
+				}
+			}
+			continue
+		}
+		if len(stack) == 0 || !stack[len(stack)-1].isObject {
+			continue
+		}
+		frame := stack[len(stack)-1]
+		if frame.expectKey {
+			key, ok := tok.(string)
+			if !ok {
+				return fmt.Errorf("%w: malformed JSON payload: expected object key", ErrInvalidRequest)
+			}
+			if _, duplicate := frame.seen[key]; duplicate {
+				return fmt.Errorf("%w: duplicate JSON key %q", ErrInvalidRequest, key)
+			}
+			frame.seen[key] = struct{}{}
+			frame.expectKey = false
+		} else {
+			// This token was a scalar value (string/number/bool/null) for
+			// the key just recorded above -- the next token in this
+			// object is a key again.
+			frame.expectKey = true
+		}
+	}
+	if len(stack) != 0 {
+		return fmt.Errorf("%w: malformed JSON payload: unbalanced object or array", ErrInvalidRequest)
 	}
 	return nil
 }
@@ -239,7 +249,7 @@ func (c SendCommand) validateSemanticInvariants(rawData map[string]interface{}) 
 		}
 		intendedRecip := int64(delegatedTaskID)
 		if intendedRecip != *c.RecipientTaskID {
-			return fmt.Errorf("%w: delegation invariant violation: delegated_task_id (%d) does not equal recipient_task_id (%d)", ErrInvalidRequest, intendedRecip, *c.RecipientTaskID)
+			return fmt.Errorf("%w: delegation invariant violation: delegated_task_id (%d) does not equal recipient_task_id (%d)", ErrInvariantViolation, intendedRecip, *c.RecipientTaskID)
 		}
 		// Check for unknown fields beyond delegated_task_id
 		if len(rawData) > 1 {
@@ -258,7 +268,7 @@ func (c SendCommand) validateSemanticInvariants(rawData map[string]interface{}) 
 		}
 		intendedComplete := int64(completedTaskID)
 		if intendedComplete != c.SenderTaskID {
-			return fmt.Errorf("%w: completion invariant violation: completed_task_id (%d) does not equal sender_task_id (%d)", ErrInvalidRequest, intendedComplete, c.SenderTaskID)
+			return fmt.Errorf("%w: completion invariant violation: completed_task_id (%d) does not equal sender_task_id (%d)", ErrInvariantViolation, intendedComplete, c.SenderTaskID)
 		}
 		// Check for unknown fields beyond completed_task_id
 		if len(rawData) > 1 {
@@ -268,15 +278,22 @@ func (c SendCommand) validateSemanticInvariants(rawData map[string]interface{}) 
 				}
 			}
 		}
-
-	case MessageStatus:
-		// MessageStatus deprecated - accept legacy payloads but warn
-		// Keep accepting minimal payload for backward compatibility
-		if len(rawData) == 0 {
-			return fmt.Errorf("%w: status payload cannot be empty", ErrInvalidRequest)
-		}
-		// Don't add new restrictions for legacy compatibility; future work may remove this type entirely
 	}
 
 	return nil
+}
+
+// ClaimedMessage wraps a Message with its cryptographic claim token for settlement.
+type ClaimedMessage struct {
+	Message    Message
+	ClaimToken string // Plaintext token for Ack/Nack verification
+}
+
+// Disposition identifies a message for acknowledgment or negative acknowledgment.
+// CRITICAL: ConsumerID MUST be the execution principal ID, NOT an arbitrary string.
+type Disposition struct {
+	MessageID  int64
+	ConsumerID string // MUST match the execution principal that performed the ClaimNext (not arbitrary)
+	ClaimToken string // Cryptographic proof of ownership (SHA-256 hashed in DB)
+	Error      string // Optional error description for Nack
 }

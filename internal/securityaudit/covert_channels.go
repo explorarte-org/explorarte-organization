@@ -5,6 +5,7 @@
 package securityaudit
 
 import (
+	"strconv"
 	"strings"
 )
 
@@ -12,25 +13,25 @@ import (
 // who can write, who can read, what authorization exists, and whether it can
 // influence context or grant capabilities to agents.
 type Channel struct {
-	Name             string // Unique identifier for the channel
-	Writers          []string // Role types that can write (e.g., "specialist", "execution_service")
-	Readers          []string // Role types that can read
-	AuthBoundary     string // Authorization mechanism ("capability_gate", "task_workflow", "none", "principal_binding", etc.)
-	OrgScope         string // Organization-level isolation type ("org_isolated", "global")
-	RoleScope        string // Role-level scope description
-	DataClass        string // Data classification support ("public", "sanitized", "organizational", "secret", "clinical")
-	SizeBoundBytes   int    // Maximum payload size in bytes (0 = unbounded)
-	Durable          bool   // Persists across invocations
-	InfluencesContext bool  // Can modify what the LLM sees in context
-	GrantsCapability bool  // Can grant LLM capabilities via content
-	AuditProvenance  string // How access is logged/audited
+	Name              string   // Unique identifier for the channel
+	Writers           []string // Role types that can write (e.g., "specialist", "execution_service")
+	Readers           []string // Role types that can read
+	AuthBoundary      string   // Authorization mechanism ("capability_gate", "task_workflow", "none", "principal_binding", etc.)
+	OrgScope          string   // Organization-level isolation type ("org_isolated", "global")
+	RoleScope         string   // Role-level scope description
+	DataClass         string   // Data classification support ("public", "sanitized", "organizational", "secret", "clinical")
+	SizeBoundBytes    int      // Maximum payload size in bytes (0 = unbounded)
+	Durable           bool     // Persists across invocations
+	InfluencesContext bool     // Can modify what the LLM sees in context
+	GrantsCapability  bool     // Can grant LLM capabilities via content
+	AuditProvenance   string   // How access is logged/audited
 }
 
 // Rule defines a detection rule for identifying covert channel violations.
 type Rule struct {
-	Name        string // e.g., "missing-auth-boundary"
-	Severity    string // "critical", "high", "medium", "low"
-	Description string // Human-readable explanation of the violation
+	Name        string             // e.g., "missing-auth-boundary"
+	Severity    string             // "critical", "high", "medium", "low"
+	Description string             // Human-readable explanation of the violation
 	Check       func(Channel) bool // Returns true if violation detected
 }
 
@@ -67,12 +68,23 @@ func Catalog() []Channel {
 			AuditProvenance:   "token_settlement_logged",
 		},
 		{
+			// Was "bypassable_via_colliding_key" / AuthBoundary "key_only":
+			// Store.Send() used to reach the idempotency-key lookup (and
+			// return an existing message on a hit) WITHOUT first checking
+			// topology, execution-principal identity, or task ownership --
+			// a colliding idempotency key alone could surface a message
+			// authored by a different, unvalidated path. Send() now runs
+			// principal validation, task ownership, and topology.
+			// ValidateEdge unconditionally BEFORE the idempotency-key
+			// lookup (see store.go), so a colliding key can no longer skip
+			// any of those checks. Updated here to keep this catalog
+			// truthful about the current implementation, not the pre-fix one.
 			Name:              "agent_messages_idempotency_collision",
 			Writers:           []string{"attacker_via_key_replay"},
 			Readers:           []string{"prior_message_recipient"},
-			AuthBoundary:      "key_only",
+			AuthBoundary:      "key_only+principal_binding+task_ownership+topology_check",
 			OrgScope:          "org_isolated",
-			RoleScope:         "bypassable_via_colliding_key",
+			RoleScope:         "sender_role matches dispatch_actor + recipient_role in topology edge, checked before idempotency lookup",
 			DataClass:         "structured_payload",
 			SizeBoundBytes:    1024,
 			Durable:           true,
@@ -81,13 +93,16 @@ func Catalog() []Channel {
 			AuditProvenance:   "idempotency_collision_tracked_if_detected",
 		},
 		{
-			Name:              "agent_messages_payload_smuggling",
-			Writers:           []string{"sending_principal"},
-			Readers:           []string{"inbox_reader"},
-			AuthBoundary:      "dataclass_scan",
-			OrgScope:          "org_isolated",
-			RoleScope:         "sender->recipient per topology",
-			DataClass:         "structured_payload_with_secret_detection",
+			Name:         "agent_messages_payload_smuggling",
+			Writers:      []string{"sending_principal"},
+			Readers:      []string{"inbox_reader"},
+			AuthBoundary: "dataclass_scan",
+			OrgScope:     "org_isolated",
+			RoleScope:    "sender->recipient per topology",
+			// Not a scanner: the V1 payload schema is closed and carries a
+			// single integer field, and unknown fields are rejected, so there
+			// is no free-text field for a secret to travel in.
+			DataClass:         "closed_schema_no_free_text",
 			SizeBoundBytes:    1024,
 			Durable:           true,
 			InfluencesContext: true,
@@ -111,14 +126,18 @@ func Catalog() []Channel {
 
 		// Task-related channels
 		{
-			Name:              "tasks_instructions",
-			Writers:           []string{"task_creator", "department_leader", "ceo"},
-			Readers:           []string{"assigned_worker"},
-			AuthBoundary:      "task_state_machine",
-			OrgScope:          "org_isolated",
-			RoleScope:         "assigned_role_id",
-			DataClass:         "free_text",
-			SizeBoundBytes:    0,
+			Name:         "tasks_instructions",
+			Writers:      []string{"task_creator", "department_leader", "ceo"},
+			Readers:      []string{"assigned_worker"},
+			AuthBoundary: "task_state_machine",
+			OrgScope:     "org_isolated",
+			RoleScope:    "assigned_role_id",
+			// Free text, but credential material is refused at ingress by
+			// ValidateCreateRequest (see internal/secretscan). Sensitive
+			// non-credential data -- personal, clinical, commercial -- is
+			// deliberately carried and governed by classification instead.
+			DataClass:         "free_text_with_secret_rejection",
+			SizeBoundBytes:    65536,
 			Durable:           true,
 			InfluencesContext: true,
 			GrantsCapability:  false,
@@ -451,10 +470,17 @@ func Rules() []Rule {
 			Severity:    "critical",
 			Description: "Secret/clinical data can be smuggled via message/instructions payload",
 			Check: func(c Channel) bool {
-				// Payload channels without secret detection
+				// Payload channels are mitigated by one of two real controls,
+				// each backed by executable evidence in the securityaudit
+				// tests. A label alone never clears this rule -- that is what
+				// ORG-04 was raised for.
+				mitigated := map[string]bool{
+					"closed_schema_no_free_text":      true,
+					"free_text_with_secret_rejection": true,
+				}
 				payloadChannels := []string{"agent_messages_payload_smuggling", "tasks_instructions"}
 				for _, pc := range payloadChannels {
-					if c.Name == pc && c.DataClass != "structured_payload_with_secret_detection" {
+					if c.Name == pc && !mitigated[c.DataClass] {
 						return true
 					}
 				}
@@ -503,16 +529,21 @@ func CheckViolations() []Violation {
 
 // Helper functions for formatting
 func formatSize(bytes int) string {
+	// string(rune(n)) previously converted the integer to the Unicode
+	// CODE POINT at that value (e.g. bytes/1024==1 produced U+0001, a
+	// control character, not the text "1") -- every non-zero, non-
+	// "unbounded" size in every violation report was silently garbled.
+	// strconv.Itoa is the correct decimal-text conversion.
 	if bytes == 0 {
 		return "unbounded"
 	}
 	if bytes >= 1048576 {
-		return string(rune(bytes/1048576)) + "MB"
+		return strconv.Itoa(bytes/1048576) + "MB"
 	}
 	if bytes >= 1024 {
-		return string(rune(bytes/1024)) + "KB"
+		return strconv.Itoa(bytes/1024) + "KB"
 	}
-	return string(rune(bytes)) + "B"
+	return strconv.Itoa(bytes) + "B"
 }
 
 func formatBool(b bool) string {

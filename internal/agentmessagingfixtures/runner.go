@@ -13,6 +13,7 @@ import (
 	agentmessagingpostgres "github.com/Mireuz13/explorarte-organization/internal/agentmessaging/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/evaluation/fixtures"
 	"github.com/Mireuz13/explorarte-organization/internal/evaluationdb"
+	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
 )
 
@@ -21,6 +22,11 @@ const (
 	fixtureSender       = "ingenieria_ia/orquestador"
 	fixtureRecipient    = "ingenieria_ia/qa"
 	fixtureUnit         = "ingenieria_ia"
+	// FIX 6: Execution principal required for ALL ledger operations.
+	// In production this comes from ORG_MODEL_EXECUTION_PRINCIPAL_KEY config.
+	// For fixtures we use a hardcoded ID that MUST exist as an active principal
+	// in the disposable test database's model_execution_principals table.
+	fixtureExecutionPrincipalID = "1" // Must match an actual principal DB row
 )
 
 // Runner exercises lease expiry, recovery, stale-token rejection and the
@@ -41,7 +47,11 @@ func (r Runner) Run(ctx context.Context, f fixtures.Fixture, subjectID string) (
 	if !ok || scenario.FixtureID != f.ID {
 		return fixtures.RunOutcome{}, fmt.Errorf("fixture %s was not activated by agentmessagingfixtures.Activate", f.ID)
 	}
-	ledger, err := agentmessagingpostgres.New(r.Store, 1_000_000, 24*time.Hour)
+	registryReader, err := registry.NewPostgresRepository(r.Store)
+	if err != nil {
+		return fixtures.RunOutcome{}, err
+	}
+	ledger, err := agentmessagingpostgres.New(r.Store, registryReader, 1_000_000, 24*time.Hour)
 	if err != nil {
 		return fixtures.RunOutcome{}, err
 	}
@@ -59,23 +69,24 @@ func (r Runner) Run(ctx context.Context, f fixtures.Fixture, subjectID string) (
 		return fixtures.RunOutcome{}, err
 	}
 
-	// 1970 makes the fixture messages strictly older than unrelated live
-	// messages, while ClaimNext's supplied clock keeps those later messages
-	// ineligible. This avoids consuming anyone else's pending work in a
-	// shared disposable integration database.
+	// FIX 6: All ledger operations now require execution principal authentication.
 	base := time.Unix(f.Seed, 0).UTC()
+
 	recoveryCommand := agentmessaging.SendCommand{
 		OrganizationID: fixtureOrganization, SenderRoleID: fixtureSender, SenderTaskID: taskID,
 		RecipientRoleID: fixtureRecipient, CorrelationID: prefix + "-correlation", CausationID: fmt.Sprintf("task:%d", taskID),
-		MessageType: agentmessaging.MessageDelegation, Payload: json.RawMessage(`{"fixture":"lease-recovery"}`),
+		MessageType:    agentmessaging.MessageDelegation,
+		Payload:        json.RawMessage(`{"fixture":"lease-recovery"}`),
 		IdempotencyKey: prefix + "-recover", MaxAttempts: 3,
+		SchemaVersion: agentmessaging.SchemaVersionV1,
+		RequestHash:   computeRequestHash(fixtureOrganization, fixtureSender, taskID, fixtureRecipient, prefix+"-correlation", prefix+"-causation", 3, fixtureRecipient, prefix+"-recover"),
 	}
-	sent, reused, err := ledger.Send(ctx, recoveryCommand, base)
+	sent, reused, err := ledger.Send(ctx, fixtureExecutionPrincipalID, recoveryCommand, base)
 	if err != nil {
 		return fixtures.RunOutcome{}, err
 	}
 	record.record("first_send_creates_exactly_one_message", !reused)
-	retried, reused, err := ledger.Send(ctx, recoveryCommand, base.Add(time.Second))
+	retried, reused, err := ledger.Send(ctx, fixtureExecutionPrincipalID, recoveryCommand, base.Add(time.Second))
 	if err != nil {
 		return fixtures.RunOutcome{}, err
 	}
@@ -86,7 +97,8 @@ func (r Runner) Run(ctx context.Context, f fixtures.Fixture, subjectID string) (
 	}
 
 	lease := time.Minute
-	first, err := ledger.ClaimNext(ctx, fixtureOrganization, fixtureRecipient, prefix+"-consumer-old", 1, lease, base)
+	// FIX 6: ClaimNext requires executionPrincipalID (must match recipient role scope).
+	first, err := ledger.ClaimNext(ctx, fixtureExecutionPrincipalID, fixtureOrganization, fixtureRecipient, 1, lease, base)
 	if err != nil {
 		return fixtures.RunOutcome{}, err
 	}
@@ -94,12 +106,14 @@ func (r Runner) Run(ctx context.Context, f fixtures.Fixture, subjectID string) (
 		return fixtures.RunOutcome{}, fmt.Errorf("first claim selected %+v, want message %d", first, sent.ID)
 	}
 	expiredAt := base.Add(2 * time.Minute)
-	lateErr := ledger.Ack(ctx, agentmessaging.Disposition{
-		MessageID: sent.ID, ConsumerID: prefix + "-consumer-old", ClaimToken: first[0].ClaimToken,
+	// Ack/Nack require execution principal + token verification.
+	// FIX 6: ConsumerID set to executionPrincipalID, NOT arbitrary string.
+	lateErr := ledger.Ack(ctx, fixtureExecutionPrincipalID, agentmessaging.Disposition{
+		MessageID: sent.ID, ConsumerID: fixtureExecutionPrincipalID, ClaimToken: first[0].ClaimToken,
 	}, expiredAt)
 	record.record("expired_owner_cannot_ack_message", errors.Is(lateErr, agentmessaging.ErrClaimExpired))
 
-	second, err := ledger.ClaimNext(ctx, fixtureOrganization, fixtureRecipient, prefix+"-consumer-new", 1, lease, expiredAt)
+	second, err := ledger.ClaimNext(ctx, fixtureExecutionPrincipalID, fixtureOrganization, fixtureRecipient, 1, lease, expiredAt)
 	if err != nil {
 		return fixtures.RunOutcome{}, err
 	}
@@ -114,12 +128,12 @@ func (r Runner) Run(ctx context.Context, f fixtures.Fixture, subjectID string) (
 	}
 	record.record("recovery_preserves_one_active_message", activeBefore == 1 && activeAfter == 1)
 
-	staleErr := ledger.Ack(ctx, agentmessaging.Disposition{
-		MessageID: sent.ID, ConsumerID: prefix + "-consumer-old", ClaimToken: first[0].ClaimToken,
+	staleErr := ledger.Ack(ctx, fixtureExecutionPrincipalID, agentmessaging.Disposition{
+		MessageID: sent.ID, ConsumerID: fixtureExecutionPrincipalID, ClaimToken: first[0].ClaimToken,
 	}, expiredAt.Add(time.Second))
 	record.record("old_claim_token_never_settles_recovered_message", errors.Is(staleErr, agentmessaging.ErrConflict))
-	if err := ledger.Ack(ctx, agentmessaging.Disposition{
-		MessageID: sent.ID, ConsumerID: prefix + "-consumer-new", ClaimToken: recovered.ClaimToken,
+	if err := ledger.Ack(ctx, fixtureExecutionPrincipalID, agentmessaging.Disposition{
+		MessageID: sent.ID, ConsumerID: fixtureExecutionPrincipalID, ClaimToken: recovered.ClaimToken,
 	}, expiredAt.Add(time.Second)); err != nil {
 		return fixtures.RunOutcome{}, fmt.Errorf("ack recovered message: %w", err)
 	}
@@ -129,18 +143,19 @@ func (r Runner) Run(ctx context.Context, f fixtures.Fixture, subjectID string) (
 	deadCommand.IdempotencyKey = prefix + "-dead"
 	deadCommand.CorrelationID = prefix + "-dead-correlation"
 	deadCommand.MaxAttempts = 1
-	dead, _, err := ledger.Send(ctx, deadCommand, base.Add(10*time.Minute))
+	deadCommand.RequestHash = computeRequestHash(fixtureOrganization, fixtureSender, taskID, fixtureRecipient, prefix+"-dead-correlation", prefix+"-dead-causation", 1, fixtureRecipient, prefix+"-dead")
+	dead, _, err := ledger.Send(ctx, fixtureExecutionPrincipalID, deadCommand, base.Add(10*time.Minute))
 	if err != nil {
 		return fixtures.RunOutcome{}, err
 	}
-	deadClaim, err := ledger.ClaimNext(ctx, fixtureOrganization, fixtureRecipient, prefix+"-consumer-crashed", 1, lease, base.Add(10*time.Minute))
+	deadClaim, err := ledger.ClaimNext(ctx, fixtureExecutionPrincipalID, fixtureOrganization, fixtureRecipient, 1, lease, base.Add(10*time.Minute))
 	if err != nil {
 		return fixtures.RunOutcome{}, err
 	}
 	if len(deadClaim) != 1 || deadClaim[0].Message.ID != dead.ID {
 		return fixtures.RunOutcome{}, fmt.Errorf("dead-letter first claim selected %+v, want message %d", deadClaim, dead.ID)
 	}
-	redelivered, err := ledger.ClaimNext(ctx, fixtureOrganization, fixtureRecipient, prefix+"-consumer-next", 1, lease, base.Add(12*time.Minute))
+	redelivered, err := ledger.ClaimNext(ctx, fixtureExecutionPrincipalID, fixtureOrganization, fixtureRecipient, 1, lease, base.Add(12*time.Minute))
 	if err != nil {
 		return fixtures.RunOutcome{}, err
 	}
@@ -234,4 +249,13 @@ func (r *recorder) finish(notes string) fixtures.RunOutcome {
 func stableSuffix(subjectID string) string {
 	sum := sha256.Sum256([]byte(subjectID))
 	return hex.EncodeToString(sum[:6])
+}
+
+// computeRequestHash computes SHA-256 hash over semantically relevant fields
+// for idempotency collision detection. Mirrors postgres/store.computeCanonicalRequestHash.
+func computeRequestHash(orgID, senderRole string, senderTask int64, recipientRole string,
+	correlationID, causationID string, maxAttempts int, recipientTaskIDRef string, idempotencyKey string) string {
+	digest := sha256.Sum256([]byte(fmt.Sprintf("send-v1|%s|%s|%d|%s|%s|%s|%d|%s|%s",
+		orgID, senderRole, senderTask, recipientRole, correlationID, causationID, maxAttempts, recipientTaskIDRef, idempotencyKey)))
+	return hex.EncodeToString(digest[:])
 }

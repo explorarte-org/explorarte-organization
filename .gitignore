@@ -19,3 +19,8 @@
 .idea/
 .vscode/
 .DS_Store
+
+# Toolchain archives downloaded onto the host while provisioning Go.
+# A 57 MB tarball sitting untracked in the worktree root is one `git add -A`
+# away from entering history, where it cannot be removed cheaply.
+go*.tar.gz

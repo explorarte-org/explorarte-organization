@@ -7,12 +7,14 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/agentmessaging"
+	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -22,11 +24,23 @@ type Store struct {
 	pool            *pgxpool.Pool
 	rateLimitMax    int
 	rateLimitWindow time.Duration
+	registryReader  registry.Reader
 }
 
-func New(store *platformpostgres.Store, rateLimitMax int, rateLimitWindow time.Duration) (*Store, error) {
+// New wires a registry.Reader into the Store specifically so Send can
+// enforce topology (see topology.go's TopologyValidator: CEO<->leader,
+// leader<->own-workers, worker->own-leader only -- worker->worker and
+// cross-department edges are never permitted). Before this, ValidateEdge
+// existed as a fully-implemented, fully-tested validator that Send never
+// called (a bare "TODO: implement topology check" comment stood in its
+// place) -- the two DENY rules it enforces were not actually applied to
+// any real Send call.
+func New(store *platformpostgres.Store, registryReader registry.Reader, rateLimitMax int, rateLimitWindow time.Duration) (*Store, error) {
 	if store == nil || store.Pool() == nil {
 		return nil, errors.New("agentmessaging store requires initialized PostgreSQL")
+	}
+	if registryReader == nil {
+		return nil, errors.New("agentmessaging store requires a registry reader for topology validation")
 	}
 	if rateLimitMax <= 0 {
 		return nil, errors.New("agentmessaging store requires a positive rate limit")
@@ -34,7 +48,7 @@ func New(store *platformpostgres.Store, rateLimitMax int, rateLimitWindow time.D
 	if rateLimitWindow <= 0 {
 		return nil, errors.New("agentmessaging store requires a positive rate limit window")
 	}
-	return &Store{pool: store.Pool(), rateLimitMax: rateLimitMax, rateLimitWindow: rateLimitWindow}, nil
+	return &Store{pool: store.Pool(), rateLimitMax: rateLimitMax, rateLimitWindow: rateLimitWindow, registryReader: registryReader}, nil
 }
 
 var _ agentmessaging.Ledger = (*Store)(nil)
@@ -66,8 +80,7 @@ func (s *Store) Send(ctx context.Context, executionPrincipalID string, command a
 	// Validate execution principal is bound to sender role
 	// This is a critical identity binding: principal.dispatch_actor_role_id must equal sender_role_id
 	// If principal cannot be found or doesn't match, reject immediately - zero-trust authentication
-	principalRole, err := s.validateExecutionPrincipalForSender(ctx, executionPrincipalID, command.SenderRoleID)
-	if err != nil {
+	if _, err := s.validateExecutionPrincipalForSender(ctx, executionPrincipalID, command.OrganizationID, command.SenderRoleID); err != nil {
 		return agentmessaging.Message{}, false, fmt.Errorf("principal validation failed: %w", err)
 	}
 
@@ -83,9 +96,14 @@ func (s *Store) Send(ctx context.Context, executionPrincipalID string, command a
 		}
 	}
 
-	// Topology validation (registry-derived edges)
-	// TODO: Implement topology check using registry
-	// For V1, we accept owner exception and basic same-org checks
+	// Topology validation (registry-derived edges): CEO<->leader,
+	// leader<->own-workers, worker->own-leader only. Constructed fresh
+	// per-call (cheap, stateless) rather than cached on Store, since
+	// Store is not itself scoped to a single organization_id -- command.
+	// OrganizationID is authoritative per Send call.
+	if err := agentmessaging.NewTopologyValidator(s.registryReader, command.OrganizationID).ValidateEdge(ctx, command.SenderRoleID, command.RecipientRoleID); err != nil {
+		return agentmessaging.Message{}, false, fmt.Errorf("topology validation failed: %w", err)
+	}
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -101,8 +119,17 @@ func (s *Store) Send(ctx context.Context, executionPrincipalID string, command a
 		if scanErr != nil {
 			return agentmessaging.Message{}, false, scanErr
 		}
-		if existing.RequestHash != nil && *existing.RequestHash != command.RequestHash {
-			// Same key but different command detected - this is a collision attack or bug
+		// Compare against the hash this store derives from the command, which
+		// is what the INSERT below persists. The previous comparison used
+		// command.RequestHash -- a caller-supplied field that SendCommand.
+		// Validate never checks and that no producer in this repository ever
+		// populates. It was therefore always "", never equal to the stored
+		// canonical hash, so every legitimate retry of an already-recorded
+		// idempotency key returned ErrConflict instead of the existing
+		// message: the deduplication this branch added was a hard failure
+		// path rather than a replay guard.
+		if existing.RequestHash != nil && *existing.RequestHash != computeCanonicalRequestHash(command) {
+			// Same key but a genuinely different command: collision or attack.
 			return agentmessaging.Message{}, false, agentmessaging.ErrConflict
 		}
 		return existing, true, tx.Commit(ctx)
@@ -146,19 +173,28 @@ RETURNING `+messageColumns,
 
 // validateExecutionPrincipalForSender verifies the execution principal exists, is active,
 // and its dispatch_actor_role_id equals the command's sender_role_id.
-func (s *Store) validateExecutionPrincipalForSender(ctx context.Context, principalID, expectedRoleID string) (string, error) {
+func (s *Store) validateExecutionPrincipalForSender(ctx context.Context, principalID, expectedOrganizationID, expectedRoleID string) (string, error) {
 	if strings.TrimSpace(principalID) == "" {
 		return "", fmt.Errorf("execution principal ID required")
+	}
+	if strings.TrimSpace(expectedOrganizationID) == "" {
+		return "", fmt.Errorf("organization ID required")
 	}
 	if strings.TrimSpace(expectedRoleID) == "" {
 		return "", fmt.Errorf("sender role ID required")
 	}
 
+	// Cross-org DENY: model_execution_principals.organization_id must
+	// match the SendCommand's own organization_id -- a role ID string
+	// like "empresa/ceo" is not globally unique (organization_roles keys
+	// on (organization_id, id)), so without this filter a principal
+	// registered under one organization could authenticate a send for a
+	// different organization whose role happens to share the same id.
 	var actualRoleID string
 	err := s.pool.QueryRow(ctx, `
 SELECT dispatch_actor_role_id
 FROM model_execution_principals
-WHERE id = $1 AND status = 'active'`, principalID).Scan(&actualRoleID)
+WHERE id = $1 AND organization_id = $2 AND status = 'active'`, principalID, expectedOrganizationID).Scan(&actualRoleID)
 
 	if err == nil {
 		if actualRoleID != expectedRoleID {
@@ -166,7 +202,7 @@ WHERE id = $1 AND status = 'active'`, principalID).Scan(&actualRoleID)
 		}
 		return actualRoleID, nil
 	}
-	return "", fmt.Errorf("execution principal not found or not active: %w", err)
+	return "", fmt.Errorf("execution principal not found, not active, or not in organization %q: %w", expectedOrganizationID, err)
 }
 
 // validateTaskOwnership verifies that a task exists in the given organization
@@ -200,11 +236,11 @@ func computeCanonicalRequestHash(command agentmessaging.SendCommand) string {
 	// Build canonical JSON with ALL semantic fields including max_attempts and schema_version
 	// Order matters: consistent ordering ensures identical hashes for identical commands
 	hashInput := map[string]interface{}{
-		"schema_version":   command.SchemaVersion,
-		"organization_id":  command.OrganizationID,
-		"sender_role_id":   command.SenderRoleID,
-		"sender_task_id":   command.SenderTaskID,
-		"max_attempts":     command.MaxAttempts,
+		"schema_version":  command.SchemaVersion,
+		"organization_id": command.OrganizationID,
+		"sender_role_id":  command.SenderRoleID,
+		"sender_task_id":  command.SenderTaskID,
+		"max_attempts":    command.MaxAttempts,
 	}
 
 	// Recipient fields (may be null)
@@ -237,7 +273,7 @@ func (s *Store) ClaimNext(ctx context.Context, executionPrincipalID, organizatio
 	}
 
 	// CRITICAL AUTHENTICATION BOUNDARY: Principal must exist, be active, and have matching dispatch_actor_role_id
-	principalDispatchRole, err := s.validateExecutionPrincipalForClaim(ctx, executionPrincipalID, recipientRoleID)
+	principalDispatchRole, err := s.validateExecutionPrincipalForClaim(ctx, executionPrincipalID, organizationID, recipientRoleID)
 	if err != nil {
 		return nil, fmt.Errorf("principal validation failed: %w", err)
 	}
@@ -333,19 +369,23 @@ RETURNING `+messageColumns, id, hash, executionPrincipalID, now.Add(claimDuratio
 
 // validateExecutionPrincipalForClaim verifies the execution principal exists, is active,
 // and its dispatch_actor_role_id matches recipientRoleID.
-func (s *Store) validateExecutionPrincipalForClaim(ctx context.Context, principalID, expectedRoleID string) (string, error) {
+func (s *Store) validateExecutionPrincipalForClaim(ctx context.Context, principalID, expectedOrganizationID, expectedRoleID string) (string, error) {
 	if strings.TrimSpace(principalID) == "" {
 		return "", fmt.Errorf("execution principal ID required")
+	}
+	if strings.TrimSpace(expectedOrganizationID) == "" {
+		return "", fmt.Errorf("organization ID required")
 	}
 	if strings.TrimSpace(expectedRoleID) == "" {
 		return "", fmt.Errorf("recipient role ID required")
 	}
 
+	// Cross-org DENY: same reasoning as validateExecutionPrincipalForSender.
 	var actualRoleID string
 	err := s.pool.QueryRow(ctx, `
 SELECT dispatch_actor_role_id
 FROM model_execution_principals
-WHERE id = $1 AND status = 'active'`, principalID).Scan(&actualRoleID)
+WHERE id = $1 AND organization_id = $2 AND status = 'active'`, principalID, expectedOrganizationID).Scan(&actualRoleID)
 
 	if err == nil {
 		if actualRoleID != expectedRoleID {
@@ -353,7 +393,7 @@ WHERE id = $1 AND status = 'active'`, principalID).Scan(&actualRoleID)
 		}
 		return actualRoleID, nil
 	}
-	return "", fmt.Errorf("execution principal not found or not active: %w", err)
+	return "", fmt.Errorf("execution principal not found, not active, or not in organization %q: %w", expectedOrganizationID, err)
 }
 
 // Ack requires executionPrincipalID matching the principal that performed ClaimNext.
@@ -366,7 +406,7 @@ func (s *Store) Ack(ctx context.Context, executionPrincipalID string, dispositio
 	}
 	defer tx.Rollback(ctx)
 
-	if err := verifyClaimWithPrincipal(ctx, tx, executionPrincipalID, disposition.MessageID, disposition.ClaimToken, now); err != nil {
+	if err := verifyClaimWithPrincipal(ctx, tx, executionPrincipalID, fmt.Sprint(disposition.MessageID), disposition.ClaimToken, now); err != nil {
 		return err
 	}
 	tag, err := tx.Exec(ctx, `
@@ -392,7 +432,7 @@ func (s *Store) Nack(ctx context.Context, executionPrincipalID string, dispositi
 	}
 	defer tx.Rollback(ctx)
 
-	if err := verifyClaimWithPrincipal(ctx, tx, executionPrincipalID, disposition.MessageID, disposition.ClaimToken, now); err != nil {
+	if err := verifyClaimWithPrincipal(ctx, tx, executionPrincipalID, fmt.Sprint(disposition.MessageID), disposition.ClaimToken, now); err != nil {
 		return err
 	}
 	tag, err := tx.Exec(ctx, `

@@ -76,7 +76,10 @@ func (p *Provider) ListApprovedEvidence(ctx context.Context, request contextengi
 	return records, nil
 }
 
-func (p *Provider) ValidateVersion(ctx context.Context, expected contextengine.SourceRecord) error {
+// The actor role is part of the SourceValidator contract but is not
+// consulted here: RAG knowledge is organization-scoped and its approval
+// lifecycle is role-independent, unlike approved memory.
+func (p *Provider) ValidateVersion(ctx context.Context, _ string, expected contextengine.SourceRecord) error {
 	if expected.Kind != contextengine.SourceRAGEvidence {
 		return fmt.Errorf("rag version validation received source kind %s", expected.Kind)
 	}

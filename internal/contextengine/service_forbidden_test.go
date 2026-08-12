@@ -13,7 +13,7 @@ func (secretMemoryProvider) ListApproved(context.Context, BuildRequest) ([]Sourc
 	content := []byte("classified")
 	return []SourceRecord{{Reference: "memory/secret", Version: "1", DataClass: DataSecret, Content: content, ContentHash: DigestMarkdown(content), Included: true}}, nil
 }
-func (secretMemoryProvider) ValidateVersion(context.Context, SourceRecord) error { return nil }
+func (secretMemoryProvider) ValidateVersion(context.Context, string, SourceRecord) error { return nil }
 
 type forbiddenRecordingStore struct {
 	SnapshotStore

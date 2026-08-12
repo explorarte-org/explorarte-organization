@@ -92,8 +92,9 @@ func (r ProviderRender) Bytes() []byte {
 // The escaped content CANNOT close/open wrapper delimiters after escaping.
 //
 // Escape rules (collision-safe):
-//   < → &lt;    > → &gt;    & → &amp;
-//   " → &quot;  ' → &#x27;  / → &#x2F;
+//
+//	< → &lt;    > → &gt;    & → &amp;
+//	" → &quot;  ' → &#x27;  / → &#x2F;
 func escapeUntrustedContent(content string) string {
 	// Order matters: escape & FIRST, then other chars
 	content = strings.ReplaceAll(content, "&", "&amp;")
@@ -121,14 +122,19 @@ func providerHeader(snapshot Snapshot) []byte {
 }
 
 // BuildProviderRender is the single deterministic constructor for
-// ProviderRender. It operates on an already-projected Snapshot (the same
-// contextcompiler.CompileForTaskClass output the legacy PortableRenderer
-// consumed) and never mutates it. Segment order is preserved exactly as it
-// arrives (deterministic segment ordering is already guaranteed upstream by
-// the assembler/compiler, not re-sorted here) -- only included segments
-// contribute content; omitted segments contribute nothing, matching the
-// legacy renderer's behavior.
+// ProviderRender using v2 serialization with structural differentiation.
+// This is THE production path for all rendering — v1 is deprecated.
+// v2 wraps untrusted data (RAG/Memory/Web) with collision-safe escaping
+// and explicit authority=none / may_grant=false markers.
 func BuildProviderRender(snapshot Snapshot) (ProviderRender, error) {
+	// CRITICAL SECURITY: Always use v2 for production rendering.
+	// This ensures untrusted data can NEVER be misinterpreted as authoritative instruction.
+	return BuildProviderRenderV2(snapshot)
+}
+
+// BuildProviderRenderLegacy provides access to v1 format for testing/back compat ONLY.
+// DO NOT USE IN PRODUCTION — this lacks the security hardening of v2.
+func BuildProviderRenderLegacy(snapshot Snapshot) (ProviderRender, error) {
 	if snapshot.Status == SnapshotInvalidated {
 		return ProviderRender{}, ErrSnapshotInvalidated
 	}
@@ -176,11 +182,11 @@ func BuildProviderRender(snapshot Snapshot) (ProviderRender, error) {
 // collision-safe structural wrappers around untrusted data sources (RAG, memory, web evidence).
 //
 // CRITICAL SECURITY CONSTRAINTS:
-//   1. Untrusted data is marked with explicit authority=none, may_grant_capabilities=false
-//   2. Content is HTML-escaped BEFORE being wrapped, preventing closing tag injection
-//   3. Wrapper delimiters use [ ] syntax not angle brackets (second layer of protection)
-//   4. Output is deterministic - same inputs always produce same bytes
-//   5. Stable/Dynamic boundary preserved (R10.4 invariant)
+//  1. Untrusted data is marked with explicit authority=none, may_grant_capabilities=false
+//  2. Content is HTML-escaped BEFORE being wrapped, preventing closing tag injection
+//  3. Wrapper delimiters use [ ] syntax not angle brackets (second layer of protection)
+//  4. Output is deterministic - same inputs always produce same bytes
+//  5. Stable/Dynamic boundary preserved (R10.4 invariant)
 //
 // The escaped content CANNOT close or forge wrapper delimiters after escaping.
 func BuildProviderRenderV2(snapshot Snapshot) (ProviderRender, error) {
@@ -257,8 +263,9 @@ func wrapUntrustedData(content string, segment Segment) []byte {
 	// Use [ ] delimiter syntax for outer wrapper (not XML angle brackets)
 	// This provides defense in depth even if escaping somehow fails
 	var out bytes.Buffer
+	priority, _ := AuthorityPriority(segment.AuthorityTier)
 	fmt.Fprintf(&out, "[authority:tier=%d trust=untrusted may_grant=false type=\"%s\"]\n",
-		segment.AuthorityTier, wrapperType)
+		priority, wrapperType)
 	fmt.Fprintf(&out, "<%s content=\"escaped\">%s</%s>\n",
 		wrapperType, escaped, wrapperType)
 	fmt.Fprintf(&out, "[/authority]\n\n")

@@ -37,6 +37,7 @@ func (m fakeMigrator) Up(context.Context) (platformmigrations.Result, error) {
 func (m fakeMigrator) Status(context.Context) (platformmigrations.Status, error) {
 	return platformmigrations.Status{Applied: 1, Current: 1, Latest: 1, Ready: m.err == nil}, m.err
 }
+func (m fakeMigrator) Tip() int64 { return 1 }
 
 type fakeReconciler struct {
 	calls atomic.Int64

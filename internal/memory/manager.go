@@ -177,17 +177,17 @@ func (m *Manager) Get(ctx context.Context, organizationID, entryID, actorRoleID 
 	// Authorization gate: actor must have memory.read_own AND role match
 	// Only allow reading entries from own role namespace
 	if entry.RoleID != actorRoleID {
-		return Entry{}, fmt.Errorf("%w: entry %q belongs to role %q, actor role %q lacks permission", ErrNotFound, entry.ID, entry.RoleID, actorRoleID)
+		return Entry{}, fmt.Errorf("%w: entry %q belongs to role %q, actor role %q lacks permission", ErrEntryNotFound, entry.ID, entry.RoleID, actorRoleID)
 	}
 
 	// Evaluate capability for this actor/role combination
 	if err := m.gate.Authorize(ctx, AuthorizationRequest{
-		OrganizationID:   entry.OrganizationID,
-		ActorRoleID:      actorRoleID,
-		CapabilityID:     CapabilityPropose, // Use propose as base check; memory.read_own extends it
-		ResourceType:     "organizational_memory",
-		ResourceID:       entry.RoleID,
-		ActionDigest:     "", // No action digest needed for read
+		OrganizationID: entry.OrganizationID,
+		ActorRoleID:    actorRoleID,
+		CapabilityID:   CapabilityPropose, // Use propose as base check; memory.read_own extends it
+		ResourceType:   "organizational_memory",
+		ResourceID:     entry.RoleID,
+		ActionDigest:   "", // No action digest needed for read
 	}); err != nil {
 		return Entry{}, fmt.Errorf("authorization denied: %w", err)
 	}
@@ -212,10 +212,10 @@ func (m *Manager) List(ctx context.Context, filter ListFilter, actorRoleID strin
 
 // GetForRevalidation is a NARROW internal API for ContextEngine revalidation refresh.
 // It does NOT bypass all authorization - it performs explicit preconditions checks:
-//   1. expectedOrganization matches entry.organization_id
-//   2. expectedRole matches entry.RoleID
-//   3. entry.Status == StatusApproved
-//   4. entry.DataClass is NOT secret or clinical
+//  1. expectedOrganization matches entry.organization_id
+//  2. expectedRole matches entry.RoleID
+//  3. entry.Status == StatusApproved
+//  4. entry.DataClass is NOT secret or clinical
 //
 // This is NOT an arbitrary get bypass - it has strict input validation that enforces
 // the expected values against actual entry data BEFORE returning anything.
@@ -241,8 +241,8 @@ func (m *Manager) GetForRevalidation(ctx context.Context, expectedOrg, expectedR
 	if entry.Status != StatusApproved {
 		return Entry{}, fmt.Errorf("revalidation precondition failed: entry status %q != approved", entry.Status)
 	}
-	if entry.DataClass == DataClassSecret || entry.DataClass == DataClassClinical {
-		return Entry{}, fmt.Errorf("revalidation precondition failed: entry data class %q not permitted", entry.DataClass)
+	if entry.Admission.DataClass == DataSecret || entry.Admission.DataClass == DataClinical {
+		return Entry{}, fmt.Errorf("revalidation precondition failed: entry data class %q not permitted", entry.Admission.DataClass)
 	}
 
 	return entry, nil
@@ -433,20 +433,19 @@ func (m *Manager) BackfillEmbeddings(ctx context.Context, request BackfillEmbedd
 	return result, nil
 }
 
-// ListApproved requires authorization - caller must have memory.read_own for the target role namespace.
-// This is used by context provider and other internal callers with proper actor identification.
-// Public-facing List() already enforces actor filtering at the API boundary.
-func (m *Manager) ListApproved(ctx context.Context, filter ApprovedFilter, limit int) ([]Entry, error) {
-	if strings.TrimSpace(filter.OrganizationID) == "" || strings.TrimSpace(filter.RoleID) == "" {
+// ListApproved is the same recency-ordered read this package has always had,
+// exposed as a Manager method so Search can fall back to it without duplicating the ordering rule.
+func (m *Manager) ListApproved(ctx context.Context, orgID, roleID string, limit int) ([]Entry, error) {
+	if strings.TrimSpace(orgID) == "" || strings.TrimSpace(roleID) == "" {
 		return nil, fmt.Errorf("%w: organization_id and role_id are required", ErrInvalidRequest)
 	}
 	if limit <= 0 {
-		limit = 10 // default fallback
+		limit = 10
 	}
 	if limit > 100 {
 		limit = 100
 	}
-	return m.repository.ListApproved(ctx, ApprovedFilter{OrganizationID: filter.OrganizationID, RoleID: filter.RoleID, Limit: limit})
+	return m.repository.ListApproved(ctx, ApprovedFilter{OrganizationID: orgID, RoleID: roleID, Limit: limit})
 }
 
 func (m *Manager) loadMutationTarget(ctx context.Context, request MutationRequest) (Entry, error) {

@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/agentbudget"
@@ -114,9 +115,20 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create executive agent budget ledger: %w", err)
 	}
-	agentMessageLedger, err := agentmessagingpostgres.New(store, agentMessageRateLimitMax, agentMessageRateLimitWindow)
+	agentMessageLedger, err := agentmessagingpostgres.New(store, registryRepository, agentMessageRateLimitMax, agentMessageRateLimitWindow)
 	if err != nil {
 		return nil, fmt.Errorf("create executive agent message ledger: %w", err)
+	}
+
+	// Wire up execution principal for agent messaging
+	// Reuse modeldispatch dispatcher store which already implements ExecutionPrincipalResolver
+	// This provides the authenticated identity required by FIX 6
+	principalStore := modelRuntime.Dispatcher.Store
+	// Read execution principal key from configuration (or use default for dev/test)
+	principalKey := os.Getenv("ORG_MODEL_EXECUTION_PRINCIPAL_KEY")
+	if principalKey == "" {
+		// Default fallback - in production this should be explicitly configured
+		principalKey = "oracle-01/model-runtime-01"
 	}
 
 	orchestrator, err := executive.NewOrchestrator(
@@ -132,7 +144,14 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 		limits,
 		executive.ClockFunc(time.Now),
 		executive.WithAgentBudgets(runtimeadapter.AgentBudgets{Ledger: agentBudgetLedger, Limits: agentbudget.DefaultLimits()}),
-		executive.WithAgentMessaging(runtimeadapter.AgentMessages{Ledger: agentMessageLedger, MaxAttempts: agentMessageMaxAttempts}),
+		executive.WithAgentMessaging(runtimeadapter.AgentMessages{
+			Ledger:              agentMessageLedger,
+			MaxAttempts:         agentMessageMaxAttempts,
+			PrincipalStore:      principalStore,
+			OrganizationID:      cfg.Tasks.OrganizationID,
+			ConfiguredPrincipal: principalKey,
+		}),
+		executive.WithExecutionPrincipal(principalKey),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create executive orchestrator: %w", err)

@@ -30,8 +30,9 @@ const (
 )
 
 type messagingFixture struct {
-	store      *platformpostgres.Store
-	revisionID int64
+	store          *platformpostgres.Store
+	revisionID     int64
+	registryReader registry.Reader
 }
 
 func openMessagingFixture(t *testing.T, ctx context.Context) messagingFixture {
@@ -91,7 +92,7 @@ func openMessagingFixture(t *testing.T, ctx context.Context) messagingFixture {
 	if err != nil || revision == nil {
 		t.Fatalf("current registry revision=%+v err=%v", revision, err)
 	}
-	return messagingFixture{store: store, revisionID: revision.ID}
+	return messagingFixture{store: store, revisionID: revision.ID, registryReader: registryRepo}
 }
 
 func (f messagingFixture) insertTask(t *testing.T, ctx context.Context, roleID string, ordinal int) int64 {
@@ -112,6 +113,30 @@ RETURNING id`, messagingIntegrationOrg, f.revisionID, roleID, messagingIntegrati
 	return taskID
 }
 
+// insertExecutionPrincipal inserts a real, active model_execution_principals
+// row bound to roleID and returns its id as a string, for use as the
+// executionPrincipalID argument to Store.Send -- Send requires an
+// authenticated principal whose dispatch_actor_role_id matches
+// SenderRoleID (see store.go's validateExecutionPrincipalForSender);
+// there is no test-only bypass for this, on purpose.
+func (f messagingFixture) insertExecutionPrincipal(t *testing.T, ctx context.Context, roleID string, ordinal int) string {
+	t.Helper()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	principalKey := fmt.Sprintf("agentmessaging-fixture-principal-%d", ordinal)
+	var principalID int64
+	if err := f.store.Pool().QueryRow(ctx, `
+INSERT INTO model_execution_principals (
+ organization_id, principal_key, dispatch_actor_role_id, principal_kind, status,
+ idempotency_key, request_hash, registered_by_role_id, created_at, updated_at
+) VALUES ($1,$2,$3,'local_process','active',$4,$5,'empresa/ceo',$6,$6)
+RETURNING id`, messagingIntegrationOrg, principalKey, roleID,
+		fmt.Sprintf("agentmessaging-fixture-principal-idem-%d", ordinal), digest(principalKey), now,
+	).Scan(&principalID); err != nil {
+		t.Fatalf("insert execution principal: %v", err)
+	}
+	return fmt.Sprintf("%d", principalID)
+}
+
 func digest(value string) string {
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
@@ -121,12 +146,13 @@ func TestSendIsIdempotentPerOrganizationAndKey(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	fixture := openMessagingFixture(t, ctx)
-	ledger, err := agentmessagingpostgres.New(fixture.store, 100, time.Hour)
+	ledger, err := agentmessagingpostgres.New(fixture.store, fixture.registryReader, 100, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
 	ceoTaskID := fixture.insertTask(t, ctx, "empresa/ceo", 1)
+	principalID := fixture.insertExecutionPrincipal(t, ctx, "empresa/ceo", 1)
 
 	command := agentmessaging.SendCommand{
 		OrganizationID: messagingIntegrationOrg, SenderRoleID: "empresa/ceo", SenderTaskID: ceoTaskID,
@@ -134,14 +160,14 @@ func TestSendIsIdempotentPerOrganizationAndKey(t *testing.T) {
 		MessageType: agentmessaging.MessageDelegation, Payload: json.RawMessage(`{"delegate":true}`),
 		IdempotencyKey: "delegation:ceo->leader", MaxAttempts: 5,
 	}
-	first, reused, err := ledger.Send(ctx, command, now)
+	first, reused, err := ledger.Send(ctx, principalID, command, now)
 	if err != nil || reused {
 		t.Fatalf("first send: message=%+v reused=%v err=%v", first, reused, err)
 	}
 	if first.Status != agentmessaging.StatusPending {
 		t.Fatalf("status=%s want pending", first.Status)
 	}
-	second, reused, err := ledger.Send(ctx, command, now.Add(time.Second))
+	second, reused, err := ledger.Send(ctx, principalID, command, now.Add(time.Second))
 	if err != nil || !reused || second.ID != first.ID {
 		t.Fatalf("second send: message=%+v reused=%v err=%v want id=%d", second, reused, err, first.ID)
 	}
@@ -151,31 +177,35 @@ func TestSendEnforcesRateLimit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	fixture := openMessagingFixture(t, ctx)
-	ledger, err := agentmessagingpostgres.New(fixture.store, 2, time.Hour)
+	ledger, err := agentmessagingpostgres.New(fixture.store, fixture.registryReader, 2, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
 	ceoTaskID := fixture.insertTask(t, ctx, "empresa/ceo", 2)
+	principalID := fixture.insertExecutionPrincipal(t, ctx, "empresa/ceo", 2)
+	recipientTaskID := fixture.insertTask(t, ctx, "ingenieria_ia/orquestador", 20)
 
 	for i := 0; i < 2; i++ {
 		command := agentmessaging.SendCommand{
 			OrganizationID: messagingIntegrationOrg, SenderRoleID: "empresa/ceo", SenderTaskID: ceoTaskID,
-			RecipientRoleID: "ingenieria_ia/orquestador", CorrelationID: "executive:rate", CausationID: fmt.Sprintf("task:%d", ceoTaskID),
-			MessageType: agentmessaging.MessageStatus, Payload: json.RawMessage(`{"n":true}`),
+			RecipientRoleID: "ingenieria_ia/orquestador", RecipientTaskID: &recipientTaskID,
+			CorrelationID: "executive:rate", CausationID: fmt.Sprintf("task:%d", ceoTaskID),
+			MessageType: agentmessaging.MessageDelegation, Payload: json.RawMessage(fmt.Sprintf(`{"delegated_task_id":%d}`, recipientTaskID)),
 			IdempotencyKey: fmt.Sprintf("status:%d", i), MaxAttempts: 5,
 		}
-		if _, _, err := ledger.Send(ctx, command, now); err != nil {
+		if _, _, err := ledger.Send(ctx, principalID, command, now); err != nil {
 			t.Fatalf("send %d: %v", i, err)
 		}
 	}
 	over := agentmessaging.SendCommand{
 		OrganizationID: messagingIntegrationOrg, SenderRoleID: "empresa/ceo", SenderTaskID: ceoTaskID,
-		RecipientRoleID: "ingenieria_ia/orquestador", CorrelationID: "executive:rate", CausationID: fmt.Sprintf("task:%d", ceoTaskID),
-		MessageType: agentmessaging.MessageStatus, Payload: json.RawMessage(`{"n":true}`),
+		RecipientRoleID: "ingenieria_ia/orquestador", RecipientTaskID: &recipientTaskID,
+		CorrelationID: "executive:rate", CausationID: fmt.Sprintf("task:%d", ceoTaskID),
+		MessageType: agentmessaging.MessageDelegation, Payload: json.RawMessage(fmt.Sprintf(`{"delegated_task_id":%d}`, recipientTaskID)),
 		IdempotencyKey: "status:over", MaxAttempts: 5,
 	}
-	if _, _, err := ledger.Send(ctx, over, now); !errors.Is(err, agentmessaging.ErrRateLimited) {
+	if _, _, err := ledger.Send(ctx, principalID, over, now); !errors.Is(err, agentmessaging.ErrRateLimited) {
 		t.Fatalf("err=%v want ErrRateLimited", err)
 	}
 }
@@ -184,13 +214,14 @@ func TestClaimAckDeliversMessageExactlyOnce(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	fixture := openMessagingFixture(t, ctx)
-	ledger, err := agentmessagingpostgres.New(fixture.store, 100, time.Hour)
+	ledger, err := agentmessagingpostgres.New(fixture.store, fixture.registryReader, 100, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
 	ceoTaskID := fixture.insertTask(t, ctx, "empresa/ceo", 3)
-	sent, _, err := ledger.Send(ctx, agentmessaging.SendCommand{
+	principalID := fixture.insertExecutionPrincipal(t, ctx, "empresa/ceo", 3)
+	sent, _, err := ledger.Send(ctx, principalID, agentmessaging.SendCommand{
 		OrganizationID: messagingIntegrationOrg, SenderRoleID: "empresa/ceo", SenderTaskID: ceoTaskID,
 		RecipientRoleID: "ingenieria_ia/orquestador", CorrelationID: "executive:claim", CausationID: fmt.Sprintf("task:%d", ceoTaskID),
 		MessageType: agentmessaging.MessageDelegation, Payload: json.RawMessage(`{"claim":true}`),
@@ -200,7 +231,8 @@ func TestClaimAckDeliversMessageExactlyOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	claimed, err := ledger.ClaimNext(ctx, messagingIntegrationOrg, "ingenieria_ia/orquestador", "leader-consumer-1", 10, time.Minute, now)
+	recipientPrincipalID := fixture.insertExecutionPrincipal(t, ctx, "ingenieria_ia/orquestador", 30)
+	claimed, err := ledger.ClaimNext(ctx, recipientPrincipalID, messagingIntegrationOrg, "ingenieria_ia/orquestador", 10, time.Minute, now)
 	if err != nil || len(claimed) != 1 || claimed[0].Message.ID != sent.ID {
 		t.Fatalf("claimed=%+v err=%v", claimed, err)
 	}
@@ -209,17 +241,25 @@ func TestClaimAckDeliversMessageExactlyOnce(t *testing.T) {
 	}
 
 	// A second claim attempt must find nothing pending.
-	again, err := ledger.ClaimNext(ctx, messagingIntegrationOrg, "ingenieria_ia/orquestador", "leader-consumer-2", 10, time.Minute, now)
+	again, err := ledger.ClaimNext(ctx, recipientPrincipalID, messagingIntegrationOrg, "ingenieria_ia/orquestador", 10, time.Minute, now)
 	if err != nil || len(again) != 0 {
 		t.Fatalf("second claim=%+v err=%v want empty", again, err)
 	}
 
-	if err := ledger.Ack(ctx, agentmessaging.Disposition{MessageID: sent.ID, ConsumerID: "leader-consumer-1", ClaimToken: claimed[0].ClaimToken}, now.Add(time.Second)); err != nil {
+	if err := ledger.Ack(ctx, recipientPrincipalID, agentmessaging.Disposition{MessageID: sent.ID, ConsumerID: "leader-consumer-1", ClaimToken: claimed[0].ClaimToken}, now.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	// A wrong claim token must be rejected.
-	if err := ledger.Ack(ctx, agentmessaging.Disposition{MessageID: sent.ID, ConsumerID: "leader-consumer-1", ClaimToken: "wrong-token"}, now); !errors.Is(err, agentmessaging.ErrConflict) {
+	if err := ledger.Ack(ctx, recipientPrincipalID, agentmessaging.Disposition{MessageID: sent.ID, ConsumerID: "leader-consumer-1", ClaimToken: "wrong-token"}, now); !errors.Is(err, agentmessaging.ErrConflict) {
 		t.Fatalf("err=%v want ErrConflict", err)
+	}
+	// A different principal than the one that claimed must never be able
+	// to settle the claim, even with the RIGHT token -- this is the
+	// stolen-claim-token defense: possession of the token alone is not
+	// sufficient authentication.
+	otherPrincipalID := fixture.insertExecutionPrincipal(t, ctx, "ingenieria_ia/orquestador", 31)
+	if err := ledger.Ack(ctx, otherPrincipalID, agentmessaging.Disposition{MessageID: sent.ID, ConsumerID: "leader-consumer-1", ClaimToken: claimed[0].ClaimToken}, now.Add(time.Second)); err == nil {
+		t.Fatal("expected Ack from a different execution principal with the correct token to be rejected")
 	}
 }
 
@@ -227,13 +267,14 @@ func TestNackRetriesUntilMaxAttemptsThenDeadLetters(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	fixture := openMessagingFixture(t, ctx)
-	ledger, err := agentmessagingpostgres.New(fixture.store, 100, time.Hour)
+	ledger, err := agentmessagingpostgres.New(fixture.store, fixture.registryReader, 100, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
 	ceoTaskID := fixture.insertTask(t, ctx, "empresa/ceo", 4)
-	sent, _, err := ledger.Send(ctx, agentmessaging.SendCommand{
+	principalID := fixture.insertExecutionPrincipal(t, ctx, "empresa/ceo", 4)
+	sent, _, err := ledger.Send(ctx, principalID, agentmessaging.SendCommand{
 		OrganizationID: messagingIntegrationOrg, SenderRoleID: "empresa/ceo", SenderTaskID: ceoTaskID,
 		RecipientRoleID: "ingenieria_ia/orquestador", CorrelationID: "executive:nack", CausationID: fmt.Sprintf("task:%d", ceoTaskID),
 		MessageType: agentmessaging.MessageDelegation, Payload: json.RawMessage(`{"nack":true}`),
@@ -243,12 +284,13 @@ func TestNackRetriesUntilMaxAttemptsThenDeadLetters(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	recipientPrincipalID := fixture.insertExecutionPrincipal(t, ctx, "ingenieria_ia/orquestador", 40)
 	for attempt := 1; attempt <= 2; attempt++ {
-		claimed, err := ledger.ClaimNext(ctx, messagingIntegrationOrg, "ingenieria_ia/orquestador", "leader-consumer", 10, time.Minute, now)
+		claimed, err := ledger.ClaimNext(ctx, recipientPrincipalID, messagingIntegrationOrg, "ingenieria_ia/orquestador", 10, time.Minute, now)
 		if err != nil || len(claimed) != 1 {
 			t.Fatalf("attempt %d: claimed=%+v err=%v", attempt, claimed, err)
 		}
-		if err := ledger.Nack(ctx, agentmessaging.Disposition{MessageID: sent.ID, ConsumerID: "leader-consumer", ClaimToken: claimed[0].ClaimToken, Error: "consumer failed"}, now); err != nil {
+		if err := ledger.Nack(ctx, recipientPrincipalID, agentmessaging.Disposition{MessageID: sent.ID, ConsumerID: "leader-consumer", ClaimToken: claimed[0].ClaimToken, Error: "consumer failed"}, now); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -262,7 +304,7 @@ func TestNackRetriesUntilMaxAttemptsThenDeadLetters(t *testing.T) {
 		t.Fatalf("status=%s attempts=%d want dead/2", status, attemptCount)
 	}
 	// A dead message must never be claimable again.
-	claimed, err := ledger.ClaimNext(ctx, messagingIntegrationOrg, "ingenieria_ia/orquestador", "leader-consumer", 10, time.Minute, now)
+	claimed, err := ledger.ClaimNext(ctx, recipientPrincipalID, messagingIntegrationOrg, "ingenieria_ia/orquestador", 10, time.Minute, now)
 	if err != nil || len(claimed) != 0 {
 		t.Fatalf("claimed dead message: %+v err=%v", claimed, err)
 	}
@@ -272,13 +314,14 @@ func TestExpiredClaimIsRecoveredAndOldTokenCannotSettle(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	fixture := openMessagingFixture(t, ctx)
-	ledger, err := agentmessagingpostgres.New(fixture.store, 100, time.Hour)
+	ledger, err := agentmessagingpostgres.New(fixture.store, fixture.registryReader, 100, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
 	ceoTaskID := fixture.insertTask(t, ctx, "empresa/ceo", 5)
-	sent, _, err := ledger.Send(ctx, agentmessaging.SendCommand{
+	principalID := fixture.insertExecutionPrincipal(t, ctx, "empresa/ceo", 5)
+	sent, _, err := ledger.Send(ctx, principalID, agentmessaging.SendCommand{
 		OrganizationID: messagingIntegrationOrg, SenderRoleID: "empresa/ceo", SenderTaskID: ceoTaskID,
 		RecipientRoleID: "ingenieria_ia/orquestador", CorrelationID: "executive:expired", CausationID: fmt.Sprintf("task:%d", ceoTaskID),
 		MessageType: agentmessaging.MessageDelegation, Payload: json.RawMessage(`{"expired":true}`),
@@ -288,26 +331,27 @@ func TestExpiredClaimIsRecoveredAndOldTokenCannotSettle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	first, err := ledger.ClaimNext(ctx, messagingIntegrationOrg, "ingenieria_ia/orquestador", "consumer-old", 1, time.Minute, now)
+	recipientPrincipalID := fixture.insertExecutionPrincipal(t, ctx, "ingenieria_ia/orquestador", 50)
+	first, err := ledger.ClaimNext(ctx, recipientPrincipalID, messagingIntegrationOrg, "ingenieria_ia/orquestador", 1, time.Minute, now)
 	if err != nil || len(first) != 1 {
 		t.Fatalf("first claim=%+v err=%v", first, err)
 	}
 	expiredAt := now.Add(2 * time.Minute)
-	if err := ledger.Ack(ctx, agentmessaging.Disposition{MessageID: sent.ID, ConsumerID: "consumer-old", ClaimToken: first[0].ClaimToken}, expiredAt); !errors.Is(err, agentmessaging.ErrClaimExpired) {
+	if err := ledger.Ack(ctx, recipientPrincipalID, agentmessaging.Disposition{MessageID: sent.ID, ConsumerID: "consumer-old", ClaimToken: first[0].ClaimToken}, expiredAt); !errors.Is(err, agentmessaging.ErrClaimExpired) {
 		t.Fatalf("late ack err=%v want ErrClaimExpired", err)
 	}
 
-	second, err := ledger.ClaimNext(ctx, messagingIntegrationOrg, "ingenieria_ia/orquestador", "consumer-new", 1, time.Minute, expiredAt)
+	second, err := ledger.ClaimNext(ctx, recipientPrincipalID, messagingIntegrationOrg, "ingenieria_ia/orquestador", 1, time.Minute, expiredAt)
 	if err != nil || len(second) != 1 {
 		t.Fatalf("recovered claim=%+v err=%v", second, err)
 	}
 	if second[0].Message.ID != sent.ID || second[0].Message.AttemptCount != 2 || second[0].ClaimToken == first[0].ClaimToken {
 		t.Fatalf("recovered message=%+v old_token_reused=%v", second[0].Message, second[0].ClaimToken == first[0].ClaimToken)
 	}
-	if err := ledger.Ack(ctx, agentmessaging.Disposition{MessageID: sent.ID, ConsumerID: "consumer-old", ClaimToken: first[0].ClaimToken}, expiredAt.Add(time.Second)); !errors.Is(err, agentmessaging.ErrConflict) {
+	if err := ledger.Ack(ctx, recipientPrincipalID, agentmessaging.Disposition{MessageID: sent.ID, ConsumerID: "consumer-old", ClaimToken: first[0].ClaimToken}, expiredAt.Add(time.Second)); !errors.Is(err, agentmessaging.ErrConflict) {
 		t.Fatalf("old owner/token after reclaim err=%v want ErrConflict", err)
 	}
-	if err := ledger.Ack(ctx, agentmessaging.Disposition{MessageID: sent.ID, ConsumerID: "consumer-new", ClaimToken: second[0].ClaimToken}, expiredAt.Add(time.Second)); err != nil {
+	if err := ledger.Ack(ctx, recipientPrincipalID, agentmessaging.Disposition{MessageID: sent.ID, ConsumerID: "consumer-new", ClaimToken: second[0].ClaimToken}, expiredAt.Add(time.Second)); err != nil {
 		t.Fatalf("ack recovered claim: %v", err)
 	}
 }
@@ -316,13 +360,14 @@ func TestExpiredFinalAttemptDeadLettersInsteadOfRequeue(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	fixture := openMessagingFixture(t, ctx)
-	ledger, err := agentmessagingpostgres.New(fixture.store, 100, time.Hour)
+	ledger, err := agentmessagingpostgres.New(fixture.store, fixture.registryReader, 100, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
 	ceoTaskID := fixture.insertTask(t, ctx, "empresa/ceo", 6)
-	sent, _, err := ledger.Send(ctx, agentmessaging.SendCommand{
+	principalID := fixture.insertExecutionPrincipal(t, ctx, "empresa/ceo", 6)
+	sent, _, err := ledger.Send(ctx, principalID, agentmessaging.SendCommand{
 		OrganizationID: messagingIntegrationOrg, SenderRoleID: "empresa/ceo", SenderTaskID: ceoTaskID,
 		RecipientRoleID: "ingenieria_ia/orquestador", CorrelationID: "executive:expired-dead", CausationID: fmt.Sprintf("task:%d", ceoTaskID),
 		MessageType: agentmessaging.MessageDelegation, Payload: json.RawMessage(`{"expired":"dead"}`),
@@ -331,12 +376,13 @@ func TestExpiredFinalAttemptDeadLettersInsteadOfRequeue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	claimed, err := ledger.ClaimNext(ctx, messagingIntegrationOrg, "ingenieria_ia/orquestador", "consumer-crashed", 1, time.Minute, now)
+	recipientPrincipalID := fixture.insertExecutionPrincipal(t, ctx, "ingenieria_ia/orquestador", 60)
+	claimed, err := ledger.ClaimNext(ctx, recipientPrincipalID, messagingIntegrationOrg, "ingenieria_ia/orquestador", 1, time.Minute, now)
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("claim=%+v err=%v", claimed, err)
 	}
 
-	reclaimed, err := ledger.ClaimNext(ctx, messagingIntegrationOrg, "ingenieria_ia/orquestador", "consumer-next", 1, time.Minute, now.Add(2*time.Minute))
+	reclaimed, err := ledger.ClaimNext(ctx, recipientPrincipalID, messagingIntegrationOrg, "ingenieria_ia/orquestador", 1, time.Minute, now.Add(2*time.Minute))
 	if err != nil || len(reclaimed) != 0 {
 		t.Fatalf("max-attempt expired message was redelivered: %+v err=%v", reclaimed, err)
 	}

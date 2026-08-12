@@ -11,172 +11,157 @@ import (
 )
 
 // TopologyValidator validates message send requests against the canonical organization topology.
-// V1 Enforces only these edges:
-//   - owner -> any role
-//   - ceo -> department leaders, ceo, owner
-//   - department leader -> own workers, ceo
+// V1 Enforces ONLY these edges:
+//   - CEO -> department leaders (of any unit in same org)
+//   - department leader -> own workers OR CEO
+//   - worker -> own department leader ONLY
+//   - department leader -> CEO
+//
+// Owner/control-plane access removed unless explicitly needed.
 type TopologyValidator struct {
 	reader registry.Reader
 	orgID  string
 }
 
-// NewTopologyValidator creates a new topology validator for the given organization.
 func NewTopologyValidator(reader registry.Reader, orgID string) *TopologyValidator {
 	return &TopologyValidator{reader: reader, orgID: orgID}
 }
 
 // ValidateEdge checks if an edge from senderRole to recipientRole is permitted by V1 topology.
+// Returns ErrTopologyViolation if edge not allowed.
 func (v *TopologyValidator) ValidateEdge(ctx context.Context, senderRole, recipientRole string) error {
-	if strings.TrimSpace(senderRole) == "" || strings.TrimSpace(recipientRole) == "" {
+	senderRole = strings.TrimSpace(senderRole)
+	recipientRole = strings.TrimSpace(recipientRole)
+	if senderRole == "" || recipientRole == "" {
 		return fmt.Errorf("sender and recipient roles required")
 	}
 
-	ownerRole := "empresa/human"
 	ceoRole := "empresa/ceo"
 
-	// Owner can send to anyone
-	if senderRole == ownerRole {
-		return nil // Owner has universal authority
-	}
-
-	// Load organization to get its structure
-	org, err := v.reader.GetOrganization(ctx, v.orgID)
+	// Verify both roles exist in our org before proceeding
+	senderRoleData, err := v.reader.GetRole(ctx, v.orgID, senderRole)
 	if err != nil {
-		return fmt.Errorf("failed to load organization: %w", err)
+		return fmt.Errorf("role %q does not exist or is inaccessible: %w", senderRole, err)
+	}
+	if senderRoleData.OrganizationID != "" && senderRoleData.OrganizationID != v.orgID {
+		return fmt.Errorf("%w: role %q belongs to org %q, expected %q",
+			ErrTopologyViolation, senderRole, senderRoleData.OrganizationID, v.orgID)
+	}
+	// A disabled role is not a participant. The registry query already
+	// excludes retired roles, but Enabled=false is a live, reversible
+	// "this role must not act right now" switch, and the rest of the system
+	// honours it (contextengine refuses to build a context for a disabled
+	// actor). Letting one keep sending and receiving agent messages would
+	// leave a decommissioned agent quietly operating on a bus everything
+	// else has already shut it out of.
+	if !senderRoleData.Enabled {
+		return fmt.Errorf("%w: sender role %q is disabled", ErrTopologyViolation, senderRole)
 	}
 
-	// Get current revision for registry lookups
-	revision, err := v.reader.GetCurrentRevision(ctx, v.orgID)
+	recipientRoleData, err := v.reader.GetRole(ctx, v.orgID, recipientRole)
 	if err != nil {
-		return fmt.Errorf("failed to get revision: %w", err)
+		// Non-existent recipient → deny (safety: cannot delegate to unknown role)
+		return fmt.Errorf("%w: recipient role %q does not exist or is inaccessible",
+			ErrTopologyViolation, recipientRole)
+	}
+	if recipientRoleData.OrganizationID != "" && recipientRoleData.OrganizationID != v.orgID {
+		return fmt.Errorf("%w: recipient role %q belongs to org %q, expected %q",
+			ErrTopologyViolation, recipientRole, recipientRoleData.OrganizationID, v.orgID)
+	}
+	if !recipientRoleData.Enabled {
+		return fmt.Errorf("%w: recipient role %q is disabled", ErrTopologyViolation, recipientRole)
 	}
 
-	// Check CEO edges
+	// Self-message check
+	if senderRole == recipientRole {
+		return fmt.Errorf("%w: self-message denied", ErrTopologyViolation)
+	}
+
+	// CEO -> department leaders (any unit's canonical_leader in same org)
 	if senderRole == ceoRole {
-		// CEO can send to department leaders
-		if v.isDepartmentLeader(ctx, senderRole, recipientRole, revision) {
+		// Get all department leaders and check if recipient is one of them
+		departments, _ := v.reader.ListUnits(ctx, v.orgID)
+		for _, dept := range departments {
+			leader, err := v.reader.GetLeader(ctx, v.orgID, dept.ID)
+			if err != nil {
+				continue
+			}
+			if leader.ID == recipientRole {
+				return nil
+			}
+		}
+		return fmt.Errorf("%w: CEO can only send to department leaders", ErrTopologyViolation)
+	}
+
+	// Department leader -> own workers OR CEO
+	if senderRoleData.CanonicalLeader {
+		sentUnitID := senderRoleData.UnitID
+		if sentUnitID == "" {
+			return fmt.Errorf("%w: department leader %q lacks assigned unit", ErrTopologyViolation, senderRole)
+		}
+
+		// Can send to own workers
+		if v.senderUnitHasWorker(ctx, sentUnitID, recipientRole) {
 			return nil
 		}
-		// CEO can send to owner
-		if recipientRole == ownerRole {
-			return nil
-		}
-		// CEO can send to self
+
+		// Can send back to CEO
 		if recipientRole == ceoRole {
 			return nil
 		}
-		// Default deny for CEO
-		return ErrTopologyViolation
+
+		return fmt.Errorf("%w: department leader can only send to their own workers or CEO", ErrTopologyViolation)
 	}
 
-	// Check department leader edges
-	isDeptLeader, deptID := v.isDepartmentLeader(ctx, senderRole, "", revision)
-	if isDeptLeader {
-		// Department leader can send to their own workers
-		if v.isWorkerInDepartment(ctx, senderRole, recipientRole, deptID, revision) {
-			return nil
-		}
-		// Department leader can send to CEO
-		if recipientRole == ceoRole {
-			return nil
-		}
-		// Default deny for dept leader
-		return ErrTopologyViolation
+	// Worker -> own department leader ONLY (no peer-to-peer!)
+	// Find which unit this worker belongs to
+	workerUnitID := senderRoleData.UnitID
+	if workerUnitID == "" {
+		return fmt.Errorf("%w: role %q is neither CEO nor department leader and lacks unit assignment",
+			ErrTopologyViolation, senderRole)
 	}
 
-	// Check worker edges
-	workerDept := v.getWorkersDepartment(ctx, senderRole, revision)
-	if workerDept != "" {
-		// Worker can send to their own department leader
-		if v.isDeptLeaderOfWorkersDepartment(ctx, recipientRole, workerDept, revision) {
-			return nil
-		}
-		// Workers cannot send peer-to-peer (V1 explicit denial)
-		return ErrTopologyViolation
-	}
-
-	// Any other role not covered by above rules
-	return ErrTopologyViolation
-}
-
-// isDepartmentLeader checks if a role is a department leader and optionally returns its department ID.
-func (v *TopologyValidator) isDepartmentLeader(ctx context.Context, roleID, expectRecipient string, revision *registry.Revision) (bool, string) {
-	if revision == nil {
-		return false, ""
-	}
-
-	role, err := v.reader.GetRole(ctx, v.orgID, roleID)
+	// Get the leader of this worker's unit
+	unitLeader, err := v.reader.GetLeader(ctx, v.orgID, workerUnitID)
 	if err != nil {
-		return false, ""
+		return fmt.Errorf("%w: could not resolve unit leader for unit %q: %w",
+			ErrTopologyViolation, workerUnitID, err)
 	}
 
-	// Department leaders have specific leadership roles
-	// Check if this role leads a department unit
-	for _, unit := range revision.Units {
-		if unit.CanonicalLeader == roleID {
-			return true, unit.ID
-		}
+	// Worker can ONLY send to their own dept leader
+	if unitLeader.ID == recipientRole {
+		return nil
 	}
-	return false, ""
+
+	return fmt.Errorf("%w: worker can only send to their own department leader", ErrTopologyViolation)
 }
 
-// isWorkerInDepartment checks if recipientRole is a worker in the sender's department.
-func (v *TopologyValidator) isWorkerInDepartment(ctx context.Context, senderRole, recipientRole, deptID string, revision *registry.Revision) bool {
-	if revision == nil {
+// extractUnitFromRole extracts the unit prefix from a role ID (e.g., "ingenieria_ia/orquestador" -> "ingenieria_ia").
+func extractUnitFromRole(roleID string) (unitID string, roleSlug string) {
+	parts := strings.SplitN(roleID, "/", 2)
+	if len(parts) == 2 {
+		return parts[0], parts[1]
+	}
+	return "", roleID
+}
+
+// senderUnitHasWorker checks if recipientRole is listed as a worker in sender's unit.
+func (v *TopologyValidator) senderUnitHasWorker(ctx context.Context, unitID, recipientRole string) bool {
+	if unitID == "" || recipientRole == "" {
 		return false
 	}
 
-	// Find unit by ID from available units
-	var foundUnit *registry.Unit
-	for i := range revision.Units {
-		u := &revision.Units[i]
-		if u.ID == deptID {
-			foundUnit = u
-			break
-		}
-	}
-	if foundUnit == nil {
+	workers, err := v.reader.ListWorkers(ctx, v.orgID, unitID)
+	if err != nil {
 		return false
 	}
 
-	// Check if recipient role belongs to this unit
-	for _, member := range foundUnit.Members {
-		if member.RoleID == recipientRole {
+	for _, w := range workers {
+		if w.ID == recipientRole {
 			return true
 		}
 	}
 	return false
 }
 
-// getWorkersDepartment gets the department that owns the worker's role.
-func (v *TopologyValidator) getWorkersDepartment(ctx context.Context, roleID string, revision *registry.Revision) string {
-	if revision == nil {
-		return ""
-	}
-
-	for _, unit := range revision.Units {
-		for _, member := range unit.Members {
-			if member.RoleID == roleID {
-				return unit.ID
-			}
-		}
-	}
-	return ""
-}
-
-// isDeptLeaderOfWorkersDepartment checks if recipientRole is the department leader of the sender's department.
-func (v *TopologyValidator) isDeptLeaderOfWorkersDepartment(ctx context.Context, recipientRole, workerDept string, revision *registry.Revision) bool {
-	if revision == nil {
-		return false
-	}
-
-	unit, ok := revision.GetUnitByID(workerDept)
-	if !ok {
-		return false
-	}
-
-	return unit.CanonicalLeader == recipientRole
-}
-
-// ErrTopologyViolation indicates a message send violates topology constraints.
-var ErrTopologyViolation = errors.New("message topology violation: sender->recipient edge not permitted by V1 topology")
+var ErrTopologyViolation = errors.New("topology violation: sender->recipient edge not permitted by V1 topology")

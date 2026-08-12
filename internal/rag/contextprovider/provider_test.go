@@ -145,20 +145,20 @@ func TestValidateVersionDetectsDeprecationAndGenerationDrift(t *testing.T) {
 	if err != nil || len(records) == 0 {
 		t.Fatalf("records=%+v err=%v", records, err)
 	}
-	if err := provider.ValidateVersion(context.Background(), records[0]); err != nil {
+	if err := provider.ValidateVersion(context.Background(), "ingenieria_ia/orquestador", records[0]); err != nil {
 		t.Fatalf("expected no drift, got %v", err)
 	}
 
 	staleRepo := stubRepository{generation: rag.IndexGeneration{ID: "department-ingenieria_ia-2"}, hasActive: true}
 	staleProvider := newTestProvider(t, staleRepo, stubGate{})
-	if err := staleProvider.ValidateVersion(context.Background(), records[0]); err == nil {
+	if err := staleProvider.ValidateVersion(context.Background(), "ingenieria_ia/orquestador", records[0]); err == nil {
 		t.Fatal("expected drift when the active index generation changed")
 	}
 }
 
 func TestValidateVersionRejectsWrongSourceKind(t *testing.T) {
 	provider := newTestProvider(t, stubRepository{}, stubGate{})
-	err := provider.ValidateVersion(context.Background(), contextengine.SourceRecord{Kind: contextengine.SourceApprovedMemory})
+	err := provider.ValidateVersion(context.Background(), "ingenieria_ia/orquestador", contextengine.SourceRecord{Kind: contextengine.SourceApprovedMemory})
 	if err == nil {
 		t.Fatal("expected rejection of a non-rag source kind")
 	}

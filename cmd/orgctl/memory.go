@@ -145,11 +145,16 @@ func runMemory(args []string, stdout, stderr io.Writer) int {
 		flags := flag.NewFlagSet("memory get", flag.ContinueOnError)
 		flags.SetOutput(stderr)
 		entryID := flags.String("id", "", "memory entry id")
+		actor := flags.String("actor", "", "actor role id — required for authorization gate")
 		jsonOutput := flags.Bool("json", false, "emit JSON")
 		if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 || strings.TrimSpace(*entryID) == "" {
 			return exitUsage
 		}
-		entry, err := runtime.Manager.Get(ctx, runtime.OrganizationID, *entryID)
+		if strings.TrimSpace(*actor) == "" {
+			fmt.Fprintln(stderr, "usage: orgctl memory get --id <entry-id> --actor <role> [--json]")
+			return exitUsage
+		}
+		entry, err := runtime.Manager.Get(ctx, runtime.OrganizationID, *entryID, *actor)
 		if err != nil {
 			return memoryCommandError(stderr, err)
 		}
@@ -158,14 +163,18 @@ func runMemory(args []string, stdout, stderr io.Writer) int {
 	case "list":
 		flags := flag.NewFlagSet("memory list", flag.ContinueOnError)
 		flags.SetOutput(stderr)
-		role := flags.String("role", "", "role id filter")
+		actor := flags.String("actor", "", "actor role id — required for authorization gate")
 		statusValue := flags.String("status", "", "candidate|approved|deprecated|archived|rejected")
 		limit := flags.Int("limit", 100, "maximum entries")
 		jsonOutput := flags.Bool("json", false, "emit JSON")
 		if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 {
 			return exitUsage
 		}
-		entries, err := runtime.Manager.List(ctx, memory.ListFilter{OrganizationID: runtime.OrganizationID, RoleID: *role, Status: memory.Status(*statusValue), Limit: *limit})
+		if strings.TrimSpace(*actor) == "" {
+			fmt.Fprintln(stderr, "usage: orgctl memory list --actor <role> [--status state] [--limit N] [--json]")
+			return exitUsage
+		}
+		entries, err := runtime.Manager.List(ctx, memory.ListFilter{OrganizationID: runtime.OrganizationID, RoleID: "", Status: memory.Status(*statusValue), Limit: *limit}, *actor)
 		if err != nil {
 			return memoryCommandError(stderr, err)
 		}

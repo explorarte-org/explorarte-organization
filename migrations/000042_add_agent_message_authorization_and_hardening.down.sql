@@ -1,4 +1,4 @@
--- Migration 000041 rollback: Remove agent message authorization columns
+-- Migration 000042 rollback: Remove agent message authorization columns
 -- This is a destructive rollback - only use if you understand data loss implications
 
 BEGIN;

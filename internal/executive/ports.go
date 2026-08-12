@@ -152,9 +152,16 @@ type AgentBudgetProvider interface {
 // between agents (CEO<->coordinador, coordinador<->worker). It is optional
 // on Orchestrator (see WithAgentMessaging) — a nil provider means no
 // messaging, existing behavior is unaffected.
+//
+// CRITICAL FIX 6: All operations require an authenticated execution principal.
+// There is NO fallback to free-string consumerIDs in production.
+// SendDelegation and SendCompletion receive executionPrincipalID as the first
+// parameter after context. This principal must have dispatch_actor_role_id ==
+// sender.AssignedRoleID for send authentication, and ClaimNext/Ack/Nack
+// require matching principals for inbox access and settlement.
 type AgentMessagingProvider interface {
-	SendDelegation(ctx context.Context, sender, recipient TaskRecord, now time.Time) error
-	SendCompletion(ctx context.Context, sender, recipient TaskRecord, now time.Time) error
+	SendDelegation(ctx context.Context, executionPrincipalID string, sender, recipient TaskRecord, now time.Time) error
+	SendCompletion(ctx context.Context, executionPrincipalID string, sender, recipient TaskRecord, now time.Time) error
 }
 
 type Clock interface{ Now() time.Time }

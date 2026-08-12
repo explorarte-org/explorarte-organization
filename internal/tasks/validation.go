@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Mireuz13/explorarte-organization/internal/secretscan"
 )
 
 const maxJSONInput = 1 << 20
@@ -161,6 +163,9 @@ func ValidateCreateRequest(request CreateRequest) error {
 	if length := len(request.Instructions); length < 1 || length > 65536 {
 		return fmt.Errorf("%w: instructions must contain 1 to 65536 bytes", ErrInvalidInput)
 	}
+	if err := rejectSecrets(request); err != nil {
+		return err
+	}
 	if request.Priority < -100000 || request.Priority > 100000 {
 		return fmt.Errorf("%w: priority is outside the supported range", ErrInvalidInput)
 	}
@@ -264,4 +269,42 @@ func NormalizeAvailableAt(value *time.Time) *time.Time {
 	}
 	normalized := value.UTC().Round(0)
 	return &normalized
+}
+
+// rejectSecrets refuses a create request whose free text carries credential
+// material, on every field that reaches the assigned agent -- not only
+// Instructions, because Title, AcceptanceCriteria and Requirement
+// descriptions are rendered into the same context.
+//
+// The returned error names the categories found and the field, never the
+// matched value: an error string is exactly the kind of place a rejected
+// secret must not reappear, since it will be logged, wrapped and very likely
+// shown to a human.
+func rejectSecrets(request CreateRequest) error {
+	fields := []struct {
+		name string
+		text string
+	}{
+		{"title", request.Title},
+		{"instructions", request.Instructions},
+	}
+	for index, criterion := range request.AcceptanceCriteria {
+		fields = append(fields, struct {
+			name string
+			text string
+		}{fmt.Sprintf("acceptance_criteria[%d]", index), criterion})
+	}
+	for index, requirement := range request.Requirements {
+		fields = append(fields, struct {
+			name string
+			text string
+		}{fmt.Sprintf("requirements[%d].description", index), requirement.Description})
+	}
+	for _, field := range fields {
+		if findings := secretscan.Scan(field.text); len(findings) > 0 {
+			return fmt.Errorf("%w: %s contains %s; store the credential in the secret store and reference it instead",
+				ErrSecretRejected, field.name, strings.Join(secretscan.Kinds(findings), ", "))
+		}
+	}
+	return nil
 }

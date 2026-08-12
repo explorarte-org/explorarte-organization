@@ -27,6 +27,10 @@ var (
 	ErrHTTPServerStopped = errors.New("HTTP server stopped unexpectedly")
 	ErrProcessStarting   = errors.New("organization kernel is still starting")
 	ErrSchemaNotReady    = errors.New("database schema is not ready")
+	// ErrSchemaStructurallyIncompatible ends the process rather than
+	// retrying: no amount of waiting reconciles a binary with a database
+	// that has applied migrations it does not contain.
+	ErrSchemaStructurallyIncompatible = errors.New("database schema is structurally incompatible with this binary")
 )
 
 type Database interface {
@@ -37,6 +41,10 @@ type Database interface {
 type Migrator interface {
 	Up(context.Context) (platformmigrations.Result, error)
 	Status(context.Context) (platformmigrations.Status, error)
+	// Tip is the highest migration version this binary carries. It is part
+	// of the contract because deployment drift is diagnosed by comparing it
+	// against the database tip.
+	Tip() int64
 }
 
 type App struct {
@@ -50,6 +58,10 @@ type App struct {
 	reconciler        tasks.TaskReconciler
 	stagingReconciler staging.StagingReconciler
 	stagingInitErr    error
+	// fatal carries a condition that makes this process permanently unable
+	// to serve, so Run can exit non-zero instead of idling. See
+	// prepareDatabase.
+	fatal chan error
 }
 
 func New(ctx context.Context, cfg config.Config, logger *slog.Logger, info buildinfo.Info) (*App, error) {
@@ -114,7 +126,11 @@ func newWithDependencies(cfg config.Config, logger *slog.Logger, info buildinfo.
 	if logger == nil {
 		logger = slog.Default()
 	}
-	application := &App{cfg: cfg, logger: logger, database: database, migrator: migrator}
+	// Report the schema this binary carries, so /version answers the
+	// deployment-drift question directly instead of requiring log
+	// archaeology (see buildinfo.Info.MigrationTip).
+	info.MigrationTip = migrator.Tip()
+	application := &App{cfg: cfg, logger: logger, database: database, migrator: migrator, fatal: make(chan error, 1)}
 	application.server = httpserver.New(cfg.HTTP, logger, info, application.Ready)
 	return application
 }
@@ -157,6 +173,8 @@ func (a *App) Run(ctx context.Context) error {
 		} else {
 			runErr = ErrHTTPServerStopped
 		}
+	case err := <-a.fatal:
+		runErr = err
 	}
 	a.process.Store(false)
 	a.schema.Store(false)
@@ -193,6 +211,21 @@ func (a *App) prepareDatabase(ctx context.Context) {
 			if !wasReady {
 				a.logger.Info("PostgreSQL schema is ready", "auto_migrate", a.cfg.Database.AutoMigrate)
 			}
+		} else if errors.Is(err, platformmigrations.ErrStructuralSchema) {
+			// The binary and the database disagree about what the schema is.
+			// Retrying re-runs an identical comparison and fails identically,
+			// so the old five-second retry loop only buried the incident: a
+			// real deployment sat live-but-never-ready for days, emitting
+			// nothing louder than a warning. Fail loudly and exit; the
+			// supervisor already knows how to restart, and a restarting
+			// container is visible in a way an idle one is not.
+			a.logger.Error("PostgreSQL schema is structurally incompatible with this binary; the process cannot serve and is exiting",
+				"error", err, "remediation", "deploy a binary whose migration set matches the database, or correct the database")
+			select {
+			case a.fatal <- fmt.Errorf("%w: %w", ErrSchemaStructurallyIncompatible, err):
+			default:
+			}
+			return
 		} else {
 			wait = a.cfg.Database.MigrationRetry
 			if wasReady {

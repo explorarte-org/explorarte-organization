@@ -224,24 +224,82 @@ func (r *Runner) Status(ctx context.Context) (Status, error) {
 	return status, nil
 }
 
+// ErrStructuralSchema marks a schema state that retrying cannot resolve.
+//
+// A structural mismatch means the binary and the database disagree about
+// what the schema *is* -- the database carries a migration this binary has
+// never heard of, or a migration it knows by a different name or contents.
+// That is a deployment fact, not a transient condition: the same comparison
+// will fail identically forever until a different binary is deployed or the
+// database is corrected. Callers must treat it differently from an
+// unreachable database, which retrying does fix.
+var ErrStructuralSchema = errors.New("structural schema mismatch between binary and database")
+
+// validateApplied compares every migration the database has recorded against
+// the set compiled into this binary.
+//
+// It reports the complete, sorted set of discrepancies rather than the first
+// one encountered. The previous implementation ranged directly over the
+// applied map, whose iteration order Go deliberately randomizes, so a single
+// unchanging fault produced a different message on every retry -- observed in
+// production alternating between versions 000035, 000037 and 000040 every
+// five seconds, which actively obstructed diagnosis of one root cause.
 func (r *Runner) validateApplied(applied map[int64]appliedMigration) error {
 	known := make(map[int64]Migration, len(r.migrations))
 	for _, migration := range r.migrations {
 		known[migration.Version] = migration
 	}
-	for version, row := range applied {
+	versions := make([]int64, 0, len(applied))
+	for version := range applied {
+		versions = append(versions, version)
+	}
+	sort.Slice(versions, func(i, j int) bool { return versions[i] < versions[j] })
+
+	var unknown, renamed, rechecksummed []string
+	for _, version := range versions {
+		row := applied[version]
 		migration, ok := known[version]
 		if !ok {
-			return fmt.Errorf("database contains unknown migration version %06d", version)
+			unknown = append(unknown, fmt.Sprintf("%06d_%s", version, row.Name))
+			continue
 		}
 		if row.Name != migration.Name {
-			return fmt.Errorf("migration %06d name changed: database=%q source=%q", version, row.Name, migration.Name)
+			renamed = append(renamed, fmt.Sprintf("%06d database=%q source=%q", version, row.Name, migration.Name))
+			continue
 		}
 		if row.Checksum != migration.Checksum {
-			return fmt.Errorf("migration %06d_%s checksum mismatch", version, migration.Name)
+			rechecksummed = append(rechecksummed, fmt.Sprintf("%06d_%s", version, migration.Name))
 		}
 	}
-	return nil
+	if len(unknown) == 0 && len(renamed) == 0 && len(rechecksummed) == 0 {
+		return nil
+	}
+
+	var detail []string
+	if len(unknown) > 0 {
+		detail = append(detail, fmt.Sprintf("database contains %d migration(s) unknown to this binary: %s", len(unknown), strings.Join(unknown, ", ")))
+	}
+	if len(renamed) > 0 {
+		detail = append(detail, fmt.Sprintf("%d migration(s) renamed: %s", len(renamed), strings.Join(renamed, ", ")))
+	}
+	if len(rechecksummed) > 0 {
+		detail = append(detail, fmt.Sprintf("%d migration(s) changed contents: %s", len(rechecksummed), strings.Join(rechecksummed, ", ")))
+	}
+	return fmt.Errorf("%w: binary knows up to %06d, database applied up to %06d; %s",
+		ErrStructuralSchema, r.Tip(), versions[len(versions)-1], strings.Join(detail, "; "))
+}
+
+// Tip returns the highest migration version compiled into this binary.
+// Comparing it against the database tip turns a deployment-drift incident
+// into a two-number diff instead of an archaeology exercise.
+func (r *Runner) Tip() int64 {
+	var tip int64
+	for _, migration := range r.migrations {
+		if migration.Version > tip {
+			tip = migration.Version
+		}
+	}
+	return tip
 }
 
 type appliedMigration struct {

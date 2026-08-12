@@ -64,7 +64,7 @@ func (p *Provider) ListApproved(ctx context.Context, request contextengine.Build
 			QueryText: queryText, Limit: p.maxEntries,
 		})
 	} else {
-		entries, err = memory.ApprovedFilter{OrganizationID: p.organizationID, RoleID: request.ActorRoleID}, p.maxEntries
+		entries, err = p.manager.ListApproved(ctx, p.organizationID, request.ActorRoleID, p.maxEntries)
 		sort.Slice(entries, func(i, j int) bool {
 			if entries[i].UpdatedAt.Equal(entries[j].UpdatedAt) {
 				return entries[i].ID < entries[j].ID
@@ -95,12 +95,21 @@ func (p *Provider) ListApproved(ctx context.Context, request contextengine.Build
 	return result, nil
 }
 
-func (p *Provider) ValidateVersion(ctx context.Context, expected contextengine.SourceRecord) error {
+func (p *Provider) ValidateVersion(ctx context.Context, actorRoleID string, expected contextengine.SourceRecord) error {
 	if expected.Kind != contextengine.SourceApprovedMemory {
 		return fmt.Errorf("memory version validation received source kind %s", expected.Kind)
 	}
-	// Use narrow revalidation API that enforces expected org/role/status/data class
-	entry, err := p.manager.GetForRevalidation(ctx, p.organizationID, expected.RoleID, expected.Reference)
+	actorRoleID = strings.TrimSpace(actorRoleID)
+	if actorRoleID == "" {
+		return errors.New("memory version validation requires the actor role the snapshot was built for")
+	}
+	// Revalidate through the narrow API that re-enforces org/role/status/data
+	// class. Passing the real actor role is what gives that enforcement any
+	// meaning: it is the same role ListApproved scoped the entry to, so an
+	// entry belonging to a different role can never satisfy revalidation.
+	// This argument replaces a literal "placeholder-for-role", which made
+	// every real revalidation fail while the unit tests still passed.
+	entry, err := p.manager.GetForRevalidation(ctx, p.organizationID, actorRoleID, expected.Reference)
 	if err != nil {
 		return err
 	}

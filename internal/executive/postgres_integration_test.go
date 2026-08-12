@@ -429,7 +429,7 @@ func TestExecutivePostgreSQL17AgentBudgetsAndMessagingAreWiredThroughDelegation(
 	if err != nil {
 		t.Fatal(err)
 	}
-	messageLedger, err := agentmessagingpostgres.New(h.store, 200, time.Hour)
+	messageLedger, err := agentmessagingpostgres.New(h.store, h.registry, 200, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}

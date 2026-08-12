@@ -10,14 +10,16 @@ type NoopOwnerConstraintProvider struct{}
 func (NoopOwnerConstraintProvider) ListApplicable(context.Context, BuildRequest) ([]SourceRecord, error) {
 	return nil, nil
 }
-func (NoopOwnerConstraintProvider) ValidateVersion(context.Context, SourceRecord) error { return nil }
+func (NoopOwnerConstraintProvider) ValidateVersion(context.Context, string, SourceRecord) error {
+	return nil
+}
 
 type UnavailableMemoryProvider struct{}
 
 func (UnavailableMemoryProvider) ListApproved(context.Context, BuildRequest) ([]SourceRecord, error) {
 	return nil, ErrSourceProviderUnavailable
 }
-func (UnavailableMemoryProvider) ValidateVersion(context.Context, SourceRecord) error {
+func (UnavailableMemoryProvider) ValidateVersion(context.Context, string, SourceRecord) error {
 	return ErrSourceProviderUnavailable
 }
 
@@ -29,7 +31,7 @@ func (UnavailableProjectProvider) GetProjectContext(_ context.Context, request B
 	}
 	return nil, fmt.Errorf("project context: %w", ErrSourceProviderUnavailable)
 }
-func (UnavailableProjectProvider) ValidateVersion(context.Context, SourceRecord) error {
+func (UnavailableProjectProvider) ValidateVersion(context.Context, string, SourceRecord) error {
 	return ErrSourceProviderUnavailable
 }
 
@@ -41,7 +43,7 @@ func (UnavailableTaskProvider) GetTaskContext(_ context.Context, request BuildRe
 	}
 	return nil, fmt.Errorf("task context: %w", ErrSourceProviderUnavailable)
 }
-func (UnavailableTaskProvider) ValidateVersion(context.Context, SourceRecord) error {
+func (UnavailableTaskProvider) ValidateVersion(context.Context, string, SourceRecord) error {
 	return ErrSourceProviderUnavailable
 }
 
@@ -50,6 +52,6 @@ type UnavailableRAGProvider struct{}
 func (UnavailableRAGProvider) ListApprovedEvidence(context.Context, BuildRequest) ([]SourceRecord, error) {
 	return nil, ErrSourceProviderUnavailable
 }
-func (UnavailableRAGProvider) ValidateVersion(context.Context, SourceRecord) error {
+func (UnavailableRAGProvider) ValidateVersion(context.Context, string, SourceRecord) error {
 	return ErrSourceProviderUnavailable
 }

@@ -1,4 +1,4 @@
--- Migration 000041: Add agent message authorization and hardening
+-- Migration 000042: Add agent message authorization and hardening
 -- This migration adds columns required for security hardening:
 -- - request_hash: SHA-256 canonical hash for idempotency integrity
 -- - schema_version: Schema version discriminator (should always be "v1")
