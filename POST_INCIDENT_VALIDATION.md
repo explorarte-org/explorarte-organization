@@ -234,7 +234,7 @@ done
 docker volume rm -f explorarte-org-integration-postgres-data
 ```
 
-**Resultado: 20/29 paquetes en verde limpio.** 9 fallan, y en los 9 casos el fallo ocurre **después** de que `testdbguard` ya autorizó la conexión/operación -- ninguno es un fallo de identidad de base de datos ni del guard:
+**Resultado real (recontado directamente del log guardado, `grep -c` sobre `^ok`/`^FAIL`): 19/29 paquetes en verde limpio, 10 fallan.** (Corrección 2026-08-12, auditoría de la rama: una versión anterior de este documento decía "20/29, 9 fallan" pero enumeraba 10 paquetes fallidos -- error de conteo, no de inventario; los 10 nombres listados abajo ya eran correctos y coinciden exactamente con `grep '^FAIL' full_suite_run3.log`.) En los 10 casos el fallo ocurre **después** de que `testdbguard` ya autorizó la conexión/operación -- ninguno es un fallo de identidad de base de datos ni del guard:
 
 ```
 organization/registry    -- imported=46/proposed=2 (drift preexistente, conteo hardcodeado vs docs/canonical real)
@@ -249,7 +249,7 @@ executive/sleep            -- mismo "media_source_ref" que rag/postgres (compart
 cmd/orgctl                 -- mismo "media_source_ref", vía el runner de evaluación r30-03
 ```
 
-Estos 9 son hallazgos de drift de esquema/datos canónicos preexistentes, nunca antes visibles porque el harness aislado nunca había corrido de punta a punta con éxito hasta esta sesión. Quedan documentados como seguimiento explícito en `HANDOFF.md` (ítem 0 de próximos pasos) -- **no** son parte del alcance de este P0 (aislamiento de la DB de integración), y ninguno tocó ni pudo tocar la base de datos de desarrollo compartida (sección 5).
+Estos 10 son hallazgos de drift de esquema/datos canónicos preexistentes, nunca antes visibles porque el harness aislado nunca había corrido de punta a punta con éxito hasta esta sesión. Quedan documentados como seguimiento explícito en `HANDOFF.md` (ítem 0 de próximos pasos) -- **no** son parte del alcance de este P0 (aislamiento de la DB de integración), y ninguno tocó ni pudo tocar la base de datos de desarrollo compartida (sección 5).
 
 ## 7. Hallazgo operacional: superusuario de integración para `pgvector`
 
@@ -257,9 +257,40 @@ Estos 9 son hallazgos de drift de esquema/datos canónicos preexistentes, nunca 
 
 **Fix**: `deployments/postgres/init/002-integration-app-superuser.sh` (`ALTER ROLE "$ORG_POSTGRES_USER" SUPERUSER`), montado **únicamente** en `compose.integration.yaml`'s override del servicio `postgres` -- nunca en `compose.yaml` base, así que nunca se aplica al rol real de producción/desarrollo. Seguro porque ese rol y esa base de datos existen solo dentro del contenedor/volumen descartable de integración, destruido en cada corrida.
 
+## 7.5. Auditoría de la rama (2026-08-12): 4 correcciones antes de mergear
+
+La rama remota fue auditada antes de mergear. 4 hallazgos, los 4 corregidos en un commit adicional sobre `c8ca508`:
+
+**1. Aislamiento entre workers/worktrees en paralelo.** `scripts/test-integration.sh` hardcodeaba `--project-name explorarte-org-integration` y borraba directamente `docker volume rm -f explorarte-org-integration-postgres-data` por nombre fijo. Peor aún: `compose.integration.yaml` fijaba `name:` para `postgres-data`/`integration-go-cache`/la red `org-internal`, y **`compose.yaml` (el archivo base de producción) también fijaba `name:` para `postgres-data` y `org-internal` a nivel top-level** -- como ambos archivos declaran las mismas claves top-level, el merge de Compose heredaba el nombre fijo del archivo base aunque `compose.integration.yaml` no dijera nada, anulando el namespacing por `--project-name` en 2 de los 3 recursos incluso después de arreglar solo el archivo de integración.
+
+Fix: `scripts/test-integration.sh` deriva `PROJECT_NAME` del hash SHA-256 del path absoluto del worktree (override explícito vía `ORG_INTEGRATION_PROJECT_NAME` si se necesita), y el cleanup usa `"${compose[@]}" down --volumes` (que Compose resuelve exactamente a los recursos de SU PROPIO proyecto, vía label, nunca por nombre adivinado) en vez de `docker volume rm -f <nombre-fijo>`. `compose.integration.yaml` resetea explícitamente los 3 `name:` heredados con `name: !reset null`, dejando que Compose namespace normalmente como `<project>_<key>`.
+
+**Verificación estática + dinámica**: `scripts/check-parallel-worker-isolation.sh` (nuevo) -- (a) falla si el patrón de nombre fijo reaparece en cualquiera de los dos archivos; (b) resuelve `docker compose config` bajo dos `--project-name` distintos y confirma que los 3 nombres de volumen/red difieren entre ambos.
+
+**Verificación en vivo (no solo config)**: se levantaron DOS proyectos Compose reales simultáneamente (`demo-worker-alpha`, `demo-worker-beta`), ambos con su propio Postgres healthy al mismo tiempo, sin publicar puertos, con volúmenes/redes/contenedores completamente distintos:
+```
+alpha: demo-worker-alpha-postgres-1   5432/tcp
+beta:  demo-worker-beta-postgres-1    5432/tcp
+demo-worker-alpha_postgres-data / demo-worker-beta_postgres-data
+demo-worker-alpha_org-internal  / demo-worker-beta_org-internal
+```
+Se tumbó **solo** `alpha` (`down --volumes`) y se confirmó que `beta` siguió corriendo intacto (`Up 12 seconds (healthy)`, su volumen sin tocar). Luego se tumbó `beta` limpio. La DB de desarrollo compartida (`explorarte_org`) se reverificó sin cambios (`organizations=1, tasks=0`) antes y después de toda la demo.
+
+**2. Fitness de `testdbguard` era solo presencia textual a nivel archivo.** El chequeo anterior solo verificaba que un archivo con SQL destructivo contuviera la substring `testdbguard.` en algún lugar -- permitía falso PASS si el guard estaba en una función distinta a la del TRUNCATE, o si `RequireDestructive` se llamaba *después* del SQL destructivo en la misma función. Reescrito para verificar, por cada función top-level (`func ... {` hasta el siguiente `func` top-level), que toda línea con SQL destructivo tenga una llamada a `testdbguard.RequireDestructive` **antes** (por número de línea) dentro de la misma función. Probado con los 2 escenarios exactos de la auditoría (guard en función distinta -> FAIL; guard después del TRUNCATE en la misma función -> FAIL) y con el árbol real (PASS). **Límite documentado explícitamente en el propio script**: la verificación es por función top-level, no por subtest `t.Run(...)` individual -- un guard en el subtest A satisface (sin detectarlo como error) un TRUNCATE sin guardar en el subtest B de la misma función. Ningún call site real de esta rama depende de ese hueco (cada uno tiene su guard como primera línea de su propio closure), pero el chequeo no lo garantiza de forma independiente por subtest, y este documento no afirma que sí.
+
+**3. Conteo de la suite de integración estaba mal.** Decía "20/29 verde, 9 fallan" pero enumeraba 10 paquetes. Recontado directo del log real (`grep -c '^ok'`/`'^FAIL'` sobre `full_suite_run3.log`): **19/29 verde, 10 fallan** -- los 10 nombres ya listados en la sección 6 eran correctos, solo el número total estaba mal. Corregido en las 3 menciones del documento (sección 6, sección 10, y el texto que enumera los hallazgos).
+
+**4. Consistencia de documentación**: `testdbguard` tiene 9 tests (no 8) -- corregido en `HANDOFF.md` (que todavía decía 8, de la fase 1, antes de la extensión de la fase 2). Estado remoto actualizado: la rama SÍ está pusheada a `origin/feat/rag-knowledge-integrity-hardening-v1`; HEAD remoto al momento de la auditoría era `c8ca508422bfa2b0be14611e7e2a9f4d524e3629`; `c74525c` se mantiene como el commit identificado de cierre del P0 (contenido), `c8ca508` como el commit que solo agregó el hash a este documento.
+
 ## 8. `go test ./...`, `go test -race ./...`, `go vet ./...`, fitness checks
 
 ```
+gofmt -l .                            -> 8 archivos preexistentes sin tocar por esta rama (cmd/orgctl/main.go,
+                                          cmd/orgd/main.go, internal/contextcompiler/contextcompiler_domain.go,
+                                          internal/modelegress/canonical_policy.go, internal/modelruntime/adapter/mimo/
+                                          {adapter,adapter_test}.go, internal/modelruntime/costgate/gate.go,
+                                          internal/organization/registry/validation.go) -- ninguno modificado en
+                                          esta rama (git diff vacío para los 8); cero archivos de esta rama sin formatear.
 go vet ./...                          -> limpio
 go vet -tags=integration ./...        -> limpio
 go build ./...                        -> limpio
@@ -270,7 +301,8 @@ go test -race ./...                   -> 1 FAIL: internal/corpussemantic.TestAve
                                           overhead del race detector, paquete no tocado por esta rama (git log
                                           confirma último commit 0cf784d, ajeno a este trabajo), no relacionado
                                           a testdbguard ni a integridad de datos.
-scripts/check-testdbguard-fitness.sh  -> PASS
+scripts/check-testdbguard-fitness.sh  -> PASS (reescrito en la auditoría, ver sección 7.5)
+scripts/check-parallel-worker-isolation.sh -> PASS (nuevo, ver sección 7.5)
 scripts/check-rag-fitness.sh          -> PASS
 scripts/check-memory-fitness.sh       -> PASS
 scripts/check-skillregistry-fitness.sh -> PASS
@@ -306,8 +338,8 @@ fix(integration-tests): close P0 -- guard every destructive integration test
 34 files changed, 561 insertions(+), 4 deletions(-)
 ```
 
-No pusheado a ningún remoto. No mergeado a `main`.
+**Estado remoto (actualizado 2026-08-12, auditoría de la rama):** pusheada a `origin/feat/rag-knowledge-integrity-hardening-v1`. HEAD remoto en el momento de esta corrección: `c8ca508422bfa2b0be14611e7e2a9f4d524e3629`. `c74525c` sigue siendo el commit identificado como cierre del P0 (el commit de contenido; `c8ca508` solo agrega el hash de commit a este mismo documento). Ningún merge a `main`.
 
 ## 10. Veredicto
 
-**P0 de aislamiento de integration DB: CERRADO.** Los 30 archivos que abren una conexión Postgres vía `ORG_TEST_DATABASE_URL` pasan por `internal/testdbguard` (directamente o transitivamente vía un helper de paquete ya guardado), sin una sola excepción sin documentar. Ningún test destructivo en el repo puede ejecutar SQL destructivo sin antes verificar en vivo que está conectado a `explorarte_test` Y que un segundo opt-in explícito (`ORG_TEST_DESTRUCTIVE_DATABASE`) está presente. La regresión estática (`check-testdbguard-fitness.sh`) hace que introducir un nuevo test destructivo sin guard rompa el build. El aislamiento físico (puerto + instancia separada) fue verificado en vivo corriendo los 29 paquetes reales contra una sola instancia Postgres descartable, sin publicar puertos, sin tocar la base de datos de desarrollo compartida ni una sola fila (fingerprint idéntico antes/después). Los 9 fallos restantes son drift de esquema/datos de negocio preexistente, no relacionado a seguridad de datos, documentado explícitamente como seguimiento separado -- no bloquean el cierre de este P0 específico.
+**P0 de aislamiento de integration DB: CERRADO.** Los 30 archivos que abren una conexión Postgres vía `ORG_TEST_DATABASE_URL` pasan por `internal/testdbguard` (directamente o transitivamente vía un helper de paquete ya guardado), sin una sola excepción sin documentar. Ningún test destructivo en el repo puede ejecutar SQL destructivo sin antes verificar en vivo que está conectado a `explorarte_test` Y que un segundo opt-in explícito (`ORG_TEST_DESTRUCTIVE_DATABASE`) está presente. La regresión estática (`check-testdbguard-fitness.sh`) hace que introducir un nuevo test destructivo sin guard rompa el build (ver sección 3 para el alcance exacto y el límite documentado de ese chequeo). El aislamiento físico (puerto + instancia separada) fue verificado en vivo corriendo los 29 paquetes reales contra una sola instancia Postgres descartable, sin publicar puertos, sin tocar la base de datos de desarrollo compartida ni una sola fila (fingerprint idéntico antes/después). Los 10 fallos restantes son drift de esquema/datos de negocio preexistente, no relacionado a seguridad de datos, documentado explícitamente como seguimiento separado -- no bloquean el cierre de este P0 específico.

@@ -50,12 +50,27 @@ services:
       - org-internal
     profiles: ["integration"]
 
+# R31 audit fix: no fixed name: overrides here. Compose's default
+# behavior namespaces volumes/networks as "<project-name>_<key>" -- fixing
+# the name here (as this file used to) silently defeated that namespacing,
+# so two worktrees running integration tests concurrently under different
+# --project-name values would still share (and each other's cleanup could
+# delete) the exact same volume/network. Leaving these as bare declarations
+# lets --project-name (see scripts/test-integration.sh, one per
+# worker/worktree by default) actually isolate them. Verified by
+# scripts/check-parallel-worker-isolation.sh.
 volumes:
+  # compose.yaml pins a fixed name: for postgres-data at the top level
+  # (shared with the production/dev project) -- reset it here so this
+  # project gets Compose's normal <project-name>_postgres-data instead of
+  # inheriting the production name and colliding with it (or with another
+  # worktree's integration project) across --project-name values.
   postgres-data:
-    name: explorarte-org-integration-postgres-data
-  integration-go-cache:
-    name: explorarte-org-integration-go-cache
+    name: !reset null
+  integration-go-cache: {}
 
 networks:
+  # Same reasoning as postgres-data above -- compose.yaml pins org-internal
+  # to a fixed name: at the top level.
   org-internal:
-    name: explorarte-org-integration-network
+    name: !reset null

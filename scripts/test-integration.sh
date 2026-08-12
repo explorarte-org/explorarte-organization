@@ -9,6 +9,18 @@ case "$MODE" in
   *) echo "usage: $0 [all|tasks|staging|authorization|context|memory|skillregistry|rag|model|egress|dispatch|identity|worker|decision|trace|improvement|completion|shadow]" >&2; exit 2 ;;
 esac
 
+# R31 audit fix (parallel worker isolation): a hardcoded project name meant
+# two worktrees running this script at the same time shared -- and could
+# tear down -- the exact same Compose project, containers, volumes, and
+# network. ORG_INTEGRATION_PROJECT_NAME lets a caller pin an explicit name
+# (e.g. CI matrix jobs); the default is derived from this worktree's own
+# absolute path, so distinct worktrees of the same repo always get
+# distinct, stable-per-worktree project names without any manual setup,
+# while re-running in the SAME worktree keeps cleaning up its own prior
+# run. Verified by scripts/check-parallel-worker-isolation.sh.
+PROJECT_NAME_DEFAULT="explorarte-org-integration-$(printf '%s' "$ROOT" | sha256sum | cut -c1-12)"
+PROJECT_NAME="${ORG_INTEGRATION_PROJECT_NAME:-$PROJECT_NAME_DEFAULT}"
+
 export ORG_POSTGRES_ADMIN_USER=explorarte_test_admin
 export ORG_POSTGRES_ADMIN_PASSWORD=integration-admin-password
 export ORG_POSTGRES_DATABASE=explorarte_test
@@ -21,11 +33,13 @@ export ORG_POSTGRES_PASSWORD=integration-app-password
 # strictly required for this script to keep working.
 export ORG_TEST_DESTRUCTIVE_DATABASE=explorarte_test
 
-compose=(docker compose --project-name explorarte-org-integration -f compose.yaml -f compose.integration.yaml --profile integration)
+compose=(docker compose --project-name "$PROJECT_NAME" -f compose.yaml -f compose.integration.yaml --profile integration)
 
 cleanup() {
-  "${compose[@]}" down --remove-orphans >/dev/null 2>&1 || true
-  docker volume rm -f explorarte-org-integration-postgres-data >/dev/null 2>&1 || true
+  # down --volumes removes exactly the volumes Compose created for THIS
+  # project (tracked by Compose's own project label) -- never a hardcoded
+  # global name, so it can never reach into another worktree's project.
+  "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
 }
 
 trap cleanup EXIT INT TERM
