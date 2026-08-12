@@ -364,6 +364,30 @@ roles:
   reports_to:
   - empresa/ceo
   - empresa/human
+- id: investigacion/research_worker_hourly_mimo_canary
+  department: investigacion
+  role: research_worker_hourly_mimo_canary
+  display_name: Worker horario de Investigacion -- canario MiMo-V2.5 (R10.2)
+  runtime_kind: scheduled_worker
+  authority_class: research_execution
+  canonical_leader: false
+  legacy_frontmatter_leader: false
+  model_policy: research.worker.mimo_canary
+  profile_path: investigacion/research_worker_hourly_mimo_canary/PERFIL.md
+  department_agent_path: investigacion/AGENT.md
+  memory_domain: investigacion
+  memory_path: null
+  summary: 'Identidad de rol aditiva y temporal, usada exclusivamente para el canario R10.2 (DeepSeek V4 Flash vs
+    MiMo-V2.5 en research.corpus_curate). Misma autoridad/contrato que investigacion/research_worker_hourly; unico
+    cambio real es la ruta de modelo (model_policy), para no alterar el ruteo por defecto del rol de produccion
+    durante el experimento. Reversible -- eliminar esta entrada y su model_policy revierte el canario sin
+    migraciones destructivas.'
+  reports_to_source_text: 'Unidad transversal de Investigacion; misma cadena de reporte que investigacion/research_worker_hourly.'
+  rag_topics_source_text: 'Ninguno -- rol de canario, no participa en deteccion de vacios de conocimiento real.'
+  status: imported_source
+  reports_to:
+  - empresa/ceo
+  - empresa/human
 - id: negocio/administrador_financiero
   department: negocio
   role: administrador_financiero

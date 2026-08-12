@@ -15,6 +15,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/config"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	"github.com/Mireuz13/explorarte-organization/internal/platform/buildinfo"
+	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
 	"github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
@@ -42,7 +43,14 @@ const (
 	exitShadowDivergence       = 12
 )
 
-func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
+func main() {
+	// R9.1 fix 4: wire the already-ldflags-injected build commit into
+	// modelruntime.BuildSHA (previously stayed at its "unknown"
+	// placeholder default in every real deployment -- the reproducibility
+	// column persisted per-invocation carried no real information).
+	modelruntime.BuildSHA = commit
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
 
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -97,6 +105,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runCost(args[1:], stdout, stderr)
 	case "agents":
 		return runAgents(args[1:], stdout, stderr)
+	case "contextcompiler":
+		return runContextCompiler(args[1:], stdout, stderr)
+	case "curation":
+		return runCuration(args[1:], stdout, stderr)
 	case "objectstorage":
 		return runObjectStorage(args[1:], stdout, stderr)
 	case "corpus":

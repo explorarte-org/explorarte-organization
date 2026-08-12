@@ -28,6 +28,14 @@ func runCorpus(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "census":
 		return runCorpusCensus(args[1:], stdout, stderr)
+	case "cluster":
+		return runCorpusCluster(args[1:], stdout, stderr)
+	case "enrich-abstracts":
+		return runCorpusEnrichAbstracts(args[1:], stdout, stderr)
+	case "embed":
+		return runCorpusEmbed(args[1:], stdout, stderr)
+	case "cluster-semantic":
+		return runCorpusClusterSemantic(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printCorpusUsage(stdout)
 		return exitOK

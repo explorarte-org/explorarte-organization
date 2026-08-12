@@ -17,19 +17,32 @@ import (
 )
 
 type Gate struct {
-	pricing *modelpricing.Service
-	ledger  costledger.Ledger
-	budgets agentbudget.Ledger
+	pricing              *modelpricing.Service
+	ledger               costledger.Ledger
+	budgets              agentbudget.Ledger
+	subscriptionProviders map[string]bool
 }
 
-func New(pricing *modelpricing.Service, ledger costledger.Ledger, budgets agentbudget.Ledger) (*Gate, error) {
+// New wires the PAYG cost/budget gate. subscriptionProviders names
+// provider IDs billed via a fixed subscription/token-plan rather than
+// pay-as-you-go (e.g. "mimo") — Reserve skips PriceTier resolution and
+// wallet reservation entirely for these, since no real per-call USD price
+// exists to reserve against and none is fabricated. Variadic and optional:
+// omitting it (or passing none) preserves the exact prior all-PAYG
+// behavior for every existing caller.
+func New(pricing *modelpricing.Service, ledger costledger.Ledger, budgets agentbudget.Ledger, subscriptionProviders ...string) (*Gate, error) {
 	if pricing == nil || ledger == nil || budgets == nil {
 		return nil, errors.New("costgate requires pricing, ledger, and budgets")
 	}
-	return &Gate{pricing: pricing, ledger: ledger, budgets: budgets}, nil
+	subscribed := make(map[string]bool, len(subscriptionProviders))
+	for _, id := range subscriptionProviders {
+		subscribed[id] = true
+	}
+	return &Gate{pricing: pricing, ledger: ledger, budgets: budgets, subscriptionProviders: subscribed}, nil
 }
 
 var _ modelruntime.CostBudgetGate = (*Gate)(nil)
+var _ modelruntime.SubscriptionSettler = (*Gate)(nil)
 
 func (g *Gate) Reserve(ctx context.Context, request modelruntime.CostReservationRequest, now time.Time) (modelruntime.CostReservation, error) {
 	// Budget tracking is independently optional per task (not every task is
@@ -44,6 +57,34 @@ func (g *Gate) Reserve(ctx context.Context, request modelruntime.CostReservation
 		budgetTracked = false
 	} else if err != nil {
 		return modelruntime.CostReservation{}, fmt.Errorf("resolve budget for task: %w", err)
+	}
+
+	if g.subscriptionProviders[request.ProviderID] {
+		// Subscription/token-plan billing (e.g. mimo): there is no
+		// PriceTier to resolve and no real per-call USD amount to reserve
+		// against the wallet — see modelruntime.CostReservation.
+		// Subscription's doc comment. Budget/token tracking (a real,
+		// observable fact — tokens requested, one model call) still
+		// applies when a budget tree is attached; only the USD dimension
+		// of it is zero, honestly, because it truly is zero.
+		reservation := modelruntime.CostReservation{
+			ProviderID: request.ProviderID, ProviderModelID: request.ProviderModelID,
+			InvocationID: request.InvocationID, WalletApplied: false, Subscription: true,
+		}
+		if !budgetTracked {
+			return reservation, nil
+		}
+		delta := agentbudget.Usage{
+			UsedUSD:        0,
+			UsedTokens:     request.EstimatedInputTokens + request.MaxOutputTokens,
+			UsedModelCalls: 1,
+		}
+		if err := g.budgets.ConsumeModelCall(ctx, budget.ID, request.InvocationID, delta, now); err != nil {
+			return modelruntime.CostReservation{}, err
+		}
+		reservation.BudgetID = budget.ID
+		reservation.BudgetApplied = true
+		return reservation, nil
 	}
 
 	tier, err := g.pricing.Resolve(ctx, request.ProviderID, request.ProviderModelID, request.EstimatedInputTokens, modelpricing.BillingOnline, now)
@@ -83,6 +124,25 @@ func (g *Gate) Reserve(ctx context.Context, request modelruntime.CostReservation
 	return reservation, nil
 }
 
+// RecordSubscriptionConsumption implements modelruntime.SubscriptionSettler.
+// A no-op for any non-subscription reservation. For a subscription
+// reservation, it records (once, idempotently) that the call reached and
+// was processed by the provider — real resource/quota consumption — without
+// computing or persisting any USD amount, via the optional
+// costledger.SubscriptionRecorder capability (same optional-capability
+// pattern as PendingReconciliationMarker below: not every Ledger backend
+// needs to implement it).
+func (g *Gate) RecordSubscriptionConsumption(ctx context.Context, reservation modelruntime.CostReservation, now time.Time) error {
+	if !reservation.Subscription {
+		return nil
+	}
+	recorder, ok := g.ledger.(costledger.SubscriptionRecorder)
+	if !ok {
+		return nil
+	}
+	return recorder.RecordSubscriptionConsumption(ctx, reservation.ProviderID, reservation.InvocationID, now)
+}
+
 // Reconcile prices inputTokens entirely at the fresh (non-cached) rate: the
 // system does not currently capture a cache-hit/cache-miss split in
 // reported usage (modelruntime.Usage only has InputTokens/OutputTokens),
@@ -109,4 +169,22 @@ func (g *Gate) Release(ctx context.Context, reservation modelruntime.CostReserva
 		return nil
 	}
 	return g.ledger.Release(ctx, reservation.ProviderID, reservation.InvocationID, now)
+}
+
+// MarkPendingReconciliation is a best-effort annotation: not every
+// costledger.Ledger implementation supports it (see
+// costledger.PendingReconciliationMarker's doc comment on why it is kept
+// separate from the required Ledger interface), so a backend that doesn't
+// implement it is treated the same as WalletApplied=false — the reservation
+// stays wherever Reserve left it rather than erroring the whole dispatch
+// over a missing annotation capability.
+func (g *Gate) MarkPendingReconciliation(ctx context.Context, reservation modelruntime.CostReservation, now time.Time) error {
+	if !reservation.WalletApplied {
+		return nil
+	}
+	marker, ok := g.ledger.(costledger.PendingReconciliationMarker)
+	if !ok {
+		return nil
+	}
+	return marker.MarkPendingReconciliation(ctx, reservation.ProviderID, reservation.InvocationID, now)
 }

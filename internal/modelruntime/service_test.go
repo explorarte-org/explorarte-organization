@@ -165,6 +165,52 @@ type fakeStore struct {
 	identityPolicy     modelidentity.ResolvedPolicy
 	identityKey        modelidentity.ExecutionIdentityKey
 	identityPrivateKey ed25519.PrivateKey
+	// lastFailureUsage captures whatever FailureCommand.Usage the service
+	// last passed to RejectProviderResponse or FailAfterResponse -- the P0
+	// usage-survives-failure mechanism (see recoveredUsage in
+	// dispatch_service.go). nil means the call passed no recovered usage.
+	lastFailureUsage *Usage
+}
+
+// fakeCostBudgetGate is a deterministic CostBudgetGate double used to
+// assert the P0 financial state machine: exactly one of
+// Reconcile/Release/MarkPendingReconciliation must fire per dispatch that
+// applied a reservation, and never more than one (settledCalls catches a
+// double-settle, which would mean the deferred auto-release in
+// dispatch_service.go's Dispatch fired on top of an explicit settle).
+type fakeCostBudgetGate struct {
+	reserveErr     error
+	reconcileErr   error
+	releaseErr     error
+	pendingErr     error
+	reserveCalls   int
+	releaseCalls   int
+	pendingCalls   int
+	reconcileCalls []reconcileCall
+}
+type reconcileCall struct{ inputTokens, cachedInputTokens, outputTokens int64 }
+
+func (f *fakeCostBudgetGate) settledCalls() int {
+	return f.releaseCalls + f.pendingCalls + len(f.reconcileCalls)
+}
+func (f *fakeCostBudgetGate) Reserve(_ context.Context, request CostReservationRequest, _ time.Time) (CostReservation, error) {
+	f.reserveCalls++
+	if f.reserveErr != nil {
+		return CostReservation{}, f.reserveErr
+	}
+	return CostReservation{ProviderID: request.ProviderID, ProviderModelID: request.ProviderModelID, InvocationID: request.InvocationID, WalletApplied: true}, nil
+}
+func (f *fakeCostBudgetGate) Reconcile(_ context.Context, _ CostReservation, inputTokens, cachedInputTokens, outputTokens int64, _ time.Time) error {
+	f.reconcileCalls = append(f.reconcileCalls, reconcileCall{inputTokens, cachedInputTokens, outputTokens})
+	return f.reconcileErr
+}
+func (f *fakeCostBudgetGate) Release(context.Context, CostReservation, time.Time) error {
+	f.releaseCalls++
+	return f.releaseErr
+}
+func (f *fakeCostBudgetGate) MarkPendingReconciliation(context.Context, CostReservation, time.Time) error {
+	f.pendingCalls++
+	return f.pendingErr
 }
 
 func (f *fakeStore) RecordRegistryValidated(context.Context, string, string) error { return nil }
@@ -276,9 +322,10 @@ func (f *fakeStore) MarkResponseReceived(context.Context, int64, int64, string, 
 	f.invocation = v
 	return v, nil
 }
-func (f *fakeStore) RejectProviderResponse(context.Context, FailureCommand, ProviderOutcome, int) (Invocation, error) {
+func (f *fakeStore) RejectProviderResponse(_ context.Context, command FailureCommand, _ ProviderOutcome, _ int) (Invocation, error) {
 	f.failed = true
 	f.providerRejected = true
+	f.lastFailureUsage = command.Usage
 	v := f.invocation
 	v.Status = InvocationFailed
 	f.invocation = v
@@ -307,8 +354,9 @@ func (f *fakeStore) FailBeforeSend(context.Context, FailureCommand, int) (Invoca
 	v.Status = InvocationFailed
 	return v, nil
 }
-func (f *fakeStore) FailAfterResponse(context.Context, FailureCommand, int) (Invocation, error) {
+func (f *fakeStore) FailAfterResponse(_ context.Context, command FailureCommand, _ int) (Invocation, error) {
 	f.failed = true
+	f.lastFailureUsage = command.Usage
 	v := f.invocation
 	v.Status = InvocationFailed
 	return v, nil
@@ -689,6 +737,182 @@ func TestDispatchDisabledDoesNotClaim(t *testing.T) {
 	}
 	if _, err = service.Dispatch(context.Background(), 11); !errors.Is(err, ErrDisabled) {
 		t.Fatalf("expected disabled dispatch, got %v", err)
+	}
+}
+
+// --- P0 financial state machine tests -------------------------------------
+//
+// These cover the AdapterFailureResponseReceived release bug (the deferred
+// Release in Dispatch fired unconditionally for this phase because
+// reservationSettled was never set) and the design each case now maps to:
+// exactly one of Reconcile/Release/MarkPendingReconciliation must fire, and
+// a `failed` invocation with real recovered usage must still be committed
+// as `actual`, not released as `released_not_sent` and not left unexplained
+// as `estimated_pending_reconciliation`.
+
+func dispatchCfgWithCostGate() RuntimeConfig {
+	return RuntimeConfig{Enabled: true, CommandTimeout: time.Minute, GlobalConcurrency: 1, MaxResponseBytes: 1024, MaxToolIntents: 2, ClaimTTL: time.Minute, ReconcileBatchSize: 10, OutboxMaxAttempts: 10, ExecutionPrincipalKey: "test-principal", ExecutionIdentityEnabled: true, ExecutionIdentityKeyFile: "test://identity"}
+}
+
+func TestDispatchBeforeRequestFailureReleasesReservation(t *testing.T) {
+	store, catalog, task, contexts, assignments, principals, now := serviceFixture()
+	gate := &fakeCostBudgetGate{}
+	outcome := ProviderOutcome{OutcomeClassification: ProviderOutcomeNotSent, ErrorClass: "request_encoding", ErrorCode: "request_encoding_failed", ResponseSchemaVersion: "test.fake.response.v1"}
+	provider := &deterministicAdapter{err: &AdapterError{Phase: AdapterFailureBeforeRequest, Outcome: outcome, Cause: ErrProviderUnavailable}}
+	service, _ := NewDispatchService("explorarte", dispatchCfgWithCostGate(), catalog, task, contexts, fakeEvaluator{allow: true}, store, modelegress.NewEvaluator(), store, principals, assignments, store, store, fakeAdapterRegistry{value: provider}, ClockFunc(func() time.Time { return now }), WithCostBudgetGate(gate))
+	_, err := service.Dispatch(context.Background(), 11)
+	if err == nil || !store.providerNotSent {
+		t.Fatalf("expected before-request failure, err=%v not_sent=%v", err, store.providerNotSent)
+	}
+	if gate.releaseCalls != 1 || gate.pendingCalls != 0 || len(gate.reconcileCalls) != 0 {
+		t.Fatalf("expected exactly one Release, got release=%d pending=%d reconcile=%d", gate.releaseCalls, gate.pendingCalls, len(gate.reconcileCalls))
+	}
+}
+
+func TestDispatchSuccessCommitsActualUsageRegression(t *testing.T) {
+	store, catalog, task, contexts, assignments, principals, now := serviceFixture()
+	gate := &fakeCostBudgetGate{}
+	provider := &deterministicAdapter{}
+	service, _ := NewDispatchService("explorarte", dispatchCfgWithCostGate(), catalog, task, contexts, fakeEvaluator{allow: true}, store, modelegress.NewEvaluator(), store, principals, assignments, store, store, fakeAdapterRegistry{value: provider}, ClockFunc(func() time.Time { return now }), WithCostBudgetGate(gate))
+	if _, err := service.Dispatch(context.Background(), 11); err != nil {
+		t.Fatal(err)
+	}
+	if !store.completed {
+		t.Fatal("expected the invocation to complete")
+	}
+	if len(gate.reconcileCalls) != 1 || gate.reconcileCalls[0].inputTokens != 2 || gate.reconcileCalls[0].outputTokens != 3 {
+		t.Fatalf("expected one Reconcile(2,_,3), got %+v", gate.reconcileCalls)
+	}
+	if gate.releaseCalls != 0 || gate.pendingCalls != 0 {
+		t.Fatalf("success must never release or park a reservation: release=%d pending=%d", gate.releaseCalls, gate.pendingCalls)
+	}
+}
+
+func TestDispatchResponseReceivedWithRecoveredUsageCommitsActualEvenThoughFailed(t *testing.T) {
+	store, catalog, task, contexts, assignments, principals, now := serviceFixture()
+	gate := &fakeCostBudgetGate{}
+	response := RawResponse{ProviderReported: true, InputTokens: 41, OutputTokens: 7, ProviderRequestID: "fake-partial"}
+	outcome := ProviderOutcome{OutcomeClassification: ProviderOutcomeRejected, ProviderRequestID: "fake-partial", HTTPStatus: 200, ErrorClass: "response", ErrorCode: "response_content_invalid", ResponseHash: SHA256Bytes([]byte("x")), ResponseSchemaVersion: "test.fake.response.v1"}
+	provider := &deterministicAdapter{response: &response, err: &AdapterError{Phase: AdapterFailureResponseReceived, Outcome: outcome, Cause: ErrResponseRejected}}
+	service, _ := NewDispatchService("explorarte", dispatchCfgWithCostGate(), catalog, task, contexts, fakeEvaluator{allow: true}, store, modelegress.NewEvaluator(), store, principals, assignments, store, store, fakeAdapterRegistry{value: provider}, ClockFunc(func() time.Time { return now }), WithCostBudgetGate(gate))
+	_, err := service.Dispatch(context.Background(), 11)
+	if err == nil || !store.providerRejected {
+		t.Fatalf("expected a rejected-provider-response failure, err=%v rejected=%v", err, store.providerRejected)
+	}
+	if len(gate.reconcileCalls) != 1 || gate.reconcileCalls[0].inputTokens != 41 || gate.reconcileCalls[0].outputTokens != 7 {
+		t.Fatalf("expected the recovered usage to be committed as actual, got reconcile=%+v", gate.reconcileCalls)
+	}
+	if gate.releaseCalls != 0 || gate.pendingCalls != 0 {
+		t.Fatalf("a call with recovered usage must be committed, never released or merely parked: release=%d pending=%d", gate.releaseCalls, gate.pendingCalls)
+	}
+	if store.lastFailureUsage == nil || store.lastFailureUsage.InputTokens != 41 || store.lastFailureUsage.OutputTokens != 7 {
+		t.Fatalf("expected the failed invocation's usage row to be threaded through, got %+v", store.lastFailureUsage)
+	}
+}
+
+func TestDispatchResponseReceivedWithoutUsageIsParkedNotReleased(t *testing.T) {
+	store, catalog, task, contexts, assignments, principals, now := serviceFixture()
+	gate := &fakeCostBudgetGate{}
+	// ProviderReported=false: this is what the deepseek adapter now returns
+	// for response_read_failed/response_json_invalid -- no usage object was
+	// ever decoded, so nothing is recoverable.
+	response := RawResponse{ProviderReported: false, ProviderRequestID: "fake-unreadable"}
+	outcome := ProviderOutcome{OutcomeClassification: ProviderOutcomeRejected, ProviderRequestID: "fake-unreadable", HTTPStatus: 200, ErrorClass: "response", ErrorCode: "response_json_invalid", ResponseHash: SHA256Bytes([]byte("x")), ResponseSchemaVersion: "test.fake.response.v1"}
+	provider := &deterministicAdapter{response: &response, err: &AdapterError{Phase: AdapterFailureResponseReceived, Outcome: outcome, Cause: ErrResponseRejected}}
+	service, _ := NewDispatchService("explorarte", dispatchCfgWithCostGate(), catalog, task, contexts, fakeEvaluator{allow: true}, store, modelegress.NewEvaluator(), store, principals, assignments, store, store, fakeAdapterRegistry{value: provider}, ClockFunc(func() time.Time { return now }), WithCostBudgetGate(gate))
+	_, err := service.Dispatch(context.Background(), 11)
+	if err == nil || !store.providerRejected {
+		t.Fatalf("expected a rejected-provider-response failure, err=%v rejected=%v", err, store.providerRejected)
+	}
+	if gate.pendingCalls != 1 {
+		t.Fatalf("expected the reservation to be marked pending reconciliation exactly once, got %d", gate.pendingCalls)
+	}
+	if gate.releaseCalls != 0 || len(gate.reconcileCalls) != 0 {
+		// This is the exact bug this change fixes: response_received must
+		// never be silently released as if the call were free.
+		t.Fatalf("response_received without usage must never be released or committed: release=%d reconcile=%+v", gate.releaseCalls, gate.reconcileCalls)
+	}
+	if store.lastFailureUsage != nil {
+		t.Fatalf("expected no usage to be threaded through when none was recoverable, got %+v", store.lastFailureUsage)
+	}
+}
+
+func TestDispatchNormalizationFailureCommitsActualFromAdapterUsage(t *testing.T) {
+	store, catalog, task, contexts, assignments, principals, now := serviceFixture()
+	gate := &fakeCostBudgetGate{}
+	// The adapter itself succeeded (decoded the envelope fine, usage known)
+	// -- only the service's own JSON-schema normalization rejects the
+	// content. response_normalization_failed must commit this as actual
+	// usage, not leave it reserved forever.
+	response := RawResponse{Content: []byte(`{"ok":"wrong"}`), ProviderRequestID: "fake-bad", ProviderReported: true, InputTokens: 19, OutputTokens: 4}
+	service, _ := NewDispatchService("explorarte", dispatchCfgWithCostGate(), catalog, task, contexts, fakeEvaluator{allow: true}, store, modelegress.NewEvaluator(), store, principals, assignments, store, store, fakeAdapterRegistry{value: &deterministicAdapter{response: &response}}, ClockFunc(func() time.Time { return now }), WithCostBudgetGate(gate))
+	_, err := service.Dispatch(context.Background(), 11)
+	if !errors.Is(err, ErrResponseRejected) || !store.failed {
+		t.Fatalf("expected terminal known-response failure, got err=%v failed=%v", err, store.failed)
+	}
+	if len(gate.reconcileCalls) != 1 || gate.reconcileCalls[0].inputTokens != 19 || gate.reconcileCalls[0].outputTokens != 4 {
+		t.Fatalf("expected normalization failure to commit actual usage, got reconcile=%+v", gate.reconcileCalls)
+	}
+	if gate.releaseCalls != 0 || gate.pendingCalls != 0 {
+		t.Fatalf("normalization failure with known usage must not release or merely park: release=%d pending=%d", gate.releaseCalls, gate.pendingCalls)
+	}
+	if store.lastFailureUsage == nil || store.lastFailureUsage.InputTokens != 19 {
+		t.Fatalf("expected usage to be threaded through FailAfterResponse, got %+v", store.lastFailureUsage)
+	}
+}
+
+func TestDispatchAmbiguousTransportIsParkedNotReleased(t *testing.T) {
+	store, catalog, task, contexts, assignments, principals, now := serviceFixture()
+	gate := &fakeCostBudgetGate{}
+	service, _ := NewDispatchService("explorarte", dispatchCfgWithCostGate(), catalog, task, contexts, fakeEvaluator{allow: true}, store, modelegress.NewEvaluator(), store, principals, assignments, store, store, fakeAdapterRegistry{value: &deterministicAdapter{err: errors.New("unknown after send")}}, ClockFunc(func() time.Time { return now }), WithCostBudgetGate(gate))
+	_, err := service.Dispatch(context.Background(), 11)
+	if !errors.Is(err, ErrAmbiguousOutcome) || !store.ambiguous {
+		t.Fatalf("expected ambiguous outcome, got %v", err)
+	}
+	if gate.pendingCalls != 1 || gate.releaseCalls != 0 || len(gate.reconcileCalls) != 0 {
+		t.Fatalf("ambiguous transport must be parked, never released or committed: pending=%d release=%d reconcile=%+v", gate.pendingCalls, gate.releaseCalls, gate.reconcileCalls)
+	}
+}
+
+// TestDispatchEverySettlementPathSettlesExactlyOnce guards against a
+// reservation reaching a terminal invocation state with no explanation at
+// all (neither committed, released, nor parked) -- and against the inverse
+// bug this change fixes elsewhere: a phase settling explicitly AND the
+// deferred Release firing on top of it.
+func TestDispatchEverySettlementPathSettlesExactlyOnce(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(*deterministicAdapter)
+		wantErr bool
+	}{
+		{name: "success", mutate: func(*deterministicAdapter) {}},
+		{name: "before request", mutate: func(a *deterministicAdapter) {
+			a.err = &AdapterError{Phase: AdapterFailureBeforeRequest, Outcome: ProviderOutcome{OutcomeClassification: ProviderOutcomeNotSent, ErrorClass: "credential", ErrorCode: "credential_unavailable", ResponseSchemaVersion: "test.fake.response.v1"}, Cause: errors.New("no credential")}
+		}, wantErr: true},
+		{name: "response received rejected without usage", mutate: func(a *deterministicAdapter) {
+			a.response = &RawResponse{ProviderRequestID: "r"}
+			a.err = &AdapterError{Phase: AdapterFailureResponseReceived, Outcome: ProviderOutcome{OutcomeClassification: ProviderOutcomeRejected, ProviderRequestID: "r", HTTPStatus: 500, ErrorClass: "response", ErrorCode: "response_read_failed", ResponseHash: SHA256Bytes([]byte("x")), ResponseSchemaVersion: "test.fake.response.v1", Retryable: true}, Cause: ErrResponseRejected}
+		}, wantErr: true},
+		{name: "ambiguous transport", mutate: func(a *deterministicAdapter) { a.err = errors.New("connection reset") }, wantErr: true},
+		{name: "normalization failed", mutate: func(a *deterministicAdapter) {
+			a.response = &RawResponse{Content: []byte(`{"ok":"wrong"}`), ProviderRequestID: "fake-bad", ProviderReported: true, InputTokens: 1, OutputTokens: 1}
+		}, wantErr: true},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			store, catalog, task, contexts, assignments, principals, now := serviceFixture()
+			gate := &fakeCostBudgetGate{}
+			provider := &deterministicAdapter{}
+			test.mutate(provider)
+			service, _ := NewDispatchService("explorarte", dispatchCfgWithCostGate(), catalog, task, contexts, fakeEvaluator{allow: true}, store, modelegress.NewEvaluator(), store, principals, assignments, store, store, fakeAdapterRegistry{value: provider}, ClockFunc(func() time.Time { return now }), WithCostBudgetGate(gate))
+			_, err := service.Dispatch(context.Background(), 11)
+			if test.wantErr && err == nil {
+				t.Fatal("expected an error")
+			}
+			if gate.settledCalls() != 1 {
+				t.Fatalf("expected the reservation to settle exactly once, got release=%d pending=%d reconcile=%d (total=%d)", gate.releaseCalls, gate.pendingCalls, len(gate.reconcileCalls), gate.settledCalls())
+			}
+		})
 	}
 }
 

@@ -259,7 +259,12 @@ func createClaimAttempt(ctx context.Context, tx pgx.Tx, invocation modelruntime.
 	if invocation.ExecutionPrincipalID != nil {
 		attemptPrincipalID = &principalID
 	}
-	attempt, err := scanAttempt(tx.QueryRow(ctx, `INSERT INTO model_dispatch_attempts(invocation_id,attempt_number,status,claim_token_hash,claimed_by,execution_principal_id,execution_identity_key_id,identity_assertion_id,identity_verified_at,claim_expires_at,retry_safety) VALUES($1,$2,'claimed',$3,$4,$5,$6,$7,$8,clock_timestamp()+make_interval(secs=>$9::double precision),'safe_before_send') RETURNING `+attemptColumns, invocation.ID, attemptNumber, tokenHash, claimedBy, attemptPrincipalID, keyID, assertionID, verifiedAt, config.ClaimTTL.Seconds()))
+	// runtime_build_sha (P0-F): records which build of this service handled
+	// the attempt. modelruntime.BuildSHA defaults to "unknown" and is meant
+	// to be overridden via `-ldflags "-X ...BuildSHA=$(git rev-parse HEAD)"`
+	// at real build time; wiring that ldflags injection into the actual
+	// Docker build is a followup (see migration 000037's up.sql comment).
+	attempt, err := scanAttempt(tx.QueryRow(ctx, `INSERT INTO model_dispatch_attempts(invocation_id,attempt_number,status,claim_token_hash,claimed_by,execution_principal_id,execution_identity_key_id,identity_assertion_id,identity_verified_at,claim_expires_at,retry_safety,runtime_build_sha) VALUES($1,$2,'claimed',$3,$4,$5,$6,$7,$8,clock_timestamp()+make_interval(secs=>$9::double precision),'safe_before_send',$10) RETURNING `+attemptColumns, invocation.ID, attemptNumber, tokenHash, claimedBy, attemptPrincipalID, keyID, assertionID, verifiedAt, config.ClaimTTL.Seconds(), modelruntime.BuildSHA))
 	if err != nil {
 		return modelruntime.ClaimedInvocation{}, err
 	}

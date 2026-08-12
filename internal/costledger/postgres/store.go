@@ -306,8 +306,8 @@ func (s *Store) Reconcile(ctx context.Context, providerID string, invocationID i
 	}
 
 	tag, err := tx.Exec(ctx, `
-INSERT INTO provider_wallet_events (provider_id, invocation_id, kind, amount_usd_nanos, created_at)
-VALUES ($1,$2,'committed',$3,$4)
+INSERT INTO provider_wallet_events (provider_id, invocation_id, kind, amount_usd_nanos, created_at, cost_provenance, financial_outcome)
+VALUES ($1,$2,'committed',$3,$4,'actual_provider_reported','actual')
 ON CONFLICT (provider_id, invocation_id, kind) WHERE invocation_id IS NOT NULL DO NOTHING`,
 		providerID, invocationID, int64(actualUSD), now)
 	if err != nil {
@@ -351,8 +351,8 @@ func (s *Store) Release(ctx context.Context, providerID string, invocationID int
 	}
 
 	tag, err := tx.Exec(ctx, `
-INSERT INTO provider_wallet_events (provider_id, invocation_id, kind, amount_usd_nanos, created_at)
-VALUES ($1,$2,'released',0,$3)
+INSERT INTO provider_wallet_events (provider_id, invocation_id, kind, amount_usd_nanos, created_at, cost_provenance, financial_outcome)
+VALUES ($1,$2,'released',0,$3,'unknown','released_not_sent')
 ON CONFLICT (provider_id, invocation_id, kind) WHERE invocation_id IS NOT NULL DO NOTHING`,
 		providerID, invocationID, now)
 	if err != nil {
@@ -369,6 +369,78 @@ ON CONFLICT (provider_id, invocation_id, kind) WHERE invocation_id IS NOT NULL D
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+var _ costledger.PendingReconciliationMarker = (*Store)(nil)
+
+// MarkPendingReconciliation annotates an existing 'reserved' wallet event
+// row in place — the only mutation provider_wallet_events ever permits (see
+// migration 000037's relaxed reject_provider_wallet_event_mutation trigger,
+// which allows exactly this one-time annotation and nothing else: kind,
+// amount, provider_id, invocation_id and created_at all stay immutable).
+// Idempotent: a row that is already annotated is left untouched and this
+// still returns nil, matching Reconcile/Release's idempotency.
+func (s *Store) MarkPendingReconciliation(ctx context.Context, providerID string, invocationID int64, now time.Time) error {
+	now = now.UTC()
+	tag, err := s.pool.Exec(ctx, `
+UPDATE provider_wallet_events
+SET cost_provenance='estimated_locally', financial_outcome='estimated_pending_reconciliation'
+WHERE provider_id=$1 AND invocation_id=$2 AND kind='reserved' AND cost_provenance IS NULL AND financial_outcome IS NULL`,
+		providerID, invocationID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 1 {
+		return nil
+	}
+	// RowsAffected()==0 here means either no 'reserved' row exists, or one
+	// exists and is already annotated (idempotent retry) — disambiguate so
+	// a genuinely missing reservation still surfaces as an error the same
+	// way Reconcile/Release do.
+	var exists bool
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM provider_wallet_events WHERE provider_id=$1 AND invocation_id=$2 AND kind='reserved')`, providerID, invocationID).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return costledger.ErrReservationNotFound
+	}
+	return nil
+}
+
+var _ costledger.SubscriptionRecorder = (*Store)(nil)
+
+// RecordSubscriptionConsumption inserts a single 'committed' wallet event
+// for a subscription/token-plan-billed call (e.g. mimo), with
+// amount_usd_nanos=0 and cost_provenance/financial_outcome set to their
+// dedicated subscription-only values ('subscription_resource_consumed' /
+// 'resource_consumed', added by migration 000039 alongside the existing
+// PAYG values from 000037) -- never a bare, unexplained 0. Unlike Reserve/
+// Reconcile/Release, this does NOT touch provider_wallets.balance_usd_nanos
+// or reserved_usd_nanos at all: there was never a real-money reservation to
+// begin with (Gate.Reserve skips PriceTier/ledger.Reserve entirely for a
+// subscription provider -- see internal/modelruntime/costgate/gate.go), so
+// there is nothing to debit or release. provider_wallets still needs a row
+// for this provider_id to satisfy provider_wallet_events' foreign key --
+// migration 000039 seeds one with balance_usd_nanos=0, documented as a pure
+// FK anchor, never a real balance.
+//
+// Idempotent per (providerID, invocationID) via the same
+// provider_wallet_events_unique_kind constraint (migration 000021) every
+// other event-insert here relies on.
+func (s *Store) RecordSubscriptionConsumption(ctx context.Context, providerID string, invocationID int64, now time.Time) error {
+	now = now.UTC()
+	_, err := s.pool.Exec(ctx, `
+INSERT INTO provider_wallet_events (provider_id, invocation_id, kind, amount_usd_nanos, created_at, cost_provenance, financial_outcome)
+VALUES ($1,$2,'committed',0,$3,'subscription_resource_consumed','resource_consumed')
+ON CONFLICT (provider_id, invocation_id, kind) WHERE invocation_id IS NOT NULL DO NOTHING`,
+		providerID, invocationID, now)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func lockWalletAndReservation(ctx context.Context, tx pgx.Tx, providerID string) (int64, int64, error) {

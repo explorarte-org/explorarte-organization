@@ -51,6 +51,11 @@ policies:
     legacy_conflicts:
     - gemini/gemini-2.5-flash in prior routing revision
     - deepseek/deepseek-v4-flash in prior routing revision
+  research.worker.mimo_canary:
+    provider: mimo
+    model: mimo-v2.5
+    transport: http_adapter
+    source_of_decision: owner_conversation_r10_2
 routing_invariants:
 - A role never selects its own model from request JSON.
 - The backend resolves a model from an approved policy and role registration.

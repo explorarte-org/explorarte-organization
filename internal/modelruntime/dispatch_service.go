@@ -455,6 +455,20 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64) (Dis
 	if renderedHash != snapshot.RenderedHash {
 		return failBeforeSend("context_render_hash_mismatch", ErrContextRejected, AuditInvocationFailed)
 	}
+	// R10.4: best-effort ProviderRender v1 telemetry (StablePrefix/
+	// DynamicSuffix hashes/bytes) -- observability only, never a dispatch
+	// gate. Both s.contexts and s.store are OPTIONAL capabilities here
+	// (ProviderRenderTelemetryReader/Recorder); an implementation that
+	// doesn't support either (any test double, or any deployment that
+	// hasn't upgraded) leaves this whole block a no-op, exactly as before
+	// R10.4 existed.
+	if reader, ok := s.contexts.(ProviderRenderTelemetryReader); ok {
+		if telemetry, telemetryErr := reader.GetProviderRenderTelemetry(ctx, invocation.ContextSnapshotID); telemetryErr == nil {
+			if recorder, ok := s.store.(ProviderRenderTelemetryRecorder); ok {
+				_ = recorder.RecordProviderRenderTelemetry(persistCtx, invocation.ID, telemetry)
+			}
+		}
+	}
 
 	var costReservation CostReservation
 	reservationApplied, reservationSettled := false, false
@@ -548,17 +562,30 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64) (Dis
 				}
 				return DispatchResult{Invocation: failed}, adapterErr
 			case AdapterFailureResponseReceived:
+				// Proof-positive the provider's HTTP response was received —
+				// the call may already be billed. This is the exact phase the
+				// original bug got backwards: reservationSettled was never
+				// set here, so the deferred Release below fired
+				// unconditionally and every one of these calls was recorded
+				// as financially free. When the adapter could recover real
+				// usage from the response envelope even while erroring
+				// (recoveredUsage), commit that as the actual cost; the
+				// invocation is still recorded as `failed` below — financial
+				// settlement and task/business success are independent.
+				usage := recoveredUsage(invocation.ID, dispatchAttemptID, rawResponse)
+				command.Usage = usage
 				failed, persistErr := s.store.RejectProviderResponse(persistCtx, command, classified.Outcome, s.config.OutboxMaxAttempts)
 				if persistErr != nil {
 					return DispatchResult{}, errors.Join(adapterErr, persistErr)
 				}
+				s.settleNonSuccessReservation(ctx, &reservationSettled, reservationApplied, costReservation, usage)
 				return DispatchResult{Invocation: failed}, adapterErr
 			case AdapterFailureAmbiguous:
 				// The provider may or may not have processed (and billed)
 				// this call — releasing the reservation here would hand
 				// back money that was possibly already spent. Leave it
 				// reserved for reconciliation rather than releasing it.
-				reservationSettled = true
+				s.settleNonSuccessReservation(ctx, &reservationSettled, reservationApplied, costReservation, nil)
 				eventType := AuditInvocationAmbiguous
 				if errors.Is(adapterErr, context.DeadlineExceeded) {
 					eventType = AuditInvocationTimedOut
@@ -600,7 +627,7 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64) (Dis
 		// request reached the provider through some path this classifier
 		// doesn't recognize as definitively unsent, so the reservation
 		// must not be auto-released.
-		reservationSettled = true
+		s.settleNonSuccessReservation(ctx, &reservationSettled, reservationApplied, costReservation, nil)
 		errorCode := "adapter_error_after_send"
 		eventType := AuditInvocationAmbiguous
 		if errors.Is(adapterErr, context.DeadlineExceeded) {
@@ -640,26 +667,37 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64) (Dis
 		// reconcile classifies the durable send_started state without dispatching.
 		// The provider is now known to have processed this call, so the
 		// reservation must not be released even though persisting that
-		// fact failed.
-		reservationSettled = true
+		// fact failed. Whether the persistence failure itself means this
+		// specific write landed is unknown, so prefer the conservative
+		// "commit what we can prove" behavior: if the adapter already
+		// recovered real usage, commit it as actual; otherwise leave the
+		// reservation parked pending reconciliation rather than releasing
+		// it.
+		s.settleNonSuccessReservation(ctx, &reservationSettled, reservationApplied, costReservation, recoveredUsage(invocation.ID, dispatchAttemptID, rawResponse))
 		return DispatchResult{}, err
 	}
 	normalized, err := s.normalizer.Normalize(invocation, dispatchAttemptID, rawResponse)
 	if err != nil {
 		// The provider already responded (and normalization is the only
-		// thing that failed), so the call is likely billable — do not
-		// release the reservation.
-		reservationSettled = true
+		// thing that failed — our own business JSON parse, not the
+		// adapter's decode of the outer envelope), so the call is almost
+		// always billable. The adapter already decoded the envelope fine
+		// here (adapterErr was nil to reach this point), so real usage is
+		// threaded through as FailureCommand.Usage and committed as actual
+		// rather than left stuck reserved forever.
+		usage := recoveredUsage(invocation.ID, dispatchAttemptID, rawResponse)
 		failed, persistErr := s.store.FailAfterResponse(persistCtx, FailureCommand{
 			InvocationID:          invocation.ID,
 			DispatchAttemptID:     dispatchAttemptID,
 			ClaimToken:            claimed.ClaimToken,
 			ErrorCode:             "response_normalization_failed",
 			OutcomeClassification: "response_received_rejected",
+			Usage:                 usage,
 		}, s.config.OutboxMaxAttempts)
 		if persistErr != nil {
 			return DispatchResult{}, errors.Join(err, persistErr)
 		}
+		s.settleNonSuccessReservation(ctx, &reservationSettled, reservationApplied, costReservation, usage)
 		return DispatchResult{Invocation: failed}, err
 	}
 	if normalized.CancellationConfirmed {
@@ -703,7 +741,23 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64) (Dis
 		// above never fires after a reconciliation attempt — retrying
 		// reconciliation, not releasing, is the correct recovery for a
 		// call that did happen.
-		if reconcileErr := s.costGate.Reconcile(persistCtx, costReservation, normalized.Usage.InputTokens, 0, normalized.Usage.OutputTokens, s.clock.Now()); reconcileErr != nil {
+		if costReservation.Subscription {
+			// Subscription/token-plan billing (e.g. mimo): no real per-call
+			// USD amount to reconcile against a wallet reservation that was
+			// never made (see CostReservation.Subscription's doc comment).
+			// Record the real, observable fact -- the call succeeded and
+			// consumed plan resources -- via the optional
+			// SubscriptionSettler capability, never via Reconcile (which
+			// would try to resolve a PriceTier that does not and should not
+			// exist for this provider).
+			if settler, ok := s.costGate.(SubscriptionSettler); ok {
+				if err := settler.RecordSubscriptionConsumption(persistCtx, costReservation, s.clock.Now()); err != nil {
+					slog.Default().Error("cost gate subscription consumption recording failed after a successful provider call",
+						"invocation_id", costReservation.InvocationID, "provider_id", costReservation.ProviderID,
+						"provider_model_id", costReservation.ProviderModelID, "error", err)
+				}
+			}
+		} else if reconcileErr := s.costGate.Reconcile(persistCtx, costReservation, normalized.Usage.InputTokens, 0, normalized.Usage.OutputTokens, s.clock.Now()); reconcileErr != nil {
 			slog.Default().Error("cost gate reconciliation failed after a successful provider call",
 				"invocation_id", costReservation.InvocationID, "provider_id", costReservation.ProviderID,
 				"provider_model_id", costReservation.ProviderModelID, "error", reconcileErr)
@@ -716,6 +770,88 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64) (Dis
 		ClaimToken:        claimed.ClaimToken,
 		Response:          normalized,
 	}, s.config.OutboxMaxAttempts)
+}
+
+// settleNonSuccessReservation resolves the cost reservation for a call that
+// is being recorded as anything other than the ordinary success path
+// (which reconciles via normalized.Usage further down in Dispatch). It
+// implements the P0 financial state machine fix: a call whose real,
+// provider-reported token usage was recovered gets that cost committed as
+// actual — financial_outcome=actual — even though the invocation itself is
+// being recorded as failed/ambiguous/cancelled, because task success and
+// financial settlement are independent facts (this is the behavior the
+// original bug got backwards: AdapterFailureResponseReceived, proof the
+// provider's HTTP response was received, was instead auto-released as if
+// free). When no usage could be recovered, the reservation is left in
+// place — never released — and annotated as
+// financial_outcome=estimated_pending_reconciliation, using the
+// already-computed conservative estimate from Reserve, because the
+// provider may already have billed a call this process cannot prove it
+// didn't.
+//
+// Sets *reservationSettled=true whenever it takes any action, so the
+// deferred Release in Dispatch never also fires for the same reservation.
+// A nil costGate or an unapplied reservation is a no-op, matching every
+// other reservation-settling call site in Dispatch.
+func (s *DispatchService) settleNonSuccessReservation(ctx context.Context, reservationSettled *bool, reservationApplied bool, reservation CostReservation, usage *Usage) {
+	if !reservationApplied || s.costGate == nil {
+		return
+	}
+	*reservationSettled = true
+	settleCtx := context.WithoutCancel(ctx)
+	now := s.clock.Now()
+	if reservation.Subscription {
+		// Same reasoning as the success path above: a subscription-billed
+		// call that reached the provider (response received, transport
+		// ambiguous, etc.) consumed real plan resources regardless of its
+		// business outcome, but has no USD amount to reconcile/park at an
+		// estimate -- there never was a wallet reservation for it.
+		if settler, ok := s.costGate.(SubscriptionSettler); ok {
+			if err := settler.RecordSubscriptionConsumption(settleCtx, reservation, now); err != nil {
+				slog.Default().Error("cost gate subscription consumption recording failed for a non-success outcome",
+					"invocation_id", reservation.InvocationID, "provider_id", reservation.ProviderID,
+					"provider_model_id", reservation.ProviderModelID, "error", err)
+			}
+		}
+		return
+	}
+	if usage != nil {
+		if err := s.costGate.Reconcile(settleCtx, reservation, usage.InputTokens, 0, usage.OutputTokens, now); err != nil {
+			slog.Default().Error("cost gate reconciliation failed for a call with recovered provider usage",
+				"invocation_id", reservation.InvocationID, "provider_id", reservation.ProviderID,
+				"provider_model_id", reservation.ProviderModelID, "error", err)
+		}
+		return
+	}
+	if err := s.costGate.MarkPendingReconciliation(settleCtx, reservation, now); err != nil {
+		slog.Default().Error("cost gate could not mark reservation pending reconciliation",
+			"invocation_id", reservation.InvocationID, "provider_id", reservation.ProviderID,
+			"provider_model_id", reservation.ProviderModelID, "error", err)
+	}
+}
+
+// recoveredUsage builds the Usage the provider's response envelope actually
+// reported, when the adapter was able to recover one even while returning
+// an error (see RawResponse.ProviderReported — the deepseek adapter now
+// sets this, with real InputTokens/OutputTokens, on every
+// AdapterFailureResponseReceived branch that fires after its own
+// json.Unmarshal of the response body already succeeded, e.g.
+// response_choice_count_invalid, response_content_invalid,
+// tool_call_name_missing, response_content_filtered,
+// response_truncated_empty — as opposed to response_read_failed/
+// response_json_invalid/HTTP-error-status branches, where no usage object
+// was ever decoded and ProviderReported stays false). Returns nil when
+// nothing recoverable is known.
+func recoveredUsage(invocationID, dispatchAttemptID int64, rawResponse RawResponse) *Usage {
+	if !rawResponse.ProviderReported {
+		return nil
+	}
+	return &Usage{
+		InvocationID: invocationID, DispatchAttemptID: dispatchAttemptID,
+		InputTokens: rawResponse.InputTokens, OutputTokens: rawResponse.OutputTokens,
+		TotalTokens: rawResponse.InputTokens + rawResponse.OutputTokens, ProviderReported: true,
+		PromptCacheHitTokens: rawResponse.PromptCacheHitTokens, PromptCacheMissTokens: rawResponse.PromptCacheMissTokens,
+	}
 }
 
 // estimateTokenCount is a deliberately conservative, provider-agnostic

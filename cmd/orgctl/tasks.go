@@ -39,6 +39,8 @@ func runTask(args []string, stdout, stderr io.Writer) int {
 		return taskList(ctx, service, args[1:], stdout, stderr)
 	case "claim":
 		return taskClaim(ctx, service, cfg, args[1:], stdout, stderr)
+	case "claim-specific":
+		return taskClaimSpecific(ctx, service, cfg, args[1:], stdout, stderr)
 	case "start":
 		return taskStart(ctx, service, args[1:], stdout, stderr)
 	case "heartbeat":
@@ -313,6 +315,33 @@ func taskClaim(ctx context.Context, service *tasks.Service, cfg config.Config, a
 		return taskError(stderr, err)
 	}
 	writeValue(stdout, *jsonOutput, values)
+	return exitOK
+}
+
+func taskClaimSpecific(ctx context.Context, service *tasks.Service, cfg config.Config, args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("task claim-specific", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	worker := flags.String("worker", "", "worker identifier")
+	role := flags.String("role", "", "assigned role filter")
+	lease := flags.Duration("lease", cfg.Tasks.DefaultLeaseDuration, "lease duration")
+	jsonOutput := flags.Bool("json", false, "emit JSON")
+	if parseInterspersed(flags, args) != nil || flags.NArg() != 1 {
+		return exitUsage
+	}
+	id, err := positiveID(flags.Arg(0), "task")
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitUsage
+	}
+	value, err := service.ClaimTaskByID(ctx, id, tasks.ClaimRequest{WorkerID: *worker, AssignedRoleID: *role, LeaseDuration: *lease})
+	if err != nil {
+		return taskError(stderr, err)
+	}
+	if value.Task.ID != id {
+		fmt.Fprintf(stderr, "claim-specific returned task %d, requested task %d (refusing to proceed)\n", value.Task.ID, id)
+		return exitDrift
+	}
+	writeValue(stdout, *jsonOutput, value)
 	return exitOK
 }
 
@@ -816,6 +845,7 @@ commands:
   get ID [--json]
   list [--status CSV] [--role ID] [--unit ID]
   claim --worker ID [--role ID] [--batch N] [--lease DURATION]
+  claim-specific TASK_ID --worker ID [--role ID] [--lease DURATION]
   start ID --attempt ID --worker ID          (lease token via stdin)
   heartbeat ID --attempt ID --worker ID      (lease token via stdin)
   result ID --attempt ID --worker ID --result-file FILE (lease token via stdin)

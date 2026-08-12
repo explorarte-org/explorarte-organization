@@ -1,0 +1,33 @@
+ALTER TABLE model_provider_outcomes
+    DROP CONSTRAINT model_provider_outcomes_json_error_offset_class_check,
+    DROP CONSTRAINT model_provider_outcomes_json_error_offset_check,
+    DROP CONSTRAINT model_provider_outcomes_json_error_class_check,
+    DROP CONSTRAINT model_provider_outcomes_request_duration_ms_check,
+    DROP CONSTRAINT model_provider_outcomes_max_output_tokens_check,
+    DROP CONSTRAINT model_provider_outcomes_response_format_check,
+    DROP CONSTRAINT model_provider_outcomes_usage_available_check,
+    DROP CONSTRAINT model_provider_outcomes_cache_miss_tokens_check,
+    DROP CONSTRAINT model_provider_outcomes_cache_hit_tokens_check,
+    DROP CONSTRAINT model_provider_outcomes_output_tokens_check,
+    DROP CONSTRAINT model_provider_outcomes_input_tokens_check,
+    DROP CONSTRAINT model_provider_outcomes_response_content_bytes_check,
+    DROP CONSTRAINT model_provider_outcomes_finish_reason_check,
+    DROP CONSTRAINT model_provider_outcomes_adapter_failure_phase_check;
+
+ALTER TABLE model_provider_outcomes
+    DROP COLUMN ends_with_json_object,
+    DROP COLUMN starts_with_json_object,
+    DROP COLUMN json_error_offset,
+    DROP COLUMN json_error_class,
+    DROP COLUMN request_duration_ms,
+    DROP COLUMN max_output_tokens,
+    DROP COLUMN response_format,
+    DROP COLUMN cache_miss_tokens,
+    DROP COLUMN cache_hit_tokens,
+    DROP COLUMN output_tokens,
+    DROP COLUMN input_tokens,
+    DROP COLUMN usage_available,
+    DROP COLUMN response_content_bytes,
+    DROP COLUMN finish_reason,
+    DROP COLUMN provider_reached,
+    DROP COLUMN adapter_failure_phase;

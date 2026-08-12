@@ -21,6 +21,8 @@ var (
 		"openai_compatible": {"public": {}, "sanitized": {}, "organizational": {}},
 		"openai_responses":  {"public": {}, "sanitized": {}, "organizational": {}},
 		"gemini":            {"public": {}, "sanitized": {}, "organizational": {}},
+		// R10.2: kept in sync with modelegress.ProductiveLoadOptions.
+		"mimo":              {"public": {}, "sanitized": {}, "organizational": {}},
 	}
 )
 
