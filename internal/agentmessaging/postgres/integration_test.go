@@ -152,12 +152,13 @@ func TestSendIsIdempotentPerOrganizationAndKey(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	ceoTaskID := fixture.insertTask(t, ctx, "empresa/ceo", 1)
+	recipientTaskID := fixture.insertTask(t, ctx, "ingenieria_ia/orquestador", 41)
 	principalID := fixture.insertExecutionPrincipal(t, ctx, "empresa/ceo", 1)
 
 	command := agentmessaging.SendCommand{
 		OrganizationID: messagingIntegrationOrg, SenderRoleID: "empresa/ceo", SenderTaskID: ceoTaskID,
-		RecipientRoleID: "ingenieria_ia/orquestador", CorrelationID: "executive:abc", CausationID: fmt.Sprintf("task:%d", ceoTaskID),
-		MessageType: agentmessaging.MessageDelegation, Payload: json.RawMessage(`{"delegate":true}`),
+		RecipientRoleID: "ingenieria_ia/orquestador", RecipientTaskID: &recipientTaskID, CorrelationID: "executive:abc", CausationID: fmt.Sprintf("task:%d", ceoTaskID),
+		MessageType: agentmessaging.MessageDelegation, SchemaVersion: agentmessaging.SchemaVersionV1, Payload: json.RawMessage(fmt.Sprintf(`{"delegated_task_id":%d}`, recipientTaskID)),
 		IdempotencyKey: "delegation:ceo->leader", MaxAttempts: 5,
 	}
 	first, reused, err := ledger.Send(ctx, principalID, command, now)
@@ -191,7 +192,7 @@ func TestSendEnforcesRateLimit(t *testing.T) {
 			OrganizationID: messagingIntegrationOrg, SenderRoleID: "empresa/ceo", SenderTaskID: ceoTaskID,
 			RecipientRoleID: "ingenieria_ia/orquestador", RecipientTaskID: &recipientTaskID,
 			CorrelationID: "executive:rate", CausationID: fmt.Sprintf("task:%d", ceoTaskID),
-			MessageType: agentmessaging.MessageDelegation, Payload: json.RawMessage(fmt.Sprintf(`{"delegated_task_id":%d}`, recipientTaskID)),
+			MessageType: agentmessaging.MessageDelegation, SchemaVersion: agentmessaging.SchemaVersionV1, Payload: json.RawMessage(fmt.Sprintf(`{"delegated_task_id":%d}`, recipientTaskID)),
 			IdempotencyKey: fmt.Sprintf("status:%d", i), MaxAttempts: 5,
 		}
 		if _, _, err := ledger.Send(ctx, principalID, command, now); err != nil {
@@ -202,7 +203,7 @@ func TestSendEnforcesRateLimit(t *testing.T) {
 		OrganizationID: messagingIntegrationOrg, SenderRoleID: "empresa/ceo", SenderTaskID: ceoTaskID,
 		RecipientRoleID: "ingenieria_ia/orquestador", RecipientTaskID: &recipientTaskID,
 		CorrelationID: "executive:rate", CausationID: fmt.Sprintf("task:%d", ceoTaskID),
-		MessageType: agentmessaging.MessageDelegation, Payload: json.RawMessage(fmt.Sprintf(`{"delegated_task_id":%d}`, recipientTaskID)),
+		MessageType: agentmessaging.MessageDelegation, SchemaVersion: agentmessaging.SchemaVersionV1, Payload: json.RawMessage(fmt.Sprintf(`{"delegated_task_id":%d}`, recipientTaskID)),
 		IdempotencyKey: "status:over", MaxAttempts: 5,
 	}
 	if _, _, err := ledger.Send(ctx, principalID, over, now); !errors.Is(err, agentmessaging.ErrRateLimited) {
@@ -220,11 +221,12 @@ func TestClaimAckDeliversMessageExactlyOnce(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	ceoTaskID := fixture.insertTask(t, ctx, "empresa/ceo", 3)
+	recipientTaskID := fixture.insertTask(t, ctx, "ingenieria_ia/orquestador", 43)
 	principalID := fixture.insertExecutionPrincipal(t, ctx, "empresa/ceo", 3)
 	sent, _, err := ledger.Send(ctx, principalID, agentmessaging.SendCommand{
 		OrganizationID: messagingIntegrationOrg, SenderRoleID: "empresa/ceo", SenderTaskID: ceoTaskID,
-		RecipientRoleID: "ingenieria_ia/orquestador", CorrelationID: "executive:claim", CausationID: fmt.Sprintf("task:%d", ceoTaskID),
-		MessageType: agentmessaging.MessageDelegation, Payload: json.RawMessage(`{"claim":true}`),
+		RecipientRoleID: "ingenieria_ia/orquestador", RecipientTaskID: &recipientTaskID, CorrelationID: "executive:claim", CausationID: fmt.Sprintf("task:%d", ceoTaskID),
+		MessageType: agentmessaging.MessageDelegation, SchemaVersion: agentmessaging.SchemaVersionV1, Payload: json.RawMessage(fmt.Sprintf(`{"delegated_task_id":%d}`, recipientTaskID)),
 		IdempotencyKey: "claim-ack", MaxAttempts: 5,
 	}, now)
 	if err != nil {
@@ -273,11 +275,12 @@ func TestNackRetriesUntilMaxAttemptsThenDeadLetters(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	ceoTaskID := fixture.insertTask(t, ctx, "empresa/ceo", 4)
+	recipientTaskID := fixture.insertTask(t, ctx, "ingenieria_ia/orquestador", 44)
 	principalID := fixture.insertExecutionPrincipal(t, ctx, "empresa/ceo", 4)
 	sent, _, err := ledger.Send(ctx, principalID, agentmessaging.SendCommand{
 		OrganizationID: messagingIntegrationOrg, SenderRoleID: "empresa/ceo", SenderTaskID: ceoTaskID,
-		RecipientRoleID: "ingenieria_ia/orquestador", CorrelationID: "executive:nack", CausationID: fmt.Sprintf("task:%d", ceoTaskID),
-		MessageType: agentmessaging.MessageDelegation, Payload: json.RawMessage(`{"nack":true}`),
+		RecipientRoleID: "ingenieria_ia/orquestador", RecipientTaskID: &recipientTaskID, CorrelationID: "executive:nack", CausationID: fmt.Sprintf("task:%d", ceoTaskID),
+		MessageType: agentmessaging.MessageDelegation, SchemaVersion: agentmessaging.SchemaVersionV1, Payload: json.RawMessage(fmt.Sprintf(`{"delegated_task_id":%d}`, recipientTaskID)),
 		IdempotencyKey: "nack-dead-letter", MaxAttempts: 2,
 	}, now)
 	if err != nil {
@@ -320,11 +323,12 @@ func TestExpiredClaimIsRecoveredAndOldTokenCannotSettle(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	ceoTaskID := fixture.insertTask(t, ctx, "empresa/ceo", 5)
+	recipientTaskID := fixture.insertTask(t, ctx, "ingenieria_ia/orquestador", 45)
 	principalID := fixture.insertExecutionPrincipal(t, ctx, "empresa/ceo", 5)
 	sent, _, err := ledger.Send(ctx, principalID, agentmessaging.SendCommand{
 		OrganizationID: messagingIntegrationOrg, SenderRoleID: "empresa/ceo", SenderTaskID: ceoTaskID,
-		RecipientRoleID: "ingenieria_ia/orquestador", CorrelationID: "executive:expired", CausationID: fmt.Sprintf("task:%d", ceoTaskID),
-		MessageType: agentmessaging.MessageDelegation, Payload: json.RawMessage(`{"expired":true}`),
+		RecipientRoleID: "ingenieria_ia/orquestador", RecipientTaskID: &recipientTaskID, CorrelationID: "executive:expired", CausationID: fmt.Sprintf("task:%d", ceoTaskID),
+		MessageType: agentmessaging.MessageDelegation, SchemaVersion: agentmessaging.SchemaVersionV1, Payload: json.RawMessage(fmt.Sprintf(`{"delegated_task_id":%d}`, recipientTaskID)),
 		IdempotencyKey: "expired-recovery", MaxAttempts: 3,
 	}, now)
 	if err != nil {
@@ -366,11 +370,12 @@ func TestExpiredFinalAttemptDeadLettersInsteadOfRequeue(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	ceoTaskID := fixture.insertTask(t, ctx, "empresa/ceo", 6)
+	recipientTaskID := fixture.insertTask(t, ctx, "ingenieria_ia/orquestador", 46)
 	principalID := fixture.insertExecutionPrincipal(t, ctx, "empresa/ceo", 6)
 	sent, _, err := ledger.Send(ctx, principalID, agentmessaging.SendCommand{
 		OrganizationID: messagingIntegrationOrg, SenderRoleID: "empresa/ceo", SenderTaskID: ceoTaskID,
-		RecipientRoleID: "ingenieria_ia/orquestador", CorrelationID: "executive:expired-dead", CausationID: fmt.Sprintf("task:%d", ceoTaskID),
-		MessageType: agentmessaging.MessageDelegation, Payload: json.RawMessage(`{"expired":"dead"}`),
+		RecipientRoleID: "ingenieria_ia/orquestador", RecipientTaskID: &recipientTaskID, CorrelationID: "executive:expired-dead", CausationID: fmt.Sprintf("task:%d", ceoTaskID),
+		MessageType: agentmessaging.MessageDelegation, SchemaVersion: agentmessaging.SchemaVersionV1, Payload: json.RawMessage(fmt.Sprintf(`{"delegated_task_id":%d}`, recipientTaskID)),
 		IdempotencyKey: "expired-dead-letter", MaxAttempts: 1,
 	}, now)
 	if err != nil {

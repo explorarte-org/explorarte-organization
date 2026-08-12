@@ -1,6 +1,7 @@
 package contextcompiler
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/Mireuz13/explorarte-organization/internal/contextengine"
@@ -189,11 +190,26 @@ func TestCompile_TelemetryUsesSameDynamicPartitionAsProviderRender(t *testing.T)
 	}
 }
 
-// R31 hardening §18.3: the compiler's StablePrefixBytes/DynamicSuffixBytes
-// must equal exactly what contextengine.BuildProviderRender itself computes
-// for the SAME projected snapshot -- this is the direct cross-package
-// equivalence check the hardening spec asks for, not just an indirect
-// inference from the partition rule being shared.
+// TestCompile_PartitionBytesMatchProviderRenderBytePartition checks that the
+// compiler's stable/dynamic partition still agrees with the one ProviderRender
+// actually produces.
+//
+// It previously asserted exact byte equality on the dynamic side. That worked
+// only while ProviderRender emitted segment content verbatim: with one dynamic
+// segment and no separators, rendered bytes happened to equal the raw
+// ByteCount sum. Security hardening v1 made BuildProviderRender delegate to
+// BuildProviderRenderV2, which wraps untrusted content in explicit
+// authority/trust markers and escapes it, so the rendered dynamic side is now
+// deliberately larger than the raw content it carries. Exact equality can no
+// longer hold without giving up the wrapping, and the wrapping is the whole
+// point of v2.
+//
+// So the assertions below test the invariant the original comment already
+// named as the one that MUST hold -- a segment contributes to the same SIDE in
+// both -- plus two properties that equality alone never checked: that the
+// divergence is bounded in the only direction wrapping can push it, and that
+// it is actually caused by the security wrapper rather than by a partition
+// bug wearing its costume.
 func TestCompile_PartitionBytesMatchProviderRenderBytePartition(t *testing.T) {
 	profile := ResearchCorpusCurateV1()
 	snap := testSnapshot("investigacion/research_worker_hourly", roleCatalogYAML())
@@ -208,19 +224,45 @@ func TestCompile_PartitionBytesMatchProviderRenderBytePartition(t *testing.T) {
 		t.Fatalf("BuildProviderRender: %v", err)
 	}
 
-	// The compiler's byte totals are raw ByteCount sums (no header, no
-	// separators); ProviderRender's StablePrefixBytes additionally
-	// includes its own fixed header (organization_id/actor_role_id/purpose)
-	// plus deterministic separators between segments. So exact byte
-	// equality is not expected -- what MUST hold is that a segment
-	// contributes to the same SIDE (stable vs dynamic) in both, which the
-	// difference-of-differences check below verifies: if the partition
-	// rule ever diverges again, DynamicSuffixBytes (no header/separator
-	// contamination on that side beyond inter-segment separators, and
-	// here there is only one dynamic segment so zero separators) must
-	// still match exactly.
-	if result.DynamicSuffixBytes != render.DynamicSuffixBytes {
-		t.Fatalf("compiler DynamicSuffixBytes=%d, ProviderRender DynamicSuffixBytes=%d -- partition must agree exactly", result.DynamicSuffixBytes, render.DynamicSuffixBytes)
+	// Side agreement: a side is empty in the compiler's accounting exactly
+	// when it is empty in the render. This is what catches the partition rule
+	// diverging again -- a segment silently moving from one side to the other
+	// shows up here, wrapping or no wrapping.
+	if (result.DynamicSuffixBytes == 0) != (render.DynamicSuffixBytes == 0) {
+		t.Fatalf("dynamic side disagrees on emptiness: compiler=%d render=%d -- the partition rule has diverged",
+			result.DynamicSuffixBytes, render.DynamicSuffixBytes)
+	}
+	if (result.StablePrefixBytes == 0) != (render.StablePrefixBytes == 0) {
+		t.Fatalf("stable side disagrees on emptiness: compiler=%d render=%d -- the partition rule has diverged",
+			result.StablePrefixBytes, render.StablePrefixBytes)
+	}
+
+	// Wrapping only ever adds bytes. If the render carries fewer bytes than
+	// the raw content the compiler counted, content was dropped somewhere,
+	// which no amount of escaping explains.
+	if render.DynamicSuffixBytes < result.DynamicSuffixBytes {
+		t.Fatalf("render dynamic side (%d bytes) is smaller than the raw content it must carry (%d bytes) -- content was lost",
+			render.DynamicSuffixBytes, result.DynamicSuffixBytes)
+	}
+	if render.StablePrefixBytes < result.StablePrefixBytes {
+		t.Fatalf("render stable side (%d bytes) is smaller than the raw content it must carry (%d bytes) -- content was lost",
+			render.StablePrefixBytes, result.StablePrefixBytes)
+	}
+
+	// The excess must be the v2 authority wrapper. Asserting this keeps the
+	// test from silently tolerating an unexplained size difference: if
+	// BuildProviderRender ever stopped wrapping (falling back to v1, say),
+	// the sizes would converge and this check would fail -- which is the
+	// correct outcome, because losing the wrapper is a security regression,
+	// not a cosmetic one.
+	if result.DynamicSuffixBytes > 0 {
+		if !bytes.Contains(render.DynamicSuffix, []byte("authority")) {
+			t.Fatalf("dynamic suffix carries content but no v2 authority marker: untrusted data is being rendered unwrapped")
+		}
+		if render.DynamicSuffixBytes == result.DynamicSuffixBytes {
+			t.Fatalf("dynamic side rendered byte-for-byte identical to raw content (%d bytes): the v2 wrapper is not being applied",
+				render.DynamicSuffixBytes)
+		}
 	}
 }
 
