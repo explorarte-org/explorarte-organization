@@ -227,6 +227,16 @@ func (a *Adapter) ReadBatchResults(ctx context.Context, providerJobName string) 
 		case item.Error != nil:
 			result.Err = item.Error.Message
 		case item.Response != nil && len(item.Response.Embedding.Values) > 0:
+			// Batch results carry no per-item OutputDimensionality (the
+			// interface does not thread the original request through to
+			// ReadBatchResults) -- expectedDimension=0 here still catches
+			// non-finite components, the same class of silent corruption
+			// §6 exists to prevent, even without a dimension to compare
+			// against.
+			if err := validateVector(item.Response.Embedding.Values, 0); err != nil {
+				result.Err = fmt.Sprintf("invalid vector: %v", err)
+				break
+			}
 			result.Vector = item.Response.Embedding.Values
 		default:
 			return nil, fmt.Errorf("embeddingruntime gemini: batch result item %q has neither a response nor an error", item.Metadata.CustomKey)

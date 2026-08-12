@@ -225,6 +225,98 @@ func TestApprovedKnowledgeRAGPostgresRepository(t *testing.T) {
 		}
 	})
 
+	// §21 P1: rag_guard_version_update (migration 000041) must reject any
+	// direct SQL attempt to change a field that is not in the explicitly
+	// permitted set (lifecycle, reviewer_role_id, reviewed_at, revision,
+	// updated_at), while still allowing the repository's own normal
+	// lifecycle transition (Store.Save) to pass.
+	//
+	// Each tampering attempt below also advances revision by exactly one,
+	// sets a matching lifecycle (candidate -> approved), and inserts the
+	// matching rag_knowledge_lifecycle_events row -- i.e. it satisfies
+	// every invariant the *pre-000041* trigger already enforced. This
+	// isolates the assertion to the field-immutability guard added in
+	// 000041: without it, an attacker who also gets the revision/audit
+	// bookkeeping right could otherwise smuggle a change to namespace_id,
+	// source_reference, source_boundary, or sanitization_evidence_ref
+	// through what looks like a legitimate lifecycle transition.
+	t.Run("database rejects mutation of immutable knowledge version fields", func(t *testing.T) {
+		tamperUpdate := func(t *testing.T, version rag.KnowledgeVersion, setClause string) error {
+			t.Helper()
+			created, _, err := store.CreateCandidate(ctx, rag.CreateCandidateCommand{Version: version, IdempotencyKey: "idem-" + version.ID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			reviewedAt := created.UpdatedAt.Add(time.Second)
+			if _, err := platform.Pool().Exec(ctx, `INSERT INTO rag_knowledge_lifecycle_events (organization_id,document_id,version_id,from_lifecycle,to_lifecycle,actor_role_id,reason,revision,created_at) VALUES ($1,$2,$3,'candidate','approved',$4,'tamper probe',2,$5)`,
+				ragIntegrationOrganization, created.DocumentID, created.ID, ragIntegrationReviewer, reviewedAt); err != nil {
+				t.Fatal(err)
+			}
+			stmt := fmt.Sprintf(`UPDATE rag_knowledge_versions SET lifecycle='approved',reviewer_role_id=$3,reviewed_at=$4,revision=2,updated_at=$4,%s WHERE organization_id=$1 AND version_id=$2`, setClause)
+			_, execErr := platform.Pool().Exec(ctx, stmt, ragIntegrationOrganization, created.ID, ragIntegrationReviewer, reviewedAt)
+			return execErr
+		}
+
+		for name, tampering := range map[string]struct {
+			id        string
+			setClause string
+		}{
+			"namespace_id":     {id: "know-immutable-namespace-id", setClause: `namespace_id='tampered-namespace'`},
+			"source_reference": {id: "know-immutable-source-reference", setClause: `source_reference='tampered:source'`},
+			"source_boundary":  {id: "know-immutable-source-boundary", setClause: `source_boundary='tampered-boundary'`},
+		} {
+			t.Run(name, func(t *testing.T) {
+				version := proposeVersion(t, domain, clock, now.Add(45*time.Second), tampering.id)
+				if err := tamperUpdate(t, version, tampering.setClause); err == nil {
+					t.Fatalf("direct SQL mutation of %s succeeded (with an otherwise-legitimate revision bump and matching audit event), expected the trigger to reject it", name)
+				}
+			})
+		}
+
+		// sanitization_evidence_ref gets its own case with data_class =
+		// sanitized and a non-null starting value: the pre-existing CHECK
+		// constraint (rag_knowledge_versions_check3) only ties
+		// sanitization_evidence_ref's NULL-ness to data_class, not its
+		// value to its old value, so swapping one non-null evidence ref for
+		// another non-null one does not trip that CHECK. Only the 000041
+		// trigger guard catches this specific tampering.
+		t.Run("sanitization_evidence_ref", func(t *testing.T) {
+			clock.now = now.Add(45 * time.Second)
+			version, err := domain.Propose(rag.ProposeCommand{
+				ID: "know-immutable-sanitization-ref", DocumentID: "know-immutable-sanitization-ref", OrganizationID: ragIntegrationOrganization,
+				NamespaceKind: rag.NamespaceDepartment, NamespaceID: ragIntegrationNamespace,
+				Version: 1, Title: "Sanitized knowledge for immutability probe", Body: "Cuerpo sanitizado para la prueba de inmutabilidad del trigger.",
+				SourceKind: rag.SourceHuman, SourceReference: "investigacion:report:sanitized-immutable-probe", ProposedBy: ragIntegrationProposer,
+				EvidenceRefs: []rag.EvidenceRef{{Reference: "evidence:sanitized-immutable-probe", Digest: "aaa"}},
+				Admission:    rag.AdmissionAttestation{DataClass: rag.DataSanitized, AttestedBy: ragIntegrationProposer, SourceBoundary: "organization", EvidenceRef: "admission:sanitized-immutable-probe", SanitizationEvidenceRef: "sanitization:original", AttestedAt: clock.now.Add(-time.Second)},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := tamperUpdate(t, version, `sanitization_evidence_ref='sanitization:tampered'`); err == nil {
+				t.Fatal("direct SQL mutation of sanitization_evidence_ref (non-null to non-null, data_class=sanitized) succeeded, expected the trigger to reject it")
+			}
+		})
+
+		// A normal lifecycle transition performed the way the real
+		// repository performs it (Store.Save, touching only
+		// lifecycle/reviewer_role_id/reviewed_at/revision/updated_at) must
+		// still succeed after the tightened trigger.
+		version := proposeVersion(t, domain, clock, now.Add(46*time.Second), "know-immutable-fields-control")
+		created, _, err := store.CreateCandidate(ctx, rag.CreateCandidateCommand{Version: version, IdempotencyKey: "idem-immutable-fields-control"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		clock.now = created.UpdatedAt.Add(time.Second)
+		approved, err := domain.Review(created, rag.ReviewApprove, ragIntegrationReviewer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Save(ctx, rag.SaveCommand{Version: approved, ExpectedRevision: 1, ActorID: ragIntegrationReviewer, Reason: "normal transition still permitted"}); err != nil {
+			t.Fatalf("legitimate lifecycle transition via repository was rejected: %v", err)
+		}
+	})
+
 	t.Run("immutable rows cannot mutate", func(t *testing.T) {
 		for name, statement := range map[string]string{
 			"content":        `UPDATE rag_knowledge_versions SET body='tampered' WHERE organization_id='explorarte' AND version_id='know-roundtrip'`,

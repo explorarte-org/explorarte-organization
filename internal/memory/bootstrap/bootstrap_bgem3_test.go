@@ -59,7 +59,7 @@ func TestOpenBGEM3SemanticSearchSucceedsWhenSidecarIsReadyAndMatches(t *testing.
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"status": "ready", "model_revision": testBGEM3ModelRevision,
-			"artifact_sha256": testBGEM3ArtifactSHA256, "dimension": 1024,
+			"artifact_sha256": testBGEM3ArtifactSHA256, "tokenizer_revision": "bge-m3-tokenizer-2024-06", "normalization": "l2", "pooling": "cls", "dimension": 1024,
 		})
 	}))
 	defer server.Close()

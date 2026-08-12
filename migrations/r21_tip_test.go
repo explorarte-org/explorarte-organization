@@ -12,8 +12,8 @@ func TestMigrationTipIs40AndContiguous(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded) != 40 {
-		t.Fatalf("migration count=%d want 40", len(loaded))
+	if len(loaded) != 41 {
+		t.Fatalf("migration count=%d want 41", len(loaded))
 	}
 	for index, migration := range loaded {
 		want := int64(index + 1)
@@ -21,7 +21,7 @@ func TestMigrationTipIs40AndContiguous(t *testing.T) {
 			t.Fatalf("migration[%d].version=%d want %d", index, migration.Version, want)
 		}
 	}
-	if loaded[len(loaded)-1].Name != "add_provider_render_telemetry" {
-		t.Fatalf("migration 39 name=%q", loaded[len(loaded)-1].Name)
+	if loaded[len(loaded)-1].Name != "harden_rag_knowledge_version_immutability" {
+		t.Fatalf("migration 40 name=%q", loaded[len(loaded)-1].Name)
 	}
 }

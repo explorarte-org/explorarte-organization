@@ -78,11 +78,11 @@ func Compile(profile ContextProfile, canonical contextengine.Snapshot) (Compilat
 	for i, seg := range canonical.Segments {
 		projectedSegments[i] = seg
 		diff := SegmentDiff{
-			SourceReference:     seg.SourceReference,
-			AuthorityTier:       seg.AuthorityTier,
-			OriginalBytes:       seg.ByteCount,
-			ProjectedBytes:      seg.ByteCount,
-			OriginalContentHash: seg.ContentHash,
+			SourceReference:      seg.SourceReference,
+			AuthorityTier:        seg.AuthorityTier,
+			OriginalBytes:        seg.ByteCount,
+			ProjectedBytes:       seg.ByteCount,
+			OriginalContentHash:  seg.ContentHash,
 			ProjectedContentHash: seg.ContentHash,
 		}
 		if seg.Included {
@@ -125,8 +125,8 @@ func CompileForTaskClass(canonical contextengine.Snapshot) (CompilationResult, e
 	profile, ok := Registry()[TaskClassOf(canonical.ActorRoleID)]
 	if !ok {
 		result := CompilationResult{
-			ContextSnapshotID:  canonical.ID,
-			Projected:          canonical,
+			ContextSnapshotID:   canonical.ID,
+			Projected:           canonical,
 			FellBackToCanonical: true,
 		}
 		return finalize(result, canonical)
@@ -142,7 +142,18 @@ func finalize(result CompilationResult, canonical contextengine.Snapshot) (Compi
 		if !seg.Included {
 			continue
 		}
-		if seg.AuthorityTier == contextengine.TierTask {
+		// R31 hardening §18.3: use the same single source of truth
+		// ProviderRender uses for its own StablePrefix/DynamicSuffix
+		// partition, instead of re-declaring a narrower, independently
+		// maintained rule here. Before this fix, this telemetry only
+		// treated TierTask as dynamic -- silently disagreeing with
+		// ProviderRender's real partition for any snapshot carrying
+		// TierProject/TierRAGEvidence/TierApprovedMemory/TierApprovedSkill
+		// content (research.corpus_curate/v1 does not use those tiers
+		// today, so the divergence was latent, not yet observed in
+		// production telemetry -- but a real, confirmed inconsistency
+		// regardless of whether it had yet produced a visibly wrong number).
+		if contextengine.IsDynamicProviderTier(seg.AuthorityTier) {
 			dynamicBytes += seg.ByteCount
 		} else {
 			stableBytes += seg.ByteCount

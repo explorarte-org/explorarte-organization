@@ -131,6 +131,17 @@ func (a *Adapter) Embed(ctx context.Context, request embeddingruntime.EmbedReque
 		a.metrics.recordCall(len(request.Items), wall, true)
 		return embeddingruntime.EmbedResponse{}, ErrModelIdentityDrift
 	}
+	// R31 hardening §7: see BGE_SIDECAR_CONTRACT_UPDATE_REQUIRED in
+	// health.go -- tokenizer_revision/normalization/pooling are pinned in
+	// Config but were never attested by the wire response before this
+	// change, meaning a sidecar could silently use a different tokenizer
+	// or pooling strategy and this adapter had no way to detect it.
+	if decoded.TokenizerRevision != a.config.TokenizerRevision || decoded.Normalization != a.config.Normalization || decoded.Pooling != a.config.Pooling {
+		a.metrics.recordCall(len(request.Items), wall, true)
+		return embeddingruntime.EmbedResponse{}, fmt.Errorf("%w: sidecar attested tokenizer_revision=%q normalization=%q pooling=%q, want %q/%q/%q",
+			ErrModelIdentityDrift, decoded.TokenizerRevision, decoded.Normalization, decoded.Pooling,
+			a.config.TokenizerRevision, a.config.Normalization, a.config.Pooling)
+	}
 	if decoded.PromptTemplateVersion != request.PromptTemplateVersion {
 		a.metrics.recordCall(len(request.Items), wall, true)
 		return embeddingruntime.EmbedResponse{}, fmt.Errorf("%w: sidecar used prompt template %q, request asked for %q", ErrModelIdentityDrift, decoded.PromptTemplateVersion, request.PromptTemplateVersion)

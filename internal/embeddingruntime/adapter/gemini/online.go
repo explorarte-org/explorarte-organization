@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"math"
 
 	"github.com/Mireuz13/explorarte-organization/internal/embeddingruntime"
 )
@@ -136,10 +137,33 @@ func (a *Adapter) Embed(ctx context.Context, request embeddingruntime.EmbedReque
 	}
 	results := make([]embeddingruntime.EmbedResult, len(request.Items))
 	for index, embedding := range decoded.Embeddings {
-		if len(embedding.Values) == 0 {
-			return embeddingruntime.EmbedResponse{}, fmt.Errorf("%w: empty vector at position %d", embeddingruntime.ErrResultCountMismatch, index)
+		if err := validateVector(embedding.Values, request.OutputDimensionality); err != nil {
+			return embeddingruntime.EmbedResponse{}, fmt.Errorf("position %d: %w", index, err)
 		}
 		results[index] = embeddingruntime.EmbedResult{Key: request.Items[index].Key, Vector: embedding.Values}
 	}
 	return embeddingruntime.EmbedResponse{Results: results, InputTokens: decoded.UsageMetadata.PromptTokenCount}, nil
+}
+
+// validateVector enforces the same adapter-boundary contract bgem3 already
+// has (R31 hardening §6): a response that decodes at the JSON level is not
+// yet trustworthy as an embedding. A wrong-dimension or non-finite vector
+// must never reach pgvector -- it would either fail there opaquely or,
+// worse, silently corrupt a similarity index. expectedDimension of 0 (a
+// caller that did not request a specific OutputDimensionality) only checks
+// for emptiness/non-finite components, since gemini-embedding-2's default
+// dimensionality is provider-chosen in that case, not caller-verifiable.
+func validateVector(vector []float32, expectedDimension int) error {
+	if len(vector) == 0 {
+		return fmt.Errorf("%w: empty vector", ErrInvalidVector)
+	}
+	if expectedDimension > 0 && len(vector) != expectedDimension {
+		return fmt.Errorf("%w: got dimension %d, want %d", ErrInvalidVector, len(vector), expectedDimension)
+	}
+	for _, component := range vector {
+		if math.IsNaN(float64(component)) || math.IsInf(float64(component), 0) {
+			return fmt.Errorf("%w: non-finite component", ErrInvalidVector)
+		}
+	}
+	return nil
 }

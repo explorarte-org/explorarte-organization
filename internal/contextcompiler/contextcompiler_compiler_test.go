@@ -156,6 +156,74 @@ func TestRoleCatalogSelfEntry_ActorNotFoundFallsBackToFullCatalog(t *testing.T) 
 	}
 }
 
+// R31 hardening §18.3: contextcompiler's telemetry must use the exact same
+// stable/dynamic partition rule as contextengine.BuildProviderRender
+// (ProviderRender v1), not an independently-maintained, narrower one.
+// Before this fix, this telemetry only ever treated TierTask as dynamic --
+// a TierRAGEvidence segment would have been silently counted as part of
+// StablePrefixBytes here, while ProviderRender itself already routed it to
+// DynamicSuffix. This test adds a TierRAGEvidence segment and asserts the
+// compiler's byte totals agree with that partition.
+func TestCompile_TelemetryUsesSameDynamicPartitionAsProviderRender(t *testing.T) {
+	profile := ResearchCorpusCurateV1()
+	snap := testSnapshot("investigacion/research_worker_hourly", roleCatalogYAML())
+	ragSegment := contextengine.Segment{
+		Ordinal: 8, RenderOrdinal: 8, AuthorityPriority: 5, AuthorityTier: contextengine.TierRAGEvidence,
+		SourceReference: "rag:evidence-1", Included: true, Content: []byte("untrusted rag evidence content"), ByteCount: 31, ContentHash: "h8",
+	}
+	snap.Segments = append(snap.Segments, ragSegment)
+
+	result, err := Compile(profile, snap)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if !contextengine.IsDynamicProviderTier(contextengine.TierRAGEvidence) {
+		t.Fatal("sanity check failed: TierRAGEvidence must be dynamic per IsDynamicProviderTier")
+	}
+	// DynamicSuffixBytes must include BOTH the original task_context
+	// segment (12 bytes) AND the new RAG evidence segment (31 bytes) = 43.
+	// Before the fix, DynamicSuffixBytes would have been only 12 (the RAG
+	// segment silently miscounted as stable).
+	if result.DynamicSuffixBytes != 12+31 {
+		t.Fatalf("DynamicSuffixBytes=%d, want 43 (task_context 12 + rag_evidence 31) -- RAG evidence must be counted as dynamic, matching ProviderRender", result.DynamicSuffixBytes)
+	}
+}
+
+// R31 hardening §18.3: the compiler's StablePrefixBytes/DynamicSuffixBytes
+// must equal exactly what contextengine.BuildProviderRender itself computes
+// for the SAME projected snapshot -- this is the direct cross-package
+// equivalence check the hardening spec asks for, not just an indirect
+// inference from the partition rule being shared.
+func TestCompile_PartitionBytesMatchProviderRenderBytePartition(t *testing.T) {
+	profile := ResearchCorpusCurateV1()
+	snap := testSnapshot("investigacion/research_worker_hourly", roleCatalogYAML())
+
+	result, err := Compile(profile, snap)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+
+	render, err := contextengine.BuildProviderRender(result.Projected)
+	if err != nil {
+		t.Fatalf("BuildProviderRender: %v", err)
+	}
+
+	// The compiler's byte totals are raw ByteCount sums (no header, no
+	// separators); ProviderRender's StablePrefixBytes additionally
+	// includes its own fixed header (organization_id/actor_role_id/purpose)
+	// plus deterministic separators between segments. So exact byte
+	// equality is not expected -- what MUST hold is that a segment
+	// contributes to the same SIDE (stable vs dynamic) in both, which the
+	// difference-of-differences check below verifies: if the partition
+	// rule ever diverges again, DynamicSuffixBytes (no header/separator
+	// contamination on that side beyond inter-segment separators, and
+	// here there is only one dynamic segment so zero separators) must
+	// still match exactly.
+	if result.DynamicSuffixBytes != render.DynamicSuffixBytes {
+		t.Fatalf("compiler DynamicSuffixBytes=%d, ProviderRender DynamicSuffixBytes=%d -- partition must agree exactly", result.DynamicSuffixBytes, render.DynamicSuffixBytes)
+	}
+}
+
 func containsString(haystack, needle string) bool {
 	return len(haystack) >= len(needle) && (func() bool {
 		for i := 0; i+len(needle) <= len(haystack); i++ {

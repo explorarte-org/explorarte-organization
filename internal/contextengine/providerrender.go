@@ -25,12 +25,30 @@ var providerRenderSeparator = []byte("\n\n")
 // research.corpus_curate-specific rule -- any task class using these tiers
 // gets the same stable/dynamic partition for free, without a provider- or
 // task-class-specific branch (R10.4 section 15).
+//
+// This is the ONLY place this set is declared (R31 hardening §18.3):
+// internal/contextcompiler's telemetry used to independently re-declare a
+// narrower version of this rule (only TierTask, missing
+// TierProject/TierRAGEvidence/TierApprovedMemory/TierApprovedSkill) --
+// confirmed as a real inconsistency, not a hypothetical. Both packages now
+// call IsDynamicProviderTier below instead of maintaining their own
+// map/switch.
 var dynamicAuthorityTiers = map[AuthorityTier]bool{
 	TierTask:           true,
 	TierProject:        true,
 	TierRAGEvidence:    true,
 	TierApprovedMemory: true,
 	TierApprovedSkill:  true,
+}
+
+// IsDynamicProviderTier is the single source of truth for the
+// StablePrefix/DynamicSuffix partition rule used by both ProviderRender
+// (this package) and internal/contextcompiler's telemetry. A tier not in
+// this closed set is stable (actor/role/policy-scoped, byte-identical
+// across invocations of the same actor+task-class+profile); a tier in this
+// set is dynamic (varies per task/request instance).
+func IsDynamicProviderTier(tier AuthorityTier) bool {
+	return dynamicAuthorityTiers[tier]
 }
 
 // ProviderRender is the provider-visible content the model actually
@@ -102,7 +120,7 @@ func BuildProviderRender(snapshot Snapshot) (ProviderRender, error) {
 		if !segment.Included {
 			continue
 		}
-		if dynamicAuthorityTiers[segment.AuthorityTier] {
+		if IsDynamicProviderTier(segment.AuthorityTier) {
 			dynamicParts = append(dynamicParts, segment.Content)
 		} else {
 			stableParts = append(stableParts, segment.Content)

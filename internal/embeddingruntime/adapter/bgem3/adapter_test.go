@@ -118,6 +118,7 @@ func TestEmbedHappyPath(t *testing.T) {
 		}
 		return http.StatusOK, embedWireResponse{
 			ModelRevision: testModelRevision, ArtifactSHA256: testArtifactSHA256, PromptTemplateVersion: req.PromptTemplateVersion,
+			TokenizerRevision: "bge-m3-tokenizer-2024-06", Normalization: "l2", Pooling: "cls",
 			Dimension: testDimension, Results: results, TextCount: len(req.Items),
 		}
 	}))
@@ -300,6 +301,7 @@ func TestEmbedBoundedQueueRejectsBeyondCapacity(t *testing.T) {
 		<-release
 		return http.StatusOK, embedWireResponse{
 			ModelRevision: testModelRevision, ArtifactSHA256: testArtifactSHA256, PromptTemplateVersion: req.PromptTemplateVersion,
+			TokenizerRevision: "bge-m3-tokenizer-2024-06", Normalization: "l2", Pooling: "cls",
 			Dimension: testDimension, Results: []wireResult{{Key: req.Items[0].Key, Vector: flatVector(testDimension, 0.1)}},
 		}
 	}))
@@ -372,7 +374,7 @@ func TestHealthyAcceptsMatchingIdentity(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(Health{Status: "ready", ModelRevision: testModelRevision, ArtifactSHA256: testArtifactSHA256, Dimension: testDimension, PeakRSSBytes: 123, CPUTimeMS: 45})
+		_ = json.NewEncoder(w).Encode(Health{Status: "ready", ModelRevision: testModelRevision, ArtifactSHA256: testArtifactSHA256, TokenizerRevision: "bge-m3-tokenizer-2024-06", Normalization: "l2", Pooling: "cls", Dimension: testDimension, PeakRSSBytes: 123, CPUTimeMS: 45})
 	}))
 	defer server.Close()
 	adapter, _ := New(baseTestConfig(server.URL))

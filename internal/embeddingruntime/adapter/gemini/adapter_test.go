@@ -3,6 +3,8 @@ package gemini
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +14,20 @@ import (
 
 	"github.com/Mireuz13/explorarte-organization/internal/embeddingruntime"
 )
+
+// fakeVector returns a dimension-correct, all-finite fake embedding for
+// tests that exercise something other than vector validation itself (R31
+// hardening §6 -- Embed now rejects any vector whose length does not match
+// the request's OutputDimensionality, so a fixture vector must actually be
+// that length or every such test would fail on the new check instead of
+// testing what it was written to test).
+func fakeVector(dimension int) []float32 {
+	vector := make([]float32, dimension)
+	for i := range vector {
+		vector[i] = 0.001 * float32(i%1000)
+	}
+	return vector
+}
 
 func writeCredentialFile(t *testing.T) string {
 	t.Helper()
@@ -50,7 +66,7 @@ func TestEmbedSendsBothTaskTypeAndPromptPrefixAndParsesUsage(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(batchEmbedContentsResponse{
-			Embeddings:    []embeddingValue{{Values: []float32{0.1, 0.2, 0.3}}},
+			Embeddings:    []embeddingValue{{Values: fakeVector(768)}},
 			UsageMetadata: usageMetadata{PromptTokenCount: 7},
 		})
 	})
@@ -76,7 +92,7 @@ func TestEmbedSendsBothTaskTypeAndPromptPrefixAndParsesUsage(t *testing.T) {
 	if sent.Content.Parts[0].Text != "task: search result | document: hola mundo" {
 		t.Fatalf("rendered text=%q", sent.Content.Parts[0].Text)
 	}
-	if len(response.Results) != 1 || response.Results[0].Key != "chunk-1" || len(response.Results[0].Vector) != 3 {
+	if len(response.Results) != 1 || response.Results[0].Key != "chunk-1" || len(response.Results[0].Vector) != 768 {
 		t.Fatalf("results=%+v", response.Results)
 	}
 	if response.InputTokens != 7 {
@@ -95,6 +111,94 @@ func TestEmbedRejectsResultCountMismatch(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected result count mismatch error")
+	}
+}
+
+// R31 hardening §6: the adapter boundary must reject a wrong-dimension
+// vector even though the response decoded successfully -- before this fix,
+// a vector shorter than request.OutputDimensionality reached the caller
+// unvalidated.
+func TestEmbedRejectsWrongDimensionVector(t *testing.T) {
+	adapter := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(batchEmbedContentsResponse{
+			Embeddings: []embeddingValue{{Values: fakeVector(3)}},
+		})
+	})
+	_, err := adapter.Embed(t.Context(), embeddingruntime.EmbedRequest{
+		ProviderID: ProviderID, ProviderModelID: "gemini-embedding-2", OutputDimensionality: 768,
+		PromptTemplateVersion: PromptTemplateV1,
+		Items:                 []embeddingruntime.EmbedItem{{Key: "chunk-1", Text: "x", Task: embeddingruntime.TaskQuery}},
+	})
+	if err == nil {
+		t.Fatal("expected wrong-dimension vector to be rejected")
+	}
+	if !errors.Is(err, ErrInvalidVector) {
+		t.Fatalf("expected ErrInvalidVector, got: %v", err)
+	}
+}
+
+// R31 hardening §6: a NaN component must never reach pgvector.
+// R31 hardening §6: validateVector itself must reject a NaN component.
+// This is a direct unit test of the pure function rather than a full
+// HTTP+JSON round trip: Go's encoding/json (the decoder doJSON actually
+// uses) has no valid JSON syntax that parses into a NaN float -- unlike
+// bgem3's sidecar (Python-originated, where a bare `NaN` token is a common
+// non-standard JSON extension bgem3's own decoder must and does handle),
+// Gemini's real API returns standard-compliant JSON where this specific
+// wire shape cannot occur. The check stays as defense-in-depth (a future
+// decode path, or a provider response with a non-finite value smuggled
+// through some other numeric edge case, must still be caught here) and is
+// verified directly rather than asserting an unreachable wire scenario.
+func TestValidateVectorRejectsNaNComponent(t *testing.T) {
+	vector := fakeVector(768)
+	vector[42] = float32(math.NaN())
+	if err := validateVector(vector, 768); !errors.Is(err, ErrInvalidVector) {
+		t.Fatalf("expected ErrInvalidVector for NaN component, got: %v", err)
+	}
+}
+
+// R31 hardening §6: a +Inf component must never reach pgvector. Unlike
+// NaN, this IS reachable through Gemini's real (standard-compliant) JSON
+// wire format: a JSON number with an exponent large enough to overflow
+// float64 (e.g. 1e400) is valid JSON syntax, and Go's decoder parses it
+// into +Inf rather than rejecting it -- a real provider response could
+// carry this, not just a hypothetical malformed one.
+// R31 hardening §6: validateVector must reject a +Inf component. Also a
+// direct unit test, for the same reason as the NaN case above: confirmed
+// empirically that Go's json decoder rejects a number too large for
+// float32 (json: cannot unmarshal number 1e400 into ... float32) BEFORE
+// ever reaching validateVector, rather than truncating it to +Inf as a
+// float64-intermediate decode might. The check still guards against a
+// future decode path that narrows float64->float32 without erroring on
+// overflow (a real, easy-to-introduce bug class), so it stays as
+// defense-in-depth rather than dead code.
+func TestValidateVectorRejectsInfComponent(t *testing.T) {
+	vector := fakeVector(768)
+	vector[7] = float32(math.Inf(1))
+	if err := validateVector(vector, 768); !errors.Is(err, ErrInvalidVector) {
+		t.Fatalf("expected ErrInvalidVector for +Inf component, got: %v", err)
+	}
+}
+
+// R31 hardening §6: a valid, correctly-dimensioned, all-finite vector must
+// still pass -- this is the regression guard against the above three tests
+// becoming vacuously true.
+func TestEmbedAcceptsValidVector(t *testing.T) {
+	adapter := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(batchEmbedContentsResponse{Embeddings: []embeddingValue{{Values: fakeVector(768)}}})
+	})
+	response, err := adapter.Embed(t.Context(), embeddingruntime.EmbedRequest{
+		ProviderID: ProviderID, ProviderModelID: "gemini-embedding-2", OutputDimensionality: 768,
+		PromptTemplateVersion: PromptTemplateV1,
+		Items:                 []embeddingruntime.EmbedItem{{Key: "chunk-1", Text: "x", Task: embeddingruntime.TaskQuery}},
+	})
+	if err != nil {
+		t.Fatalf("expected a valid vector to be accepted, got: %v", err)
+	}
+	if len(response.Results) != 1 || len(response.Results[0].Vector) != 768 {
+		t.Fatalf("results=%+v", response.Results)
 	}
 }
 
@@ -289,7 +393,7 @@ func TestEmbedSendsInlineDataForMediaItem(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(batchEmbedContentsResponse{
-			Embeddings: []embeddingValue{{Values: []float32{0.1, 0.2, 0.3}}},
+			Embeddings: []embeddingValue{{Values: fakeVector(768)}},
 		})
 	})
 
@@ -437,7 +541,7 @@ func TestEmbedSendsAPIKeyViaGoogHeaderNotBearer(t *testing.T) {
 		gotAuthHeader = r.Header.Get("Authorization")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(batchEmbedContentsResponse{
-			Embeddings: []embeddingValue{{Values: []float32{0.1}}},
+			Embeddings: []embeddingValue{{Values: fakeVector(768)}},
 		})
 	})
 	_, err := adapter.Embed(t.Context(), embeddingruntime.EmbedRequest{

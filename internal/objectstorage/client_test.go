@@ -2,9 +2,13 @@ package objectstorage
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -186,5 +190,257 @@ func TestDeleteObjectTreatsNotFoundAsSuccess(t *testing.T) {
 	})
 	if err := client.DeleteObject(context.Background(), "raw/already-gone.pdf"); err != nil {
 		t.Fatalf("DeleteObject on missing key should not error, got: %v", err)
+	}
+}
+
+// --- HeadObject -------------------------------------------------------
+
+func TestHeadObjectReadsSizeFromContentLength(t *testing.T) {
+	client, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodHead {
+			t.Errorf("method = %q, want HEAD", r.Method)
+		}
+		w.Header().Set("Content-Length", "1234")
+		w.Header().Set("Content-MD5", "abc123==")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	summary, err := client.HeadObject(context.Background(), "raw/doc.pdf")
+	if err != nil {
+		t.Fatalf("HeadObject: %v", err)
+	}
+	if summary.Size != 1234 {
+		t.Fatalf("Size = %d, want 1234", summary.Size)
+	}
+	if summary.MD5 != "abc123==" {
+		t.Fatalf("MD5 = %q, want abc123==", summary.MD5)
+	}
+}
+
+func TestHeadObjectToleratesMissingContentLength(t *testing.T) {
+	client, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	summary, err := client.HeadObject(context.Background(), "raw/doc.pdf")
+	if err != nil {
+		t.Fatalf("HeadObject: %v", err)
+	}
+	if summary.Size != 0 {
+		t.Fatalf("Size = %d, want 0 when Content-Length absent", summary.Size)
+	}
+}
+
+// --- PutObjectIfAbsent --------------------------------------------------
+
+func md5B64(b []byte) string {
+	sum := md5.Sum(b)
+	return base64.StdEncoding.EncodeToString(sum[:])
+}
+
+func TestPutObjectIfAbsentCreatesWhenMissing(t *testing.T) {
+	var gotIfNoneMatch string
+	var gotContentLength string
+	body := []byte(`{"page":1}`)
+
+	client, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Errorf("method = %q, want PUT", r.Method)
+		}
+		gotIfNoneMatch = r.Header.Get("If-None-Match")
+		gotContentLength = r.Header.Get("Content-Length")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	result, err := client.PutObjectIfAbsent(context.Background(), "manifests/parser-runs/x/poppler/1.0/manifest.json", body, "application/json")
+	if err != nil {
+		t.Fatalf("PutObjectIfAbsent: %v", err)
+	}
+	if result.Outcome != PutOutcomeCreated {
+		t.Fatalf("Outcome = %v, want PutOutcomeCreated", result.Outcome)
+	}
+	if gotIfNoneMatch != "*" {
+		t.Fatalf("If-None-Match = %q, want \"*\"", gotIfNoneMatch)
+	}
+	if gotContentLength != strconv.Itoa(len(body)) {
+		t.Fatalf("Content-Length = %q, want %d", gotContentLength, len(body))
+	}
+	if result.Object.MD5 != md5B64(body) {
+		t.Fatalf("Object.MD5 = %q, want %q", result.Object.MD5, md5B64(body))
+	}
+	if result.Object.Size != int64(len(body)) {
+		t.Fatalf("Object.Size = %d, want %d", result.Object.Size, len(body))
+	}
+}
+
+func TestPutObjectIfAbsentReusesWhenDigestMatches(t *testing.T) {
+	body := []byte(`{"page":1}`)
+	putCalls, headCalls := 0, 0
+
+	client, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPut:
+			putCalls++
+			w.Header().Set("Content-Type", "application/json")
+			http.Error(w, `{"code":"ObjectAlreadyExists","message":"object already exists"}`, http.StatusPreconditionFailed)
+		case http.MethodHead:
+			headCalls++
+			w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+			w.Header().Set("Content-MD5", md5B64(body))
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Errorf("unexpected method %q", r.Method)
+		}
+	})
+
+	result, err := client.PutObjectIfAbsent(context.Background(), "manifests/parser-runs/x/poppler/1.0/manifest.json", body, "application/json")
+	if err != nil {
+		t.Fatalf("PutObjectIfAbsent: %v", err)
+	}
+	if result.Outcome != PutOutcomeReused {
+		t.Fatalf("Outcome = %v, want PutOutcomeReused", result.Outcome)
+	}
+	if putCalls != 1 || headCalls != 1 {
+		t.Fatalf("putCalls=%d headCalls=%d, want 1 and 1", putCalls, headCalls)
+	}
+}
+
+func TestPutObjectIfAbsentConflictsWhenDigestDiffers(t *testing.T) {
+	body := []byte(`{"page":1}`)
+	existingBody := []byte(`{"page":1,"different":true}`)
+
+	client, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPut:
+			http.Error(w, `{"code":"ObjectAlreadyExists","message":"object already exists"}`, http.StatusPreconditionFailed)
+		case http.MethodHead:
+			w.Header().Set("Content-Length", strconv.Itoa(len(existingBody)))
+			w.Header().Set("Content-MD5", md5B64(existingBody))
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Errorf("unexpected method %q", r.Method)
+		}
+	})
+
+	_, err := client.PutObjectIfAbsent(context.Background(), "manifests/parser-runs/x/poppler/1.0/manifest.json", body, "application/json")
+	if !errors.Is(err, ErrImmutableObjectConflict) {
+		t.Fatalf("err = %v, want ErrImmutableObjectConflict", err)
+	}
+}
+
+func TestPutObjectIfAbsentFallsBackToBodyWhenHeadHasNoMD5(t *testing.T) {
+	body := []byte(`page-bytes-identical`)
+
+	client, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPut:
+			http.Error(w, `{"code":"ObjectAlreadyExists","message":"object already exists"}`, http.StatusPreconditionFailed)
+		case http.MethodHead:
+			// Multipart-uploaded objects: OCI omits Content-MD5.
+			w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+			w.WriteHeader(http.StatusOK)
+		case http.MethodGet:
+			_, _ = w.Write(body)
+		default:
+			t.Errorf("unexpected method %q", r.Method)
+		}
+	})
+
+	result, err := client.PutObjectIfAbsent(context.Background(), "pages/x/poppler/1.0/page-0001-y.pdf", body, "application/pdf")
+	if err != nil {
+		t.Fatalf("PutObjectIfAbsent: %v", err)
+	}
+	if result.Outcome != PutOutcomeReused {
+		t.Fatalf("Outcome = %v, want PutOutcomeReused", result.Outcome)
+	}
+}
+
+func TestPutObjectIfAbsentFallbackConflictsOnDifferentBytes(t *testing.T) {
+	body := []byte(`page-bytes-a`)
+	existingBody := []byte(`page-bytes-b-different-length`)
+
+	client, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPut:
+			http.Error(w, `{"code":"ObjectAlreadyExists","message":"object already exists"}`, http.StatusPreconditionFailed)
+		case http.MethodHead:
+			w.Header().Set("Content-Length", strconv.Itoa(len(existingBody)))
+			w.WriteHeader(http.StatusOK)
+		case http.MethodGet:
+			_, _ = w.Write(existingBody)
+		default:
+			t.Errorf("unexpected method %q", r.Method)
+		}
+	})
+
+	_, err := client.PutObjectIfAbsent(context.Background(), "pages/x/poppler/1.0/page-0001-y.pdf", body, "application/pdf")
+	if !errors.Is(err, ErrImmutableObjectConflict) {
+		t.Fatalf("err = %v, want ErrImmutableObjectConflict", err)
+	}
+}
+
+func TestPutObjectIfAbsentPropagatesOtherErrors(t *testing.T) {
+	client, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+
+	_, err := client.PutObjectIfAbsent(context.Background(), "manifests/parser-runs/x/poppler/1.0/manifest.json", []byte("x"), "application/json")
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if errors.Is(err, ErrImmutableObjectConflict) {
+		t.Fatalf("500 must not be reported as ErrImmutableObjectConflict")
+	}
+	if !errors.Is(err, ErrRequest) {
+		t.Fatalf("err = %v, want wrapping ErrRequest", err)
+	}
+}
+
+// --- error sanitization -------------------------------------------------
+
+func TestErrorSanitizationNeverEmbedsRawBody(t *testing.T) {
+	secret := "super-secret-internal-detail-should-never-appear-in-logs-0xdeadbeef"
+	client, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(secret))
+	})
+
+	_, err := client.GetObject(context.Background(), "raw/x.pdf")
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("error must not contain the raw response body verbatim: %v", err)
+	}
+}
+
+func TestErrorSanitizationSurfacesCodeAndMessageOnly(t *testing.T) {
+	client, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"code":"InternalError","message":"boom"}`, http.StatusInternalServerError)
+	})
+
+	_, err := client.GetObject(context.Background(), "raw/x.pdf")
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if !strings.Contains(err.Error(), "code=InternalError") || !strings.Contains(err.Error(), "message=boom") {
+		t.Fatalf("expected sanitized code/message in error, got: %v", err)
+	}
+}
+
+func TestErrorSanitizationTruncatesLongFields(t *testing.T) {
+	longMessage := strings.Repeat("x", 5000)
+	client, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := json.Marshal(map[string]string{"code": "InternalError", "message": longMessage})
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write(body)
+	})
+
+	_, err := client.GetObject(context.Background(), "raw/x.pdf")
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if len(err.Error()) > 500 {
+		t.Fatalf("error message not bounded: %d bytes", len(err.Error()))
 	}
 }
