@@ -159,7 +159,7 @@ INSERT INTO agent_messages (
     organization_id, sender_role_id, sender_task_id, recipient_role_id, recipient_task_id,
     correlation_id, causation_id, message_type, payload, idempotency_key, max_attempts,
     request_hash, schema_version, payload_byte_size, available_at, created_at, updated_at
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$12,$12)
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15,$15)
 RETURNING `+messageColumns,
 		command.OrganizationID, command.SenderRoleID, command.SenderTaskID, command.RecipientRoleID, command.RecipientTaskID,
 		command.CorrelationID, command.CausationID, string(command.MessageType), []byte(command.Payload), command.IdempotencyKey, command.MaxAttempts,
