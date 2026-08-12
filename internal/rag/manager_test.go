@@ -207,7 +207,7 @@ func newTestManager(t *testing.T, gate AuthorizationGate, namespaces NamespaceRe
 	t.Helper()
 	clock := &fixedClock{now: time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)}
 	repo := newFakeRepository()
-	manager, err := NewManager(NewService(clock), repo, gate, namespaces, nil)
+	manager, err := NewManager(NewService(clock), repo, gate, namespaces, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,7 +394,7 @@ func TestManagerReindexRejectsNonApprovedVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := misbehavingApprovedRepository{fakeRepository: newFakeRepository(), version: candidate}
-	manager, err := NewManager(NewService(clock), repo, &recordingGate{}, &fakeNamespaces{}, nil)
+	manager, err := NewManager(NewService(clock), repo, &recordingGate{}, &fakeNamespaces{}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -430,7 +430,7 @@ func newBackfillTestManager(t *testing.T, semantic *SemanticSearchDeps, chunkCou
 	}
 	repo.chunksByGen["gen-1"] = chunks
 	gate := &recordingGate{}
-	manager, err := NewManager(NewService(nil), repo, gate, &fakeNamespaces{}, semantic)
+	manager, err := NewManager(NewService(nil), repo, gate, &fakeNamespaces{}, semantic, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -569,5 +569,100 @@ func TestManagerBackfillEmbeddingsSelectsBGEM3TableForBGEM3Identity(t *testing.T
 	}
 	if len(repo.bgeM3ChunkEmbeddings) != 2 || len(repo.chunkEmbeddings) != 0 {
 		t.Fatalf("bgeM3ChunkEmbeddings=%d chunkEmbeddings=%d want 2 and 0 — must never write the gemini table for a bge-m3 identity", len(repo.bgeM3ChunkEmbeddings), len(repo.chunkEmbeddings))
+	}
+}
+
+func newBackfillTestManagerWithMedia(t *testing.T, semantic *SemanticSearchDeps, mediaFetcher MediaFetcher, chunks []Chunk) (*Manager, *fakeRepository, *recordingGate) {
+	t.Helper()
+	repo := newFakeRepository()
+	repo.activeGeneration["department:ingenieria_ia"] = "gen-1"
+	repo.generations["gen-1"] = IndexGeneration{ID: "gen-1", Status: GenerationActive}
+	repo.chunksByGen["gen-1"] = chunks
+	gate := &recordingGate{}
+	manager, err := NewManager(NewService(nil), repo, gate, &fakeNamespaces{}, semantic, mediaFetcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return manager, repo, gate
+}
+
+func TestManagerBackfillEmbeddingsEmbedsMediaBackedChunkViaMediaFetcher(t *testing.T) {
+	ledger := &fakeEmbeddingLedger{balanceOK: true}
+	adapter := &fakeOnlineAdapter{vector: []float32{0.1, 0.2}, tokens: 5}
+	fetcher := &fakeMediaFetcher{data: []byte("%PDF-1.4 fake page bytes")}
+	chunks := []Chunk{{
+		ID: "chunk-pdf-1", GenerationID: "gen-1", Content: "extracted page text",
+		MediaSourceRef: "raw/papers/foo.pdf-page-3.pdf", MediaMimeType: "application/pdf",
+	}}
+	manager, _, _ := newBackfillTestManagerWithMedia(t, testSemanticDeps(ledger, adapter, nil, t), fetcher, chunks)
+
+	result, err := manager.BackfillEmbeddings(context.Background(), BackfillEmbeddingsRequest{
+		OrganizationID: "explorarte", NamespaceKind: NamespaceDepartment, NamespaceID: "ingenieria_ia", ActorRoleID: "empresa/human",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Embedded != 1 || result.Skipped != 0 {
+		t.Fatalf("result=%+v", result)
+	}
+	if fetcher.fetchCalls != 1 || fetcher.lastRef != "raw/papers/foo.pdf-page-3.pdf" {
+		t.Fatalf("fetcher calls=%d lastRef=%q", fetcher.fetchCalls, fetcher.lastRef)
+	}
+	sentItem := adapter.lastRequest.Items[0]
+	if sentItem.Text != "" {
+		t.Fatalf("expected empty Text for media item, got %q", sentItem.Text)
+	}
+	if sentItem.MimeType != "application/pdf" || string(sentItem.Data) != "%PDF-1.4 fake page bytes" {
+		t.Fatalf("sent item=%+v", sentItem)
+	}
+}
+
+func TestManagerBackfillEmbeddingsSkipsMediaChunkWithNoMediaFetcherConfigured(t *testing.T) {
+	ledger := &fakeEmbeddingLedger{balanceOK: true}
+	adapter := &fakeOnlineAdapter{vector: []float32{0.1, 0.2}, tokens: 5}
+	chunks := []Chunk{{ID: "chunk-pdf-1", GenerationID: "gen-1", Content: "text", MediaSourceRef: "raw/x.pdf", MediaMimeType: "application/pdf"}}
+	manager, _, _ := newBackfillTestManagerWithMedia(t, testSemanticDeps(ledger, adapter, nil, t), nil, chunks)
+
+	result, err := manager.BackfillEmbeddings(context.Background(), BackfillEmbeddingsRequest{
+		OrganizationID: "explorarte", NamespaceKind: NamespaceDepartment, NamespaceID: "ingenieria_ia", ActorRoleID: "empresa/human",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Embedded != 0 || result.Skipped != 1 {
+		t.Fatalf("result=%+v, want 0 embedded 1 skipped", result)
+	}
+	if adapter.entered != 0 {
+		t.Fatalf("adapter must never be called without a media fetcher, entered=%d", adapter.entered)
+	}
+}
+
+func TestManagerBackfillEmbeddingsSkipsMediaChunkWhenFetchFails(t *testing.T) {
+	ledger := &fakeEmbeddingLedger{balanceOK: true}
+	adapter := &fakeOnlineAdapter{vector: []float32{0.1, 0.2}, tokens: 5}
+	fetcher := &fakeMediaFetcher{err: errors.New("object storage unavailable")}
+	chunks := []Chunk{{ID: "chunk-pdf-1", GenerationID: "gen-1", Content: "text", MediaSourceRef: "raw/x.pdf", MediaMimeType: "application/pdf"}}
+	manager, _, _ := newBackfillTestManagerWithMedia(t, testSemanticDeps(ledger, adapter, nil, t), fetcher, chunks)
+
+	result, err := manager.BackfillEmbeddings(context.Background(), BackfillEmbeddingsRequest{
+		OrganizationID: "explorarte", NamespaceKind: NamespaceDepartment, NamespaceID: "ingenieria_ia", ActorRoleID: "empresa/human",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Embedded != 0 || result.Skipped != 1 {
+		t.Fatalf("result=%+v, want 0 embedded 1 skipped", result)
+	}
+	if adapter.entered != 0 {
+		t.Fatalf("adapter must never be called when the fetch itself failed, entered=%d", adapter.entered)
+	}
+}
+
+func TestChunkIsMedia(t *testing.T) {
+	if (Chunk{Content: "hola"}).IsMedia() {
+		t.Fatal("text-only chunk must not report IsMedia")
+	}
+	if !(Chunk{MediaSourceRef: "raw/x.pdf", MediaMimeType: "application/pdf"}).IsMedia() {
+		t.Fatal("media-backed chunk must report IsMedia")
 	}
 }

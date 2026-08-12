@@ -30,6 +30,15 @@ services:
     shm_size: 128mb
     restart: unless-stopped
     stop_grace_period: 30s
+    ports:
+      # Host-loopback only, for one-off `docker compose run --network host`
+      # invocations that need to reach the BGE-M3 sidecar (loopback-only by
+      # design, see internal/embeddingruntime/adapter/bgem3) from a
+      # container in the same network namespace as the host. The persistent
+      # orgd/model-worker services stay on the bridge network and reach
+      # postgres via the "postgres" DNS name as before -- this port exists
+      # only for that specific escape hatch, not general external access.
+      - "127.0.0.1:5432:5432"
     networks:
       - org-internal
 
@@ -96,8 +105,28 @@ services:
       ORG_STAGING_RECONCILE_INTERVAL: ${ORG_STAGING_RECONCILE_INTERVAL:-30s}
       ORG_STAGING_RECONCILE_BATCH_SIZE: ${ORG_STAGING_RECONCILE_BATCH_SIZE:-100}
       ORG_STAGING_GIT_BINARY: ${ORG_STAGING_GIT_BINARY:-git}
+      # OCI Object Storage (see model-worker for the fuller explanation) --
+      # mounted here too because the objectstorage CLI subcommands run via
+      # `docker compose run --rm --entrypoint orgctl orgd objectstorage ...`.
+      ORG_OBJECT_STORAGE_OCI_ENABLED: "true"
+      ORG_OBJECT_STORAGE_OCI_TENANCY_OCID: ocid1.tenancy.oc1..aaaaaaaa4fugjamty3gtjrjmdmmfomlivxabqpqsgprlxkhz6lebjgutumzq
+      ORG_OBJECT_STORAGE_OCI_USER_OCID: ocid1.user.oc1..aaaaaaaagdrjnpcecaqx7dzybkdvn5fvdelcm7a7fhrskywitssx5q74ezta
+      ORG_OBJECT_STORAGE_OCI_FINGERPRINT: "0b:a6:4b:35:a0:b2:19:73:ae:04:75:ca:17:dc:6c:ad"
+      ORG_OBJECT_STORAGE_OCI_REGION: sa-santiago-1
+      ORG_OBJECT_STORAGE_OCI_NAMESPACE: axkhdnwe6r1c
+      ORG_OBJECT_STORAGE_OCI_BUCKET: bucket-20260810-0027
+      ORG_OBJECT_STORAGE_OCI_PRIVATE_KEY_FILE: /run/secrets/oci-object-storage-api-key.pem
+      # Gemini Embedding 2 -- billed, real API, used for multimodal (PDF page)
+      # and text chunk embeddings via internal/embeddingruntime/adapter/gemini.
+      ORG_EMBEDDING_PROVIDER_GEMINI_ENABLED: "true"
+      ORG_EMBEDDING_PROVIDER_GEMINI_BASE_URL: https://generativelanguage.googleapis.com
+      ORG_EMBEDDING_PROVIDER_GEMINI_CREDENTIAL_FILE: /run/secrets/gemini-embedding-api-key
     ports:
       - "127.0.0.1:${ORG_HTTP_PORT:-8080}:8080"
+    volumes:
+      - /etc/explorarte/secrets/oci-object-storage-api-key.pem:/run/secrets/oci-object-storage-api-key.pem:ro
+      - /home/ubuntu/rag_curado:/opt/explorarte/knowledge-source/rag_curado:ro
+      - /etc/explorarte/secrets/gemini-embedding-api-key:/run/secrets/gemini-embedding-api-key:ro
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=32m
@@ -115,6 +144,164 @@ services:
       timeout: 3s
       retries: 5
       start_period: 15s
+    networks:
+      - org-internal
+
+  model-worker:
+    # orgctl model worker run: the only process that consumes
+    # ORG_MODEL_EXECUTION_IDENTITY_* / dispatches real invocations (orgd
+    # never imports internal/modelruntime -- see
+    # cmd/orgctl/worker.go:runModelWorker doc comment). Same image as orgd,
+    # different entrypoint. Runs the full internal/config.Config the same
+    # way orgd does (openModelWorkerRuntime calls config.Load()), so it
+    # needs the same database/canonical/task/staging environment -- not
+    # because this process reads all of it, but because config.Load()
+    # validates the whole struct at once.
+    image: explorarte-organization:${ORG_VERSION:-dev}
+    entrypoint: ["/usr/local/bin/orgctl", "model", "worker", "run"]
+    environment:
+      ORG_APP_NAME: ${ORG_APP_NAME:-explorarte-organization}
+      ORG_ENVIRONMENT: ${ORG_ENVIRONMENT:-development}
+      ORG_LOG_LEVEL: ${ORG_LOG_LEVEL:-info}
+      ORG_LOG_FORMAT: ${ORG_LOG_FORMAT:-json}
+      ORG_DATABASE_HOST: postgres
+      ORG_DATABASE_PORT: 5432
+      ORG_DATABASE_NAME: ${ORG_POSTGRES_DATABASE:-explorarte_org}
+      ORG_DATABASE_USER: ${ORG_POSTGRES_USER:-explorarte_app}
+      ORG_DATABASE_PASSWORD: ${ORG_POSTGRES_PASSWORD:?set ORG_POSTGRES_PASSWORD in .env}
+      ORG_DATABASE_SSLMODE: disable
+      ORG_DATABASE_MAX_CONNS: ${ORG_DATABASE_MAX_CONNS:-8}
+      ORG_DATABASE_MIN_CONNS: ${ORG_DATABASE_MIN_CONNS:-1}
+      ORG_DATABASE_MAX_CONN_LIFETIME: ${ORG_DATABASE_MAX_CONN_LIFETIME:-30m}
+      ORG_DATABASE_MAX_CONN_IDLE_TIME: ${ORG_DATABASE_MAX_CONN_IDLE_TIME:-5m}
+      ORG_DATABASE_HEALTH_CHECK_PERIOD: ${ORG_DATABASE_HEALTH_CHECK_PERIOD:-30s}
+      ORG_DATABASE_CONNECT_TIMEOUT: ${ORG_DATABASE_CONNECT_TIMEOUT:-5s}
+      ORG_DATABASE_PING_TIMEOUT: ${ORG_DATABASE_PING_TIMEOUT:-2s}
+      ORG_DATABASE_STATEMENT_TIMEOUT: ${ORG_DATABASE_STATEMENT_TIMEOUT:-30s}
+      ORG_DATABASE_LOCK_TIMEOUT: ${ORG_DATABASE_LOCK_TIMEOUT:-5s}
+      ORG_DATABASE_AUTO_MIGRATE: ${ORG_DATABASE_AUTO_MIGRATE:-true}
+      ORG_DATABASE_MIGRATION_TIMEOUT: ${ORG_DATABASE_MIGRATION_TIMEOUT:-45s}
+      ORG_DATABASE_MIGRATION_RETRY: ${ORG_DATABASE_MIGRATION_RETRY:-5s}
+      ORG_CANONICAL_DIR: /opt/explorarte/docs/canonical
+      ORG_REGISTRY_SYNC_TIMEOUT: ${ORG_REGISTRY_SYNC_TIMEOUT:-30s}
+      ORG_TASK_ORGANIZATION_ID: ${ORG_TASK_ORGANIZATION_ID:-explorarte}
+      ORG_TASK_RECONCILER_ENABLED: ${ORG_TASK_RECONCILER_ENABLED:-true}
+      ORG_TASK_RECONCILE_INTERVAL: ${ORG_TASK_RECONCILE_INTERVAL:-5s}
+      ORG_TASK_RECONCILE_BATCH_SIZE: ${ORG_TASK_RECONCILE_BATCH_SIZE:-100}
+      ORG_TASK_DEFAULT_MAX_ATTEMPTS: ${ORG_TASK_DEFAULT_MAX_ATTEMPTS:-5}
+      ORG_TASK_DEFAULT_LEASE_DURATION: ${ORG_TASK_DEFAULT_LEASE_DURATION:-2m}
+      ORG_TASK_MAX_LEASE_DURATION: ${ORG_TASK_MAX_LEASE_DURATION:-15m}
+      ORG_TASK_RETRY_BASE_DELAY: ${ORG_TASK_RETRY_BASE_DELAY:-5s}
+      ORG_TASK_RETRY_MAX_DELAY: ${ORG_TASK_RETRY_MAX_DELAY:-10m}
+      ORG_TASK_OUTBOX_MAX_ATTEMPTS: ${ORG_TASK_OUTBOX_MAX_ATTEMPTS:-10}
+      ORG_TASK_OUTBOX_CLAIM_DURATION: ${ORG_TASK_OUTBOX_CLAIM_DURATION:-1m}
+      ORG_TASK_COMMAND_TIMEOUT: ${ORG_TASK_COMMAND_TIMEOUT:-30s}
+      ORG_STAGING_ENABLED: ${ORG_STAGING_ENABLED:-false}
+      ORG_STAGING_REPOSITORIES_FILE: ${ORG_STAGING_REPOSITORIES_FILE:-/etc/explorarte/repositories.yaml}
+      ORG_STAGING_WORKSPACE_ROOT: ${ORG_STAGING_WORKSPACE_ROOT:-/var/lib/explorarte/staging/workspaces}
+      ORG_STAGING_ARTIFACT_ROOT: ${ORG_STAGING_ARTIFACT_ROOT:-/var/lib/explorarte/staging/artifacts}
+      ORG_STAGING_QUARANTINE_ROOT: ${ORG_STAGING_QUARANTINE_ROOT:-/var/lib/explorarte/staging/quarantine}
+      ORG_STAGING_COMMAND_TIMEOUT: ${ORG_STAGING_COMMAND_TIMEOUT:-2m}
+      ORG_STAGING_MAX_ARTIFACT_BYTES: ${ORG_STAGING_MAX_ARTIFACT_BYTES:-67108864}
+      ORG_STAGING_MAX_CHANGED_FILES: ${ORG_STAGING_MAX_CHANGED_FILES:-500}
+      ORG_STAGING_STALE_AFTER: ${ORG_STAGING_STALE_AFTER:-30m}
+      ORG_STAGING_RECONCILE_INTERVAL: ${ORG_STAGING_RECONCILE_INTERVAL:-30s}
+      ORG_STAGING_RECONCILE_BATCH_SIZE: ${ORG_STAGING_RECONCILE_BATCH_SIZE:-100}
+      ORG_STAGING_GIT_BINARY: ${ORG_STAGING_GIT_BINARY:-git}
+      ORG_MODEL_RUNTIME_ENABLED: "true"
+      ORG_MODEL_EXECUTION_IDENTITY_ENABLED: "true"
+      ORG_MODEL_EXECUTION_IDENTITY_KEY_FILE: /run/secrets/model-execution-identity.pem
+      ORG_MODEL_EXECUTION_PRINCIPAL_KEY: oracle-org-01/model-runtime-01
+      ORG_MODEL_WORKER_BATCH_SIZE: ${ORG_MODEL_WORKER_BATCH_SIZE:-10}
+      ORG_MODEL_WORKER_CONCURRENCY: ${ORG_MODEL_WORKER_CONCURRENCY:-1}
+      # DeepSeek: official OpenAI-compatible Chat Completions interface,
+      # confirmed against DeepSeek's own docs (base https://api.deepseek.com,
+      # POST /chat/completions -- stateless, full history resent each turn).
+      ORG_MODEL_PROVIDER_DEEPSEEK_ENABLED: "true"
+      ORG_MODEL_PROVIDER_DEEPSEEK_ENDPOINT_URL: https://api.deepseek.com/chat/completions
+      ORG_MODEL_PROVIDER_DEEPSEEK_CREDENTIAL_FILE: /run/secrets/deepseek-api-key
+      # Default request timeout (2m) proved too short for larger curation
+      # clusters needing several thousand output tokens (owner-directed
+      # corpus curation canary, found live: response_read_failed on
+      # anything beyond a 2-work cluster). Bumped to give real generation
+      # time headroom -- an infra/timeout fix, not a prompt/schema/
+      # threshold change, so it does not violate the canary's frozen-
+      # config rule.
+      ORG_MODEL_PROVIDER_DEEPSEEK_REQUEST_TIMEOUT: 10m
+      # Real root cause of every response_read_failed in the canary run:
+      # ORG_MODEL_RUNTIME_COMMAND_TIMEOUT defaults to 30s and wraps the
+      # ENTIRE 'orgctl model invocation dispatch' command, including the
+      # provider HTTP call -- Go context.WithTimeout nests to the MINIMUM
+      # of parent and child deadlines, so this 30s outer deadline was
+      # firing before the DeepSeek adapter's own 6m/10m RequestTimeout
+      # ever had a chance to matter. Every canary failure died at ~30.8s
+      # regardless of cluster size or max_output_tokens. Infra/timeout
+      # fix only, does not touch prompt/schema/rubric/threshold.
+      ORG_MODEL_RUNTIME_COMMAND_TIMEOUT: 10m
+      # MiMo-V2.5 (Xiaomi Token Plan) -- R10.2 challenger canary. Confirmed
+      # live: base https://token-plan-sgp.xiaomimimo.com/v1, POST
+      # /chat/completions, api-key header (not Authorization: Bearer).
+      # billing_mode=subscription (Token Plan), never modeled as a PAYG
+      # PriceTier -- see internal/modelruntime/costgate.go's
+      # subscriptionProviders and migrations/000039. Disabled by default
+      # in production; enabled only for this explicit canary run.
+      ORG_MODEL_PROVIDER_MIMO_ENABLED: "true"
+      ORG_MODEL_PROVIDER_MIMO_ENDPOINT_URL: https://token-plan-sgp.xiaomimimo.com/v1/chat/completions
+      ORG_MODEL_PROVIDER_MIMO_CREDENTIAL_FILE: /run/secrets/mimo-api-key
+      ORG_MODEL_PROVIDER_MIMO_REQUEST_TIMEOUT: 10m
+      # OpenAI-compatible: credential mounted and ready, but left disabled.
+      # The current adapter (internal/modelruntime/adapter/openaicompat)
+      # only speaks Chat Completions (AdapterID=openai_chat_completions,
+      # schema openai.chat.completions.request.v1). gpt-5.6-luna is meant to
+      # run over the Responses API (/v1/responses +
+      # /v1/responses/compact for native compaction) per owner decision --
+      # that needs a new adapter/protocol, not just this env wiring, so it
+      # stays disabled until that code exists.
+      # OpenAI-compatible: enabled via Chat Completions (the adapter's only
+      # supported shape today). gpt-5.6-luna is documented to prefer
+      # Responses API (/v1/responses + native /v1/responses/compact) for
+      # agentic/multi-turn work -- that adapter does not exist yet, this is
+      # the interim path while it is built.
+      ORG_MODEL_PROVIDER_OPENAI_COMPATIBLE_ENABLED: "true"
+      ORG_MODEL_PROVIDER_OPENAI_COMPATIBLE_ENDPOINT_URL: https://api.openai.com/v1/chat/completions
+      ORG_MODEL_PROVIDER_OPENAI_COMPATIBLE_CREDENTIAL_FILE: /run/secrets/openai-compatible-api-key
+      # OpenAI Responses API: new adapter (internal/modelruntime/adapter/openairesponses),
+      # built and tested but not yet wired into model-routing.yaml. Enabled here only for a
+      # manual latency canary; reuses the existing openai-compatible-api-key secret (same
+      # OpenAI account/credential works for both Chat Completions and Responses endpoints).
+      ORG_MODEL_PROVIDER_OPENAI_RESPONSES_ENABLED: "true"
+      ORG_MODEL_PROVIDER_OPENAI_RESPONSES_ENDPOINT_URL: https://api.openai.com/v1/responses
+      ORG_MODEL_PROVIDER_OPENAI_RESPONSES_CREDENTIAL_FILE: /run/secrets/openai-compatible-api-key
+      # OCI Object Storage: source-of-truth bucket for the knowledge ingestion
+      # pipeline (raw/normalized/manifests/logs). Hand-rolled OCI Signing v1
+      # client (internal/objectstorage), no OCI SDK dependency.
+      ORG_OBJECT_STORAGE_OCI_ENABLED: "true"
+      ORG_OBJECT_STORAGE_OCI_TENANCY_OCID: ocid1.tenancy.oc1..aaaaaaaa4fugjamty3gtjrjmdmmfomlivxabqpqsgprlxkhz6lebjgutumzq
+      ORG_OBJECT_STORAGE_OCI_USER_OCID: ocid1.user.oc1..aaaaaaaagdrjnpcecaqx7dzybkdvn5fvdelcm7a7fhrskywitssx5q74ezta
+      ORG_OBJECT_STORAGE_OCI_FINGERPRINT: "0b:a6:4b:35:a0:b2:19:73:ae:04:75:ca:17:dc:6c:ad"
+      ORG_OBJECT_STORAGE_OCI_REGION: sa-santiago-1
+      ORG_OBJECT_STORAGE_OCI_NAMESPACE: axkhdnwe6r1c
+      ORG_OBJECT_STORAGE_OCI_BUCKET: bucket-20260810-0027
+      ORG_OBJECT_STORAGE_OCI_PRIVATE_KEY_FILE: /run/secrets/oci-object-storage-api-key.pem
+    volumes:
+      - /etc/explorarte/secrets/model-execution-identity.pem:/run/secrets/model-execution-identity.pem:ro
+      - /etc/explorarte/secrets/deepseek-api-key:/run/secrets/deepseek-api-key:ro
+      - /etc/explorarte/secrets/mimo-api-key:/run/secrets/mimo-api-key:ro
+      - /etc/explorarte/secrets/openai-compatible-api-key:/run/secrets/openai-compatible-api-key:ro
+      - /etc/explorarte/secrets/oci-object-storage-api-key.pem:/run/secrets/oci-object-storage-api-key.pem:ro
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    depends_on:
+      - postgres
     networks:
       - org-internal
 

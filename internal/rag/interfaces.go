@@ -258,3 +258,15 @@ type BGEM3EmbeddingRepository interface {
 type EmbeddingBackfillRepository interface {
 	PendingChunkEmbeddings(ctx context.Context, organizationID string, namespaceKind NamespaceKind, namespaceID string, identity EmbeddingIdentity, limit int) ([]Chunk, error)
 }
+
+// MediaFetcher retrieves the raw bytes a media-backed chunk's
+// MediaSourceRef points at (see Chunk.MediaSourceRef/IsMedia) — an Object
+// Storage key, resolved by whatever client the caller wires in.
+// BackfillEmbeddings never imports internal/objectstorage directly; this
+// interface is the seam. A nil MediaFetcher is a supported configuration
+// (a namespace with no media-backed chunks never needs one) — encountering
+// a media chunk with no fetcher configured degrades that chunk to skipped,
+// same as any other embedding failure.
+type MediaFetcher interface {
+	FetchMedia(ctx context.Context, ref string) ([]byte, error)
+}

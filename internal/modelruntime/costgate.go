@@ -14,6 +14,16 @@ import (
 // is not a license to skip real-money accounting. WalletApplied is false
 // only when the gate itself is absent (nil CostBudgetGate on
 // DispatchService), never as a fallback for an untracked task.
+// Subscription marks a reservation for a provider billed via a fixed
+// token-plan/subscription (e.g. mimo) rather than pay-as-you-go: there is
+// no real per-call USD price to reserve or reconcile against (no PriceTier
+// exists, and fabricating one would misrepresent a real cost that is
+// actually unknown/inapplicable). WalletApplied is always false for a
+// subscription reservation — Reconcile/Release/MarkPendingReconciliation
+// are no-ops for it (see their own WalletApplied checks) — and settlement
+// instead goes through SubscriptionSettler.RecordSubscriptionConsumption,
+// which records the real, observable fact that the call happened (quota
+// was drawn from the plan) without ever inventing a USD amount.
 type CostReservation struct {
 	ProviderID      string
 	ProviderModelID string
@@ -21,6 +31,7 @@ type CostReservation struct {
 	BudgetID        int64
 	WalletApplied   bool
 	BudgetApplied   bool
+	Subscription    bool
 }
 
 // CostReservationRequest carries everything CostBudgetGate needs to
@@ -62,4 +73,30 @@ type CostBudgetGate interface {
 	// the call failed before producing a response the provider will
 	// charge for.
 	Release(ctx context.Context, reservation CostReservation, now time.Time) error
+	// MarkPendingReconciliation leaves the wallet reservation in place
+	// (does NOT release it) but records that its real cost is not yet
+	// known — used when the provider's receipt of the call is certain or
+	// likely (a response was received but no usable token usage could be
+	// recovered from it, an ambiguous transport outcome, a timeout after
+	// send) so the reservation must not be freed as if the call were free,
+	// even though there is no real usage yet to Reconcile against. A
+	// later, out-of-band reconciliation job is expected to resolve these.
+	MarkPendingReconciliation(ctx context.Context, reservation CostReservation, now time.Time) error
+}
+
+// SubscriptionSettler is an OPTIONAL CostBudgetGate capability for
+// providers billed via a fixed subscription/token-plan (CostReservation.
+// Subscription=true) rather than pay-as-you-go. It is deliberately NOT a
+// required method on CostBudgetGate itself — the same pattern
+// costledger.PendingReconciliationMarker already uses for the same reason:
+// several existing CostBudgetGate fakes in tests only exercise the PAYG
+// path, and adding a required method there would force unrelated tests to
+// grow a no-op stub. DispatchService type-asserts for it.
+type SubscriptionSettler interface {
+	// RecordSubscriptionConsumption records that a subscription-billed
+	// call reached and was processed by the provider — a real, observable
+	// fact (quota/resource consumed) — WITHOUT computing or persisting any
+	// USD amount, since none is known or applicable for a token-plan call.
+	// A no-op (nil error) for a reservation with Subscription=false.
+	RecordSubscriptionConsumption(ctx context.Context, reservation CostReservation, now time.Time) error
 }

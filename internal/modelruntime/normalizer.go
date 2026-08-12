@@ -131,6 +131,15 @@ func (n Normalizer) Normalize(invocation Invocation, dispatchAttemptID int64, ra
 		OutputTokens:      raw.OutputTokens,
 		TotalTokens:       raw.InputTokens + raw.OutputTokens,
 		ProviderReported:  raw.ProviderReported,
+		// R9.1 fix 3: this success path previously dropped
+		// PromptCacheHitTokens/PromptCacheMissTokens even though the
+		// adapter already populates them on RawResponse -- cache
+		// telemetry was only wired for the failure path
+		// (insertRecoveredUsage), so every SUCCESSFUL invocation's
+		// cache_hit/miss columns read NULL. Mirror what the failure
+		// path already does.
+		PromptCacheHitTokens:  raw.PromptCacheHitTokens,
+		PromptCacheMissTokens: raw.PromptCacheMissTokens,
 	}
 	return NormalizedResponse{
 		Result:                result,

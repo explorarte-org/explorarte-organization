@@ -209,7 +209,7 @@ func semanticDepsForMemory(profile retrievalProfile, adapter *deterministicAdapt
 }
 
 func newRAGManager(store *ragpostgres.Store, clock *fixedClock, namespaceID string, gate ragGate, semantic *rag.SemanticSearchDeps) (*rag.Manager, error) {
-	return rag.NewManager(rag.NewService(clock), store, gate, namespaceResolver{namespaceID: namespaceID}, semantic)
+	return rag.NewManager(rag.NewService(clock), store, gate, namespaceResolver{namespaceID: namespaceID}, semantic, nil)
 }
 
 func newMemoryManager(store *memorypostgres.Store, clock *fixedClock, semantic *memory.SemanticSearchDeps) (*memory.Manager, error) {

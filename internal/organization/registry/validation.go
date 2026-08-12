@@ -19,7 +19,10 @@ var (
 	productiveEgressAllowRules = map[string]map[string]struct{}{
 		"deepseek":          {"public": {}, "sanitized": {}, "organizational": {}},
 		"openai_compatible": {"public": {}, "sanitized": {}, "organizational": {}},
+		"openai_responses":  {"public": {}, "sanitized": {}, "organizational": {}},
 		"gemini":            {"public": {}, "sanitized": {}, "organizational": {}},
+		// R10.2: kept in sync with modelegress.ProductiveLoadOptions.
+		"mimo":              {"public": {}, "sanitized": {}, "organizational": {}},
 	}
 )
 
@@ -95,8 +98,8 @@ func (v *validator) validateOrganization() {
 	if err := ValidateUnitID(organization.Organization.ID); err != nil {
 		v.addError("organization.id_invalid", "organization.yaml:organization.id", "%v", err)
 	}
-	if len(organization.OperationalDepartments) != 7 {
-		v.addError("organization.operational_department_count", "organization.yaml:operational_departments", "expected exactly 7 operational departments, got %d", len(organization.OperationalDepartments))
+	if len(organization.OperationalDepartments) != 4 { // negocio consolidation (comunicaciones/creativo/finanzas/marketing -> negocio): 7 -> 4
+		v.addError("organization.operational_department_count", "organization.yaml:operational_departments", "expected exactly 4 operational departments, got %d", len(organization.OperationalDepartments))
 	}
 	units := make(map[string]string)
 	for _, department := range organization.OperationalDepartments {

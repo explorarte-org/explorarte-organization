@@ -49,7 +49,7 @@ func (s *Store) PendingChunkEmbeddings(ctx context.Context, organizationID strin
 	}
 
 	rows, err := s.pool.Query(ctx, `
-SELECT c.chunk_id, c.version_id, c.generation_id, c.chunker_id, c.chunker_version, c.ordinal, c.start_offset, c.end_offset, c.content, c.content_hash
+SELECT c.chunk_id, c.version_id, c.generation_id, c.chunker_id, c.chunker_version, c.ordinal, c.start_offset, c.end_offset, c.content, c.content_hash, c.media_source_ref, c.media_mime_type
 FROM rag_knowledge_chunks c
 JOIN rag_index_generations g ON g.organization_id=c.organization_id AND g.generation_id=c.generation_id
 WHERE c.organization_id=$1 AND g.namespace_kind=$2 AND g.namespace_id=$3 AND g.status='active'
@@ -66,8 +66,15 @@ LIMIT $6`, args...)
 	chunks := make([]rag.Chunk, 0)
 	for rows.Next() {
 		var chunk rag.Chunk
-		if err := rows.Scan(&chunk.ID, &chunk.VersionID, &chunk.GenerationID, &chunk.ChunkerID, &chunk.ChunkerVersion, &chunk.Ordinal, &chunk.StartOffset, &chunk.EndOffset, &chunk.Content, &chunk.ContentHash); err != nil {
+		var mediaSourceRef, mediaMimeType *string
+		if err := rows.Scan(&chunk.ID, &chunk.VersionID, &chunk.GenerationID, &chunk.ChunkerID, &chunk.ChunkerVersion, &chunk.Ordinal, &chunk.StartOffset, &chunk.EndOffset, &chunk.Content, &chunk.ContentHash, &mediaSourceRef, &mediaMimeType); err != nil {
 			return nil, err
+		}
+		if mediaSourceRef != nil {
+			chunk.MediaSourceRef = *mediaSourceRef
+		}
+		if mediaMimeType != nil {
+			chunk.MediaMimeType = *mediaMimeType
 		}
 		chunks = append(chunks, chunk)
 	}

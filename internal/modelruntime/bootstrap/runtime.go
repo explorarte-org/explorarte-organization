@@ -12,6 +12,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/authorization"
 	authorizationbootstrap "github.com/Mireuz13/explorarte-organization/internal/authorization/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/config"
+	"github.com/Mireuz13/explorarte-organization/internal/contextcompiler"
 	"github.com/Mireuz13/explorarte-organization/internal/contextengine"
 	contextbootstrap "github.com/Mireuz13/explorarte-organization/internal/contextengine/bootstrap"
 	costledgerpostgres "github.com/Mireuz13/explorarte-organization/internal/costledger/postgres"
@@ -25,7 +26,9 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/deepseek"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/gemini"
+	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/mimo"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/openaicompat"
+	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/openairesponses"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/costgate"
 	modelpostgres "github.com/Mireuz13/explorarte-organization/internal/modelruntime/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
@@ -140,11 +143,19 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	if err != nil {
 		return nil, fmt.Errorf("load DeepSeek provider config: %w", err)
 	}
+	mimoConfig, err := mimo.LoadConfig(os.LookupEnv, runtimeCfg.MaxResponseBytes)
+	if err != nil {
+		return nil, fmt.Errorf("load MiMo provider config: %w", err)
+	}
 	geminiConfig, err := gemini.LoadConfig(os.LookupEnv, runtimeCfg.MaxResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("load Gemini provider config: %w", err)
 	}
-	registeredAdapters := make([]modelruntime.ProviderAdapter, 0, 3)
+	openaiResponsesConfig, err := openairesponses.LoadConfig(os.LookupEnv, runtimeCfg.MaxResponseBytes)
+	if err != nil {
+		return nil, fmt.Errorf("load OpenAI Responses provider config: %w", err)
+	}
+	registeredAdapters := make([]modelruntime.ProviderAdapter, 0, 5)
 	if openAIConfig.Enabled {
 		providerAdapter, providerErr := openaicompat.New(openAIConfig)
 		if providerErr != nil {
@@ -159,10 +170,28 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 		}
 		registeredAdapters = append(registeredAdapters, providerAdapter)
 	}
+	if mimoConfig.Enabled {
+		// MiMo is deliberately not wired into docs/canonical/model-routing.yaml
+		// as any role's default in this phase -- registering the adapter here
+		// only makes provider=mimo dispatchable when explicitly invoked (the
+		// owner's canary smoke tests), never chosen by routing defaults.
+		providerAdapter, providerErr := mimo.New(mimoConfig)
+		if providerErr != nil {
+			return nil, fmt.Errorf("open MiMo provider adapter: %w", providerErr)
+		}
+		registeredAdapters = append(registeredAdapters, providerAdapter)
+	}
 	if geminiConfig.Enabled {
 		providerAdapter, providerErr := gemini.New(geminiConfig)
 		if providerErr != nil {
 			return nil, fmt.Errorf("open Gemini provider adapter: %w", providerErr)
+		}
+		registeredAdapters = append(registeredAdapters, providerAdapter)
+	}
+	if openaiResponsesConfig.Enabled {
+		providerAdapter, providerErr := openairesponses.New(openaiResponsesConfig)
+		if providerErr != nil {
+			return nil, fmt.Errorf("open OpenAI Responses provider adapter: %w", providerErr)
 		}
 		registeredAdapters = append(registeredAdapters, providerAdapter)
 	}
@@ -183,7 +212,10 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	if err != nil {
 		return nil, fmt.Errorf("create agent budget ledger: %w", err)
 	}
-	gate, err := costgate.New(pricingService, walletLedger, budgetLedger)
+	// mimo.ProviderID is billed via a fixed Token Plan (subscription/quota),
+	// not pay-as-you-go -- costgate.Gate skips PriceTier resolution and
+	// wallet reservation entirely for it (see costgate/gate.go's Reserve).
+	gate, err := costgate.New(pricingService, walletLedger, budgetLedger, mimo.ProviderID)
 	if err != nil {
 		return nil, fmt.Errorf("create cost/budget gate: %w", err)
 	}
@@ -264,6 +296,57 @@ func (a taskAdapter) GetTaskAttempt(ctx context.Context, taskID, attemptID int64
 
 type contextAdapter struct{ service contextengine.Service }
 
+// resolvedRender is the SINGLE deterministic outcome of rendering one
+// context snapshot for dispatch. GetContextSnapshot (pre-dispatch integrity
+// hash), RenderContextSnapshot (the bytes actually sent to the provider),
+// and GetProviderRenderTelemetry (observability) all derive from the exact
+// same call to this type's constructor -- resolveRender below -- so the
+// three can never diverge. This is the same single-source-of-truth
+// invariant that fixed the R10 context_render_hash_mismatch bug, extended
+// to cover the new ProviderRender v1 layer (R10.4 section 12).
+type resolvedRender struct {
+	bytes          []byte
+	hash           string
+	fellBack       bool
+	fallbackReason string
+	providerRender contextengine.ProviderRender
+}
+
+// resolveRender projects the snapshot exactly as R10's Context Compiler
+// already does (contextcompiler.CompileForTaskClass -- unchanged, still
+// falls back to the canonical snapshot unmodified for every actor/task
+// class other than research.corpus_curate/v1) and then renders it. R10.4
+// activates ProviderRender v1 (StablePrefix/DynamicSuffix, no
+// AuditEnvelope fields in the provider-visible bytes) ONLY when the
+// compiler did not fall back -- i.e. only for research.corpus_curate/v1,
+// per the pedido's explicit "no generalizar por herencia" (section 15/52).
+// Every other task class, and any snapshot for which BuildProviderRender
+// itself errors, uses the exact unmodified legacy PortableRenderer --
+// always explicit and observable (fellBack=true), never silent.
+func resolveRender(ctx context.Context, snapshot contextengine.Snapshot) (resolvedRender, error) {
+	result, err := contextcompiler.CompileForTaskClass(snapshot)
+	if err != nil {
+		return resolvedRender{}, err
+	}
+	if !result.FellBackToCanonical {
+		if render, buildErr := contextengine.BuildProviderRender(result.Projected); buildErr == nil {
+			return resolvedRender{
+				bytes: render.Bytes(), hash: render.ProviderRenderHash,
+				providerRender: render,
+			}, nil
+		}
+	}
+	rendered, err := contextengine.NewRenderer().Render(ctx, result.Projected)
+	if err != nil {
+		return resolvedRender{}, err
+	}
+	reason := "task_class_not_projected"
+	if !result.FellBackToCanonical {
+		reason = "provider_render_build_failed"
+	}
+	return resolvedRender{bytes: rendered, hash: contextengine.DigestCanonicalBytes(rendered), fellBack: true, fallbackReason: reason}, nil
+}
+
 func (a contextAdapter) GetContextSnapshot(ctx context.Context, id int64) (modelruntime.ContextSnapshotRef, error) {
 	snapshot, err := a.service.Get(ctx, id, true)
 	if err != nil {
@@ -287,9 +370,13 @@ func (a contextAdapter) GetContextSnapshot(ctx context.Context, id int64) (model
 	// task scope. Normalize only at this adapter boundary; scope derivation above
 	// retains the canonical task:<id> reference.
 	taskRef := strings.TrimPrefix(snapshot.TaskRef, "task:")
+	renderedHash := snapshot.RenderedHash
+	if render, renderErr := resolveRender(ctx, snapshot); renderErr == nil {
+		renderedHash = render.hash
+	}
 	return modelruntime.ContextSnapshotRef{
 		ID: snapshot.ID, OrganizationID: snapshot.OrganizationID, OrganizationRevisionID: snapshot.OrganizationRevisionID,
-		ActorRoleID: snapshot.ActorRoleID, TaskRef: taskRef, Status: string(snapshot.Status), RenderedHash: snapshot.RenderedHash,
+		ActorRoleID: snapshot.ActorRoleID, TaskRef: taskRef, Status: string(snapshot.Status), RenderedHash: renderedHash,
 		DataClasses: classes, ExecutiveScope: scope,
 	}, nil
 }
@@ -306,7 +393,57 @@ func (a contextAdapter) ValidateContextSnapshot(ctx context.Context, id int64) e
 }
 
 func (a contextAdapter) RenderContextSnapshot(ctx context.Context, id int64) ([]byte, error) {
-	return a.service.Render(ctx, id)
+	snapshot, err := a.service.Get(ctx, id, true)
+	if err != nil {
+		return nil, err
+	}
+	// Replicate contextengine.Service.Render's exact pre-render checks
+	// (status + Validate) -- this adapter fetches the snapshot itself to
+	// project/render it, so it can no longer rely on Service.Render to do
+	// that validation for it.
+	if snapshot.Status == contextengine.SnapshotInvalidated {
+		return nil, contextengine.ErrSnapshotInvalidated
+	}
+	validation, err := a.service.Validate(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if !validation.Valid {
+		return nil, contextengine.ErrSnapshotStale
+	}
+	render, err := resolveRender(ctx, snapshot)
+	if err != nil {
+		return nil, err
+	}
+	return render.bytes, nil
+}
+
+// GetProviderRenderTelemetry implements modelruntime.ProviderRenderTelemetryReader
+// (R10.4, optional capability). Derives from the exact same resolveRender
+// call as RenderContextSnapshot/GetContextSnapshot above -- never a
+// separate computation.
+func (a contextAdapter) GetProviderRenderTelemetry(ctx context.Context, id int64) (modelruntime.ProviderRenderTelemetry, error) {
+	snapshot, err := a.service.Get(ctx, id, true)
+	if err != nil {
+		return modelruntime.ProviderRenderTelemetry{}, err
+	}
+	render, err := resolveRender(ctx, snapshot)
+	if err != nil {
+		return modelruntime.ProviderRenderTelemetry{}, err
+	}
+	if render.fellBack {
+		return modelruntime.ProviderRenderTelemetry{
+			FallbackToLegacy: true, FallbackReason: render.fallbackReason,
+			ProviderRenderHash: render.hash, ProviderVisibleBytes: len(render.bytes),
+		}, nil
+	}
+	pr := render.providerRender
+	return modelruntime.ProviderRenderTelemetry{
+		Version: pr.Version, FallbackToLegacy: false,
+		StablePrefixHash: pr.StablePrefixHash, StablePrefixBytes: pr.StablePrefixBytes,
+		DynamicSuffixHash: pr.DynamicSuffixHash, DynamicSuffixBytes: pr.DynamicSuffixBytes,
+		ProviderRenderHash: pr.ProviderRenderHash, ProviderVisibleBytes: pr.ProviderVisibleBytes,
+	}, nil
 }
 
 type authorizationAdapter struct{ evaluator authorization.Evaluator }

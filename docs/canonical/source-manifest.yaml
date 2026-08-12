@@ -86,11 +86,8 @@ files:
   sha256: 6dcf1f1996c25ae3b5fdb11084e2bca0c851a8af94f6f5849cc6631ab7ead6f3
   bytes: 2537
 - path: /mnt/data/branch0_work/source/organizacion/ingenieria_ia/AGENT.md
-  sha256: 2542144c3b30bd1dda2f1f895c9856fd7efa6cfc17aa8890e9bdcbe7c112a991
-  bytes: 5538
-- path: /mnt/data/branch0_work/source/organizacion/ingenieria_ia/arquitecto_infraestructura/PERFIL.md
-  sha256: fd2ae25fecd1855064286fd53ab8ab56a640c710cf1a8673f7f933d6be24240e
-  bytes: 1688
+  sha256: ea6840bfafbd3a824a8e402e993dc59e67bc9a766b70e80766b1ac154b161920
+  bytes: 6029
 - path: /mnt/data/branch0_work/source/organizacion/ingenieria_ia/arquitecto_software/PERFIL.md
   sha256: 9462078e03c326b74cf8952cf7cf69b353d7019c9bdaa1c960563eb3d74ada81
   bytes: 1425
@@ -109,33 +106,33 @@ files:
 - path: /mnt/data/branch0_work/source/organizacion/ingenieria_ia/frontend/memoria/MEMORY.md
   sha256: 8bc4e83229fc9cf68fd7e163f0277ea25ee4a1a9be4d7eebc27716512951b8e9
   bytes: 396
-- path: /mnt/data/branch0_work/source/organizacion/ingenieria_ia/guardian_cloud/PERFIL.md
-  sha256: c54159213aa91cbe7af94aa461fdb0d09c9d76e1adaf80cc953e728a361b2b02
-  bytes: 1389
+- path: /mnt/data/branch0_work/source/organizacion/ingenieria_ia/ingeniero_ia/PERFIL.md
+  sha256: c57e7f4fcafe31c7c024621e89a9c122550220c2bc226111af6b429d70bd0a17
+  bytes: 2507
 - path: /mnt/data/branch0_work/source/organizacion/ingenieria_ia/ml_data_scientist/PERFIL.md
   sha256: e551e4b1b50f99e28904788d389f75eb3d01f3acbaf3e9857b05de38ae75cc73
   bytes: 1362
 - path: /mnt/data/branch0_work/source/organizacion/ingenieria_ia/orquestador/PERFIL.md
   sha256: 286c74f25533f2d2e5eb3e83e30ee1d440bc6c6e1bd034d63ebc2d6305374a8a
   bytes: 7413
-- path: /mnt/data/branch0_work/source/organizacion/ingenieria_ia/project_manager/PERFIL.md
-  sha256: f26e7946202f0806b6fb78677fa50207ad2fdfd99ba304d7a5c8bab9825203d7
-  bytes: 1402
 - path: /mnt/data/branch0_work/source/organizacion/ingenieria_ia/qa/PERFIL.md
   sha256: 25470daf06d24467c8f28ee2d11d4f2b44d335ae3b8b7ab635907f16a5c5ebe8
   bytes: 1759
 - path: /mnt/data/branch0_work/source/organizacion/ingenieria_ia/qa/memoria/MEMORY.md
   sha256: 2fdb00602c473dc5d6c9cdfc44a9d943622d405805926debee2dc7c7746e7398
   bytes: 1485
-- path: /mnt/data/branch0_work/source/organizacion/ingenieria_ia/workflow_grafos/PERFIL.md
-  sha256: cd94d4e6e32788c73889a87f0f9d5651c6cb42dc836de57583674f64908a00d4
-  bytes: 1553
+- path: /mnt/data/branch0_work/source/organizacion/ingenieria_ia/semantic_engineer/PERFIL.md
+  sha256: 7e7077d788917f404e3fce919d1238e96507b34ab37904f5a395f2c2023ff960
+  bytes: 2954
 - path: /mnt/data/branch0_work/source/organizacion/investigacion/AGENT.md
   sha256: a969ce56397789c1a65a0a95700edd4616849221db4f37b313efbf71c6ed0245
   bytes: 2164
 - path: /mnt/data/branch0_work/source/organizacion/investigacion/auditor_cerebro_empresa/PERFIL.md
   sha256: 3f95d05b844f0ed8638f8c938997a95910b8e63945221151741a2009686f02af
   bytes: 2152
+- path: /mnt/data/branch0_work/source/organizacion/investigacion/research_worker_hourly/PERFIL.md
+  sha256: d4e5a5d89eba6a6a5a7cc5b12e4f1598e2276801f3257ad69da8e475abb68655
+  bytes: 1725
 - path: /mnt/data/branch0_work/source/organizacion/marketing/AGENT.md
   sha256: 89a9492e94b53518a1cf1ad92e729adc206aba628f79024c87ccc23f8c237716
   bytes: 808

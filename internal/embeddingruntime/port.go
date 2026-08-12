@@ -30,14 +30,48 @@ func (k TaskKind) Valid() bool {
 	}
 }
 
-// EmbedItem is one text to embed. Key is caller-assigned and must be unique
-// within a single request/batch — callers use it to associate a result back
-// to the input that produced it. Never assume response order matches
-// request order beyond what a specific adapter method explicitly documents.
+// EmbedItem is one input to embed. Key is caller-assigned and must be
+// unique within a single request/batch — callers use it to associate a
+// result back to the input that produced it. Never assume response order
+// matches request order beyond what a specific adapter method explicitly
+// documents.
+//
+// An item is either text (Text set, MimeType empty) or inline binary media
+// (MimeType set to the content's actual MIME type, Data holding the raw
+// bytes, Text ignored). Exactly one of the two must be populated — an item
+// with both or neither set is invalid. Media items only apply to adapters
+// that advertise multimodal support (see the adapter's own Config/adapter
+// doc comment); an adapter that only understands text must reject a media
+// item with ErrInvalidRequest rather than silently drop it or stringify
+// the bytes as text.
 type EmbedItem struct {
-	Key  string
-	Text string
-	Task TaskKind
+	Key      string
+	Text     string
+	MimeType string
+	Data     []byte
+	Task     TaskKind
+}
+
+// IsMedia reports whether this item carries inline binary content instead
+// of plain text.
+func (i EmbedItem) IsMedia() bool { return i.MimeType != "" }
+
+// Valid checks the item's own shape (key present, task valid, exactly one
+// of Text/media populated) — it does not know a specific adapter's
+// modality or size limits, which stay adapter-local.
+func (i EmbedItem) Valid() bool {
+	if i.Key == "" || !i.Task.Valid() {
+		return false
+	}
+	hasText := i.Text != ""
+	hasMedia := i.MimeType != "" || len(i.Data) > 0
+	if hasText == hasMedia {
+		return false // both or neither
+	}
+	if hasMedia && (i.MimeType == "" || len(i.Data) == 0) {
+		return false // media requires both fields, not just one
+	}
+	return true
 }
 
 type EmbedRequest struct {

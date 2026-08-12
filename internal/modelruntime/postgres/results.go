@@ -10,7 +10,16 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func insertProviderOutcome(ctx context.Context, tx pgx.Tx, invocationID, attemptID int64, outcome modelruntime.ProviderOutcome) error {
+// insertProviderOutcome persists a ProviderOutcome, including its Gate F
+// (Provider Failure Telemetry) fields. phase records which of the three
+// modelruntime.AdapterFailurePhase stages this outcome was observed at --
+// it is the caller's responsibility (see each Store method below) since it
+// follows directly from which state transition is being persisted, not from
+// anything decodable off the outcome value itself. An empty phase is stored
+// as NULL; model_provider_outcomes.provider_reached is then a generated
+// column derived 1:1 from phase <> 'before_request' (NULL phase, i.e. the
+// ordinary success path via MarkResponseReceived, is treated as reached).
+func insertProviderOutcome(ctx context.Context, tx pgx.Tx, invocationID, attemptID int64, outcome modelruntime.ProviderOutcome, phase modelruntime.AdapterFailurePhase) error {
 	if err := outcome.Validate(); err != nil {
 		return err
 	}
@@ -18,24 +27,64 @@ func insertProviderOutcome(ctx context.Context, tx pgx.Tx, invocationID, attempt
 	if outcome.HTTPStatus > 0 {
 		httpStatus = outcome.HTTPStatus
 	}
+	var requestDurationMS any
+	if outcome.RequestDuration != nil {
+		requestDurationMS = outcome.RequestDuration.Milliseconds()
+	}
 	tag, err := tx.Exec(ctx, `
 INSERT INTO model_provider_outcomes(
     provider_request_record_id,organization_id,invocation_id,dispatch_attempt_id,
     outcome_classification,provider_request_id,http_status,error_class,error_code,
-    retryable,response_hash,response_schema_version,cancellation_confirmed
+    retryable,response_hash,response_schema_version,cancellation_confirmed,
+    adapter_failure_phase,finish_reason,response_content_bytes,usage_available,
+    input_tokens,output_tokens,cache_hit_tokens,cache_miss_tokens,
+    response_format,max_output_tokens,request_duration_ms,
+    json_error_class,json_error_offset,starts_with_json_object,ends_with_json_object
 )
 SELECT r.id,r.organization_id,r.invocation_id,r.dispatch_attempt_id,
-       $3,NULLIF($4,''),$5,NULLIF($6,''),NULLIF($7,''),$8,NULLIF($9,''),$10,$11
+       $3,NULLIF($4,''),$5,NULLIF($6,''),NULLIF($7,''),$8,NULLIF($9,''),$10,$11,
+       NULLIF($12,''),NULLIF($13,''),$14,$15,
+       $16,$17,$18,$19,
+       NULLIF($20,''),$21,$22,
+       NULLIF($23,''),$24,$25,$26
 FROM model_provider_requests r
 WHERE r.invocation_id=$1 AND r.dispatch_attempt_id=$2`,
 		invocationID, attemptID, outcome.OutcomeClassification, outcome.ProviderRequestID,
 		httpStatus, outcome.ErrorClass, outcome.ErrorCode, outcome.Retryable,
-		outcome.ResponseHash, outcome.ResponseSchemaVersion, outcome.CancellationConfirmed)
+		outcome.ResponseHash, outcome.ResponseSchemaVersion, outcome.CancellationConfirmed,
+		string(phase), outcome.FinishReason, outcome.ResponseContentBytes, outcome.UsageAvailable,
+		outcome.InputTokens, outcome.OutputTokens, outcome.CacheHitTokens, outcome.CacheMissTokens,
+		outcome.ResponseFormat, outcome.MaxOutputTokens, requestDurationMS,
+		outcome.JSONErrorClass, outcome.JSONErrorOffset, outcome.StartsWithJSONObject, outcome.EndsWithJSONObject)
 	if err != nil {
 		return mapError(err)
 	}
 	if tag.RowsAffected() != 1 {
 		return modelruntime.ErrConflict
+	}
+	return nil
+}
+
+// insertRecoveredUsage persists a Usage row for an invocation that is being
+// recorded as a business failure (RejectProviderResponse/FailAfterResponse)
+// but whose provider-reported token counts were nonetheless recovered — see
+// modelruntime.FailureCommand.Usage's doc comment. Mirrors the usage insert
+// CompleteInvocation already does on the success path, including the
+// nullable prompt-cache-hit/miss columns.
+func insertRecoveredUsage(ctx context.Context, tx pgx.Tx, usage *modelruntime.Usage) error {
+	if usage == nil {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `
+INSERT INTO model_invocation_usage(
+    invocation_id,dispatch_attempt_id,input_tokens,output_tokens,total_tokens,provider_reported,
+    prompt_cache_hit_tokens,prompt_cache_miss_tokens
+) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+ON CONFLICT (invocation_id) DO NOTHING`,
+		usage.InvocationID, usage.DispatchAttemptID, usage.InputTokens, usage.OutputTokens, usage.TotalTokens, usage.ProviderReported,
+		usage.PromptCacheHitTokens, usage.PromptCacheMissTokens,
+	); err != nil {
+		return mapError(err)
 	}
 	return nil
 }
@@ -55,7 +104,7 @@ func (s *Store) MarkResponseReceived(ctx context.Context, invocationID, attemptI
 		if outcome.OutcomeClassification != modelruntime.ProviderOutcomeResponseReceived {
 			return modelruntime.Invocation{}, modelruntime.ErrInvalidRequest
 		}
-		if err = insertProviderOutcome(ctx, tx, invocationID, attemptID, outcome); err != nil {
+		if err = insertProviderOutcome(ctx, tx, invocationID, attemptID, outcome, modelruntime.AdapterFailureResponseReceived); err != nil {
 			return modelruntime.Invocation{}, err
 		}
 		if _, err = tx.Exec(ctx, `
@@ -94,7 +143,10 @@ func (s *Store) RejectProviderResponse(ctx context.Context, command modelruntime
 		if attempt.InvocationID != command.InvocationID || attempt.Status != modelruntime.DispatchSendStarted {
 			return modelruntime.Invocation{}, modelruntime.ErrConflict
 		}
-		if err = insertProviderOutcome(ctx, tx, command.InvocationID, command.DispatchAttemptID, outcome); err != nil {
+		if err = insertProviderOutcome(ctx, tx, command.InvocationID, command.DispatchAttemptID, outcome, modelruntime.AdapterFailureResponseReceived); err != nil {
+			return modelruntime.Invocation{}, err
+		}
+		if err = insertRecoveredUsage(ctx, tx, command.Usage); err != nil {
 			return modelruntime.Invocation{}, err
 		}
 		if _, err = tx.Exec(ctx, `
@@ -142,7 +194,7 @@ func (s *Store) FailCommittedBeforeRequest(ctx context.Context, command modelrun
 		if attempt.InvocationID != command.InvocationID || attempt.Status != modelruntime.DispatchSendStarted {
 			return modelruntime.Invocation{}, modelruntime.ErrConflict
 		}
-		if err = insertProviderOutcome(ctx, tx, command.InvocationID, command.DispatchAttemptID, outcome); err != nil {
+		if err = insertProviderOutcome(ctx, tx, command.InvocationID, command.DispatchAttemptID, outcome, modelruntime.AdapterFailureBeforeRequest); err != nil {
 			return modelruntime.Invocation{}, err
 		}
 		if _, err = tx.Exec(ctx, `
@@ -231,16 +283,24 @@ RETURNING id,created_at`,
 		).Scan(&resultID, &createdAt); err != nil {
 			return modelruntime.DispatchResult{}, mapError(err)
 		}
+		// prompt_cache_hit_tokens/prompt_cache_miss_tokens: fixed R9.1 --
+		// normalizer.go's Normalize now copies
+		// RawResponse.PromptCacheHitTokens/PromptCacheMissTokens onto the
+		// Usage it returns, so this success path is populated the same as
+		// the business-failure paths (insertRecoveredUsage) already were.
 		if _, err = tx.Exec(ctx, `
 INSERT INTO model_invocation_usage(
-    invocation_id,dispatch_attempt_id,input_tokens,output_tokens,total_tokens,provider_reported
-) VALUES($1,$2,$3,$4,$5,$6)`,
+    invocation_id,dispatch_attempt_id,input_tokens,output_tokens,total_tokens,provider_reported,
+    prompt_cache_hit_tokens,prompt_cache_miss_tokens
+) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
 			invocation.ID,
 			attempt.ID,
 			command.Response.Usage.InputTokens,
 			command.Response.Usage.OutputTokens,
 			command.Response.Usage.TotalTokens,
 			command.Response.Usage.ProviderReported,
+			command.Response.Usage.PromptCacheHitTokens,
+			command.Response.Usage.PromptCacheMissTokens,
 		); err != nil {
 			return modelruntime.DispatchResult{}, mapError(err)
 		}
@@ -331,6 +391,9 @@ func (s *Store) FailAfterResponse(ctx context.Context, command modelruntime.Fail
 		if attempt.InvocationID != command.InvocationID || attempt.Status != modelruntime.DispatchResponseReceived {
 			return modelruntime.Invocation{}, modelruntime.ErrConflict
 		}
+		if err = insertRecoveredUsage(ctx, tx, command.Usage); err != nil {
+			return modelruntime.Invocation{}, err
+		}
 		if _, err = tx.Exec(ctx, `
 UPDATE model_dispatch_attempts
 SET status='completed',retry_safety='not_retryable',
@@ -372,7 +435,7 @@ func (s *Store) MarkAmbiguous(ctx context.Context, command modelruntime.FailureC
 			return modelruntime.Invocation{}, modelruntime.ErrConflict
 		}
 		if command.ProviderOutcome != nil {
-			if err = insertProviderOutcome(ctx, tx, command.InvocationID, command.DispatchAttemptID, *command.ProviderOutcome); err != nil {
+			if err = insertProviderOutcome(ctx, tx, command.InvocationID, command.DispatchAttemptID, *command.ProviderOutcome, modelruntime.AdapterFailureAmbiguous); err != nil {
 				return modelruntime.Invocation{}, err
 			}
 		}
@@ -427,7 +490,7 @@ func (s *Store) MarkCancelled(ctx context.Context, command modelruntime.FailureC
 			if command.ProviderOutcome == nil || command.ProviderOutcome.OutcomeClassification != modelruntime.ProviderOutcomeCancelled {
 				return modelruntime.Invocation{}, fmt.Errorf("%w: confirmed cancellation outcome is required", modelruntime.ErrInvalidRequest)
 			}
-			if err = insertProviderOutcome(ctx, tx, command.InvocationID, command.DispatchAttemptID, *command.ProviderOutcome); err != nil {
+			if err = insertProviderOutcome(ctx, tx, command.InvocationID, command.DispatchAttemptID, *command.ProviderOutcome, modelruntime.AdapterFailureAmbiguous); err != nil {
 				return modelruntime.Invocation{}, err
 			}
 		}

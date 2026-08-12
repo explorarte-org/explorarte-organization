@@ -55,3 +55,51 @@ type Ledger interface {
 type CallReader interface {
 	ListCallBreakdowns(ctx context.Context, organizationID, providerID string, limit int) ([]CallBreakdown, error)
 }
+
+// PendingReconciliationMarker is an optional capability of a Ledger backend:
+// annotate an existing, still-open 'reserved' wallet event as
+// financial_outcome=estimated_pending_reconciliation / cost_provenance=
+// estimated_locally, without releasing or committing it — used when the
+// provider's receipt of the call is certain or likely (an ambiguous
+// transport outcome, a response was received but no real usage could be
+// recovered from it) but the true cost is unknown, so the reservation must
+// stay parked at its conservative estimate rather than be freed as if the
+// call were free.
+//
+// Deliberately NOT part of Ledger itself: several existing fakes (e.g.
+// internal/rag/semantic_test.go, internal/memory/semantic_test.go) only
+// exercise the embedding path and implement Ledger directly — adding a
+// required method there would force unrelated packages outside this
+// change's scope to grow a no-op stub. Callers that need this capability
+// (internal/modelruntime/costgate) type-assert for it.
+//
+// Idempotent: annotating an already-annotated row is a no-op success,
+// matching Reconcile/Release's own idempotency. Returns ErrReservationNotFound
+// if no 'reserved' event exists for (providerID, invocationID).
+type PendingReconciliationMarker interface {
+	MarkPendingReconciliation(ctx context.Context, providerID string, invocationID int64, now time.Time) error
+}
+
+// SubscriptionRecorder is an optional capability of a Ledger backend for
+// providers billed via a fixed subscription/token-plan (e.g. mimo) rather
+// than pay-as-you-go: record, once, that a call reached and was processed
+// by the provider (real resource/quota consumption) WITHOUT any real per-
+// call USD price to reserve/reconcile against — no PriceTier exists for
+// these providers and none is fabricated (see
+// modelruntime.CostReservation.Subscription's doc comment).
+//
+// Deliberately NOT part of Ledger itself, for the same reason
+// PendingReconciliationMarker isn't: several existing fakes implement
+// Ledger directly without ever exercising a subscription-billed provider,
+// and a required method would force them to grow a no-op stub.
+// internal/modelruntime/costgate type-asserts for it.
+//
+// Idempotent per (providerID, invocationID): recording an already-recorded
+// call is a no-op success. amount_usd_nanos is always 0 for the row this
+// writes, but never bare/unexplained — it is always written together with
+// a non-null, distinct cost_provenance/financial_outcome pair that makes
+// "0 because this is subscription-billed, not $0 because it was free"
+// unambiguous to any reader of provider_wallet_events.
+type SubscriptionRecorder interface {
+	RecordSubscriptionConsumption(ctx context.Context, providerID string, invocationID int64, now time.Time) error
+}

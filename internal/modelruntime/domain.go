@@ -5,6 +5,15 @@ import (
 	"time"
 )
 
+// BuildSHA identifies which build of this service is running (P0-F: runtime/
+// adapter build identity). It defaults to "unknown" and is intended to be
+// overridden at real build time via
+// `-ldflags "-X .../internal/modelruntime.BuildSHA=$(git rev-parse HEAD)"`.
+// Wiring that ldflags injection into the actual Docker build is a followup —
+// see migration 000037's up.sql for the column this feeds and why it isn't
+// fully wired yet.
+var BuildSHA = "unknown"
+
 type Transport string
 
 const (
@@ -237,6 +246,14 @@ type Usage struct {
 	OutputTokens      int64 `json:"output_tokens"`
 	TotalTokens       int64 `json:"total_tokens"`
 	ProviderReported  bool  `json:"provider_reported"`
+	// PromptCacheHitTokens/PromptCacheMissTokens are nil whenever the
+	// provider omitted the corresponding field — never defaulted to zero,
+	// since zero and "not reported" are different facts. Currently
+	// populated by the deepseek adapter's DeepSeek-specific
+	// prompt_cache_hit_tokens/prompt_cache_miss_tokens usage fields; other
+	// providers leave both nil.
+	PromptCacheHitTokens  *int64 `json:"prompt_cache_hit_tokens,omitempty"`
+	PromptCacheMissTokens *int64 `json:"prompt_cache_miss_tokens,omitempty"`
 }
 
 type CanonicalRequest struct {
@@ -280,6 +297,10 @@ type RawResponse struct {
 	ProviderReported      bool
 	CancellationConfirmed bool
 	ProviderOutcome       ProviderOutcome
+	// PromptCacheHitTokens/PromptCacheMissTokens mirror Usage's fields of
+	// the same name — see its doc comment. Set by the deepseek adapter.
+	PromptCacheHitTokens  *int64
+	PromptCacheMissTokens *int64
 }
 type NormalizedResponse struct {
 	Result                InvocationResult

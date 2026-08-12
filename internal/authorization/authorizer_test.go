@@ -269,6 +269,7 @@ func TestApprovalModesAndRiskDoNotInventApproval(t *testing.T) {
 
 func TestLegacyAuthorizeCompatibility(t *testing.T) {
 	a, _ := testAuthorizer(t)
+
 	if err := a.Authorize(context.Background(), "explorarte", 7, "ingenieria_ia/code-runner", "code.commit"); err != nil {
 		t.Fatal(err)
 	}
@@ -280,6 +281,17 @@ func TestLegacyAuthorizeCompatibility(t *testing.T) {
 	}
 	if err := a.Authorize(context.Background(), "explorarte", 7, "empresa/human", "missing.capability"); !errors.Is(err, ErrUnknownCapability) {
 		t.Fatalf("unknown=%v", err)
+	}
+
+	// Regression: the legacy capability bridge must preserve the
+	// infrastructure-only model_invocation scope for model.invoke.
+	if err := a.Authorize(context.Background(), "explorarte", 7, "ingenieria_ia/code-runner", "model.invoke"); err != nil {
+		t.Fatalf("legacy model.invoke execution-service allow: %v", err)
+	}
+
+	// The scope fix must not bypass the owner's model.invoke hard deny.
+	if err := a.Authorize(context.Background(), "explorarte", 7, "empresa/human", "model.invoke"); !errors.Is(err, ErrCapabilityDenied) {
+		t.Fatalf("legacy model.invoke owner hard deny: %v", err)
 	}
 }
 

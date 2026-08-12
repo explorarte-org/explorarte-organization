@@ -28,6 +28,8 @@ func runBudget(args []string, stdout, stderr io.Writer) int {
 		return runBudgetSetPrice(args[1:], stdout, stderr)
 	case "set-balance":
 		return runBudgetSetBalance(args[1:], stdout, stderr)
+	case "create-root":
+		return runBudgetCreateRoot(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown budget subcommand %q\n", args[0])
 		printBudgetUsage(stderr)
@@ -213,8 +215,83 @@ func runBudgetSetBalance(args []string, stdout, stderr io.Writer) int {
 	return exitOK
 }
 
+// runBudgetCreateRoot wires internal/agentbudget/postgres.Store.
+// CreateRootBudget -- an already-implemented, already-tested domain method
+// with no prior CLI entrypoint -- to orgctl. Deliberately thin: it accepts
+// only --root-task and --role plus optional per-dimension overrides, and
+// defaults every dimension to agentbudget.DefaultLimits(), the ceiling the
+// package itself documents as "a conservative starting ceiling for one
+// CEO->leader->worker execution tree" (not a value invented for this
+// command). agentbudget.Limits.Validate() still rejects any override that
+// is not strictly positive, so this cannot create an unlimited budget.
+func runBudgetCreateRoot(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("budget create-root", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	jsonOutput := flags.Bool("json", false, "emit machine-readable JSON")
+	rootTaskID := flags.Int64("root-task", 0, "root task id this budget governs")
+	roleID := flags.String("role", "", "role id the budget is scoped to")
+	defaults := agentbudget.DefaultLimits()
+	maxUSD := flags.Float64("max-usd", defaults.MaxUSD.USD(), "USD ceiling")
+	maxTokens := flags.Int64("max-tokens", defaults.MaxTokens, "token ceiling")
+	maxModelCalls := flags.Int64("max-model-calls", defaults.MaxModelCalls, "model call ceiling")
+	maxWallTimeMS := flags.Int64("max-wall-time-ms", defaults.MaxWallTimeMS, "wall time ceiling in milliseconds")
+	maxDepth := flags.Int64("max-depth", defaults.MaxDepth, "delegation depth ceiling")
+	maxRetries := flags.Int64("max-retries", defaults.MaxRetries, "retry ceiling")
+	maxSubagents := flags.Int64("max-subagents", defaults.MaxSubagents, "subagent ceiling")
+	if err := flags.Parse(args); err != nil {
+		return exitUsage
+	}
+	if *rootTaskID <= 0 || *roleID == "" || flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: orgctl budget create-root --root-task <id> --role <role_id> [--max-usd 5] [--max-tokens 500000] [--max-model-calls 100] [--max-wall-time-ms 3600000] [--max-depth 5] [--max-retries 10] [--max-subagents 20] [--json]")
+		return exitUsage
+	}
+	limits := agentbudget.Limits{
+		MaxUSD: modelpricing.USDFromDollars(*maxUSD), MaxTokens: *maxTokens, MaxModelCalls: *maxModelCalls,
+		MaxWallTimeMS: *maxWallTimeMS, MaxDepth: *maxDepth, MaxRetries: *maxRetries, MaxSubagents: *maxSubagents,
+	}
+	if err := limits.Validate(); err != nil {
+		fmt.Fprintf(stderr, "invalid limits: %v\n", err)
+		return exitUsage
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(stderr, "load configuration: %v\n", err)
+		return exitUsage
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.Tasks.CommandTimeout)
+	defer cancel()
+	store, runner, code := openDatabase(ctx, cfg, stderr, "budget")
+	if code != exitOK {
+		return code
+	}
+	defer store.Close()
+	status, err := runner.Status(ctx)
+	if err != nil {
+		fmt.Fprintf(stderr, "migration status: %v\n", err)
+		return exitInternal
+	}
+	if !status.Ready {
+		fmt.Fprintf(stderr, "database schema has %d pending migrations\n", status.Pending)
+		return exitDrift
+	}
+
+	ledger, err := agentbudgetpostgres.New(store)
+	if err != nil {
+		fmt.Fprintf(stderr, "create agent budget ledger: %v\n", err)
+		return exitInternal
+	}
+	budget, err := ledger.CreateRootBudget(ctx, cfg.Tasks.OrganizationID, *rootTaskID, *roleID, limits, time.Now().UTC())
+	if err != nil {
+		fmt.Fprintf(stderr, "create root budget: %v\n", err)
+		return exitInternal
+	}
+	writeValue(stdout, *jsonOutput, budget)
+	return exitOK
+}
+
 func printBudgetUsage(out io.Writer) {
-	fmt.Fprintln(out, `usage: orgctl budget <status|set-price|set-balance> [flags]
+	fmt.Fprintln(out, `usage: orgctl budget <status|set-price|set-balance|create-root> [flags]
 
   status --task <id> [--json]
       Show the multidimensional budget (USD, tokens, model calls, wall
@@ -230,5 +307,13 @@ func printBudgetUsage(out io.Writer) {
 
   set-balance --provider <id> --usd <amount> [--json]
       Set a provider wallet's absolute balance (not a top-up delta).
-      Rejected if the new balance is below what is already reserved.`)
+      Rejected if the new balance is below what is already reserved.
+
+  create-root --root-task <id> --role <role_id>
+              [--max-usd 5] [--max-tokens 500000] [--max-model-calls 100]
+              [--max-wall-time-ms 3600000] [--max-depth 5] [--max-retries 10]
+              [--max-subagents 20] [--json]
+      Create the root agent budget a task tree consumes against. Every
+      dimension defaults to agentbudget.DefaultLimits(); all seven ceilings
+      must be strictly positive.`)
 }

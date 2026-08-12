@@ -1,204 +1,6 @@
 schema_version: 0.1.0
 document_status: branch_0_candidate
 roles:
-- id: comunicaciones/analista_audiencias
-  department: comunicaciones
-  role: analista_audiencias
-  display_name: Analista de Comunicación y Audiencias (Comunicaciones)
-  runtime_kind: worker_agent
-  authority_class: specialist
-  canonical_leader: false
-  legacy_frontmatter_leader: false
-  model_policy: department.worker
-  profile_path: comunicaciones/analista_audiencias/PERFIL.md
-  department_agent_path: comunicaciones/AGENT.md
-  memory_domain: comunicaciones
-  memory_path: null
-  summary: 'Analizar el desempeño verificable de los canales y acciones de comunicación, así como las señales de
-    audiencia, para apoyar las decisiones de curaduría, distribución y calendario editorial de Comunicaciones. No
-    produce contenido: convierte datos y observaciones autorizadas en evidencia, hallazgos y recomendaciones para
-    la decisión del líder.'
-  reports_to_source_text: Editor de Contenido de Marca, líder del departamento de Comunicaciones.
-  rag_topics_source_text: '- Métricas de engagement reales y definiciones internas. - Calendario editorial y desempeño
-    histórico de contenidos. - Voz, tono y lineamientos de marca aprobados. - Segmentos y necesidades de audiencia
-    autorizados. - Historial de publicaciones, menciones, alianzas y aprendizajes verificables.'
-  status: imported_source
-  reports_to:
-  - comunicaciones/editor_contenido_marca
-- id: comunicaciones/community_manager
-  department: comunicaciones
-  role: community_manager
-  display_name: Community Manager (Comunicaciones)
-  runtime_kind: worker_agent
-  authority_class: specialist
-  canonical_leader: false
-  legacy_frontmatter_leader: false
-  model_policy: department.worker
-  profile_path: comunicaciones/community_manager/PERFIL.md
-  department_agent_path: comunicaciones/AGENT.md
-  memory_domain: comunicaciones
-  memory_path: null
-  summary: Gestionar la comunicación orgánica de Psi.Explorarte en redes sociales conforme al protocolo de comunicación
-    externa, la voz y el tono de marca aprobados por el departamento. Cura y publica activos y mensajes que hayan
-    sido producidos o aprobados por las áreas correspondientes; no redacta ni diseña contenido propio.
-  reports_to_source_text: Editor de Contenido de Marca, líder del departamento de Comunicaciones.
-  rag_topics_source_text: '- Gestión de comunidades y redes orgánicas. - Protocolo de publicación y calendario editorial.
-    - Voz y tono de marca aprobados. - Reglas de moderación, escalación y comunicación externa. - Métricas de engagement
-    reales de los canales de la organización.'
-  status: imported_source
-  reports_to:
-  - comunicaciones/editor_contenido_marca
-- id: comunicaciones/editor_contenido_marca
-  department: comunicaciones
-  role: editor_contenido_marca
-  display_name: Editor de Contenido de Marca (Comunicaciones)
-  runtime_kind: department_leader_agent
-  authority_class: department_leadership
-  canonical_leader: true
-  legacy_frontmatter_leader: true
-  model_policy: department.leader
-  profile_path: comunicaciones/editor_contenido_marca/PERFIL.md
-  department_agent_path: comunicaciones/AGENT.md
-  memory_domain: comunicaciones
-  memory_path: null
-  summary: Decidir el protocolo de comunicación externa (qué, cómo y dónde se comunica la empresa) y coordinar al
-    Community Manager. Cura y publica el blog consumiendo el copy que produce Creativo — no decide estrategia de
-    producto ni de crecimiento (eso es CEO/Marketing).
-  reports_to_source_text: Otro líder de departamento, Investigación, o directo a CEO.
-  rag_topics_source_text: '**Externo:** comunicación organizacional, community management, redacción de blog/periodística.
-    **Interno:** calendario editorial, métricas de engagement reales, tono de voz de marca ya definido.'
-  status: imported_source
-  reports_to:
-  - empresa/ceo
-- id: comunicaciones/rrpp_alianzas
-  department: comunicaciones
-  role: rrpp_alianzas
-  display_name: Especialista en Relaciones Públicas y Alianzas (Comunicaciones)
-  runtime_kind: worker_agent
-  authority_class: specialist
-  canonical_leader: false
-  legacy_frontmatter_leader: false
-  model_policy: department.worker
-  profile_path: comunicaciones/rrpp_alianzas/PERFIL.md
-  department_agent_path: comunicaciones/AGENT.md
-  memory_domain: comunicaciones
-  memory_path: null
-  summary: Apoyar la gestión ordenada de relaciones públicas, contactos institucionales y alianzas de comunicación
-    de Psi.Explorarte. Coordina oportunidades, solicitudes y compromisos externos dentro del protocolo aprobado;
-    no produce contenido ni negocia por cuenta propia compromisos que requieran autorización.
-  reports_to_source_text: Editor de Contenido de Marca, líder del departamento de Comunicaciones.
-  rag_topics_source_text: '- Protocolo de comunicación externa y aprobaciones. - Voz, tono y lineamientos de marca
-    aprobados. - Registro de alianzas y relaciones públicas existentes. - Políticas de uso de marca, privacidad
-    y escalación. - Historial verificable de menciones, colaboraciones y resultados de comunicación.'
-  status: imported_source
-  reports_to:
-  - comunicaciones/editor_contenido_marca
-- id: creativo/copywriter
-  department: creativo
-  role: copywriter
-  display_name: Escritor/Copywriter (Creativo)
-  runtime_kind: worker_agent
-  authority_class: specialist
-  canonical_leader: false
-  legacy_frontmatter_leader: false
-  model_policy: department.worker
-  profile_path: creativo/copywriter/PERFIL.md
-  department_agent_path: creativo/AGENT.md
-  memory_domain: creativo
-  memory_path: null
-  summary: Convertir briefs y lineamientos de marca en textos claros, relevantes y persuasivos para los activos
-    creativos de Psi.Explorarte. Entrega piezas listas para revisión del Diseñador; no define la estrategia de distribución
-    ni publica directamente.
-  reports_to_source_text: Diseñador, líder de Creativo.
-  rag_topics_source_text: null
-  status: imported_source
-  reports_to:
-  - creativo/disenador
-- id: creativo/disenador
-  department: creativo
-  role: disenador
-  display_name: Diseñador (Creativo)
-  runtime_kind: department_leader_agent
-  authority_class: department_leadership
-  canonical_leader: true
-  legacy_frontmatter_leader: true
-  model_policy: department.leader
-  profile_path: creativo/disenador/PERFIL.md
-  department_agent_path: creativo/AGENT.md
-  memory_domain: creativo
-  memory_path: null
-  summary: Coordinar al departamento (Escritor/Copywriter, Fotógrafo, Ilustrador, Editor de Video), que es puramente
-    productor de activos — no decide estrategia de distribución (eso es Marketing/Comunicaciones) ni publica directamente.
-  reports_to_source_text: Otro líder de departamento, Investigación, o directo a CEO.
-  rag_topics_source_text: '**Externo:** teoría del color y tipografía, dirección de arte, copywriting persuasivo,
-    composición fotográfica, edición de video. **Interno:** guía de estilo/marca ya construida, banco de referencias
-    visuales, qué contenido funcionó antes.'
-  status: imported_source
-  reports_to:
-  - empresa/ceo
-- id: creativo/editor_video
-  department: creativo
-  role: editor_video
-  display_name: Editor de Video (Creativo)
-  runtime_kind: worker_agent
-  authority_class: specialist
-  canonical_leader: false
-  legacy_frontmatter_leader: false
-  model_policy: department.worker
-  profile_path: creativo/editor_video/PERFIL.md
-  department_agent_path: creativo/AGENT.md
-  memory_domain: creativo
-  memory_path: null
-  summary: Montar y preparar piezas audiovisuales coherentes con la guía de estilo/marca a partir de material disponible
-    y de un brief aprobado. Entrega videos, proyectos y especificaciones para revisión del Diseñador; no define
-    la estrategia de distribución ni publica directamente.
-  reports_to_source_text: Diseñador, líder de Creativo.
-  rag_topics_source_text: null
-  status: imported_source
-  reports_to:
-  - creativo/disenador
-- id: creativo/fotografo
-  department: creativo
-  role: fotografo
-  display_name: Fotógrafo (Creativo)
-  runtime_kind: worker_agent
-  authority_class: specialist
-  canonical_leader: false
-  legacy_frontmatter_leader: false
-  model_policy: department.worker
-  profile_path: creativo/fotografo/PERFIL.md
-  department_agent_path: creativo/AGENT.md
-  memory_domain: creativo
-  memory_path: null
-  summary: Crear, seleccionar y preparar material fotográfico coherente con la guía de estilo/marca y con el brief
-    creativo. Entrega imágenes y documentación de uso para revisión del Diseñador; no define la estrategia de distribución
-    ni publica directamente.
-  reports_to_source_text: Diseñador, líder de Creativo.
-  rag_topics_source_text: null
-  status: imported_source
-  reports_to:
-  - creativo/disenador
-- id: creativo/ilustrador
-  department: creativo
-  role: ilustrador
-  display_name: Ilustrador (Creativo)
-  runtime_kind: worker_agent
-  authority_class: specialist
-  canonical_leader: false
-  legacy_frontmatter_leader: false
-  model_policy: department.worker
-  profile_path: creativo/ilustrador/PERFIL.md
-  department_agent_path: creativo/AGENT.md
-  memory_domain: creativo
-  memory_path: null
-  summary: Desarrollar ilustraciones, recursos gráficos y sistemas visuales originales que traduzcan el brief y
-    la identidad de marca en piezas consistentes. Entrega archivos editables o finales para revisión del Diseñador;
-    no define la estrategia de distribución ni publica directamente.
-  reports_to_source_text: Diseñador, líder de Creativo.
-  rag_topics_source_text: null
-  status: imported_source
-  reports_to:
-  - creativo/disenador
 - id: empresa/ceo
   department: empresa
   role: ceo
@@ -212,17 +14,37 @@ roles:
   department_agent_path: empresa/AGENT.md
   memory_domain: empresa
   memory_path: empresa/ceo/memoria/MEMORY.md
-  summary: 'Coordinar entre departamentos y escalar a Eduardo. Su objetivo explícito: que la empresa **funcione,
-    venda, y sea 100% autónoma**. Deliberadamente minimalista para no competir con la función de auditoría de Investigación
-    ni con el trabajo de coordinación que ya hace cada líder dentro de su propio equipo.'
-  reports_to_source_text: Directo a Eduardo — es la escalación final de toda la organización salvo Investigación
-    (par, no subordinado).
-  rag_topics_source_text: '**Dominio:** `empresa`. Externo: estrategia de agentes autónomos, gobernanza de IA, casos
-    reales de organizaciones 100% o mayormente autónomas. Interno: decisiones estratégicas ya tomadas, resúmenes
-    sanitizados que cada departamento publica hacia el Cerebro Empresa.'
+  summary: 'Coordinar entre departamentos y escalar a Eduardo. Su objetivo explícito: que la empresa **funcione, venda, y
+    sea 100% autónoma**. Deliberadamente minimalista para no competir con la función de auditoría de Investigación ni con
+    el trabajo de coordinación que ya hace cada líder dentro de su propio equipo.'
+  reports_to_source_text: Directo a Eduardo — es la escalación final de toda la organización salvo Investigación (par, no
+    subordinado).
+  rag_topics_source_text: '**Dominio:** `empresa`. Externo: estrategia de agentes autónomos, gobernanza de IA, casos reales
+    de organizaciones 100% o mayormente autónomas. Interno: decisiones estratégicas ya tomadas, resúmenes sanitizados que
+    cada departamento publica hacia el Cerebro Empresa.'
   status: imported_source
   reports_to:
   - empresa/human
+- id: empresa/ceo_observer
+  department: empresa
+  role: ceo_observer
+  display_name: Observador concurrente del CEO
+  runtime_kind: concurrent_read_only_observer
+  authority_class: executive_observer
+  canonical_leader: false
+  legacy_frontmatter_leader: false
+  model_policy: executive.observer
+  profile_path: null
+  department_agent_path: empresa/AGENT.md
+  memory_domain: empresa
+  memory_path: null
+  summary: Inspecciona conversación, proyectos, actividad y evidencia en paralelo; entrega observaciones privadas al CEO sin
+    responder al propietario ni modificar proyectos.
+  reports_to_source_text: CEO; su ejecución es de solo lectura.
+  rag_topics_source_text: Estado de proyectos, contradicciones, bloqueos, evidencia y riesgos organizacionales sanitizados.
+  status: proposed_profile_required
+  reports_to:
+  - empresa/ceo
 - id: empresa/human
   department: empresa
   role: human
@@ -241,143 +63,6 @@ roles:
   rag_topics_source_text: null
   status: imported_source
   reports_to: []
-- id: finanzas/administrador_financiero
-  department: finanzas
-  role: administrador_financiero
-  display_name: Administrador Financiero (Finanzas)
-  runtime_kind: department_leader_agent
-  authority_class: department_leadership
-  canonical_leader: true
-  legacy_frontmatter_leader: true
-  model_policy: department.leader
-  profile_path: finanzas/administrador_financiero/PERFIL.md
-  department_agent_path: finanzas/AGENT.md
-  memory_domain: finanzas
-  memory_path: null
-  summary: Coordinar al departamento (Analista de KPIs, Estratega de Expansión) y mantener la salud financiera de
-    la operación. El Analista de KPIs **prepara** los indicadores; Investigación los **audita** — este rol no se
-    autoevalúa, es una separación deliberada de responsabilidades.
-  reports_to_source_text: Otro líder de departamento, Investigación, o directo a CEO.
-  rag_topics_source_text: '**Externo:** finanzas para empresas chicas, KPIs (CAC/LTV/burn rate), regulación de medios
-    de pago en Chile (MercadoPago/PayPal), tributación chilena básica. **Interno:** KPIs históricos, oportunidades
-    evaluadas y su resultado, políticas de cumplimiento ya definidas.'
-  status: imported_source
-  reports_to:
-  - empresa/ceo
-- id: finanzas/analista_costos
-  department: finanzas
-  role: analista_costos
-  display_name: Analista de Costos y Caja (Finanzas)
-  runtime_kind: worker_agent
-  authority_class: specialist
-  canonical_leader: false
-  legacy_frontmatter_leader: false
-  model_policy: department.worker
-  profile_path: finanzas/analista_costos/PERFIL.md
-  department_agent_path: finanzas/AGENT.md
-  memory_domain: finanzas
-  memory_path: null
-  summary: 'Dueño del registro y seguimiento de la economía real de la organización: qué se gasta y en qué (APIs,
-    infraestructura, herramientas, publicidad), qué entra, y qué se debe. Eduardo es el principal proveedor — sus
-    ingresos vienen de los pacientes de Clínica Online, así que la salud de la organización se mide contra esa fuente,
-    y el capital mensual para publicidad se decide con esos números, no con optimismo.'
-  reports_to_source_text: Al Administrador Financiero, líder de Finanzas.
-  rag_topics_source_text: null
-  status: imported_source
-  reports_to:
-  - finanzas/administrador_financiero
-- id: finanzas/analista_kpis
-  department: finanzas
-  role: analista_kpis
-  display_name: Analista de KPIs (Finanzas)
-  runtime_kind: worker_agent
-  authority_class: specialist
-  canonical_leader: false
-  legacy_frontmatter_leader: false
-  model_policy: department.worker
-  profile_path: finanzas/analista_kpis/PERFIL.md
-  department_agent_path: finanzas/AGENT.md
-  memory_domain: finanzas
-  memory_path: null
-  summary: Preparar indicadores financieros y operativos con datos trazables, supuestos explícitos y criterios conservadores,
-    para que el Administrador Financiero los revise antes de cualquier publicación o uso en decisiones. El objetivo
-    es mostrar la salud financiera real de la operación, no producir cifras optimistas.
-  reports_to_source_text: Finanzas. Especialista operativo. Reporta al Administrador Financiero, líder del departamento.
-    Ejecuta el trabajo de preparación y control analítico que le asigne su líder; no es punto de contacto directo
-    con CEO.
-  rag_topics_source_text: null
-  status: imported_source
-  reports_to:
-  - finanzas/administrador_financiero
-- id: finanzas/estratega_expansion
-  department: finanzas
-  role: estratega_expansion
-  display_name: Estratega de Expansión (Finanzas)
-  runtime_kind: worker_agent
-  authority_class: specialist
-  canonical_leader: false
-  legacy_frontmatter_leader: false
-  model_policy: department.worker
-  profile_path: finanzas/estratega_expansion/PERFIL.md
-  department_agent_path: finanzas/AGENT.md
-  memory_domain: finanzas
-  memory_path: null
-  summary: Evaluar, junto con el Administrador Financiero, oportunidades de venta o expansión y alternativas de
-    deuda con criterio financiero, explícito y conservador. Su función es aportar análisis para decidir; no convertir
-    una oportunidad en compromiso comercial o financiero sin las aprobaciones correspondientes.
-  reports_to_source_text: Finanzas. Especialista operativo. Reporta al Administrador Financiero, líder del departamento.
-    Ejecuta análisis y prepara recomendaciones dentro del alcance asignado; no es punto de contacto directo con
-    CEO.
-  rag_topics_source_text: null
-  status: imported_source
-  reports_to:
-  - finanzas/administrador_financiero
-- id: finanzas/ingeniero_industrial
-  department: finanzas
-  role: ingeniero_industrial
-  display_name: Ingeniero Industrial (Finanzas)
-  runtime_kind: worker_agent
-  authority_class: specialist
-  canonical_leader: false
-  legacy_frontmatter_leader: false
-  model_policy: department.worker
-  profile_path: finanzas/ingeniero_industrial/PERFIL.md
-  department_agent_path: finanzas/AGENT.md
-  memory_domain: finanzas
-  memory_path: null
-  summary: 'Optimizar los procesos de la organización misma — la disciplina de ingeniería industrial aplicada a
-    una empresa de agentes: costo por unidad de trabajo, cuellos de botella, colas, capacidad, ventanas tarifarias
-    y retrabajo. La organización no tenía hasta hoy a nadie cuyo trabajo fuera mirarse a sí misma con esos lentes.
-    Como en el resto de la organización, no implementa — define qué se mide y cuál es el objetivo; la instrumentación
-    y el código son de Ingeniería de IA.'
-  reports_to_source_text: Al Administrador Financiero, líder de Finanzas.
-  rag_topics_source_text: null
-  status: imported_source
-  reports_to:
-  - finanzas/administrador_financiero
-- id: ingenieria_ia/arquitecto_infraestructura
-  department: ingenieria_ia
-  role: arquitecto_infraestructura
-  display_name: Arquitecto de Infraestructura (Ingeniería de IA)
-  runtime_kind: worker_agent
-  authority_class: specialist
-  canonical_leader: false
-  legacy_frontmatter_leader: false
-  model_policy: department.worker
-  profile_path: ingenieria_ia/arquitecto_infraestructura/PERFIL.md
-  department_agent_path: ingenieria_ia/AGENT.md
-  memory_domain: ingenieria_ia
-  memory_path: null
-  summary: 'Dueño del diseño de la infraestructura donde vive todo lo demás: el VPS, k3s y sus servicios, cómo se
-    nombran y cómo se llega a ellos, y que cada pieza desplegada tenga fuente en el árbol y manifiesto versionado.
-    Los riesgos latentes que dejaron las auditorías son su cartera: ClusterIPs escritas a mano en unidades systemd
-    que se rompen en silencio si un Service se recrea, una ruta del gateway sin fuente que no se puede reconstruir,
-    y manifiestos del disco que divergen del clúster.'
-  reports_to_source_text: Al Orquestador, líder de Ingeniería de IA.
-  rag_topics_source_text: null
-  status: imported_source
-  reports_to:
-  - ingenieria_ia/orquestador
 - id: ingenieria_ia/arquitecto_software
   department: ingenieria_ia
   role: arquitecto_software
@@ -391,10 +76,10 @@ roles:
   department_agent_path: ingenieria_ia/AGENT.md
   memory_domain: ingenieria_ia
   memory_path: null
-  summary: 'Custodiar el diseño del código de la organización: que los componentes tengan fronteras limpias, que
-    las decisiones de estructura queden escritas donde corresponde y que ningún arreglo urgente hipoteque el diseño.
-    Cuando un cambio toca varios paquetes o introduce una dependencia nueva, es quien dice si la forma propuesta
-    es la correcta antes de que se implemente.'
+  summary: 'Custodiar el diseño del código de la organización: que los componentes tengan fronteras limpias, que las decisiones
+    de estructura queden escritas donde corresponde y que ningún arreglo urgente hipoteque el diseño. Cuando un cambio toca
+    varios paquetes o introduce una dependencia nueva, es quien dice si la forma propuesta es la correcta antes de que se
+    implemente.'
   reports_to_source_text: Al Orquestador, líder de Ingeniería de IA.
   rag_topics_source_text: null
   status: imported_source
@@ -413,10 +98,10 @@ roles:
   department_agent_path: ingenieria_ia/AGENT.md
   memory_domain: ingenieria_ia
   memory_path: null
-  summary: 'Custodio de los secretos y de la superficie de ataque: credenciales y su rotación, permisos de archivos
-    y montajes, qué puede escribir cada herramienta y qué rutas le quedan prohibidas. Cada error de esta familia
-    que hubo hoy (un token legible por cualquier usuario, una ruta de escritura aceptada sin validar) es exactamente
-    el tipo de cosa que este rol previene.'
+  summary: 'Custodio de los secretos y de la superficie de ataque: credenciales y su rotación, permisos de archivos y montajes,
+    qué puede escribir cada herramienta y qué rutas le quedan prohibidas. Cada error de esta familia que hubo hoy (un token
+    legible por cualquier usuario, una ruta de escritura aceptada sin validar) es exactamente el tipo de cosa que este rol
+    previene.'
   reports_to_source_text: Al Orquestador, líder de Ingeniería de IA.
   rag_topics_source_text: null
   status: imported_source
@@ -435,13 +120,12 @@ roles:
   department_agent_path: ingenieria_ia/AGENT.md
   memory_domain: ingenieria_ia
   memory_path: null
-  summary: 'Es un **ejecutor, no un rol pensante**. No decide qué hay que hacer ni cómo debería hacerse: toma un
-    encargo ya especificado y lo lleva a cabo. Su ficha existe para que quede claro ese límite — a este puesto no
-    se le delegan decisiones de diseño, prioridad ni alcance. Si un encargo le llega ambiguo, la respuesta correcta
-    es devolverlo, no interpretarlo. Lo distingue del resto del departamento una sola capacidad: es el único que
-    trabaja con shell real sobre el repositorio y **puede cerrar el trabajo con un commit**. Los demás roles escriben
-    y compilan dentro del runtime, pero no commitean. Por eso el trabajo que necesita quedar en la historia del
-    repositorio pasa por acá.'
+  summary: 'Es un **ejecutor, no un rol pensante**. No decide qué hay que hacer ni cómo debería hacerse: toma un encargo ya
+    especificado y lo lleva a cabo. Su ficha existe para que quede claro ese límite — a este puesto no se le delegan decisiones
+    de diseño, prioridad ni alcance. Si un encargo le llega ambiguo, la respuesta correcta es devolverlo, no interpretarlo.
+    Lo distingue del resto del departamento una sola capacidad: es el único que trabaja con shell real sobre el repositorio
+    y **puede cerrar el trabajo con un commit**. Los demás roles escriben y compilan dentro del runtime, pero no commitean.
+    Por eso el trabajo que necesita quedar en la historia del repositorio pasa por acá.'
   reports_to_source_text: null
   rag_topics_source_text: null
   status: imported_source
@@ -460,9 +144,9 @@ roles:
   department_agent_path: ingenieria_ia/AGENT.md
   memory_domain: ingenieria_ia
   memory_path: null
-  summary: 'Dueño de las tuberías de datos de la organización: la ingesta al RAG (hoy el camino de libros traducidos
-    y del contenido del buscador), el spool y la cuarentena, los recibos e índices derivados, y la calidad de lo
-    que entra — un documento mal troceado o duplicado es su problema aunque lo haya detectado Investigación.'
+  summary: 'Dueño de las tuberías de datos de la organización: la ingesta al RAG (hoy el camino de libros traducidos y del
+    contenido del buscador), el spool y la cuarentena, los recibos e índices derivados, y la calidad de lo que entra — un
+    documento mal troceado o duplicado es su problema aunque lo haya detectado Investigación.'
   reports_to_source_text: Al Orquestador, líder de Ingeniería de IA.
   rag_topics_source_text: null
   status: imported_source
@@ -481,35 +165,37 @@ roles:
   department_agent_path: ingenieria_ia/AGENT.md
   memory_domain: ingenieria_ia
   memory_path: ingenieria_ia/frontend/memoria/MEMORY.md
-  summary: Construir y mantener las interfaces web que otros departamentos necesitan (dashboards internos, paneles
-    de operación, microsites o landings cuando Creativo/Servicios lo piden vía tarea autorizada) — sin decidir producto
-    ni estrategia visual por su cuenta; ejecuta el brief que le llega, con criterio técnico propio sobre cómo implementarlo
-    bien.
+  summary: Construir y mantener las interfaces web que otros departamentos necesitan (dashboards internos, paneles de operación,
+    microsites o landings cuando Creativo/Servicios lo piden vía tarea autorizada) — sin decidir producto ni estrategia visual
+    por su cuenta; ejecuta el brief que le llega, con criterio técnico propio sobre cómo implementarlo bien.
   reports_to_source_text: Al Orquestador (líder de Ingeniería de IA).
-  rag_topics_source_text: '**Externo:** patrones de UI/UX, accesibilidad (WCAG), sistemas de diseño por tokens,
-    frameworks frontend y sus trade-offs, rendimiento de carga. **Interno:** decisiones de UI ya tomadas, guía de
-    estilo/marca cuando exista, componentes reutilizables ya construidos, qué patrón visual funcionó antes.'
+  rag_topics_source_text: '**Externo:** patrones de UI/UX, accesibilidad (WCAG), sistemas de diseño por tokens, frameworks
+    frontend y sus trade-offs, rendimiento de carga. **Interno:** decisiones de UI ya tomadas, guía de estilo/marca cuando
+    exista, componentes reutilizables ya construidos, qué patrón visual funcionó antes.'
   status: imported_source
   reports_to:
   - ingenieria_ia/orquestador
-- id: ingenieria_ia/guardian_cloud
+- id: ingenieria_ia/ingeniero_ia
   department: ingenieria_ia
-  role: guardian_cloud
-  display_name: Guardián/Cloud-Infraestructura (Ingeniería de IA)
+  role: ingeniero_ia
+  display_name: Ingeniero de IA (Ingeniería de IA)
   runtime_kind: worker_agent
   authority_class: specialist
   canonical_leader: false
   legacy_frontmatter_leader: false
   model_policy: department.worker
-  profile_path: ingenieria_ia/guardian_cloud/PERFIL.md
+  profile_path: ingenieria_ia/ingeniero_ia/PERFIL.md
   department_agent_path: ingenieria_ia/AGENT.md
   memory_domain: ingenieria_ia
   memory_path: null
-  summary: 'Custodio de lo que corre: los pods de `psi-infra`, los contenedores de producción, el guardián determinista
-    que vigila recursos, procesos, colas, Kaggle y RAG, y los despliegues — cada binario desplegado con su fuente
-    en el árbol, cada manifiesto del disco comparado con el clúster antes de aplicar.'
+  summary: 'Dueño de cómo la organización consume modelos: proveedores, model runtime, ruteo y fallback, las adaptaciones
+    Responses/ChatCompletions, uso de herramientas, context engineering (compresión, caching, compactación de contexto) y
+    la integración de RAG hacia el Working Context de cada tarea. Conoce el RAG lo suficiente para consumirlo bien, pero
+    no es dueño de su tecnología de recuperación — eso es de `ingenieria_ia/semantic_engineer`. Cuando exista Memory OS,
+    es quien construye la interfaz entre memoria y modelo, no quien diseña la memoria misma.'
   reports_to_source_text: Al Orquestador, líder de Ingeniería de IA.
-  rag_topics_source_text: null
+  rag_topics_source_text: 'Model runtime, adaptadores de proveedor, tool use, context engineering, compresión de contexto,
+    caching y compactación, ingeniería de prompts.'
   status: imported_source
   reports_to:
   - ingenieria_ia/orquestador
@@ -526,10 +212,9 @@ roles:
   department_agent_path: ingenieria_ia/AGENT.md
   memory_domain: ingenieria_ia
   memory_path: null
-  summary: 'Dueño de la parte modelo de la organización: embeddings y su calidad (troceado, re-embebido, evaluación
-    de retrieval), los kernels GPU de Kaggle que corren el trabajo pesado sin saturar el VPS, y las comparaciones
-    de modelos con metodología reproducible — configuración, muestra y límite declarados, nunca una muestra favorable
-    presentada como prueba general.'
+  summary: 'Dueño de la parte modelo de la organización: embeddings y su calidad (troceado, re-embebido, evaluación de retrieval),
+    los kernels GPU de Kaggle que corren el trabajo pesado sin saturar el VPS, y las comparaciones de modelos con metodología
+    reproducible — configuración, muestra y límite declarados, nunca una muestra favorable presentada como prueba general.'
   reports_to_source_text: Al Orquestador, líder de Ingeniería de IA.
   rag_topics_source_text: null
   status: imported_source
@@ -548,44 +233,20 @@ roles:
   department_agent_path: ingenieria_ia/AGENT.md
   memory_domain: ingenieria_ia
   memory_path: null
-  summary: Coordinar el trabajo técnico de Ingeniería de IA (Arquitecto de Software, Frontend, Data Engineer, Data
-    Scientist/ML, QA, Guardián/Cloud-Infraestructura, Ciberseguridad, Project Manager, Workflow y Grafos) y decidir
-    qué información del departamento se sanitiza y publica hacia el Cerebro Empresa. No ejecuta el trabajo técnico
-    de cada rol — dirige y prioriza.
+  summary: Coordinar el trabajo técnico de Ingeniería de IA (Arquitecto de Software, Ingeniero de IA, Semantic Engineer,
+    Data Engineer, Data Scientist/ML, Ciberseguridad, QA, Code-runner, Frontend) y decidir qué información del departamento
+    se sanitiza y publica hacia el Cerebro Empresa. No ejecuta el trabajo técnico de cada rol — dirige y prioriza.
   reports_to_source_text: Otro líder de departamento, Investigación, o directo a CEO — según lo que exige `organizacion/AGENT.md`.
-    No tiene un superior fijo dentro de Ingeniería de IA (es el líder), pero sigue bajo supervisión humana de Eduardo
-    como todo el resto de la organización.
-  rag_topics_source_text: '**Externo (investigar activamente):** arquitectura de software y patrones, Go idiomático,
-    Kubernetes/k3s, OWASP/hardening, MLOps, metodologías de testing, matemáticas y cálculo aplicado (redes neuronales
-    simples, optimización de hiperparámetros), diseño de sistemas, frontend (CSS/HTML/ React), pipelines de datos,
-    reportería y visualización de datos. **Interno (se acumula solo, no es tema de búsqueda):** decisiones técnicas
-    del departamento (ADRs), runbooks de infraestructura, convenciones de código, incidentes y su resolución, estado
-    del roadmap de migración.'
+    No tiene un superior fijo dentro de Ingeniería de IA (es el líder), pero sigue bajo supervisión humana de Eduardo como
+    todo el resto de la organización.
+  rag_topics_source_text: '**Externo (investigar activamente):** arquitectura de software y patrones, Go idiomático, Kubernetes/k3s,
+    OWASP/hardening, MLOps, metodologías de testing, matemáticas y cálculo aplicado (redes neuronales simples, optimización
+    de hiperparámetros), diseño de sistemas, frontend (CSS/HTML/ React), pipelines de datos, reportería y visualización de
+    datos. **Interno (se acumula solo, no es tema de búsqueda):** decisiones técnicas del departamento (ADRs), runbooks de
+    infraestructura, convenciones de código, incidentes y su resolución, estado del roadmap de migración.'
   status: imported_source
   reports_to:
   - empresa/ceo
-- id: ingenieria_ia/project_manager
-  department: ingenieria_ia
-  role: project_manager
-  display_name: Project Manager (Ingeniería de IA)
-  runtime_kind: worker_agent
-  authority_class: specialist
-  canonical_leader: false
-  legacy_frontmatter_leader: false
-  model_policy: department.worker
-  profile_path: ingenieria_ia/project_manager/PERFIL.md
-  department_agent_path: ingenieria_ia/AGENT.md
-  memory_domain: ingenieria_ia
-  memory_path: null
-  summary: 'Dueño del ritmo de entrega: que el trabajo avance en ciclos cortos con checkpoint verificable — un test
-    que pasa, un endpoint que responde, un build que corre — y no en tramos largos sin retroalimentación, que es
-    donde se esconden los problemas más caros. Mantiene el registro único de cada tarea larga: ruta de origen, destino,
-    total esperado, completados, errores y fecha.'
-  reports_to_source_text: Al Orquestador, líder de Ingeniería de IA.
-  rag_topics_source_text: null
-  status: imported_source
-  reports_to:
-  - ingenieria_ia/orquestador
 - id: ingenieria_ia/qa
   department: ingenieria_ia
   role: qa
@@ -599,34 +260,59 @@ roles:
   department_agent_path: ingenieria_ia/AGENT.md
   memory_domain: ingenieria_ia
   memory_path: ingenieria_ia/qa/memoria/MEMORY.md
-  summary: 'Dueño de las pruebas de la organización: las diseña y las ejecuta, no las recibe hechas de nadie, y
-    revisa el código antes de que suba. Con el toolchain de la imagen `toolchain` y la herramienta `verificar_codigo`
-    (comando fijo: compilar y correr tests, nada de shell libre) puede probar de verdad dentro del runtime — un
-    visto bueno sin corrida es un estado que miente, y eso ya costó cuatro tareas.'
+  summary: 'Dueño de las pruebas de la organización: las diseña y las ejecuta, no las recibe hechas de nadie, y revisa el
+    código antes de que suba. Con el toolchain de la imagen `toolchain` y la herramienta `verificar_codigo` (comando fijo:
+    compilar y correr tests, nada de shell libre) puede probar de verdad dentro del runtime — un visto bueno sin corrida es
+    un estado que miente, y eso ya costó cuatro tareas.'
   reports_to_source_text: Al Orquestador, líder de Ingeniería de IA.
   rag_topics_source_text: null
   status: imported_source
   reports_to:
   - ingenieria_ia/orquestador
-- id: ingenieria_ia/workflow_grafos
+- id: ingenieria_ia/razonamiento_logico
   department: ingenieria_ia
-  role: workflow_grafos
-  display_name: Workflow y Grafos (Ingeniería de IA)
+  role: razonamiento_logico
+  display_name: Especialista en razonamiento lógico
+  runtime_kind: verifier_agent
+  authority_class: assurance
+  canonical_leader: false
+  legacy_frontmatter_leader: false
+  model_policy: department.worker
+  profile_path: null
+  department_agent_path: ingenieria_ia/AGENT.md
+  memory_domain: ingenieria_ia
+  memory_path: null
+  summary: Implementa reglas organizacionales ejecutables, verificación lógica en modo sombra y, en una fase posterior, verificación
+    de afirmaciones mediante tableaux.
+  reports_to_source_text: Orquestador de Ingeniería de IA.
+  rag_topics_source_text: Datalog, Prolog, lógica de primer orden acotada, cláusulas de Horn, tableaux semánticos, políticas
+    y verificación de invariantes.
+  status: proposed_profile_required
+  reports_to:
+  - ingenieria_ia/orquestador
+- id: ingenieria_ia/semantic_engineer
+  department: ingenieria_ia
+  role: semantic_engineer
+  display_name: Semantic Engineer (Ingeniería de IA)
   runtime_kind: worker_agent
   authority_class: specialist
   canonical_leader: false
   legacy_frontmatter_leader: false
   model_policy: department.worker
-  profile_path: ingenieria_ia/workflow_grafos/PERFIL.md
+  profile_path: ingenieria_ia/semantic_engineer/PERFIL.md
   department_agent_path: ingenieria_ia/AGENT.md
   memory_domain: ingenieria_ia
   memory_path: null
-  summary: 'Mantiene y extiende el hook (mensajes, estados, deadlines, escalado) y el grafo real de comunicación
-    entre roles: quién habla con quién, por dónde, y qué pasa cuando un eslabón no tiene quien lo consuma del otro
-    lado. Los fallos de canal de hoy — seis departamentos sin consumidor, deadlines que no escalan, dieciséis fallos
-    sin reintento — son su cartera directa.'
+  summary: 'Dueño de la tecnología de retrieval y representación semántica de la organización: embeddings, recuperación
+    semántica e híbrida, RAG, GraphRAG, RAG jerárquico, árboles semánticos, ontologías, grafos de conocimiento, reranking,
+    evaluación de retrieval, retrieval cross-lingual, representación simbólica, Logic IR y la integración con Prolog en
+    modo sombra. Es la capa semántica de un futuro Memory OS. Evoluciona conceptualmente del antiguo rol Workflow y Grafos
+    (el trabajo real de grafos de comunicación entre roles no tenía historial durable de ejecución al momento de esta
+    reestructuración — ver commit de reestructuración de roles de Ingeniería de IA) hacia un rol con ownership mucho más
+    amplio: toda la tecnología de retrieval y representación semántica del departamento, no solo el grafo de mensajería.'
   reports_to_source_text: Al Orquestador, líder de Ingeniería de IA.
-  rag_topics_source_text: null
+  rag_topics_source_text: 'Embeddings, hybrid retrieval, RAG, GraphRAG, RAG jerárquico, ontologías, grafos de conocimiento,
+    reranking, evaluación de retrieval, retrieval cross-lingual, Logic IR, Prolog/Datalog.'
   status: imported_source
   reports_to:
   - ingenieria_ia/orquestador
@@ -643,21 +329,158 @@ roles:
   department_agent_path: investigacion/AGENT.md
   memory_domain: investigacion
   memory_path: null
-  summary: Auditar continuamente el "segundo cerebro" de la empresa (`CerebroEmpresa`) y el workflow de RAG de todos
-    los departamentos, incluidas las células de producto — sin acumular memoria operativa propia del negocio. Diagnostica
-    problemas de calidad del RAG (dominios vacíos, contenido mal troceado/ embebido, duplicados, metadata inconsistente);
-    delega el arreglo técnico a Ingeniería de IA — nunca implementa el arreglo por sí mismo.
-  reports_to_source_text: Otro líder de departamento, o directo a CEO — según lo que exige `organizacion/AGENT.md`.
-    Par de CEO, sigue bajo supervisión humana de Eduardo.
+  summary: Auditar continuamente el "segundo cerebro" de la empresa (`CerebroEmpresa`) y el workflow de RAG de todos los departamentos,
+    incluidas las células de producto — sin acumular memoria operativa propia del negocio. Diagnostica problemas de calidad
+    del RAG (dominios vacíos, contenido mal troceado/ embebido, duplicados, metadata inconsistente); delega el arreglo técnico
+    a Ingeniería de IA — nunca implementa el arreglo por sí mismo.
+  reports_to_source_text: Otro líder de departamento, o directo a CEO — según lo que exige `organizacion/AGENT.md`. Par de
+    CEO, sigue bajo supervisión humana de Eduardo.
   rag_topics_source_text: '**Externo:** segundo cerebro/PKM, teoría e ingeniería de grafos, metodologías de investigación
-    en IA, arquitecturas/evaluación/chunking/ retrieval de RAG. **Interno:** hallazgos de auditoría, referencias
-    y decisiones de auditoría — no un historial paralelo de operación del negocio.'
+    en IA, arquitecturas/evaluación/chunking/ retrieval de RAG. **Interno:** hallazgos de auditoría, referencias y decisiones
+    de auditoría — no un historial paralelo de operación del negocio.'
   status: imported_source
   reports_to:
   - empresa/ceo
   - empresa/human
-- id: marketing/analista_performance
-  department: marketing
+- id: investigacion/research_worker_hourly
+  department: investigacion
+  role: research_worker_hourly
+  display_name: Worker horario de Investigación
+  runtime_kind: scheduled_worker
+  authority_class: research_execution
+  canonical_leader: false
+  legacy_frontmatter_leader: false
+  model_policy: research.worker
+  profile_path: investigacion/research_worker_hourly/PERFIL.md
+  department_agent_path: investigacion/AGENT.md
+  memory_domain: investigacion
+  memory_path: null
+  summary: Detecta vacíos de conocimiento por proyecto, departamento y perfil; produce candidatos de investigación y RAG,
+    sin publicar directamente al conocimiento aprobado.
+  reports_to_source_text: Unidad transversal de Investigación; los hallazgos se entregan al auditor y se escalan al CEO o
+    a Eduardo según riesgo.
+  rag_topics_source_text: Vacíos de conocimiento derivados del registro organizacional, proyectos activos y perfiles aprobados.
+  status: imported_source
+  reports_to:
+  - empresa/ceo
+  - empresa/human
+- id: investigacion/research_worker_hourly_mimo_canary
+  department: investigacion
+  role: research_worker_hourly_mimo_canary
+  display_name: Worker horario de Investigacion -- canario MiMo-V2.5 (R10.2)
+  runtime_kind: scheduled_worker
+  authority_class: research_execution
+  canonical_leader: false
+  legacy_frontmatter_leader: false
+  model_policy: research.worker.mimo_canary
+  profile_path: investigacion/research_worker_hourly_mimo_canary/PERFIL.md
+  department_agent_path: investigacion/AGENT.md
+  memory_domain: investigacion
+  memory_path: null
+  summary: 'Identidad de rol aditiva y temporal, usada exclusivamente para el canario R10.2 (DeepSeek V4 Flash vs
+    MiMo-V2.5 en research.corpus_curate). Misma autoridad/contrato que investigacion/research_worker_hourly; unico
+    cambio real es la ruta de modelo (model_policy), para no alterar el ruteo por defecto del rol de produccion
+    durante el experimento. Reversible -- eliminar esta entrada y su model_policy revierte el canario sin
+    migraciones destructivas.'
+  reports_to_source_text: 'Unidad transversal de Investigacion; misma cadena de reporte que investigacion/research_worker_hourly.'
+  rag_topics_source_text: 'Ninguno -- rol de canario, no participa en deteccion de vacios de conocimiento real.'
+  status: imported_source
+  reports_to:
+  - empresa/ceo
+  - empresa/human
+- id: negocio/administrador_financiero
+  department: negocio
+  role: administrador_financiero
+  display_name: Administrador Financiero (Finanzas)
+  runtime_kind: worker_agent
+  authority_class: specialist
+  canonical_leader: false
+  legacy_frontmatter_leader: false
+  model_policy: department.worker
+  profile_path: negocio/administrador_financiero/PERFIL.md
+  department_agent_path: negocio/AGENT.md
+  memory_domain: negocio
+  memory_path: null
+  summary: Coordinar al departamento (Analista de KPIs, Estratega de Expansión) y mantener la salud financiera de la operación.
+    El Analista de KPIs **prepara** los indicadores; Investigación los **audita** — este rol no se autoevalúa, es una separación
+    deliberada de responsabilidades.
+  reports_to_source_text: 'Otro líder de departamento, Investigación, o directo a CEO. [Migrado: pasa a reportar a negocio/director_negocio
+    tras la consolidación de comunicaciones/creativo/finanzas/marketing en negocio.]'
+  rag_topics_source_text: '**Externo:** finanzas para empresas chicas, KPIs (CAC/LTV/burn rate), regulación de medios de pago
+    en Chile (MercadoPago/PayPal), tributación chilena básica. **Interno:** KPIs históricos, oportunidades evaluadas y su
+    resultado, políticas de cumplimiento ya definidas.'
+  status: imported_source
+  reports_to:
+  - negocio/director_negocio
+- id: negocio/analista_audiencias
+  department: negocio
+  role: analista_audiencias
+  display_name: Analista de Comunicación y Audiencias (Comunicaciones)
+  runtime_kind: worker_agent
+  authority_class: specialist
+  canonical_leader: false
+  legacy_frontmatter_leader: false
+  model_policy: department.worker
+  profile_path: negocio/analista_audiencias/PERFIL.md
+  department_agent_path: negocio/AGENT.md
+  memory_domain: negocio
+  memory_path: null
+  summary: 'Analizar el desempeño verificable de los canales y acciones de comunicación, así como las señales de audiencia,
+    para apoyar las decisiones de curaduría, distribución y calendario editorial de Comunicaciones. No produce contenido:
+    convierte datos y observaciones autorizadas en evidencia, hallazgos y recomendaciones para la decisión del líder.'
+  reports_to_source_text: Editor de Contenido de Marca, líder del departamento de Comunicaciones.
+  rag_topics_source_text: '- Métricas de engagement reales y definiciones internas. - Calendario editorial y desempeño histórico
+    de contenidos. - Voz, tono y lineamientos de marca aprobados. - Segmentos y necesidades de audiencia autorizados. - Historial
+    de publicaciones, menciones, alianzas y aprendizajes verificables.'
+  status: imported_source
+  reports_to:
+  - negocio/editor_contenido_marca
+- id: negocio/analista_costos
+  department: negocio
+  role: analista_costos
+  display_name: Analista de Costos y Caja (Finanzas)
+  runtime_kind: worker_agent
+  authority_class: specialist
+  canonical_leader: false
+  legacy_frontmatter_leader: false
+  model_policy: department.worker
+  profile_path: negocio/analista_costos/PERFIL.md
+  department_agent_path: negocio/AGENT.md
+  memory_domain: negocio
+  memory_path: null
+  summary: 'Dueño del registro y seguimiento de la economía real de la organización: qué se gasta y en qué (APIs, infraestructura,
+    herramientas, publicidad), qué entra, y qué se debe. Eduardo es el principal proveedor — sus ingresos vienen de los pacientes
+    de Clínica Online, así que la salud de la organización se mide contra esa fuente, y el capital mensual para publicidad
+    se decide con esos números, no con optimismo.'
+  reports_to_source_text: Al Administrador Financiero, líder de Finanzas.
+  rag_topics_source_text: null
+  status: imported_source
+  reports_to:
+  - negocio/administrador_financiero
+- id: negocio/analista_kpis
+  department: negocio
+  role: analista_kpis
+  display_name: Analista de KPIs (Finanzas)
+  runtime_kind: worker_agent
+  authority_class: specialist
+  canonical_leader: false
+  legacy_frontmatter_leader: false
+  model_policy: department.worker
+  profile_path: negocio/analista_kpis/PERFIL.md
+  department_agent_path: negocio/AGENT.md
+  memory_domain: negocio
+  memory_path: null
+  summary: Preparar indicadores financieros y operativos con datos trazables, supuestos explícitos y criterios conservadores,
+    para que el Administrador Financiero los revise antes de cualquier publicación o uso en decisiones. El objetivo es mostrar
+    la salud financiera real de la operación, no producir cifras optimistas.
+  reports_to_source_text: Finanzas. Especialista operativo. Reporta al Administrador Financiero, líder del departamento. Ejecuta
+    el trabajo de preparación y control analítico que le asigne su líder; no es punto de contacto directo con CEO.
+  rag_topics_source_text: null
+  status: imported_source
+  reports_to:
+  - negocio/administrador_financiero
+- id: negocio/analista_performance
+  department: negocio
   role: analista_performance
   display_name: Analista de Performance (Marketing)
   runtime_kind: worker_agent
@@ -665,45 +488,263 @@ roles:
   canonical_leader: false
   legacy_frontmatter_leader: false
   model_policy: department.worker
-  profile_path: marketing/analista_performance/PERFIL.md
-  department_agent_path: marketing/AGENT.md
-  memory_domain: marketing
+  profile_path: negocio/analista_performance/PERFIL.md
+  department_agent_path: negocio/AGENT.md
+  memory_domain: negocio
   memory_path: null
-  summary: Medir el rendimiento real de los esfuerzos de adquisición, activación, conversión y retención para que
-    el Estratega de Crecimiento pueda decidir si una campaña se escala, se ajusta o se descontinúa. Convierte datos
-    de marketing en evidencia accionable; no decide por intuición ni ejecuta cambios de campaña sin una asignación
-    explícita.
-  reports_to_source_text: Al **Estratega de Crecimiento**, líder de Marketing. El Estratega consolida el análisis
-    con la evidencia del Investigador del Consumidor y comunica las decisiones de crecimiento según la jerarquía
-    organizacional.
+  summary: Medir el rendimiento real de los esfuerzos de adquisición, activación, conversión y retención para que el Estratega
+    de Crecimiento pueda decidir si una campaña se escala, se ajusta o se descontinúa. Convierte datos de marketing en evidencia
+    accionable; no decide por intuición ni ejecuta cambios de campaña sin una asignación explícita.
+  reports_to_source_text: Al **Estratega de Crecimiento**, líder de Marketing. El Estratega consolida el análisis con la evidencia
+    del Investigador del Consumidor y comunica las decisiones de crecimiento según la jerarquía organizacional.
   rag_topics_source_text: null
   status: imported_source
   reports_to:
-  - marketing/estratega_crecimiento
-- id: marketing/estratega_crecimiento
-  department: marketing
-  role: estratega_crecimiento
-  display_name: Estratega de Crecimiento (Marketing)
+  - negocio/estratega_crecimiento
+- id: negocio/community_manager
+  department: negocio
+  role: community_manager
+  display_name: Community Manager (Comunicaciones)
+  runtime_kind: worker_agent
+  authority_class: specialist
+  canonical_leader: false
+  legacy_frontmatter_leader: false
+  model_policy: department.worker
+  profile_path: negocio/community_manager/PERFIL.md
+  department_agent_path: negocio/AGENT.md
+  memory_domain: negocio
+  memory_path: null
+  summary: Gestionar la comunicación orgánica de Psi.Explorarte en redes sociales conforme al protocolo de comunicación externa,
+    la voz y el tono de marca aprobados por el departamento. Cura y publica activos y mensajes que hayan sido producidos o
+    aprobados por las áreas correspondientes; no redacta ni diseña contenido propio.
+  reports_to_source_text: Editor de Contenido de Marca, líder del departamento de Comunicaciones.
+  rag_topics_source_text: '- Gestión de comunidades y redes orgánicas. - Protocolo de publicación y calendario editorial.
+    - Voz y tono de marca aprobados. - Reglas de moderación, escalación y comunicación externa. - Métricas de engagement reales
+    de los canales de la organización.'
+  status: imported_source
+  reports_to:
+  - negocio/editor_contenido_marca
+- id: negocio/copywriter
+  department: negocio
+  role: copywriter
+  display_name: Escritor/Copywriter (Creativo)
+  runtime_kind: worker_agent
+  authority_class: specialist
+  canonical_leader: false
+  legacy_frontmatter_leader: false
+  model_policy: department.worker
+  profile_path: negocio/copywriter/PERFIL.md
+  department_agent_path: negocio/AGENT.md
+  memory_domain: negocio
+  memory_path: null
+  summary: Convertir briefs y lineamientos de marca en textos claros, relevantes y persuasivos para los activos creativos
+    de Psi.Explorarte. Entrega piezas listas para revisión del Diseñador; no define la estrategia de distribución ni publica
+    directamente.
+  reports_to_source_text: Diseñador, líder de Creativo.
+  rag_topics_source_text: null
+  status: imported_source
+  reports_to:
+  - negocio/disenador
+- id: negocio/director_negocio
+  department: negocio
+  role: director_negocio
+  display_name: Director de Negocio
   runtime_kind: department_leader_agent
   authority_class: department_leadership
   canonical_leader: true
   legacy_frontmatter_leader: true
   model_policy: department.leader
-  profile_path: marketing/estratega_crecimiento/PERFIL.md
-  department_agent_path: marketing/AGENT.md
-  memory_domain: marketing
+  profile_path: negocio/director_negocio/PERFIL.md
+  department_agent_path: negocio/AGENT.md
+  memory_domain: negocio
   memory_path: null
-  summary: Coordinar al departamento (Investigador del Consumidor, Analista de Performance) y definir la estrategia
-    de crecimiento — no ejecuta campañas él mismo, prioriza y decide qué se prueba.
-  reports_to_source_text: Otro líder de departamento, Investigación, o directo a CEO.
-  rag_topics_source_text: '**Externo:** psicología del consumidor, economía conductual, growth marketing, pricing
-    psychology, colores del consumo (psicología del color aplicada a venta), técnicas de atención inmediata, neuromarketing.
-    **Interno:** resultados de campañas pasadas, pricing histórico, perfiles de consumidor ya construidos.'
+  summary: Coordinar el departamento de Negocio y convertir la estrategia ejecutiva en planes operativos coherentes entre
+    crecimiento, comunicaciones, creativo y finanzas. Resuelve trade-offs internos entre adquisición/crecimiento, marca, producción
+    creativa, comunicación externa y sostenibilidad financiera. No sustituye el trabajo especializado de esas funciones y
+    no redefine la estrategia global de la empresa, que sigue correspondiendo al CEO/owner según canonical.
+  reports_to_source_text: CEO, según canonical (empresa/ceo).
+  rag_topics_source_text: null
   status: imported_source
   reports_to:
   - empresa/ceo
-- id: marketing/investigador_consumidor
-  department: marketing
+- id: negocio/disenador
+  department: negocio
+  role: disenador
+  display_name: Diseñador (Creativo)
+  runtime_kind: worker_agent
+  authority_class: specialist
+  canonical_leader: false
+  legacy_frontmatter_leader: false
+  model_policy: department.worker
+  profile_path: negocio/disenador/PERFIL.md
+  department_agent_path: negocio/AGENT.md
+  memory_domain: negocio
+  memory_path: null
+  summary: Coordinar al departamento (Escritor/Copywriter, Fotógrafo, Ilustrador, Editor de Video), que es puramente productor
+    de activos — no decide estrategia de distribución (eso es Marketing/Comunicaciones) ni publica directamente.
+  reports_to_source_text: 'Otro líder de departamento, Investigación, o directo a CEO. [Migrado: pasa a reportar a negocio/director_negocio
+    tras la consolidación de comunicaciones/creativo/finanzas/marketing en negocio.]'
+  rag_topics_source_text: '**Externo:** teoría del color y tipografía, dirección de arte, copywriting persuasivo, composición
+    fotográfica, edición de video. **Interno:** guía de estilo/marca ya construida, banco de referencias visuales, qué contenido
+    funcionó antes.'
+  status: imported_source
+  reports_to:
+  - negocio/director_negocio
+- id: negocio/editor_contenido_marca
+  department: negocio
+  role: editor_contenido_marca
+  display_name: Editor de Contenido de Marca (Comunicaciones)
+  runtime_kind: worker_agent
+  authority_class: specialist
+  canonical_leader: false
+  legacy_frontmatter_leader: false
+  model_policy: department.worker
+  profile_path: negocio/editor_contenido_marca/PERFIL.md
+  department_agent_path: negocio/AGENT.md
+  memory_domain: negocio
+  memory_path: null
+  summary: Decidir el protocolo de comunicación externa (qué, cómo y dónde se comunica la empresa) y coordinar al Community
+    Manager. Cura y publica el blog consumiendo el copy que produce Creativo — no decide estrategia de producto ni de crecimiento
+    (eso es CEO/Marketing).
+  reports_to_source_text: 'Otro líder de departamento, Investigación, o directo a CEO. [Migrado: pasa a reportar a negocio/director_negocio
+    tras la consolidación de comunicaciones/creativo/finanzas/marketing en negocio.]'
+  rag_topics_source_text: '**Externo:** comunicación organizacional, community management, redacción de blog/periodística.
+    **Interno:** calendario editorial, métricas de engagement reales, tono de voz de marca ya definido.'
+  status: imported_source
+  reports_to:
+  - negocio/director_negocio
+- id: negocio/editor_video
+  department: negocio
+  role: editor_video
+  display_name: Editor de Video (Creativo)
+  runtime_kind: worker_agent
+  authority_class: specialist
+  canonical_leader: false
+  legacy_frontmatter_leader: false
+  model_policy: department.worker
+  profile_path: negocio/editor_video/PERFIL.md
+  department_agent_path: negocio/AGENT.md
+  memory_domain: negocio
+  memory_path: null
+  summary: Montar y preparar piezas audiovisuales coherentes con la guía de estilo/marca a partir de material disponible y
+    de un brief aprobado. Entrega videos, proyectos y especificaciones para revisión del Diseñador; no define la estrategia
+    de distribución ni publica directamente.
+  reports_to_source_text: Diseñador, líder de Creativo.
+  rag_topics_source_text: null
+  status: imported_source
+  reports_to:
+  - negocio/disenador
+- id: negocio/estratega_crecimiento
+  department: negocio
+  role: estratega_crecimiento
+  display_name: Estratega de Crecimiento (Marketing)
+  runtime_kind: worker_agent
+  authority_class: specialist
+  canonical_leader: false
+  legacy_frontmatter_leader: false
+  model_policy: department.worker
+  profile_path: negocio/estratega_crecimiento/PERFIL.md
+  department_agent_path: negocio/AGENT.md
+  memory_domain: negocio
+  memory_path: null
+  summary: Coordinar al departamento (Investigador del Consumidor, Analista de Performance) y definir la estrategia de crecimiento
+    — no ejecuta campañas él mismo, prioriza y decide qué se prueba.
+  reports_to_source_text: 'Otro líder de departamento, Investigación, o directo a CEO. [Migrado: pasa a reportar a negocio/director_negocio
+    tras la consolidación de comunicaciones/creativo/finanzas/marketing en negocio.]'
+  rag_topics_source_text: '**Externo:** psicología del consumidor, economía conductual, growth marketing, pricing psychology,
+    colores del consumo (psicología del color aplicada a venta), técnicas de atención inmediata, neuromarketing. **Interno:**
+    resultados de campañas pasadas, pricing histórico, perfiles de consumidor ya construidos.'
+  status: imported_source
+  reports_to:
+  - negocio/director_negocio
+- id: negocio/estratega_expansion
+  department: negocio
+  role: estratega_expansion
+  display_name: Estratega de Expansión (Finanzas)
+  runtime_kind: worker_agent
+  authority_class: specialist
+  canonical_leader: false
+  legacy_frontmatter_leader: false
+  model_policy: department.worker
+  profile_path: negocio/estratega_expansion/PERFIL.md
+  department_agent_path: negocio/AGENT.md
+  memory_domain: negocio
+  memory_path: null
+  summary: Evaluar, junto con el Administrador Financiero, oportunidades de venta o expansión y alternativas de deuda con
+    criterio financiero, explícito y conservador. Su función es aportar análisis para decidir; no convertir una oportunidad
+    en compromiso comercial o financiero sin las aprobaciones correspondientes.
+  reports_to_source_text: Finanzas. Especialista operativo. Reporta al Administrador Financiero, líder del departamento. Ejecuta
+    análisis y prepara recomendaciones dentro del alcance asignado; no es punto de contacto directo con CEO.
+  rag_topics_source_text: null
+  status: imported_source
+  reports_to:
+  - negocio/administrador_financiero
+- id: negocio/fotografo
+  department: negocio
+  role: fotografo
+  display_name: Fotógrafo (Creativo)
+  runtime_kind: worker_agent
+  authority_class: specialist
+  canonical_leader: false
+  legacy_frontmatter_leader: false
+  model_policy: department.worker
+  profile_path: negocio/fotografo/PERFIL.md
+  department_agent_path: negocio/AGENT.md
+  memory_domain: negocio
+  memory_path: null
+  summary: Crear, seleccionar y preparar material fotográfico coherente con la guía de estilo/marca y con el brief creativo.
+    Entrega imágenes y documentación de uso para revisión del Diseñador; no define la estrategia de distribución ni publica
+    directamente.
+  reports_to_source_text: Diseñador, líder de Creativo.
+  rag_topics_source_text: null
+  status: imported_source
+  reports_to:
+  - negocio/disenador
+- id: negocio/ilustrador
+  department: negocio
+  role: ilustrador
+  display_name: Ilustrador (Creativo)
+  runtime_kind: worker_agent
+  authority_class: specialist
+  canonical_leader: false
+  legacy_frontmatter_leader: false
+  model_policy: department.worker
+  profile_path: negocio/ilustrador/PERFIL.md
+  department_agent_path: negocio/AGENT.md
+  memory_domain: negocio
+  memory_path: null
+  summary: Desarrollar ilustraciones, recursos gráficos y sistemas visuales originales que traduzcan el brief y la identidad
+    de marca en piezas consistentes. Entrega archivos editables o finales para revisión del Diseñador; no define la estrategia
+    de distribución ni publica directamente.
+  reports_to_source_text: Diseñador, líder de Creativo.
+  rag_topics_source_text: null
+  status: imported_source
+  reports_to:
+  - negocio/disenador
+- id: negocio/ingeniero_industrial
+  department: negocio
+  role: ingeniero_industrial
+  display_name: Ingeniero Industrial (Finanzas)
+  runtime_kind: worker_agent
+  authority_class: specialist
+  canonical_leader: false
+  legacy_frontmatter_leader: false
+  model_policy: department.worker
+  profile_path: negocio/ingeniero_industrial/PERFIL.md
+  department_agent_path: negocio/AGENT.md
+  memory_domain: negocio
+  memory_path: null
+  summary: 'Optimizar los procesos de la organización misma — la disciplina de ingeniería industrial aplicada a una empresa
+    de agentes: costo por unidad de trabajo, cuellos de botella, colas, capacidad, ventanas tarifarias y retrabajo. La organización
+    no tenía hasta hoy a nadie cuyo trabajo fuera mirarse a sí misma con esos lentes. Como en el resto de la organización,
+    no implementa — define qué se mide y cuál es el objetivo; la instrumentación y el código son de Ingeniería de IA.'
+  reports_to_source_text: Al Administrador Financiero, líder de Finanzas.
+  rag_topics_source_text: null
+  status: imported_source
+  reports_to:
+  - negocio/administrador_financiero
+- id: negocio/investigador_consumidor
+  department: negocio
   role: investigador_consumidor
   display_name: Investigador del Consumidor (Marketing)
   runtime_kind: worker_agent
@@ -711,19 +752,42 @@ roles:
   canonical_leader: false
   legacy_frontmatter_leader: false
   model_policy: department.worker
-  profile_path: marketing/investigador_consumidor/PERFIL.md
-  department_agent_path: marketing/AGENT.md
-  memory_domain: marketing
+  profile_path: negocio/investigador_consumidor/PERFIL.md
+  department_agent_path: negocio/AGENT.md
+  memory_domain: negocio
   memory_path: null
-  summary: Convertir preguntas de crecimiento en evidencia accionable sobre el consumidor. Investiga la psicología
-    del consumidor y la economía conductual, identifica motivaciones, fricciones, sesgos y contextos de decisión,
-    y formula hipótesis que puedan probarse en marketing. Su trabajo debe ayudar a evitar campañas basadas únicamente
-    en intuición o en que un mensaje “se ve bien”.
+  summary: Convertir preguntas de crecimiento en evidencia accionable sobre el consumidor. Investiga la psicología del consumidor
+    y la economía conductual, identifica motivaciones, fricciones, sesgos y contextos de decisión, y formula hipótesis que
+    puedan probarse en marketing. Su trabajo debe ayudar a evitar campañas basadas únicamente en intuición o en que un mensaje
+    “se ve bien”.
   reports_to_source_text: Estratega de Crecimiento, líder de Marketing.
   rag_topics_source_text: null
   status: imported_source
   reports_to:
-  - marketing/estratega_crecimiento
+  - negocio/estratega_crecimiento
+- id: negocio/rrpp_alianzas
+  department: negocio
+  role: rrpp_alianzas
+  display_name: Especialista en Relaciones Públicas y Alianzas (Comunicaciones)
+  runtime_kind: worker_agent
+  authority_class: specialist
+  canonical_leader: false
+  legacy_frontmatter_leader: false
+  model_policy: department.worker
+  profile_path: negocio/rrpp_alianzas/PERFIL.md
+  department_agent_path: negocio/AGENT.md
+  memory_domain: negocio
+  memory_path: null
+  summary: Apoyar la gestión ordenada de relaciones públicas, contactos institucionales y alianzas de comunicación de Psi.Explorarte.
+    Coordina oportunidades, solicitudes y compromisos externos dentro del protocolo aprobado; no produce contenido ni negocia
+    por cuenta propia compromisos que requieran autorización.
+  reports_to_source_text: Editor de Contenido de Marca, líder del departamento de Comunicaciones.
+  rag_topics_source_text: '- Protocolo de comunicación externa y aprobaciones. - Voz, tono y lineamientos de marca aprobados.
+    - Registro de alianzas y relaciones públicas existentes. - Políticas de uso de marca, privacidad y escalación. - Historial
+    verificable de menciones, colaboraciones y resultados de comunicación.'
+  status: imported_source
+  reports_to:
+  - negocio/editor_contenido_marca
 - id: recursos_agenticos/curador_catalogo
   department: recursos_agenticos
   role: curador_catalogo
@@ -757,14 +821,13 @@ roles:
   memory_domain: recursos_agenticos
   memory_path: null
   summary: 'Evaluar y proponer la evolución del organigrama de agentes (nuevos roles, fusión o retiro de roles existentes),
-    y coordinar al resto del departamento: Diseñador de Perfiles, Capacitador, Evaluador de Habilidades/Benchmark.
-    Como en el resto de la organización, la decisión final de implementar un cambio de organigrama es humana — este
-    rol propone, Eduardo aprueba.'
+    y coordinar al resto del departamento: Diseñador de Perfiles, Capacitador, Evaluador de Habilidades/Benchmark. Como en
+    el resto de la organización, la decisión final de implementar un cambio de organigrama es humana — este rol propone, Eduardo
+    aprueba.'
   reports_to_source_text: Otro líder de departamento, Investigación, o directo a CEO.
-  rag_topics_source_text: '**Externo:** diseño/psicología organizacional, metodologías de capacitación, papers de
-    evaluación de agentes IA (benchmarking). **Interno:** fichas de puesto existentes, historial de capacitaciones,
-    resultados de benchmark por skill, catálogo de skills descubiertas en GitHub, catálogo de modelos de IA probados/no
-    probados con su resultado.'
+  rag_topics_source_text: '**Externo:** diseño/psicología organizacional, metodologías de capacitación, papers de evaluación
+    de agentes IA (benchmarking). **Interno:** fichas de puesto existentes, historial de capacitaciones, resultados de benchmark
+    por skill, catálogo de skills descubiertas en GitHub, catálogo de modelos de IA probados/no probados con su resultado.'
   status: imported_source
   reports_to:
   - empresa/ceo
@@ -857,9 +920,9 @@ roles:
   department_agent_path: servicios/AGENT.md
   memory_domain: servicios
   memory_path: null
-  summary: Comprobar, con evidencia, si los cambios del servicio producen la calidad y los resultados esperados
-    para usuarios y operación. Aporta criterios de aceptación, medición y aprendizaje al ciclo de producto; no confunde
-    que una implementación funcione técnicamente con que el servicio sea útil, seguro o efectivo.
+  summary: Comprobar, con evidencia, si los cambios del servicio producen la calidad y los resultados esperados para usuarios
+    y operación. Aporta criterios de aceptación, medición y aprendizaje al ciclo de producto; no confunde que una implementación
+    funcione técnicamente con que el servicio sea útil, seguro o efectivo.
   reports_to_source_text: null
   rag_topics_source_text: null
   status: imported_source
@@ -879,8 +942,8 @@ roles:
   memory_domain: servicios
   memory_path: null
   summary: Diseñar experiencias digitales claras, accesibles y coherentes para los productos del portafolio, convirtiendo
-    necesidades de usuarios y objetivos de servicio en flujos, interfaces y especificaciones verificables. Trabaja
-    con la célula de cada producto sin sustituir a su Product Owner ni al responsable clínico humano.
+    necesidades de usuarios y objetivos de servicio en flujos, interfaces y especificaciones verificables. Trabaja con la
+    célula de cada producto sin sustituir a su Product Owner ni al responsable clínico humano.
   reports_to_source_text: null
   rag_topics_source_text: null
   status: imported_source
@@ -899,9 +962,9 @@ roles:
   department_agent_path: servicios/AGENT.md
   memory_domain: servicios
   memory_path: null
-  summary: Asegurar que la operación diaria de los servicios sea consistente, observable y capaz de recuperarse
-    ante fallos. Convierte decisiones aprobadas de producto y diseño en procedimientos operables, coordina la ejecución
-    entre equipos y mantiene informada a la jefatura sobre capacidad, riesgos e incidentes.
+  summary: Asegurar que la operación diaria de los servicios sea consistente, observable y capaz de recuperarse ante fallos.
+    Convierte decisiones aprobadas de producto y diseño en procedimientos operables, coordina la ejecución entre equipos y
+    mantiene informada a la jefatura sobre capacidad, riesgos e incidentes.
   reports_to_source_text: null
   rag_topics_source_text: null
   status: imported_source
@@ -920,14 +983,14 @@ roles:
   department_agent_path: servicios/AGENT.md
   memory_domain: servicios
   memory_path: null
-  summary: 'Decidir prioridades de ejecución entre los productos del portafolio (hoy: Clínica Online; a futuro:
-    el servicio de simulaciones) y coordinar al resto del departamento: Diseñador UX/UI, Service Designer, Soporte
-    al Usuario, Operaciones de Servicio, Responsable de Datos del Servicio, Analista de Calidad y Resultados. La
-    decisión estratégica de qué producto construir o retirar es de CEO — este rol ejecuta esa dirección día a día.'
+  summary: 'Decidir prioridades de ejecución entre los productos del portafolio (hoy: Clínica Online; a futuro: el servicio
+    de simulaciones) y coordinar al resto del departamento: Diseñador UX/UI, Service Designer, Soporte al Usuario, Operaciones
+    de Servicio, Responsable de Datos del Servicio, Analista de Calidad y Resultados. La decisión estratégica de qué producto
+    construir o retirar es de CEO — este rol ejecuta esa dirección día a día.'
   reports_to_source_text: Otro líder de departamento, Investigación, o directo a CEO.
-  rag_topics_source_text: '**Externo:** heurísticas UX/accesibilidad (WCAG), service design, gestión de incidentes,
-    metodologías de calidad de producto. **Interno:** catálogo de incidentes y su resolución, decisiones de UX tomadas,
-    esquema de datos del servicio, métricas de calidad/resultados.'
+  rag_topics_source_text: '**Externo:** heurísticas UX/accesibilidad (WCAG), service design, gestión de incidentes, metodologías
+    de calidad de producto. **Interno:** catálogo de incidentes y su resolución, decisiones de UX tomadas, esquema de datos
+    del servicio, métricas de calidad/resultados.'
   status: imported_source
   reports_to:
   - empresa/ceo
@@ -944,9 +1007,9 @@ roles:
   department_agent_path: servicios/AGENT.md
   memory_domain: servicios
   memory_path: null
-  summary: Mantener definiciones, calidad, trazabilidad y uso responsable de los datos necesarios para operar y
-    mejorar los servicios. Ayuda a que Producto y las funciones del departamento tomen decisiones con métricas comparables,
-    límites claros y evidencia reproducible, sin convertir el departamento en custodio informal de datos sensibles.
+  summary: Mantener definiciones, calidad, trazabilidad y uso responsable de los datos necesarios para operar y mejorar los
+    servicios. Ayuda a que Producto y las funciones del departamento tomen decisiones con métricas comparables, límites claros
+    y evidencia reproducible, sin convertir el departamento en custodio informal de datos sensibles.
   reports_to_source_text: null
   rag_topics_source_text: null
   status: imported_source
@@ -965,9 +1028,9 @@ roles:
   department_agent_path: servicios/AGENT.md
   memory_domain: servicios
   memory_path: null
-  summary: Diseñar y mejorar el servicio de punta a punta, conectando la experiencia de usuario con personas, procesos,
-    tecnología, políticas, canales y operaciones. Hace visible cómo se entrega el valor y dónde pueden producirse
-    fricciones, fallos o riesgos en los productos del portafolio.
+  summary: Diseñar y mejorar el servicio de punta a punta, conectando la experiencia de usuario con personas, procesos, tecnología,
+    políticas, canales y operaciones. Hace visible cómo se entrega el valor y dónde pueden producirse fricciones, fallos o
+    riesgos en los productos del portafolio.
   reports_to_source_text: null
   rag_topics_source_text: null
   status: imported_source
@@ -986,76 +1049,11 @@ roles:
   department_agent_path: servicios/AGENT.md
   memory_domain: servicios
   memory_path: null
-  summary: Acompañar a los usuarios en el uso del servicio, resolver solicitudes dentro del alcance autorizado y
-    convertir señales de soporte en evidencia accionable para Producto, UX/UI, Operaciones y Calidad. Protege la
-    confianza del usuario y evita que una interacción de soporte se convierta en consejo clínico o una promesa no
-    autorizada.
+  summary: Acompañar a los usuarios en el uso del servicio, resolver solicitudes dentro del alcance autorizado y convertir
+    señales de soporte en evidencia accionable para Producto, UX/UI, Operaciones y Calidad. Protege la confianza del usuario
+    y evita que una interacción de soporte se convierta en consejo clínico o una promesa no autorizada.
   reports_to_source_text: null
   rag_topics_source_text: null
   status: imported_source
   reports_to:
   - servicios/product_manager_portafolio
-- id: empresa/ceo_observer
-  department: empresa
-  role: ceo_observer
-  display_name: Observador concurrente del CEO
-  runtime_kind: concurrent_read_only_observer
-  authority_class: executive_observer
-  canonical_leader: false
-  legacy_frontmatter_leader: false
-  model_policy: executive.observer
-  profile_path: null
-  department_agent_path: empresa/AGENT.md
-  memory_domain: empresa
-  memory_path: null
-  summary: Inspecciona conversación, proyectos, actividad y evidencia en paralelo; entrega observaciones privadas
-    al CEO sin responder al propietario ni modificar proyectos.
-  reports_to_source_text: CEO; su ejecución es de solo lectura.
-  rag_topics_source_text: Estado de proyectos, contradicciones, bloqueos, evidencia y riesgos organizacionales sanitizados.
-  status: proposed_profile_required
-  reports_to:
-  - empresa/ceo
-- id: investigacion/research_worker_hourly
-  department: investigacion
-  role: research_worker_hourly
-  display_name: Worker horario de Investigación
-  runtime_kind: scheduled_worker
-  authority_class: research_execution
-  canonical_leader: false
-  legacy_frontmatter_leader: false
-  model_policy: research.worker
-  profile_path: null
-  department_agent_path: investigacion/AGENT.md
-  memory_domain: investigacion
-  memory_path: null
-  summary: Detecta vacíos de conocimiento por proyecto, departamento y perfil; produce candidatos de investigación
-    y RAG, sin publicar directamente al conocimiento aprobado.
-  reports_to_source_text: Unidad transversal de Investigación; los hallazgos se entregan al auditor y se escalan
-    al CEO o a Eduardo según riesgo.
-  rag_topics_source_text: Vacíos de conocimiento derivados del registro organizacional, proyectos activos y perfiles
-    aprobados.
-  status: proposed_profile_required
-  reports_to:
-  - empresa/ceo
-  - empresa/human
-- id: ingenieria_ia/razonamiento_logico
-  department: ingenieria_ia
-  role: razonamiento_logico
-  display_name: Especialista en razonamiento lógico
-  runtime_kind: verifier_agent
-  authority_class: assurance
-  canonical_leader: false
-  legacy_frontmatter_leader: false
-  model_policy: department.worker
-  profile_path: null
-  department_agent_path: ingenieria_ia/AGENT.md
-  memory_domain: ingenieria_ia
-  memory_path: null
-  summary: Implementa reglas organizacionales ejecutables, verificación lógica en modo sombra y, en una fase posterior,
-    verificación de afirmaciones mediante tableaux.
-  reports_to_source_text: Orquestador de Ingeniería de IA.
-  rag_topics_source_text: Datalog, Prolog, lógica de primer orden acotada, cláusulas de Horn, tableaux semánticos,
-    políticas y verificación de invariantes.
-  status: proposed_profile_required
-  reports_to:
-  - ingenieria_ia/orquestador

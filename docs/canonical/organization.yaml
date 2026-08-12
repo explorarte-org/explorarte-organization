@@ -20,21 +20,12 @@ executive:
     model_policy: executive.observer
     decision_status: candidate_owner_confirmed_behavior_model_pending
 operational_departments:
-- id: comunicaciones
-  leader_role_id: comunicaciones/editor_contenido_marca
-  agent_path: comunicaciones/AGENT.md
-- id: creativo
-  leader_role_id: creativo/disenador
-  agent_path: creativo/AGENT.md
-- id: finanzas
-  leader_role_id: finanzas/administrador_financiero
-  agent_path: finanzas/AGENT.md
 - id: ingenieria_ia
   leader_role_id: ingenieria_ia/orquestador
   agent_path: ingenieria_ia/AGENT.md
-- id: marketing
-  leader_role_id: marketing/estratega_crecimiento
-  agent_path: marketing/AGENT.md
+- id: negocio
+  leader_role_id: negocio/director_negocio
+  agent_path: negocio/AGENT.md
 - id: recursos_agenticos
   leader_role_id: recursos_agenticos/desarrollo_organizacional
   agent_path: recursos_agenticos/AGENT.md
@@ -64,6 +55,6 @@ daily_cycle:
   action: null
   decision_status: open_exact_behavior_not_defined_by_sources
 counts:
-  operational_departments: 7
-  imported_profiles: 45
-  proposed_profiles: 3
+  operational_departments: 4
+  imported_profiles: 46
+  proposed_profiles: 2

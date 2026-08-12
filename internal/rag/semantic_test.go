@@ -90,14 +90,16 @@ func (l *fakeEmbeddingLedger) ReleaseEmbedding(context.Context, string, int64, t
 var _ costledger.Ledger = (*fakeEmbeddingLedger)(nil)
 
 type fakeOnlineAdapter struct {
-	vector  []float32
-	err     error
-	tokens  int64
-	entered int
+	vector      []float32
+	err         error
+	tokens      int64
+	entered     int
+	lastRequest embeddingruntime.EmbedRequest
 }
 
 func (a *fakeOnlineAdapter) Embed(_ context.Context, request embeddingruntime.EmbedRequest) (embeddingruntime.EmbedResponse, error) {
 	a.entered++
+	a.lastRequest = request
 	if a.err != nil {
 		return embeddingruntime.EmbedResponse{}, a.err
 	}
@@ -105,6 +107,22 @@ func (a *fakeOnlineAdapter) Embed(_ context.Context, request embeddingruntime.Em
 		Results:     []embeddingruntime.EmbedResult{{Key: request.Items[0].Key, Vector: a.vector}},
 		InputTokens: a.tokens,
 	}, nil
+}
+
+type fakeMediaFetcher struct {
+	data       []byte
+	err        error
+	lastRef    string
+	fetchCalls int
+}
+
+func (f *fakeMediaFetcher) FetchMedia(_ context.Context, ref string) ([]byte, error) {
+	f.fetchCalls++
+	f.lastRef = ref
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.data, nil
 }
 
 func testSemanticDeps(ledger *fakeEmbeddingLedger, adapter *fakeOnlineAdapter, budgets agentbudget.Ledger, t *testing.T) *SemanticSearchDeps {
@@ -121,7 +139,7 @@ func newSemanticQueryManager(t *testing.T, semantic *SemanticSearchDeps) (*Manag
 	repo.activeGeneration["own:solo"] = "gen-1"
 	repo.generations["gen-1"] = IndexGeneration{ID: "gen-1", Status: GenerationActive}
 	namespaces := &fakeNamespaces{own: "solo"}
-	manager, err := NewManager(NewService(nil), repo, &recordingGate{}, namespaces, semantic)
+	manager, err := NewManager(NewService(nil), repo, &recordingGate{}, namespaces, semantic, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,5 +233,62 @@ func TestQueryReleasesReservationWhenProviderCallFails(t *testing.T) {
 	}
 	if repo.lastQueryCommand.QueryVector != nil {
 		t.Fatal("expected nil QueryVector after a provider failure")
+	}
+}
+
+func TestEstimateTextTokens(t *testing.T) {
+	if got := estimateTextTokens("abcd"); got != 2 {
+		t.Fatalf("estimateTextTokens(4 bytes)=%d want 2", got)
+	}
+	if got := estimateTextTokens(""); got != 1 {
+		t.Fatalf("estimateTextTokens(empty)=%d want 1", got)
+	}
+}
+
+func TestEstimateMediaTokensPDFIncludesRenderedPagePlusText(t *testing.T) {
+	got := estimateMediaTokens("application/pdf", "abcd")
+	if want := int64(258 + 2); got != want {
+		t.Fatalf("estimateMediaTokens(pdf)=%d want %d", got, want)
+	}
+}
+
+func TestEstimateMediaTokensAudioUsesFlatPlaceholder(t *testing.T) {
+	if got := estimateMediaTokens("audio/mpeg", "irrelevant"); got != 1000 {
+		t.Fatalf("estimateMediaTokens(audio)=%d want 1000", got)
+	}
+}
+
+func TestEmbedMediaSendsMimeTypeAndDataNotText(t *testing.T) {
+	ledger := &fakeEmbeddingLedger{balanceOK: true}
+	adapter := &fakeOnlineAdapter{vector: []float32{0.4, 0.5}, tokens: 300}
+	manager, _ := newSemanticQueryManager(t, testSemanticDeps(ledger, adapter, nil, t))
+
+	vector := manager.embedMedia(context.Background(), "explorarte", "empresa/human", "extracted text", "application/pdf", []byte("%PDF-1.4"), nil, embeddingruntime.TaskDocument, costledger.EmbeddingOperationRAGReindex)
+	if vector == nil {
+		t.Fatal("expected a vector")
+	}
+	sent := adapter.lastRequest.Items[0]
+	if sent.Text != "" {
+		t.Fatalf("expected empty Text, got %q", sent.Text)
+	}
+	if sent.MimeType != "application/pdf" || string(sent.Data) != "%PDF-1.4" {
+		t.Fatalf("sent item=%+v", sent)
+	}
+}
+
+func TestEmbedMediaSkipsWhenClassifierTextMatchesForbiddenPattern(t *testing.T) {
+	ledger := &fakeEmbeddingLedger{balanceOK: true}
+	adapter := &fakeOnlineAdapter{vector: []float32{0.4, 0.5}, tokens: 300}
+	manager, _ := newSemanticQueryManager(t, testSemanticDeps(ledger, adapter, nil, t))
+
+	// A credential-assignment pattern (see dataclassifier.secretPatterns) —
+	// even though this text is never itself the embed payload, it stands
+	// in for the page's extracted text, which the media path still scans.
+	vector := manager.embedMedia(context.Background(), "explorarte", "empresa/human", `api_key: "abcdefgh12345678"`, "application/pdf", []byte("%PDF-1.4"), nil, embeddingruntime.TaskDocument, costledger.EmbeddingOperationRAGReindex)
+	if vector != nil {
+		t.Fatal("expected embedMedia to skip when classifierText matches a forbidden pattern")
+	}
+	if adapter.entered != 0 {
+		t.Fatalf("adapter must never be called when the classifier text is rejected, entered=%d", adapter.entered)
 	}
 }

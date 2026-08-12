@@ -64,7 +64,12 @@ func ProductiveLoadOptions(knownProviders []string) LoadOptions {
 		ProductiveExplicitRules: map[string][]DataClassification{
 			"deepseek":          {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
 			"openai_compatible": {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
+			"openai_responses":  {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
 			"gemini":            {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
+			// R10.2: MiMo-V2.5 challenger canary (internal/modelruntime/
+			// adapter/mimo), same classification surface as the other
+			// compiled HTTP API adapters.
+			"mimo":              {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
 		},
 	}
 }

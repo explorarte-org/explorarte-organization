@@ -68,6 +68,52 @@ type ProviderOutcome struct {
 	ResponseHash          string
 	ResponseSchemaVersion string
 	CancellationConfirmed bool
+
+	// --- Gate F: Provider Failure Telemetry ---------------------------------
+	// Populated by adapters (currently only deepseek) at every point a
+	// ProviderOutcome is constructed, so a failed invocation can be
+	// consultably diagnosed without ever persisting the prompt, completion,
+	// hidden reasoning, or any secret. Every field below is either a length,
+	// a byte count, a provider-supplied enum-like token, or a request-shaping
+	// fact that is already public API surface -- never response content.
+
+	// FinishReason is the raw provider finish_reason string (e.g. DeepSeek's
+	// chatChoice.FinishReason), whenever the response envelope was decoded
+	// far enough to expose one.
+	FinishReason string
+	// ResponseContentBytes is the length (never the content) of the raw HTTP
+	// response body, whenever it was read (even partially, on a bounded-read
+	// failure).
+	ResponseContentBytes *int
+	// UsageAvailable/InputTokens/OutputTokens/CacheHitTokens/CacheMissTokens
+	// restate the provider's usage object (if decoded) on the outcome row
+	// itself, so a failure row is self-sufficient without joining
+	// model_invocation_usage -- which, for genuinely pre-decode failures,
+	// has no row for this attempt at all.
+	UsageAvailable  bool
+	InputTokens     *int64
+	OutputTokens    *int64
+	CacheHitTokens  *int64
+	CacheMissTokens *int64
+	// ResponseFormat/MaxOutputTokens echo request-shaping facts (not response
+	// content) from the CanonicalRequest that produced this outcome.
+	ResponseFormat  string
+	MaxOutputTokens *int
+	// RequestDuration is wall-clock elapsed time from just before the
+	// provider HTTP request was sent to the point this outcome was
+	// constructed (success or failure), for latency triage.
+	RequestDuration *time.Duration
+
+	// JSONErrorClass/JSONErrorOffset/StartsWithJSONObject/EndsWithJSONObject
+	// are populated only for the response_json_invalid failure: the Go
+	// encoding/json error's offset and type name (never the JSON body
+	// itself), plus two cheap boundary checks that distinguish "provider
+	// sent something that isn't JSON at all" from "provider sent JSON that
+	// was truncated mid-object".
+	JSONErrorClass       string
+	JSONErrorOffset      *int64
+	StartsWithJSONObject *bool
+	EndsWithJSONObject   *bool
 }
 
 func (o ProviderOutcome) effectiveTransport() Transport {
@@ -116,6 +162,31 @@ func (o ProviderOutcome) Validate() error {
 	}
 	if o.ErrorCode != "" && !providerMetadataTokenPattern.MatchString(o.ErrorCode) {
 		return fmt.Errorf("%w: provider error code is not normalized", ErrInvalidRequest)
+	}
+	if len(o.FinishReason) > 120 || len(o.ResponseFormat) > 60 || len(o.JSONErrorClass) > 120 {
+		return fmt.Errorf("%w: provider outcome telemetry metadata exceeds limits", ErrInvalidRequest)
+	}
+	if o.ResponseContentBytes != nil && *o.ResponseContentBytes < 0 {
+		return fmt.Errorf("%w: invalid response content byte length", ErrInvalidRequest)
+	}
+	if (o.InputTokens != nil && *o.InputTokens < 0) || (o.OutputTokens != nil && *o.OutputTokens < 0) ||
+		(o.CacheHitTokens != nil && *o.CacheHitTokens < 0) || (o.CacheMissTokens != nil && *o.CacheMissTokens < 0) {
+		return fmt.Errorf("%w: invalid provider outcome token count", ErrInvalidRequest)
+	}
+	if o.UsageAvailable && o.InputTokens == nil && o.OutputTokens == nil {
+		return fmt.Errorf("%w: usage marked available without any recovered token count", ErrInvalidRequest)
+	}
+	if o.MaxOutputTokens != nil && *o.MaxOutputTokens <= 0 {
+		return fmt.Errorf("%w: invalid max output tokens", ErrInvalidRequest)
+	}
+	if o.RequestDuration != nil && *o.RequestDuration < 0 {
+		return fmt.Errorf("%w: invalid request duration", ErrInvalidRequest)
+	}
+	if o.JSONErrorOffset != nil && *o.JSONErrorOffset < 0 {
+		return fmt.Errorf("%w: invalid JSON error offset", ErrInvalidRequest)
+	}
+	if o.JSONErrorOffset != nil && o.JSONErrorClass == "" {
+		return fmt.Errorf("%w: JSON error offset without a JSON error class", ErrInvalidRequest)
 	}
 	switch o.OutcomeClassification {
 	case ProviderOutcomeResponseReceived:

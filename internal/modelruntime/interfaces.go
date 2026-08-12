@@ -63,6 +63,40 @@ type OrganizationCatalog interface {
 type TaskAttemptReader interface {
 	GetTaskAttempt(context.Context, int64, int64) (TaskAttemptRef, error)
 }
+
+// ProviderRenderTelemetry captures R10.4's StablePrefix/DynamicSuffix
+// render telemetry for one dispatch. Kept as a plain value type separate
+// from ContextSnapshotRef -- it is OPTIONAL observability, not part of the
+// core context-integrity contract every ContextReader must satisfy.
+type ProviderRenderTelemetry struct {
+	Version              string
+	FallbackToLegacy     bool
+	FallbackReason       string
+	StablePrefixHash     string
+	StablePrefixBytes    int
+	DynamicSuffixHash    string
+	DynamicSuffixBytes   int
+	ProviderRenderHash   string
+	ProviderVisibleBytes int
+}
+
+// ProviderRenderTelemetryReader is an OPTIONAL capability a ContextReader
+// implementation may additionally provide (R10.4). DispatchService
+// type-asserts for it -- an implementation that doesn't support it (e.g. a
+// test double) leaves dispatch behaving exactly as it did before R10.4, no
+// new required method, no new failure mode.
+type ProviderRenderTelemetryReader interface {
+	GetProviderRenderTelemetry(context.Context, int64) (ProviderRenderTelemetry, error)
+}
+
+// ProviderRenderTelemetryRecorder is an OPTIONAL capability a Store may
+// additionally provide. Writing this telemetry is always best-effort: a
+// failure here must never fail or retry a dispatch (R10.4 section 27 -- a
+// cache/render-telemetry concern is never a correctness gate).
+type ProviderRenderTelemetryRecorder interface {
+	RecordProviderRenderTelemetry(ctx context.Context, invocationID int64, telemetry ProviderRenderTelemetry) error
+}
+
 type ContextReader interface {
 	GetContextSnapshot(context.Context, int64) (ContextSnapshotRef, error)
 	ValidateContextSnapshot(context.Context, int64) error
@@ -183,6 +217,17 @@ type FailureCommand struct {
 	OutcomeClassification string
 	EventType             string
 	ProviderOutcome       *ProviderOutcome
+	// Usage carries token usage recovered from the provider's response
+	// envelope even though the call is being recorded as a business
+	// failure (e.g. response_content_invalid, response_truncated_empty,
+	// response_normalization_failed). When non-nil, RejectProviderResponse/
+	// FailAfterResponse persist it exactly like CompleteInvocation's
+	// success path does — a failed invocation can still have known, real
+	// usage, and that fact must not be discarded just because the call
+	// didn't produce a usable result. Usage.InvocationID/DispatchAttemptID
+	// are set by the caller the same way CompletionCommand.Response.Usage
+	// already requires.
+	Usage *Usage
 }
 
 type Clock interface{ Now() time.Time }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -19,16 +20,18 @@ const (
 )
 
 type Manager struct {
-	domain     *Service
-	repository Repository
-	gate       AuthorizationGate
-	namespaces NamespaceResolver
-	semantic   *SemanticSearchDeps
+	domain       *Service
+	repository   Repository
+	gate         AuthorizationGate
+	namespaces   NamespaceResolver
+	semantic     *SemanticSearchDeps
+	mediaFetcher MediaFetcher
 }
 
 // NewManager's semantic parameter may be nil — see SemanticSearchDeps for
-// what that degrades to.
-func NewManager(domain *Service, repository Repository, gate AuthorizationGate, namespaces NamespaceResolver, semantic *SemanticSearchDeps) (*Manager, error) {
+// what that degrades to. mediaFetcher may also be nil — see MediaFetcher's
+// doc comment.
+func NewManager(domain *Service, repository Repository, gate AuthorizationGate, namespaces NamespaceResolver, semantic *SemanticSearchDeps, mediaFetcher MediaFetcher) (*Manager, error) {
 	if domain == nil {
 		return nil, errors.New("rag manager requires domain service")
 	}
@@ -44,7 +47,7 @@ func NewManager(domain *Service, repository Repository, gate AuthorizationGate, 
 	if err := semantic.validate(); err != nil {
 		return nil, err
 	}
-	return &Manager{domain: domain, repository: repository, gate: gate, namespaces: namespaces, semantic: semantic}, nil
+	return &Manager{domain: domain, repository: repository, gate: gate, namespaces: namespaces, semantic: semantic, mediaFetcher: mediaFetcher}, nil
 }
 
 type ProposeRequest struct {
@@ -241,6 +244,18 @@ type ReindexRequest struct {
 	NamespaceID       string
 	ActorRoleID       string
 	ApprovalRequestID *int64
+	// PrecomputedChunks, keyed by version ID, supplies the exact chunks to
+	// use for specific approved versions instead of recomputing them from
+	// version.Body via ChunkBody -- used by out-of-process ingestion
+	// pipelines (e.g. PDF page splitting via internal/pdfingest) that
+	// already did expensive, external work to produce these chunks and
+	// must not have Reindex silently redo it. A version with no entry
+	// here still goes through the normal ChunkBody path unchanged. The
+	// caller is responsible for each supplied chunk's Ordinal/VersionID/
+	// ContentHash being internally consistent -- the same validation the
+	// repository already applies to every chunk regardless of origin
+	// (see postgres Store.Reindex) is the actual enforcement point.
+	PrecomputedChunks map[string][]Chunk
 }
 
 // Reindex builds a new index generation over every approved, non-superseded
@@ -268,6 +283,10 @@ func (m *Manager) Reindex(ctx context.Context, request ReindexRequest) (IndexGen
 	for _, version := range versions {
 		if version.Lifecycle != LifecycleApproved {
 			return IndexGeneration{}, fmt.Errorf("%w: cannot index non-approved knowledge version %s", ErrVersionNotApproved, version.ID)
+		}
+		if precomputed, ok := request.PrecomputedChunks[version.ID]; ok {
+			chunks = append(chunks, precomputed...)
+			continue
 		}
 		versionChunks, err := ChunkBody(version.ID, DefaultChunkerID, DefaultChunkerVersion, version.Body)
 		if err != nil {
@@ -358,7 +377,23 @@ func (m *Manager) BackfillEmbeddings(ctx context.Context, request BackfillEmbedd
 	result := BackfillEmbeddingsResult{Done: len(pending) < batchSize}
 	now := time.Now().UTC()
 	for _, chunk := range pending {
-		vector := m.embed(ctx, organizationID, actorRoleID, chunk.Content, nil, embeddingruntime.TaskDocument, costledger.EmbeddingOperationRAGReindex)
+		var vector []float32
+		if chunk.IsMedia() {
+			if m.mediaFetcher == nil {
+				slog.Default().Warn("rag embedding skipped: chunk is media-backed but no MediaFetcher is configured", "chunk_id", chunk.ID)
+				result.Skipped++
+				continue
+			}
+			data, err := m.mediaFetcher.FetchMedia(ctx, chunk.MediaSourceRef)
+			if err != nil {
+				slog.Default().Warn("rag embedding skipped: media fetch failed", "chunk_id", chunk.ID, "error", err)
+				result.Skipped++
+				continue
+			}
+			vector = m.embedMedia(ctx, organizationID, actorRoleID, chunk.Content, chunk.MediaMimeType, data, nil, embeddingruntime.TaskDocument, costledger.EmbeddingOperationRAGReindex)
+		} else {
+			vector = m.embed(ctx, organizationID, actorRoleID, chunk.Content, nil, embeddingruntime.TaskDocument, costledger.EmbeddingOperationRAGReindex)
+		}
 		if vector == nil {
 			result.Skipped++
 			continue
