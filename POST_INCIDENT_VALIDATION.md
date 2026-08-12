@@ -299,7 +299,14 @@ scripts/check-pdfingest-fitness.sh    -> FAIL "os/exec found outside approved ca
 
 ## 9. Commit final
 
-Ver `git log -1` en `feat/rag-knowledge-integrity-hardening-v1` tras el commit de esta fase -- hash y mensaje completo abajo (rellenado post-commit).
+```
+commit c74525c56033b6291064e4553b76ca2a3f55f80f
+branch feat/rag-knowledge-integrity-hardening-v1 (sobre 324148d)
+fix(integration-tests): close P0 -- guard every destructive integration test
+34 files changed, 561 insertions(+), 4 deletions(-)
+```
+
+No pusheado a ningún remoto. No mergeado a `main`.
 
 ## 10. Veredicto
 
