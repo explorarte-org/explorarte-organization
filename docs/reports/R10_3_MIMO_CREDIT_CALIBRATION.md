@@ -103,3 +103,8 @@ conserva reserva operacional razonable:     NO
 ## No se hizo
 
 No se gastaron los 4 requests MiMo restantes del presupuesto de calibración de créditos (máximo 5 permitidos) — la conclusión ya es inequívoca con 1 medición limpia más la reconciliación cruzada (LOW excede el plan por ~2.6B créditos, un margen demasiado grande para que precisión adicional cambie la conclusión binaria). No se investigó una API de cuota machine-readable más allá de lo ya documentado como NO VERIFICADO en `MIMO_V25_INTEGRATION_AUDIT.md`. No se convirtió ningún crédito a USD.
+
+
+---
+
+**Historical runtime evidence referenced by R9–R10.5 was destroyed in the development-database incident of 2026-08-12. The reports and committed implementation remain intact, but the referenced database rows are no longer independently queryable.**

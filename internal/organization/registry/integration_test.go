@@ -15,6 +15,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/testdbguard"
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 	"gopkg.in/yaml.v3"
 )
@@ -30,6 +31,9 @@ func TestCanonicalRegistryAgainstPostgreSQL(t *testing.T) {
 	}
 	if _, err = runner.Up(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
+	}
+	if err := testdbguard.RequireDestructive(ctx, os.Getenv("ORG_TEST_DATABASE_URL"), store.Pool()); err != nil {
+		t.Fatalf("refusing destructive TRUNCATE: %v", err)
 	}
 	if _, err = store.Pool().Exec(ctx, `TRUNCATE organization_reporting_lines, organization_registry_revision_documents, organization_roles, organizational_units, organizations, organization_registry_revisions, audit_events RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatalf("clean registry: %v", err)
@@ -220,6 +224,10 @@ func openStore(t *testing.T, ctx context.Context) *platformpostgres.Store {
 	store, err := platformpostgres.Open(ctx, cfg.Database, "registry-integration-test")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if err := testdbguard.RequireTestDatabase(ctx, url, store.Pool()); err != nil {
+		store.Close()
+		t.Fatalf("refusing to run against unverified database: %v", err)
 	}
 	return store
 }

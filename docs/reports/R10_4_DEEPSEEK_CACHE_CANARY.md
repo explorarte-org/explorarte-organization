@@ -79,3 +79,8 @@ No se calculó un costo hipotético "todo-miss" con precios verificados -- no se
 ## Contabilidad
 
 5 requests DeepSeek reales, costo real total $0.03692164, dentro del cap de 10. 0 requests MiMo (por diseño, sección 17-18 del pedido).
+
+
+---
+
+**Historical runtime evidence referenced by R9–R10.5 was destroyed in the development-database incident of 2026-08-12. The reports and committed implementation remain intact, but the referenced database rows are no longer independently queryable.**

@@ -20,6 +20,7 @@ services:
       ORG_POSTGRES_PASSWORD: ${ORG_POSTGRES_PASSWORD:?set ORG_POSTGRES_PASSWORD in .env}
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      - ./deployments/postgres/init/000-enable-pgvector.sh:/docker-entrypoint-initdb.d/000-enable-pgvector.sh:ro
       - ./deployments/postgres/init/001-create-app-user.sh:/docker-entrypoint-initdb.d/001-create-app-user.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]

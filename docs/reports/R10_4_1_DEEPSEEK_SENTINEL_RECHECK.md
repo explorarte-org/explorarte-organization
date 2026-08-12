@@ -127,3 +127,8 @@ Para los 3 clusters que MiMo también recuperó en R10.2 (`a1653182030ccd4`, `aa
 ## Contabilidad
 
 5 requests DeepSeek reales, costo total real: $0.03525816. 4/4 tareas finalizadas automáticamente, 0 limpieza manual, 100% visibilidad de accounting. 0 requests MiMo (por diseño).
+
+
+---
+
+**Historical runtime evidence referenced by R9–R10.5 was destroyed in the development-database incident of 2026-08-12. The reports and committed implementation remain intact, but the referenced database rows are no longer independently queryable.**

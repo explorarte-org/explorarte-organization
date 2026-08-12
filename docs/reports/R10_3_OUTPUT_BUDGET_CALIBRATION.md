@@ -41,3 +41,8 @@ Propuesta (evidencia, no política): **elevar el piso mínimo de 3000 a 4500 par
 ## Contabilidad
 
 2 requests reales usados en Parte A (1 MiMo + 1 DeepSeek), ambos dentro de los caps declarados (≤3 MiMo para calibración de budget, ≤1 DeepSeek para el control). Accounting: MiMo `$0 subscription-covered` (real, no fabricado, invocation 261), DeepSeek `$0.00962178` (invocation 262, fallo, cobrado igual — el fallo del provider no exime el costo real de un request PAYG ya realizado).
+
+
+---
+
+**Historical runtime evidence referenced by R9–R10.5 was destroyed in the development-database incident of 2026-08-12. The reports and committed implementation remain intact, but the referenced database rows are no longer independently queryable.**

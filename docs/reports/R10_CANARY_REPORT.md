@@ -60,3 +60,8 @@ El primer smoke (1 cluster) falló con `context_render_hash_mismatch`: `dispatch
 - **Reliability**: 73.3% vs 80% — una caída de exactamente 1 cluster sobre 15. Con n=15 y comportamiento estocástico ya documentado del provider (DeepSeek ya mostraba tasas de `response_truncated_empty` variables entre corridas idénticas de r8→r9→r9.1 sin cambiar nada de contexto), **esto no es evidencia suficiente para atribuir la caída a la reducción de contexto** — necesitaría repetirse varias veces para separar señal de ruido. Se reporta con honestidad, no se ignora ni se sobre-interpreta.
 
 No llega a PASS puro porque la pregunta central de R10 (¿la reducción de contexto mejora, empeora, o no afecta la reliability?) queda sin respuesta concluyente con un solo run de 15 — exactamente el escenario "R9.1 11/15, R10 11-ish/15" que el propio diseño anticipó como resultado ambiguo, no data suficiente para decidir. Ver comparación completa.
+
+
+---
+
+**Historical runtime evidence referenced by R9–R10.5 was destroyed in the development-database incident of 2026-08-12. The reports and committed implementation remain intact, but the referenced database rows are no longer independently queryable.**

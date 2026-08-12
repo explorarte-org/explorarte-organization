@@ -120,3 +120,8 @@ No es PASS ni PASS_WITH_CHANGES: **46.7% de tasa de éxito terminal es demasiado
 ## 13. No se hizo
 
 No se corrió Full Silver. No se publicó Knowledge. No se implementó R10 (Context & Inference Economy) — solo se generó este reporte y el baseline de contexto (documento separado). Repositorio sin commitear.
+
+
+---
+
+**Historical runtime evidence referenced by R9–R10.5 was destroyed in the development-database incident of 2026-08-12. The reports and committed implementation remain intact, but the referenced database rows are no longer independently queryable.**

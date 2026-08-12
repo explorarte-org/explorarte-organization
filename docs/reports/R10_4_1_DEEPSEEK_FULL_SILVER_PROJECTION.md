@@ -86,3 +86,8 @@ output tokens (no cacheable, mismo en los 3 escenarios, con retry 1.2x): 5,916,5
 - El representante "30" para el bucket 19+ es una aproximación (rango real 19-77) — no se tiene la distribución exacta dentro de ese bucket.
 - La tasa $/token no-cacheado es empírica (9 requests reales), no la tabla de precios oficial verificada de DeepSeek.
 - No se proyecta `retry amplification` por bucket de tamaño (se asume la misma tasa 1.2x/1.0x/1.5x en todos los tamaños) — es posible que clusters grandes tengan una tasa de reintento distinta a la observada en clusters pequeños/medianos, no medido.
+
+
+---
+
+**Historical runtime evidence referenced by R9–R10.5 was destroyed in the development-database incident of 2026-08-12. The reports and committed implementation remain intact, but the referenced database rows are no longer independently queryable.**

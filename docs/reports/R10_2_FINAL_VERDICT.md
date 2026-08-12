@@ -82,3 +82,8 @@ C. Cash accounting:                subscription-covered, sin cargo marginal PAYG
 ## STOP
 
 No se realizaron llamadas nuevas al provider en esta fase de auditoría (100% offline). No se ejecuta Full Silver. No se prueba MiniMax. No se inicia R11. No se cambia el ruteo automático de ningún rol — DeepSeek permanece intacto y como ruta primaria; MiMo permanece como challenger, disponible para futuras corridas de canario bajo la misma disciplina (offline-first, caps explícitos, nunca ventaja artificial), pendiente de que el owner decida sobre las recomendaciones de esta sección.
+
+
+---
+
+**Historical runtime evidence referenced by R9–R10.5 was destroyed in the development-database incident of 2026-08-12. The reports and committed implementation remain intact, but the referenced database rows are no longer independently queryable.**

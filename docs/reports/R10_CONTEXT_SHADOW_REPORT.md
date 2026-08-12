@@ -55,3 +55,8 @@ Ningún caso disparó el criterio de STOP ("exclusión dudosa de safety/owner_de
 ## Siguiente paso
 
 Fase 5 (activar el perfil solo para `research.corpus_curate`) y Fase 6 (ejecutar los 15 clusters reales con el contexto proyectado, comparar contra r9.1) requieren gastar dinero real en DeepSeek — **no ejecutado todavía, esperando autorización explícita** antes de hacer el primer dispatch real con contexto reducido.
+
+
+---
+
+**Historical runtime evidence referenced by R9–R10.5 was destroyed in the development-database incident of 2026-08-12. The reports and committed implementation remain intact, but the referenced database rows are no longer independently queryable.**

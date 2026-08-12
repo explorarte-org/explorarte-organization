@@ -12,6 +12,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/config"
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/testdbguard"
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 	"github.com/jackc/pgx/v5"
 )
@@ -41,6 +42,9 @@ func TestR21TransportAwareProviderOutcomeMigrationPostgreSQL17(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
+	if err := testdbguard.RequireTestDatabase(ctx, databaseURL, store.Pool()); err != nil {
+		t.Fatalf("refusing to run against unverified database: %v", err)
+	}
 
 	runner, err := platformmigrations.New(store.Pool(), rootmigrations.Files)
 	if err != nil {
@@ -64,6 +68,9 @@ func TestR21TransportAwareProviderOutcomeMigrationPostgreSQL17(t *testing.T) {
 		t.Fatalf("loaded migrations=%d last=%d want %d/%d", len(loaded), loaded[len(loaded)-1].Version, tip, tip)
 	}
 
+	if err := testdbguard.RequireDestructive(ctx, databaseURL, store.Pool()); err != nil {
+		t.Fatalf("refusing destructive migration DownSQL: %v", err)
+	}
 	if err := store.UnitOfWork().WithinTransaction(ctx, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
 		if _, execErr := tx.Exec(ctx, loaded[17].DownSQL); execErr != nil {
 			return execErr

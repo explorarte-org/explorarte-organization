@@ -107,3 +107,8 @@ Ningún cap alcanzado. `go test ./...` verde (incluye los 9 tests nuevos del con
 ## STOP
 
 R10.3 cierra aquí. No se avanza a Full Silver aunque los Gates A y B hayan pasado — el Gate C, obligatorio, no se cumple. Pendiente de decisión del owner sobre capacidad del Token Plan antes de reevaluar.
+
+
+---
+
+**Historical runtime evidence referenced by R9–R10.5 was destroyed in the development-database incident of 2026-08-12. The reports and committed implementation remain intact, but the referenced database rows are no longer independently queryable.**

@@ -47,3 +47,8 @@ Diferencia de 134 bytes en el prefijo estable: **exactamente** el header nuevo (
 ## Conclusión de esta fase
 
 Gate PASADO en su totalidad: cardinalidad esperada exacta en los tres hashes, 0 fallback, contenido y autoridad preservados con evidencia byte-exacta. Se procede al canario real de 5 clusters DeepSeek (siguiente reporte).
+
+
+---
+
+**Historical runtime evidence referenced by R9–R10.5 was destroyed in the development-database incident of 2026-08-12. The reports and committed implementation remain intact, but the referenced database rows are no longer independently queryable.**

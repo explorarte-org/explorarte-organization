@@ -122,3 +122,8 @@ Los ~28 tests enumerados en el pedido (10 de `ProviderRender` determinista, 5 de
 El diagnóstico está confirmado con evidencia directa de código (no inferencia): la causa raíz del 0% cache-hit de DeepSeek en R10/R10.2/R10.3 es que `PortableRenderer.Render` serializa metadata dinámica de auditoría (`snapshot_id`, `task_ref`, `request_hash`) en los primeros bytes del único mensaje `user` enviado al provider, antes de cualquier contenido de segmento — destruyendo la identidad byte-a-byte del prefijo sin importar cuán estables sean los segmentos reales (que, según R10, ya lo son en un 6/7 de los casos). El diseño de separación `AuditEnvelope`/`StablePrefix`/`DynamicSuffix` propuesto por el pedido es arquitectónicamente correcto para resolver esto, es implementable sin modificar `internal/contextengine` core, y preserva el invariante de integridad de hash ya establecido en R10 mediante una única función de construcción compartida.
 
 **Siguiente paso**: implementar `ProviderRender` v1 (Fase 2 del pedido), con tests, shadow determinism sobre los mismos 15 contexts de R10, y solo si el gate de autoridad pasa, el canario real de 5 clusters DeepSeek. No se ha tocado ningún código todavía en esta fase.
+
+
+---
+
+**Historical runtime evidence referenced by R9–R10.5 was destroyed in the development-database incident of 2026-08-12. The reports and committed implementation remain intact, but the referenced database rows are no longer independently queryable.**

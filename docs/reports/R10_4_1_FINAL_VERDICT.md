@@ -76,3 +76,8 @@ MiMo:     0 requests (por diseño)
 ## STOP
 
 R10.4.1 cierra aquí. `DEEPSEEK_SENTINEL_RECOVERY=4/4`, `DEEPSEEK_PRODUCTION_CONFIG_RELIABILITY=STRONG`, `PROVIDER_STRATEGY_RECOMMENDATION=DEEPSEEK_PRIMARY_CANDIDATE`, `DEEPSEEK_FULL_SILVER_TECHNICAL_READY=CONDITIONAL`. Ningún routing cambiado. Pendiente de decisión del owner sobre si validar a mayor escala antes de Full Silver, y sobre cómo reconciliar esta recomendación con la de R10.3 (`MIMO_PRIMARY_DEEPSEEK_ADJUDICATOR`) — ambas evidencias son reales y no se contradicen, describen configuraciones distintas de DeepSeek (legacy vs production-config).
+
+
+---
+
+**Historical runtime evidence referenced by R9–R10.5 was destroyed in the development-database incident of 2026-08-12. The reports and committed implementation remain intact, but the referenced database rows are no longer independently queryable.**

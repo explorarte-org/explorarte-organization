@@ -79,3 +79,8 @@ Consulta directa sobre `mimo15_results.jsonl` (fuente: `curation_output` persist
 ## Contabilidad
 
 7 requests DeepSeek reales para Parte B (dentro del cap de 12), costo real total (suma de `provider_wallet_events` para invocation_id 263-269): $0.08646218 (ver `R10_3_MIMO_CREDIT_CALIBRATION.md` para el consolidado de toda la fase R10.3). 0 requests MiMo en esta parte (por diseño — el adjudicador nunca vuelve a tocar a MiMo).
+
+
+---
+
+**Historical runtime evidence referenced by R9–R10.5 was destroyed in the development-database incident of 2026-08-12. The reports and committed implementation remain intact, but the referenced database rows are no longer independently queryable.**

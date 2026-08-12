@@ -41,3 +41,8 @@ Comparación estricta. **CONTROL = r9.1** (contexto completo, contrato definitiv
 ## No se hizo
 
 No se corrió Full Silver. No se generalizó el perfil a otros task classes. No se tocó `renderer.go` (el fix del cache-hit real queda pendiente, documentado como cambio separado). No se cambió `max_output_tokens`, modelo, rubric, ni política de reintentos.
+
+
+---
+
+**Historical runtime evidence referenced by R9–R10.5 was destroyed in the development-database incident of 2026-08-12. The reports and committed implementation remain intact, but the referenced database rows are no longer independently queryable.**

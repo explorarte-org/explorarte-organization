@@ -226,3 +226,8 @@ Usando la medición real de B y proyectando solo `role-catalog.yaml` (48,500-49,
 ---
 
 Pendiente tu aprobación antes de implementar. La palanca de mayor impacto y menor riesgo identificada es una sola: proyectar `role-catalog.yaml` a la entrada propia del rol — 47 roles ajenos completamente irrelevantes para curar papers, ~59% del contexto medido, cero pérdida de autoridad real.
+
+
+---
+
+**Historical runtime evidence referenced by R9–R10.5 was destroyed in the development-database incident of 2026-08-12. The reports and committed implementation remain intact, but the referenced database rows are no longer independently queryable.**

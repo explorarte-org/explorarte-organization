@@ -66,3 +66,8 @@ MiMo:     0 requests (por diseño)
 ## STOP
 
 R10.4 cierra aquí. `ProviderRender v1` queda adoptado y activo solo para `research.corpus_curate/v1`. No se avanza a Full Silver, no se generaliza a otros task classes, no se integra ningún provider/roadmap fuera de alcance. Pendiente de decisión del owner sobre próximos pasos (repetir el canario a mayor escala para confirmar `STRONG_PASS`, evaluar la estrategia `MIMO_PRIMARY_DEEPSEEK_ADJUDICATOR` de R10.3, o abordar la capacidad del Token Plan de MiMo antes de cualquier Full Silver).
+
+
+---
+
+**Historical runtime evidence referenced by R9–R10.5 was destroyed in the development-database incident of 2026-08-12. The reports and committed implementation remain intact, but the referenced database rows are no longer independently queryable.**

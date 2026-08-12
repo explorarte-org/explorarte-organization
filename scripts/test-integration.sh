@@ -14,6 +14,12 @@ export ORG_POSTGRES_ADMIN_PASSWORD=integration-admin-password
 export ORG_POSTGRES_DATABASE=explorarte_test
 export ORG_POSTGRES_USER=explorarte_app
 export ORG_POSTGRES_PASSWORD=integration-app-password
+# R31 incident fix: internal/testdbguard.RequireDestructive requires this
+# exact value before permitting TRUNCATE/migration-DownSQL. compose.integration.yaml
+# also defaults it to explorarte_test on its own, so this export is
+# belt-and-suspenders documentation of the same deliberate assertion, not
+# strictly required for this script to keep working.
+export ORG_TEST_DESTRUCTIVE_DATABASE=explorarte_test
 
 compose=(docker compose --project-name explorarte-org-integration -f compose.yaml -f compose.integration.yaml --profile integration)
 

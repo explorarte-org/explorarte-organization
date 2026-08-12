@@ -1,4 +1,14 @@
 services:
+  # R31 incident fix: the integration project must never depend on, or be
+  # able to collide with, compose.yaml's 127.0.0.1:5432:5432 host port
+  # publish (the BGE-M3 escape hatch). Tests inside this Compose network
+  # already reach Postgres via the internal "postgres" DNS name; resetting
+  # ports to empty here means this project's postgres container never
+  # tries to bind a host port at all, so it can never collide with -- or
+  # silently fall back to -- the shared development instance.
+  postgres:
+    ports: !reset []
+
   integration-test:
     image: golang:1.25-bookworm
     working_dir: /src
@@ -6,6 +16,13 @@ services:
     environment:
       ORG_TEST_DATABASE_URL: postgres://explorarte_app:integration-app-password@postgres:5432/explorarte_test?sslmode=disable
       ORG_DATABASE_URL: postgres://explorarte_app:integration-app-password@postgres:5432/explorarte_test?sslmode=disable
+      # R31 incident fix: internal/testdbguard.RequireDestructive requires
+      # this as a second, deliberately-set signal before permitting
+      # TRUNCATE/migration-DownSQL, independent of the DSN above. Safe to
+      # hardcode here because this compose override only ever targets the
+      # isolated, discardable integration postgres instance -- it never
+      # ships to compose.yaml or anything shared.
+      ORG_TEST_DESTRUCTIVE_DATABASE: ${ORG_TEST_DESTRUCTIVE_DATABASE:-explorarte_test}
       ORG_CANONICAL_DIR: /src/docs/canonical
       ORG_STAGING_ENABLED: "true"
       ORG_STAGING_REPOSITORIES_FILE: /tmp/explorarte-staging/repositories.yaml

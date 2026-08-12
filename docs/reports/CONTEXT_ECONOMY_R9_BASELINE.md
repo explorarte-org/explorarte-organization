@@ -46,3 +46,8 @@ No se hizo un desglose segmento-por-segmento del `context_snapshot` real esta ve
 - cost por Work evaluado: ~$0.0052 (usando el total de 59 Works evaluados en los 7 clusters exitosos contra el costo total de los 24 intentos, incluyendo fallos — más alto que r8 porque ahora se ve el costo real de los reintentos)
 
 No se elimina nada todavía. Este documento es exclusivamente el punto de partida medido para el diseño de R10.
+
+
+---
+
+**Historical runtime evidence referenced by R9–R10.5 was destroyed in the development-database incident of 2026-08-12. The reports and committed implementation remain intact, but the referenced database rows are no longer independently queryable.**
