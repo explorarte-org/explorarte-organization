@@ -9,8 +9,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -54,7 +56,30 @@ func TestModelEgressPostgreSQL17(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	canonical, err := modelegress.LoadCanonicalPolicy(filepath.Join("..", "..", "..", "docs", "canonical"), modelegress.ProductiveLoadOptions([]string{"deepseek", "openai_compatible", "gemini"}))
+	// Derive the known-provider set from the canonical routing document,
+	// exactly as the production bootstrap does (see
+	// internal/modelegress/bootstrap.providerAdapter.ProviderIDs). The list
+	// used to be hardcoded as {deepseek, openai_compatible, gemini}, which
+	// drifted from the canonical policy as providers were added and removed:
+	// the policy declares mimo and openai_responses, neither of which was in
+	// the hardcoded set, so LoadCanonicalPolicy rejected the real policy with
+	// unknown provider "mimo" -- a stale test constant failing the trunk,
+	// not a policy defect.
+	canonicalDir := filepath.Join("..", "..", "..", "docs", "canonical")
+	routing, err := modelruntime.LoadCanonicalRouting(canonicalDir)
+	if err != nil {
+		t.Fatalf("load canonical routing: %v", err)
+	}
+	providerSet := make(map[string]struct{}, len(routing.Policies))
+	for _, policy := range routing.Policies {
+		providerSet[policy.Provider] = struct{}{}
+	}
+	knownProviders := make([]string, 0, len(providerSet))
+	for provider := range providerSet {
+		knownProviders = append(knownProviders, provider)
+	}
+	sort.Strings(knownProviders)
+	canonical, err := modelegress.LoadCanonicalPolicy(canonicalDir, modelegress.ProductiveLoadOptions(knownProviders))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -98,8 +98,15 @@ func TestCanonicalRegistryAgainstPostgreSQL(t *testing.T) {
 			}
 		}
 	}
-	if imported != 45 || proposed != 3 {
-		t.Fatalf("imported=%d proposed=%d", imported, proposed)
+	// 46 imported + 2 proposed = the 48 roles asserted above. These counts
+	// track docs/canonical/role-catalog.yaml, which is the source of truth:
+	// a role leaves proposed_profile_required the moment it gains a profile.
+	// The previous 45/3 expectation went stale when a role gained one on
+	// main without this test being updated, which left the integration suite
+	// red on the trunk itself -- update these numbers deliberately alongside
+	// the catalog, never to make a red run go green.
+	if imported != 46 || proposed != 2 {
+		t.Fatalf("imported=%d proposed=%d (expected 46/2 per docs/canonical/role-catalog.yaml)", imported, proposed)
 	}
 	canonicalSnapshot, _, err := loader.Load()
 	if err != nil {
@@ -308,7 +315,21 @@ func removeLeafRole(t *testing.T, dir, id string) {
 	var org map[string]any
 	_ = yaml.Unmarshal(body, &org)
 	counts := org["counts"].(map[string]any)
-	counts["imported_profiles"] = 44
+	// Derive the declared count from whatever the catalog currently holds,
+	// minus the single role this helper just removed. It used to hardcode
+	// 44, which was correct only while the catalog had exactly 45 imported
+	// profiles; when main gained one, this helper started writing a count
+	// that matched nothing and the registry validator correctly rejected the
+	// sync -- turning a stale test constant into a red integration suite on
+	// the trunk itself.
+	switch current := counts["imported_profiles"].(type) {
+	case int:
+		counts["imported_profiles"] = current - 1
+	case float64:
+		counts["imported_profiles"] = int(current) - 1
+	default:
+		t.Fatalf("unexpected imported_profiles type %T", counts["imported_profiles"])
+	}
 	body, _ = yaml.Marshal(org)
 	_ = os.WriteFile(orgPath, body, 0o600)
 	mapPath := filepath.Join(dir, "leader-worker-map.yaml")

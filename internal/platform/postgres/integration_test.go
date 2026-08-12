@@ -68,6 +68,35 @@ func TestPostgresMigrationsAndUnitOfWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// This test deliberately down-migrates individual middle versions and
+	// deletes their schema_migrations rows. Runner.Up then re-applies only
+	// those versions -- never the later ones, which are still recorded as
+	// applied -- so any object a later migration altered is silently lost
+	// while schema_migrations keeps claiming the schema is at tip. Migration
+	// 000038 adds CHECK constraints to model_provider_outcomes, a table an
+	// earlier migration recreates on the way back up, so those constraints
+	// vanished and every integration package sharing this database after
+	// this one inherited a schema that disagreed with its own version
+	// record. Rebuild a pristine, fully-migrated schema on the way out so
+	// the damage stays inside this test. This is a defer rather than a
+	// t.Cleanup because the store pool is closed by a defer registered
+	// earlier in this function, and cleanups run after every defer.
+	defer func() {
+		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancelCleanup()
+		if _, cleanupErr := store.Pool().Exec(cleanupCtx, `DROP SCHEMA public CASCADE; CREATE SCHEMA public;`); cleanupErr != nil {
+			t.Fatalf("restore schema after destructive migration test: %v", cleanupErr)
+			return
+		}
+		if _, cleanupErr := store.Pool().Exec(cleanupCtx, `CREATE EXTENSION IF NOT EXISTS vector;`); cleanupErr != nil {
+			t.Fatalf("restore pgvector after schema rebuild: %v", cleanupErr)
+			return
+		}
+		if _, cleanupErr := runner.Up(cleanupCtx); cleanupErr != nil {
+			t.Fatalf("re-apply migrations after schema rebuild: %v", cleanupErr)
+		}
+	}()
 	result, err := runner.Up(ctx)
 	if err != nil {
 		t.Fatal(err)

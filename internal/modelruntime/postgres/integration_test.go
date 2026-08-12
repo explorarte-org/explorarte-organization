@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -103,23 +104,61 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		if err := platform.Pool().QueryRow(ctx, `SELECT count(*) FILTER (WHERE dispatch_enabled), count(*) FILTER (WHERE adapter_status='available') FROM model_profile_versions WHERE organization_revision_id=$1`, revision.ID).Scan(&enabled, &available); err != nil {
 			t.Fatal(err)
 		}
-		// All six canonical policies now resolve through HTTP API adapters.
-		// Alibaba Token Plan remains a retired historical implementation and
-		// must not materialize as a provider or profile version.
-		if enabled != 6 || available != 6 {
-			t.Fatalf("compiled provider versions enabled=%d available=%d, want 6/6", enabled, available)
+		// Every canonical routing policy must resolve through an HTTP API
+		// adapter. The expected count is derived from the routing document
+		// rather than hardcoded: it used to read "want 6/6", which silently
+		// went stale the moment a seventh policy landed and then failed the
+		// trunk for a reason that had nothing to do with the behavior under
+		// test. Alibaba Token Plan remains a retired historical
+		// implementation and must not materialize as a provider or profile
+		// version -- that is what makes this a real assertion rather than a
+		// tautology, since it is absent from the routing document too.
+		routingForCount, routingErr := modelruntime.LoadCanonicalRouting(filepath.Join("..", "..", "..", "docs", "canonical"))
+		if routingErr != nil {
+			t.Fatalf("load canonical routing: %v", routingErr)
+		}
+		wantVersions := len(routingForCount.Policies)
+		if enabled != wantVersions || available != wantVersions {
+			t.Fatalf("compiled provider versions enabled=%d available=%d, want %d/%d", enabled, available, wantVersions, wantVersions)
 		}
 		// R30 retired every gemini routing policy (research.audit/research.worker
 		// moved to deepseek-v4-pro/flash, department.leader moved to
 		// deepseek-v4-pro) — gemini remains a compiled HTTP adapter (still used
 		// by internal/embeddingruntime, a separate dispatch path this registry
 		// sync does not touch) but now resolves zero profile versions here.
-		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id='openai_compatible' AND transport='http_adapter' AND dispatch_enabled AND adapter_status='available'`, revision.ID, 2)
-		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND profile_id='ceo-primary' AND provider_id='openai_compatible' AND transport='http_adapter' AND dispatch_enabled AND adapter_status='available'`, revision.ID, 1)
+		// Per-provider expectations come from the canonical routing document.
+		// They were hardcoded (openai_compatible: 2, deepseek: 4, gemini: 0)
+		// and drifted as policies moved between providers, failing the trunk
+		// for a reason unrelated to the behavior under test. Deriving them
+		// keeps the assertion honest without needing a human to remember.
+		perProvider := make(map[string]int, len(routingForCount.Policies))
+		for _, policy := range routingForCount.Policies {
+			perProvider[policy.Provider]++
+		}
+		for _, provider := range []string{"openai_compatible", "deepseek", "gemini", "mimo", "openai_responses"} {
+			assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id='`+provider+`' AND transport='http_adapter' AND dispatch_enabled AND adapter_status='available'`, revision.ID, perProvider[provider])
+		}
+		// The CEO profile must resolve to whichever provider the canonical
+		// routing assigns to executive.ceo -- it was pinned to
+		// openai_compatible here and silently became wrong when the policy
+		// moved to openai_responses.
+		ceoPolicy, hasCEO := routingForCount.Policies["executive.ceo"]
+		if !hasCEO {
+			t.Fatal("canonical routing has no executive.ceo policy")
+		}
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND profile_id='ceo-primary' AND provider_id='`+ceoPolicy.Provider+`' AND transport='http_adapter' AND dispatch_enabled AND adapter_status='available'`, revision.ID, 1)
 		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id='alibaba_token_plan_via_claude_code' AND (dispatch_enabled OR adapter_status<>'unavailable')`, revision.ID, 0)
-		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id='deepseek' AND transport='http_adapter' AND dispatch_enabled AND adapter_status='available'`, revision.ID, 4)
-		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id='gemini' AND transport='http_adapter' AND dispatch_enabled AND adapter_status='available'`, revision.ID, 0)
-		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id NOT IN ('openai_compatible','alibaba_token_plan_via_claude_code','deepseek','gemini') AND (dispatch_enabled OR adapter_status<>'unavailable')`, revision.ID, 0)
+		// Nothing outside the canonically routed providers may materialize.
+		// The exclusion list was hardcoded and went stale as providers were
+		// added, so it started flagging legitimately routed ones; it is now
+		// built from the routing document itself.
+		quoted := make([]string, 0, len(perProvider)+1)
+		for provider := range perProvider {
+			quoted = append(quoted, "'"+provider+"'")
+		}
+		quoted = append(quoted, "'alibaba_token_plan_via_claude_code'")
+		sort.Strings(quoted)
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id NOT IN (`+strings.Join(quoted, ",")+`) AND (dispatch_enabled OR adapter_status<>'unavailable')`, revision.ID, 0)
 	})
 
 	fakeRoutingHash := modelruntime.SHA256Bytes([]byte("test.fake canonical routing fixture v1"))
@@ -824,6 +863,7 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 			version int
 			file    string
 		}{
+			{40, "000040_add_provider_render_telemetry.down.sql"},
 			{30, "000030_extend_wallet_for_embedding_invocations.down.sql"},
 			{25, "000025_enforce_wallet_single_terminal.down.sql"},
 			{21, "000021_create_provider_wallets.down.sql"},
@@ -859,7 +899,10 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		}
 		tip := loadedForTip[len(loadedForTip)-1].Version
 		reapplied, upErr := runner.Up(ctx)
-		if upErr != nil || len(reapplied.Applied) != 10 || reapplied.Current != tip {
+		// Derived from the rollback list above rather than hardcoded: adding a
+		// migration there used to require remembering to bump a literal here
+		// too, and forgetting turned a correct rollback into a red suite.
+		if upErr != nil || len(reapplied.Applied) != len(versions) || reapplied.Current != tip {
 			t.Fatalf("reapply=%+v err=%v want current=%d", reapplied, upErr, tip)
 		}
 		var exists bool

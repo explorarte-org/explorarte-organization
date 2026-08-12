@@ -72,7 +72,12 @@ func TestShadowVerifierStorePostgreSQL17(t *testing.T) {
 		if snap.RevisionID != revision.ID {
 			t.Fatalf("revision=%d want %d", snap.RevisionID, revision.ID)
 		}
-		if len(snap.Units) < 9 || len(snap.Roles) < 40 || len(snap.ReportingLines) == 0 {
+		// Lower bounds, not a mirror of the catalog: the unit floor was 9 and
+		// went stale when comunicaciones/creativo/finanzas/marketing were
+		// consolidated into negocio, leaving 6. A snapshot that loads the
+		// live organization only needs to be non-degenerate here -- the exact
+		// shape is asserted against the canonical documents elsewhere.
+		if len(snap.Units) < 4 || len(snap.Roles) < 40 || len(snap.ReportingLines) == 0 {
 			t.Fatalf("snapshot too small: units=%d roles=%d lines=%d", len(snap.Units), len(snap.Roles), len(snap.ReportingLines))
 		}
 		if len(snap.MatrixHash) != 64 {

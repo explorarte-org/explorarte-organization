@@ -27,8 +27,12 @@ import (
 const (
 	integrationOrganization = "explorarte"
 	integrationOwner        = "empresa/human"
-	integrationRequester    = "creativo/copywriter"
-	approvalCapability      = "rag.publish_approved"
+	// creativo/ was consolidated into negocio/ in the canonical catalog
+	// (see role-catalog.yaml). The old ID stopped resolving, so every
+	// approval request in this suite failed with role_not_found -- on main,
+	// not just here.
+	integrationRequester = "negocio/copywriter"
+	approvalCapability   = "rag.publish_approved"
 )
 
 func TestDurableCapabilityPolicyEngine(t *testing.T) {
