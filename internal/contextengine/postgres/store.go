@@ -105,6 +105,14 @@ func (s *Store) GetByIdempotency(ctx context.Context, organizationID, key string
 }
 
 func (s *Store) List(ctx context.Context, filter contextengine.ListFilter) ([]contextengine.Snapshot, error) {
+	// ORG-AUDIT-012: organization_id must never be optional here. Before
+	// this, ($1='' OR organization_id=$1) treated an empty OrganizationID
+	// as "every organization" instead of "none" -- the one caller in this
+	// codebase (cmd/orgctl/context.go) always passes a real value, so this
+	// tightens an unused footgun rather than changing observed behavior.
+	if strings.TrimSpace(filter.OrganizationID) == "" {
+		return nil, fmt.Errorf("%w: organization_id is required", contextengine.ErrInvalidRequest)
+	}
 	limit := filter.Limit
 	if limit <= 0 {
 		limit = 100
@@ -114,7 +122,7 @@ func (s *Store) List(ctx context.Context, filter contextengine.ListFilter) ([]co
 	}
 	rows, err := s.pool.Query(ctx, `
 SELECT `+snapshotColumns+` FROM context_snapshots
-WHERE ($1='' OR organization_id=$1)
+WHERE organization_id=$1
   AND ($2='' OR actor_role_id=$2)
   AND ($3='' OR status=$3)
 ORDER BY created_at DESC,id DESC LIMIT $4`, filter.OrganizationID, filter.ActorRoleID, filter.Status, limit)
