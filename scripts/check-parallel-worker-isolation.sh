@@ -66,4 +66,47 @@ echo "$NAMES_A"
 echo "project worker-isolation-probe-b resolved:"
 echo "$NAMES_B"
 
+echo "--- canonical: the shared compose file must describe production, not a worktree ---"
+# The checks above prove two project names produce separate resources. They do
+# not prove the DEFAULT name is the right one, and that gap was expensive: a
+# worktree obtained isolation by editing `name:` in this shared file, the
+# change reached main, and the production checkout then resolved to a
+# development project. `docker compose stop` exited 0 matching nothing, and an
+# up would have started a second runtime beside the live one on the same
+# database -- during a schema migration.
+#
+# Isolation belongs in the caller's environment (COMPOSE_PROJECT_NAME or
+# --project-name), never in the shared file. These two invariants assert both
+# halves at once.
+CANONICAL_PROJECT=explorarte-organization
+
+resolve_project() {
+  # docker compose reports the resolved project name; parse it from config.
+  ( unset COMPOSE_PROJECT_NAME; [ -n "${1:-}" ] && export COMPOSE_PROJECT_NAME="$1"
+    docker compose -f compose.yaml config --format json 2>/dev/null \
+      | python3 -c 'import json,sys; print(json.load(sys.stdin).get("name",""))' 2>/dev/null )
+}
+
+DEFAULT_PROJECT="$(resolve_project "")"
+if [[ "$DEFAULT_PROJECT" != "$CANONICAL_PROJECT" ]]; then
+  fail "compose.yaml resolves to project '$DEFAULT_PROJECT' with no override; production deploys from main require '$CANONICAL_PROJECT'. A worktree needing a different name must set COMPOSE_PROJECT_NAME in its own environment instead of editing this shared file."
+fi
+echo "    no override        -> $DEFAULT_PROJECT"
+
+PROBE_A="$(resolve_project worker-isolation-probe-a)"
+PROBE_B="$(resolve_project worker-isolation-probe-b)"
+[[ "$PROBE_A" == "worker-isolation-probe-a" ]] || fail "COMPOSE_PROJECT_NAME override ignored; resolved '$PROBE_A'"
+[[ "$PROBE_B" == "worker-isolation-probe-b" ]] || fail "COMPOSE_PROJECT_NAME override ignored; resolved '$PROBE_B'"
+[[ "$PROBE_A" != "$PROBE_B" ]] || fail "two distinct overrides resolved to the same project"
+[[ "$PROBE_A" != "$CANONICAL_PROJECT" && "$PROBE_B" != "$CANONICAL_PROJECT" ]] \
+  || fail "an override resolved to the canonical production project"
+echo "    override a         -> $PROBE_A"
+echo "    override b         -> $PROBE_B"
+echo "    canonical intact   -> $DEFAULT_PROJECT"
+
+# Guard the mechanism itself: overriding must not have edited the file.
+if ! grep -q "^name: ${CANONICAL_PROJECT}$" compose.yaml; then
+  fail "compose.yaml no longer declares the canonical project name"
+fi
+
 echo "parallel-worker-isolation fitness: PASS"

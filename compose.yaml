@@ -1,12 +1,18 @@
-# Worktree isolation: this worktree (feat/security-agent-communication-
-# hardening-v1, /home/ubuntu/explorarte-security-worktree) previously
-# shared the same Compose project name as the main checkout
-# (/opt/explorarte/organization). A docker compose up run from here would
-# recreate -- and silently replace -- the production containers with this
-# branch's build. Renamed so the two can never collide; change back only
-# if this worktree is retired and its containers are meant to become the
-# canonical ones.
-name: explorarte-security-worktree
+# Canonical Compose project for the production organization. Deployments
+# from main rely on this name resolving to the project that actually runs
+# in production.
+#
+# Development and integration worktrees MUST obtain isolation through
+# COMPOSE_PROJECT_NAME or --project-name in their own environment, never by
+# editing this shared file. A worktree once renamed the project here to
+# avoid colliding with production; the change was correct in intent and
+# applied in the wrong layer, so once it reached main this file described a
+# development worktree instead of the deployment. `docker compose stop` then
+# exited 0 while matching nothing, and a `docker compose up` would have
+# created a second runtime alongside the live one against the same database.
+# scripts/check-parallel-worker-isolation.sh asserts both halves: this name
+# stays canonical, and an override still produces separate resources.
+name: explorarte-organization
 
 services:
   postgres:
