@@ -47,6 +47,15 @@
 # impossible is tracked separately as D-HARNESS-AUTODISCOVERY (this
 # manifest still requires a human to remember to add a line per package;
 # see docs handoff for the deferred-debt entry).
+#
+# EXEC-PRINCIPAL-001 targeted re-verification found a sixth omission of the
+# same kind: cmd/orgctl has real //go:build integration tests
+# (TestEvaluationRunReportsFullCoverageForTodaysActivatedFixtures and two
+# others) that cli-smoke's black-box CLI invocation does not exercise --
+# cli-smoke runs the built orgctl binary, it does not run
+# "go test -tags=integration ./cmd/orgctl". Exactly the D-HARNESS-AUTODISCOVERY
+# scenario predicted: a sixth package went unaccounted before anyone
+# remembered to add a line for it.
 id	modes	kind	timeout	depends_on	command
 platform-postgres	all	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/platform/postgres
 organization-registry	all	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/organization/registry
@@ -76,4 +85,5 @@ costledger-postgres	all,costledger	integration	15m	-	compose_run go test -count=
 evaluation-postgres	all,evaluation	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/evaluation/postgres
 modelpricing-postgres	all,modelpricing	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/modelpricing/postgres
 webevidence-postgres	all,webevidence	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/webevidence/postgres
+orgctl-integration	all,orgctl	integration	15m	-	compose_run go test -count=1 -tags=integration ./cmd/orgctl
 cli-smoke	all	smoke	15m	-	run_cli_smoke
