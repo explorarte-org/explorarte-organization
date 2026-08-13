@@ -220,7 +220,7 @@ JSON
 JSON
     /tmp/orgctl memory review --file /tmp/memory-review.json --json >/tmp/memory-approved.json
     grep -Fq "\"status\": \"approved\"" /tmp/memory-approved.json
-    /tmp/orgctl memory list --role ingenieria_ia/orquestador --status approved --json >/tmp/memory-list.json
+    /tmp/orgctl memory list --actor ingenieria_ia/orquestador --status approved --json >/tmp/memory-list.json
     grep -Fq "cli-memory-smoke" /tmp/memory-list.json
 
     /tmp/orgctl context build --actor-role ingenieria_ia/qa --purpose "CLI context smoke" --idempotency-key cli-context-smoke --json >/tmp/context-created.json
