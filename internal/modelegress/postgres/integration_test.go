@@ -29,6 +29,67 @@ import (
 
 const egressIntegrationOrganization = "explorarte"
 
+// ORG-AUDIT-004 regression: model_egress_revision_belongs_to_organization
+// (the predicate the ownership constraint triggers call) must still
+// recognize a revision that was genuinely materialized for this
+// organization at some point, even after both organizations.current_revision_id
+// and every organizational_units.source_revision_id have moved past it --
+// exactly what a routine registry sync does. Before this fix the predicate
+// only checked those two live pointers, so a historical revision with an
+// otherwise-untouched model_egress_revision_bindings row (bindings are
+// immutable and never deleted) would stop being recognized as belonging to
+// the organization the moment the next sync landed.
+func TestEgressRevisionOwnershipRecognizesHistoricalBindings(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	store := openEgressStore(t, ctx)
+	t.Cleanup(store.Close)
+	resetEgressSchema(t, ctx, store)
+	revisionN1 := syncEgressCanonical(t, ctx, store)
+
+	if _, err := store.Pool().Exec(ctx, `
+INSERT INTO model_egress_policy_versions (organization_id, policy_id, policy_version, introduced_by_organization_revision_id, canonical_hash, status, created_at)
+VALUES ($1,'org-audit-004-policy',1,$2,$3,'materializing',clock_timestamp())
+ON CONFLICT DO NOTHING`, egressIntegrationOrganization, revisionN1.ID, modelegress.SHA256Bytes([]byte("org-audit-004-policy"))); err != nil {
+		t.Fatal(err)
+	}
+	var policyVersionID int64
+	if err := store.Pool().QueryRow(ctx, `SELECT id FROM model_egress_policy_versions WHERE organization_id=$1 AND introduced_by_organization_revision_id=$2`, egressIntegrationOrganization, revisionN1.ID).Scan(&policyVersionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Pool().Exec(ctx, `
+INSERT INTO model_egress_revision_bindings (organization_id, organization_revision_id, policy_version_id, canonical_hash, created_at)
+VALUES ($1,$2,$3,$4,clock_timestamp())
+ON CONFLICT DO NOTHING`, egressIntegrationOrganization, revisionN1.ID, policyVersionID, modelegress.SHA256Bytes([]byte("org-audit-004-policy"))); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate the sync that made N1 historical: a new revision N2 becomes
+	// current, and every unit's source_revision_id moves to it too -- the
+	// same thing registry.Apply does on every real sync.
+	revisionN2 := insertEgressRevision(t, ctx, store, modelegress.SHA256Bytes([]byte("org-audit-004-n2")), "org-audit-004-n2")
+	if _, err := store.Pool().Exec(ctx, `UPDATE organizational_units SET source_revision_id=$1 WHERE organization_id=$2`, revisionN2, egressIntegrationOrganization); err != nil {
+		t.Fatal(err)
+	}
+
+	var belongsAfterSync bool
+	if err := store.Pool().QueryRow(ctx, `SELECT model_egress_revision_belongs_to_organization($1,$2)`, egressIntegrationOrganization, revisionN1.ID).Scan(&belongsAfterSync); err != nil {
+		t.Fatal(err)
+	}
+	if !belongsAfterSync {
+		t.Fatalf("revision %d had a real model_egress_revision_bindings row but the predicate said it no longer belongs to %q after the next revision synced", revisionN1.ID, egressIntegrationOrganization)
+	}
+
+	// A revision this organization never bound anything to must still be denied.
+	var belongsForUnrelated bool
+	if err := store.Pool().QueryRow(ctx, `SELECT model_egress_revision_belongs_to_organization($1,$2)`, egressIntegrationOrganization, int64(-1)).Scan(&belongsForUnrelated); err != nil {
+		t.Fatal(err)
+	}
+	if belongsForUnrelated {
+		t.Fatal("predicate returned true for a revision id that was never bound to this organization")
+	}
+}
+
 func TestModelEgressPostgreSQL17(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
