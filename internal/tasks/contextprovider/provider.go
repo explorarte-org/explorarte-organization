@@ -33,8 +33,29 @@ func (p *Provider) GetTaskContext(ctx context.Context, request contextengine.Bui
 	if err != nil {
 		return nil, err
 	}
-	if detail.Task.OrganizationID != request.OrganizationID || detail.Task.OrganizationRevisionID != request.OrganizationRevisionID {
+	// ORG-AUDIT-009: this used to also require
+	// detail.Task.OrganizationRevisionID == request.OrganizationRevisionID.
+	// resolve() in contextengine/service.go already forces
+	// request.OrganizationRevisionID to be the CURRENT revision before this
+	// provider is ever called (Build rejects with ReasonRevisionMismatch
+	// otherwise) -- so that check was really "the task's revision at
+	// creation must equal whatever revision is active right now," which a
+	// registry sync makes false for every task created before it. A task is
+	// work content (title/instructions/evidence/attempts), not a policy
+	// snapshot; the policy currency requirement belongs to the registry
+	// revision check that already runs, not to task identity. Organization
+	// match is what actually matters here.
+	if detail.Task.OrganizationID != request.OrganizationID {
 		return nil, fmt.Errorf("task context scope mismatch for task %d", id)
+	}
+	// ORG-AUDIT-010: the actor building this context and the role the task
+	// is actually assigned to are two different things the caller controls
+	// independently (BuildRequest.ActorRoleID and TaskRef are both plain
+	// request fields). Nothing before this compared them -- a caller could
+	// combine memory/RAG scoped to one role with instructions/evidence from
+	// a task assigned to a different one.
+	if detail.Task.AssignedRoleID != request.ActorRoleID {
+		return nil, fmt.Errorf("task %d is assigned to %q, not requesting actor %q", id, detail.Task.AssignedRoleID, request.ActorRoleID)
 	}
 	record, err := sourceRecord(detail)
 	if err != nil {
@@ -43,10 +64,12 @@ func (p *Provider) GetTaskContext(ctx context.Context, request contextengine.Bui
 	return &record, nil
 }
 
-// The actor role is part of the SourceValidator contract but is not
-// consulted here: a task context record is scoped by task reference, and
-// the caller has already bound the task to the actor.
-func (p *Provider) ValidateVersion(ctx context.Context, _ string, expected contextengine.SourceRecord) error {
+// ORG-AUDIT-010: actorRoleID used to be ignored here on the claim that "the
+// caller has already bound the task to the actor" -- GetTaskContext above
+// is that caller, and it did not (see the fix there). Revalidation on
+// render/re-render must reject a task whose assignee has since changed
+// out from under the actor just as firmly as the initial build does.
+func (p *Provider) ValidateVersion(ctx context.Context, actorRoleID string, expected contextengine.SourceRecord) error {
 	if expected.Kind != contextengine.SourceTaskContext {
 		return fmt.Errorf("task version validation received source kind %s", expected.Kind)
 	}
@@ -57,6 +80,9 @@ func (p *Provider) ValidateVersion(ctx context.Context, _ string, expected conte
 	detail, err := p.reader.GetTask(ctx, id)
 	if err != nil {
 		return err
+	}
+	if detail.Task.AssignedRoleID != actorRoleID {
+		return fmt.Errorf("task %d is assigned to %q, not requesting actor %q", id, detail.Task.AssignedRoleID, actorRoleID)
 	}
 	current, err := sourceRecord(detail)
 	if err != nil {

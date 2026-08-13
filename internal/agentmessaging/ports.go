@@ -12,6 +12,15 @@ const (
 	CapabilityAgentMessageSettle = "agent.message.settle"
 )
 
+// CapabilityAuthorizer is the minimal capability-check surface agentmessaging
+// needs. It mirrors authorization.CapabilityAuthorizer's signature so the
+// concrete *authorization.Authorizer already wired in bootstrap can be
+// passed straight in, without agentmessaging importing the authorization
+// package itself (it only needs this one call, not approvals/evaluation).
+type CapabilityAuthorizer interface {
+	Authorize(ctx context.Context, organizationID string, revisionID int64, roleID, capability string) error
+}
+
 // Ledger is the transactional boundary for the agent message inbox. Send
 // is idempotent per (organizationID, idempotencyKey) — a retried
 // delegation or completion call for the same task never double-sends.

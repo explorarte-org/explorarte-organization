@@ -116,9 +116,14 @@ func TestR23PostgreSQLProjectsWorkerEvidenceAndClosesDAGRace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// ORG-AUDIT-010: GetTaskContext now requires ActorRoleID to match the
+	// task's real assignee -- this test is about evidence-content
+	// projection, not actor identity, so it supplies the real assignee
+	// rather than exercising that check.
 	record, err := provider.GetTaskContext(context.Background(), contextengine.BuildRequest{
 		OrganizationID: "explorarte", OrganizationRevisionID: reviewDetail.Task.OrganizationRevisionID,
-		TaskRef: fmt.Sprintf("task:%d", reviewID),
+		ActorRoleID: reviewDetail.Task.AssignedRoleID,
+		TaskRef:     fmt.Sprintf("task:%d", reviewID),
 	})
 	if err != nil {
 		t.Fatal(err)

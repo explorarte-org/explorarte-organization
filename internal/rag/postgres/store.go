@@ -376,6 +376,42 @@ func (s *Store) Reindex(ctx context.Context, command rag.ReindexCommand) (rag.In
 		}
 		rows.Close()
 	}
+	// ORG-AUDIT-011: neither the content-hash check above nor the
+	// version-approved-in-namespace check confirms a chunk's content is
+	// actually derived from the version body a human approved -- a chunk
+	// can be internally self-consistent (its own hash matches its own
+	// content) while citing text nobody reviewed under an honest
+	// canonical_hash. For text chunks (not media-backed -- those derive
+	// from an external file/page, not version.Body, and their own
+	// provenance binding is separate, undone work), require
+	// body[start:end] == content against the version this transaction
+	// already confirmed is approved in this namespace.
+	versionBodies := make(map[string]string, len(approvedVersionIDs))
+	if len(approvedVersionIDs) > 0 {
+		versionIDs := make([]string, 0, len(approvedVersionIDs))
+		for id := range approvedVersionIDs {
+			versionIDs = append(versionIDs, id)
+		}
+		rows, err := tx.Query(ctx, `SELECT version_id, body FROM rag_knowledge_versions WHERE organization_id=$1 AND namespace_kind=$2 AND namespace_id=$3 AND version_id = ANY($4)`,
+			organizationID, string(command.NamespaceKind), namespaceID, versionIDs)
+		if err != nil {
+			return rag.IndexGeneration{}, mapError("load chunk version bodies", err)
+		}
+		for rows.Next() {
+			var id, body string
+			if err := rows.Scan(&id, &body); err != nil {
+				rows.Close()
+				return rag.IndexGeneration{}, mapError("scan chunk version body", err)
+			}
+			versionBodies[id] = body
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return rag.IndexGeneration{}, mapError("iterate chunk version bodies", err)
+		}
+		rows.Close()
+	}
+
 	for _, chunk := range command.Chunks {
 		if !approvedVersionIDs[chunk.VersionID] {
 			return rag.IndexGeneration{}, fmt.Errorf("%w: chunk references a version that is not approved in this namespace: %s", rag.ErrInvalidRequest, chunk.VersionID)
@@ -394,6 +430,12 @@ func (s *Store) Reindex(ctx context.Context, command rag.ReindexCommand) (rag.In
 		}
 		if mediaFieldsComplete && !chunk.TextExtractionStatus.Valid() {
 			return rag.IndexGeneration{}, fmt.Errorf("%w: invalid text_extraction_status %q", rag.ErrInvalidRequest, chunk.TextExtractionStatus)
+		}
+		if !mediaFieldsComplete {
+			body := versionBodies[chunk.VersionID]
+			if chunk.EndOffset > len(body) || body[chunk.StartOffset:chunk.EndOffset] != chunk.Content {
+				return rag.IndexGeneration{}, fmt.Errorf("%w: chunk content is not derived from the approved version body at the claimed offsets", rag.ErrInvalidRequest)
+			}
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO rag_knowledge_chunks (organization_id,chunk_id,generation_id,version_id,chunker_id,chunker_version,ordinal,start_offset,end_offset,content,content_hash,embedding_model_id,embedding_model_version,embedding_dimension,media_source_ref,media_mime_type,source_page_number,media_sha256,media_parser,media_parser_version,text_extraction_status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
 			organizationID, chunkID, generationID, chunk.VersionID, chunk.ChunkerID, chunk.ChunkerVersion, chunk.Ordinal, chunk.StartOffset, chunk.EndOffset, chunk.Content, chunk.ContentHash,

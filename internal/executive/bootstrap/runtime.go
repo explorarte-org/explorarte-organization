@@ -2,7 +2,6 @@ package bootstrap
 
 import (
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/agentbudget"
@@ -115,21 +114,23 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create executive agent budget ledger: %w", err)
 	}
-	agentMessageLedger, err := agentmessagingpostgres.New(store, registryRepository, agentMessageRateLimitMax, agentMessageRateLimitWindow)
+	agentMessageLedger, err := agentmessagingpostgres.New(store, registryRepository, authorizationRuntime.Authorizer, agentMessageRateLimitMax, agentMessageRateLimitWindow)
 	if err != nil {
 		return nil, fmt.Errorf("create executive agent message ledger: %w", err)
 	}
 
-	// Wire up execution principal for agent messaging
-	// Reuse modeldispatch dispatcher store which already implements ExecutionPrincipalResolver
-	// This provides the authenticated identity required by FIX 6
+	// EXEC-PRINCIPAL-001: agent messaging resolves its own role-bound
+	// principal per sender internally (see runtimeadapter.AgentMessages),
+	// lazily provisioning one via this same store when a role sends its
+	// first message. Reusing modelRuntime's dispatcher store here is still
+	// correct -- model_execution_principals is one table regardless of
+	// which subsystem is resolving against it -- but there is no longer a
+	// single ORG_MODEL_EXECUTION_PRINCIPAL_KEY to read for this purpose.
+	// modelruntime's own dispatch bootstrap still reads that env var
+	// separately, for its own, different technical-process identity
+	// (semantics A, not the role-bound identity below -- see the
+	// EXEC-PRINCIPAL-001 handoff for the distinction).
 	principalStore := modelRuntime.Dispatcher.Store
-	// Read execution principal key from configuration (or use default for dev/test)
-	principalKey := os.Getenv("ORG_MODEL_EXECUTION_PRINCIPAL_KEY")
-	if principalKey == "" {
-		// Default fallback - in production this should be explicitly configured
-		principalKey = "oracle-01/model-runtime-01"
-	}
 
 	orchestrator, err := executive.NewOrchestrator(
 		cfg.Tasks.OrganizationID,
@@ -145,13 +146,11 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 		executive.ClockFunc(time.Now),
 		executive.WithAgentBudgets(runtimeadapter.AgentBudgets{Ledger: agentBudgetLedger, Limits: agentbudget.DefaultLimits()}),
 		executive.WithAgentMessaging(runtimeadapter.AgentMessages{
-			Ledger:              agentMessageLedger,
-			MaxAttempts:         agentMessageMaxAttempts,
-			PrincipalStore:      principalStore,
-			OrganizationID:      cfg.Tasks.OrganizationID,
-			ConfiguredPrincipal: principalKey,
+			Ledger:         agentMessageLedger,
+			MaxAttempts:    agentMessageMaxAttempts,
+			PrincipalStore: principalStore,
+			OrganizationID: cfg.Tasks.OrganizationID,
 		}),
-		executive.WithExecutionPrincipal(principalKey),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create executive orchestrator: %w", err)

@@ -149,6 +149,45 @@ func TestApprovedKnowledgeRAGPostgresRepository(t *testing.T) {
 		}
 	})
 
+	// ORG-AUDIT-011 regression: a chunk that is internally self-consistent
+	// (its own hash matches its own content) and references an approved
+	// version in the right namespace must still be rejected if its content
+	// is not actually derived from that version's approved body -- neither
+	// check alone catches a forged chunk that carries someone else's text
+	// under an honest version_id/canonical_hash.
+	t.Run("reindex rejects a chunk whose content was not derived from the approved body", func(t *testing.T) {
+		const forgeryNamespace = "ingenieria_ia_forgery"
+		version := proposeVersionInNamespace(t, domain, clock, now.Add(20*time.Second), "know-forgery", forgeryNamespace)
+		created, _, err := store.CreateCandidate(ctx, rag.CreateCandidateCommand{Version: version, IdempotencyKey: "idem-forgery"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		clock.now = created.UpdatedAt.Add(time.Second)
+		approved, err := domain.Review(created, rag.ReviewApprove, ragIntegrationReviewer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		approved, err = store.Save(ctx, rag.SaveCommand{Version: approved, ExpectedRevision: 1, ActorID: ragIntegrationReviewer, Reason: "content verified"})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		chunks, err := rag.ChunkBody(approved.ID, rag.DefaultChunkerID, rag.DefaultChunkerVersion, approved.Body)
+		if err != nil || len(chunks) == 0 {
+			t.Fatalf("chunks=%v err=%v", chunks, err)
+		}
+		forged := make([]rag.Chunk, len(chunks))
+		copy(forged, chunks)
+		forged[0].Content = "This is not a recording of the approved body at all."
+		forged[0].ContentHash = rag.ContentHash(forged[0].Content)
+
+		if _, err := store.Reindex(ctx, rag.ReindexCommand{OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceDepartment, NamespaceID: forgeryNamespace, ChunkerID: rag.DefaultChunkerID, ChunkerVersion: rag.DefaultChunkerVersion, Chunks: forged}); err == nil {
+			t.Fatal("expected Reindex to reject a chunk not derived from the approved body, got nil error")
+		} else if !errors.Is(err, rag.ErrInvalidRequest) {
+			t.Fatalf("Reindex err=%v, want rag.ErrInvalidRequest", err)
+		}
+	})
+
 	t.Run("reindex activation is atomic across generations", func(t *testing.T) {
 		const generationsNamespace = "ingenieria_ia_generations"
 		version := proposeVersionInNamespace(t, domain, clock, now.Add(15*time.Second), "know-generations", generationsNamespace)

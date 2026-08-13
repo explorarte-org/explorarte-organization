@@ -1,0 +1,1 @@
+DROP INDEX model_execution_principals_active_role_bound_idx;

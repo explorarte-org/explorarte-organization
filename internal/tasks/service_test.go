@@ -129,6 +129,19 @@ func serviceFixture(t *testing.T) (*Service, *fakePersistence, *fakeCatalog) {
 	return service, persistence, catalog
 }
 
+// ORG-AUDIT-012 regression: the postgres Store has no organization_id bound
+// at construction (unlike memory/rag), so GetTask(id) alone cannot tell one
+// organization's task from another's if this ever ran multi-org. Service is
+// scoped to Config.OrganizationID and must reject a task belonging to a
+// different one rather than returning it.
+func TestGetTaskRejectsTaskFromAnotherOrganization(t *testing.T) {
+	service, persistence, _ := serviceFixture(t)
+	persistence.created.OrganizationID = "a-different-organization"
+	if _, err := service.GetTask(context.Background(), 1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetTask across organizations: err=%v, want ErrNotFound", err)
+	}
+}
+
 func TestCreateTaskDerivesRegistryFieldsAndDefaults(t *testing.T) {
 	service, persistence, _ := serviceFixture(t)
 	request := validCreateRequest()
@@ -183,7 +196,7 @@ func TestCreateTaskWithDependencyStartsPending(t *testing.T) {
 func TestClaimRevalidatesAssignee(t *testing.T) {
 	service, persistence, catalog := serviceFixture(t)
 	catalog.roles["ingenieria_ia/qa"] = RoleRef{ID: "ingenieria_ia/qa", UnitID: "ingenieria_ia", Enabled: false, Executable: false}
-	_, err := service.ClaimTasks(context.Background(), ClaimRequest{WorkerID: "worker-1"})
+	_, err := service.ClaimTasks(context.Background(), ClaimRequest{WorkerID: "worker-1", AssignedRoleID: "ingenieria_ia/qa"})
 	if err != nil {
 		t.Fatalf("ClaimTasks() error = %v", err)
 	}

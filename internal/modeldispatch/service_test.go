@@ -54,6 +54,10 @@ func (f fakePrincipalResolver) ResolveByKey(context.Context, string, string) (Ex
 	return f.principal, f.err
 }
 
+func (f fakePrincipalResolver) ResolveActiveForRole(context.Context, string, string) (ExecutionPrincipal, error) {
+	return f.principal, f.err
+}
+
 type fakePrincipalStore struct {
 	fakePrincipalResolver
 	registerCalls int

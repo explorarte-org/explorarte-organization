@@ -91,7 +91,7 @@ services:
       ORG_DATABASE_PING_TIMEOUT: ${ORG_DATABASE_PING_TIMEOUT:-2s}
       ORG_DATABASE_STATEMENT_TIMEOUT: ${ORG_DATABASE_STATEMENT_TIMEOUT:-30s}
       ORG_DATABASE_LOCK_TIMEOUT: ${ORG_DATABASE_LOCK_TIMEOUT:-5s}
-      ORG_DATABASE_AUTO_MIGRATE: ${ORG_DATABASE_AUTO_MIGRATE:-true}
+      ORG_DATABASE_AUTO_MIGRATE: ${ORG_DATABASE_AUTO_MIGRATE:-false}
       ORG_DATABASE_MIGRATION_TIMEOUT: ${ORG_DATABASE_MIGRATION_TIMEOUT:-45s}
       ORG_DATABASE_MIGRATION_RETRY: ${ORG_DATABASE_MIGRATION_RETRY:-5s}
       ORG_CANONICAL_DIR: /opt/explorarte/docs/canonical
@@ -194,7 +194,7 @@ services:
       ORG_DATABASE_PING_TIMEOUT: ${ORG_DATABASE_PING_TIMEOUT:-2s}
       ORG_DATABASE_STATEMENT_TIMEOUT: ${ORG_DATABASE_STATEMENT_TIMEOUT:-30s}
       ORG_DATABASE_LOCK_TIMEOUT: ${ORG_DATABASE_LOCK_TIMEOUT:-5s}
-      ORG_DATABASE_AUTO_MIGRATE: ${ORG_DATABASE_AUTO_MIGRATE:-true}
+      ORG_DATABASE_AUTO_MIGRATE: ${ORG_DATABASE_AUTO_MIGRATE:-false}
       ORG_DATABASE_MIGRATION_TIMEOUT: ${ORG_DATABASE_MIGRATION_TIMEOUT:-45s}
       ORG_DATABASE_MIGRATION_RETRY: ${ORG_DATABASE_MIGRATION_RETRY:-5s}
       ORG_CANONICAL_DIR: /opt/explorarte/docs/canonical
@@ -312,7 +312,17 @@ services:
     security_opt:
       - no-new-privileges:true
     healthcheck:
-      disable: true
+      # ORG-AUDIT-008: process-liveness only (catches a crashed/exited
+      # process; restart:unless-stopped already recovers from that, but
+      # this makes it visible in `docker compose ps`/`--wait` instead of
+      # silent). Does NOT prove the dispatcher is making progress -- a
+      # real readiness signal needs the worker to expose one, which it
+      # does not today.
+      test: ["CMD-SHELL", "pgrep -f 'orgctl model worker run' > /dev/null"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
     restart: unless-stopped
     stop_grace_period: 30s
     depends_on:
@@ -321,10 +331,12 @@ services:
       - org-internal
 
 volumes:
+  # ORG-AUDIT-007: no hardcoded name -- Compose namespaces this under the
+  # active project name, so distinct Compose projects (production vs. any
+  # worktree) never collide over the same volume.
   postgres-data:
-    name: explorarte-org-postgres-data
 
 networks:
+  # ORG-AUDIT-007: same reasoning as the volume above.
   org-internal:
-    name: explorarte-org-internal
     driver: bridge

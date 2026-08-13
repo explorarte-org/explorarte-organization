@@ -25,6 +25,7 @@ type Store struct {
 	rateLimitMax    int
 	rateLimitWindow time.Duration
 	registryReader  registry.Reader
+	authorizer      agentmessaging.CapabilityAuthorizer
 }
 
 // New wires a registry.Reader into the Store specifically so Send can
@@ -35,12 +36,15 @@ type Store struct {
 // called (a bare "TODO: implement topology check" comment stood in its
 // place) -- the two DENY rules it enforces were not actually applied to
 // any real Send call.
-func New(store *platformpostgres.Store, registryReader registry.Reader, rateLimitMax int, rateLimitWindow time.Duration) (*Store, error) {
+func New(store *platformpostgres.Store, registryReader registry.Reader, authorizer agentmessaging.CapabilityAuthorizer, rateLimitMax int, rateLimitWindow time.Duration) (*Store, error) {
 	if store == nil || store.Pool() == nil {
 		return nil, errors.New("agentmessaging store requires initialized PostgreSQL")
 	}
 	if registryReader == nil {
 		return nil, errors.New("agentmessaging store requires a registry reader for topology validation")
+	}
+	if authorizer == nil {
+		return nil, errors.New("agentmessaging store requires a capability authorizer -- ORG-AUDIT-005: the matrix declares agent.message.send/claim/settle grants per role class, and nothing enforced them")
 	}
 	if rateLimitMax <= 0 {
 		return nil, errors.New("agentmessaging store requires a positive rate limit")
@@ -48,21 +52,21 @@ func New(store *platformpostgres.Store, registryReader registry.Reader, rateLimi
 	if rateLimitWindow <= 0 {
 		return nil, errors.New("agentmessaging store requires a positive rate limit window")
 	}
-	return &Store{pool: store.Pool(), rateLimitMax: rateLimitMax, rateLimitWindow: rateLimitWindow, registryReader: registryReader}, nil
+	return &Store{pool: store.Pool(), rateLimitMax: rateLimitMax, rateLimitWindow: rateLimitWindow, registryReader: registryReader, authorizer: authorizer}, nil
 }
 
 var _ agentmessaging.Ledger = (*Store)(nil)
 
 const messageColumns = `id, organization_id, sender_role_id, sender_task_id, recipient_role_id, recipient_task_id,
 correlation_id, causation_id, message_type, payload, idempotency_key, status, attempt_count, max_attempts,
-claimed_by, claim_expires_at, last_error, available_at, created_at, updated_at, delivered_at`
+claimed_by, claim_expires_at, last_error, available_at, created_at, updated_at, delivered_at, request_hash`
 
 func scanMessage(row pgx.Row) (agentmessaging.Message, error) {
 	var m agentmessaging.Message
 	if err := row.Scan(
 		&m.ID, &m.OrganizationID, &m.SenderRoleID, &m.SenderTaskID, &m.RecipientRoleID, &m.RecipientTaskID,
 		&m.CorrelationID, &m.CausationID, &m.MessageType, &m.Payload, &m.IdempotencyKey, &m.Status, &m.AttemptCount, &m.MaxAttempts,
-		&m.ClaimedBy, &m.ClaimExpiresAt, &m.LastError, &m.AvailableAt, &m.CreatedAt, &m.UpdatedAt, &m.DeliveredAt,
+		&m.ClaimedBy, &m.ClaimExpiresAt, &m.LastError, &m.AvailableAt, &m.CreatedAt, &m.UpdatedAt, &m.DeliveredAt, &m.RequestHash,
 	); err != nil {
 		return agentmessaging.Message{}, err
 	}
@@ -105,6 +109,21 @@ func (s *Store) Send(ctx context.Context, executionPrincipalID string, command a
 		return agentmessaging.Message{}, false, fmt.Errorf("topology validation failed: %w", err)
 	}
 
+	// ORG-AUDIT-005: capability-matrix.yaml declares which role classes hold
+	// agent.message.send; topology alone does not encode that (e.g.
+	// execution_service has no send grant even though some of its edges
+	// would otherwise be topologically valid).
+	sendRevision, err := s.registryReader.GetCurrentRevision(ctx, command.OrganizationID)
+	if err != nil {
+		return agentmessaging.Message{}, false, fmt.Errorf("resolve current revision for capability check: %w", err)
+	}
+	if sendRevision == nil {
+		return agentmessaging.Message{}, false, fmt.Errorf("no active registry revision for organization %q", command.OrganizationID)
+	}
+	if err := s.authorizer.Authorize(ctx, command.OrganizationID, sendRevision.ID, command.SenderRoleID, agentmessaging.CapabilityAgentMessageSend); err != nil {
+		return agentmessaging.Message{}, false, fmt.Errorf("capability check failed: %w", err)
+	}
+
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return agentmessaging.Message{}, false, fmt.Errorf("begin send: %w", err)
@@ -120,14 +139,13 @@ func (s *Store) Send(ctx context.Context, executionPrincipalID string, command a
 			return agentmessaging.Message{}, false, scanErr
 		}
 		// Compare against the hash this store derives from the command, which
-		// is what the INSERT below persists. The previous comparison used
-		// command.RequestHash -- a caller-supplied field that SendCommand.
-		// Validate never checks and that no producer in this repository ever
-		// populates. It was therefore always "", never equal to the stored
-		// canonical hash, so every legitimate retry of an already-recorded
-		// idempotency key returned ErrConflict instead of the existing
-		// message: the deduplication this branch added was a hard failure
-		// path rather than a replay guard.
+		// is what the INSERT below persists. request_hash is part of
+		// messageColumns/scanMessage (ORG-AUDIT-001 fix) so existing.RequestHash
+		// reflects the stored value, not a caller-supplied field nobody
+		// populates. A prior version of this comparison used
+		// command.RequestHash instead -- always empty -- so this branch never
+		// actually detected a collision; it silently returned whatever row
+		// matched the idempotency key regardless of payload.
 		if existing.RequestHash != nil && *existing.RequestHash != computeCanonicalRequestHash(command) {
 			// Same key but a genuinely different command: collision or attack.
 			return agentmessaging.Message{}, false, agentmessaging.ErrConflict
@@ -282,6 +300,20 @@ func (s *Store) ClaimNext(ctx context.Context, executionPrincipalID, organizatio
 	// This double-check prevents any spoofing attempts
 	if principalDispatchRole != recipientRoleID {
 		return nil, fmt.Errorf("execution principal %q dispatch_actor_role_id (%q) does not match claimed recipient role (%q)", executionPrincipalID, principalDispatchRole, recipientRoleID)
+	}
+
+	// ORG-AUDIT-005: agent.message.claim is a higher-risk grant than send in
+	// capability-matrix.yaml (department_leadership can send but not claim);
+	// enforce it here, not just declare it.
+	claimRevision, err := s.registryReader.GetCurrentRevision(ctx, organizationID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve current revision for capability check: %w", err)
+	}
+	if claimRevision == nil {
+		return nil, fmt.Errorf("no active registry revision for organization %q", organizationID)
+	}
+	if err := s.authorizer.Authorize(ctx, organizationID, claimRevision.ID, recipientRoleID, agentmessaging.CapabilityAgentMessageClaim); err != nil {
+		return nil, fmt.Errorf("capability check failed: %w", err)
 	}
 
 	now = now.UTC()

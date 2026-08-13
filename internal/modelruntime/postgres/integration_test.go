@@ -870,7 +870,41 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 			// the same rule the comment above states for any migration that
 			// alters these tables.
 			{44, "000044_make_egress_revision_ownership_restorable.down.sql"},
+			// 000047 seeds a provider_wallets row; it must come down before
+			// 000021 drops that table outright, same rule as everything else
+			// in this list.
+			{47, "000047_seed_openai_responses_pricing_and_wallet.down.sql"},
 			{40, "000040_add_provider_render_telemetry.down.sql"},
+			// 000039 replaces the CHECK constraints 000037 defines on
+			// provider_wallet_events (adding the subscription_resource_consumed
+			// value), so it must come down before 000037 removes the columns
+			// those constraints check. Discovered the same way 000025/000030
+			// were: this list silently omitted 000037/000039/000047 for a
+			// while after they landed, and nothing running after this suite in
+			// the shared harness database happened to depend on cost_provenance
+			// or the openai_responses wallet row surviving -- until
+			// costledger-postgres and modelpricing-postgres joined the official
+			// harness manifest and both started failing with columns/rows
+			// silently missing, even though a standalone fresh migrate-up (and
+			// this very test's own PASS) never showed anything wrong.
+			{39, "000039_add_subscription_billing_provenance.down.sql"},
+			{37, "000037_add_cost_settlement_provenance.down.sql"},
+			// 000034 widens embedding_invocations_operation_check (adds
+			// memory_backfill); 000030's down.sql DROPs embedding_invocations
+			// outright (it created the table), so 000034 must come down first
+			// or schema_migrations keeps claiming 000034 is applied while the
+			// table it altered no longer exists -- Up()'s reapply then recreates
+			// the table via 000030 with its original, narrower 4-value
+			// constraint and silently skips 000034 forever (it is still marked
+			// applied), because nothing in THIS list deleted its
+			// schema_migrations row. Exactly the same omission class as
+			// 000025/000030/000037/000039/000047 before it -- this table just
+			// happens to be a different one than the provider_wallet* pair the
+			// comment above was scoped to, so it slipped through that fix too.
+			// Found only once cmd/orgctl (RunnerKind: "costledger", fixture
+			// r30-09) started inserting operation='memory_backfill' rows through
+			// the official harness for the first time.
+			{34, "000034_add_memory_backfill_embedding_operation.down.sql"},
 			{30, "000030_extend_wallet_for_embedding_invocations.down.sql"},
 			{25, "000025_enforce_wallet_single_terminal.down.sql"},
 			{21, "000021_create_provider_wallets.down.sql"},
@@ -933,6 +967,33 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		var embeddingInvocationsExists bool
 		if err = platform.Pool().QueryRow(ctx, `SELECT to_regclass('public.embedding_invocations') IS NOT NULL`).Scan(&embeddingInvocationsExists); err != nil || !embeddingInvocationsExists {
 			t.Fatalf("embedding_invocations missing after reapply: exists=%v err=%v", embeddingInvocationsExists, err)
+		}
+		// Prove 000037/000039 actually reran too, not just 000030/000021 --
+		// this is the exact regression this test's own prior omission of
+		// migrations 37/39/47 from the down-list caused for costledger-postgres
+		// and modelpricing-postgres once they joined the official harness.
+		var costProvenanceExists bool
+		if err = platform.Pool().QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='provider_wallet_events' AND column_name='cost_provenance')`).Scan(&costProvenanceExists); err != nil || !costProvenanceExists {
+			t.Fatalf("provider_wallet_events.cost_provenance missing after reapply: exists=%v err=%v", costProvenanceExists, err)
+		}
+		// Prove 000047's seed row actually reran too -- costgate.Reserve fails
+		// closed for openai_responses without it (ORG-AUDIT-003).
+		var openaiResponsesWalletExists bool
+		if err = platform.Pool().QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM provider_wallets WHERE provider_id='openai_responses')`).Scan(&openaiResponsesWalletExists); err != nil || !openaiResponsesWalletExists {
+			t.Fatalf("provider_wallets openai_responses row missing after reapply: exists=%v err=%v", openaiResponsesWalletExists, err)
+		}
+		// Prove 000034 actually reran too, not just 000030's CREATE TABLE --
+		// insert a memory_backfill row directly and roll it back; the CHECK
+		// constraint accepting it is the exact fact 000034 adds, and rolling
+		// the insert back keeps this assertion side-effect-free.
+		if _, err = platform.Pool().Exec(ctx, `
+BEGIN;
+INSERT INTO embedding_invocations (organization_id, actor_role_id, provider_id, provider_model_id, billing_mode, operation, created_at)
+SELECT 'explorarte', 'ingenieria_ia/orquestador', 'reapply-probe', 'reapply-probe', 'online', 'memory_backfill', NOW()
+WHERE EXISTS (SELECT 1 FROM organizations WHERE id='explorarte');
+ROLLBACK;
+`); err != nil {
+			t.Fatalf("embedding_invocations_operation_check missing memory_backfill after reapply: %v", err)
 		}
 	})
 }

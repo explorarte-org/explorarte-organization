@@ -106,7 +106,7 @@ func fixtureCrossNamespaceDenial() Fixture {
 	return Fixture{
 		ID: "r30-06-cross-namespace-authorization-denial", Version: 1, Title: "Denegación de autorización cruzando namespace",
 		Objective:      "Un actor de un departamento no debe poder recuperar, por ningún canal (exacto/léxico/semántico), contenido aprobado de otro namespace/departamento sin capability explícita — namespace leakage es uno de los gates duros de R30.",
-		OrganizationID: "explorarte", Roles: []string{"ingenieria_ia/orquestador", "marketing/estratega_crecimiento"},
+		OrganizationID: "explorarte", Roles: []string{"ingenieria_ia/orquestador", "negocio/estratega_crecimiento"}, // negocio/, not marketing/ -- see internal/retrievalfixtures/runner.go
 		Scenario:         "pending: reuses internal/rag.Manager.Query and internal/memory.Manager.Search cross-role, against real Postgres",
 		ExpectedResult:   "la consulta cruzada retorna cero resultados del namespace ajeno, en los tres modos.",
 		HardInvariants:   []string{"namespace leakage nunca ocurre, en ningún canal ni modo.", "La denegación ocurre antes de cualquier egress a un proveedor de embeddings."},

@@ -26,6 +26,36 @@
 # invocation; splitting it into individually observable assertions is a
 # separate front, tracked as debt. Modelling it as one unit is honest --
 # the harness reports exactly the granularity it can actually observe.
+#
+# D-HARNESS-001 (Grok Audit Baseline 001 remediation): agentmessaging-postgres
+# and the three executive-* units below were real, passing (or, for
+# executive-postgres, one known pre-existing failure -- see its own
+# handoff entry) integration suites that this manifest never listed.
+# COMPLETE_GREEN never depended on observing them; a control could live
+# entirely inside one of these packages and be invisible to the official
+# harness. This file being the single source of truth (see the file
+# header) is exactly what makes adding four lines the whole fix.
+#
+# D-HARNESS-001 follow-up (independent adversarial re-verification):
+# agentbudget-postgres, costledger-postgres, evaluation-postgres,
+# modelpricing-postgres and webevidence-postgres were the same kind of
+# omission -- real, independently passing integration suites this manifest
+# never listed. modelpricing-postgres matters most: it carries the
+# regression-test evidence for ORG-AUDIT-003 (pricing/wallet catalog
+# closure), so its absence meant that closure was never actually observed
+# by COMPLETE_GREEN. Adding five lines is the fix; making a sixth omission
+# impossible is tracked separately as D-HARNESS-AUTODISCOVERY (this
+# manifest still requires a human to remember to add a line per package;
+# see docs handoff for the deferred-debt entry).
+#
+# EXEC-PRINCIPAL-001 targeted re-verification found a sixth omission of the
+# same kind: cmd/orgctl has real //go:build integration tests
+# (TestEvaluationRunReportsFullCoverageForTodaysActivatedFixtures and two
+# others) that cli-smoke's black-box CLI invocation does not exercise --
+# cli-smoke runs the built orgctl binary, it does not run
+# "go test -tags=integration ./cmd/orgctl". Exactly the D-HARNESS-AUTODISCOVERY
+# scenario predicted: a sixth package went unaccounted before anyone
+# remembered to add a line for it.
 id	modes	kind	timeout	depends_on	command
 platform-postgres	all	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/platform/postgres
 organization-registry	all	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/organization/registry
@@ -46,4 +76,14 @@ decisiongraphtrace	all,trace	integration	15m	-	compose_run go test -count=1 -tag
 improvement-postgres	all,improvement	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/improvement/postgres
 completion-postgres	all,completion	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/completion/postgres
 shadowverifier-postgres	all,shadow	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/shadowverifier/postgres
+agentmessaging-postgres	all,messaging	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/agentmessaging/postgres
+executive-postgres	all,executive	integration	20m	-	compose_run go test -count=1 -tags=integration ./internal/executive
+executive-postrun-postgres	all,executive	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/executive/postrun
+executive-sleep-postgres	all,executive	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/executive/sleep
+agentbudget-postgres	all,agentbudget	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/agentbudget/postgres
+costledger-postgres	all,costledger	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/costledger/postgres
+evaluation-postgres	all,evaluation	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/evaluation/postgres
+modelpricing-postgres	all,modelpricing	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/modelpricing/postgres
+webevidence-postgres	all,webevidence	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/webevidence/postgres
+orgctl-integration	all,orgctl	integration	15m	-	compose_run go test -count=1 -tags=integration ./cmd/orgctl
 cli-smoke	all	smoke	15m	-	run_cli_smoke

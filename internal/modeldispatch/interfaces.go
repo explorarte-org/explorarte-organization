@@ -64,12 +64,23 @@ type ExecutionPrincipalResolver interface {
 	ResolveByKey(ctx context.Context, organizationID, principalKey string) (ExecutionPrincipal, error)
 }
 
+// RoleBoundPrincipalResolver resolves the single active execution principal
+// authorized to send/act as a given organizational role -- the server-side
+// trust boundary agent-messaging's per-hop sender authentication depends on.
+// The database enforces at most one active row per (organization_id,
+// dispatch_actor_role_id) (see migration 000048), so this never has to pick
+// among candidates.
+type RoleBoundPrincipalResolver interface {
+	ResolveActiveForRole(ctx context.Context, organizationID, roleID string) (ExecutionPrincipal, error)
+}
+
 type PrincipalStore interface {
 	RegisterPrincipal(context.Context, PreparedRegisterPrincipal) (RegisterPrincipalResult, error)
 	GetPrincipal(context.Context, int64) (ExecutionPrincipal, error)
 	ListPrincipals(context.Context, string, int) ([]ExecutionPrincipal, error)
 	DisablePrincipal(context.Context, int64, string, string) (ExecutionPrincipal, error)
 	ExecutionPrincipalResolver
+	RoleBoundPrincipalResolver
 }
 
 type AssignmentStore interface {
