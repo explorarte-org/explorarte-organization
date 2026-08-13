@@ -74,6 +74,32 @@ func TestGetTaskContextAllowsTheRealAssignee(t *testing.T) {
 	}
 }
 
+// ORG-AUDIT-009 regression: a task created under an older registry revision
+// must still produce task context once the registry has synced forward --
+// task identity is not a policy snapshot pinned to its creation-time
+// revision. Before this fix, GetTaskContext additionally required
+// detail.Task.OrganizationRevisionID == request.OrganizationRevisionID,
+// which resolve() in contextengine.Service already forces to be the
+// CURRENT revision -- so any task created before a sync could never build
+// context again.
+func TestGetTaskContextSurvivesARevisionThatHasMovedOn(t *testing.T) {
+	detail := taskDetailFixture()
+	detail.Task.OrganizationRevisionID = 3 // the task's revision at creation
+	provider, err := New(fakeTaskReader{detail: detail})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := contextengine.BuildRequest{
+		OrganizationID:         "explorarte",
+		OrganizationRevisionID: 9, // the CURRENT revision, well past 3
+		ActorRoleID:            "ingenieria_ia/orquestador",
+		TaskRef:                "task:42",
+	}
+	if _, err := provider.GetTaskContext(context.Background(), request); err != nil {
+		t.Fatalf("expected task context to build for a task created under an older revision, got err=%v", err)
+	}
+}
+
 func TestValidateVersionRejectsActorThatIsNotTheAssignee(t *testing.T) {
 	detail := taskDetailFixture()
 	provider, err := New(fakeTaskReader{detail: detail})

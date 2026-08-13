@@ -33,7 +33,19 @@ func (p *Provider) GetTaskContext(ctx context.Context, request contextengine.Bui
 	if err != nil {
 		return nil, err
 	}
-	if detail.Task.OrganizationID != request.OrganizationID || detail.Task.OrganizationRevisionID != request.OrganizationRevisionID {
+	// ORG-AUDIT-009: this used to also require
+	// detail.Task.OrganizationRevisionID == request.OrganizationRevisionID.
+	// resolve() in contextengine/service.go already forces
+	// request.OrganizationRevisionID to be the CURRENT revision before this
+	// provider is ever called (Build rejects with ReasonRevisionMismatch
+	// otherwise) -- so that check was really "the task's revision at
+	// creation must equal whatever revision is active right now," which a
+	// registry sync makes false for every task created before it. A task is
+	// work content (title/instructions/evidence/attempts), not a policy
+	// snapshot; the policy currency requirement belongs to the registry
+	// revision check that already runs, not to task identity. Organization
+	// match is what actually matters here.
+	if detail.Task.OrganizationID != request.OrganizationID {
 		return nil, fmt.Errorf("task context scope mismatch for task %d", id)
 	}
 	// ORG-AUDIT-010: the actor building this context and the role the task
