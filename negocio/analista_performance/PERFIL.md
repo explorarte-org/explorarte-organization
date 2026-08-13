@@ -18,9 +18,15 @@ Este rol opera exclusivamente dentro del alcance descrito en la Misión.
 No asume responsabilidades de otros roles ni redefine su propia autoridad, capacidades o ruteo de modelo.
 
 ## Reporta a
-- negocio/estratega_crecimiento
+- negocio/director_negocio
 
-Fuente canonical: Al **Estratega de Crecimiento**, líder de Marketing. El Estratega consolida el análisis con la evidencia del Investigador del Consumidor y comunica las decisiones de crecimiento según la jerarquía organizacional.
+Autoridad formal unica: el departamento consolidado tiene un solo lider canonical.
+
+## Coordinacion funcional
+- negocio/estratega_crecimiento (responsable funcional del area crecimiento)
+
+Coordinacion operativa, no autoridad de departamento: no delega, no aprueba y no
+aparece como arista de reporte formal. Ver negocio/AGENT.md.
 
 ## Contexto y conocimiento relevante
 (sin temas RAG registrados en canonical para este rol)

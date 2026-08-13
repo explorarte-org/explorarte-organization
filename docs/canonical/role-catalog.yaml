@@ -428,13 +428,13 @@ roles:
   summary: 'Analizar el desempeño verificable de los canales y acciones de comunicación, así como las señales de audiencia,
     para apoyar las decisiones de curaduría, distribución y calendario editorial de Comunicaciones. No produce contenido:
     convierte datos y observaciones autorizadas en evidencia, hallazgos y recomendaciones para la decisión del líder.'
-  reports_to_source_text: Editor de Contenido de Marca, líder del departamento de Comunicaciones.
+  reports_to_source_text: "Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion funcional del area comunicaciones: negocio/editor_contenido_marca, responsable funcional sin autoridad de departamento (ver negocio/AGENT.md)."
   rag_topics_source_text: '- Métricas de engagement reales y definiciones internas. - Calendario editorial y desempeño histórico
     de contenidos. - Voz, tono y lineamientos de marca aprobados. - Segmentos y necesidades de audiencia autorizados. - Historial
     de publicaciones, menciones, alianzas y aprendizajes verificables.'
   status: imported_source
   reports_to:
-  - negocio/editor_contenido_marca
+  - negocio/director_negocio
 - id: negocio/analista_costos
   department: negocio
   role: analista_costos
@@ -452,11 +452,11 @@ roles:
     herramientas, publicidad), qué entra, y qué se debe. Eduardo es el principal proveedor — sus ingresos vienen de los pacientes
     de Clínica Online, así que la salud de la organización se mide contra esa fuente, y el capital mensual para publicidad
     se decide con esos números, no con optimismo.'
-  reports_to_source_text: Al Administrador Financiero, líder de Finanzas.
+  reports_to_source_text: "Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion funcional del area finanzas: negocio/administrador_financiero, responsable funcional sin autoridad de departamento (ver negocio/AGENT.md)."
   rag_topics_source_text: null
   status: imported_source
   reports_to:
-  - negocio/administrador_financiero
+  - negocio/director_negocio
 - id: negocio/analista_kpis
   department: negocio
   role: analista_kpis
@@ -473,12 +473,11 @@ roles:
   summary: Preparar indicadores financieros y operativos con datos trazables, supuestos explícitos y criterios conservadores,
     para que el Administrador Financiero los revise antes de cualquier publicación o uso en decisiones. El objetivo es mostrar
     la salud financiera real de la operación, no producir cifras optimistas.
-  reports_to_source_text: Finanzas. Especialista operativo. Reporta al Administrador Financiero, líder del departamento. Ejecuta
-    el trabajo de preparación y control analítico que le asigne su líder; no es punto de contacto directo con CEO.
+  reports_to_source_text: "Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion funcional del area finanzas: negocio/administrador_financiero, responsable funcional sin autoridad de departamento (ver negocio/AGENT.md)."
   rag_topics_source_text: null
   status: imported_source
   reports_to:
-  - negocio/administrador_financiero
+  - negocio/director_negocio
 - id: negocio/analista_performance
   department: negocio
   role: analista_performance
@@ -495,12 +494,11 @@ roles:
   summary: Medir el rendimiento real de los esfuerzos de adquisición, activación, conversión y retención para que el Estratega
     de Crecimiento pueda decidir si una campaña se escala, se ajusta o se descontinúa. Convierte datos de marketing en evidencia
     accionable; no decide por intuición ni ejecuta cambios de campaña sin una asignación explícita.
-  reports_to_source_text: Al **Estratega de Crecimiento**, líder de Marketing. El Estratega consolida el análisis con la evidencia
-    del Investigador del Consumidor y comunica las decisiones de crecimiento según la jerarquía organizacional.
+  reports_to_source_text: "Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion funcional del area crecimiento: negocio/estratega_crecimiento, responsable funcional sin autoridad de departamento (ver negocio/AGENT.md)."
   rag_topics_source_text: null
   status: imported_source
   reports_to:
-  - negocio/estratega_crecimiento
+  - negocio/director_negocio
 - id: negocio/community_manager
   department: negocio
   role: community_manager
@@ -517,13 +515,13 @@ roles:
   summary: Gestionar la comunicación orgánica de Psi.Explorarte en redes sociales conforme al protocolo de comunicación externa,
     la voz y el tono de marca aprobados por el departamento. Cura y publica activos y mensajes que hayan sido producidos o
     aprobados por las áreas correspondientes; no redacta ni diseña contenido propio.
-  reports_to_source_text: Editor de Contenido de Marca, líder del departamento de Comunicaciones.
+  reports_to_source_text: "Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion funcional del area comunicaciones: negocio/editor_contenido_marca, responsable funcional sin autoridad de departamento (ver negocio/AGENT.md)."
   rag_topics_source_text: '- Gestión de comunidades y redes orgánicas. - Protocolo de publicación y calendario editorial.
     - Voz y tono de marca aprobados. - Reglas de moderación, escalación y comunicación externa. - Métricas de engagement reales
     de los canales de la organización.'
   status: imported_source
   reports_to:
-  - negocio/editor_contenido_marca
+  - negocio/director_negocio
 - id: negocio/copywriter
   department: negocio
   role: copywriter
@@ -540,11 +538,11 @@ roles:
   summary: Convertir briefs y lineamientos de marca en textos claros, relevantes y persuasivos para los activos creativos
     de Psi.Explorarte. Entrega piezas listas para revisión del Diseñador; no define la estrategia de distribución ni publica
     directamente.
-  reports_to_source_text: Diseñador, líder de Creativo.
+  reports_to_source_text: "Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion funcional del area creativo: negocio/disenador, responsable funcional sin autoridad de departamento (ver negocio/AGENT.md)."
   rag_topics_source_text: null
   status: imported_source
   reports_to:
-  - negocio/disenador
+  - negocio/director_negocio
 - id: negocio/director_negocio
   department: negocio
   role: director_negocio
@@ -629,11 +627,11 @@ roles:
   summary: Montar y preparar piezas audiovisuales coherentes con la guía de estilo/marca a partir de material disponible y
     de un brief aprobado. Entrega videos, proyectos y especificaciones para revisión del Diseñador; no define la estrategia
     de distribución ni publica directamente.
-  reports_to_source_text: Diseñador, líder de Creativo.
+  reports_to_source_text: "Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion funcional del area creativo: negocio/disenador, responsable funcional sin autoridad de departamento (ver negocio/AGENT.md)."
   rag_topics_source_text: null
   status: imported_source
   reports_to:
-  - negocio/disenador
+  - negocio/director_negocio
 - id: negocio/estratega_crecimiento
   department: negocio
   role: estratega_crecimiento
@@ -673,12 +671,11 @@ roles:
   summary: Evaluar, junto con el Administrador Financiero, oportunidades de venta o expansión y alternativas de deuda con
     criterio financiero, explícito y conservador. Su función es aportar análisis para decidir; no convertir una oportunidad
     en compromiso comercial o financiero sin las aprobaciones correspondientes.
-  reports_to_source_text: Finanzas. Especialista operativo. Reporta al Administrador Financiero, líder del departamento. Ejecuta
-    análisis y prepara recomendaciones dentro del alcance asignado; no es punto de contacto directo con CEO.
+  reports_to_source_text: "Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion funcional del area finanzas: negocio/administrador_financiero, responsable funcional sin autoridad de departamento (ver negocio/AGENT.md)."
   rag_topics_source_text: null
   status: imported_source
   reports_to:
-  - negocio/administrador_financiero
+  - negocio/director_negocio
 - id: negocio/fotografo
   department: negocio
   role: fotografo
@@ -695,11 +692,11 @@ roles:
   summary: Crear, seleccionar y preparar material fotográfico coherente con la guía de estilo/marca y con el brief creativo.
     Entrega imágenes y documentación de uso para revisión del Diseñador; no define la estrategia de distribución ni publica
     directamente.
-  reports_to_source_text: Diseñador, líder de Creativo.
+  reports_to_source_text: "Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion funcional del area creativo: negocio/disenador, responsable funcional sin autoridad de departamento (ver negocio/AGENT.md)."
   rag_topics_source_text: null
   status: imported_source
   reports_to:
-  - negocio/disenador
+  - negocio/director_negocio
 - id: negocio/ilustrador
   department: negocio
   role: ilustrador
@@ -716,11 +713,11 @@ roles:
   summary: Desarrollar ilustraciones, recursos gráficos y sistemas visuales originales que traduzcan el brief y la identidad
     de marca en piezas consistentes. Entrega archivos editables o finales para revisión del Diseñador; no define la estrategia
     de distribución ni publica directamente.
-  reports_to_source_text: Diseñador, líder de Creativo.
+  reports_to_source_text: "Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion funcional del area creativo: negocio/disenador, responsable funcional sin autoridad de departamento (ver negocio/AGENT.md)."
   rag_topics_source_text: null
   status: imported_source
   reports_to:
-  - negocio/disenador
+  - negocio/director_negocio
 - id: negocio/ingeniero_industrial
   department: negocio
   role: ingeniero_industrial
@@ -738,11 +735,11 @@ roles:
     de agentes: costo por unidad de trabajo, cuellos de botella, colas, capacidad, ventanas tarifarias y retrabajo. La organización
     no tenía hasta hoy a nadie cuyo trabajo fuera mirarse a sí misma con esos lentes. Como en el resto de la organización,
     no implementa — define qué se mide y cuál es el objetivo; la instrumentación y el código son de Ingeniería de IA.'
-  reports_to_source_text: Al Administrador Financiero, líder de Finanzas.
+  reports_to_source_text: "Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion funcional del area finanzas: negocio/administrador_financiero, responsable funcional sin autoridad de departamento (ver negocio/AGENT.md)."
   rag_topics_source_text: null
   status: imported_source
   reports_to:
-  - negocio/administrador_financiero
+  - negocio/director_negocio
 - id: negocio/investigador_consumidor
   department: negocio
   role: investigador_consumidor
@@ -760,11 +757,11 @@ roles:
     y la economía conductual, identifica motivaciones, fricciones, sesgos y contextos de decisión, y formula hipótesis que
     puedan probarse en marketing. Su trabajo debe ayudar a evitar campañas basadas únicamente en intuición o en que un mensaje
     “se ve bien”.
-  reports_to_source_text: Estratega de Crecimiento, líder de Marketing.
+  reports_to_source_text: "Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion funcional del area crecimiento: negocio/estratega_crecimiento, responsable funcional sin autoridad de departamento (ver negocio/AGENT.md)."
   rag_topics_source_text: null
   status: imported_source
   reports_to:
-  - negocio/estratega_crecimiento
+  - negocio/director_negocio
 - id: negocio/rrpp_alianzas
   department: negocio
   role: rrpp_alianzas
@@ -781,13 +778,13 @@ roles:
   summary: Apoyar la gestión ordenada de relaciones públicas, contactos institucionales y alianzas de comunicación de Psi.Explorarte.
     Coordina oportunidades, solicitudes y compromisos externos dentro del protocolo aprobado; no produce contenido ni negocia
     por cuenta propia compromisos que requieran autorización.
-  reports_to_source_text: Editor de Contenido de Marca, líder del departamento de Comunicaciones.
+  reports_to_source_text: "Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion funcional del area comunicaciones: negocio/editor_contenido_marca, responsable funcional sin autoridad de departamento (ver negocio/AGENT.md)."
   rag_topics_source_text: '- Protocolo de comunicación externa y aprobaciones. - Voz, tono y lineamientos de marca aprobados.
     - Registro de alianzas y relaciones públicas existentes. - Políticas de uso de marca, privacidad y escalación. - Historial
     verificable de menciones, colaboraciones y resultados de comunicación.'
   status: imported_source
   reports_to:
-  - negocio/editor_contenido_marca
+  - negocio/director_negocio
 - id: recursos_agenticos/curador_catalogo
   department: recursos_agenticos
   role: curador_catalogo

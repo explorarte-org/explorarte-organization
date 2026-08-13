@@ -18,9 +18,15 @@ Este rol opera exclusivamente dentro del alcance descrito en la Misión.
 No asume responsabilidades de otros roles ni redefine su propia autoridad, capacidades o ruteo de modelo.
 
 ## Reporta a
-- negocio/editor_contenido_marca
+- negocio/director_negocio
 
-Fuente canonical: Editor de Contenido de Marca, líder del departamento de Comunicaciones.
+Autoridad formal unica: el departamento consolidado tiene un solo lider canonical.
+
+## Coordinacion funcional
+- negocio/editor_contenido_marca (responsable funcional del area comunicaciones)
+
+Coordinacion operativa, no autoridad de departamento: no delega, no aprueba y no
+aparece como arista de reporte formal. Ver negocio/AGENT.md.
 
 ## Contexto y conocimiento relevante
 - Gestión de comunidades y redes orgánicas. - Protocolo de publicación y calendario editorial. - Voz y tono de marca aprobados. - Reglas de moderación, escalación y comunicación externa. - Métricas de engagement reales de los canales de la organización.

@@ -18,9 +18,15 @@ Este rol opera exclusivamente dentro del alcance descrito en la Misión.
 No asume responsabilidades de otros roles ni redefine su propia autoridad, capacidades o ruteo de modelo.
 
 ## Reporta a
-- negocio/administrador_financiero
+- negocio/director_negocio
 
-Fuente canonical: Al Administrador Financiero, líder de Finanzas.
+Autoridad formal unica: el departamento consolidado tiene un solo lider canonical.
+
+## Coordinacion funcional
+- negocio/administrador_financiero (responsable funcional del area finanzas)
+
+Coordinacion operativa, no autoridad de departamento: no delega, no aprueba y no
+aparece como arista de reporte formal. Ver negocio/AGENT.md.
 
 ## Contexto y conocimiento relevante
 (sin temas RAG registrados en canonical para este rol)
