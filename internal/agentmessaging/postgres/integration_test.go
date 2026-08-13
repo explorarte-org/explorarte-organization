@@ -174,6 +174,48 @@ func TestSendIsIdempotentPerOrganizationAndKey(t *testing.T) {
 	}
 }
 
+// ORG-AUDIT-001 regression: idempotency dedup must compare the *stored*
+// canonical request hash, not a caller-supplied field nobody populates.
+// Reusing an idempotency key with a materially different command has to be
+// a rejected collision, never a silent replay of someone else's message.
+func TestSendRejectsSameKeyWithDifferentCommand(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	fixture := openMessagingFixture(t, ctx)
+	ledger, err := agentmessagingpostgres.New(fixture.store, fixture.registryReader, 100, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	ceoTaskID := fixture.insertTask(t, ctx, "empresa/ceo", 1)
+	recipientTaskID := fixture.insertTask(t, ctx, "ingenieria_ia/orquestador", 41)
+	otherRecipientTaskID := fixture.insertTask(t, ctx, "ingenieria_ia/orquestador", 42)
+	principalID := fixture.insertExecutionPrincipal(t, ctx, "empresa/ceo", 1)
+
+	base := agentmessaging.SendCommand{
+		OrganizationID: messagingIntegrationOrg, SenderRoleID: "empresa/ceo", SenderTaskID: ceoTaskID,
+		RecipientRoleID: "ingenieria_ia/orquestador", RecipientTaskID: &recipientTaskID, CorrelationID: "executive:collision", CausationID: fmt.Sprintf("task:%d", ceoTaskID),
+		MessageType: agentmessaging.MessageDelegation, SchemaVersion: agentmessaging.SchemaVersionV1, Payload: json.RawMessage(fmt.Sprintf(`{"delegated_task_id":%d}`, recipientTaskID)),
+		IdempotencyKey: "delegation:ceo->leader:collision-test", MaxAttempts: 5,
+	}
+	first, reused, err := ledger.Send(ctx, principalID, base, now)
+	if err != nil || reused {
+		t.Fatalf("first send: message=%+v reused=%v err=%v", first, reused, err)
+	}
+
+	// Same idempotency key, but a genuinely different command: it points the
+	// delegation at a different task. Schema-valid on its own -- the point is
+	// that the canonical hash differs from the first Send's, not that the
+	// payload is malformed.
+	colliding := base
+	colliding.RecipientTaskID = &otherRecipientTaskID
+	colliding.Payload = json.RawMessage(fmt.Sprintf(`{"delegated_task_id":%d}`, otherRecipientTaskID))
+	_, _, err = ledger.Send(ctx, principalID, colliding, now.Add(time.Second))
+	if !errors.Is(err, agentmessaging.ErrConflict) {
+		t.Fatalf("send with reused key and different payload: err=%v want ErrConflict", err)
+	}
+}
+
 func TestSendEnforcesRateLimit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

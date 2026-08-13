@@ -55,14 +55,14 @@ var _ agentmessaging.Ledger = (*Store)(nil)
 
 const messageColumns = `id, organization_id, sender_role_id, sender_task_id, recipient_role_id, recipient_task_id,
 correlation_id, causation_id, message_type, payload, idempotency_key, status, attempt_count, max_attempts,
-claimed_by, claim_expires_at, last_error, available_at, created_at, updated_at, delivered_at`
+claimed_by, claim_expires_at, last_error, available_at, created_at, updated_at, delivered_at, request_hash`
 
 func scanMessage(row pgx.Row) (agentmessaging.Message, error) {
 	var m agentmessaging.Message
 	if err := row.Scan(
 		&m.ID, &m.OrganizationID, &m.SenderRoleID, &m.SenderTaskID, &m.RecipientRoleID, &m.RecipientTaskID,
 		&m.CorrelationID, &m.CausationID, &m.MessageType, &m.Payload, &m.IdempotencyKey, &m.Status, &m.AttemptCount, &m.MaxAttempts,
-		&m.ClaimedBy, &m.ClaimExpiresAt, &m.LastError, &m.AvailableAt, &m.CreatedAt, &m.UpdatedAt, &m.DeliveredAt,
+		&m.ClaimedBy, &m.ClaimExpiresAt, &m.LastError, &m.AvailableAt, &m.CreatedAt, &m.UpdatedAt, &m.DeliveredAt, &m.RequestHash,
 	); err != nil {
 		return agentmessaging.Message{}, err
 	}
@@ -120,14 +120,13 @@ func (s *Store) Send(ctx context.Context, executionPrincipalID string, command a
 			return agentmessaging.Message{}, false, scanErr
 		}
 		// Compare against the hash this store derives from the command, which
-		// is what the INSERT below persists. The previous comparison used
-		// command.RequestHash -- a caller-supplied field that SendCommand.
-		// Validate never checks and that no producer in this repository ever
-		// populates. It was therefore always "", never equal to the stored
-		// canonical hash, so every legitimate retry of an already-recorded
-		// idempotency key returned ErrConflict instead of the existing
-		// message: the deduplication this branch added was a hard failure
-		// path rather than a replay guard.
+		// is what the INSERT below persists. request_hash is part of
+		// messageColumns/scanMessage (ORG-AUDIT-001 fix) so existing.RequestHash
+		// reflects the stored value, not a caller-supplied field nobody
+		// populates. A prior version of this comparison used
+		// command.RequestHash instead -- always empty -- so this branch never
+		// actually detected a collision; it silently returned whatever row
+		// matched the idempotency key regardless of payload.
 		if existing.RequestHash != nil && *existing.RequestHash != computeCanonicalRequestHash(command) {
 			// Same key but a genuinely different command: collision or attack.
 			return agentmessaging.Message{}, false, agentmessaging.ErrConflict
