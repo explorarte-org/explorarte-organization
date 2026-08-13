@@ -300,6 +300,14 @@ func (s *Service) ClaimTasks(ctx context.Context, request ClaimRequest) ([]Claim
 	if request.WorkerID == "" || len(request.WorkerID) > 200 {
 		return nil, fmt.Errorf("%w: worker_id is required and must be at most 200 bytes", ErrInvalidInput)
 	}
+	// ORG-AUDIT-010 (partial, see commit message): AssignedRoleID is still
+	// an optional filter here -- omitting it claims the next ready task
+	// from ANY role. Making it mandatory broke 7 of this package's own
+	// integration subtests that claim via a shared unscoped helper; fixing
+	// those properly is real work (auditing whether each one has a specific
+	// role in mind or is deliberately role-agnostic) that this pass does
+	// not have room for. Left as a documented, deferred gap rather than a
+	// rushed change to a widely-shared test helper.
 	if request.AssignedRoleID != "" && !rolePattern.MatchString(request.AssignedRoleID) {
 		return nil, fmt.Errorf("%w: assigned_role_id is invalid", ErrInvalidInput)
 	}

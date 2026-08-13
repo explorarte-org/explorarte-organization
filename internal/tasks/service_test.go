@@ -196,7 +196,7 @@ func TestCreateTaskWithDependencyStartsPending(t *testing.T) {
 func TestClaimRevalidatesAssignee(t *testing.T) {
 	service, persistence, catalog := serviceFixture(t)
 	catalog.roles["ingenieria_ia/qa"] = RoleRef{ID: "ingenieria_ia/qa", UnitID: "ingenieria_ia", Enabled: false, Executable: false}
-	_, err := service.ClaimTasks(context.Background(), ClaimRequest{WorkerID: "worker-1"})
+	_, err := service.ClaimTasks(context.Background(), ClaimRequest{WorkerID: "worker-1", AssignedRoleID: "ingenieria_ia/qa"})
 	if err != nil {
 		t.Fatalf("ClaimTasks() error = %v", err)
 	}
