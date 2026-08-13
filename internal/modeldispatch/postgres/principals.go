@@ -113,12 +113,59 @@ func (s *Store) ResolveByKey(ctx context.Context, organizationID, principalKey s
 	return scanPrincipal(s.pool.QueryRow(ctx, `SELECT `+principalColumns+` FROM model_execution_principals WHERE organization_id=$1 AND principal_key=$2`, organizationID, principalKey))
 }
 
-// ResolveActiveForRole returns the single active principal authorized to act
-// as roleID in organizationID. Migration 000048's partial unique index on
-// (organization_id, dispatch_actor_role_id) WHERE status='active' is what
-// makes "single" a database-enforced fact rather than an application
-// assumption -- this query cannot return more than one active row even under
-// a concurrent registration race.
+// ResolveActiveForRole returns the single active role-bound principal
+// authorized to act as roleID in organizationID. Migration 000048's
+// partial unique index on (organization_id, dispatch_actor_role_id) WHERE
+// status='active' AND principal_key LIKE 'role-bound/%' is what makes
+// "single" a database-enforced fact rather than an application assumption
+// -- this query cannot return more than one active row even under a
+// concurrent registration race.
+//
+// The principal_key filter is not optional: model_execution_principals
+// also holds pre-existing technical dispatcher principals (e.g.
+// oracle-01/model-runtime-01) that legitimately share a
+// dispatch_actor_role_id with each other and, potentially, with a
+// role-bound principal -- a different concept (see
+// modeldispatch.RoleBoundPrincipalKeyPrefix's doc comment). Without this
+// filter, an org+role that happened to have both an active technical
+// principal and an active role-bound one would return whichever row the
+// planner picked first, non-deterministically -- silently authenticating
+// agent-messaging sends with the wrong kind of identity.
 func (s *Store) ResolveActiveForRole(ctx context.Context, organizationID, roleID string) (modeldispatch.ExecutionPrincipal, error) {
-	return scanPrincipal(s.pool.QueryRow(ctx, `SELECT `+principalColumns+` FROM model_execution_principals WHERE organization_id=$1 AND dispatch_actor_role_id=$2 AND status='active'`, organizationID, roleID))
+	// Query, not QueryRow: QueryRow silently reads only the first row of a
+	// multi-row result and discards the rest, with no defined ordering to
+	// make "first" mean anything -- migration 000048's unique index is
+	// supposed to make more than one active role-bound row per
+	// (organization_id, dispatch_actor_role_id) impossible, but this
+	// resolver does not lean on that guarantee alone. If it is ever
+	// violated (a future migration rollback, a manual DB edit, a bug
+	// elsewhere), fail closed with ErrConflict instead of arbitrarily
+	// authenticating a send as whichever row Postgres happened to return
+	// first.
+	rows, err := s.pool.Query(ctx, `SELECT `+principalColumns+` FROM model_execution_principals WHERE organization_id=$1 AND dispatch_actor_role_id=$2 AND status='active' AND principal_key LIKE $3`, organizationID, roleID, modeldispatch.RoleBoundPrincipalKeyPrefix+"%")
+	if err != nil {
+		return modeldispatch.ExecutionPrincipal{}, mapError(err)
+	}
+	defer rows.Close()
+
+	var found []modeldispatch.ExecutionPrincipal
+	for rows.Next() {
+		principal, scanErr := scanPrincipal(rows)
+		if scanErr != nil {
+			return modeldispatch.ExecutionPrincipal{}, scanErr
+		}
+		found = append(found, principal)
+	}
+	if err := rows.Err(); err != nil {
+		return modeldispatch.ExecutionPrincipal{}, mapError(err)
+	}
+
+	switch len(found) {
+	case 0:
+		return modeldispatch.ExecutionPrincipal{}, modeldispatch.ErrNotFound
+	case 1:
+		return found[0], nil
+	default:
+		return modeldispatch.ExecutionPrincipal{}, fmt.Errorf("%w: %d active role-bound principals found for organization %q role %q, expected exactly one", modeldispatch.ErrConflict, len(found), organizationID, roleID)
+	}
 }

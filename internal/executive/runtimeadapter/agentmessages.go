@@ -41,13 +41,6 @@ var (
 
 var _ executive.AgentMessagingProvider = AgentMessages{}
 
-// roleBoundPrincipalKeyPrefix namespaces auto-provisioned, role-bound
-// principals from any operator-registered principal (e.g.
-// oracle-01/model-runtime-01, which is a model-dispatch technical identity,
-// a different concept -- see the package doc comment on ExecutionPrincipal
-// vs. this adapter's role-bound usage).
-const roleBoundPrincipalKeyPrefix = "role-bound/"
-
 // roleBoundProvisionerRoleID attributes auto-provisioned principals in
 // registered_by_role_id/audit_events. It is not a role FK (that column has
 // none), only an audit label identifying the runtime component that
@@ -79,7 +72,7 @@ func (a AgentMessages) resolveOrProvisionPrincipalForRole(ctx context.Context, r
 		return modeldispatch.ExecutionPrincipal{}, fmt.Errorf("%w: %v", ErrNoActivePrincipal, err)
 	}
 
-	principalKey := roleBoundPrincipalKeyPrefix + roleID
+	principalKey := modeldispatch.RoleBoundPrincipalKeyPrefix + roleID
 	command := modeldispatch.RegisterPrincipalCommand{
 		OrganizationID: a.OrganizationID, PrincipalKey: principalKey,
 		DispatchActorRoleID: roleID, PrincipalKind: modeldispatch.PrincipalLocalProcess,

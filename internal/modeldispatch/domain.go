@@ -29,6 +29,18 @@ func (s AssignmentStatus) Terminal() bool {
 	return s == AssignmentExhausted || s == AssignmentExpired || s == AssignmentRevoked
 }
 
+// RoleBoundPrincipalKeyPrefix namespaces the principal_key of every
+// principal that represents "the one authenticated organizational sender
+// for this role" (agent-messaging's identity, semantics B) from every
+// other principal in this table, in particular the pre-existing technical
+// dispatcher identities (semantics A -- e.g. oracle-01/model-runtime-01)
+// that legitimately share a dispatch_actor_role_id with each other and,
+// potentially, with a role-bound principal. Migration 000048's unique
+// index and RoleBoundPrincipalResolver.ResolveActiveForRole both filter on
+// this prefix so a lookup for "the role-bound principal" can never
+// ambiguously return a technical one instead.
+const RoleBoundPrincipalKeyPrefix = "role-bound/"
+
 // ExecutionPrincipal identifies a concrete instance of a dispatching process. It
 // is not an agent, carries no context or memory, and never stores credentials.
 type ExecutionPrincipal struct {
