@@ -6,12 +6,15 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/config"
 	"github.com/Mireuz13/explorarte-organization/internal/modelpricing"
 	modelpricingpostgres "github.com/Mireuz13/explorarte-organization/internal/modelpricing/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
+	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/mimo"
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/testdbguard"
@@ -96,6 +99,18 @@ func TestModelPricingSeedIsRealAndResolvable(t *testing.T) {
 		t.Fatalf("gemini-2.5-pro long tier=%+v", geminiPro)
 	}
 
+	// ORG-AUDIT-003: executive.ceo routes to openai_responses/gpt-5.6-luna
+	// in docs/canonical/model-routing.yaml; this must resolve exactly like
+	// openai_compatible's identical rate card, or the CEO's cost gate fails
+	// closed on every model.invoke.
+	ceoShort, err := service.Resolve(ctx, "openai_responses", "gpt-5.6-luna", 1_000, modelpricing.BillingOnline, now)
+	if err != nil {
+		t.Fatalf("openai_responses/gpt-5.6-luna must be resolvable: %v", err)
+	}
+	if ceoShort.ContextTierName != "default" || ceoShort.InputPriceNanosPerMillion != 200_000_000 {
+		t.Fatalf("openai_responses gpt-5.6-luna short tier=%+v", ceoShort)
+	}
+
 	// R30 retired gemini-2.5-flash from model-routing.yaml (research.worker
 	// now routes to deepseek/deepseek-v4-flash; Gemini is generation-only
 	// history from here on, never a live routing target) — this row is kept
@@ -119,6 +134,66 @@ func TestModelPricingSeedIsRealAndResolvable(t *testing.T) {
 // seeded gemini-embedding-2 rows (000027) resolve to the row matching the
 // requested billing mode, and that Store.ListTiers' SQL-level billing_mode
 // filter and Resolve's own defensive re-check agree.
+// ORG-AUDIT-003 regression: closes the catalog gap directly, rather than
+// only proving the one provider (openai_responses) this pass happened to
+// fix. Every provider docs/canonical/model-routing.yaml names for a
+// non-subscription policy must have a resolvable model_pricing tier and a
+// provider_wallets row, or costgate.Reserve fails closed for that role's
+// every model.invoke -- exactly the gap that let openai_responses go
+// unnoticed until an audit found it.
+func TestEveryRoutedNonSubscriptionProviderHasPricingAndAWallet(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	platform := openPricingStore(t, ctx)
+	store, err := modelpricingpostgres.New(platform)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := modelpricing.NewService(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+
+	routing, err := modelruntime.LoadCanonicalRouting(filepath.Join("..", "..", "..", "docs", "canonical"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscriptionProviders := map[string]bool{mimo.ProviderID: true}
+
+	type routedModel struct{ provider, model string }
+	seen := map[routedModel]bool{}
+	for policyID, policy := range routing.Policies {
+		if subscriptionProviders[policy.Provider] {
+			continue
+		}
+		key := routedModel{policy.Provider, policy.Model}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if _, err := service.Resolve(ctx, policy.Provider, policy.Model, 1_000, modelpricing.BillingOnline, now); err != nil {
+			t.Errorf("policy %q routes to %s/%s, which has no resolvable model_pricing tier: %v", policyID, policy.Provider, policy.Model, err)
+		}
+	}
+
+	providers := map[string]bool{}
+	for _, policy := range routing.Policies {
+		if !subscriptionProviders[policy.Provider] {
+			providers[policy.Provider] = true
+		}
+	}
+	for providerID := range providers {
+		var count int
+		if err := platform.Pool().QueryRow(ctx, `SELECT count(*) FROM provider_wallets WHERE provider_id=$1`, providerID).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count == 0 {
+			t.Errorf("provider %q is routed to by canonical policy but has no provider_wallets row", providerID)
+		}
+	}
+}
+
 func TestModelPricingBillingModeNeverConflatesOnlineAndBatch(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
