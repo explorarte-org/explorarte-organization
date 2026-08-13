@@ -870,7 +870,25 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 			// the same rule the comment above states for any migration that
 			// alters these tables.
 			{44, "000044_make_egress_revision_ownership_restorable.down.sql"},
+			// 000047 seeds a provider_wallets row; it must come down before
+			// 000021 drops that table outright, same rule as everything else
+			// in this list.
+			{47, "000047_seed_openai_responses_pricing_and_wallet.down.sql"},
 			{40, "000040_add_provider_render_telemetry.down.sql"},
+			// 000039 replaces the CHECK constraints 000037 defines on
+			// provider_wallet_events (adding the subscription_resource_consumed
+			// value), so it must come down before 000037 removes the columns
+			// those constraints check. Discovered the same way 000025/000030
+			// were: this list silently omitted 000037/000039/000047 for a
+			// while after they landed, and nothing running after this suite in
+			// the shared harness database happened to depend on cost_provenance
+			// or the openai_responses wallet row surviving -- until
+			// costledger-postgres and modelpricing-postgres joined the official
+			// harness manifest and both started failing with columns/rows
+			// silently missing, even though a standalone fresh migrate-up (and
+			// this very test's own PASS) never showed anything wrong.
+			{39, "000039_add_subscription_billing_provenance.down.sql"},
+			{37, "000037_add_cost_settlement_provenance.down.sql"},
 			{30, "000030_extend_wallet_for_embedding_invocations.down.sql"},
 			{25, "000025_enforce_wallet_single_terminal.down.sql"},
 			{21, "000021_create_provider_wallets.down.sql"},
@@ -933,6 +951,20 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		var embeddingInvocationsExists bool
 		if err = platform.Pool().QueryRow(ctx, `SELECT to_regclass('public.embedding_invocations') IS NOT NULL`).Scan(&embeddingInvocationsExists); err != nil || !embeddingInvocationsExists {
 			t.Fatalf("embedding_invocations missing after reapply: exists=%v err=%v", embeddingInvocationsExists, err)
+		}
+		// Prove 000037/000039 actually reran too, not just 000030/000021 --
+		// this is the exact regression this test's own prior omission of
+		// migrations 37/39/47 from the down-list caused for costledger-postgres
+		// and modelpricing-postgres once they joined the official harness.
+		var costProvenanceExists bool
+		if err = platform.Pool().QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='provider_wallet_events' AND column_name='cost_provenance')`).Scan(&costProvenanceExists); err != nil || !costProvenanceExists {
+			t.Fatalf("provider_wallet_events.cost_provenance missing after reapply: exists=%v err=%v", costProvenanceExists, err)
+		}
+		// Prove 000047's seed row actually reran too -- costgate.Reserve fails
+		// closed for openai_responses without it (ORG-AUDIT-003).
+		var openaiResponsesWalletExists bool
+		if err = platform.Pool().QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM provider_wallets WHERE provider_id='openai_responses')`).Scan(&openaiResponsesWalletExists); err != nil || !openaiResponsesWalletExists {
+			t.Fatalf("provider_wallets openai_responses row missing after reapply: exists=%v err=%v", openaiResponsesWalletExists, err)
 		}
 	})
 }
