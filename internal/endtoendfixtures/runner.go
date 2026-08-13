@@ -14,6 +14,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/executive"
 	"github.com/Mireuz13/explorarte-organization/internal/executive/runtimeadapter"
 	memorypostgres "github.com/Mireuz13/explorarte-organization/internal/memory/postgres"
+	dispatchpostgres "github.com/Mireuz13/explorarte-organization/internal/modeldispatch/postgres"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
 	ragpostgres "github.com/Mireuz13/explorarte-organization/internal/rag/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/tasks"
@@ -74,6 +75,17 @@ func (r Runner) Run(ctx context.Context, f fixtures.Fixture, subjectID string) (
 	if err != nil {
 		return fixtures.RunOutcome{}, err
 	}
+	// EXEC-PRINCIPAL-001: no principal registration here anymore.
+	// AgentMessages resolves (and lazily provisions, on first use) the
+	// correct role-bound principal per sender internally -- the same
+	// mechanism internal/executive/bootstrap/runtime.go now wires in
+	// production. Registering one fixed principal up front, as this fixture
+	// used to, only worked for a single sender role and silently diverged
+	// from how production actually authenticates a multi-hop flow.
+	dispatchStore, err := dispatchpostgres.New(r.Store)
+	if err != nil {
+		return fixtures.RunOutcome{}, err
+	}
 	models := newFakeModelRuntime(evidence)
 	orchestrator, err := executive.NewOrchestrator(
 		fixtureOrganization,
@@ -82,7 +94,10 @@ func (r Runner) Run(ctx context.Context, f fixtures.Fixture, subjectID string) (
 		&fakeContext{}, fakeAssignments{}, models, h.completion, h.decisions, h.authz,
 		executive.DefaultLimits(), executive.ClockFunc(time.Now),
 		executive.WithAgentBudgets(runtimeadapter.AgentBudgets{Ledger: budgetLedger, Limits: agentbudget.DefaultLimits()}),
-		executive.WithAgentMessaging(runtimeadapter.AgentMessages{Ledger: messageLedger, MaxAttempts: 10}),
+		executive.WithAgentMessaging(runtimeadapter.AgentMessages{
+			Ledger: messageLedger, MaxAttempts: 10,
+			PrincipalStore: dispatchStore, OrganizationID: fixtureOrganization,
+		}),
 	)
 	if err != nil {
 		return fixtures.RunOutcome{}, fmt.Errorf("construct orchestrator: %w", err)

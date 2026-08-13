@@ -27,6 +27,7 @@ import (
 	decisiongraphpostgres "github.com/Mireuz13/explorarte-organization/internal/decisiongraph/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/executive"
 	"github.com/Mireuz13/explorarte-organization/internal/executive/runtimeadapter"
+	dispatchpostgres "github.com/Mireuz13/explorarte-organization/internal/modeldispatch/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
@@ -436,9 +437,24 @@ func TestExecutivePostgreSQL17AgentBudgetsAndMessagingAreWiredThroughDelegation(
 	if err != nil {
 		t.Fatal(err)
 	}
+	// EXEC-PRINCIPAL-001: no principal registration here. AgentMessages
+	// resolves the role-bound principal for each hop's sender internally,
+	// lazily provisioning one on first use -- the exact mechanism
+	// internal/executive/bootstrap/runtime.go wires in production. This
+	// fixture exercises the real runtime contract, not a fixture-only
+	// shortcut: it must pass because role-based resolution genuinely works
+	// across the CEO->leader and leader->worker hops below, not because the
+	// fixture pre-arranged a principal whose role happens to match one hop.
+	dispatchStore, err := dispatchpostgres.New(h.store)
+	if err != nil {
+		t.Fatal(err)
+	}
 	orchestrator := newOrchestrator(t, h, models, integrationAssignments{}, completionGate,
 		executive.WithAgentBudgets(runtimeadapter.AgentBudgets{Ledger: budgetLedger, Limits: agentbudget.DefaultLimits()}),
-		executive.WithAgentMessaging(runtimeadapter.AgentMessages{Ledger: messageLedger, MaxAttempts: 10}),
+		executive.WithAgentMessaging(runtimeadapter.AgentMessages{
+			Ledger: messageLedger, MaxAttempts: 10,
+			PrincipalStore: dispatchStore, OrganizationID: "explorarte",
+		}),
 	)
 
 	run, reused, err := orchestrator.Submit(h.ctx, executive.SubmitRequest{
