@@ -214,6 +214,50 @@ Reproduced twice on independent fresh volumes (immediately before and after the 
 - **P2 remaining**: D-005, D-008, D-010, D-012 (unchanged from the original pass), D-EXEC-PRINCIPAL-002 (new, informational).
 - **Unknown**: none blocking. The original pass's "unknown" (whether production's `bootstrap.Open` always supplies a working execution principal) is now **resolved** — it did not, for any hop, until this round's fixes; production has been calling `attachChildCoordination` with agent messaging wired since the security-hardening branch merged, meaning **real delegation messaging has likely never functioned in production either**, silently, since MaxAttempts/retry policy would have simply exhausted attempts on every delegation without an operator necessarily noticing a message-send failure distinct from other task-orchestration errors. This is a significant, newly-confirmed fact, not a residual risk of this round's changes — this round is what fixes it.
 
-## W. VERDICT
+## W. VERDICT (original pass)
 
-**READY_FOR_TARGETED_INDEPENDENT_REVIEW**
+**READY_FOR_TARGETED_INDEPENDENT_REVIEW** — superseded below. Independent targeted verification (DeepSeek v4 Pro, three phases across two premature-turn-budget stops, 256 turns total, ~$0.14) returned `VERIFIED_WITH_REQUIRED_FIX`.
+
+---
+
+# Closure Round 3 — Required Fixes + R30 Evaluation Bug Chain
+
+## X. TARGETED VERIFICATION RESULT
+
+Independent verifier confirmed everything in Closure Round 2 (compose identity, both shared-DB contamination fixes, EXEC-PRINCIPAL-001 root cause/fix/multi-hop proof/negative proof/mutation fitness, migration 48's actual SQL and lifecycle) with real, independently-executed evidence — including going further than the original worker by genuinely provisioning a second organization to test cross-org isolation directly. Two new findings blocked `VERIFIED_READY_FOR_MERGE`:
+
+1. **`cmd/orgctl` outside the harness** — real `//go:build integration` tests, not exercised by `cli-smoke`. `UNACCOUNTED=1`, not 0.
+2. **`ResolveActiveForRole` had no `principal_key` filter** — relied indirectly on model-dispatch technical principals never sharing `authority_class=execution_service` with an organizational role; not defended in the resolver itself, and `QueryRow` would silently pick an arbitrary row under ambiguity rather than fail closed.
+
+## Y. FIXES APPLIED
+
+1. **`cmd/orgctl` added to the harness manifest** (`orgctl-integration`, commit `2d9f366`).
+2. **`ResolveActiveForRole` scoped + fail-closed** (commit `9f45b21`): filters `principal_key LIKE 'role-bound/%'` via the new shared constant `modeldispatch.RoleBoundPrincipalKeyPrefix`; replaced `QueryRow` with an explicit count that returns `ErrConflict` on >1 active row instead of arbitrarily picking one. Six new behavioral tests (`internal/modeldispatch/postgres/role_bound_principal_test.go`) cover exactly the six cases required: role-bound-only, role-bound-never-lost-to-technical (and the reverse), no cross-org leak (against a genuinely provisioned second org), disabled-treated-as-not-found, and 8-way concurrent provisioning converging on one principal.
+
+Adding fix 1 exposed a **three-bug chain** in the R30 evaluation harness — real, pre-existing defects, none related to EXEC-PRINCIPAL-001, all invisible because `cmd/orgctl`'s own coverage test had never run through any harness path before:
+
+3. **r30-06 (`internal/retrievalfixtures`)** — referenced `marketing/estratega_crecimiento`, a role that does not exist in the canonical registry (`negocio/estratega_crecimiento` is correct). One-line stale reference. Commit `591ab06`.
+4. **r30-10 (`internal/agentmessagingfixtures`)** — two independent bugs: (a) a placeholder `Payload` that never satisfied `DelegationPayloadV1`'s semantic-invariant check; (b) a single hardcoded `"1"` execution-principal ID used for both `Send` (as sender) and `ClaimNext`/`Ack` (as recipient) — the exact EXEC-PRINCIPAL-001 shape, in a different fixture, since `ClaimNext` independently validates `principal.dispatch_actor_role_id == recipientRoleID`. Fixed with a real recipient task + correct payload, and two role-bound principals provisioned via the same mechanism `runtimeadapter.AgentMessages` uses. Commit `6e7e29a`.
+5. **r30-09 (`internal/costledgerfixtures`, surfaced through `internal/modelruntime/postgres`)** — the modelruntime down/reapply rollback list fixed earlier this branch (for 37/39/47) was *also* missing migration 000034, which widens `embedding_invocations_operation_check` to include `memory_backfill`. 000030's down.sql (already in the list) drops the `embedding_invocations` table outright, so 000034's `schema_migrations` row was never cleared and its widened constraint never reapplied — corrupting `operation='memory_backfill'` inserts for the rest of the shared harness run. Same omission class as before, just a different table than the `provider_wallet_events`/`provider_wallets` pair that fix was scoped to. Added migration 34 to the list plus a rollback-safe post-reapply probe. Commit `37a96c4`.
+
+Each bug was root-caused before being fixed (not patched to make a symptom disappear), and each fix was independently confirmed by isolating the exact suite-ordering interaction that had hidden it (contextengine's own down/reapply test still passes; the constraint was intact after it; the corruption only appeared after modelruntime's rollback list ran with 34 missing).
+
+## Z. HARNESS
+
+```
+expected             30
+passed               30
+failed               0
+accounting_complete  true
+evidence_complete    true
+FINAL STATUS         COMPLETE_GREEN
+```
+Reproduced on two independent runs after all five fixes in this closure round (30/29 → 30/30, confirmed stable).
+
+## AA. STANDARD TESTS
+
+`go build ./...`, `go vet ./...`, `go vet -tags=integration ./...`, `go test ./...`, and `go test -race` on every touched package (`internal/executive/...`, `internal/modeldispatch/...`, `internal/agentmessaging/...`, `internal/agentmessagingfixtures/...`, `internal/retrievalfixtures/...`, `internal/costledgerfixtures/...`, `internal/modelruntime/...`, `cmd/orgctl/...`) — all PASS.
+
+## AB. FINAL VERDICT
+
+**READY_FOR_MERGE**, pending a fresh independent confirmation pass if desired. Nothing in this closure round touched production, deployed, or merged to `main`. Working tree clean at HEAD (`git status --short` empty); 5 new commits on `fix/grok-audit-baseline-001`, none squashed, none force-pushed.
