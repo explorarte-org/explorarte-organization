@@ -23,7 +23,7 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const wantCount = 43
+	const wantCount = 44
 	if len(loaded) != wantCount {
 		t.Fatalf("migration count=%d want %d", len(loaded), wantCount)
 	}
@@ -38,6 +38,7 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		41: "harden_rag_knowledge_version_immutability",
 		42: "add_agent_message_authorization_and_hardening",
 		43: "restrict_agent_message_type",
+		44: "make_egress_revision_ownership_restorable",
 	}
 	byVersion := make(map[int64]string, len(loaded))
 	for _, migration := range loaded {
@@ -49,7 +50,7 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		}
 	}
 
-	if tip := loaded[len(loaded)-1]; tip.Version != 43 {
-		t.Fatalf("migration tip=%06d want 000043", tip.Version)
+	if tip := loaded[len(loaded)-1]; tip.Version != 44 {
+		t.Fatalf("migration tip=%06d want 000044", tip.Version)
 	}
 }

@@ -863,6 +863,13 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 			version int
 			file    string
 		}{
+			// 000044 replaced 000008 cross-table CHECK constraints with
+			// deferrable constraint triggers, so 000008 down cannot drop
+			// constraints that no longer exist. Its own down restores them
+			// first, which is why it must be rolled back before 000008 --
+			// the same rule the comment above states for any migration that
+			// alters these tables.
+			{44, "000044_make_egress_revision_ownership_restorable.down.sql"},
 			{40, "000040_add_provider_render_telemetry.down.sql"},
 			{30, "000030_extend_wallet_for_embedding_invocations.down.sql"},
 			{25, "000025_enforce_wallet_single_terminal.down.sql"},
