@@ -112,3 +112,13 @@ RETURNING `+principalColumns, id, actorRoleID, reasonCode))
 func (s *Store) ResolveByKey(ctx context.Context, organizationID, principalKey string) (modeldispatch.ExecutionPrincipal, error) {
 	return scanPrincipal(s.pool.QueryRow(ctx, `SELECT `+principalColumns+` FROM model_execution_principals WHERE organization_id=$1 AND principal_key=$2`, organizationID, principalKey))
 }
+
+// ResolveActiveForRole returns the single active principal authorized to act
+// as roleID in organizationID. Migration 000048's partial unique index on
+// (organization_id, dispatch_actor_role_id) WHERE status='active' is what
+// makes "single" a database-enforced fact rather than an application
+// assumption -- this query cannot return more than one active row even under
+// a concurrent registration race.
+func (s *Store) ResolveActiveForRole(ctx context.Context, organizationID, roleID string) (modeldispatch.ExecutionPrincipal, error) {
+	return scanPrincipal(s.pool.QueryRow(ctx, `SELECT `+principalColumns+` FROM model_execution_principals WHERE organization_id=$1 AND dispatch_actor_role_id=$2 AND status='active'`, organizationID, roleID))
+}

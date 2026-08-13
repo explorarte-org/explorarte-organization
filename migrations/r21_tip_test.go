@@ -23,7 +23,7 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const wantCount = 47
+	const wantCount = 48
 	if len(loaded) != wantCount {
 		t.Fatalf("migration count=%d want %d", len(loaded), wantCount)
 	}
@@ -43,6 +43,8 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		45: "make_audit_events_immutable",
 		46: "recognize_historical_egress_revision_bindings",
 		47: "seed_openai_responses_pricing_and_wallet",
+		// EXEC-PRINCIPAL-001 remediation:
+		48: "enforce_single_active_execution_principal_per_role",
 	}
 	byVersion := make(map[int64]string, len(loaded))
 	for _, migration := range loaded {
@@ -54,7 +56,7 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		}
 	}
 
-	if tip := loaded[len(loaded)-1]; tip.Version != 47 {
-		t.Fatalf("migration tip=%06d want 000047", tip.Version)
+	if tip := loaded[len(loaded)-1]; tip.Version != 48 {
+		t.Fatalf("migration tip=%06d want 000048", tip.Version)
 	}
 }
