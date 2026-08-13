@@ -25,6 +25,7 @@ type Store struct {
 	rateLimitMax    int
 	rateLimitWindow time.Duration
 	registryReader  registry.Reader
+	authorizer      agentmessaging.CapabilityAuthorizer
 }
 
 // New wires a registry.Reader into the Store specifically so Send can
@@ -35,12 +36,15 @@ type Store struct {
 // called (a bare "TODO: implement topology check" comment stood in its
 // place) -- the two DENY rules it enforces were not actually applied to
 // any real Send call.
-func New(store *platformpostgres.Store, registryReader registry.Reader, rateLimitMax int, rateLimitWindow time.Duration) (*Store, error) {
+func New(store *platformpostgres.Store, registryReader registry.Reader, authorizer agentmessaging.CapabilityAuthorizer, rateLimitMax int, rateLimitWindow time.Duration) (*Store, error) {
 	if store == nil || store.Pool() == nil {
 		return nil, errors.New("agentmessaging store requires initialized PostgreSQL")
 	}
 	if registryReader == nil {
 		return nil, errors.New("agentmessaging store requires a registry reader for topology validation")
+	}
+	if authorizer == nil {
+		return nil, errors.New("agentmessaging store requires a capability authorizer -- ORG-AUDIT-005: the matrix declares agent.message.send/claim/settle grants per role class, and nothing enforced them")
 	}
 	if rateLimitMax <= 0 {
 		return nil, errors.New("agentmessaging store requires a positive rate limit")
@@ -48,7 +52,7 @@ func New(store *platformpostgres.Store, registryReader registry.Reader, rateLimi
 	if rateLimitWindow <= 0 {
 		return nil, errors.New("agentmessaging store requires a positive rate limit window")
 	}
-	return &Store{pool: store.Pool(), rateLimitMax: rateLimitMax, rateLimitWindow: rateLimitWindow, registryReader: registryReader}, nil
+	return &Store{pool: store.Pool(), rateLimitMax: rateLimitMax, rateLimitWindow: rateLimitWindow, registryReader: registryReader, authorizer: authorizer}, nil
 }
 
 var _ agentmessaging.Ledger = (*Store)(nil)
@@ -103,6 +107,21 @@ func (s *Store) Send(ctx context.Context, executionPrincipalID string, command a
 	// OrganizationID is authoritative per Send call.
 	if err := agentmessaging.NewTopologyValidator(s.registryReader, command.OrganizationID).ValidateEdge(ctx, command.SenderRoleID, command.RecipientRoleID); err != nil {
 		return agentmessaging.Message{}, false, fmt.Errorf("topology validation failed: %w", err)
+	}
+
+	// ORG-AUDIT-005: capability-matrix.yaml declares which role classes hold
+	// agent.message.send; topology alone does not encode that (e.g.
+	// execution_service has no send grant even though some of its edges
+	// would otherwise be topologically valid).
+	sendRevision, err := s.registryReader.GetCurrentRevision(ctx, command.OrganizationID)
+	if err != nil {
+		return agentmessaging.Message{}, false, fmt.Errorf("resolve current revision for capability check: %w", err)
+	}
+	if sendRevision == nil {
+		return agentmessaging.Message{}, false, fmt.Errorf("no active registry revision for organization %q", command.OrganizationID)
+	}
+	if err := s.authorizer.Authorize(ctx, command.OrganizationID, sendRevision.ID, command.SenderRoleID, agentmessaging.CapabilityAgentMessageSend); err != nil {
+		return agentmessaging.Message{}, false, fmt.Errorf("capability check failed: %w", err)
 	}
 
 	tx, err := s.pool.Begin(ctx)
@@ -281,6 +300,20 @@ func (s *Store) ClaimNext(ctx context.Context, executionPrincipalID, organizatio
 	// This double-check prevents any spoofing attempts
 	if principalDispatchRole != recipientRoleID {
 		return nil, fmt.Errorf("execution principal %q dispatch_actor_role_id (%q) does not match claimed recipient role (%q)", executionPrincipalID, principalDispatchRole, recipientRoleID)
+	}
+
+	// ORG-AUDIT-005: agent.message.claim is a higher-risk grant than send in
+	// capability-matrix.yaml (department_leadership can send but not claim);
+	// enforce it here, not just declare it.
+	claimRevision, err := s.registryReader.GetCurrentRevision(ctx, organizationID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve current revision for capability check: %w", err)
+	}
+	if claimRevision == nil {
+		return nil, fmt.Errorf("no active registry revision for organization %q", organizationID)
+	}
+	if err := s.authorizer.Authorize(ctx, organizationID, claimRevision.ID, recipientRoleID, agentmessaging.CapabilityAgentMessageClaim); err != nil {
+		return nil, fmt.Errorf("capability check failed: %w", err)
 	}
 
 	now = now.UTC()

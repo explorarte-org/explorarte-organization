@@ -70,7 +70,7 @@ func (r Runner) Run(ctx context.Context, f fixtures.Fixture, subjectID string) (
 	if err != nil {
 		return fixtures.RunOutcome{}, err
 	}
-	messageLedger, err := agentmessagingpostgres.New(r.Store, h.registry, 1_000_000, 24*time.Hour)
+	messageLedger, err := agentmessagingpostgres.New(r.Store, h.registry, h.authorizer, 1_000_000, 24*time.Hour)
 	if err != nil {
 		return fixtures.RunOutcome{}, err
 	}

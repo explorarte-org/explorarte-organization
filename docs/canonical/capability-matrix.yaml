@@ -102,6 +102,8 @@ grants:
   - rag.read_department
   - memory.propose
   - agent.message.send
+  - agent.message.claim
+  - agent.message.settle
   specialist:
   - organization.read_registry
   - task.execute

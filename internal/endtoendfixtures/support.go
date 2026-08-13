@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Mireuz13/explorarte-organization/internal/agentmessaging"
 	authorizationbootstrap "github.com/Mireuz13/explorarte-organization/internal/authorization/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/completion"
 	completionpostgres "github.com/Mireuz13/explorarte-organization/internal/completion/postgres"
@@ -45,12 +46,13 @@ const (
 // against a fresh disposable database must do the same instead of
 // assuming another test suite already did it.
 type harness struct {
-	store      *platformpostgres.Store
-	registry   *registry.PostgresRepository
-	tasks      *tasks.Service
-	authz      executive.AuthorizationGate
-	completion executive.CompletionGate
-	decisions  executive.DecisionRecorder
+	store          *platformpostgres.Store
+	registry       *registry.PostgresRepository
+	tasks          *tasks.Service
+	authz          executive.AuthorizationGate
+	completion     executive.CompletionGate
+	decisions      executive.DecisionRecorder
+	authorizer     agentmessaging.CapabilityAuthorizer
 }
 
 func newHarness(ctx context.Context, store *platformpostgres.Store) (*harness, error) {
@@ -118,6 +120,7 @@ func newHarness(ctx context.Context, store *platformpostgres.Store) (*harness, e
 	return &harness{
 		store: store, registry: registryRepo, tasks: taskService,
 		authz:      runtimeadapter.Authorization{Service: authRuntime.Service, OrganizationID: fixtureOrganization},
+		authorizer: authRuntime.Authorizer,
 		completion: runtimeadapter.Completion{Service: completionService},
 		decisions: runtimeadapter.DecisionGraph{
 			Service: decisionGraphService, Canonical: canonicalProvider,

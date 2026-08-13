@@ -115,7 +115,7 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create executive agent budget ledger: %w", err)
 	}
-	agentMessageLedger, err := agentmessagingpostgres.New(store, registryRepository, agentMessageRateLimitMax, agentMessageRateLimitWindow)
+	agentMessageLedger, err := agentmessagingpostgres.New(store, registryRepository, authorizationRuntime.Authorizer, agentMessageRateLimitMax, agentMessageRateLimitWindow)
 	if err != nil {
 		return nil, fmt.Errorf("create executive agent message ledger: %w", err)
 	}

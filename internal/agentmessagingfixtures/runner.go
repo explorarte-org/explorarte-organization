@@ -11,6 +11,9 @@ import (
 
 	"github.com/Mireuz13/explorarte-organization/internal/agentmessaging"
 	agentmessagingpostgres "github.com/Mireuz13/explorarte-organization/internal/agentmessaging/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/authorization"
+	authorizationpostgres "github.com/Mireuz13/explorarte-organization/internal/authorization/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/config"
 	"github.com/Mireuz13/explorarte-organization/internal/evaluation/fixtures"
 	"github.com/Mireuz13/explorarte-organization/internal/evaluationdb"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
@@ -51,7 +54,19 @@ func (r Runner) Run(ctx context.Context, f fixtures.Fixture, subjectID string) (
 	if err != nil {
 		return fixtures.RunOutcome{}, err
 	}
-	ledger, err := agentmessagingpostgres.New(r.Store, registryReader, 1_000_000, 24*time.Hour)
+	cfg, err := config.Load()
+	if err != nil {
+		return fixtures.RunOutcome{}, err
+	}
+	authorizationStore, err := authorizationpostgres.New(r.Store)
+	if err != nil {
+		return fixtures.RunOutcome{}, err
+	}
+	authorizer, err := authorization.NewWithPolicyReader(authorizationStore, fixtureOrganization, cfg.Registry.CanonicalDir)
+	if err != nil {
+		return fixtures.RunOutcome{}, err
+	}
+	ledger, err := agentmessagingpostgres.New(r.Store, registryReader, authorizer, 1_000_000, 24*time.Hour)
 	if err != nil {
 		return fixtures.RunOutcome{}, err
 	}

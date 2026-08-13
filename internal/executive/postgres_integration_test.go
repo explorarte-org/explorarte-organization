@@ -16,6 +16,7 @@ import (
 
 	"github.com/Mireuz13/explorarte-organization/internal/agentbudget"
 	agentbudgetpostgres "github.com/Mireuz13/explorarte-organization/internal/agentbudget/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/agentmessaging"
 	agentmessagingpostgres "github.com/Mireuz13/explorarte-organization/internal/agentmessaging/postgres"
 	authorizationbootstrap "github.com/Mireuz13/explorarte-organization/internal/authorization/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/completion"
@@ -45,6 +46,7 @@ type integrationHarness struct {
 	authz      executive.AuthorizationGate
 	completion executive.CompletionGate
 	decisions  executive.DecisionRecorder
+	authorizer agentmessaging.CapabilityAuthorizer
 }
 
 func newIntegrationHarness(t *testing.T) *integrationHarness {
@@ -196,6 +198,7 @@ TRUNCATE outbox_events,task_dead_letters,task_events,task_leases,task_attempts,t
 	return &integrationHarness{
 		ctx: ctx, cancel: cancel, store: store, registry: registryRepo, tasks: taskService,
 		authz:      runtimeadapter.Authorization{Service: authRuntime.Service, OrganizationID: "explorarte"},
+		authorizer: authRuntime.Authorizer,
 		completion: runtimeadapter.Completion{Service: completionService},
 		decisions: runtimeadapter.DecisionGraph{
 			Service: decisionGraphService, Canonical: canonicalProvider,
@@ -429,7 +432,7 @@ func TestExecutivePostgreSQL17AgentBudgetsAndMessagingAreWiredThroughDelegation(
 	if err != nil {
 		t.Fatal(err)
 	}
-	messageLedger, err := agentmessagingpostgres.New(h.store, h.registry, 200, time.Hour)
+	messageLedger, err := agentmessagingpostgres.New(h.store, h.registry, h.authorizer, 200, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
