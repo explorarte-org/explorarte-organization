@@ -1,0 +1,33 @@
+# Canonical definition of the preconditions an integration run must satisfy
+# before any suite is allowed to execute.
+#
+# Two classes, and the distinction is the whole point of this file:
+#
+#   SAFETY          failing means running anything further would be unsafe or
+#                   semantically invalid -- a destructive suite could reach a
+#                   database that is not disposable, or two worktrees could
+#                   tear down each other's containers. The run aborts and NO
+#                   suite is attempted. This is the fail-fast that must be
+#                   preserved.
+#
+#   INFRASTRUCTURE  failing means no valid environment could be created, so
+#                   the run cannot produce evidence about the system at all.
+#                   Also aborts, but says something different: not "unsafe",
+#                   rather "unable to observe".
+#
+# A functional test failure is neither of these. It is recorded and the run
+# continues -- see scripts/integration-suites.tsv.
+#
+# Columns, tab separated:
+#   id       stable identifier, appears in the evidence manifest
+#   class    SAFETY | INFRASTRUCTURE
+#   command  shell command; non-zero exit fails the precondition
+#
+# Order matters: checks that need a live database come after the one that
+# starts it.
+id	class	command
+compose-isolation	SAFETY	assert_compose_isolation
+destructive-authorization	SAFETY	assert_destructive_authorization
+postgres-healthy	INFRASTRUCTURE	assert_postgres_healthy
+disposable-database	SAFETY	assert_disposable_database
+schema-bootstrap	INFRASTRUCTURE	assert_schema_bootstrap

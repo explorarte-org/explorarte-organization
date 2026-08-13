@@ -44,66 +44,11 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 cleanup
-"${compose[@]}" up -d --wait postgres
 
-if [[ "$MODE" == all ]]; then
-  timeout --foreground --signal=TERM --kill-after=30s 15m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/platform/postgres
-  timeout --foreground --signal=TERM --kill-after=30s 15m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/organization/registry
-fi
-if [[ "$MODE" == all || "$MODE" == tasks ]]; then
-  timeout --foreground --signal=TERM --kill-after=30s 15m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/tasks/postgres
-fi
-if [[ "$MODE" == all || "$MODE" == staging ]]; then
-  timeout --foreground --signal=TERM --kill-after=30s 20m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/staging/postgres
-fi
-if [[ "$MODE" == all || "$MODE" == authorization ]]; then
-  timeout --foreground --signal=TERM --kill-after=30s 20m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/authorization/postgres
-fi
-if [[ "$MODE" == all || "$MODE" == context ]]; then
-  timeout --foreground --signal=TERM --kill-after=30s 25m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/contextengine/postgres
-fi
-if [[ "$MODE" == all || "$MODE" == memory ]]; then
-  timeout --foreground --signal=TERM --kill-after=30s 20m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/memory/postgres
-fi
-if [[ "$MODE" == all || "$MODE" == skillregistry ]]; then
-  timeout --foreground --signal=TERM --kill-after=30s 20m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/skillregistry/postgres
-fi
-if [[ "$MODE" == all || "$MODE" == rag ]]; then
-  timeout --foreground --signal=TERM --kill-after=30s 20m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/rag/postgres
-fi
-if [[ "$MODE" == all || "$MODE" == egress ]]; then
-  timeout --foreground --signal=TERM --kill-after=30s 30m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/modelegress/postgres
-fi
-if [[ "$MODE" == all || "$MODE" == model ]]; then
-  timeout --foreground --signal=TERM --kill-after=30s 30m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/modelruntime/postgres
-fi
-if [[ "$MODE" == all || "$MODE" == dispatch ]]; then
-  timeout --foreground --signal=TERM --kill-after=30s 30m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/modeldispatch/postgres
-fi
-if [[ "$MODE" == all || "$MODE" == identity ]]; then
-  timeout --foreground --signal=TERM --kill-after=30s 30m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/modelidentity/postgres
-fi
-if [[ "$MODE" == all || "$MODE" == worker ]]; then
-  timeout --foreground --signal=TERM --kill-after=30s 30m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/cellworker/postgres
-fi
-if [[ "$MODE" == all || "$MODE" == decision ]]; then
-  timeout --foreground --signal=TERM --kill-after=30s 30m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/decisiongraph/postgres
-fi
-if [[ "$MODE" == all || "$MODE" == trace ]]; then
-  timeout --foreground --signal=TERM --kill-after=30s 15m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/decisiongraphtrace
-fi
-if [[ "$MODE" == all || "$MODE" == improvement ]]; then
-  timeout --foreground --signal=TERM --kill-after=30s 15m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/improvement/postgres
-fi
-if [[ "$MODE" == all || "$MODE" == completion ]]; then
-  timeout --foreground --signal=TERM --kill-after=30s 15m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/completion/postgres
-fi
-if [[ "$MODE" == all || "$MODE" == shadow ]]; then
-  timeout --foreground --signal=TERM --kill-after=30s 15m "${compose[@]}" run --rm -T integration-test go test -count=1 -tags=integration ./internal/shadowverifier/postgres
-fi
-
-if [[ "$MODE" == all ]]; then
-  timeout --foreground --signal=TERM --kill-after=30s 15m "${compose[@]}" run --rm -T integration-test sh -ec '
+# The CLI smoke tests, preserved verbatim from the previous harness and
+# registered as a single observable unit in scripts/integration-suites.tsv.
+run_cli_smoke() {
+  compose_cmd run --rm -T integration-test sh -ec '
     export ORG_DATABASE_URL="$ORG_TEST_DATABASE_URL" ORG_CANONICAL_DIR=/src/docs/canonical
     # Model and identity CLI commands bootstrap the shared context runtime even
     # when they do not build a context. Provide the integration source root
@@ -341,4 +286,305 @@ JSON
     set -e
     test "$rag_validate_code" -ne 0
   '
+}
+
+# =====================================================================
+# Evidence model
+# =====================================================================
+#
+# The harness distinguishes execution failure from evidence incompleteness.
+#
+# A run that stops at the first failing suite and a run that observes every
+# suite and finds one failure both used to exit non-zero, and were therefore
+# indistinguishable to every consumer. They are not the same claim: the first
+# says nothing about the suites it never reached. That gap has already cost
+# us a real regression -- a CLI contract changed, the smoke test that would
+# have caught it never ran because an unrelated package failed earlier, and
+# the change reached main under an evidence set nobody could tell was partial.
+#
+# COMPLETE_GREEN therefore means all of the following, never merely "exit 0":
+#   - every critical precondition passed;
+#   - every applicable unit in the manifest was observed;
+#   - no unit ended UNKNOWN and none was BLOCKED by a failed dependency;
+#   - no unit failed.
+#
+# Accounting completeness and evidence completeness are tracked separately.
+# Knowing what happened to all twenty units (accounting) is not the same as
+# having behavioural evidence from all twenty (evidence). Four units BLOCKED
+# by a failed dependency are fully accounted for and still leave us without
+# evidence about them, so that run is INCOMPLETE_RUN, not
+# COMPLETE_WITH_FAILURES. A unit SKIPPED_NOT_APPLICABLE because the caller
+# asked for a single mode is different: nobody expected evidence from it.
+
+SUITES_FILE="${ORG_INTEGRATION_SUITES_FILE:-$ROOT/scripts/integration-suites.tsv}"
+PRECONDITIONS_FILE="${ORG_INTEGRATION_PRECONDITIONS_FILE:-$ROOT/scripts/integration-preconditions.tsv}"
+MANIFEST_PATH="${ORG_INTEGRATION_MANIFEST:-$ROOT/integration-evidence.json}"
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+GIT_SHA="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+
+declare -a UNIT_IDS=()
+declare -A UNIT_MODES=() UNIT_KIND=() UNIT_TIMEOUT=() UNIT_DEPS=() UNIT_CMD=()
+declare -A UNIT_STATUS=() UNIT_EXIT=() UNIT_DURATION=() UNIT_NOTE=()
+declare -a PRECOND_IDS=()
+declare -A PRECOND_CLASS=() PRECOND_CMD=() PRECOND_STATUS=() PRECOND_MSG=()
+ABORT_CLASS=""
+ABORT_REASON=""
+
+# compose_run is the single indirection every suite command goes through.
+# Keeping it a function rather than an expanded string is what lets the
+# fitness manifests substitute trivial commands and exercise the accounting
+# logic without Docker.
+compose_cmd() { docker compose --project-name "$PROJECT_NAME" -f compose.yaml -f compose.integration.yaml --profile integration "$@"; }
+compose_run() { compose_cmd run --rm -T integration-test "$@"; }
+export -f compose_cmd compose_run run_cli_smoke
+export PROJECT_NAME
+
+read_manifest() {
+  local file="$1" kind="$2" line id a b c d e
+  [[ -r "$file" ]] || { echo "harness: cannot read $kind manifest: $file" >&2; exit 70; }
+  while IFS=$'\t' read -r id a b c d e; do
+    [[ -z "$id" || "$id" == \#* || "$id" == "id" ]] && continue
+    if [[ "$kind" == suites ]]; then
+      UNIT_IDS+=("$id")
+      UNIT_MODES["$id"]="$a"; UNIT_KIND["$id"]="$b"; UNIT_TIMEOUT["$id"]="$c"
+      UNIT_DEPS["$id"]="$d";  UNIT_CMD["$id"]="$e"
+      # Every declared unit starts UNKNOWN. A unit the runner never reaches
+      # keeps that status, which is precisely how an unobserved suite becomes
+      # visible instead of silently vanishing from the summary.
+      UNIT_STATUS["$id"]="UNKNOWN"; UNIT_EXIT["$id"]=""; UNIT_DURATION["$id"]=0
+      UNIT_NOTE["$id"]=""
+    else
+      PRECOND_IDS+=("$id"); PRECOND_CLASS["$id"]="$a"; PRECOND_CMD["$id"]="$b"
+      PRECOND_STATUS["$id"]="UNKNOWN"; PRECOND_MSG["$id"]=""
+    fi
+  done < "$file"
+}
+
+applies_to_mode() {
+  local modes="$1" candidate
+  IFS=',' read -ra candidate <<< "$modes"
+  for m in "${candidate[@]}"; do [[ "$m" == "$MODE" ]] && return 0; done
+  return 1
+}
+
+# ---------------------------------------------------------------------
+# Preconditions
+# ---------------------------------------------------------------------
+
+assert_compose_isolation() {
+  # Two worktrees must never share a Compose project, or one can tear down
+  # the other's database mid-run. The project name is derived from this
+  # worktree's own path; a fixed name would be the regression this guards.
+  [[ -n "$PROJECT_NAME" ]] || { echo "project name is empty"; return 1; }
+  if [[ "$PROJECT_NAME" != *"$(printf '%s' "$ROOT" | sha256sum | cut -c1-12)"* ]] \
+     && [[ -z "${ORG_INTEGRATION_PROJECT_NAME:-}" ]]; then
+    echo "project name is not derived from this worktree and was not set explicitly"
+    return 1
+  fi
+  return 0
+}
+
+assert_destructive_authorization() {
+  # internal/testdbguard refuses destructive operations unless this sentinel
+  # names the canonical disposable database. Asserting it here, before any
+  # suite runs, turns a per-test guard into a run-level precondition.
+  [[ "${ORG_TEST_DESTRUCTIVE_DATABASE:-}" == "explorarte_test" ]] || {
+    echo "ORG_TEST_DESTRUCTIVE_DATABASE is '${ORG_TEST_DESTRUCTIVE_DATABASE:-unset}', expected explorarte_test"
+    return 1
+  }
+  return 0
+}
+
+assert_postgres_healthy() {
+  "${compose[@]}" up -d --wait postgres
+}
+
+assert_disposable_database() {
+  # The database the suites will destroy must be the disposable one, checked
+  # against the live server rather than against the DSN string alone.
+  local actual
+  actual="$("${compose[@]}" exec -T postgres psql -U "$ORG_POSTGRES_USER" -d "$ORG_POSTGRES_DATABASE" -tAc 'select current_database()' 2>/dev/null | tr -d '[:space:]')"
+  [[ "$actual" == "explorarte_test" ]] || {
+    echo "connected database is '${actual:-unreachable}', refusing to run destructive suites"
+    return 1
+  }
+  return 0
+}
+
+assert_schema_bootstrap() {
+  # Prove the schema can be built from scratch before any suite runs. This
+  # is what lets platform/postgres be an ordinary suite again: it used to be
+  # the de-facto bootstrap purely because it ran first, which made its
+  # failure look like everyone else's problem.
+  compose_run sh -ec 'export ORG_DATABASE_URL="$ORG_TEST_DATABASE_URL"; go run ./cmd/orgctl migrate up >/dev/null'
+}
+
+run_preconditions() {
+  local id class out rc
+  echo "--- preconditions ---"
+  for id in "${PRECOND_IDS[@]}"; do
+    class="${PRECOND_CLASS[$id]}"
+    set +e
+    out="$(eval "${PRECOND_CMD[$id]}" 2>&1)"
+    rc=$?
+    set -e
+    if [[ $rc -eq 0 ]]; then
+      PRECOND_STATUS["$id"]="PASS"
+      printf '  %-28s %s\n' "$id" "PASS"
+    else
+      PRECOND_STATUS["$id"]="FAIL"
+      PRECOND_MSG["$id"]="$(printf '%s' "$out" | tail -3 | tr '\n' ' ')"
+      printf '  %-28s %s (%s)\n' "$id" "FAIL" "$class"
+      printf '      %s\n' "${PRECOND_MSG[$id]}"
+      if [[ "$class" == SAFETY ]]; then
+        ABORT_CLASS="SAFETY_ABORT"
+      else
+        ABORT_CLASS="INFRASTRUCTURE_ABORT"
+      fi
+      ABORT_REASON="precondition $id failed"
+      return 1
+    fi
+  done
+  return 0
+}
+
+# ---------------------------------------------------------------------
+# Suites
+# ---------------------------------------------------------------------
+
+blocked_by() {
+  # Returns the first declared dependency that did not pass, or nothing.
+  local deps="$1" dep
+  [[ "$deps" == "-" || -z "$deps" ]] && return 0
+  IFS=',' read -ra dep <<< "$deps"
+  for d in "${dep[@]}"; do
+    [[ "${UNIT_STATUS[$d]:-UNKNOWN}" == "PASS" ]] || { printf '%s' "$d"; return 0; }
+  done
+  return 0
+}
+
+run_suites() {
+  local id started ended rc blocker
+  echo "--- suites ---"
+  for id in "${UNIT_IDS[@]}"; do
+    if ! applies_to_mode "${UNIT_MODES[$id]}"; then
+      UNIT_STATUS["$id"]="SKIPPED_NOT_APPLICABLE"
+      UNIT_NOTE["$id"]="mode $MODE does not select this unit"
+      continue
+    fi
+    blocker="$(blocked_by "${UNIT_DEPS[$id]}")"
+    if [[ -n "$blocker" ]]; then
+      UNIT_STATUS["$id"]="BLOCKED"
+      UNIT_NOTE["$id"]="dependency $blocker did not pass"
+      printf '  %-28s %s (dependency %s)\n' "$id" "BLOCKED" "$blocker"
+      continue
+    fi
+    started=$(date +%s)
+    set +e
+    timeout --foreground --signal=TERM --kill-after=30s "${UNIT_TIMEOUT[$id]}" \
+      bash -c "${UNIT_CMD[$id]}"
+    rc=$?
+    set -e
+    ended=$(date +%s)
+    UNIT_EXIT["$id"]="$rc"
+    UNIT_DURATION["$id"]=$(( ended - started ))
+    if [[ $rc -eq 0 ]]; then
+      UNIT_STATUS["$id"]="PASS"
+    else
+      UNIT_STATUS["$id"]="FAIL"
+    fi
+    printf '  %-28s %s (exit %d, %ds)\n' "$id" "${UNIT_STATUS[$id]}" "$rc" "${UNIT_DURATION[$id]}"
+  done
+}
+
+# ---------------------------------------------------------------------
+# Accounting and evidence manifest
+# ---------------------------------------------------------------------
+
+emit_evidence() {
+  local finished expected=0 passed=0 failed=0 blocked=0 skipped=0 unknown=0 accounted=0
+  local accounting_complete evidence_complete final_status id first
+  finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  for id in "${UNIT_IDS[@]}"; do
+    expected=$(( expected + 1 ))
+    case "${UNIT_STATUS[$id]}" in
+      PASS) passed=$(( passed + 1 ));;
+      FAIL) failed=$(( failed + 1 ));;
+      BLOCKED) blocked=$(( blocked + 1 ));;
+      SKIPPED_NOT_APPLICABLE) skipped=$(( skipped + 1 ));;
+      *) unknown=$(( unknown + 1 ));;
+    esac
+  done
+  accounted=$(( passed + failed + blocked + skipped + unknown ))
+
+  if [[ $accounted -eq $expected ]]; then accounting_complete=true; else accounting_complete=false; fi
+  # SKIPPED_NOT_APPLICABLE does not break evidence completeness: nobody
+  # expected evidence from a unit the requested mode excludes. UNKNOWN and
+  # BLOCKED do, because those are units we expected to observe and did not.
+  if [[ "$accounting_complete" == true && $unknown -eq 0 && $blocked -eq 0 ]]; then
+    evidence_complete=true
+  else
+    evidence_complete=false
+  fi
+
+  if [[ -n "$ABORT_CLASS" ]]; then
+    final_status="$ABORT_CLASS"
+    evidence_complete=false
+  elif [[ "$evidence_complete" != true ]]; then
+    final_status="INCOMPLETE_RUN"
+  elif [[ $failed -gt 0 ]]; then
+    final_status="COMPLETE_WITH_FAILURES"
+  else
+    final_status="COMPLETE_GREEN"
+  fi
+
+  {
+    printf '{\n  "run_id": "%s",\n  "started_at": "%s",\n  "finished_at": "%s",\n' "$RUN_ID" "$STARTED_AT" "$finished"
+    printf '  "git_sha": "%s",\n  "mode": "%s",\n  "project_name": "%s",\n' "$GIT_SHA" "$MODE" "$PROJECT_NAME"
+    printf '  "preconditions": [\n'
+    first=1
+    for id in "${PRECOND_IDS[@]}"; do
+      [[ $first -eq 0 ]] && printf ',\n'; first=0
+      printf '    {"id": "%s", "class": "%s", "status": "%s", "message": "%s"}' \
+        "$id" "${PRECOND_CLASS[$id]}" "${PRECOND_STATUS[$id]}" "${PRECOND_MSG[$id]//\"/\\\"}"
+    done
+    printf '\n  ],\n  "suites": [\n'
+    first=1
+    for id in "${UNIT_IDS[@]}"; do
+      [[ $first -eq 0 ]] && printf ',\n'; first=0
+      printf '    {"id": "%s", "kind": "%s", "status": "%s", "exit_code": %s, "duration_seconds": %s, "note": "%s"}' \
+        "$id" "${UNIT_KIND[$id]}" "${UNIT_STATUS[$id]}" "${UNIT_EXIT[$id]:-null}" "${UNIT_DURATION[$id]}" "${UNIT_NOTE[$id]}"
+    done
+    printf '\n  ],\n  "summary": {\n'
+    printf '    "expected": %d, "accounted": %d, "passed": %d, "failed": %d, "blocked": %d, "skipped_not_applicable": %d, "unknown": %d\n' \
+      "$expected" "$accounted" "$passed" "$failed" "$blocked" "$skipped" "$unknown"
+    printf '  },\n  "accounting_complete": %s,\n  "evidence_complete": %s,\n' "$accounting_complete" "$evidence_complete"
+    printf '  "final_status": "%s",\n  "abort_reason": "%s"\n}\n' "$final_status" "$ABORT_REASON"
+  } > "$MANIFEST_PATH"
+
+  echo
+  echo "--- evidence ---"
+  printf '  expected   %d\n  accounted  %d\n' "$expected" "$accounted"
+  printf '  passed     %d\n  failed     %d\n  blocked    %d\n  skipped    %d\n  unknown    %d\n' \
+    "$passed" "$failed" "$blocked" "$skipped" "$unknown"
+  printf '  accounting_complete  %s\n  evidence_complete    %s\n' "$accounting_complete" "$evidence_complete"
+  printf '  FINAL STATUS         %s\n' "$final_status"
+  [[ -n "$ABORT_REASON" ]] && printf '  abort_reason         %s\n' "$ABORT_REASON"
+  printf '  manifest             %s\n' "$MANIFEST_PATH"
+
+  # Exit 0 is reserved for COMPLETE_GREEN. Every other state -- failures,
+  # aborts, or an incomplete evidence set -- is non-zero, so existing
+  # consumers (Makefile, ci.yml) keep working unchanged while the richer
+  # semantics live in the manifest.
+  [[ "$final_status" == "COMPLETE_GREEN" ]]
+}
+
+read_manifest "$PRECONDITIONS_FILE" preconditions
+read_manifest "$SUITES_FILE" suites
+
+if run_preconditions; then
+  run_suites
 fi
+emit_evidence

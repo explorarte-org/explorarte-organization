@@ -24,3 +24,7 @@
 # A 57 MB tarball sitting untracked in the worktree root is one `git add -A`
 # away from entering history, where it cannot be removed cheaply.
 go*.tar.gz
+
+# Evidence manifest emitted by scripts/test-integration.sh on every run.
+# It is a per-run artifact, not a checked-in contract.
+/integration-evidence.json

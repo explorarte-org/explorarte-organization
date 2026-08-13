@@ -10,7 +10,7 @@ LDFLAGS := -s -w \
 	-X main.commit=$(COMMIT) \
 	-X main.buildTime=$(BUILD_TIME)
 
-.PHONY: help deps fmt fmt-check vet test test-unit test-race test-integration test-task-integration test-task-fitness test-staging-integration test-staging-fitness test-authorization-integration test-authorization-fitness test-context-integration test-context-fitness test-memory-integration test-memory-fitness test-skillregistry-integration test-skillregistry-fitness test-rag-integration test-rag-fitness test-model-runtime-integration test-model-runtime-fitness test-model-egress-integration test-model-egress-fitness test-model-identity-integration test-model-identity-fitness test-model-provider-fitness test-alibaba-cli-fitness test-cellworker-integration test-cellworker-fitness test-decisiongraph-integration test-decisiongraph-fitness test-decisiongraphtrace-integration test-improvement-integration test-improvement-fitness test-completion-integration test-completion-fitness test-executive-integration test-executive-fitness test-embeddingruntime-fitness test-webevidence-fitness build build-cross run verify verify-all clean docker-build compose-up compose-down compose-logs migrate-up migrate-status registry-validate registry-diff registry-sync registry-status task-reconcile outbox-status
+.PHONY: help deps fmt fmt-check vet test test-unit test-race test-integration check-integration-evidence test-task-integration test-task-fitness test-staging-integration test-staging-fitness test-authorization-integration test-authorization-fitness test-context-integration test-context-fitness test-memory-integration test-memory-fitness test-skillregistry-integration test-skillregistry-fitness test-rag-integration test-rag-fitness test-model-runtime-integration test-model-runtime-fitness test-model-egress-integration test-model-egress-fitness test-model-identity-integration test-model-identity-fitness test-model-provider-fitness test-alibaba-cli-fitness test-cellworker-integration test-cellworker-fitness test-decisiongraph-integration test-decisiongraph-fitness test-decisiongraphtrace-integration test-improvement-integration test-improvement-fitness test-completion-integration test-completion-fitness test-executive-integration test-executive-fitness test-embeddingruntime-fitness test-webevidence-fitness build build-cross run verify verify-all clean docker-build compose-up compose-down compose-logs migrate-up migrate-status registry-validate registry-diff registry-sync registry-status task-reconcile outbox-status
 
 help:
 	@printf '%s\n' \
@@ -76,6 +76,9 @@ test-race:
 
 test-integration:
 	./scripts/test-integration.sh
+
+check-integration-evidence:
+	./scripts/check-integration-evidence-fitness.sh
 
 test-task-integration:
 	./scripts/test-integration.sh tasks
