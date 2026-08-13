@@ -92,7 +92,16 @@ func openLedgerFixture(t *testing.T, ctx context.Context) ledgerFixture {
 INSERT INTO provider_wallets (provider_id, balance_usd_nanos, reserved_usd_nanos, updated_at) VALUES
     ('deepseek', 8660000000, 0, NOW()),
     ('gemini', 10000000000, 0, NOW()),
-    ('openai_compatible', 9700000000, 0, NOW())`); err != nil {
+    ('openai_compatible', 9700000000, 0, NOW()),
+    -- 000039/000047 seed these two once per database, same as the three
+    -- above; this list predated both migrations and, since every suite in
+    -- the shared harness database runs against the same live Postgres, an
+    -- incomplete reseed here silently deleted them for whichever suite ran
+    -- next -- exactly what broke modelpricing-postgres's
+    -- TestEveryRoutedNonSubscriptionProviderHasPricingAndAWallet once that
+    -- suite joined the official harness manifest.
+    ('mimo', 0, 0, NOW()),
+    ('openai_responses', 9700000000, 0, NOW())`); err != nil {
 		t.Fatalf("reseed wallets: %v", err)
 	}
 
