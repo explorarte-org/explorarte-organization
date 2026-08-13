@@ -23,7 +23,7 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const wantCount = 44
+	const wantCount = 47
 	if len(loaded) != wantCount {
 		t.Fatalf("migration count=%d want %d", len(loaded), wantCount)
 	}
@@ -39,6 +39,10 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		42: "add_agent_message_authorization_and_hardening",
 		43: "restrict_agent_message_type",
 		44: "make_egress_revision_ownership_restorable",
+		// Grok Audit Baseline 001 remediation:
+		45: "make_audit_events_immutable",
+		46: "recognize_historical_egress_revision_bindings",
+		47: "seed_openai_responses_pricing_and_wallet",
 	}
 	byVersion := make(map[int64]string, len(loaded))
 	for _, migration := range loaded {
@@ -50,7 +54,7 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		}
 	}
 
-	if tip := loaded[len(loaded)-1]; tip.Version != 44 {
-		t.Fatalf("migration tip=%06d want 000044", tip.Version)
+	if tip := loaded[len(loaded)-1]; tip.Version != 47 {
+		t.Fatalf("migration tip=%06d want 000047", tip.Version)
 	}
 }
