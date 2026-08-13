@@ -35,6 +35,18 @@
 # entirely inside one of these packages and be invisible to the official
 # harness. This file being the single source of truth (see the file
 # header) is exactly what makes adding four lines the whole fix.
+#
+# D-HARNESS-001 follow-up (independent adversarial re-verification):
+# agentbudget-postgres, costledger-postgres, evaluation-postgres,
+# modelpricing-postgres and webevidence-postgres were the same kind of
+# omission -- real, independently passing integration suites this manifest
+# never listed. modelpricing-postgres matters most: it carries the
+# regression-test evidence for ORG-AUDIT-003 (pricing/wallet catalog
+# closure), so its absence meant that closure was never actually observed
+# by COMPLETE_GREEN. Adding five lines is the fix; making a sixth omission
+# impossible is tracked separately as D-HARNESS-AUTODISCOVERY (this
+# manifest still requires a human to remember to add a line per package;
+# see docs handoff for the deferred-debt entry).
 id	modes	kind	timeout	depends_on	command
 platform-postgres	all	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/platform/postgres
 organization-registry	all	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/organization/registry
@@ -59,4 +71,9 @@ agentmessaging-postgres	all,messaging	integration	15m	-	compose_run go test -cou
 executive-postgres	all,executive	integration	20m	-	compose_run go test -count=1 -tags=integration ./internal/executive
 executive-postrun-postgres	all,executive	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/executive/postrun
 executive-sleep-postgres	all,executive	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/executive/sleep
+agentbudget-postgres	all,agentbudget	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/agentbudget/postgres
+costledger-postgres	all,costledger	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/costledger/postgres
+evaluation-postgres	all,evaluation	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/evaluation/postgres
+modelpricing-postgres	all,modelpricing	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/modelpricing/postgres
+webevidence-postgres	all,webevidence	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/webevidence/postgres
 cli-smoke	all	smoke	15m	-	run_cli_smoke
