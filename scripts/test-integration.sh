@@ -201,10 +201,10 @@ JSON
     /tmp/orgctl outbox status --json >/tmp/outbox.json
     action_digest="$(printf %s authorization-cli-smoke | sha256sum | cut -d" " -f1)"
     /tmp/orgctl authorization evaluate --actor-role ingenieria_ia/code-runner --capability code.commit --resource-type code --resource-id cli-smoke --action-digest "$action_digest" --json >/tmp/authorization-evaluate.json
-    /tmp/orgctl authorization request --actor-role creativo/copywriter --capability rag.publish_approved --resource-type rag_candidate --resource-id cli-smoke --action-digest "$action_digest" --idempotency-key cli-authorization-smoke --reason "CI one-time approval" --json >/tmp/authorization-request.json
+    /tmp/orgctl authorization request --actor-role negocio/copywriter --capability rag.publish_approved --resource-type rag_candidate --resource-id cli-smoke --action-digest "$action_digest" --idempotency-key cli-authorization-smoke --reason "CI one-time approval" --json >/tmp/authorization-request.json
     request_id="$(grep -m1 "\"id\"" /tmp/authorization-request.json | tr -cd "0-9")"
     /tmp/orgctl authorization decide "$request_id" --decision approve --actor-role empresa/human --reason "CI owner approval" --json >/tmp/authorization-decision.json
-    /tmp/orgctl authorization consume "$request_id" --actor-role creativo/copywriter --action-digest "$action_digest" --json >/tmp/authorization-consume.json
+    /tmp/orgctl authorization consume "$request_id" --actor-role negocio/copywriter --action-digest "$action_digest" --json >/tmp/authorization-consume.json
     grep -Fq "\"status\": \"ready\"" /tmp/task-created.json
     grep -Fq "\"pending\"" /tmp/outbox.json
 
@@ -295,7 +295,7 @@ JSON
 
     set +e
     /tmp/orgctl rag query --file - --json <<JSON >/tmp/rag-query-denied.out 2>/tmp/rag-query-denied.err
-{"actor_role_id":"creativo/copywriter","scope":"department","query_text":"egress"}
+{"actor_role_id":"negocio/copywriter","scope":"department","query_text":"egress"}
 JSON
     rag_denied_code=$?
     set -e
