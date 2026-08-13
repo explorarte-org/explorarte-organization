@@ -153,15 +153,20 @@ type AgentBudgetProvider interface {
 // on Orchestrator (see WithAgentMessaging) — a nil provider means no
 // messaging, existing behavior is unaffected.
 //
-// CRITICAL FIX 6: All operations require an authenticated execution principal.
-// There is NO fallback to free-string consumerIDs in production.
-// SendDelegation and SendCompletion receive executionPrincipalID as the first
-// parameter after context. This principal must have dispatch_actor_role_id ==
-// sender.AssignedRoleID for send authentication, and ClaimNext/Ack/Nack
-// require matching principals for inbox access and settlement.
+// CRITICAL FIX 6 (extended by EXEC-PRINCIPAL-001): every send is
+// authenticated by an execution principal bound to sender.AssignedRoleID.
+// There is no caller-supplied principal parameter — a static
+// executionPrincipalID cannot authenticate a multi-hop flow where each hop
+// has a different sender role (CEO->leader, leader->worker, worker->leader,
+// leader->CEO), so the implementation resolves the principal itself,
+// server-side, from sender.AssignedRoleID (see
+// runtimeadapter.AgentMessages.resolveOrProvisionPrincipalForRole). This
+// principal must have dispatch_actor_role_id == sender.AssignedRoleID for
+// send authentication, and ClaimNext/Ack/Nack require matching principals
+// for inbox access and settlement.
 type AgentMessagingProvider interface {
-	SendDelegation(ctx context.Context, executionPrincipalID string, sender, recipient TaskRecord, now time.Time) error
-	SendCompletion(ctx context.Context, executionPrincipalID string, sender, recipient TaskRecord, now time.Time) error
+	SendDelegation(ctx context.Context, sender, recipient TaskRecord, now time.Time) error
+	SendCompletion(ctx context.Context, sender, recipient TaskRecord, now time.Time) error
 }
 
 type Clock interface{ Now() time.Time }

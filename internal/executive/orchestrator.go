@@ -30,7 +30,6 @@ type Orchestrator struct {
 	clock          Clock
 	budgets        AgentBudgetProvider
 	messages       AgentMessagingProvider
-	principalKey   string // Pre-resolved execution principal key for messaging operations
 
 	mu     sync.Mutex
 	leases map[int64]LeaseRecord
@@ -52,14 +51,6 @@ func WithAgentBudgets(budgets AgentBudgetProvider) OrchestratorOption {
 // behaves exactly as it did before AgentMessagingProvider existed.
 func WithAgentMessaging(messages AgentMessagingProvider) OrchestratorOption {
 	return func(o *Orchestrator) { o.messages = messages }
-}
-
-// WithExecutionPrincipal sets the configured execution principal key for
-// authenticating agent messaging operations. This prevents spoofing - the
-// principal must be resolved from the authenticated identity, not from
-// sender role/task data.
-func WithExecutionPrincipal(principalKey string) OrchestratorOption {
-	return func(o *Orchestrator) { o.principalKey = strings.TrimSpace(principalKey) }
 }
 
 func NewOrchestrator(organizationID string, registry RegistryResolver, tasks TaskCoordinator, contexts ContextCoordinator, assignments DispatchProvisioner, models ModelCoordinator, completion CompletionGate, decisions DecisionRecorder, authz AuthorizationGate, limits Limits, clock Clock, opts ...OrchestratorOption) (*Orchestrator, error) {
@@ -368,21 +359,23 @@ func (o *Orchestrator) attachChildCoordination(ctx context.Context, root, sender
 			return fmt.Errorf("inherit agent budget for task %d: %w", child.ID, err)
 		}
 	}
-	if o.messages != nil {
-		// FIX 6: Use the configured execution principal key resolved from
-		// authenticated identity (NOT from sender/task data).
-		// CRITICAL: If messaging is wired but no principal is configured, FAIL explicitly.
-		// NO silent skipping — that would allow tasks to propagate without coordinated messaging,
-		// potentially creating orphaned state machines or inconsistent coordination.
-		executionPrincipalID := o.principalKey
-		if executionPrincipalID == "" {
-			// Explicit fail: messaging is enabled in wiring but authentication identity not configured.
-			// This is a configuration error, NOT a "skip" scenario.
-			return fmt.Errorf("agent messaging wired but no execution principal configured "+
-				"(ORG_MODEL_EXECUTION_PRINCIPAL_KEY or WithExecutionPrincipal required): "+
-				"cannot delegate task %d without authenticated principal — safe-fail, not silent-skip", child.ID)
-		}
-		if err := o.messages.SendDelegation(ctx, executionPrincipalID, sender, child, now); err != nil {
+	// A role creating its own sub-task (e.g. the CEO's root task spawning its
+	// own "CEO planning" task -- both AssignedRoleID==CEORoleID) crosses no
+	// organizational trust boundary: nothing is being delegated to a
+	// different actor, so there is nothing for agent-messaging to
+	// authenticate. agentmessaging's own topology validator enforces this as
+	// a hard invariant (ValidateEdge denies senderRole==recipientRole
+	// unconditionally, see internal/agentmessaging/topology.go) -- this is
+	// not a gap to route around, it is the reason a same-role hop must never
+	// reach SendDelegation in the first place.
+	if o.messages != nil && sender.AssignedRoleID != child.AssignedRoleID {
+		// FIX 6 (EXEC-PRINCIPAL-001): no principal is configured on the
+		// Orchestrator itself anymore -- AgentMessagingProvider resolves the
+		// correct, role-bound principal internally from sender.AssignedRoleID.
+		// A single static principal here could not authenticate more than one
+		// sender role across a multi-hop flow (CEO->leader, leader->worker,
+		// worker->leader, leader->CEO); see runtimeadapter.AgentMessages.
+		if err := o.messages.SendDelegation(ctx, sender, child, now); err != nil {
 			return fmt.Errorf("send delegation message for task %d: %w", child.ID, err)
 		}
 	}
