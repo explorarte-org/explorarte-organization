@@ -13,9 +13,9 @@ import (
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/config"
+	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	"github.com/Mireuz13/explorarte-organization/internal/platform/buildinfo"
-	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
 	"github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
