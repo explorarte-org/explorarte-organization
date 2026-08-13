@@ -74,6 +74,146 @@ Two real regressions were found and fixed during this closure review, both from 
 - **P2 remaining**: D-005, D-008 (healthcheck proves liveness not readiness), D-010, D-012.
 - **Unknown/unverified**: whether any organization other than `explorarte` will ever be provisioned in the same Postgres instance (this is exactly what would convert D-012 from latent to live). The pre-existing `TestExecutivePostgreSQL17AgentBudgetsAndMessagingAreWiredThroughDelegation` gap's blast radius outside the test itself (i.e., whether production `orchestrator` construction always supplies `WithExecutionPrincipal` via `bootstrap.Open`'s fallback) was not re-verified this pass — `bootstrap/runtime.go`'s own fallback (`"oracle-01/model-runtime-01"` if the env var is unset) suggests production is not exposed to this specific gap, but that inference was not independently confirmed against a running production orchestrator.
 
-## H. MERGE READINESS
+## H. MERGE READINESS (original pass)
 
-**READY_FOR_INDEPENDENT_REVIEW**
+**READY_FOR_INDEPENDENT_REVIEW** — superseded by the closure round below. Independent adversarial verification (DeepSeek v4 Pro, EXP-0001, two phases, 115 turns total) returned `VERIFIED_WITH_REQUIRED_FIX`, not ready-for-merge as-is; three required fixes plus a deeper finding it did not surface are closed in the section that follows.
+
+---
+
+# Closure Round 2 — Post-Verification Fixes + EXEC-PRINCIPAL-001
+
+## I. HEAD
+
+- final SHA: `407f7bc546b799b257240269f1116aa3967c7e2f`
+- base for this round: `69e604019134fa316bc879cb86fe04683f9daa17` (the SHA independently verified above)
+- 8 new commits, all on `fix/grok-audit-baseline-001`, none squashed, none force-pushed
+- working tree: clean
+
+## J. REQUIRED FIXES FROM ADVERSARIAL VERIFICATION
+
+1. **Compose canonical identity** (P1) — `compose.yaml` had committed `name: grok-audit-fixes-worktree` over the canonical `name: explorarte-organization`, the exact wrong-layer isolation the file's own header comment warns against. Restored. Commit `8b9dc42`.
+2. **+5 harness suites** (D-HARNESS-001 follow-up) — `agentbudget-postgres`, `costledger-postgres`, `evaluation-postgres`, `modelpricing-postgres`, `webevidence-postgres` added to `scripts/integration-suites.tsv`. Commit `afb2bcf`. Adding them **surfaced two independent, real, pre-existing bugs** — not decoration:
+   - `internal/modelruntime/postgres`'s down/reapply test had a stale hardcoded rollback list missing migrations 37/39/47, silently corrupting `cost_provenance` and the `openai_responses` wallet row for every suite running after it in the shared harness database. Fixed, with new post-reapply assertions. Commit `2d78921`.
+   - `internal/costledger/postgres`'s fixture truncated `provider_wallets` and reseeded only 3 of 5 real providers (predated migrations 39/47). Fixed. Commit `fcddf80`.
+   - Harness result after these three: **28/29**, only `executive-postgres` still failing.
+3. **executive-postgres fixture** — attempting the minimal fix (`WithExecutionPrincipal` + a real `PrincipalStore` + one registered principal, mirroring the exact production wiring pattern) surfaced a genuinely deeper, previously-unverified defect, investigated and closed as EXEC-PRINCIPAL-001 below rather than patched around.
+
+## K. EXEC-PRINCIPAL-001
+
+### Root cause: **CONFIRMED**
+
+Evidence, in the order it was found:
+1. Wiring `WithExecutionPrincipal(key)` alone (no `PrincipalStore`) panicked — nil interface call in `AgentMessages.resolvePrincipalByKey`.
+2. Wiring a real `PrincipalStore` + one registered principal (`oracle-01/model-runtime-01` / `ingenieria_ia/code-runner`, the exact convention used everywhere else in this codebase) then failed with `principal has dispatch_actor_role_id="ingenieria_ia/code-runner" but sender is "empresa/ceo"` — the CEO→leader hop's sender role doesn't match the one principal.
+3. Fixing role resolution (below) then surfaced a **second, independent, previously-unreached bug**: `AgentMessages` passed the principal's *key* string into `Ledger.Send`, whose own defense-in-depth query (`internal/agentmessaging/postgres.Store.validateExecutionPrincipalForSender`) compares against the principal's *numeric ID* column. A non-numeric key there always fails type coercion. **No agent-messaging delegation call had ever succeeded through the real orchestrator, at any hop, before this fix** — the role-mismatch bug always fired first, masking this one.
+4. Fixing both then surfaced a **third, independent bug**: the orchestrator's very first `attachChildCoordination` call (root task → the CEO's own "planning" sub-task, both `AssignedRoleID=="empresa/ceo"`) is a same-role self-message, which `agentmessaging`'s topology validator denies unconditionally by design (`ValidateEdge`, `internal/agentmessaging/topology.go:76`). Not a bug in the validator — the orchestrator must not attempt agent-messaging for a hop that crosses no role boundary.
+
+All three were **latent since the original security-hardening branch** (`security-agent-communication-hardening-v1`) introduced principal authentication — none were specific to this closure round's changes. They were invisible because `executive-postgres` had never run in the official harness until D-HARNESS-001's fix (this same closure round), and the code path from `Orchestrator.attachChildCoordination` through to a real `Ledger.Send` call had apparently never been exercised end-to-end by any test before.
+
+## L. OLD MODEL
+
+`Orchestrator` held one `principalKey string`, set once at bootstrap from `ORG_MODEL_EXECUTION_PRINCIPAL_KEY` (default `oracle-01/model-runtime-01`), passed unchanged into every `SendDelegation`/`SendCompletion` call regardless of which role was actually sending. `AgentMessages.SendDelegation` resolved that one key to one principal and checked `principal.DispatchActorRoleID == sender.AssignedRoleID` — a check that, by construction, can be satisfied for at most one role. A real flow has at least two distinct sender roles (CEO, then each department leader); a production-realistic wiring could never pass this check for both.
+
+## M. NEW MODEL
+
+**Resolver.** `modeldispatch.PrincipalStore` gained `ResolveActiveForRole(ctx, organizationID, roleID) (ExecutionPrincipal, error)` (interface: `internal/modeldispatch/interfaces.go`; implementation: `internal/modeldispatch/postgres/principals.go`), backed by migration `000048`'s partial unique index enforcing at most one active principal per `(organization_id, dispatch_actor_role_id)` — scoped to `principal_key LIKE 'role-bound/%'` only (see distinction below).
+
+**Trust boundary.** `AgentMessages.resolveOrProvisionPrincipalForRole` (`internal/executive/runtimeadapter/agentmessages.go`) takes only `ctx` and `roleID`, where `roleID` is always `sender.AssignedRoleID` off an already-persisted, already-registry-validated `TaskRecord` — never from caller/model/task-text input. It resolves the active role-bound principal, or lazily provisions one via a deterministic, idempotent `principal_key = "role-bound/" + roleID` / `idempotency_key = "role-bound-principal:" + org + ":" + roleID`. Concurrent callers racing this either create the row or observe the one just created — never a duplicate, same idempotency contract `RegisterPrincipal` already provides everywhere else.
+
+**Orchestrator.** No longer holds a principal key at all. `WithExecutionPrincipal`/`principalKey` are deleted, not deprecated. `AgentMessagingProvider.SendDelegation`/`SendCompletion` (`internal/executive/ports.go`) dropped the `executionPrincipalID` parameter entirely — the implementation resolves it internally.
+
+**Provisioning.** Lazy, on first use, not pre-populated from the registry's ~80-role catalog. Deterministic and auditable (every `RegisterPrincipal` call writes to `audit_events`; revocable via the existing `DisablePrincipal`).
+
+**Distinction resolved (was mixed silently before, per section 4 of the request): two identities, kept explicitly separate.**
+- **Semantics A** (technical dispatcher identity) — `internal/modeldispatch`'s pre-existing use: `oracle-01/model-runtime-01`-style principals identify *the process* invoking a model provider, and legitimately many such principals can share one `dispatch_actor_role_id` (proven directly by `modelruntime-postgres`'s own `execution_principal_mismatch_denies_claim...` test, which registers two). **Role can change model provider without this identity needing to change.**
+- **Semantics B** (organizational sender identity) — agent-messaging's need: exactly one authenticated principal per role, standing in for "the role itself" as a message sender. This is what EXEC-PRINCIPAL-001 fixes.
+- Kept apart by construction, not convention alone: the `role-bound/` key prefix plus migration 000048's *scoped* partial index (not a blanket one) means role-bound (B) principals are uniqueness-constrained and semantics-A principals are completely unaffected — confirmed directly: the initial blanket-constraint draft of migration 048 broke `modelruntime-postgres`'s legitimate multi-principal-per-role test; rescoping the predicate fixed it without touching that test.
+
+## N. SECURITY INVARIANTS PRESERVED
+
+- `execution_principal.dispatch_actor_role_id == sender.AssignedRoleID`, enforced at two independent layers (`runtimeadapter.validateSenderRoleWithPrincipal` and `agentmessaging/postgres.Store.validateExecutionPrincipalForSender`) — neither removed, neither relaxed.
+- No wildcard/super-principal, no cross-role fallback, no role derived from model/task-text input, no bypass for executive specifically.
+- `roleID` passed to the resolver is always the sender's already-persisted, already-registry-validated `AssignedRoleID` — never accepted as a parameter from a caller.
+- Topology (`agentmessaging.NewTopologyValidator`), capability (`CapabilityAuthorizer`), and task ownership (`validateTaskOwnership`) all remain fully independent of principal resolution — none were touched.
+
+## O. MULTI-HOP PROOF
+
+All four hops proven with real, persisted tasks and messages against Postgres 17, `TestExecutiveMultiHopMessagingEndToEnd` (`internal/executive/exec_principal_test.go`):
+
+| Hop | Mechanism | Result |
+|---|---|---|
+| CEO → leader | `SendDelegation` (also proven through the real `Orchestrator`, `TestExecutivePostgreSQL17AgentBudgetsAndMessagingAreWiredThroughDelegation`) | PASS |
+| leader → worker | `SendDelegation` (also proven through the real `Orchestrator`) | PASS |
+| worker → leader | `SendCompletion` (direct — see note below) | PASS |
+| leader → CEO | `SendCompletion` (direct — see note below) | PASS |
+
+CEO/leader/worker resolve to three distinct principal IDs (asserted directly). Same-role self-delegation (CEO→CEO) still denied by topology, proving the fix didn't weaken that invariant.
+
+**Note on `SendCompletion`:** `internal/executive.Orchestrator` implements and requires `AgentMessagingProvider.SendCompletion` but never calls it anywhere (`grep -rn SendCompletion internal/executive` outside its own declaration/implementation returns nothing) — a separate, pre-existing fact about this codebase, not something EXEC-PRINCIPAL-001 touches or introduces. The completion-direction tests call it directly to prove the *same resolution mechanism* is correct for that direction too; they do not claim the Orchestrator wires it into the real completion flow (which uses a different mechanism, `CompletionGate`).
+
+## P. NEGATIVE PROOF
+
+| Case | Test | Result |
+|---|---|---|
+| Wrong principal (role mismatch) | `TestExecutiveMessagingRejectsPrincipalRoleMismatch` — ledger's own independent re-validation, since the resolver can no longer produce a mismatch by construction | DENIED |
+| Disabled principal | `TestExecutiveMessagingRejectsDisabledPrincipal` — denied at the ledger layer; `RegisterPrincipal`'s idempotent reuse returns the same disabled row rather than silently minting a fresh active one | DENIED |
+| Cross-org | `TestExecutiveMessagingRejectsCrossOrgPrincipal` — see honest caveat below | DENIED (by a different layer than intended) |
+| Invalid topology (self-message) | `TestExecutiveMultiHopMessagingEndToEnd`'s final assertion | DENIED |
+| `validateSenderRoleWithPrincipal` in isolation | `TestValidateSenderRoleWithPrincipalDeniesRoleMismatch` (table-driven unit test, `internal/executive/runtimeadapter`) | DENIED |
+
+**Honest caveat on cross-org:** in this single-organization deployment, `agentmessaging/postgres.Store`'s task-ownership check independently denies the tested attack shape (command organization ≠ real task organization) before the principal-organization check is even reached. Isolating the principal-level org check alone would require provisioning a second, fully-seeded organization (its own `organizations`/`organization_roles`/registry revision rows) purely for one negative-path test — judged out of proportion. Reported honestly rather than forced green; see mutation C below.
+
+## Q. MUTATION FITNESS
+
+| Mutation | Expected failing test(s) | Observed |
+|---|---|---|
+| A/D: resolver always returns the CEO principal regardless of role | `TestExecutiveMessagingLeaderToWorkerUsesLeaderPrincipal`, `TestExecutiveMessagingWorkerToLeaderUsesWorkerPrincipal`, `TestExecutiveMessagingLeaderToCEOUsesLeaderPrincipal`, `TestExecutiveMultiHopMessagingEndToEnd` | **CAUGHT** — all 4 failed; the 2 CEO-sender tests and the 4 negative tests still passed (correctly unaffected) |
+| B: `validateSenderRoleWithPrincipal` neutralized (returns nil unconditionally) | Integration mismatch test alone: **not caught** (it drives the ledger directly, which has its own independent check) — this is real defense-in-depth, not a gap: added `TestValidateSenderRoleWithPrincipalDeniesRoleMismatch`, a direct unit test of the function, which **is CAUGHT** by this exact mutation | **CAUGHT** (by the added unit test) |
+| C: `organization_id` filter removed from `Store.validateExecutionPrincipalForSender`'s query | `TestExecutiveMessagingRejectsCrossOrgPrincipal` | **NOT CAUGHT** — task-ownership's independent org check denies the same scenario first; see honest caveat in section P. This mutation is real (the principal-org check itself would be bypassed) but not currently exercised in isolation by any test |
+| — (not requested, found during investigation): fixing role resolution alone without fixing the key-vs-ID bug in `Ledger.Send` | any real send | Would still fail — confirmed this is a second, independent bug by observing the exact error change from role-mismatch to a different failure only after fixing both |
+
+## R. FIXTURES
+
+- **`internal/executive/postgres_integration_test.go`** (`TestExecutivePostgreSQL17AgentBudgetsAndMessagingAreWiredThroughDelegation`): all manual principal registration removed. Wires `AgentMessages{Ledger, MaxAttempts, PrincipalStore, OrganizationID}` — identical shape to production bootstrap. Passes because role resolution genuinely works, not because a fixture pre-arranged a matching principal.
+- **`internal/endtoendfixtures/runner.go`**: same change, same reasoning. Same root cause confirmed (identical wiring pattern), fixed in the same commit family.
+
+## S. HARNESS
+
+```
+expected             29
+passed               29
+failed               0
+blocked              0
+skipped              0
+unknown              0
+accounting_complete  true
+evidence_complete    true
+FINAL STATUS         COMPLETE_GREEN
+```
+Reproduced twice on independent fresh volumes (immediately before and after the final commit series) with identical results.
+
+## T. MIGRATIONS
+
+- New migration: **yes**, `000048_enforce_single_active_execution_principal_per_role` — justified because the "at most one active role-bound principal per role" property is exactly the kind of invariant this codebase already enforces at the database layer elsewhere (e.g. `model_dispatcher_assignments_one_active_idx`), and a resolver with no such guarantee would have no principled basis to pick among ambiguous candidates under a race.
+- Tip: **47 → 48**.
+- Demonstrated this round: 47→48 up, 0→48 fresh, 48 down/reapply, `pg_dump`/restore (11,173 lines, 0 errors both directions), and post-restore invariant check (the scoped partial index survives restore intact, predicate included).
+- `migrations/r21_tip_test.go` updated (`wantCount`, expected map, tip assertion) to 48.
+
+## U. DEFERRED
+
+- **D-005** — unchanged, P2, no 24/7 blocker.
+- **D-008** — unchanged, P2, no 24/7 blocker.
+- **D-010** — unchanged, P2, no 24/7 blocker.
+- **D-012** — unchanged, P2 now / **hard blocker pre-multi-org**.
+- **New: D-EXEC-PRINCIPAL-002** (P3, informational) — the cross-org negative test for the new resolver is currently only exercised indirectly (via task-ownership's independent check, see section P/Q). Trigger to resolve: before a second organization is genuinely provisioned in the same Postgres instance (the same trigger as D-012, and for the same underlying reason — this deployment has never needed to distinguish multi-org attack shapes from single-org ones in its test fixtures).
+
+## V. FINAL RISK
+
+- **P0 remaining**: none.
+- **P1 remaining**: none. The compose regression (P1) is closed (section J.1).
+- **P2 remaining**: D-005, D-008, D-010, D-012 (unchanged from the original pass), D-EXEC-PRINCIPAL-002 (new, informational).
+- **Unknown**: none blocking. The original pass's "unknown" (whether production's `bootstrap.Open` always supplies a working execution principal) is now **resolved** — it did not, for any hop, until this round's fixes; production has been calling `attachChildCoordination` with agent messaging wired since the security-hardening branch merged, meaning **real delegation messaging has likely never functioned in production either**, silently, since MaxAttempts/retry policy would have simply exhausted attempts on every delegation without an operator necessarily noticing a message-send failure distinct from other task-orchestration errors. This is a significant, newly-confirmed fact, not a residual risk of this round's changes — this round is what fixes it.
+
+## W. VERDICT
+
+**READY_FOR_TARGETED_INDEPENDENT_REVIEW**
