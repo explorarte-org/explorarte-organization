@@ -11,11 +11,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/agentmessaging"
 	agentmessagingpostgres "github.com/Mireuz13/explorarte-organization/internal/agentmessaging/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/authorization"
+	authorizationpostgres "github.com/Mireuz13/explorarte-organization/internal/authorization/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/config"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
@@ -33,6 +36,7 @@ type messagingFixture struct {
 	store          *platformpostgres.Store
 	revisionID     int64
 	registryReader registry.Reader
+	authorizer     agentmessaging.CapabilityAuthorizer
 }
 
 func openMessagingFixture(t *testing.T, ctx context.Context) messagingFixture {
@@ -92,7 +96,15 @@ func openMessagingFixture(t *testing.T, ctx context.Context) messagingFixture {
 	if err != nil || revision == nil {
 		t.Fatalf("current registry revision=%+v err=%v", revision, err)
 	}
-	return messagingFixture{store: store, revisionID: revision.ID, registryReader: registryRepo}
+	authorizationStore, err := authorizationpostgres.New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorizer, err := authorization.NewWithPolicyReader(authorizationStore, messagingIntegrationOrg, canonicalDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return messagingFixture{store: store, revisionID: revision.ID, registryReader: registryRepo, authorizer: authorizer}
 }
 
 func (f messagingFixture) insertTask(t *testing.T, ctx context.Context, roleID string, ordinal int) int64 {
@@ -146,7 +158,7 @@ func TestSendIsIdempotentPerOrganizationAndKey(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	fixture := openMessagingFixture(t, ctx)
-	ledger, err := agentmessagingpostgres.New(fixture.store, fixture.registryReader, 100, time.Hour)
+	ledger, err := agentmessagingpostgres.New(fixture.store, fixture.registryReader, fixture.authorizer, 100, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +194,7 @@ func TestSendRejectsSameKeyWithDifferentCommand(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	fixture := openMessagingFixture(t, ctx)
-	ledger, err := agentmessagingpostgres.New(fixture.store, fixture.registryReader, 100, time.Hour)
+	ledger, err := agentmessagingpostgres.New(fixture.store, fixture.registryReader, fixture.authorizer, 100, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,11 +228,84 @@ func TestSendRejectsSameKeyWithDifferentCommand(t *testing.T) {
 	}
 }
 
+// ORG-AUDIT-002 regression: TopologyV1EdgeContract and the securityaudit
+// catalog tests both exercise ValidateEdge directly, never the real
+// Store.Send call site. That leaves the actual production topology
+// enforcement mechanically unproven: deleting the ValidateEdge call inside
+// Send would not fail a single existing test. This proves the deny through
+// the real store, against the real registry, the way production traffic
+// actually goes.
+func TestSendDeniesWorkerToWorkerViaRealStore(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	fixture := openMessagingFixture(t, ctx)
+	ledger, err := agentmessagingpostgres.New(fixture.store, fixture.registryReader, fixture.authorizer, 100, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+
+	const senderRole = "ingenieria_ia/qa"
+	const recipientRole = "ingenieria_ia/frontend"
+	senderTaskID := fixture.insertTask(t, ctx, senderRole, 900)
+	recipientTaskID := fixture.insertTask(t, ctx, recipientRole, 901)
+	principalID := fixture.insertExecutionPrincipal(t, ctx, senderRole, 900)
+
+	command := agentmessaging.SendCommand{
+		OrganizationID: messagingIntegrationOrg, SenderRoleID: senderRole, SenderTaskID: senderTaskID,
+		RecipientRoleID: recipientRole, RecipientTaskID: &recipientTaskID, CorrelationID: "peer:deny", CausationID: fmt.Sprintf("task:%d", senderTaskID),
+		MessageType: agentmessaging.MessageDelegation, SchemaVersion: agentmessaging.SchemaVersionV1, Payload: json.RawMessage(fmt.Sprintf(`{"delegated_task_id":%d}`, recipientTaskID)),
+		IdempotencyKey: "peer-deny:qa->frontend", MaxAttempts: 5,
+	}
+	_, _, err = ledger.Send(ctx, principalID, command, now)
+	if err == nil {
+		t.Fatal("expected worker-to-worker Send through the real store to be denied by topology, got nil error")
+	}
+	if !strings.Contains(err.Error(), "topology validation failed") {
+		t.Fatalf("Send err=%v, want a topology validation failure (peer workers %s->%s are not a V1 edge)", err, senderRole, recipientRole)
+	}
+}
+
+// ORG-AUDIT-005 regression: capability-matrix.yaml grants execution_service
+// model.invoke/code.* but NOT agent.message.send. This edge is topologically
+// legal (worker->own-leader), so topology alone would let it through; only
+// the capability check this test proves is wired can reject it.
+func TestSendDeniesRoleWithoutMessageSendCapability(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	fixture := openMessagingFixture(t, ctx)
+	ledger, err := agentmessagingpostgres.New(fixture.store, fixture.registryReader, fixture.authorizer, 100, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+
+	const senderRole = "ingenieria_ia/code-runner" // authority_class: execution_service, no agent.message.send grant
+	const recipientRole = "ingenieria_ia/orquestador"
+	senderTaskID := fixture.insertTask(t, ctx, senderRole, 950)
+	recipientTaskID := fixture.insertTask(t, ctx, recipientRole, 951)
+	principalID := fixture.insertExecutionPrincipal(t, ctx, senderRole, 950)
+
+	command := agentmessaging.SendCommand{
+		OrganizationID: messagingIntegrationOrg, SenderRoleID: senderRole, SenderTaskID: senderTaskID,
+		RecipientRoleID: recipientRole, RecipientTaskID: &recipientTaskID, CorrelationID: "capability:deny", CausationID: fmt.Sprintf("task:%d", senderTaskID),
+		MessageType: agentmessaging.MessageDelegation, SchemaVersion: agentmessaging.SchemaVersionV1, Payload: json.RawMessage(fmt.Sprintf(`{"delegated_task_id":%d}`, recipientTaskID)),
+		IdempotencyKey: "capability-deny:code-runner->orquestador", MaxAttempts: 5,
+	}
+	_, _, err = ledger.Send(ctx, principalID, command, now)
+	if err == nil {
+		t.Fatal("expected Send from a role without agent.message.send to be denied, got nil error")
+	}
+	if !strings.Contains(err.Error(), "capability check failed") {
+		t.Fatalf("Send err=%v, want a capability check failure (execution_service has no agent.message.send grant)", err)
+	}
+}
+
 func TestSendEnforcesRateLimit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	fixture := openMessagingFixture(t, ctx)
-	ledger, err := agentmessagingpostgres.New(fixture.store, fixture.registryReader, 2, time.Hour)
+	ledger, err := agentmessagingpostgres.New(fixture.store, fixture.registryReader, fixture.authorizer, 2, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +342,7 @@ func TestClaimAckDeliversMessageExactlyOnce(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	fixture := openMessagingFixture(t, ctx)
-	ledger, err := agentmessagingpostgres.New(fixture.store, fixture.registryReader, 100, time.Hour)
+	ledger, err := agentmessagingpostgres.New(fixture.store, fixture.registryReader, fixture.authorizer, 100, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,7 +396,7 @@ func TestNackRetriesUntilMaxAttemptsThenDeadLetters(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	fixture := openMessagingFixture(t, ctx)
-	ledger, err := agentmessagingpostgres.New(fixture.store, fixture.registryReader, 100, time.Hour)
+	ledger, err := agentmessagingpostgres.New(fixture.store, fixture.registryReader, fixture.authorizer, 100, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -359,7 +444,7 @@ func TestExpiredClaimIsRecoveredAndOldTokenCannotSettle(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	fixture := openMessagingFixture(t, ctx)
-	ledger, err := agentmessagingpostgres.New(fixture.store, fixture.registryReader, 100, time.Hour)
+	ledger, err := agentmessagingpostgres.New(fixture.store, fixture.registryReader, fixture.authorizer, 100, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +491,7 @@ func TestExpiredFinalAttemptDeadLettersInsteadOfRequeue(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	fixture := openMessagingFixture(t, ctx)
-	ledger, err := agentmessagingpostgres.New(fixture.store, fixture.registryReader, 100, time.Hour)
+	ledger, err := agentmessagingpostgres.New(fixture.store, fixture.registryReader, fixture.authorizer, 100, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
