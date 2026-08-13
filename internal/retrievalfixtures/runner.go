@@ -251,7 +251,12 @@ func (r Runner) runCrossNamespace(ctx context.Context, f fixtures.Fixture, profi
 	record := newRecorder(f, profile.name)
 	clock := &fixedClock{now: fixtureBaseTime(f.Seed)}
 	targetNamespace := fixtureNamespace(f.ID, profile.name) + "_target"
-	targetActor := "marketing/estratega_crecimiento"
+	// negocio/estratega_crecimiento, not marketing/estratega_crecimiento --
+	// the marketing/ namespace does not exist in docs/canonical/role-catalog.yaml
+	// (this fixture predates a rename to negocio/). Never caught before
+	// because r30-06 had no runner wired to a real harness path until
+	// cmd/orgctl joined the official manifest.
+	targetActor := "negocio/estratega_crecimiento"
 	deniedActor := fixtureActor
 	setupManager, err := newRAGManager(ragStore, clock, targetNamespace, ragGate{}, nil)
 	if err != nil {
