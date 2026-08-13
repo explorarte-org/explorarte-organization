@@ -180,4 +180,38 @@ rc="$(run_harness "$HARNESS" "$WORK/pre-ok.tsv" "$WORK/suites-green.tsv" "$WORK/
 [[ "$(field "$WORK/green.json" evidence_complete)" == True ]] || fail "expected complete evidence"
 note "control: the same manifest without the mutation does reach COMPLETE_GREEN"
 
+# ---------------------------------------------------------------------
+echo "--- fitness 4: agentmessaging-postgres and executive-* are observed by the real manifest ---"
+# ---------------------------------------------------------------------
+# D-HARNESS-001 (Grok Audit Baseline 001 remediation): unlike fitness 1-3,
+# this drives the harness against the REAL scripts/integration-suites.tsv,
+# not a synthetic one -- the property under test is specifically whether
+# these four real suites are wired into the one manifest the harness
+# actually reads, not whether the generic accounting mechanism works in the
+# abstract. A safety-precondition abort keeps this fast: read_manifest
+# parses the real suites file and populates every UNIT_ID before
+# run_preconditions ever runs, so the comparison below never needs Docker
+# or a live suite execution.
+REAL_SUITES="$ROOT/scripts/integration-suites.tsv"
+NEW_UNITS=(agentmessaging-postgres executive-postgres executive-postrun-postgres executive-sleep-postgres)
+
+run_harness "$HARNESS" "$WORK/pre-unsafe.tsv" "$REAL_SUITES" "$WORK/real-with.json" >/dev/null
+for unit in "${NEW_UNITS[@]}"; do
+  [[ "$(suite_status "$WORK/real-with.json" "$unit")" != ABSENT ]]     || fail "$unit is not present in the real integration-suites.tsv manifest"
+done
+note "all four new units are present in the real manifest (observed, not just grepped)"
+
+# Mutation: the manifest as it stood before this remediation -- the four
+# new lines removed. If the accounting mechanism cannot tell the
+# difference, adding suites to the manifest proves nothing about coverage.
+grep -Ev '^(agentmessaging-postgres|executive-postgres|executive-postrun-postgres|executive-sleep-postgres)	'   "$REAL_SUITES" > "$WORK/suites-real-without-new.tsv"
+run_harness "$HARNESS" "$WORK/pre-unsafe.tsv" "$WORK/suites-real-without-new.tsv" "$WORK/real-without.json" >/dev/null
+for unit in "${NEW_UNITS[@]}"; do
+  [[ "$(suite_status "$WORK/real-without.json" "$unit")" == ABSENT ]]     || fail "$unit still present after removing it from the manifest; mutation had no effect"
+done
+with_count="$(python3 -c "import json;print(json.load(open('$WORK/real-with.json'))['summary']['expected'])")"
+without_count="$(python3 -c "import json;print(json.load(open('$WORK/real-without.json'))['summary']['expected'])")"
+[[ "$((with_count - without_count))" == "${#NEW_UNITS[@]}" ]]   || fail "expected count dropped by $((with_count - without_count)), want ${#NEW_UNITS[@]} when the four new units are removed"
+note "mutation (four lines removed from the real manifest) is detected: expected drops from $with_count to $without_count, all four units vanish from the evidence"
+
 echo "integration-evidence fitness: PASS"
