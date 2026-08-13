@@ -12,7 +12,10 @@
 # created a second runtime alongside the live one against the same database.
 # scripts/check-parallel-worker-isolation.sh asserts both halves: this name
 # stays canonical, and an override still produces separate resources.
-name: explorarte-organization
+# Worktree-local project name: prevents docker compose up here from
+# recreating/replacing the production containers (same project name pattern
+# used by other worktrees this session).
+name: grok-audit-fixes-worktree
 
 services:
   postgres:
