@@ -134,12 +134,15 @@ type KnowledgeVersion struct {
 // this item's extracted text (FTS, citations, snippets, debugging,
 // provenance) even when it is not what gets embedded.
 // SourcePageNumber/MediaSHA256/MediaParser/MediaParserVersion/
-// TextExtractionStatus are reproducibility provenance, not retrieval
-// fields (owner decision point 9 of the PDF ingestion contract): all five
-// are set together exactly when MediaSourceRef/MediaMimeType are, never
-// independently. MediaSHA256 is the separated single-page PDF's own hash
-// -- recorded, not re-derivable on demand, because splitting the same
-// source PDF twice does not reliably reproduce identical page bytes (see
+// TextExtractionStatus are reproducibility provenance rather than ranking
+// inputs (owner decision point 9 of the PDF ingestion contract) -- query
+// results (see QueryResult) surface these fields too, so a consumer can
+// verify the exact media/page lineage behind any retrieved chunk, not
+// just at proposal/ingestion time. All five are set together exactly
+// when MediaSourceRef/MediaMimeType are, never independently.
+// MediaSHA256 is the separated single-page PDF's own hash -- recorded,
+// not re-derivable on demand, because splitting the same source PDF
+// twice does not reliably reproduce identical page bytes (see
 // internal/pdfingest/poppler's idempotency test).
 type Chunk struct {
 	ID                    string               `json:"id"`

@@ -999,6 +999,167 @@ func TestApprovedKnowledgeRAGPostgresRepository(t *testing.T) {
 	})
 }
 
+// TestQueryResultSurfacesMediaProvenance is the RAG-QUERY-PROVENANCE-001
+// regression: internal/rag/postgres/hybrid_query.go's SELECT list used to
+// omit media_source_ref/media_mime_type/source_page_number/media_sha256/
+// media_parser/media_parser_version/text_extraction_status, so Store.Query
+// never populated those seven fields on the returned rag.Chunk even though
+// rag_knowledge_chunks stored them correctly (see PR #27's per-page
+// provenance fix and migrations 000035/000036). This is a real, disjoint
+// generation with exactly one media-backed chunk and one ordinary text
+// chunk, run through the real Reindex + Query path against real Postgres
+// -- never a reimplementation of the projection.
+func TestQueryResultSurfacesMediaProvenance(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	platform := openRAGStore(t, ctx)
+	t.Cleanup(platform.Close)
+	runner, err := platformmigrations.New(platform.Pool(), rootmigrations.Files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.Up(ctx); err != nil {
+		t.Fatal(err)
+	}
+	resetRAGSchema(t, ctx, platform)
+	t.Cleanup(func() { resetRAGSchema(t, context.Background(), platform) })
+	syncRAGCanonical(t, ctx, platform)
+	store, err := ragpostgres.New(platform, ragIntegrationOrganization)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	clock := &fixedClock{now: now}
+	domain := rag.NewService(clock)
+
+	version := proposeVersion(t, domain, clock, now, "know-provenance")
+	created, _, err := store.CreateCandidate(ctx, rag.CreateCandidateCommand{Version: version, IdempotencyKey: "idem-provenance"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.now = created.UpdatedAt.Add(time.Second)
+	approved, err := domain.Review(created, rag.ReviewApprove, ragIntegrationReviewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approved, err = store.Save(ctx, rag.SaveCommand{Version: approved, ExpectedRevision: 1, ActorID: ragIntegrationReviewer, Reason: "content verified"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// mediaChunk mirrors a real Ghostscript-rebuilt page (see PR #27 /
+	// RAG-PDF-CHUNK-OVERFLOW-001): all seven provenance fields set
+	// together, exactly the all-or-nothing shape migration 000036
+	// enforces. A media-backed chunk's content is exempt from Reindex's
+	// "derived from the approved body at these offsets" check (see
+	// Store.Reindex), so it can carry the page's own extracted text.
+	mediaContent := "contenido de la pagina extraida via ghostscript"
+	mediaChunk := rag.Chunk{
+		ID: approved.ID + "-1", VersionID: approved.ID, ChunkerID: "pdf-page-window", ChunkerVersion: "v2",
+		Ordinal: 1, StartOffset: 0, EndOffset: len(mediaContent),
+		Content: mediaContent, ContentHash: rag.ContentHash(mediaContent),
+		MediaSourceRef: "raw/papers/audit-corpus-2026-08/testfixture/page-1.pdf", MediaMimeType: "application/pdf",
+		SourcePageNumber: 1, MediaSHA256: "deadbeef0123456789deadbeef0123456789deadbeef0123456789deadbeef01",
+		MediaParser: "ghostscript/pdfwrite", MediaParserVersion: "10.00.0+poppler-amplification-fallback",
+		TextExtractionStatus: rag.TextExtractionOK,
+	}
+	// textChunk is an ordinary, non-media chunk in the same generation --
+	// its seven provenance fields must come back as Go zero values, not a
+	// Scan error, proving the NULL-handling side of the fix. Unlike
+	// mediaChunk, a non-media chunk IS subject to the "derived from body"
+	// check, so its content must be an exact substring of approved.Body at
+	// its own offsets -- using the whole body keeps this trivially true
+	// without hand-picking a substring.
+	textChunk := rag.Chunk{
+		ID: approved.ID + "-2", VersionID: approved.ID, ChunkerID: "pdf-page-window", ChunkerVersion: "v2",
+		Ordinal: 2, StartOffset: 0, EndOffset: len(approved.Body),
+		Content: approved.Body, ContentHash: rag.ContentHash(approved.Body),
+	}
+	generation, err := store.Reindex(ctx, rag.ReindexCommand{
+		OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceDepartment, NamespaceID: ragIntegrationNamespace,
+		ChunkerID: "pdf-page-window", ChunkerVersion: "v2", Chunks: []rag.Chunk{mediaChunk, textChunk},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if generation.Status != rag.GenerationActive {
+		t.Fatalf("generation=%+v", generation)
+	}
+
+	// rrfSoloMatchScore is the exact score runHybridQuery's documented RRF
+	// formula (score = 1/(rrfK+rank)) produces for a chunk that matches
+	// exactly one channel (lexical) at rank 1, with no vector channel
+	// configured (this test's Manager has no embedding deps) and no
+	// digit-run token to trigger the exact-match channel. Asserting this
+	// exact value -- not just "some positive score" -- is what proves
+	// adding the seven provenance columns to the SELECT list left the
+	// fusion arithmetic untouched, not merely still functional.
+	const rrfSoloMatchScore = 1.0 / 61.0
+	const scoreTolerance = 1e-9
+
+	t.Run("media-backed result surfaces all seven provenance fields and ranks by the unchanged RRF formula", func(t *testing.T) {
+		results, err := store.Query(ctx, rag.QueryCommand{OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceDepartment, NamespaceID: ragIntegrationNamespace, QueryText: "ghostscript", Limit: 10})
+		if err != nil || len(results) != 1 {
+			t.Fatalf("results=%+v err=%v", results, err)
+		}
+		got := results[0].Chunk
+		want := mediaChunk
+		if got.MediaSourceRef != want.MediaSourceRef || got.MediaMimeType != want.MediaMimeType ||
+			got.SourcePageNumber != want.SourcePageNumber || got.MediaSHA256 != want.MediaSHA256 ||
+			got.MediaParser != want.MediaParser || got.MediaParserVersion != want.MediaParserVersion ||
+			got.TextExtractionStatus != want.TextExtractionStatus {
+			t.Fatalf("provenance mismatch: got=%+v want=%+v", got, want)
+		}
+		if diff := results[0].Score - rrfSoloMatchScore; diff > scoreTolerance || diff < -scoreTolerance {
+			t.Fatalf("score=%v want %v (RRF fusion must be unaffected by the provenance projection)", results[0].Score, rrfSoloMatchScore)
+		}
+	})
+
+	t.Run("text-only result leaves provenance fields empty without a scan error and ranks by the unchanged RRF formula", func(t *testing.T) {
+		results, err := store.Query(ctx, rag.QueryCommand{OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceDepartment, NamespaceID: ragIntegrationNamespace, QueryText: "egress", Limit: 10})
+		if err != nil || len(results) != 1 {
+			t.Fatalf("results=%+v err=%v", results, err)
+		}
+		got := results[0].Chunk
+		if got.MediaSourceRef != "" || got.MediaMimeType != "" || got.SourcePageNumber != 0 ||
+			got.MediaSHA256 != "" || got.MediaParser != "" || got.MediaParserVersion != "" || got.TextExtractionStatus != "" {
+			t.Fatalf("expected zero-value provenance for a text-only chunk, got=%+v", got)
+		}
+		if diff := results[0].Score - rrfSoloMatchScore; diff > scoreTolerance || diff < -scoreTolerance {
+			t.Fatalf("score=%v want %v (RRF fusion must be unaffected by the provenance projection)", results[0].Score, rrfSoloMatchScore)
+		}
+	})
+
+	t.Run("a query matching both chunks fuses and orders them deterministically", func(t *testing.T) {
+		// "de" appears once in mediaChunk's content and multiple times in
+		// textChunk's (the full approved body) -- both still match the
+		// same single lexical channel at their own best rank, so this
+		// exercises the multi-row fused/GROUP BY path (untouched by this
+		// fix) without depending on hand-tuned term frequencies.
+		results, err := store.Query(ctx, rag.QueryCommand{OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceDepartment, NamespaceID: ragIntegrationNamespace, QueryText: "de", Limit: 10})
+		if err != nil || len(results) != 2 {
+			t.Fatalf("results=%+v err=%v", results, err)
+		}
+		var sawMedia, sawText bool
+		for _, r := range results {
+			if r.Chunk.IsMedia() {
+				sawMedia = true
+			} else {
+				sawText = true
+			}
+		}
+		if !sawMedia {
+			t.Fatalf("mediaChunk missing from fused results: %+v", results)
+		}
+		if !sawText {
+			t.Fatalf("textChunk missing from fused results: %+v", results)
+		}
+		if results[0].Score < results[1].Score {
+			t.Fatalf("expected results sorted by score descending, got %v then %v", results[0].Score, results[1].Score)
+		}
+	})
+}
+
 func proposeVersion(t *testing.T, domain *rag.Service, clock *fixedClock, now time.Time, id string) rag.KnowledgeVersion {
 	t.Helper()
 	return proposeVersionInNamespace(t, domain, clock, now, id, ragIntegrationNamespace)
