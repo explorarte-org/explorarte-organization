@@ -144,7 +144,28 @@ func (h *harness) roles() smoke.Roles {
 	return smoke.Roles{CEO: smokeCEORole, Leader: smokeLeaderRole, Worker: smokeWorkerRole}
 }
 
-// 1. Happy-path four-hop smoke.
+// runVerifyDeliver runs a full clean smoke cycle end to end and fails the
+// test immediately if any stage does not pass — the "known good baseline"
+// several tests below need before they can safely run() again (Run refuses
+// to start while a prior run's messages are still pending/claimed).
+func (h *harness) runVerifyDeliver(t *testing.T, correlationID string) smoke.Result {
+	t.Helper()
+	result, err := smoke.Run(h.ctx, h.store.Pool(), h.messages, smokeTestOrg, h.roles(), correlationID, time.Now())
+	if err != nil {
+		t.Fatalf("run(%q): %v", correlationID, err)
+	}
+	report, err := smoke.Verify(h.ctx, h.store.Pool(), smokeTestOrg, correlationID)
+	if err != nil || !report.AllFourPresent || !report.AllCorrelated || !report.AllIdentical || !report.SupportTasksSafe {
+		t.Fatalf("verify(%q) did not pass cleanly: err=%v report=%+v", correlationID, err, report)
+	}
+	deliverReport, err := smoke.Deliver(h.ctx, h.store.Pool(), h.messages, smokeTestOrg, h.roles(), correlationID, time.Now())
+	if err != nil || !deliverReport.AllDelivered {
+		t.Fatalf("deliver(%q) did not complete cleanly: err=%v report=%+v", correlationID, err, deliverReport)
+	}
+	return result
+}
+
+// 1. Happy-path four-hop smoke, through to full delivery.
 func TestSmokeHappyPathFourHops(t *testing.T) {
 	h := newHarness(t)
 	defer h.close()
@@ -177,7 +198,7 @@ func TestSmokeHappyPathFourHops(t *testing.T) {
 
 	// Close the loop: only after Verify passes, per the gate Deliver itself
 	// requires callers to have already checked.
-	deliverReport, err := smoke.Deliver(h.ctx, h.store.Pool(), h.messages, smokeTestOrg, correlationID, time.Now())
+	deliverReport, err := smoke.Deliver(h.ctx, h.store.Pool(), h.messages, smokeTestOrg, h.roles(), correlationID, time.Now())
 	if err != nil {
 		t.Fatalf("deliver: %v", err)
 	}
@@ -215,15 +236,14 @@ func TestSmokeHappyPathFourHops(t *testing.T) {
 }
 
 // 2. Existing role-bound principals: a second smoke run against the same
-// roles must find all three principals already provisioned.
+// roles must find all three principals already provisioned. The first run
+// must be fully delivered first — Run refuses to start while any of its
+// own prior messages are still pending.
 func TestSmokeExistingRoleBoundPrincipals(t *testing.T) {
 	h := newHarness(t)
 	defer h.close()
 
-	first := smoke.NewCorrelationID(time.Now())
-	if _, err := smoke.Run(h.ctx, h.store.Pool(), h.messages, smokeTestOrg, h.roles(), first, time.Now()); err != nil {
-		t.Fatalf("first run (provisions principals): %v", err)
-	}
+	h.runVerifyDeliver(t, smoke.NewCorrelationID(time.Now()))
 
 	second := smoke.NewCorrelationID(time.Now().Add(time.Second))
 	result, err := smoke.Run(h.ctx, h.store.Pool(), h.messages, smokeTestOrg, h.roles(), second, time.Now())
@@ -308,15 +328,16 @@ func TestSmokeWrongRoleTaskOwnershipDenied(t *testing.T) {
 	}
 }
 
-// 6. Disabled principal DENY.
+// 6. Disabled principal DENY. The first (provisioning) run is delivered
+// before disabling its principal and attempting a second run, so the
+// second run's failure is unambiguously attributable to the disabled
+// principal rather than to leftover pending traffic from the first.
 func TestSmokeDisabledPrincipalDenied(t *testing.T) {
 	h := newHarness(t)
 	defer h.close()
 
-	correlationID := smoke.NewCorrelationID(time.Now())
-	if _, err := smoke.Run(h.ctx, h.store.Pool(), h.messages, smokeTestOrg, h.roles(), correlationID, time.Now()); err != nil {
-		t.Fatalf("provisioning run: %v", err)
-	}
+	h.runVerifyDeliver(t, smoke.NewCorrelationID(time.Now()))
+
 	ceoPrincipal, err := h.messages.PrincipalStore.ResolveActiveForRole(h.ctx, smokeTestOrg, smokeCEORole)
 	if err != nil {
 		t.Fatalf("resolve CEO principal: %v", err)
@@ -365,23 +386,26 @@ func TestSmokeSupportTasksNeverExecutable(t *testing.T) {
 	}
 }
 
-// 8. Unrelated rows/content must remain unchanged by a smoke run.
+// 8. Unrelated rows/content must remain unchanged by a smoke run. The
+// control fixture is delivered immediately after creation so its messages
+// leave 'pending' (a delivered, historical message no longer occupies an
+// inbox and must not block a later run's own quiescence check).
 func TestSmokeUnrelatedRowsUnchanged(t *testing.T) {
 	h := newHarness(t)
 	defer h.close()
 
-	// A pre-existing, unrelated control task+message pair created BEFORE
-	// the smoke run — a real, non-smoke row the run must never touch.
 	controlCorrelation := "pre-existing-control-fixture"
-	pre, err := smoke.Run(h.ctx, h.store.Pool(), h.messages, smokeTestOrg, h.roles(), controlCorrelation, time.Now())
-	if err != nil {
-		t.Fatalf("seed control fixture: %v", err)
+	pre := h.runVerifyDeliver(t, controlCorrelation)
+
+	var controlStatusBefore string
+	if err := h.store.Pool().QueryRow(h.ctx, `SELECT status FROM agent_messages WHERE organization_id=$1 AND correlation_id=$2 ORDER BY id LIMIT 1`, smokeTestOrg, controlCorrelation).Scan(&controlStatusBefore); err != nil {
+		t.Fatalf("snapshot control message: %v", err)
 	}
-	var controlSnapshotBefore struct {
-		status        string
-		balanceUnused int
+	if controlStatusBefore != "delivered" {
+		t.Fatalf("control fixture status=%q, want delivered before proceeding", controlStatusBefore)
 	}
-	if err := h.store.Pool().QueryRow(h.ctx, `SELECT status FROM tasks WHERE id=$1`, pre.CEOTask.ID).Scan(&controlSnapshotBefore.status); err != nil {
+	var controlTaskStatusBefore string
+	if err := h.store.Pool().QueryRow(h.ctx, `SELECT status FROM tasks WHERE id=$1`, pre.CEOTask.ID).Scan(&controlTaskStatusBefore); err != nil {
 		t.Fatalf("snapshot control task: %v", err)
 	}
 	var orgRoleCountBefore, orgCountBefore int
@@ -397,19 +421,19 @@ func TestSmokeUnrelatedRowsUnchanged(t *testing.T) {
 		t.Fatalf("run under test: %v", err)
 	}
 
-	var controlStatusAfter string
-	if err := h.store.Pool().QueryRow(h.ctx, `SELECT status FROM tasks WHERE id=$1`, pre.CEOTask.ID).Scan(&controlStatusAfter); err != nil {
+	var controlTaskStatusAfter string
+	if err := h.store.Pool().QueryRow(h.ctx, `SELECT status FROM tasks WHERE id=$1`, pre.CEOTask.ID).Scan(&controlTaskStatusAfter); err != nil {
 		t.Fatalf("re-read control task: %v", err)
 	}
-	if controlStatusAfter != controlSnapshotBefore.status {
-		t.Fatalf("control task status changed: before=%q after=%q", controlSnapshotBefore.status, controlStatusAfter)
+	if controlTaskStatusAfter != controlTaskStatusBefore {
+		t.Fatalf("control task status changed: before=%q after=%q", controlTaskStatusBefore, controlTaskStatusAfter)
 	}
-	var controlMessageCount int
-	if err := h.store.Pool().QueryRow(h.ctx, `SELECT count(*) FROM agent_messages WHERE correlation_id=$1`, controlCorrelation).Scan(&controlMessageCount); err != nil {
+	var controlDeliveredCount int
+	if err := h.store.Pool().QueryRow(h.ctx, `SELECT count(*) FROM agent_messages WHERE correlation_id=$1 AND status='delivered'`, controlCorrelation).Scan(&controlDeliveredCount); err != nil {
 		t.Fatal(err)
 	}
-	if controlMessageCount != 4 {
-		t.Fatalf("control fixture's 4 messages were disturbed: now count=%d", controlMessageCount)
+	if controlDeliveredCount != 4 {
+		t.Fatalf("control fixture's 4 delivered messages were disturbed: now delivered-count=%d", controlDeliveredCount)
 	}
 
 	var orgRoleCountAfter, orgCountAfter int
@@ -427,38 +451,99 @@ func TestSmokeUnrelatedRowsUnchanged(t *testing.T) {
 	}
 }
 
-// 9. Deliver must defend against foreign traffic in the same role's inbox:
-// if a genuine, older, unrelated pending message for the leader role exists
-// when Deliver runs, ClaimNext will surface it first (oldest-first FIFO) --
-// Deliver must detect it does not belong to this run, release it back to
-// 'pending' via Nack (never Ack it, never leave it dangling 'claimed'), and
-// fail loudly rather than silently acknowledging traffic it does not own.
-func TestSmokeDeliverDefendsAgainstForeignInboxTraffic(t *testing.T) {
+// snapshotMessage captures every column that could plausibly be mutated by
+// a claim/nack cycle, so a test can assert byte-equivalence, not just
+// "still pending".
+type snapshotMessage struct {
+	status         string
+	attemptCount   int
+	lastError      *string
+	availableAt    time.Time
+	updatedAt      time.Time
+	claimTokenHash *string
+	claimedBy      *string
+	claimExpiresAt *time.Time
+}
+
+func snapshotAgentMessage(t *testing.T, ctx context.Context, h *harness, id int64) snapshotMessage {
+	t.Helper()
+	var s snapshotMessage
+	if err := h.store.Pool().QueryRow(ctx, `
+		SELECT status, attempt_count, last_error, available_at, updated_at, claim_token_hash, claimed_by, claim_expires_at
+		FROM agent_messages WHERE id=$1
+	`, id).Scan(&s.status, &s.attemptCount, &s.lastError, &s.availableAt, &s.updatedAt, &s.claimTokenHash, &s.claimedBy, &s.claimExpiresAt); err != nil {
+		t.Fatalf("snapshot message id=%d: %v", id, err)
+	}
+	return s
+}
+
+func requireByteEquivalent(t *testing.T, before, after snapshotMessage) {
+	t.Helper()
+	if before.status != after.status {
+		t.Fatalf("status changed: before=%q after=%q (must be byte-equivalent — untouched, not merely still 'pending')", before.status, after.status)
+	}
+	if before.attemptCount != after.attemptCount {
+		t.Fatalf("attempt_count changed: before=%d after=%d (a claim, even one immediately released, is not a no-op)", before.attemptCount, after.attemptCount)
+	}
+	if !before.updatedAt.Equal(after.updatedAt) {
+		t.Fatalf("updated_at changed: before=%v after=%v", before.updatedAt, after.updatedAt)
+	}
+	if !before.availableAt.Equal(after.availableAt) {
+		t.Fatalf("available_at changed: before=%v after=%v", before.availableAt, after.availableAt)
+	}
+	if (before.claimTokenHash == nil) != (after.claimTokenHash == nil) {
+		t.Fatalf("claim_token_hash presence changed: before=%v after=%v", before.claimTokenHash, after.claimTokenHash)
+	}
+	if (before.claimedBy == nil) != (after.claimedBy == nil) {
+		t.Fatalf("claimed_by presence changed: before=%v after=%v", before.claimedBy, after.claimedBy)
+	}
+}
+
+// 9. Run must refuse to start at all — before creating any support tasks —
+// when a role it needs is not quiescent (a genuine, unrelated pending
+// message already occupies that role's inbox).
+func TestSmokeRunRefusesWhenInboxesNotQuiescent(t *testing.T) {
 	h := newHarness(t)
 	defer h.close()
 
-	// A genuine-looking, older smoke run standing in for real production
-	// traffic to the same leader role, deliberately left undelivered
-	// (pending) -- exactly what a real consumer's queued message looks
-	// like from Deliver's point of view.
-	foreignCorrelation := "genuine-production-traffic-not-part-of-this-smoke"
-	if _, err := smoke.Run(h.ctx, h.store.Pool(), h.messages, smokeTestOrg, h.roles(), foreignCorrelation, time.Now()); err != nil {
-		t.Fatalf("seed foreign traffic: %v", err)
-	}
-	var foreignLeaderMessageID int64
-	if err := h.store.Pool().QueryRow(h.ctx,
-		`SELECT id FROM agent_messages WHERE organization_id=$1 AND correlation_id=$2 AND recipient_role_id=$3 ORDER BY id LIMIT 1`,
-		smokeTestOrg, foreignCorrelation, smokeLeaderRole,
-	).Scan(&foreignLeaderMessageID); err != nil {
-		t.Fatalf("locate foreign leader-inbox message: %v", err)
+	h.runVerifyDeliver(t, "genuine-traffic-standing-in-for-production") // provisions principals cleanly, delivered
+	foreign := smoke.NewCorrelationID(time.Now().Add(time.Second))
+	if _, err := smoke.Run(h.ctx, h.store.Pool(), h.messages, smokeTestOrg, h.roles(), foreign, time.Now()); err != nil {
+		t.Fatalf("seed foreign pending traffic: %v", err)
+	} // deliberately left pending — stands in for a live, undelivered production message
+
+	var tasksBefore, messagesBefore int
+	h.store.Pool().QueryRow(h.ctx, `SELECT count(*) FROM tasks`).Scan(&tasksBefore)
+	h.store.Pool().QueryRow(h.ctx, `SELECT count(*) FROM agent_messages`).Scan(&messagesBefore)
+
+	blocked := smoke.NewCorrelationID(time.Now().Add(2 * time.Second))
+	if _, err := smoke.Run(h.ctx, h.store.Pool(), h.messages, smokeTestOrg, h.roles(), blocked, time.Now()); err == nil {
+		t.Fatal("Run must refuse to start while foreign pending traffic occupies a role inbox it needs")
 	}
 
-	// The run actually under test, created strictly after the foreign
-	// traffic, so ClaimNext's oldest-first ordering would surface the
-	// foreign message before this run's own leader-inbox messages if
-	// Deliver only trusted batch size instead of checking identity.
-	correlationID := smoke.NewCorrelationID(time.Now().Add(time.Second))
-	if _, err := smoke.Run(h.ctx, h.store.Pool(), h.messages, smokeTestOrg, h.roles(), correlationID, time.Now()); err != nil {
+	var tasksAfter, messagesAfter int
+	h.store.Pool().QueryRow(h.ctx, `SELECT count(*) FROM tasks`).Scan(&tasksAfter)
+	h.store.Pool().QueryRow(h.ctx, `SELECT count(*) FROM agent_messages`).Scan(&messagesAfter)
+	if tasksAfter != tasksBefore {
+		t.Fatalf("Run created task rows despite refusing to proceed: before=%d after=%d", tasksBefore, tasksAfter)
+	}
+	if messagesAfter != messagesBefore {
+		t.Fatalf("Run created message rows despite refusing to proceed: before=%d after=%d", messagesBefore, messagesAfter)
+	}
+}
+
+// 10. Deliver must refuse to claim at all when foreign traffic appears in
+// the window between a clean Verify and the Deliver call — and the foreign
+// message must come out byte-equivalent to how it went in: Deliver's
+// precheck means no ClaimNext is ever issued, so nothing is touched, not
+// merely "released back to pending" after being claimed.
+func TestSmokeDeliverRefusesWhenInboxesNotQuiescent(t *testing.T) {
+	h := newHarness(t)
+	defer h.close()
+
+	correlationID := smoke.NewCorrelationID(time.Now())
+	result, err := smoke.Run(h.ctx, h.store.Pool(), h.messages, smokeTestOrg, h.roles(), correlationID, time.Now())
+	if err != nil {
 		t.Fatalf("run under test: %v", err)
 	}
 	report, err := smoke.Verify(h.ctx, h.store.Pool(), smokeTestOrg, correlationID)
@@ -466,16 +551,39 @@ func TestSmokeDeliverDefendsAgainstForeignInboxTraffic(t *testing.T) {
 		t.Fatalf("run under test did not verify cleanly: err=%v report=%+v", err, report)
 	}
 
-	_, deliverErr := smoke.Deliver(h.ctx, h.store.Pool(), h.messages, smokeTestOrg, correlationID, time.Now())
+	// Inject genuine, unrelated traffic into the leader role's inbox in the
+	// window between Verify and Deliver — via a direct Ledger.Send (not
+	// smoke.Run, which would itself be blocked by the same precondition
+	// this test exists to prove matters).
+	ceoPrincipal, err := h.messages.PrincipalStore.ResolveActiveForRole(h.ctx, smokeTestOrg, smokeCEORole)
+	if err != nil {
+		t.Fatalf("resolve CEO principal: %v", err)
+	}
+	recipientTaskID := result.LeaderTask.ID
+	injected := agentmessaging.SendCommand{
+		OrganizationID: smokeTestOrg, SenderRoleID: smokeCEORole, SenderTaskID: result.CEOTask.ID,
+		RecipientRoleID: smokeLeaderRole, RecipientTaskID: &recipientTaskID,
+		CorrelationID: "genuine-traffic-injected-between-verify-and-deliver", CausationID: "genuine-traffic-injected-between-verify-and-deliver",
+		MessageType: agentmessaging.MessageDelegation, Payload: []byte(`{"delegated_task_id":` + strconv.FormatInt(recipientTaskID, 10) + `}`),
+		IdempotencyKey: "genuine-traffic-injected-between-verify-and-deliver", MaxAttempts: 1, SchemaVersion: agentmessaging.SchemaVersionV1,
+	}
+	var injectedID int64
+	msg, _, sendErr := h.messages.Ledger.Send(h.ctx, strconv.FormatInt(ceoPrincipal.ID, 10), injected, time.Now())
+	if sendErr != nil {
+		t.Fatalf("inject genuine unrelated traffic: %v", sendErr)
+	}
+	injectedID = msg.ID
+
+	before := snapshotAgentMessage(t, h.ctx, h, injectedID)
+
+	_, deliverErr := smoke.Deliver(h.ctx, h.store.Pool(), h.messages, smokeTestOrg, h.roles(), correlationID, time.Now())
 	if deliverErr == nil {
-		t.Fatal("expected Deliver to fail when a foreign message occupies the same role's inbox ahead of this run's own messages")
+		t.Fatal("Deliver must refuse to claim while foreign pending traffic occupies a role inbox it needs")
 	}
 
-	var foreignStatus string
-	if err := h.store.Pool().QueryRow(h.ctx, `SELECT status FROM agent_messages WHERE id=$1`, foreignLeaderMessageID).Scan(&foreignStatus); err != nil {
-		t.Fatalf("re-read foreign message: %v", err)
-	}
-	if foreignStatus != "pending" {
-		t.Fatalf("foreign message status=%q, want 'pending' (Deliver must release, never ack or strand, traffic it does not own)", foreignStatus)
+	after := snapshotAgentMessage(t, h.ctx, h, injectedID)
+	requireByteEquivalent(t, before, after)
+	if after.status != "pending" {
+		t.Fatalf("injected message status=%q, want 'pending' untouched", after.status)
 	}
 }

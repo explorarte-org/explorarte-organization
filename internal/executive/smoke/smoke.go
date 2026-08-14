@@ -43,6 +43,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/tasks"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -123,13 +124,70 @@ func NewCorrelationID(now time.Time) string {
 	return fmt.Sprintf("smoke/%s/%d", now.UTC().Format("20060102T150405Z"), now.UnixNano())
 }
 
+// ErrForeignInboxTraffic means a pending or claimed message for one of the
+// three roles this smoke touches already exists and does not belong to the
+// run being checked. It is returned by both Run (before anything is
+// created) and Deliver (before anything is claimed) — see
+// precheckRoleInboxesQuiescent.
+var ErrForeignInboxTraffic = errors.New("foreign message occupies a role inbox this smoke run needs quiescent")
+
+// precheckRoleInboxesQuiescent refuses to proceed if any pending or claimed
+// message already sits in one of roles' inboxes and does not belong to
+// excludeCorrelationID (pass "" when nothing of this run's own exists yet,
+// i.e. before Run creates anything).
+//
+// This exists because ClaimNext has no "claim exactly this message ID"
+// primitive — it always claims the oldest pending messages for a
+// (organization, role), and claiming ANY message (even one immediately
+// released via Nack) is not a no-op: it increments attempt_count and
+// rewrites last_error/available_at/updated_at, and if that claim happens
+// to be the message's last allowed attempt, Nack moves it straight to
+// 'dead'. So "claim foreign traffic, then Nack it" is not equivalent to
+// "leave foreign traffic untouched" — it can silently kill someone else's
+// message. The only way to guarantee a smoke run never touches traffic it
+// doesn't own is to never claim it in the first place: check quiescence
+// first, and treat this check failing as an already-broken operational
+// precondition (a production consumer/producer was not actually quiescent
+// during the smoke window), not something to route around.
+func precheckRoleInboxesQuiescent(ctx context.Context, pool *pgxpool.Pool, organizationID string, roles Roles, excludeCorrelationID string) error {
+	var id int64
+	var role, status, correlation string
+	err := pool.QueryRow(ctx, `
+		SELECT id, recipient_role_id, status, correlation_id
+		FROM agent_messages
+		WHERE organization_id = $1
+		  AND recipient_role_id = ANY($2)
+		  AND status IN ('pending','claimed')
+		  AND ($3 = '' OR correlation_id IS DISTINCT FROM $3)
+		ORDER BY id
+		LIMIT 1
+	`, organizationID, []string{roles.CEO, roles.Leader, roles.Worker}, excludeCorrelationID).Scan(&id, &role, &status, &correlation)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("check role inbox quiescence: %w", err)
+	}
+	return fmt.Errorf("%w: message id=%d recipient_role_id=%q status=%q correlation_id=%q",
+		ErrForeignInboxTraffic, id, role, status, correlation)
+}
+
 // Run creates the three support tasks and sends all four messages of the
 // CEO -> leader -> worker -> leader -> CEO chain, using the real
 // AgentMessages adapter unmodified — no special-cased "smoke mode" inside
 // SendDelegation/SendCompletion, no altered idempotency-key contract. The
 // only smoke-specific behavior lives here, in how the three support tasks
 // are created.
+//
+// Run refuses to create anything if any of the three roles' inboxes
+// already carries pending/claimed traffic — see
+// precheckRoleInboxesQuiescent. This must run BEFORE the support tasks
+// exist, since there is nothing of this run's own to exclude yet.
 func Run(ctx context.Context, pool *pgxpool.Pool, messages runtimeadapter.AgentMessages, organizationID string, roles Roles, correlationID string, now time.Time) (Result, error) {
+	if err := precheckRoleInboxesQuiescent(ctx, pool, organizationID, roles, ""); err != nil {
+		return Result{}, fmt.Errorf("refusing to start: %w", err)
+	}
+
 	existingCEO, err := principalAlreadyActive(ctx, messages.PrincipalStore, organizationID, roles.CEO)
 	if err != nil {
 		return Result{}, fmt.Errorf("check existing CEO principal: %w", err)
@@ -390,20 +448,39 @@ type DeliverReport struct {
 //
 // Safety-critical: ClaimNext claims the OLDEST pending messages for a
 // (organization, role) — not specific message IDs, since the ledger has no
-// "claim exactly this ID" primitive. If ANY genuine, unrelated pending
-// message for one of the three roles this run touches exists at the same
-// moment (e.g. a real consumer or a concurrent second smoke run), Deliver
-// could claim it instead of — or in addition to — its own message. Deliver
-// defends against this: after each ClaimNext, every claimed message ID is
-// checked against this run's own known set; anything unexpected is
-// immediately Nacked back to 'pending' (never Acked, never left dangling
-// claimed) and the whole call fails with an error naming the foreign
-// message ID, rather than silently acknowledging traffic this run does not
-// own. This is exactly why the operational precondition matters: no
-// production ClaimNext consumer should be actively draining the same
-// roles' inboxes while a smoke run's Deliver step executes.
-func Deliver(ctx context.Context, pool *pgxpool.Pool, messages runtimeadapter.AgentMessages, organizationID, correlationID string, now time.Time) (DeliverReport, error) {
+// "claim exactly this ID" primitive, so Deliver cannot simply ask for its
+// own four. An earlier version of this function handled that by claiming
+// whatever ClaimNext returned and Nacking anything unexpected straight
+// back to 'pending' — but claiming is not a no-op: it increments
+// attempt_count and rewrites last_error/available_at/updated_at
+// regardless of what happens next, and if that claim happened to be a
+// message's last allowed attempt, Nack would move it straight to 'dead'.
+// "claim foreign traffic, then Nack it" is therefore NOT equivalent to
+// "leave foreign traffic untouched" — in the worst case it is equivalent
+// to "leave foreign traffic dead." That is too strong a side effect for
+// anything calling itself production-safe.
+//
+// Deliver now never claims foreign traffic in the first place: it calls
+// precheckRoleInboxesQuiescent immediately before ClaimNext (Run already
+// checked once before creating anything, but state can change in the
+// window between Run and Deliver) and refuses to proceed at all if
+// anything foreign is found — no ClaimNext call is made, so nothing is
+// touched. Reaching Deliver's ClaimNext calls having just passed that
+// check means an unexpected foreign ID showing up there is a genuine
+// operational precondition violation (something else claimed or enqueued
+// against these roles in the instant between the check and the call, e.g.
+// a production consumer that was not actually kept quiescent) rather than
+// routine traffic — Deliver still defends against that residual race by
+// Nacking anything unexpected straight back to 'pending' rather than
+// acking it, but that path existing is not a substitute for keeping
+// producers/consumers of these three roles' inboxes quiescent for the
+// smoke's brief window, which remains the real operational precondition.
+func Deliver(ctx context.Context, pool *pgxpool.Pool, messages runtimeadapter.AgentMessages, organizationID string, roles Roles, correlationID string, now time.Time) (DeliverReport, error) {
 	report := DeliverReport{CorrelationID: correlationID}
+
+	if err := precheckRoleInboxesQuiescent(ctx, pool, organizationID, roles, correlationID); err != nil {
+		return report, fmt.Errorf("refusing to claim: %w", err)
+	}
 
 	rows, err := pool.Query(ctx, `
 		SELECT id, recipient_role_id FROM agent_messages

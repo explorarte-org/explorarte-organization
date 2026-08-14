@@ -71,7 +71,7 @@ func runExecutiveSmoke(args []string, stdout, stderr io.Writer) int {
 	var deliverReport smoke.DeliverReport
 	var deliverErr error
 	if verified {
-		deliverReport, deliverErr = smoke.Deliver(ctx, store.Pool(), messages, cfg.Tasks.OrganizationID, correlationID, now)
+		deliverReport, deliverErr = smoke.Deliver(ctx, store.Pool(), messages, cfg.Tasks.OrganizationID, roles, correlationID, now)
 	}
 
 	passed := verified && deliverErr == nil && deliverReport.AllDelivered
