@@ -118,6 +118,7 @@ grants:
   - audit.read_sanitized_evidence
   - audit.publish_finding
   - rag.propose_candidate
+  - rag.read_department
   - memory.read_own
   research_execution:
   - organization.read_registry
