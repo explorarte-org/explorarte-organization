@@ -48,12 +48,20 @@ func (s *Service) Propose(command ProposeCommand) (KnowledgeVersion, error) {
 	}
 	now := s.clock.Now().UTC()
 	contentHash := ContentHash(command.Body)
+	// RAG-INTEGRITY-001: canonicalize AttestedAt to Postgres's persisted
+	// precision BEFORE it ever reaches ComputeCanonicalHash below --
+	// hashing the caller's raw, possibly-nanosecond-precision value here
+	// and truncating only on the way into the database is what broke
+	// self-consistency (a value that hashed one way at propose time and
+	// re-hashed a different way on every subsequent read).
+	admission := command.Admission
+	admission.AttestedAt = canonicalPersistenceTime(admission.AttestedAt)
 	version := KnowledgeVersion{
 		ID: strings.TrimSpace(command.ID), DocumentID: strings.TrimSpace(command.DocumentID), OrganizationID: strings.TrimSpace(command.OrganizationID),
 		NamespaceKind: command.NamespaceKind, NamespaceID: strings.TrimSpace(command.NamespaceID), Version: command.Version,
 		Title: strings.TrimSpace(command.Title), Body: command.Body, SourceKind: command.SourceKind, SourceReference: strings.TrimSpace(command.SourceReference),
 		SourceRunRef: strings.TrimSpace(command.SourceRunRef), EvidenceRefs: append([]EvidenceRef(nil), command.EvidenceRefs...),
-		ProposedBy: strings.TrimSpace(command.ProposedBy), Admission: command.Admission, ContentHash: contentHash,
+		ProposedBy: strings.TrimSpace(command.ProposedBy), Admission: admission, ContentHash: contentHash,
 		SupersedesVersionID: strings.TrimSpace(command.SupersedesVersionID), Lifecycle: LifecycleCandidate, Revision: 1,
 		CreatedAt: now, UpdatedAt: now,
 	}

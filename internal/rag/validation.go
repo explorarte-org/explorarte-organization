@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/dataclassifier"
 )
@@ -39,6 +40,22 @@ func (a AdmissionAttestation) Validate() error {
 	}
 	if strings.TrimSpace(a.AttestedBy) == "" || strings.TrimSpace(a.SourceBoundary) == "" || strings.TrimSpace(a.EvidenceRef) == "" || a.AttestedAt.IsZero() {
 		return fmt.Errorf("%w: admission attestation is incomplete", ErrInvalidAdmission)
+	}
+	// RAG-INTEGRITY-001 defense in depth: Service.Propose is the one path
+	// that canonicalizes AttestedAt (UTC, microsecond-truncated) before
+	// ComputeCanonicalHash ever sees it, but the repository calls
+	// Validate() again on every load -- a KnowledgeVersion constructed
+	// any other way (a future caller that bypasses Propose, a test
+	// fixture) must not be able to persist a value ComputeCanonicalHash
+	// would hash one way now and re-hash a different way after a
+	// Postgres round-trip. Rejecting non-UTC and sub-microsecond
+	// precision here means that can never reach storage in the first
+	// place, not just in the one call site that currently constructs it.
+	if a.AttestedAt.Location() != time.UTC {
+		return fmt.Errorf("%w: admission attested_at must be UTC", ErrInvalidAdmission)
+	}
+	if a.AttestedAt.Nanosecond()%1000 != 0 {
+		return fmt.Errorf("%w: admission attested_at must not carry sub-microsecond precision (would not survive a Postgres timestamptz round-trip)", ErrInvalidAdmission)
 	}
 	if a.DataClass == DataSanitized && strings.TrimSpace(a.SanitizationEvidenceRef) == "" {
 		return fmt.Errorf("%w: sanitized data class requires sanitization evidence", ErrInvalidAdmission)

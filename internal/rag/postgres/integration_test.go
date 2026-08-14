@@ -1092,3 +1092,93 @@ func syncRAGCanonical(t *testing.T, ctx context.Context, store *platformpostgres
 	}
 	return revision
 }
+
+// TestKnowledgeVersionSurvivesPostgresRoundtripWithNanosecondPrecisionInput
+// is the RAG-INTEGRITY-001 regression: a caller that hands Propose a
+// genuinely nanosecond-precision, non-UTC AttestedAt (exactly what
+// time.Now() without truncation produces, and what a caller in a
+// different timezone would produce) must still round-trip through real
+// Postgres and re-validate cleanly on read. Before this fix, this exact
+// shape of input produced a version whose ComputeCanonicalHash() at
+// propose time never matched what got recomputed after a timestamptz
+// round-trip truncated the stored value -- a valid write that became
+// permanently unreadable (ErrSourceDrift on every subsequent Get/List).
+func TestKnowledgeVersionSurvivesPostgresRoundtripWithNanosecondPrecisionInput(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	platform := openRAGStore(t, ctx)
+	t.Cleanup(platform.Close)
+	runner, err := platformmigrations.New(platform.Pool(), rootmigrations.Files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.Up(ctx); err != nil {
+		t.Fatal(err)
+	}
+	resetRAGSchema(t, ctx, platform)
+	t.Cleanup(func() { resetRAGSchema(t, context.Background(), platform) })
+	syncRAGCanonical(t, ctx, platform)
+	store, err := ragpostgres.New(platform, ragIntegrationOrganization)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	loc := time.FixedZone("UTC-3", -3*60*60)
+	nanoAttestedAt := time.Date(2026, 8, 14, 1, 0, 0, 123456789, loc)
+	clock := &fixedClock{now: time.Now().UTC()}
+	domain := rag.NewService(clock)
+	version, err := domain.Propose(rag.ProposeCommand{
+		ID: "know-nanosecond-roundtrip", DocumentID: "know-nanosecond-roundtrip", OrganizationID: ragIntegrationOrganization,
+		NamespaceKind: rag.NamespaceDepartment, NamespaceID: ragIntegrationNamespace, Version: 1,
+		Title: "Nanosecond roundtrip regression", Body: "Body content for the roundtrip regression test.",
+		SourceKind: rag.SourceResearch, SourceReference: "investigacion:report:99", ProposedBy: ragIntegrationProposer,
+		EvidenceRefs: []rag.EvidenceRef{{Reference: "evidence:nano", Digest: "aaa"}},
+		Admission: rag.AdmissionAttestation{DataClass: rag.DataOrganizational, AttestedBy: ragIntegrationProposer, SourceBoundary: "organization", EvidenceRef: "admission:nano", AttestedAt: nanoAttestedAt},
+	})
+	if err != nil {
+		t.Fatalf("Propose with nanosecond-precision, non-UTC AttestedAt: %v", err)
+	}
+	if version.Admission.AttestedAt.Location() != time.UTC {
+		t.Fatalf("Propose did not canonicalize AttestedAt to UTC: %v", version.Admission.AttestedAt)
+	}
+	if version.Admission.AttestedAt.Nanosecond()%1000 != 0 {
+		t.Fatalf("Propose did not truncate AttestedAt to microsecond precision: %v", version.Admission.AttestedAt)
+	}
+	created, _, err := store.CreateCandidate(ctx, rag.CreateCandidateCommand{Version: version, IdempotencyKey: "idem-nano-roundtrip"})
+	if err != nil {
+		t.Fatalf("CreateCandidate: %v", err)
+	}
+	fetched, err := store.Get(ctx, ragIntegrationOrganization, created.ID)
+	if err != nil {
+		t.Fatalf("Get after round-trip failed (this is the RAG-INTEGRITY-001 symptom -- a valid write became unreadable): %v", err)
+	}
+	if fetched.CanonicalHash != created.CanonicalHash {
+		t.Fatalf("canonical hash drifted across the round-trip: wrote %s, read %s", created.CanonicalHash, fetched.CanonicalHash)
+	}
+	if err := fetched.Validate(); err != nil {
+		t.Fatalf("fetched version failed re-validation: %v", err)
+	}
+
+	// Same input JSON-equivalent command + same idempotency_key, replayed:
+	// must produce the identical canonical_hash both times (the second
+	// defect the same fix addresses -- omitted/re-derived attested_at
+	// made retries nondeterministic).
+	replay, err := domain.Propose(rag.ProposeCommand{
+		ID: "know-nanosecond-roundtrip", DocumentID: "know-nanosecond-roundtrip", OrganizationID: ragIntegrationOrganization,
+		NamespaceKind: rag.NamespaceDepartment, NamespaceID: ragIntegrationNamespace, Version: 1,
+		Title: "Nanosecond roundtrip regression", Body: "Body content for the roundtrip regression test.",
+		SourceKind: rag.SourceResearch, SourceReference: "investigacion:report:99", ProposedBy: ragIntegrationProposer,
+		EvidenceRefs: []rag.EvidenceRef{{Reference: "evidence:nano", Digest: "aaa"}},
+		Admission: rag.AdmissionAttestation{DataClass: rag.DataOrganizational, AttestedBy: ragIntegrationProposer, SourceBoundary: "organization", EvidenceRef: "admission:nano", AttestedAt: nanoAttestedAt},
+	})
+	if err != nil {
+		t.Fatalf("replay Propose: %v", err)
+	}
+	if replay.CanonicalHash != created.CanonicalHash {
+		t.Fatalf("replay with identical input produced a different canonical_hash: first=%s replay=%s", created.CanonicalHash, replay.CanonicalHash)
+	}
+	replayed, reused, err := store.CreateCandidate(ctx, rag.CreateCandidateCommand{Version: replay, IdempotencyKey: "idem-nano-roundtrip"})
+	if err != nil || !reused || replayed.ID != created.ID {
+		t.Fatalf("idempotent replay: replayed=%+v reused=%v err=%v", replayed, reused, err)
+	}
+}

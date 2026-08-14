@@ -232,9 +232,18 @@ func runRAGIngestPDF(ctx context.Context, runtime *ragbootstrap.Runtime, input r
 		return ragIngestPDFResult{}, fmt.Errorf("%w: extracted text matched a forbidden data pattern, refusing to propose", rag.ErrInvalidRequest)
 	}
 
+	// RAG-INTEGRITY-001: no time.Now() fallback here. This used to mean
+	// the same input JSON + the same idempotency_key could produce a
+	// different canonical_hash on every retry (attested_at silently
+	// different each time), which is exactly the kind of nondeterminism
+	// idempotency_key exists to prevent -- and is what produced the
+	// "idempotency key already commits different knowledge content"
+	// conflict seen on a retried ingest. `rag propose` already requires
+	// an explicit, parseable admission.attested_at; ingest-pdf now does
+	// too.
 	attestedAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(input.Admission.AttestedAt))
 	if err != nil {
-		attestedAt = time.Now().UTC()
+		return ragIngestPDFResult{}, fmt.Errorf("%w: parse admission.attested_at: %v", rag.ErrInvalidRequest, err)
 	}
 	version, reused, err := runtime.Manager.Propose(ctx, rag.ProposeRequest{
 		Command: rag.ProposeCommand{
