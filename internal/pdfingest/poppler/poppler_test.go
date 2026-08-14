@@ -202,3 +202,81 @@ func TestNewRejectsInvalidConfig(t *testing.T) {
 		t.Fatal("expected New to reject a zero-value Config")
 	}
 }
+
+func TestIsPageAmplifiedDetectsDisproportionatePages(t *testing.T) {
+	// Real case this guards against (CUTOVER-DEPLOYMENT-REHEARSAL-003
+	// audit corpus): an 11.5MB, 30-page source where pdfseparate carried
+	// the entire document into a single "page", instead of that page's
+	// fair share (~384KB).
+	sourceLen := 11_567_785
+	pageCount := 30
+	amplifiedPage := make([]byte, 11_567_601)
+	if !isPageAmplified(amplifiedPage, sourceLen, pageCount) {
+		t.Fatal("expected the reproduced real-world amplified page to be detected")
+	}
+}
+
+func TestIsPageAmplifiedAllowsOrdinaryPages(t *testing.T) {
+	sourceLen := 11_567_785
+	pageCount := 30
+	fairShare := sourceLen / pageCount
+	ordinaryPage := make([]byte, fairShare*2) // 2x fair share: normal variance, not amplification
+	if isPageAmplified(ordinaryPage, sourceLen, pageCount) {
+		t.Fatal("a page at 2x fair share should not be flagged as amplified")
+	}
+}
+
+func TestIsPageAmplifiedIgnoresSmallFilesBelowFloor(t *testing.T) {
+	// A tiny single-page source: fairShare*factor is smaller than the
+	// floor, and the floor itself should not fire on ordinary small PDFs.
+	sourceLen := 100_000
+	pageCount := 1
+	page := make([]byte, 150_000)
+	if isPageAmplified(page, sourceLen, pageCount) {
+		t.Fatal("pageCount<=1 must never be flagged as amplified -- there is nothing to compare it against")
+	}
+}
+
+func TestStripNULBytesRemovesEmbeddedNUL(t *testing.T) {
+	in := "Managing Procedural Memory\x00 in LLM Agents"
+	want := "Managing Procedural Memory in LLM Agents"
+	if got := stripNULBytes(in); got != want {
+		t.Fatalf("stripNULBytes(%q) = %q, want %q", in, got, want)
+	}
+}
+
+func TestStripNULBytesLeavesCleanTextUntouched(t *testing.T) {
+	in := "no null bytes here at all"
+	if got := stripNULBytes(in); got != in {
+		t.Fatalf("stripNULBytes(%q) = %q, want unchanged", in, got)
+	}
+}
+
+func TestProcessRebuildsAmplifiedPageViaGhostscript(t *testing.T) {
+	proc := newTestProcessor(t)
+	// Force every page to look "amplified" by dropping the floor to zero,
+	// so this test exercises the real Ghostscript subprocess path against
+	// the small checked-in fixture instead of needing an 11MB reproduction
+	// of the original bloated-PDF case.
+	originalFactor, originalFloor := pageAmplificationFactor, pageAmplificationFloor
+	pageAmplificationFactor = 0
+	pageAmplificationFloor = 0
+	t.Cleanup(func() { pageAmplificationFactor, pageAmplificationFloor = originalFactor, originalFloor })
+
+	source := readFixture(t, "two-page.pdf")
+	result, err := proc.Process(context.Background(), source)
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if len(result.Pages) != 2 {
+		t.Fatalf("expected 2 pages, got %d", len(result.Pages))
+	}
+	for _, page := range result.Pages {
+		if len(page.SHA256) != 64 {
+			t.Fatalf("page %d missing sha256 after ghostscript rebuild", page.PageNumber)
+		}
+		if page.ExtractedText == "" {
+			t.Fatalf("page %d lost its extracted text after ghostscript rebuild", page.PageNumber)
+		}
+	}
+}

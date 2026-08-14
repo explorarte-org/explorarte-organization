@@ -74,10 +74,14 @@ func (v KnowledgeVersion) Validate() error {
 	if err := v.Admission.Validate(); err != nil {
 		return err
 	}
+	// ARCH-BOUNDARY-001: no clinical cross-check here by design -- see
+	// cmd/orgctl/rag.go's runRAGIngestPDF for the full rationale. This
+	// package has no clinical data concept; DataClinical remains a valid
+	// DataClass value only so AllowedInApprovedKnowledge's existing
+	// architectural rejection of it keeps working, not because content
+	// is ever expected to be classified as clinical here.
 	if finding := dataclassifier.Detect(v.Body); finding.Secret && v.Admission.DataClass != DataSecret {
 		return fmt.Errorf("%w: body matches a %s but is declared %q", ErrForbiddenDataClass, finding.SecretReason, v.Admission.DataClass)
-	} else if finding.Clinical && v.Admission.DataClass != DataClinical {
-		return fmt.Errorf("%w: body matches a %s but is declared %q", ErrForbiddenDataClass, finding.ClinicalReason, v.Admission.DataClass)
 	}
 	if v.ContentHash != ContentHash(v.Body) {
 		return fmt.Errorf("%w: content hash must equal the hash of the normalized body", ErrInvalidVersion)

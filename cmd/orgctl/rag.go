@@ -216,7 +216,19 @@ func runRAGIngestPDF(ctx context.Context, runtime *ragbootstrap.Runtime, input r
 	if bodyText == "" {
 		bodyText = fmt.Sprintf("[PDF sin texto extraible: %d paginas, ver chunks media-backed para el contenido visual]", len(pdfResult.Pages))
 	}
-	if finding := dataclassifier.Detect(bodyText); finding.Any() {
+	// ARCH-BOUNDARY-001: Organization's RAG domain has no clinical data
+	// concept -- clinical/patient/session data belongs to a separate
+	// product (the Clinica system) with its own trust boundary and its
+	// own storage, never this one. Refusing ingestion because extracted
+	// text contains ordinary engineering vocabulary that happens to
+	// overlap a clinical word list (a paper discussing "patient
+	// histories" as a memory-system example, or a "failure diagnosis")
+	// was a boundary violation, not a safety feature: it asked "does
+	// this look clinical" of a system that should never need to ask that
+	// question about its own knowledge corpus. Secret-shaped content
+	// (API keys, tokens, credentials) stays a real Organization concern
+	// and is still checked.
+	if finding := dataclassifier.Detect(bodyText); finding.Secret {
 		return ragIngestPDFResult{}, fmt.Errorf("%w: extracted text matched a forbidden data pattern, refusing to propose", rag.ErrInvalidRequest)
 	}
 
