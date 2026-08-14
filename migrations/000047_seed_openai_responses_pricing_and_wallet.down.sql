@@ -3,6 +3,13 @@
 -- under it, even on rollback. Same pattern as 000026/000027's down
 -- migrations -- the seeded openai_responses/gpt-5.6-luna price tiers stand.
 --
--- provider_wallets has no such trigger (balances legitimately change), so
--- the wallet row this migration seeded is safe to remove on rollback.
-DELETE FROM provider_wallets WHERE provider_id = 'openai_responses';
+-- CUTOVER-REHEARSAL-001: the up migration for this version no longer
+-- unconditionally creates the openai_responses wallet -- it only does so
+-- if one was not already present. On rollback there is no reliable way to
+-- tell "the wallet this migration created" apart from "a wallet that
+-- predates this migration and already carries real balance or ledger
+-- references" (production has exactly the latter). Deleting it
+-- unconditionally on down would risk destroying real state this migration
+-- never owned. So, like model_pricing above, this down is deliberately
+-- non-destructive.
+SELECT 1;
