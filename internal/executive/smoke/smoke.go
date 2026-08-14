@@ -1,0 +1,563 @@
+// Package smoke proves the CEO -> leader -> worker -> leader -> CEO
+// executive messaging/principal chain against a real, live Postgres —
+// including production — without ever touching the durable task engine's
+// executable path.
+//
+// It exercises exactly the same real components production wiring uses
+// (agentmessagingpostgres.Store as the Ledger, modeldispatch/postgres.Store
+// as the PrincipalStore, runtimeadapter.AgentMessages as the adapter), so a
+// passing smoke run is evidence about the real code path, not a simulation
+// of it.
+//
+// The one deliberate departure from a real business task is how its three
+// support tasks are created: internal/tasks/postgres.Store.Create can only
+// insert a task into a non-terminal status (there is no supported way to
+// ask the durable task engine's own Create/Finalize state machine for a
+// task that is terminal from birth — Finalize's no_action outcome requires
+// the task to already be awaiting_verification, which itself requires
+// passing through ready/leased/running first). A smoke support task must
+// NEVER be visible to any reader in ready/leased/running, not even for one
+// transaction's duration, so this package inserts directly with
+// status=no_action and terminal_at populated in the same statement that
+// creates the row — the row never exists in any other status. See
+// createSupportTask for the exact statement.
+package smoke
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"strconv"
+	"time"
+
+	"github.com/Mireuz13/explorarte-organization/internal/agentmessaging"
+	agentmessagingpostgres "github.com/Mireuz13/explorarte-organization/internal/agentmessaging/postgres"
+	authorizationbootstrap "github.com/Mireuz13/explorarte-organization/internal/authorization/bootstrap"
+	"github.com/Mireuz13/explorarte-organization/internal/config"
+	"github.com/Mireuz13/explorarte-organization/internal/executive"
+	"github.com/Mireuz13/explorarte-organization/internal/executive/runtimeadapter"
+	"github.com/Mireuz13/explorarte-organization/internal/modeldispatch"
+	modeldispatchpostgres "github.com/Mireuz13/explorarte-organization/internal/modeldispatch/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
+	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/tasks"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// agentMessageRateLimitMax/Window mirror the exact values production
+// bootstrap uses (internal/executive/bootstrap/runtime.go) — the smoke must
+// exercise the same rate-limit configuration real traffic does, not a
+// looser one that would hide a real production issue.
+const (
+	agentMessageRateLimitMax    = 200
+	agentMessageRateLimitWindow = time.Hour
+	agentMessageMaxAttempts     = 10
+)
+
+// Wire constructs the exact same real components production bootstrap uses
+// for executive messaging (internal/executive/bootstrap/runtime.go) — the
+// same Ledger and PrincipalStore concrete types, the same authorizer, the
+// same rate limits — so a smoke run exercises production's real code path,
+// not a parallel reimplementation of it that could drift.
+func Wire(cfg config.Config, store *platformpostgres.Store) (runtimeadapter.AgentMessages, error) {
+	registryRepository, err := registry.NewPostgresRepository(store)
+	if err != nil {
+		return runtimeadapter.AgentMessages{}, fmt.Errorf("create registry repository: %w", err)
+	}
+	authorizationRuntime, err := authorizationbootstrap.Open(cfg, store)
+	if err != nil {
+		return runtimeadapter.AgentMessages{}, fmt.Errorf("open authorization runtime: %w", err)
+	}
+	agentMessageLedger, err := agentmessagingpostgres.New(store, registryRepository, authorizationRuntime.Authorizer, agentMessageRateLimitMax, agentMessageRateLimitWindow)
+	if err != nil {
+		return runtimeadapter.AgentMessages{}, fmt.Errorf("create agent message ledger: %w", err)
+	}
+	principalStore, err := modeldispatchpostgres.New(store)
+	if err != nil {
+		return runtimeadapter.AgentMessages{}, fmt.Errorf("create principal store: %w", err)
+	}
+	return runtimeadapter.AgentMessages{
+		Ledger:         agentMessageLedger,
+		MaxAttempts:    agentMessageMaxAttempts,
+		PrincipalStore: principalStore,
+		OrganizationID: cfg.Tasks.OrganizationID,
+	}, nil
+}
+
+// Roles names the three real, already-registered production roles a smoke
+// run exercises. These must be real roles the organization's registry
+// already knows about — the smoke never creates or syncs registry state.
+type Roles struct {
+	CEO    string
+	Leader string
+	Worker string
+}
+
+// Result is what one smoke run produced: the three support tasks, the four
+// messages sent, and whether each hop's role-bound principal already
+// existed or had to be lazily provisioned by this run.
+type Result struct {
+	CorrelationID string
+	CEOTask       executive.TaskRecord
+	LeaderTask    executive.TaskRecord
+	WorkerTask    executive.TaskRecord
+	Hops          []HopOutcome
+}
+
+// HopOutcome records one of the four sends.
+type HopOutcome struct {
+	Label                string // "ceo_to_leader_delegation", etc.
+	SenderRoleID         string
+	RecipientRoleID      string
+	MessageType          string
+	PrincipalWasExisting bool // true if the role-bound principal already existed before this run
+}
+
+// NewCorrelationID returns a unique, clearly-tagged correlation id for one
+// smoke run. The "smoke/" prefix is load-bearing: it is what lets a human
+// or a query immediately tell a smoke-generated row apart from genuine
+// business traffic (see POST_SMOKE_MESSAGE_SAFETY in the branch report).
+func NewCorrelationID(now time.Time) string {
+	return fmt.Sprintf("smoke/%s/%d", now.UTC().Format("20060102T150405Z"), now.UnixNano())
+}
+
+// ErrForeignInboxTraffic means a pending or claimed message for one of the
+// three roles this smoke touches already exists and does not belong to the
+// run being checked. It is returned by both Run (before anything is
+// created) and Deliver (before anything is claimed) — see
+// precheckRoleInboxesQuiescent.
+var ErrForeignInboxTraffic = errors.New("foreign message occupies a role inbox this smoke run needs quiescent")
+
+// precheckRoleInboxesQuiescent refuses to proceed if any pending or claimed
+// message already sits in one of roles' inboxes and does not belong to
+// excludeCorrelationID (pass "" when nothing of this run's own exists yet,
+// i.e. before Run creates anything).
+//
+// This exists because ClaimNext has no "claim exactly this message ID"
+// primitive — it always claims the oldest pending messages for a
+// (organization, role), and claiming ANY message (even one immediately
+// released via Nack) is not a no-op: it increments attempt_count and
+// rewrites last_error/available_at/updated_at, and if that claim happens
+// to be the message's last allowed attempt, Nack moves it straight to
+// 'dead'. So "claim foreign traffic, then Nack it" is not equivalent to
+// "leave foreign traffic untouched" — it can silently kill someone else's
+// message. The only way to guarantee a smoke run never touches traffic it
+// doesn't own is to never claim it in the first place: check quiescence
+// first, and treat this check failing as an already-broken operational
+// precondition (a production consumer/producer was not actually quiescent
+// during the smoke window), not something to route around.
+func precheckRoleInboxesQuiescent(ctx context.Context, pool *pgxpool.Pool, organizationID string, roles Roles, excludeCorrelationID string) error {
+	var id int64
+	var role, status, correlation string
+	err := pool.QueryRow(ctx, `
+		SELECT id, recipient_role_id, status, correlation_id
+		FROM agent_messages
+		WHERE organization_id = $1
+		  AND recipient_role_id = ANY($2)
+		  AND status IN ('pending','claimed')
+		  AND ($3 = '' OR correlation_id IS DISTINCT FROM $3)
+		ORDER BY id
+		LIMIT 1
+	`, organizationID, []string{roles.CEO, roles.Leader, roles.Worker}, excludeCorrelationID).Scan(&id, &role, &status, &correlation)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("check role inbox quiescence: %w", err)
+	}
+	return fmt.Errorf("%w: message id=%d recipient_role_id=%q status=%q correlation_id=%q",
+		ErrForeignInboxTraffic, id, role, status, correlation)
+}
+
+// Run creates the three support tasks and sends all four messages of the
+// CEO -> leader -> worker -> leader -> CEO chain, using the real
+// AgentMessages adapter unmodified — no special-cased "smoke mode" inside
+// SendDelegation/SendCompletion, no altered idempotency-key contract. The
+// only smoke-specific behavior lives here, in how the three support tasks
+// are created.
+//
+// Run refuses to create anything if any of the three roles' inboxes
+// already carries pending/claimed traffic — see
+// precheckRoleInboxesQuiescent. This must run BEFORE the support tasks
+// exist, since there is nothing of this run's own to exclude yet.
+func Run(ctx context.Context, pool *pgxpool.Pool, messages runtimeadapter.AgentMessages, organizationID string, roles Roles, correlationID string, now time.Time) (Result, error) {
+	if err := precheckRoleInboxesQuiescent(ctx, pool, organizationID, roles, ""); err != nil {
+		return Result{}, fmt.Errorf("refusing to start: %w", err)
+	}
+
+	existingCEO, err := principalAlreadyActive(ctx, messages.PrincipalStore, organizationID, roles.CEO)
+	if err != nil {
+		return Result{}, fmt.Errorf("check existing CEO principal: %w", err)
+	}
+	existingLeader, err := principalAlreadyActive(ctx, messages.PrincipalStore, organizationID, roles.Leader)
+	if err != nil {
+		return Result{}, fmt.Errorf("check existing leader principal: %w", err)
+	}
+	existingWorker, err := principalAlreadyActive(ctx, messages.PrincipalStore, organizationID, roles.Worker)
+	if err != nil {
+		return Result{}, fmt.Errorf("check existing worker principal: %w", err)
+	}
+
+	ceoTask, err := createSupportTask(ctx, pool, organizationID, roles.CEO, correlationID, "ceo")
+	if err != nil {
+		return Result{}, fmt.Errorf("create CEO support task: %w", err)
+	}
+	leaderTask, err := createSupportTask(ctx, pool, organizationID, roles.Leader, correlationID, "leader")
+	if err != nil {
+		return Result{}, fmt.Errorf("create leader support task: %w", err)
+	}
+	workerTask, err := createSupportTask(ctx, pool, organizationID, roles.Worker, correlationID, "worker")
+	if err != nil {
+		return Result{}, fmt.Errorf("create worker support task: %w", err)
+	}
+
+	result := Result{CorrelationID: correlationID, CEOTask: ceoTask, LeaderTask: leaderTask, WorkerTask: workerTask}
+
+	if err := messages.SendDelegation(ctx, ceoTask, leaderTask, now); err != nil {
+		return result, fmt.Errorf("ceo -> leader delegation: %w", err)
+	}
+	result.Hops = append(result.Hops, HopOutcome{Label: "ceo_to_leader_delegation", SenderRoleID: roles.CEO, RecipientRoleID: roles.Leader, MessageType: "delegation", PrincipalWasExisting: existingCEO})
+
+	if err := messages.SendDelegation(ctx, leaderTask, workerTask, now); err != nil {
+		return result, fmt.Errorf("leader -> worker delegation: %w", err)
+	}
+	result.Hops = append(result.Hops, HopOutcome{Label: "leader_to_worker_delegation", SenderRoleID: roles.Leader, RecipientRoleID: roles.Worker, MessageType: "delegation", PrincipalWasExisting: existingLeader})
+
+	if err := messages.SendCompletion(ctx, workerTask, leaderTask, now); err != nil {
+		return result, fmt.Errorf("worker -> leader completion: %w", err)
+	}
+	result.Hops = append(result.Hops, HopOutcome{Label: "worker_to_leader_completion", SenderRoleID: roles.Worker, RecipientRoleID: roles.Leader, MessageType: "completion", PrincipalWasExisting: existingWorker})
+
+	if err := messages.SendCompletion(ctx, leaderTask, ceoTask, now); err != nil {
+		return result, fmt.Errorf("leader -> ceo completion: %w", err)
+	}
+	// The leader principal is used twice (hop 2 and hop 4); by hop 4 it
+	// necessarily already exists (hop 2 either found it or provisioned it),
+	// so this reports the state as of the START of this run, same as the
+	// other three, not "existing by the time we get here" trivia.
+	result.Hops = append(result.Hops, HopOutcome{Label: "leader_to_ceo_completion", SenderRoleID: roles.Leader, RecipientRoleID: roles.CEO, MessageType: "completion", PrincipalWasExisting: existingLeader})
+
+	return result, nil
+}
+
+func principalAlreadyActive(ctx context.Context, store modeldispatch.PrincipalStore, organizationID, roleID string) (bool, error) {
+	_, err := store.ResolveActiveForRole(ctx, organizationID, roleID)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, modeldispatch.ErrNotFound) {
+		return false, nil
+	}
+	return false, err
+}
+
+// createSupportTask inserts a task row that is terminal (status=no_action,
+// terminal_at populated) in the SAME statement that creates it. No other
+// session can ever observe this row in pending/ready/leased/running: it
+// simply does not exist in the database until it exists already-terminal.
+//
+// This deliberately bypasses internal/tasks/postgres.Store.Create (which
+// can only insert into a non-terminal initial status) — using it here
+// would put the row into 'pending', where a real reconciler polling the
+// same database could theoretically claim it before this function's own
+// follow-up finalize call ever ran. A synthetic smoke fixture must never
+// create that window, so there is no follow-up call: the row is born done.
+func createSupportTask(ctx context.Context, pool *pgxpool.Pool, organizationID, roleID, correlationID, label string) (executive.TaskRecord, error) {
+	var revisionID int64
+	if err := pool.QueryRow(ctx, `SELECT COALESCE(current_revision_id,0) FROM organizations WHERE id=$1 AND retired_at IS NULL`, organizationID).Scan(&revisionID); err != nil {
+		return executive.TaskRecord{}, fmt.Errorf("resolve organization revision: %w", err)
+	}
+	var unitID string
+	if err := pool.QueryRow(ctx, `SELECT unit_id FROM organization_roles WHERE organization_id=$1 AND id=$2 AND retired_at IS NULL`, organizationID, roleID).Scan(&unitID); err != nil {
+		return executive.TaskRecord{}, fmt.Errorf("resolve unit for role %q: %w", roleID, err)
+	}
+
+	idempotencyKey := fmt.Sprintf("smoke-support-task:%s:%s", correlationID, label)
+	requestHash := sha256Hex(fmt.Sprintf("smoke-support-task:%s:%s:%s", organizationID, roleID, correlationID))
+	title := fmt.Sprintf("[smoke] %s support task", label)
+	instructions := fmt.Sprintf(
+		"Synthetic, non-executable support task created by the production-safe executive "+
+			"messaging smoke (correlation %s). This task was born in a terminal status "+
+			"(no_action) and must never be claimed, leased, or executed.",
+		correlationID,
+	)
+
+	const query = `
+		INSERT INTO tasks(
+			organization_id, organization_revision_id, requested_by_role_id, assigned_role_id, assigned_unit_id,
+			idempotency_key, request_hash, title, instructions, acceptance_criteria, status, priority, available_at,
+			max_attempts, correlation_id, causation_id, terminal_at
+		) VALUES ($1,$2,NULL,$3,$4,$5,$6,$7,$8,'[]'::jsonb,$9,0,NOW(),1,$10,$10,NOW())
+		RETURNING id, organization_id, organization_revision_id, assigned_role_id, assigned_unit_id,
+			idempotency_key, request_hash, title, instructions, status, priority, max_attempts, correlation_id, causation_id
+	`
+	var t executive.TaskRecord
+	err := pool.QueryRow(ctx, query,
+		organizationID, revisionID, roleID, unitID, idempotencyKey, requestHash, title, instructions,
+		string(tasks.StatusNoAction), correlationID,
+	).Scan(
+		&t.ID, &t.OrganizationID, &t.OrganizationRevisionID, &t.AssignedRoleID, &t.AssignedUnitID,
+		&t.IdempotencyKey, &t.RequestHash, &t.Title, &t.Instructions, &t.Status, &t.Priority, &t.MaxAttempts,
+		&t.CorrelationID, &t.CausationID,
+	)
+	if err != nil {
+		return executive.TaskRecord{}, fmt.Errorf("insert support task: %w", err)
+	}
+	return t, nil
+}
+
+func sha256Hex(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
+
+// MessageInvariant is the read-back proof for one persisted agent_messages
+// row that a currently-active role-bound principal's dispatch_actor_role_id
+// matches both the message's sender_role_id and the sender task's
+// assigned_role_id. This is send-time enforcement plus read-back
+// consistency, not a byte-level proof of the exact principal ID that wrote
+// the row — agent_messages does not persist which principal authored it
+// (Store.Send validates the principal before accepting the INSERT, but the
+// principal's own ID is not a column on the message). Verify re-resolves
+// "the currently active role-bound principal for this role" independently
+// and checks it against what was written; it does not and cannot assert
+// "principal X, specifically, wrote this row" after the fact.
+type MessageInvariant struct {
+	MessageID                    int64
+	SenderTaskID                 int64
+	SenderRoleIDOnMessage        string
+	SenderRoleIDOnTask           string
+	PrincipalDispatchActorRoleID string
+	RecipientTaskID              int64
+	RecipientRoleIDOnMessage     string
+	CorrelationID                string
+	MessageType                  string
+	Identical                    bool
+}
+
+// VerifyReport is the full read-back verification of one smoke run.
+type VerifyReport struct {
+	CorrelationID    string
+	Messages         []MessageInvariant
+	AllFourPresent   bool
+	AllCorrelated    bool
+	AllIdentical     bool
+	SupportTasksSafe bool // true if none of the 3 support tasks are in an executable status
+}
+
+// Verify re-reads the database (never trusting the in-process Result alone)
+// and checks every invariant the production-safe smoke must prove:
+//   - exactly 4 messages exist for this correlation id;
+//   - every one of them carries this exact correlation id (not just "some
+//     truthy value");
+//   - for every message, sender_role_id (on the message) ==
+//     assigned_role_id (on the sender task) ==
+//     dispatch_actor_role_id (on the resolved principal);
+//   - the three support tasks are still in a non-executable status.
+func Verify(ctx context.Context, pool *pgxpool.Pool, organizationID, correlationID string) (VerifyReport, error) {
+	report := VerifyReport{CorrelationID: correlationID}
+
+	rows, err := pool.Query(ctx, `
+		SELECT am.id, am.sender_task_id, am.sender_role_id, st.assigned_role_id,
+		       am.recipient_task_id, am.recipient_role_id, am.correlation_id, am.message_type,
+		       mep.dispatch_actor_role_id
+		FROM agent_messages am
+		JOIN tasks st ON st.id = am.sender_task_id
+		LEFT JOIN model_execution_principals mep
+		       ON mep.organization_id = st.organization_id
+		      AND mep.dispatch_actor_role_id = st.assigned_role_id
+		      AND mep.status = 'active'
+		      AND mep.principal_key = $1 || st.assigned_role_id
+		WHERE am.organization_id = $2 AND am.correlation_id = $3
+		ORDER BY am.id
+	`, modeldispatch.RoleBoundPrincipalKeyPrefix, organizationID, correlationID)
+	if err != nil {
+		return report, fmt.Errorf("query messages for correlation %q: %w", correlationID, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var m MessageInvariant
+		var principalRole *string
+		if err := rows.Scan(&m.MessageID, &m.SenderTaskID, &m.SenderRoleIDOnMessage, &m.SenderRoleIDOnTask,
+			&m.RecipientTaskID, &m.RecipientRoleIDOnMessage, &m.CorrelationID, &m.MessageType, &principalRole); err != nil {
+			return report, fmt.Errorf("scan message invariant row: %w", err)
+		}
+		if principalRole != nil {
+			m.PrincipalDispatchActorRoleID = *principalRole
+		}
+		m.Identical = m.SenderRoleIDOnMessage == m.SenderRoleIDOnTask && m.SenderRoleIDOnTask == m.PrincipalDispatchActorRoleID
+		report.Messages = append(report.Messages, m)
+	}
+	if err := rows.Err(); err != nil {
+		return report, fmt.Errorf("iterate message invariant rows: %w", err)
+	}
+
+	report.AllFourPresent = len(report.Messages) == 4
+	report.AllCorrelated = true
+	report.AllIdentical = true
+	for _, m := range report.Messages {
+		if m.CorrelationID != correlationID {
+			report.AllCorrelated = false
+		}
+		if !m.Identical {
+			report.AllIdentical = false
+		}
+	}
+
+	var executableCount int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM tasks
+		WHERE organization_id = $1 AND correlation_id = $2
+		  AND status IN ('pending','ready','leased','running','awaiting_verification','blocked','retry_wait')
+	`, organizationID, correlationID).Scan(&executableCount); err != nil {
+		return report, fmt.Errorf("check support task executability: %w", err)
+	}
+	report.SupportTasksSafe = executableCount == 0
+
+	return report, nil
+}
+
+// DeliverReport is the outcome of closing the loop on one smoke run's four
+// messages: claiming and acknowledging each through the real
+// agentmessaging.Ledger, so they leave 'pending' and can never be picked up
+// later by a real inbox consumer that only filters on
+// (organization_id, recipient_role_id, status='pending') — support tasks
+// being born no_action keeps the durable TASK engine from ever touching
+// them, but it says nothing about the MESSAGE engine's own inbox, which
+// ClaimNext queries independently of task status.
+type DeliverReport struct {
+	CorrelationID    string
+	ClaimedCount     int
+	AckedCount       int
+	RemainingPending int
+	AllDelivered     bool
+}
+
+// Deliver claims and acknowledges all four of a smoke run's messages
+// through the real ClaimNext/Ack path — the same path a genuine consumer
+// would use — rather than a raw UPDATE, so closing the loop exercises the
+// ledger's own claim-token and principal-binding validation instead of
+// bypassing it. Call this ONLY after Verify has returned
+// AllFourPresent && AllCorrelated && AllIdentical && SupportTasksSafe; it
+// does not re-check those itself, by design, so a caller cannot
+// accidentally deliver an unverified run.
+//
+// Safety-critical: ClaimNext claims the OLDEST pending messages for a
+// (organization, role) — not specific message IDs, since the ledger has no
+// "claim exactly this ID" primitive, so Deliver cannot simply ask for its
+// own four. An earlier version of this function handled that by claiming
+// whatever ClaimNext returned and Nacking anything unexpected straight
+// back to 'pending' — but claiming is not a no-op: it increments
+// attempt_count and rewrites last_error/available_at/updated_at
+// regardless of what happens next, and if that claim happened to be a
+// message's last allowed attempt, Nack would move it straight to 'dead'.
+// "claim foreign traffic, then Nack it" is therefore NOT equivalent to
+// "leave foreign traffic untouched" — in the worst case it is equivalent
+// to "leave foreign traffic dead." That is too strong a side effect for
+// anything calling itself production-safe.
+//
+// Deliver now never claims foreign traffic in the first place: it calls
+// precheckRoleInboxesQuiescent immediately before ClaimNext (Run already
+// checked once before creating anything, but state can change in the
+// window between Run and Deliver) and refuses to proceed at all if
+// anything foreign is found — no ClaimNext call is made, so nothing is
+// touched. Reaching Deliver's ClaimNext calls having just passed that
+// check means an unexpected foreign ID showing up there is a genuine
+// operational precondition violation (something else claimed or enqueued
+// against these roles in the instant between the check and the call, e.g.
+// a production consumer that was not actually kept quiescent) rather than
+// routine traffic — Deliver still defends against that residual race by
+// Nacking anything unexpected straight back to 'pending' rather than
+// acking it, but that path existing is not a substitute for keeping
+// producers/consumers of these three roles' inboxes quiescent for the
+// smoke's brief window, which remains the real operational precondition.
+func Deliver(ctx context.Context, pool *pgxpool.Pool, messages runtimeadapter.AgentMessages, organizationID string, roles Roles, correlationID string, now time.Time) (DeliverReport, error) {
+	report := DeliverReport{CorrelationID: correlationID}
+
+	if err := precheckRoleInboxesQuiescent(ctx, pool, organizationID, roles, correlationID); err != nil {
+		return report, fmt.Errorf("refusing to claim: %w", err)
+	}
+
+	rows, err := pool.Query(ctx, `
+		SELECT id, recipient_role_id FROM agent_messages
+		WHERE organization_id = $1 AND correlation_id = $2 AND status = 'pending'
+		ORDER BY id
+	`, organizationID, correlationID)
+	if err != nil {
+		return report, fmt.Errorf("query pending messages for correlation %q: %w", correlationID, err)
+	}
+	byRole := map[string][]int64{}
+	for rows.Next() {
+		var id int64
+		var role string
+		if err := rows.Scan(&id, &role); err != nil {
+			rows.Close()
+			return report, fmt.Errorf("scan pending message row: %w", err)
+		}
+		byRole[role] = append(byRole[role], id)
+	}
+	if err := rows.Err(); err != nil {
+		return report, fmt.Errorf("iterate pending message rows: %w", err)
+	}
+	rows.Close()
+
+	for role, expectedIDs := range byRole {
+		expected := map[int64]bool{}
+		for _, id := range expectedIDs {
+			expected[id] = true
+		}
+
+		principal, err := messages.PrincipalStore.ResolveActiveForRole(ctx, organizationID, role)
+		if err != nil {
+			return report, fmt.Errorf("resolve principal for role %q: %w", role, err)
+		}
+		principalID := strconv.FormatInt(principal.ID, 10)
+
+		claimed, err := messages.Ledger.ClaimNext(ctx, principalID, organizationID, role, len(expectedIDs), time.Minute, now)
+		if err != nil {
+			return report, fmt.Errorf("claim messages for role %q: %w", role, err)
+		}
+		report.ClaimedCount += len(claimed)
+
+		for _, cm := range claimed {
+			if !expected[cm.Message.ID] {
+				// Not ours. Release it immediately rather than ack or
+				// silently drop it — this must never happen against a
+				// correctly-gated smoke run, so treat it as a hard stop.
+				_ = messages.Ledger.Nack(ctx, principalID, agentmessaging.Disposition{
+					MessageID: cm.Message.ID, ConsumerID: principalID, ClaimToken: cm.ClaimToken,
+					Error: "released by production-safe smoke: message did not belong to this run",
+				}, now)
+				return report, fmt.Errorf(
+					"claimed message id=%d for role %q does not belong to correlation %q (foreign traffic present during Deliver) — released back to pending, aborting",
+					cm.Message.ID, role, correlationID,
+				)
+			}
+			if err := messages.Ledger.Ack(ctx, principalID, agentmessaging.Disposition{
+				MessageID: cm.Message.ID, ConsumerID: principalID, ClaimToken: cm.ClaimToken,
+			}, now); err != nil {
+				return report, fmt.Errorf("ack message id=%d: %w", cm.Message.ID, err)
+			}
+			report.AckedCount++
+		}
+	}
+
+	var total, delivered, pending int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM agent_messages WHERE organization_id=$1 AND correlation_id=$2`, organizationID, correlationID).Scan(&total); err != nil {
+		return report, fmt.Errorf("count total messages: %w", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM agent_messages WHERE organization_id=$1 AND correlation_id=$2 AND status='delivered'`, organizationID, correlationID).Scan(&delivered); err != nil {
+		return report, fmt.Errorf("count delivered messages: %w", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM agent_messages WHERE organization_id=$1 AND correlation_id=$2 AND status='pending'`, organizationID, correlationID).Scan(&pending); err != nil {
+		return report, fmt.Errorf("count pending messages: %w", err)
+	}
+	report.RemainingPending = pending
+	report.AllDelivered = total == 4 && delivered == 4 && pending == 0
+
+	return report, nil
+}

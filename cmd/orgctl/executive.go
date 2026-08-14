@@ -38,6 +38,8 @@ func runExecutive(args []string, stdout, stderr io.Writer) int {
 		return runExecutiveWorker(args[1:], stdout, stderr)
 	case "reconcile-gating":
 		return runExecutiveReconcileGating(args[1:], stdout, stderr)
+	case "smoke":
+		return runExecutiveSmoke(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printExecutiveUsage(stdout)
 		return exitOK

@@ -80,6 +80,7 @@ agentmessaging-postgres	all,messaging	integration	15m	-	compose_run go test -cou
 executive-postgres	all,executive	integration	20m	-	compose_run go test -count=1 -tags=integration ./internal/executive
 executive-postrun-postgres	all,executive	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/executive/postrun
 executive-sleep-postgres	all,executive	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/executive/sleep
+executive-smoke-postgres	all,executive	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/executive/smoke
 agentbudget-postgres	all,agentbudget	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/agentbudget/postgres
 costledger-postgres	all,costledger	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/costledger/postgres
 evaluation-postgres	all,evaluation	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/evaluation/postgres
