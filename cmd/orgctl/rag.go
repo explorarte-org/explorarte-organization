@@ -208,7 +208,7 @@ func runRAGIngestPDF(ctx context.Context, runtime *ragbootstrap.Runtime, input r
 			Content: content, ContentHash: rag.ContentHash(content),
 			MediaSourceRef: pageObject, MediaMimeType: "application/pdf",
 			SourcePageNumber: page.PageNumber, MediaSHA256: page.SHA256,
-			MediaParser: pdfResult.ParserName, MediaParserVersion: pdfResult.ParserVersion,
+			MediaParser: page.MediaParser, MediaParserVersion: page.MediaParserVersion,
 			TextExtractionStatus: rag.TextExtractionStatus(page.TextExtractionStatus),
 		})
 	}

@@ -45,6 +45,20 @@ type Page struct {
 	SHA256               string
 	ExtractedText        string
 	TextExtractionStatus TextExtractionStatus
+	// MediaParser/MediaParserVersion describe whatever tool actually
+	// produced PDFBytes for THIS page -- normally the same poppler
+	// suite as the rest of the document ("poppler/pdfseparate"), but a
+	// page the amplification fallback rebuilt was produced by Ghostscript
+	// instead ("ghostscript/pdfwrite"), and provenance must say so: two
+	// years from now, an auditor tracing a chunk's media back to what
+	// actually generated those bytes must not be told "poppler" for
+	// bytes poppler never touched. MediaParserVersion carries a
+	// "+poppler-amplification-fallback" suffix on Ghostscript-derived
+	// pages for the same reason -- source.pdf and its SHA-256 stay the
+	// single canonical, immutable source either way; this only describes
+	// how this one derived page artifact came to exist.
+	MediaParser        string
+	MediaParserVersion string
 }
 
 // Result is one source PDF's full page-by-page breakdown, plus the parser

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -277,6 +278,33 @@ func TestProcessRebuildsAmplifiedPageViaGhostscript(t *testing.T) {
 		}
 		if page.ExtractedText == "" {
 			t.Fatalf("page %d lost its extracted text after ghostscript rebuild", page.PageNumber)
+		}
+		// The provenance regression this guards against: a page whose
+		// bytes were actually produced by Ghostscript must never be
+		// reported as poppler's -- that is a lie to whoever traces a
+		// chunk's media back to its actual origin.
+		if page.MediaParser != mediaParserGhostscript {
+			t.Fatalf("page %d MediaParser = %q, want %q (bytes came from ghostscript)", page.PageNumber, page.MediaParser, mediaParserGhostscript)
+		}
+		if page.MediaParserVersion == "" || !strings.Contains(page.MediaParserVersion, amplificationFallbackTag) {
+			t.Fatalf("page %d MediaParserVersion = %q, want it to contain %q", page.PageNumber, page.MediaParserVersion, amplificationFallbackTag)
+		}
+	}
+}
+
+func TestProcessRecordsPopplerProvenanceForOrdinaryPages(t *testing.T) {
+	proc := newTestProcessor(t)
+	source := readFixture(t, "two-page.pdf")
+	result, err := proc.Process(context.Background(), source)
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	for _, page := range result.Pages {
+		if page.MediaParser != mediaParserPoppler {
+			t.Fatalf("page %d MediaParser = %q, want %q", page.PageNumber, page.MediaParser, mediaParserPoppler)
+		}
+		if page.MediaParserVersion == "" || strings.Contains(page.MediaParserVersion, amplificationFallbackTag) {
+			t.Fatalf("page %d MediaParserVersion = %q, want a plain poppler version with no fallback tag", page.PageNumber, page.MediaParserVersion)
 		}
 	}
 }

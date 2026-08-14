@@ -27,6 +27,16 @@ import (
 
 const ParserName = "poppler"
 
+// mediaParserPoppler / mediaParserGhostscript / amplificationFallbackTag
+// are the exact MediaParser/MediaParserVersion values Page carries,
+// depending on whether pdfseparate or the Ghostscript amplification
+// fallback actually produced that page's bytes.
+const (
+	mediaParserPoppler     = "poppler/pdfseparate"
+	mediaParserGhostscript = "ghostscript/pdfwrite"
+	amplificationFallbackTag = "+poppler-amplification-fallback"
+)
+
 // Config pins every external dependency this package touches: the three
 // poppler-utils binaries by absolute path (resolved once at construction
 // via exec.LookPath, never re-resolved per call against a possibly-
@@ -68,6 +78,7 @@ func DefaultConfig() (Config, error) {
 type Processor struct {
 	cfg           Config
 	parserVersion string
+	gsVersion     string
 }
 
 var _ pdfingest.Processor = (*Processor)(nil)
@@ -89,7 +100,29 @@ func New(cfg Config) (*Processor, error) {
 	if err != nil {
 		return nil, fmt.Errorf("poppler: resolve version: %w", err)
 	}
-	return &Processor{cfg: cfg, parserVersion: version}, nil
+	gsVersion, err := resolveGsVersion(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("poppler: resolve ghostscript version: %w", err)
+	}
+	return &Processor{cfg: cfg, parserVersion: version, gsVersion: gsVersion}, nil
+}
+
+// resolveGsVersion pins Ghostscript's version once at construction, same
+// discipline as resolveVersion above for poppler (owner decision point 9:
+// pin and record the parser version) -- `gs --version` prints just the
+// version number to stdout, no stderr parsing needed.
+func resolveGsVersion(cfg Config) (string, error) {
+	cmd := exec.Command(cfg.GsBinary, "--version")
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("gs --version: %w", err)
+	}
+	version := strings.TrimSpace(stdout.String())
+	if version == "" {
+		return "", errors.New("gs --version produced no output")
+	}
+	return version, nil
 }
 
 var versionPattern = regexp.MustCompile(`pdftotext version (\S+)`)
@@ -221,6 +254,7 @@ func (p *Processor) Process(ctx context.Context, sourcePDF []byte) (pdfingest.Re
 		if err != nil {
 			return pdfingest.Result{}, fmt.Errorf("poppler: read separated page: %w", err)
 		}
+		mediaParser, mediaParserVersion := mediaParserPoppler, p.parserVersion
 		if isPageAmplified(pageBytes, len(sourcePDF), pageCount) {
 			rebuilt, gsErr := p.rebuildPageWithGhostscript(ctx, sourcePath, pageNumberOf(name), workDir)
 			if gsErr != nil {
@@ -233,6 +267,7 @@ func (p *Processor) Process(ctx context.Context, sourcePDF []byte) (pdfingest.Re
 				return pdfingest.Result{}, fmt.Errorf("poppler: write ghostscript-rebuilt page: %w", err)
 			}
 			pageBytes = rebuilt
+			mediaParser, mediaParserVersion = mediaParserGhostscript, p.gsVersion+amplificationFallbackTag
 		}
 		sum := sha256.Sum256(pageBytes)
 		text, status, err := p.extractText(ctx, pagePath)
@@ -245,6 +280,7 @@ func (p *Processor) Process(ctx context.Context, sourcePDF []byte) (pdfingest.Re
 		pages = append(pages, pdfingest.Page{
 			PageNumber: pageNumberOf(name), PDFBytes: pageBytes, SHA256: hex.EncodeToString(sum[:]),
 			ExtractedText: text, TextExtractionStatus: status,
+			MediaParser: mediaParser, MediaParserVersion: mediaParserVersion,
 		})
 	}
 
