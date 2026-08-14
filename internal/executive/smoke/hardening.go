@@ -214,10 +214,11 @@ func Cleanup(ctx context.Context, pool *pgxpool.Pool, messages runtimeadapter.Ag
 	}
 	rows.Close()
 
-	// Messages already 'claimed' (not by this Cleanup call) cannot be
-	// Nacked without their plaintext claim token, which is never
-	// persisted. Report them as unresolved-but-self-recovering.
-	report.Unresolved = append(report.Unresolved, claimedIDs...)
+	// claimedIDs (already 'claimed' when Cleanup started, not by this
+	// call) cannot be Nacked without their plaintext claim token, which is
+	// never persisted -- nothing to attempt for them. The final re-query
+	// below is what actually reports them, not this note.
+	_ = claimedIDs
 
 	for role, ids := range pendingByRole {
 		expected := map[int64]bool{}
@@ -226,13 +227,11 @@ func Cleanup(ctx context.Context, pool *pgxpool.Pool, messages runtimeadapter.Ag
 		}
 		principal, err := messages.PrincipalStore.ResolveActiveForRole(ctx, organizationID, role)
 		if err != nil {
-			report.Unresolved = append(report.Unresolved, ids...)
 			continue
 		}
 		principalID := strconv.FormatInt(principal.ID, 10)
 		claimed, err := messages.Ledger.ClaimNext(ctx, principalID, organizationID, role, len(ids), time.Minute, now)
 		if err != nil {
-			report.Unresolved = append(report.Unresolved, ids...)
 			continue
 		}
 		for _, cm := range claimed {
@@ -250,20 +249,49 @@ func Cleanup(ctx context.Context, pool *pgxpool.Pool, messages runtimeadapter.Ag
 				continue
 			}
 			if err := messages.Ledger.Nack(ctx, principalID, disposition, now); err != nil {
-				report.Unresolved = append(report.Unresolved, cm.Message.ID)
 				continue
 			}
 			report.DeadenedCount++
 		}
+		// ClaimNext claims the oldest N pending messages for (org, role),
+		// not specifically these N IDs -- if any foreign traffic for this
+		// role was older than one of ours, ClaimNext could have returned
+		// fewer of OUR expected IDs than requested, silently leaving one
+		// of them untouched. Do not infer success from "we didn't see an
+		// error"; the final re-query below is the only thing this
+		// function trusts to say what is still open.
 	}
 
-	var stillOpen int
-	if err := pool.QueryRow(ctx, `
-		SELECT count(*) FROM agent_messages
+	// Ground truth, not arithmetic: re-query which of this run's own
+	// messages are still pending/claimed after everything above. A
+	// bookkeeping subtraction (found - deadened - explicitly-tracked-
+	// unresolved) could under-report Unresolved if ClaimNext ever claimed
+	// fewer of this run's own IDs than requested (e.g. older foreign
+	// traffic occupied some of the claimed slots) -- this re-query cannot
+	// be fooled by that, since it asks the database directly.
+	openRows, err := pool.Query(ctx, `
+		SELECT id FROM agent_messages
 		WHERE organization_id = $1 AND correlation_id = $2 AND status IN ('pending','claimed')
-	`, organizationID, correlationID).Scan(&stillOpen); err != nil {
-		return report, fmt.Errorf("count remaining open messages: %w", err)
+		ORDER BY id
+	`, organizationID, correlationID)
+	if err != nil {
+		return report, fmt.Errorf("query remaining open messages: %w", err)
 	}
+	var stillOpen []int64
+	for openRows.Next() {
+		var id int64
+		if err := openRows.Scan(&id); err != nil {
+			openRows.Close()
+			return report, fmt.Errorf("scan remaining open message: %w", err)
+		}
+		stillOpen = append(stillOpen, id)
+	}
+	if err := openRows.Err(); err != nil {
+		return report, fmt.Errorf("iterate remaining open messages: %w", err)
+	}
+	openRows.Close()
+
+	report.Unresolved = stillOpen
 	report.AlreadyTerminal = report.MessagesFound - report.DeadenedCount - len(report.Unresolved)
 
 	return report, nil
