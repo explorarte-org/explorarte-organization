@@ -59,13 +59,30 @@ func runExecutiveSmoke(args []string, stdout, stderr io.Writer) int {
 	result, runErr := smoke.Run(ctx, store.Pool(), messages, cfg.Tasks.OrganizationID, roles, correlationID, now)
 	report, verifyErr := smoke.Verify(ctx, store.Pool(), cfg.Tasks.OrganizationID, correlationID)
 
-	passed := runErr == nil && verifyErr == nil && report.AllFourPresent && report.AllCorrelated && report.AllIdentical && report.SupportTasksSafe
+	verified := runErr == nil && verifyErr == nil && report.AllFourPresent && report.AllCorrelated && report.AllIdentical && report.SupportTasksSafe
+
+	// Deliver is only attempted once Verify has proven the run clean --
+	// closing the loop on an unverified run would be worse than leaving it
+	// pending. This is also the operational precondition the branch report
+	// flagged: no production ClaimNext consumer should be actively draining
+	// these same three roles' inboxes while Deliver runs, or it may collide
+	// with genuine traffic (Deliver defends against and reports this, but
+	// avoiding it operationally is still the right default).
+	var deliverReport smoke.DeliverReport
+	var deliverErr error
+	if verified {
+		deliverReport, deliverErr = smoke.Deliver(ctx, store.Pool(), messages, cfg.Tasks.OrganizationID, correlationID, now)
+	}
+
+	passed := verified && deliverErr == nil && deliverReport.AllDelivered
 	writeExecutiveValue(stdout, *jsonOutput, map[string]any{
 		"correlation_id": correlationID,
 		"result":         result,
 		"verification":   report,
+		"delivery":       deliverReport,
 		"run_error":      errString(runErr),
 		"verify_error":   errString(verifyErr),
+		"deliver_error":  errString(deliverErr),
 		"passed":         passed,
 	})
 	if !passed {

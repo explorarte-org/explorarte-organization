@@ -174,6 +174,44 @@ func TestSmokeHappyPathFourHops(t *testing.T) {
 	if !report.SupportTasksSafe {
 		t.Fatalf("expected the 3 support tasks to never be executable")
 	}
+
+	// Close the loop: only after Verify passes, per the gate Deliver itself
+	// requires callers to have already checked.
+	deliverReport, err := smoke.Deliver(h.ctx, h.store.Pool(), h.messages, smokeTestOrg, correlationID, time.Now())
+	if err != nil {
+		t.Fatalf("deliver: %v", err)
+	}
+	if deliverReport.ClaimedCount != 4 || deliverReport.AckedCount != 4 {
+		t.Fatalf("deliver claimed=%d acked=%d, want 4/4: %+v", deliverReport.ClaimedCount, deliverReport.AckedCount, deliverReport)
+	}
+	if deliverReport.RemainingPending != 0 {
+		t.Fatalf("deliver left %d pending, want 0", deliverReport.RemainingPending)
+	}
+	if !deliverReport.AllDelivered {
+		t.Fatalf("expected AllDelivered=true: %+v", deliverReport)
+	}
+
+	var statuses []string
+	rows, err := h.store.Pool().Query(h.ctx, `SELECT status FROM agent_messages WHERE organization_id=$1 AND correlation_id=$2`, smokeTestOrg, correlationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		statuses = append(statuses, s)
+	}
+	if len(statuses) != 4 {
+		t.Fatalf("expected 4 messages after delivery, got %d", len(statuses))
+	}
+	for _, s := range statuses {
+		if s != "delivered" {
+			t.Fatalf("expected every message status='delivered', found %q", s)
+		}
+	}
 }
 
 // 2. Existing role-bound principals: a second smoke run against the same
@@ -386,5 +424,58 @@ func TestSmokeUnrelatedRowsUnchanged(t *testing.T) {
 	}
 	if orgCountAfter != orgCountBefore {
 		t.Fatalf("organizations count changed: before=%d after=%d", orgCountBefore, orgCountAfter)
+	}
+}
+
+// 9. Deliver must defend against foreign traffic in the same role's inbox:
+// if a genuine, older, unrelated pending message for the leader role exists
+// when Deliver runs, ClaimNext will surface it first (oldest-first FIFO) --
+// Deliver must detect it does not belong to this run, release it back to
+// 'pending' via Nack (never Ack it, never leave it dangling 'claimed'), and
+// fail loudly rather than silently acknowledging traffic it does not own.
+func TestSmokeDeliverDefendsAgainstForeignInboxTraffic(t *testing.T) {
+	h := newHarness(t)
+	defer h.close()
+
+	// A genuine-looking, older smoke run standing in for real production
+	// traffic to the same leader role, deliberately left undelivered
+	// (pending) -- exactly what a real consumer's queued message looks
+	// like from Deliver's point of view.
+	foreignCorrelation := "genuine-production-traffic-not-part-of-this-smoke"
+	if _, err := smoke.Run(h.ctx, h.store.Pool(), h.messages, smokeTestOrg, h.roles(), foreignCorrelation, time.Now()); err != nil {
+		t.Fatalf("seed foreign traffic: %v", err)
+	}
+	var foreignLeaderMessageID int64
+	if err := h.store.Pool().QueryRow(h.ctx,
+		`SELECT id FROM agent_messages WHERE organization_id=$1 AND correlation_id=$2 AND recipient_role_id=$3 ORDER BY id LIMIT 1`,
+		smokeTestOrg, foreignCorrelation, smokeLeaderRole,
+	).Scan(&foreignLeaderMessageID); err != nil {
+		t.Fatalf("locate foreign leader-inbox message: %v", err)
+	}
+
+	// The run actually under test, created strictly after the foreign
+	// traffic, so ClaimNext's oldest-first ordering would surface the
+	// foreign message before this run's own leader-inbox messages if
+	// Deliver only trusted batch size instead of checking identity.
+	correlationID := smoke.NewCorrelationID(time.Now().Add(time.Second))
+	if _, err := smoke.Run(h.ctx, h.store.Pool(), h.messages, smokeTestOrg, h.roles(), correlationID, time.Now()); err != nil {
+		t.Fatalf("run under test: %v", err)
+	}
+	report, err := smoke.Verify(h.ctx, h.store.Pool(), smokeTestOrg, correlationID)
+	if err != nil || !report.AllFourPresent || !report.AllCorrelated || !report.AllIdentical || !report.SupportTasksSafe {
+		t.Fatalf("run under test did not verify cleanly: err=%v report=%+v", err, report)
+	}
+
+	_, deliverErr := smoke.Deliver(h.ctx, h.store.Pool(), h.messages, smokeTestOrg, correlationID, time.Now())
+	if deliverErr == nil {
+		t.Fatal("expected Deliver to fail when a foreign message occupies the same role's inbox ahead of this run's own messages")
+	}
+
+	var foreignStatus string
+	if err := h.store.Pool().QueryRow(h.ctx, `SELECT status FROM agent_messages WHERE id=$1`, foreignLeaderMessageID).Scan(&foreignStatus); err != nil {
+		t.Fatalf("re-read foreign message: %v", err)
+	}
+	if foreignStatus != "pending" {
+		t.Fatalf("foreign message status=%q, want 'pending' (Deliver must release, never ack or strand, traffic it does not own)", foreignStatus)
 	}
 }

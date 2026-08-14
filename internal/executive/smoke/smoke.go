@@ -29,8 +29,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
+	"github.com/Mireuz13/explorarte-organization/internal/agentmessaging"
 	agentmessagingpostgres "github.com/Mireuz13/explorarte-organization/internal/agentmessaging/postgres"
 	authorizationbootstrap "github.com/Mireuz13/explorarte-organization/internal/authorization/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/config"
@@ -254,11 +256,17 @@ func sha256Hex(s string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// MessageInvariant is the read-back, byte-level proof for one persisted
-// agent_messages row: the invariant that
-// agent_messages.sender_role_id == tasks.assigned_role_id ==
-// model_execution_principals.dispatch_actor_role_id must hold for every
-// hop, not just be true "by construction" of the code that wrote it.
+// MessageInvariant is the read-back proof for one persisted agent_messages
+// row that a currently-active role-bound principal's dispatch_actor_role_id
+// matches both the message's sender_role_id and the sender task's
+// assigned_role_id. This is send-time enforcement plus read-back
+// consistency, not a byte-level proof of the exact principal ID that wrote
+// the row — agent_messages does not persist which principal authored it
+// (Store.Send validates the principal before accepting the INSERT, but the
+// principal's own ID is not a column on the message). Verify re-resolves
+// "the currently active role-bound principal for this role" independently
+// and checks it against what was written; it does not and cannot assert
+// "principal X, specifically, wrote this row" after the fact.
 type MessageInvariant struct {
 	MessageID                    int64
 	SenderTaskID                 int64
@@ -351,6 +359,128 @@ func Verify(ctx context.Context, pool *pgxpool.Pool, organizationID, correlation
 		return report, fmt.Errorf("check support task executability: %w", err)
 	}
 	report.SupportTasksSafe = executableCount == 0
+
+	return report, nil
+}
+
+// DeliverReport is the outcome of closing the loop on one smoke run's four
+// messages: claiming and acknowledging each through the real
+// agentmessaging.Ledger, so they leave 'pending' and can never be picked up
+// later by a real inbox consumer that only filters on
+// (organization_id, recipient_role_id, status='pending') — support tasks
+// being born no_action keeps the durable TASK engine from ever touching
+// them, but it says nothing about the MESSAGE engine's own inbox, which
+// ClaimNext queries independently of task status.
+type DeliverReport struct {
+	CorrelationID    string
+	ClaimedCount     int
+	AckedCount       int
+	RemainingPending int
+	AllDelivered     bool
+}
+
+// Deliver claims and acknowledges all four of a smoke run's messages
+// through the real ClaimNext/Ack path — the same path a genuine consumer
+// would use — rather than a raw UPDATE, so closing the loop exercises the
+// ledger's own claim-token and principal-binding validation instead of
+// bypassing it. Call this ONLY after Verify has returned
+// AllFourPresent && AllCorrelated && AllIdentical && SupportTasksSafe; it
+// does not re-check those itself, by design, so a caller cannot
+// accidentally deliver an unverified run.
+//
+// Safety-critical: ClaimNext claims the OLDEST pending messages for a
+// (organization, role) — not specific message IDs, since the ledger has no
+// "claim exactly this ID" primitive. If ANY genuine, unrelated pending
+// message for one of the three roles this run touches exists at the same
+// moment (e.g. a real consumer or a concurrent second smoke run), Deliver
+// could claim it instead of — or in addition to — its own message. Deliver
+// defends against this: after each ClaimNext, every claimed message ID is
+// checked against this run's own known set; anything unexpected is
+// immediately Nacked back to 'pending' (never Acked, never left dangling
+// claimed) and the whole call fails with an error naming the foreign
+// message ID, rather than silently acknowledging traffic this run does not
+// own. This is exactly why the operational precondition matters: no
+// production ClaimNext consumer should be actively draining the same
+// roles' inboxes while a smoke run's Deliver step executes.
+func Deliver(ctx context.Context, pool *pgxpool.Pool, messages runtimeadapter.AgentMessages, organizationID, correlationID string, now time.Time) (DeliverReport, error) {
+	report := DeliverReport{CorrelationID: correlationID}
+
+	rows, err := pool.Query(ctx, `
+		SELECT id, recipient_role_id FROM agent_messages
+		WHERE organization_id = $1 AND correlation_id = $2 AND status = 'pending'
+		ORDER BY id
+	`, organizationID, correlationID)
+	if err != nil {
+		return report, fmt.Errorf("query pending messages for correlation %q: %w", correlationID, err)
+	}
+	byRole := map[string][]int64{}
+	for rows.Next() {
+		var id int64
+		var role string
+		if err := rows.Scan(&id, &role); err != nil {
+			rows.Close()
+			return report, fmt.Errorf("scan pending message row: %w", err)
+		}
+		byRole[role] = append(byRole[role], id)
+	}
+	if err := rows.Err(); err != nil {
+		return report, fmt.Errorf("iterate pending message rows: %w", err)
+	}
+	rows.Close()
+
+	for role, expectedIDs := range byRole {
+		expected := map[int64]bool{}
+		for _, id := range expectedIDs {
+			expected[id] = true
+		}
+
+		principal, err := messages.PrincipalStore.ResolveActiveForRole(ctx, organizationID, role)
+		if err != nil {
+			return report, fmt.Errorf("resolve principal for role %q: %w", role, err)
+		}
+		principalID := strconv.FormatInt(principal.ID, 10)
+
+		claimed, err := messages.Ledger.ClaimNext(ctx, principalID, organizationID, role, len(expectedIDs), time.Minute, now)
+		if err != nil {
+			return report, fmt.Errorf("claim messages for role %q: %w", role, err)
+		}
+		report.ClaimedCount += len(claimed)
+
+		for _, cm := range claimed {
+			if !expected[cm.Message.ID] {
+				// Not ours. Release it immediately rather than ack or
+				// silently drop it — this must never happen against a
+				// correctly-gated smoke run, so treat it as a hard stop.
+				_ = messages.Ledger.Nack(ctx, principalID, agentmessaging.Disposition{
+					MessageID: cm.Message.ID, ConsumerID: principalID, ClaimToken: cm.ClaimToken,
+					Error: "released by production-safe smoke: message did not belong to this run",
+				}, now)
+				return report, fmt.Errorf(
+					"claimed message id=%d for role %q does not belong to correlation %q (foreign traffic present during Deliver) — released back to pending, aborting",
+					cm.Message.ID, role, correlationID,
+				)
+			}
+			if err := messages.Ledger.Ack(ctx, principalID, agentmessaging.Disposition{
+				MessageID: cm.Message.ID, ConsumerID: principalID, ClaimToken: cm.ClaimToken,
+			}, now); err != nil {
+				return report, fmt.Errorf("ack message id=%d: %w", cm.Message.ID, err)
+			}
+			report.AckedCount++
+		}
+	}
+
+	var total, delivered, pending int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM agent_messages WHERE organization_id=$1 AND correlation_id=$2`, organizationID, correlationID).Scan(&total); err != nil {
+		return report, fmt.Errorf("count total messages: %w", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM agent_messages WHERE organization_id=$1 AND correlation_id=$2 AND status='delivered'`, organizationID, correlationID).Scan(&delivered); err != nil {
+		return report, fmt.Errorf("count delivered messages: %w", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM agent_messages WHERE organization_id=$1 AND correlation_id=$2 AND status='pending'`, organizationID, correlationID).Scan(&pending); err != nil {
+		return report, fmt.Errorf("count pending messages: %w", err)
+	}
+	report.RemainingPending = pending
+	report.AllDelivered = total == 4 && delivered == 4 && pending == 0
 
 	return report, nil
 }
