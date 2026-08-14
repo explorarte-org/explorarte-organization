@@ -538,8 +538,16 @@ func TestManagerBackfillEmbeddingsSkipsChunksThatFailToEmbedWithoutFailingTheCal
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Embedded != 0 || result.Skipped != 2 || !result.Done {
-		t.Fatalf("result=%+v want Embedded=0 Skipped=2 Done=true", result)
+	// RAG-EMBED-COMPLETENESS-001: Done must be false here even though
+	// pending (2) is well under BatchSize (10) -- both chunks that were
+	// found are still unembedded (Skipped, not Embedded), so there is
+	// real work left for a caller to retry, even though the pending page
+	// itself looked exhausted. Before the fix this asserted Done=true,
+	// which is exactly the bug: a caller stops paging the instant it
+	// sees Done=true, so a page that skipped everything reported false
+	// completion.
+	if result.Embedded != 0 || result.Skipped != 2 || result.Done {
+		t.Fatalf("result=%+v want Embedded=0 Skipped=2 Done=false", result)
 	}
 	if len(repo.chunkEmbeddings) != 0 {
 		t.Fatalf("chunkEmbeddings=%d want 0 — a failed embed must never be inserted", len(repo.chunkEmbeddings))
@@ -664,5 +672,93 @@ func TestChunkIsMedia(t *testing.T) {
 	}
 	if !(Chunk{MediaSourceRef: "raw/x.pdf", MediaMimeType: "application/pdf"}).IsMedia() {
 		t.Fatal("media-backed chunk must report IsMedia")
+	}
+}
+
+// The following four tests are the explicit RAG-EMBED-COMPLETENESS-001
+// Done regression matrix: Done must be true only when this call both found
+// fewer pending chunks than BatchSize AND skipped none of them -- computed
+// after processing the page, not derived from the pending count alone
+// before anything was attempted.
+
+// A: pending < batch, all succeed => Done=true.
+func TestBackfillDoneMatrixA_PendingUnderBatchAllSucceed(t *testing.T) {
+	ledger := &fakeEmbeddingLedger{balanceOK: true}
+	adapter := &fakeOnlineAdapter{vector: []float32{0.1, 0.2}, tokens: 5}
+	manager, _, _ := newBackfillTestManager(t, testSemanticDeps(ledger, adapter, nil, t), 3)
+
+	result, err := manager.BackfillEmbeddings(context.Background(), BackfillEmbeddingsRequest{
+		OrganizationID: "explorarte", NamespaceKind: NamespaceDepartment, NamespaceID: "ingenieria_ia", ActorRoleID: "empresa/human", BatchSize: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Embedded != 3 || result.Skipped != 0 || !result.Done {
+		t.Fatalf("matrix A: result=%+v want Embedded=3 Skipped=0 Done=true", result)
+	}
+}
+
+// B: pending < batch, one or more skipped => Done=false. Mixed case (not
+// all-skipped, unlike TestManagerBackfillEmbeddingsSkipsChunksThatFailToEmbedWithoutFailingTheCall
+// above): one chunk embeds, one is permanently rejected by the classifier.
+func TestBackfillDoneMatrixB_PendingUnderBatchSomeSkipped(t *testing.T) {
+	ledger := &fakeEmbeddingLedger{balanceOK: true}
+	adapter := &fakeOnlineAdapter{vector: []float32{0.1, 0.2}, tokens: 5}
+	repo := newFakeRepository()
+	repo.activeGeneration["department:ingenieria_ia"] = "gen-1"
+	repo.generations["gen-1"] = IndexGeneration{ID: "gen-1", Status: GenerationActive}
+	repo.chunksByGen["gen-1"] = []Chunk{
+		{ID: "chunk-ok", GenerationID: "gen-1", Content: "ordinary content"},
+		{ID: "chunk-secret", GenerationID: "gen-1", Content: `api_key: "abcdefgh12345678"`},
+	}
+	gate := &recordingGate{}
+	manager, err := NewManager(NewService(nil), repo, gate, &fakeNamespaces{}, testSemanticDeps(ledger, adapter, nil, t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := manager.BackfillEmbeddings(context.Background(), BackfillEmbeddingsRequest{
+		OrganizationID: "explorarte", NamespaceKind: NamespaceDepartment, NamespaceID: "ingenieria_ia", ActorRoleID: "empresa/human", BatchSize: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Embedded != 1 || result.Skipped != 1 || result.Done {
+		t.Fatalf("matrix B: result=%+v want Embedded=1 Skipped=1 Done=false", result)
+	}
+}
+
+// C: pending == batch, all succeed => Done=false (the next batch is the
+// only thing that can prove exhaustion when the page was exactly full).
+func TestBackfillDoneMatrixC_PendingEqualsBatchAllSucceed(t *testing.T) {
+	ledger := &fakeEmbeddingLedger{balanceOK: true}
+	adapter := &fakeOnlineAdapter{vector: []float32{0.1, 0.2}, tokens: 5}
+	manager, _, _ := newBackfillTestManager(t, testSemanticDeps(ledger, adapter, nil, t), 5)
+
+	result, err := manager.BackfillEmbeddings(context.Background(), BackfillEmbeddingsRequest{
+		OrganizationID: "explorarte", NamespaceKind: NamespaceDepartment, NamespaceID: "ingenieria_ia", ActorRoleID: "empresa/human", BatchSize: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Embedded != 2 || result.Skipped != 0 || result.Done {
+		t.Fatalf("matrix C: result=%+v want Embedded=2 Skipped=0 Done=false", result)
+	}
+}
+
+// D: pending == 0 => Done=true.
+func TestBackfillDoneMatrixD_NoPendingChunks(t *testing.T) {
+	ledger := &fakeEmbeddingLedger{balanceOK: true}
+	adapter := &fakeOnlineAdapter{vector: []float32{0.1, 0.2}, tokens: 5}
+	manager, _, _ := newBackfillTestManager(t, testSemanticDeps(ledger, adapter, nil, t), 0)
+
+	result, err := manager.BackfillEmbeddings(context.Background(), BackfillEmbeddingsRequest{
+		OrganizationID: "explorarte", NamespaceKind: NamespaceDepartment, NamespaceID: "ingenieria_ia", ActorRoleID: "empresa/human", BatchSize: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Embedded != 0 || result.Skipped != 0 || !result.Done {
+		t.Fatalf("matrix D: result=%+v want Embedded=0 Skipped=0 Done=true", result)
 	}
 }

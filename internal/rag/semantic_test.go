@@ -7,6 +7,7 @@ import (
 
 	"github.com/Mireuz13/explorarte-organization/internal/agentbudget"
 	"github.com/Mireuz13/explorarte-organization/internal/costledger"
+	"github.com/Mireuz13/explorarte-organization/internal/dataclassifier"
 	"github.com/Mireuz13/explorarte-organization/internal/embeddingruntime"
 	"github.com/Mireuz13/explorarte-organization/internal/modelpricing"
 )
@@ -290,5 +291,68 @@ func TestEmbedMediaSkipsWhenClassifierTextMatchesForbiddenPattern(t *testing.T) 
 	}
 	if adapter.entered != 0 {
 		t.Fatalf("adapter must never be called when the classifier text is rejected, entered=%d", adapter.entered)
+	}
+}
+
+// TestEmbedMediaAllowsClinicalVocabularyText is the RAG-EMBED-COMPLETENESS-001
+// regression: ARCH-BOUNDARY-001 already established that Organization's RAG
+// domain has no clinical data concept (cmd/orgctl/rag.go's runRAGIngestPDF,
+// internal/rag/validation.go's KnowledgeVersion.Validate), but this third
+// call site -- the embedding path itself -- was missed and kept using
+// finding.Any() (Secret OR Clinical), silently degrading embeddings for any
+// media-backed chunk whose extracted page text happened to contain ordinary
+// engineering vocabulary overlapping the clinical word list. Asserts the
+// precondition through the real dataclassifier.Detect (never a
+// reimplementation of its decision) before checking that embedMedia now
+// proceeds to the adapter and returns a real vector.
+func TestEmbedMediaAllowsClinicalVocabularyText(t *testing.T) {
+	// "patient histories" as a memory-system example -- the exact shape of
+	// false positive found in the real 16-paper audit corpus (MemOS, page
+	// 13): ordinary engineering prose, not clinical data.
+	pageText := "The system caches frequently accessed knowledge, such as patient histories, for fast retrieval during diagnosis."
+	finding := dataclassifier.Detect(pageText)
+	if !finding.Clinical {
+		t.Fatalf("test fixture does not exercise the clinical-vocabulary path: finding=%+v", finding)
+	}
+	if finding.Secret {
+		t.Fatalf("test fixture unexpectedly also matches a secret pattern: finding=%+v", finding)
+	}
+
+	ledger := &fakeEmbeddingLedger{balanceOK: true}
+	adapter := &fakeOnlineAdapter{vector: []float32{0.4, 0.5}, tokens: 300}
+	manager, _ := newSemanticQueryManager(t, testSemanticDeps(ledger, adapter, nil, t))
+
+	vector := manager.embedMedia(context.Background(), "explorarte", "empresa/human", pageText, "application/pdf", []byte("%PDF-1.4"), nil, embeddingruntime.TaskDocument, costledger.EmbeddingOperationRAGReindex)
+	if vector == nil {
+		t.Fatal("expected embedMedia to proceed and return a vector for clinical-vocabulary (non-secret) text")
+	}
+	if adapter.entered != 1 {
+		t.Fatalf("adapter called %d times, want 1 -- clinical vocabulary must reach the provider", adapter.entered)
+	}
+}
+
+// TestEmbedMediaStillSkipsSecretShapedText proves the same fix did not
+// weaken the real Organization concern the boundary is meant to preserve:
+// secret-shaped content must still never reach the embedding provider.
+// Reuses the same credential-assignment fixture as
+// TestEmbedMediaSkipsWhenClassifierTextMatchesForbiddenPattern, but asserts
+// the precondition through the real dataclassifier.Detect first.
+func TestEmbedMediaStillSkipsSecretShapedText(t *testing.T) {
+	pageText := `api_key: "abcdefgh12345678"`
+	finding := dataclassifier.Detect(pageText)
+	if !finding.Secret {
+		t.Fatalf("test fixture does not exercise the secret path: finding=%+v", finding)
+	}
+
+	ledger := &fakeEmbeddingLedger{balanceOK: true}
+	adapter := &fakeOnlineAdapter{vector: []float32{0.4, 0.5}, tokens: 300}
+	manager, _ := newSemanticQueryManager(t, testSemanticDeps(ledger, adapter, nil, t))
+
+	vector := manager.embedMedia(context.Background(), "explorarte", "empresa/human", pageText, "application/pdf", []byte("%PDF-1.4"), nil, embeddingruntime.TaskDocument, costledger.EmbeddingOperationRAGReindex)
+	if vector != nil {
+		t.Fatal("expected embedMedia to skip secret-shaped classifier text")
+	}
+	if adapter.entered != 0 {
+		t.Fatalf("adapter must never be called for secret-shaped text, entered=%d", adapter.entered)
 	}
 }

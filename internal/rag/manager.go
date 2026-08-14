@@ -321,11 +321,20 @@ type BackfillEmbeddingsRequest struct {
 type BackfillEmbeddingsResult struct {
 	Embedded int
 	Skipped  int
-	// Done is true once a call found fewer pending chunks than BatchSize —
-	// the only reliable "nothing left" signal, since a chunk that failed
-	// to embed this call (Skipped) is not retried within the same call,
-	// but is not gone either: it is still pending and will be returned
-	// again by the next call.
+	// Done is true only when this call both (a) found fewer pending
+	// chunks than BatchSize -- there was nothing left to page through --
+	// and (b) skipped none of them. RAG-EMBED-COMPLETENESS-001: Done used
+	// to be decided from (a) alone, before any chunk was even attempted,
+	// so a page that was entirely Skipped (e.g. every chunk permanently
+	// fails dataclassifier.Detect) still reported Done=true -- the CLI
+	// loop (see cmd/orgctl) stops the instant it sees that, so a batch
+	// could report completion while chunks with no embedding at all were
+	// left behind, silently, forever. A chunk that failed to embed this
+	// call is not retried within the same call, but is not gone either:
+	// it is still pending and will be returned again by the next call --
+	// which is exactly why any Skipped chunk on an otherwise-final page
+	// must keep Done false: there is real, unfinished, retriable work
+	// left, even though the pending count alone looked like exhaustion.
 	Done bool
 }
 
@@ -374,7 +383,7 @@ func (m *Manager) BackfillEmbeddings(ctx context.Context, request BackfillEmbedd
 	if err != nil {
 		return BackfillEmbeddingsResult{}, err
 	}
-	result := BackfillEmbeddingsResult{Done: len(pending) < batchSize}
+	result := BackfillEmbeddingsResult{}
 	now := time.Now().UTC()
 	for _, chunk := range pending {
 		var vector []float32
@@ -426,6 +435,11 @@ func (m *Manager) BackfillEmbeddings(ctx context.Context, request BackfillEmbedd
 		}
 		result.Embedded++
 	}
+	// Computed after the loop, not before: see BackfillEmbeddingsResult.
+	// Done's doc comment for why a page with any Skipped chunk can never
+	// be Done, regardless of how the pending count alone compares to
+	// batchSize.
+	result.Done = len(pending) < batchSize && result.Skipped == 0
 	return result, nil
 }
 
