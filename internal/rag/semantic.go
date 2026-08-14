@@ -93,7 +93,7 @@ func (m *Manager) embed(ctx context.Context, organizationID, actorRoleID, text s
 // is the SAME page's already-extracted text (chunk.Content) even though it
 // is not what gets sent to the provider: dataclassifier.Detect only
 // understands text patterns, so scanning the extracted text is the only
-// secret/clinical defense-in-depth check available for a media item —
+// secret defense-in-depth check available for a media item —
 // there is no equivalent scan of the raw bytes. This is a real, documented
 // gap, not a silently-assumed equivalence: a secret that exists only in a
 // PDF's visual content (e.g. a screenshot of a credential) with no
@@ -134,7 +134,7 @@ func estimateMediaTokens(mimeType, extractedText string) int64 {
 }
 
 // embedItem is the shared core behind embed (text) and embedMedia (inline
-// binary): every failure mode — content classified as secret/clinical,
+// binary): every failure mode — content classified as secret,
 // insufficient wallet balance, exceeded agent budget, or a provider/
 // adapter error — degrades to "no vector this time" rather than failing
 // the caller outright: embeddings enrich retrieval, they are not a hard
@@ -154,7 +154,18 @@ func (m *Manager) embedItem(ctx context.Context, organizationID, actorRoleID, cl
 	defer func() {
 		slog.Default().Info("rag embedding channel status", "provider_id", deps.ProviderID, "provider_model_id", deps.ProviderModelID, "operation", operation, "degraded", vector == nil)
 	}()
-	if finding := dataclassifier.Detect(classifierText); finding.Any() {
+	// ARCH-BOUNDARY-001: Organization's RAG domain has no clinical data
+	// concept — see cmd/orgctl/rag.go's runRAGIngestPDF and
+	// internal/rag/validation.go's KnowledgeVersion.Validate for the full
+	// rationale, both already scoped to finding.Secret only. This was the
+	// third call site into dataclassifier.Detect on RAG content and was
+	// missed in that fix: it kept using finding.Any() (Secret OR
+	// Clinical), silently degrading embeddings for any chunk whose
+	// extracted text happened to contain ordinary engineering vocabulary
+	// overlapping the clinical word list (RAG-EMBED-COMPLETENESS-001).
+	// Secret-shaped content stays a real Organization concern and is
+	// still checked; clinical vocabulary is not.
+	if finding := dataclassifier.Detect(classifierText); finding.Secret {
 		slog.Default().Warn("rag embedding skipped: text matched a forbidden data pattern", "organization_id", organizationID, "operation", operation)
 		return nil
 	}
