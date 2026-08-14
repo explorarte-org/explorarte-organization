@@ -54,10 +54,14 @@
 --   - No schema migration. No permanent bypass. No change to any other
 --     row. Runtime schema tip stays at 48.
 --
--- Idempotent to run twice: step 3's precondition check requires the
--- persisted canonical_hash to still equal the frozen "old" value, so a
--- second run finds nothing left to repair and rolls back cleanly at the
--- assertion stage rather than doing anything.
+-- Fail-closed on rerun, not idempotent: step 3's precondition check
+-- requires the persisted canonical_hash to still equal the frozen "old"
+-- value, so once this has committed once, a second run finds that
+-- precondition already false for every row and ROLLBACKs at the
+-- assertion stage rather than doing anything -- it does not silently
+-- no-op as a safe "run it again" operation. This script is a one-shot
+-- incident artifact for this specific corruption event; it must not be
+-- re-executed against production.
 
 BEGIN;
 
