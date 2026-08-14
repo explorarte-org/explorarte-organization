@@ -487,9 +487,39 @@ func (s *Store) Query(ctx context.Context, command rag.QueryCommand) ([]rag.Quer
 	for rows.Next() {
 		var result rag.QueryResult
 		var dataClass string
+		// The seven media-provenance columns are NULL together for an
+		// ordinary text chunk and set together for a media-backed one (see
+		// migration 000036's all-or-nothing CHECK) -- scanned through
+		// pointer-to-Go-zero-value targets so a NULL row leaves
+		// result.Chunk's corresponding fields at their normal Go zero
+		// values (empty string / 0), never a Scan error.
+		var mediaSourceRef, mediaMimeType, mediaSHA256, mediaParser, mediaParserVersion, textExtractionStatus *string
+		var sourcePageNumber *int
 		if err := rows.Scan(&result.Chunk.ID, &result.Chunk.VersionID, &result.Chunk.ChunkerID, &result.Chunk.ChunkerVersion, &result.Chunk.Ordinal, &result.Chunk.StartOffset, &result.Chunk.EndOffset, &result.Chunk.Content, &result.Chunk.ContentHash,
+			&mediaSourceRef, &mediaMimeType, &sourcePageNumber, &mediaSHA256, &mediaParser, &mediaParserVersion, &textExtractionStatus,
 			&result.DocumentID, &result.Title, &result.SourceReference, &dataClass, &result.CanonicalHash, &result.Score); err != nil {
 			return nil, mapError("scan rag query result", err)
+		}
+		if mediaSourceRef != nil {
+			result.Chunk.MediaSourceRef = *mediaSourceRef
+		}
+		if mediaMimeType != nil {
+			result.Chunk.MediaMimeType = *mediaMimeType
+		}
+		if sourcePageNumber != nil {
+			result.Chunk.SourcePageNumber = *sourcePageNumber
+		}
+		if mediaSHA256 != nil {
+			result.Chunk.MediaSHA256 = *mediaSHA256
+		}
+		if mediaParser != nil {
+			result.Chunk.MediaParser = *mediaParser
+		}
+		if mediaParserVersion != nil {
+			result.Chunk.MediaParserVersion = *mediaParserVersion
+		}
+		if textExtractionStatus != nil {
+			result.Chunk.TextExtractionStatus = rag.TextExtractionStatus(*textExtractionStatus)
 		}
 		result.Chunk.GenerationID = activeGenerationID
 		result.NamespaceKind = command.NamespaceKind

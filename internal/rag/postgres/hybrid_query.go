@@ -165,6 +165,7 @@ fused AS (
     GROUP BY chunk_id
 )
 SELECT c.chunk_id,c.version_id,c.chunker_id,c.chunker_version,c.ordinal,c.start_offset,c.end_offset,c.content,c.content_hash,
+ c.media_source_ref,c.media_mime_type,c.source_page_number,c.media_sha256,c.media_parser,c.media_parser_version,c.text_extraction_status,
  v.document_id,v.title,v.source_reference,v.data_class,v.canonical_hash,
  f.rrf_score AS score
 FROM fused f
