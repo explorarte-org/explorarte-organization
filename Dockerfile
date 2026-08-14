@@ -29,7 +29,7 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags 
 # distroless image must always be that default -- this stage is only
 # ever built explicitly via `docker build --target pdfingest`.
 FROM debian:bookworm-slim AS pdfingest
-RUN apt-get update && apt-get install -y --no-install-recommends poppler-utils sqlite3 ca-certificates && rm -rf /var/lib/apt/lists/* && useradd --system --no-create-home --shell /usr/sbin/nologin pdfingest
+RUN apt-get update && apt-get install -y --no-install-recommends poppler-utils ghostscript sqlite3 ca-certificates && rm -rf /var/lib/apt/lists/* && useradd --system --no-create-home --shell /usr/sbin/nologin pdfingest
 COPY --from=build /out/orgctl /usr/local/bin/orgctl
 COPY --from=build /src/docs/canonical /opt/explorarte/docs/canonical
 ENV ORG_CANONICAL_DIR=/opt/explorarte/docs/canonical

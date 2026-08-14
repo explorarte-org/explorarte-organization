@@ -38,9 +38,13 @@ type Config struct {
 	PdfseparateBinary string
 	PdftotextBinary   string
 	PdfinfoBinary     string
-	CommandTimeout    time.Duration
-	WorkDir           string
-	MaxPages          int
+	// GsBinary (Ghostscript) is the fallback path for pages pdfseparate
+	// amplifies -- see isPageAmplified's doc comment for why this is
+	// sometimes necessary and not a quarantine condition.
+	GsBinary       string
+	CommandTimeout time.Duration
+	WorkDir        string
+	MaxPages       int
 }
 
 func DefaultConfig() (Config, error) {
@@ -54,6 +58,9 @@ func DefaultConfig() (Config, error) {
 	}
 	if cfg.PdfinfoBinary, err = exec.LookPath("pdfinfo"); err != nil {
 		return Config{}, fmt.Errorf("poppler: pdfinfo not found in PATH: %w", err)
+	}
+	if cfg.GsBinary, err = exec.LookPath("gs"); err != nil {
+		return Config{}, fmt.Errorf("poppler: gs (ghostscript) not found in PATH: %w", err)
 	}
 	return cfg, nil
 }
@@ -69,8 +76,8 @@ var _ pdfingest.Processor = (*Processor)(nil)
 // the ingestion contract: pin and record the parser version) by running
 // `pdftotext -v`, which poppler prints to stderr regardless of exit code.
 func New(cfg Config) (*Processor, error) {
-	if cfg.PdfseparateBinary == "" || cfg.PdftotextBinary == "" || cfg.PdfinfoBinary == "" {
-		return nil, errors.New("poppler: all three binary paths are required")
+	if cfg.PdfseparateBinary == "" || cfg.PdftotextBinary == "" || cfg.PdfinfoBinary == "" || cfg.GsBinary == "" {
+		return nil, errors.New("poppler: all four binary paths are required")
 	}
 	if cfg.CommandTimeout <= 0 {
 		return nil, errors.New("poppler: command timeout must be positive")
@@ -214,6 +221,19 @@ func (p *Processor) Process(ctx context.Context, sourcePDF []byte) (pdfingest.Re
 		if err != nil {
 			return pdfingest.Result{}, fmt.Errorf("poppler: read separated page: %w", err)
 		}
+		if isPageAmplified(pageBytes, len(sourcePDF), pageCount) {
+			rebuilt, gsErr := p.rebuildPageWithGhostscript(ctx, sourcePath, pageNumberOf(name), workDir)
+			if gsErr != nil {
+				if errors.Is(gsErr, pdfingest.ErrTimeout) {
+					return pdfingest.Result{}, pdfingest.ErrTimeout
+				}
+				return pdfingest.Result{}, fmt.Errorf("poppler: ghostscript fallback for amplified page: %w", gsErr)
+			}
+			if err := os.WriteFile(pagePath, rebuilt, 0o600); err != nil {
+				return pdfingest.Result{}, fmt.Errorf("poppler: write ghostscript-rebuilt page: %w", err)
+			}
+			pageBytes = rebuilt
+		}
 		sum := sha256.Sum256(pageBytes)
 		text, status, err := p.extractText(ctx, pagePath)
 		if err != nil {
@@ -229,6 +249,69 @@ func (p *Processor) Process(ctx context.Context, sourcePDF []byte) (pdfingest.Re
 	}
 
 	return pdfingest.Result{Pages: pages, ParserName: ParserName, ParserVersion: p.parserVersion}, nil
+}
+
+// pageAmplificationFactor and pageAmplificationFloor together decide when
+// a single page pdfseparate produced is "amplified": some source PDFs
+// (irregular xref/object structure -- poppler's "recursive dicts" warning
+// is the usual tell) cause pdfseparate to carry the *entire* document's
+// object graph (every embedded font/image referenced anywhere, not just
+// on that page) into each single-page file, instead of just that page's
+// own content. A well-formed multi-page PDF splits into pages roughly
+// proportional to len(source)/pageCount; amplification means a page is
+// several times larger than that fair share. Measured on a real case
+// (CUTOVER-DEPLOYMENT-REHEARSAL-003 audit corpus, ICLR 2026 formatting):
+// an 11.5MB, 30-page source produced a "page 15" that was itself 11.5MB
+// -- i.e. the whole document duplicated once per page, ~345MB total for
+// one paper. This is not evidence the PDF is malformed (QuarantineError
+// would be the wrong response -- see pdfingest.QuarantineReason's own
+// doc comment: retrying with the same bytes can help here, just not via
+// pdfseparate), so it gets a fallback, not a rejection.
+// var, not const: TestProcessRebuildsAmplifiedPageViaGhostscript overrides
+// these to exercise the real Ghostscript subprocess path against a small
+// fixture instead of needing an 11MB reproduction of the original case.
+var (
+	pageAmplificationFactor = 3
+	pageAmplificationFloor  = 2 << 20 // 2MiB; below this, splitting overhead isn't worth a second parser pass
+)
+
+func isPageAmplified(pageBytes []byte, sourceLen, pageCount int) bool {
+	if pageCount <= 1 || sourceLen <= 0 {
+		return false
+	}
+	fairShare := sourceLen / pageCount
+	threshold := fairShare * pageAmplificationFactor
+	if threshold < pageAmplificationFloor {
+		threshold = pageAmplificationFloor
+	}
+	return len(pageBytes) > threshold
+}
+
+// rebuildPageWithGhostscript re-renders exactly one page from the original
+// (unseparated) source PDF via Ghostscript's pdfwrite device, which
+// rebuilds the page's object graph from scratch instead of copying
+// pdfseparate's carried-over one -- confirmed on the case above to shrink
+// an amplified 11.5MB page to ~55KB. Only ever called as a fallback for
+// isPageAmplified; the primary path stays pdfseparate for every ordinary
+// PDF, unchanged.
+func (p *Processor) rebuildPageWithGhostscript(ctx context.Context, sourcePath string, pageNum int, workDir string) ([]byte, error) {
+	outPath := filepath.Join(workDir, fmt.Sprintf("gs-page-%d.pdf", pageNum))
+	pageArg := strconv.Itoa(pageNum)
+	_, stderr, err := p.run(ctx, p.cfg.GsBinary,
+		"-sDEVICE=pdfwrite", "-dNOPAUSE", "-dBATCH", "-dQUIET",
+		"-dFirstPage="+pageArg, "-dLastPage="+pageArg,
+		"-sOutputFile="+outPath, sourcePath)
+	if err != nil {
+		if errors.Is(err, pdfingest.ErrTimeout) {
+			return nil, pdfingest.ErrTimeout
+		}
+		return nil, fmt.Errorf("ghostscript: %s", firstLine(stderr))
+	}
+	rebuilt, err := os.ReadFile(outPath)
+	if err != nil {
+		return nil, fmt.Errorf("read ghostscript output: %w", err)
+	}
+	return rebuilt, nil
 }
 
 // extractText never fails the page on its own: a pdftotext error against
@@ -247,10 +330,27 @@ func (p *Processor) extractText(ctx context.Context, pagePath string) (string, p
 	// pdftotext appends a trailing form feed (\f, page-break convention)
 	// after the last newline; trim both, not just \n.
 	text := strings.TrimRight(string(out), "\n\f")
+	text = stripNULBytes(text)
 	if strings.TrimSpace(text) == "" {
 		return "", pdfingest.TextExtractionEmpty, nil
 	}
 	return text, pdfingest.TextExtractionOK, nil
+}
+
+// stripNULBytes removes any embedded NUL byte pdftotext -enc UTF-8
+// occasionally emits for certain malformed ligature/font edge cases --
+// not a text-encoding error (the rest of the run is valid UTF-8), just a
+// stray byte that carries no meaning. PostgreSQL's text type can never
+// store one (INSERT fails with "invalid byte sequence for encoding
+// UTF8: 0x00"), so this is the only place in the pipeline that could
+// ever encounter it: strip it here, once, rather than let every
+// downstream consumer (rag, memory, contextengine) reimplement the same
+// defense.
+func stripNULBytes(text string) string {
+	if strings.IndexByte(text, 0) < 0 {
+		return text
+	}
+	return strings.ReplaceAll(text, "\x00", "")
 }
 
 var pageFileNumberPattern = regexp.MustCompile(`page-(\d+)\.pdf`)

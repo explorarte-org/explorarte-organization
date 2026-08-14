@@ -173,14 +173,27 @@ func TestProposeRejectsSecretContentDeclaredAsLowerDataClass(t *testing.T) {
 	}
 }
 
-func TestProposeRejectsClinicalContentDeclaredAsLowerDataClass(t *testing.T) {
+// TestProposeAllowsClinicalVocabularyUnderPublicDataClass documents
+// ARCH-BOUNDARY-001: Organization's RAG domain has no clinical data
+// concept, so ordinary engineering text that happens to contain a word
+// from a clinical vocabulary list ("patient", "diagnosis", "symptom" --
+// all common outside medicine too: "patient histories" as a memory-system
+// example, "failure diagnosis" while debugging) must never be refused on
+// that basis alone. Clinical/patient/session data belongs to a separate
+// product (the Clinica system) with its own trust boundary; this test
+// replaces the old TestProposeRejectsClinicalContentDeclaredAsLowerDataClass,
+// which asserted the opposite of what this boundary now requires. Secret
+// detection (TestProposeRejectsSecretContentDeclaredAsLowerDataClass)
+// still applies unchanged -- credential leakage is a real Organization
+// concern regardless of this boundary.
+func TestProposeAllowsClinicalVocabularyUnderPublicDataClass(t *testing.T) {
 	now := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
 	clock := &fixedClock{now: now}
 	svc := NewService(clock)
 	command := validProposeCommand(now)
 	command.Body = "El paciente presenta síntomas relacionados con el nuevo despliegue de modelos."
-	if _, err := svc.Propose(command); !errors.Is(err, ErrForbiddenDataClass) {
-		t.Fatalf("propose clinical-shaped body under %q: err=%v want ErrForbiddenDataClass", command.Admission.DataClass, err)
+	if _, err := svc.Propose(command); err != nil {
+		t.Fatalf("propose clinical-vocabulary body under %q: unexpected err=%v", command.Admission.DataClass, err)
 	}
 }
 
