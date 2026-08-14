@@ -331,12 +331,27 @@ services:
       - org-internal
 
 volumes:
-  # ORG-AUDIT-007: no hardcoded name -- Compose namespaces this under the
-  # active project name, so distinct Compose projects (production vs. any
-  # worktree) never collide over the same volume.
+  # ORG-AUDIT-007 pinned this to the project name so worktree Compose
+  # projects would never collide with production over the same volume --
+  # correct intent, wrong layer. On 2026-08-14 that meant a real
+  # `docker compose up` against production silently resolved a *different*,
+  # brand-new, empty volume (explorarte-organization_postgres-data) instead
+  # of the durable production volume (explorarte-org-postgres-data),
+  # because postgres was recreated under the now-default project-namespaced
+  # name. Production data was never touched only because the run was caught
+  # before anything wrote to the new volume -- see CUTOVER-DEPLOYMENT-
+  # REHEARSAL-003. A production DB's physical identity must not change
+  # when orchestration config (project name) changes. Worktree isolation
+  # still belongs in COMPOSE_PROJECT_NAME/--project-name, and worktrees
+  # that need their own Postgres get their own explicit override name
+  # (rehearsal-NNN-postgres-data, worker-X-postgres-data, ...), not a
+  # collision with this one.
   postgres-data:
+    name: explorarte-org-postgres-data
 
 networks:
-  # ORG-AUDIT-007: same reasoning as the volume above.
+  # ORG-AUDIT-007: same reasoning as the volume above -- but the network
+  # is not a durable data resource. Recreating it under a project-namespaced
+  # name is harmless (no data lives in a network), so it stays unpinned.
   org-internal:
     driver: bridge
