@@ -20,6 +20,12 @@ import (
 // with one smoke/ correlation id; it never TRUNCATEs, resets sequences,
 // resyncs the registry, or modifies any pre-existing row. See
 // internal/executive/smoke's package doc for the full design rationale.
+//
+// This calls smoke.Execute, which runs Preflight (registry-synchronized +
+// capability checks, read-only) before creating anything, and guarantees
+// Cleanup runs on any failure after that point -- so a failed smoke run
+// never leaves messages sitting in 'pending'/'claimed' for a real consumer
+// to pick up later.
 func runExecutiveSmoke(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("executive smoke", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -46,46 +52,21 @@ func runExecutiveSmoke(args []string, stdout, stderr io.Writer) int {
 	}
 	defer store.Close()
 
-	messages, err := smoke.Wire(cfg, store)
+	toolkit, err := smoke.WireToolkit(cfg, store)
 	if err != nil {
-		fmt.Fprintf(stderr, "wire executive messaging: %v\n", err)
+		fmt.Fprintf(stderr, "wire executive messaging toolkit: %v\n", err)
 		return exitInternal
 	}
 
-	now := time.Now()
-	correlationID := smoke.NewCorrelationID(now)
 	roles := smoke.Roles{CEO: *ceoRole, Leader: *leaderRole, Worker: *workerRole}
+	report, execErr := smoke.Execute(ctx, store.Pool(), toolkit, roles, time.Now())
 
-	result, runErr := smoke.Run(ctx, store.Pool(), messages, cfg.Tasks.OrganizationID, roles, correlationID, now)
-	report, verifyErr := smoke.Verify(ctx, store.Pool(), cfg.Tasks.OrganizationID, correlationID)
-
-	verified := runErr == nil && verifyErr == nil && report.AllFourPresent && report.AllCorrelated && report.AllIdentical && report.SupportTasksSafe
-
-	// Deliver is only attempted once Verify has proven the run clean --
-	// closing the loop on an unverified run would be worse than leaving it
-	// pending. This is also the operational precondition the branch report
-	// flagged: no production ClaimNext consumer should be actively draining
-	// these same three roles' inboxes while Deliver runs, or it may collide
-	// with genuine traffic (Deliver defends against and reports this, but
-	// avoiding it operationally is still the right default).
-	var deliverReport smoke.DeliverReport
-	var deliverErr error
-	if verified {
-		deliverReport, deliverErr = smoke.Deliver(ctx, store.Pool(), messages, cfg.Tasks.OrganizationID, roles, correlationID, now)
-	}
-
-	passed := verified && deliverErr == nil && deliverReport.AllDelivered
 	writeExecutiveValue(stdout, *jsonOutput, map[string]any{
-		"correlation_id": correlationID,
-		"result":         result,
-		"verification":   report,
-		"delivery":       deliverReport,
-		"run_error":      errString(runErr),
-		"verify_error":   errString(verifyErr),
-		"deliver_error":  errString(deliverErr),
-		"passed":         passed,
+		"report": report,
+		"error":  errString(execErr),
+		"passed": report.Passed,
 	})
-	if !passed {
+	if !report.Passed {
 		return exitInternal
 	}
 	return exitOK

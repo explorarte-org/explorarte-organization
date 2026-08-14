@@ -31,6 +31,7 @@ const (
 type harness struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
+	cfg      config.Config
 	store    *platformpostgres.Store
 	messages runtimeadapter.AgentMessages
 }
@@ -132,7 +133,7 @@ RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatal(err)
 	}
 
-	return &harness{ctx: ctx, cancel: cancel, store: store, messages: messages}
+	return &harness{ctx: ctx, cancel: cancel, cfg: cfg, store: store, messages: messages}
 }
 
 func (h *harness) close() {
