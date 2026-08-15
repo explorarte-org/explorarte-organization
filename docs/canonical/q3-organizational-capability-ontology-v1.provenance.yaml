@@ -1,0 +1,189 @@
+manifest_id: Q3-ONTOLOGY-V1-PROVENANCE-001
+manifest_version: 1
+created_at_utc: "2026-08-15T21:58:44Z"
+mission: ORGANIZATION-REDESIGN-001
+phase: Q3-OPERATIONAL-DEFINITION-001
+base_sha: 4c847eb590e50a16fc4ee4bce82a4e5c771d1bf0
+
+ontology:
+  version: Q3_ONTOLOGY_V1
+  term: ORGANIZATIONAL_CAPABILITY
+  artifact: docs/canonical/q3-organizational-capability-ontology-v1.md
+
+  whole_file_freeze:
+    sha256: 0da2f727ceff769469c0ffad32c165690b3f4c1e5deac31d6e099117f9f1f974
+    meaning: >-
+      Historical freeze of the complete ontology file exactly as validated.
+      This identity is not superseded by the derived normative hash.
+
+  normative_contract:
+    sha256: cbf4b72975b4a8d8c2650969181f470d7a91fbf5f35beeabd23eb66a03f6e11c
+    meaning: >-
+      Byte-exact normative contract governing future Q3-002 classifications:
+      operational definition, Q1-Q6 decision procedure, artifact-role taxonomy,
+      granularity rules, required positive-record schema, and exclusions.
+    source_encoding: UTF-8
+    start_marker_inclusive: "## 1. Operational definition\n"
+    end_marker_exclusive: "## Appendix A — ontology derivation set (closed before freeze)\n"
+    zero_based_start_offset: 415
+    zero_based_end_offset_exclusive: 11987
+    byte_length: 11572
+    range_notation: "[415,11987)"
+    transformation: none
+    derivation_rule: >-
+      Read the artifact as raw bytes. Locate the first exact UTF-8 byte sequence
+      equal to start_marker_inclusive and include it. Starting from that offset,
+      locate the first exact UTF-8 byte sequence equal to end_marker_exclusive
+      and exclude it. Hash every byte in the resulting half-open range exactly
+      as stored. Do not decode/re-encode, normalize Unicode, trim whitespace,
+      convert newlines, or reserialize content. The newline bytes immediately
+      preceding end_marker_exclusive remain included.
+    reference_algorithm_python: |
+      from hashlib import sha256
+      from pathlib import Path
+
+      artifact = Path("docs/canonical/q3-organizational-capability-ontology-v1.md")
+      raw = artifact.read_bytes()
+      start_marker = b"## 1. Operational definition\n"
+      end_marker = (
+          "## Appendix A — ontology derivation set (closed before freeze)\n"
+          .encode("utf-8")
+      )
+      start = raw.index(start_marker)
+      end = raw.index(end_marker, start)
+      normative = raw[start:end]
+      assert start == 415
+      assert end == 11987
+      assert len(normative) == 11572
+      assert sha256(normative).hexdigest() == (
+          "cbf4b72975b4a8d8c2650969181f470d7a91fbf5f35beeabd23eb66a03f6e11c"
+      )
+
+validation:
+  report_artifact: docs/reports/q3-operational-definition-001.md
+  report_sha256: 913e021f47346d32cc08a575a02e16d4b57f7d04e0d16d75930b8afcca28a166
+  report_hash_meaning: >-
+    Evidence that the frozen ontology was evaluated through the preregistered
+    derivation, holdout, independent-review, and agreement procedure.
+  derivation_set_count: 8
+  holdout_count: 24
+  exact_classification_agreement:
+    numerator: 23
+    denominator: 24
+    ratio: 0.9583333333333334
+    percent_rounded_2dp: 95.83
+  capability_boundary_agreement:
+    numerator: 23
+    denominator: 24
+    ratio: 0.9583333333333334
+    percent_rounded_2dp: 95.83
+  cohen_kappa: 0.8823529411764707
+  reviewer_a_capabilities: 5
+  reviewer_b_capabilities: 6
+  expected_count_used: false
+  q3_pre_def_used_for_tuning: false
+  ontology_changed_during_or_after_holdout: false
+  model_spend_usd: 0.00
+  production_mutated: false
+  final_status: Q3_OPERATIONAL_DEFINITION_VALIDATED
+
+validation_disagreements:
+  - disagreement_id: VALIDATION_DISAGREEMENT_001
+    candidate_id: H18
+    artifact: internal/costledger/postgres/embeddings.go
+    locator: "internal/costledger/postgres/embeddings.go:15-40"
+    type: ARTIFACT_VS_CAPABILITY_CONFUSION
+    shared_observation: >-
+      Both reviewers found repository-owned, stable, verifiable behavior with a
+      specifiable effect and therefore passed Q1-Q4. They diverged only at Q5.
+    reviewer_a:
+      decision_path:
+        Q1: YES
+        Q2: YES
+        Q3: YES
+        Q4: YES
+        Q5: YES
+        Q6: NOT_EVALUATED
+      classification: "SUPPORTING_ARTIFACT_OF:OC-EMBEDDING-COST-ACCOUNTING"
+      basis: >-
+        Invocation-row creation is a persistence step supporting the adjacent
+        reserve/reconcile/release cost-accounting behavior present in the packet.
+    reviewer_b:
+      decision_path:
+        Q1: YES
+        Q2: YES
+        Q3: YES
+        Q4: YES
+        Q5: NO
+        Q6: NO
+      classification: ORGANIZATIONAL_CAPABILITY
+      capability_id: OC-EMBEDDING-INVOCATION-REGISTRATION
+      basis: >-
+        Validation and durable invocation registration have an independently
+        invocable entry/effect contract distinct from wallet accounting.
+    ontology_changed_after_observation: false
+    used_for_tuning: false
+    future_status: >-
+      Candidate counterexample for a future ontology version; not a reason to
+      modify Q3_ONTOLOGY_V1.
+
+human_review:
+  status: PASS
+  ontology_revision_requested: false
+  checks:
+    - check_id: HR-01
+      question: >-
+        Does the normative document contain the rules supplied to both reviewers,
+        without rules added after the holdout?
+      result: PASS
+      evidence: >-
+        Whole-file freeze and normative-region hashes are byte-pinned; the report
+        records freeze before holdout and an unchanged post-review file hash.
+    - check_id: HR-02
+      question: >-
+        Does the report demonstrate that derivation set and holdout did not overlap?
+      result: PASS
+      evidence: >-
+        The report records all eight derivation candidates, exact exclusion rules,
+        deterministic generation, and the complete 24-candidate holdout.
+    - check_id: HR-03
+      question: >-
+        Are 23/24, 95.83 percent, and Cohen kappa 0.882353 reproducible from the
+        recorded classifications?
+      result: PASS
+      evidence: >-
+        The report preserves both 24-row classifications, boundary mapping,
+        marginals, expected-agreement formula, and kappa calculation.
+    - check_id: HR-04
+      question: >-
+        Is the embeddings.go disagreement preserved without retrospective reconciliation?
+      result: PASS
+      evidence: >-
+        VALIDATION_DISAGREEMENT_001 preserves both Q1-Q6 paths and classifications;
+        ontology_changed_after_observation and used_for_tuning are false.
+    - check_id: HR-05
+      question: >-
+        Is the Q3-002 identity contract precise enough to reject a drift toward
+        the literal existence of N custom mechanisms?
+      result: PASS
+      evidence: >-
+        The report freezes subject, requested relation, measurement universe,
+        required output schema, gate algorithm, and the mandatory negative fixture.
+
+future_q3_002_measurement_contract:
+  ontology_file_freeze: 0da2f727ceff769469c0ffad32c165690b3f4c1e5deac31d6e099117f9f1f974
+  ontology_normative_contract: cbf4b72975b4a8d8c2650969181f470d7a91fbf5f35beeabd23eb66a03f6e11c
+  validation_report: 913e021f47346d32cc08a575a02e16d4b57f7d04e0d16d75930b8afcca28a166
+  question_identity_contract: 5d14179555b1634238ffd197bc56afa42bc5b1dc93e5605f5d2e58f368e48f9c
+  requirements:
+    - Verify both ontology hashes before classification.
+    - Apply only the byte-pinned normative contract as decision rules.
+    - Preserve the whole-file hash as the identity of the validated source artifact.
+    - Do not use VALIDATION_DISAGREEMENT_001 to tune Q3_ONTOLOGY_V1.
+    - Run QUESTION_IDENTITY_GATE before collection or measurement.
+
+change_control:
+  ontology_v1_mutation_allowed: false
+  hashes_recomputed_or_replaced: false
+  manifest_is_additive_provenance_only: true
+  commit_created: false
