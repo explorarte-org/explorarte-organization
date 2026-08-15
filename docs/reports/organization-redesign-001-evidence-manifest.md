@@ -59,6 +59,43 @@ report but no longer exists is recorded here as `MISSING_AT_MANIFEST_TIME` and i
 **not** recreated — a regenerated file would not be the artifact the report was
 written against.
 
+
+## RERUN-002 artifacts
+
+Added 2026-08-15T13:52:13Z. Same rule: hashes bind the durable reports to off-git evidence; no raw artifact is copied into git.
+
+| Artifact | Path | Bytes | SHA-256 |
+| --- | --- | ---: | --- |
+| `rerun002_report.txt` | `/home/ubuntu/redesign-001/state/rerun002_report.txt` | 8,645 | `948098abaff74c7e172870428b13e566386da1d9272460d97fa8a4ed80dda340` |
+| `campaign_run3_state.json` | `/home/ubuntu/redesign-001/state/campaign_run3_state.json` | 114,245 | `b68bc4760917c8af541e6720685fd6647ebf27bb61cdd9e10415de28ba8b426b` |
+| `root_mismatch_replay.json` | `/home/ubuntu/redesign-001/state/root_mismatch_replay.json` | 9,987 | `816ee29a853de0fac31ab1127646130b89d89924f6127112efc9256dc3133286` |
+| `reliability_replay.json` | `/home/ubuntu/redesign-001/state/reliability_replay.json` | 1,066 | `971d0dfef9e46bf706ce5c592605b25fedee23a7779a0731ee3f05bd50967597` |
+| `q2_equivalence.json` | `/home/ubuntu/redesign-001/state/q2_equivalence.json` | 5,878 | `0eed6453461069cfd1947e628ba90b7b3aae7b9ee4eac02c843a4cd7dd658468` |
+| `transport_attempts.jsonl` | `/home/ubuntu/redesign-001/logs/transport_attempts.jsonl` | 46,451 | `c6e6777356bb0f9479ecdbd1b98f31dd3eb64557e35a4e2a71edd179b4544c2c` |
+| `tool_trajectory.jsonl` | `/home/ubuntu/redesign-001/logs/tool_trajectory.jsonl` | 340,280 | `fa527878dbb9a0ca6d869b02313f6e2c33500c65bbb6f93b61f95bb2e925f1dc` |
+| `rerun002.log` | `/home/ubuntu/redesign-001/logs/rerun002.log` | 37,400 | `b56d2f3f9ba3d5a454b461840a2aac591b61cff26a1f6958c675fcee1098f72b` |
+| `test_loop_fix.py` | `/home/ubuntu/redesign-001/_fixtest/test_loop_fix.py` | 35,191 | `18e567df3cfdf6cb7ca0934f49665a69c1130650b4015e64f7570b8a7a52d50e` |
+| `proc_identity.py` | `/home/ubuntu/redesign-001/proc_identity.py` | 1,538 | `12217c24805287252f92ffa59f6542c382030343a2c2cf3154b16866434c859a` |
+| `model_calls.jsonl` | `/home/ubuntu/redesign-001/logs/model_calls.jsonl` | 465,210 | `e52f1ae59bafb1a50ea86a3debf50051a6a7f07e1e5215c171176ed4491b1221` |
+| `gate_replay.json` | `/home/ubuntu/redesign-001/state/gate_replay.json` | 2,853 | `976c6a11d40d2f21a9137d7e6b47ae12d1426f6982b961e75ba848667f72d588` |
+| `q3_body_search.json` | `/home/ubuntu/redesign-001/state/q3_body_search.json` | 13,456 | `97fbdde15de4b421708a8fd634fa2743e9c87d97a753674cbe8711bf23e54008` |
+| `campaign_run3_state.json.bak-before-taskA` | `/home/ubuntu/redesign-001/state/campaign_run3_state.json.bak-before-taskA` | 100,285 | `00e99b4ab7bf3cde4113a37902a99ccc1dbc0e9eeb6f9d37ed1ab2d77aa06a5d` |
+
+- **`rerun002_report.txt`** — RERUN-002 mandated FINAL OUTPUT (CLEAN_BASELINE_VALID)
+- **`campaign_run3_state.json`** — RERUN-002 run state: findings, rulings, aborted runs, context evidence registry
+- **`root_mismatch_replay.json`** — per-call replay of RERUN-001 against both trees (root mismatch impact)
+- **`reliability_replay.json`** — Q4 extractor replay result and Q2 resume point
+- **`q2_equivalence.json`** — Q2_RESUME_EQUIVALENCE_CHECK: task A vs reconciler task B
+- **`transport_attempts.jsonl`** — every transport attempt with request hash, result and bytes
+- **`tool_trajectory.jsonl`** — every tool call with resolved measurement root and result hash
+- **`rerun002.log`** — controller log for RERUN-002
+- **`test_loop_fix.py`** — offline regression harness at 141 checks
+- **`proc_identity.py`** — exact process identity used instead of fuzzy pgrep
+- **`model_calls.jsonl`** — every model call of the mission; source of all cost figures
+- **`gate_replay.json`** — citation-gate replay of the stored Q2/Q4 packets
+- **`q3_body_search.json`** — canonical body search (63 manifest entries) from BOUNDARY-REPAIR-001
+- **`campaign_run3_state.json.bak-before-taskA`** — Q2 pending-A preservation: state immediately before task A was restored
+
 ## Scope
 
 This manifest binds evidence provenance only. It makes no claim about the findings
@@ -68,3 +105,4 @@ themselves, does not authorize V2, and does not reopen any question.
 
 - [`organization-redesign-001-boundary-repair-001.md`](organization-redesign-001-boundary-repair-001.md)
 - [`organization-redesign-001-rerun-001.md`](organization-redesign-001-rerun-001.md)
+- [`organization-redesign-001-rerun-002.md`](organization-redesign-001-rerun-002.md)
