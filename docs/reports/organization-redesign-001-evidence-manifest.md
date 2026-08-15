@@ -84,6 +84,7 @@ Added 2026-08-15T13:52:13Z. Same rule: hashes bind the durable reports to off-gi
 | `gate_replay.json` | `/home/ubuntu/redesign-001/state/gate_replay.json` | 2,853 | `976c6a11d40d2f21a9137d7e6b47ae12d1426f6982b961e75ba848667f72d588` | `PRESENT_AT_MANIFEST_TIME` |
 | `q3_body_search.json` | `/home/ubuntu/redesign-001/state/q3_body_search.json` | 13,456 | `97fbdde15de4b421708a8fd634fa2743e9c87d97a753674cbe8711bf23e54008` | `PRESENT_AT_MANIFEST_TIME` |
 | `campaign_run3_state.json.bak-before-taskA` | `/home/ubuntu/redesign-001/state/campaign_run3_state.json.bak-before-taskA` | 100,285 | `00e99b4ab7bf3cde4113a37902a99ccc1dbc0e9eeb6f9d37ed1ab2d77aa06a5d` | `PRESENT_AT_MANIFEST_TIME` |
+| `mutable_path_provenance.json` | `/home/ubuntu/redesign-001/state/mutable_path_provenance.json` | 1,072 | `ce3e59b1904abf83a78586f9f5bb41bfb145d27f8aa042056feb36e147b6a235` | `PRESENT_AT_MANIFEST_TIME` |
 
 - **`rerun002_report.txt`** — RERUN-002 mandated FINAL OUTPUT (CLEAN_BASELINE_VALID)
 - **`campaign_run3_state.json`** — RERUN-002 run state: findings, rulings, aborted runs, context evidence registry
@@ -99,6 +100,7 @@ Added 2026-08-15T13:52:13Z. Same rule: hashes bind the durable reports to off-gi
 - **`gate_replay.json`** — citation-gate replay of the stored Q2/Q4 packets
 - **`q3_body_search.json`** — canonical body search (63 manifest entries) from BOUNDARY-REPAIR-001
 - **`campaign_run3_state.json.bak-before-taskA`** — Q2 pending-A preservation: state immediately before task A was restored
+- **`mutable_path_provenance.json`** — result of the deterministic mutable-path search below; it now carries a provenance claim, so it is bound here like any other evidence artifact
 
 ### Mutable-path provenance
 
@@ -108,7 +110,7 @@ still verifies at that path. It does not.
 
 | Path | Historical record | Current record | Historical bytes still at that path? |
 | --- | --- | --- | --- |
-| `~/redesign-001/logs/model_calls.jsonl` | `0c033ec1e51d3021…` · 262,339 B | `e52f1ae59bafb1a5…` · 465,210 B | no — file was appended to |
+| `~/redesign-001/logs/model_calls.jsonl` | `0c033ec1e51d3021…` · 262,339 B | `e52f1ae59bafb1a5…` · 465,210 B | not as a standalone file — retained as a verified prefix |
 | `~/redesign-001/_fixtest/test_loop_fix.py` | `64bb5aa025835b4f…` · 23,551 B | `18e567df3cfdf6cb…` · 35,191 B | no — file was edited in place |
 
 Both historical hashes were valid at their manifest-generation time. The same paths were
@@ -117,22 +119,30 @@ not evidence that the exact historical byte stream remains retrievable from that
 path.**
 
 A deterministic search over `/home/ubuntu`, `/opt/explorarte`, `/srv` and `/tmp`
-(93,260 files inspected, matched by size then by full sha256) found **no exact copy** of
-either historical byte stream. Therefore, for both:
+(93,260 files inspected, matched by size then by full sha256) found **no exact standalone copy**
+of either historical byte stream. Neither was recreated.
 
+The two cases are not equivalent, and are recorded separately:
+
+**`model_calls.jsonl`**
+```
+HISTORICAL_BYTES_RETAINED_AS_VERIFIED_PREFIX
+EXACT_STANDALONE_ARTIFACT_NOT_RETAINED
+```
+The log is append-only. The first 262,339 bytes of the current file hash to
+`0c033ec1e51d3021…` exactly — the historical byte stream survives, verifiably, as a prefix of
+the current file. What no longer exists is a standalone artifact at that path whose whole
+content hashes to the historical value. A reviewer can re-verify the historical record by
+hashing the first 262,339 bytes.
+
+**`test_loop_fix.py`**
 ```
 HISTORICAL_HASH_ONLY
 EXACT_BYTES_NOT_CURRENTLY_RETAINED
 ```
-
-Neither was recreated.
-
-One qualifier, recorded because it is verifiable and useful to a reviewer, and because it does
-**not** change the status above: `model_calls.jsonl` is append-only, and the first 262,339 bytes
-of the current file hash to the historical value exactly. The historical content is therefore
-contained within the current file as a prefix, even though the file itself no longer hashes to
-the historical value. `test_loop_fix.py` has no such property — its prefix does not match, since
-it was edited rather than appended.
+The file was edited in place, not appended. Its prefix does not match the historical hash and
+no copy of the historical bytes was found anywhere in the searched roots. Only the hash record
+survives.
 
 Result data: `~/redesign-001/state/mutable_path_provenance.json`.
 
