@@ -211,3 +211,10 @@ zero-count premise is known to be partly an artifact.
 | `~/redesign-001/logs/rerun.log` | controller log for both runs |
 | `~/redesign-001/prompts/deepseek_master_v4.txt` | master prompt used for collection |
 | `~/redesign-001/_fixtest/test_loop_fix.py` | offline regression harness |
+
+These artifacts are bound by sha256 and byte size in
+[`organization-redesign-001-evidence-manifest.md`](organization-redesign-001-evidence-manifest.md).
+The configured $5.00 run cap recorded above is historical; it is classified as
+`MANDATE_CONFIGURATION_DRIFT` in
+[`organization-redesign-001-boundary-repair-001.md`](organization-redesign-001-boundary-repair-001.md),
+with no budget violation. Nothing else in this report has been altered.

@@ -36,17 +36,20 @@ executive_ceo_plan execution:   OBSERVED
 downstream historical chain:    IRRECOVERABLE WITH RETAINED EVIDENCE
 mechanism_absent:               NOT ESTABLISHED
 classification:                 Q1_HISTORICAL_EVIDENCE_IRRECOVERABLE
+                                (WITH CURRENT RETAINED/ACCESSIBLE EVIDENCE)
 ```
 
-### Search performed
+### Search performed — within the accessible measurement boundary
 
-Six classes of artifact were inspected, read-only: `~/db-snapshots/**` recursively; a
+Six classes of artifact were inspected, read-only, across the storage reachable from this host: `~/db-snapshots/**` recursively; a
 host-wide scan for `*.dump`, `*.sql`, `*.sql.gz`, basebackups and `pg_dump` output; a
 host-wide scan for any file over 1 MB dated 2026-08-09 to 2026-08-13; Docker containers
 and their retained JSON logs; PostgreSQL WAL segments; object-storage references in
 compose and config.
 
-**Eleven candidate artifacts were found. None contains pre-truncation state.**
+**Eleven candidate artifacts were found. None retains the pre-truncation relational
+state required to resolve Q1.** The surviving pre-truncation outbox and audit history
+is explicitly handled below and was already available to RERUN-001.
 
 ### The decisive artifact
 
@@ -75,9 +78,13 @@ The retained WAL belongs to a PostgreSQL container created 2026-08-14T03:23Z and
 only the post-cutover period. No container or application log from 2026-08-10..12
 survives.
 
-The live `outbox_events` table (1942 rows) is a **superset** of the 1816 rows in the
-oldest dump, and RERUN-001 already measured against it. The dumps therefore offer no
-source that was not already available.
+**Pre-truncation history does survive, in one place only:** `outbox_events` (and 6
+`audit_events` rows). That is exactly why the table above shows 1816 rows there while
+every relational table Q1 depends on shows 0. The live `outbox_events` table (1942 rows)
+is a **superset** of the 1816 rows in the oldest dump, and RERUN-001 already measured
+against it. The dumps therefore offer no source that was not already available, and the
+irrecoverability recorded here is scoped to the relational evidence Q1 requires — not to
+pre-truncation history as a whole.
 
 ### Restore decision
 
@@ -255,8 +262,11 @@ cited as established findings.**
 
 ## 6. Decision consequences
 
-- **Q1 must not be retried against the same historical evidence boundary.** The retained
-  artifact set has been exhaustively enumerated and none contains the required state.
+- **Q1 must not be retried against the same historical evidence boundary.** The
+  accessible retained artifact set within the searched measurement boundary has been
+  exhaustively enumerated, and none of it holds the relational state Q1 requires. This
+  makes no claim about inaccessible provider snapshots, unknown external archives, or
+  artifacts outside the searched boundary.
 - **Q1's UNKNOWN is historical irrecoverability, not negative evidence.** It does not
   support any claim that downstream stages were absent, dormant or vestigial.
 - **The original Q3 formulation must not be retried** unless the exact canonical bodies
@@ -281,6 +291,10 @@ Operational evidence remains outside git, in the campaign working directory:
 | `~/redesign-001/state/campaign_run2_state.json` | run state, findings, halt history, instrument findings |
 | `~/redesign-001/state/q3_body_search.json` | per-entry canonical body search result |
 
+Each of these is bound to this report by sha256 and byte size in
+[`organization-redesign-001-evidence-manifest.md`](organization-redesign-001-evidence-manifest.md),
+so a reviewer can verify that an artifact has not changed since the report was written.
+
 DB dumps, physical backups, raw model traces and generated evidence bundles are **not**
 copied into git. `docs/reports/` stores the durable reviewable report, not the raw
 evidence.
@@ -291,3 +305,5 @@ evidence.
 
 - [`organization-redesign-001-rerun-001.md`](organization-redesign-001-rerun-001.md) —
   the RERUN-001 measurement this phase takes as input.
+- [`organization-redesign-001-evidence-manifest.md`](organization-redesign-001-evidence-manifest.md) —
+  sha256 and byte size of every off-git artifact these reports reference.
