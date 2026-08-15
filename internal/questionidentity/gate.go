@@ -179,7 +179,7 @@ func Evaluate(candidate RefinementContract) (Decision, error) {
 	if reason := exactSetReason(candidate.MeasurementUniverse, canonicalMeasurementUniverse); reason != "" {
 		markChanged(FieldMeasurementUniverse, reason+"; optional sources belong in observation_supplements")
 	}
-	if reason := requiredSetReason(candidate.RequiredOutputSchema, canonicalRequiredOutputSchema); reason != "" {
+	if reason := exactRequiredOutputReason(candidate.RequiredOutputSchema, canonicalRequiredOutputSchema); reason != "" {
 		markChanged(FieldRequiredOutputSchema, reason)
 	}
 	if reason := validateSupplements(candidate.ObservationSupplements); reason != "" {
@@ -245,13 +245,16 @@ func exactSetReason(actual, required []string) string {
 	return ""
 }
 
-func requiredSetReason(actual, required []string) string {
+func exactRequiredOutputReason(actual, required []string) string {
 	if duplicateOrBlank(actual) {
-		return "must contain unique, nonblank output members"
+		return "must contain each canonical output exactly once and no blank members"
+	}
+	if len(actual) != len(required) {
+		return "must contain exactly the canonical output schema"
 	}
 	for _, item := range required {
 		if !slices.Contains(actual, item) {
-			return "is missing required member " + item
+			return "is missing canonical output member " + item
 		}
 	}
 	return ""
@@ -327,14 +330,6 @@ type normalizedContract struct {
 
 func normalize(candidate RefinementContract) ([]byte, error) {
 	outputs := append([]string(nil), canonicalRequiredOutputSchema...)
-	extras := make([]string, 0)
-	for _, output := range candidate.RequiredOutputSchema {
-		if !slices.Contains(canonicalRequiredOutputSchema, output) {
-			extras = append(extras, output)
-		}
-	}
-	sort.Strings(extras)
-	outputs = append(outputs, extras...)
 
 	supplements := slices.Clone(candidate.ObservationSupplements)
 	sort.Slice(supplements, func(i, j int) bool {

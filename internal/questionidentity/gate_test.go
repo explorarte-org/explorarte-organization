@@ -212,34 +212,41 @@ func TestUnknownNarrowingPredicateFailsClosed(t *testing.T) {
 	assertRejectedWithFields(t, decision, []ContractField{FieldNarrowingPredicates})
 }
 
-func TestAdditionalOutputIsAllowedAndNormalizationIsOrderIndependent(t *testing.T) {
-	left := CanonicalContract()
-	left.RequiredOutputSchema = append(left.RequiredOutputSchema, "z_detail", "a_detail")
-	left.ObservationSupplements = []ObservationSupplement{
-		{SourceID: "z_source", Label: "z label"},
-		{SourceID: "a_source", Label: "a label"},
+func TestAdditionalOutputRejectsOutputSchemaDrift(t *testing.T) {
+	contract := CanonicalContract()
+	contract.RequiredOutputSchema = append(contract.RequiredOutputSchema, "literal_phrase_exists")
+
+	decision, err := Evaluate(contract)
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+	assertRejectedWithFields(t, decision, []ContractField{FieldRequiredOutputSchema})
+}
+
+func TestRequiredOutputNormalizationIsOrderIndependent(t *testing.T) {
+	canonical := CanonicalContract()
+	reordered := CanonicalContract()
+	reordered.RequiredOutputSchema = []string{
+		OutputCompleteness,
+		OutputRuntimeEvidence,
+		OutputCapabilityInventory,
+		OutputLimitations,
+		OutputDeclarationConfig,
 	}
 
-	right := CanonicalContract()
-	right.RequiredOutputSchema = append([]string{"a_detail", "z_detail"}, right.RequiredOutputSchema...)
-	right.ObservationSupplements = []ObservationSupplement{
-		{SourceID: "a_source", Label: "a label"},
-		{SourceID: "z_source", Label: "z label"},
-	}
-
-	leftDecision, err := Evaluate(left)
+	canonicalDecision, err := Evaluate(canonical)
 	if err != nil {
-		t.Fatalf("Evaluate(left) error = %v", err)
+		t.Fatalf("Evaluate(canonical) error = %v", err)
 	}
-	rightDecision, err := Evaluate(right)
+	reorderedDecision, err := Evaluate(reordered)
 	if err != nil {
-		t.Fatalf("Evaluate(right) error = %v", err)
+		t.Fatalf("Evaluate(reordered) error = %v", err)
 	}
-	if !leftDecision.Accepted() || !rightDecision.Accepted() {
-		t.Fatalf("allowed extensions rejected: left=%#v right=%#v", leftDecision, rightDecision)
+	if !canonicalDecision.Accepted() || !reorderedDecision.Accepted() {
+		t.Fatalf("canonical output reordering rejected: canonical=%#v reordered=%#v", canonicalDecision, reorderedDecision)
 	}
-	if leftDecision.NormalizedContractSHA256 != rightDecision.NormalizedContractSHA256 {
-		t.Fatalf("normalization depends on input order: %s != %s", leftDecision.NormalizedContractSHA256, rightDecision.NormalizedContractSHA256)
+	if canonicalDecision.NormalizedContractSHA256 != reorderedDecision.NormalizedContractSHA256 {
+		t.Fatalf("normalization depends on output order: %s != %s", canonicalDecision.NormalizedContractSHA256, reorderedDecision.NormalizedContractSHA256)
 	}
 }
 
