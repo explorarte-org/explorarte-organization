@@ -1,0 +1,25 @@
+{
+  "schema_version": "Q3_002_INITIAL_STATE_V1",
+  "run_id": "Q3-002-CANONICAL-MEASUREMENT",
+  "question_id": "REFORMULATED-Q3-002",
+  "active_questions": [
+    "REFORMULATED-Q3-002"
+  ],
+  "questions": [
+    {
+      "question_id": "REFORMULATED-Q3-002",
+      "status": "UNKNOWN"
+    }
+  ],
+  "model_calls": {
+    "deepseek": 0,
+    "grok": 0,
+    "luna": 0
+  },
+  "model_spend_usd": 0.0,
+  "database_accesses": 0,
+  "refinement_counts": {},
+  "tool_call_counts": {},
+  "prior_findings": [],
+  "prior_dispositions": []
+}

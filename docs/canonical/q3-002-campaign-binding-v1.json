@@ -1,0 +1,72 @@
+{
+  "schema_version": "Q3_002_CAMPAIGN_BINDING_V1",
+  "mission_id": "ORGANIZATION-REDESIGN-001",
+  "phase_id": "Q3_002_CAMPAIGN_BINDING_REPAIR_001",
+  "binding_role": "REPAIR_DEVELOPMENT_AND_VALIDATION_ONLY",
+  "question_id": "REFORMULATED-Q3-002",
+  "declared_base_sha": "37ed48d97cfda9efaf4f660a4f626745d793107e",
+  "remote_main_sha_at_freeze": "37ed48d97cfda9efaf4f660a4f626745d793107e",
+  "measurement_roots": {
+    "measurement_root": "/home/ubuntu/campaign-37ed48d",
+    "tool_root": "/home/ubuntu/campaign-37ed48d",
+    "citation_root": "/home/ubuntu/campaign-37ed48d",
+    "integrity_root": "/home/ubuntu/campaign-37ed48d"
+  },
+  "active_questions": [
+    "REFORMULATED-Q3-002"
+  ],
+  "initial_epistemic_state": "UNKNOWN",
+  "initial_state": {
+    "artifact": "/home/ubuntu/q3-002-campaign-binding-repair-001/tools/instrumentv4/testdata/q3-002-clean-initial-state.json",
+    "construction_method": "CONSTRUCTED_FROM_SCHEMA_WHITELIST",
+    "historical_source": null,
+    "historical_state_subtraction": false,
+    "sha256": "2f41f95dfe95131bb9763909a4aaed2babce9448dbecef93e00c28e1aa17a47e",
+    "allowed_fields": [
+      "active_questions",
+      "database_accesses",
+      "model_calls",
+      "model_spend_usd",
+      "prior_dispositions",
+      "prior_findings",
+      "question_id",
+      "questions",
+      "refinement_counts",
+      "run_id",
+      "schema_version",
+      "tool_call_counts"
+    ]
+  },
+  "controller": {
+    "instrument": "INSTRUMENT_V4",
+    "path": "/home/ubuntu/redesign-001/loop_controller.py",
+    "sha256": "3547b61eba43b3aad6d14eec7313fdab1b480483c7d5d55b2368aba558066c8f",
+    "bytes": 66401
+  },
+  "question_identity": {
+    "contract_sha256": "5d14179555b1634238ffd197bc56afa42bc5b1dc93e5605f5d2e58f368e48f9c",
+    "binding_schema": "INSTRUMENT_V4_CONTROLLER_BINDING_V1",
+    "source_set_sha256": "5b1dd340e26a27879f30830d0b51068220b07665b0a459aaaa1f7b512d4c307a",
+    "gate_binary_path": "/home/ubuntu/q3-002-campaign-binding-repair-001/bin/question-identity-gate",
+    "gate_binary_sha256": "43b25561ed645231d4c74b499a99fc8c375aeb7ee947dcd86a9470e2a467f0cd",
+    "gate_binary_bytes": 3114724
+  },
+  "ontology": {
+    "version": "Q3_ONTOLOGY_V1",
+    "artifact": "docs/canonical/q3-organizational-capability-ontology-v1.md",
+    "whole_file_sha256": "0da2f727ceff769469c0ffad32c165690b3f4c1e5deac31d6e099117f9f1f974",
+    "normative_sha256": "cbf4b72975b4a8d8c2650969181f470d7a91fbf5f35beeabd23eb66a03f6e11c",
+    "normative_start_offset": 415,
+    "normative_end_offset_exclusive": 11987,
+    "normative_bytes": 11572
+  },
+  "execution_constraints": {
+    "rerun_002_state_reuse_allowed": false,
+    "rerun_002_budget_reuse_allowed": false,
+    "historical_questions_allowed": false,
+    "model_calls_during_repair_allowed": false,
+    "database_access_during_repair_allowed": false,
+    "q3_002_execution_during_repair_allowed": false,
+    "final_scientific_base_frozen_before_repair_merge_allowed": false
+  }
+}
