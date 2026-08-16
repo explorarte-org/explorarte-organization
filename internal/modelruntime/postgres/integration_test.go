@@ -244,11 +244,38 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	t.Run("credential-bearing model input is rejected before durable admission", func(t *testing.T) {
+		const idempotencyKey = "pg-secret-admission"
+		command := validInvocationCommand(taskRef, snapshotRef, "ingenieria_ia/code-runner", idempotencyKey)
+		command.ModelInput = &modelruntime.ModelInputEnvelope{
+			SchemaVersion: modelruntime.ModelInputEnvelopeSchemaV1, ContextSnapshotID: snapshotRef.ID,
+			CanonicalProjectionDigest: modelruntime.SHA256Bytes([]byte("secret-admission-projection")),
+			StablePrefix:              []modelruntime.ModelInputMessage{{Role: modelruntime.ModelInputRoleUser, Content: string(contexts.rendered)}},
+			VisibleHistory:            []modelruntime.ModelInputMessage{{Role: modelruntime.ModelInputRoleAssistant, Content: "API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456"}},
+		}
+		if _, createErr := invocations.Create(ctx, command); !errors.Is(createErr, modelruntime.ErrModelInputSecretRejected) {
+			t.Fatalf("credential-bearing model input error=%v", createErr)
+		}
+		assertModelCountTwo(t, ctx, platform, `SELECT count(*) FROM model_invocations WHERE organization_id=$1 AND idempotency_key=$2`, modelIntegrationOrganization, idempotencyKey, 0)
+		assertModelCountTwo(t, ctx, platform, `SELECT count(*) FROM model_invocation_inputs i JOIN model_invocations v ON v.id=i.invocation_id WHERE v.organization_id=$1 AND v.idempotency_key=$2`, modelIntegrationOrganization, idempotencyKey, 0)
+	})
+
 	t.Run("create reuse conflict and fake one-shot dispatch are durable", func(t *testing.T) {
 		command := validInvocationCommand(taskRef, snapshotRef, "ingenieria_ia/code-runner", "pg-fake-dispatch")
 		created, createErr := invocations.Create(ctx, command)
 		if createErr != nil || created.Reused {
 			t.Fatalf("created=%+v err=%v", created, createErr)
+		}
+		input, inputErr := store.GetModelInput(ctx, created.Invocation.ID)
+		if inputErr != nil || input.Envelope.SchemaVersion != modelruntime.ModelInputEnvelopeSchemaV1 || input.Envelope.ContextSnapshotID != snapshotRef.ID || len(input.CanonicalBytes) == 0 || modelruntime.SHA256Bytes(input.CanonicalBytes) != input.CanonicalDigest {
+			t.Fatalf("durable model input=%+v err=%v", input, inputErr)
+		}
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_invocation_inputs WHERE invocation_id=$1`, created.Invocation.ID, 1)
+		if _, mutationErr := platform.Pool().Exec(ctx, `UPDATE model_invocation_inputs SET schema_version='mutated' WHERE invocation_id=$1`, created.Invocation.ID); mutationErr == nil {
+			t.Fatal("model invocation input accepted mutation")
+		}
+		if _, mutationErr := platform.Pool().Exec(ctx, `DELETE FROM model_invocation_inputs WHERE invocation_id=$1`, created.Invocation.ID); mutationErr == nil {
+			t.Fatal("model invocation input accepted deletion")
 		}
 		reused, createErr := invocations.Create(ctx, command)
 		if createErr != nil || !reused.Reused || reused.Invocation.ID != created.Invocation.ID {
@@ -863,6 +890,11 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 			version int
 			file    string
 		}{
+			// 000049 owns a FK to model_invocations, so its immutable input
+			// table must come down before 000007 drops the invocation table.
+			// Reapplying the ordered migration set recreates the 1:1 input
+			// representation only after the Model Runtime gateway exists.
+			{49, "000049_create_model_invocation_inputs.down.sql"},
 			// 000044 replaced 000008 cross-table CHECK constraints with
 			// deferrable constraint triggers, so 000008 down cannot drop
 			// constraints that no longer exist. Its own down restores them
@@ -932,8 +964,8 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		// runner's Up loop walks every migration, setting Current even for
 		// ones already applied) — migration 19 is untouched by this
 		// rollback/reapply cycle (it depends on 17, not any version rolled
-		// back here), so only the 7 explicitly rolled-back versions above
-		// are expected in Applied, while Current still reports the real tip.
+		// back here), so only the explicitly rolled-back versions above are
+		// expected in Applied, while Current still reports the real tip.
 		loadedForTip, tipErr := platformmigrations.Load(rootmigrations.Files)
 		if tipErr != nil {
 			t.Fatal(tipErr)
@@ -947,7 +979,7 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 			t.Fatalf("reapply=%+v err=%v want current=%d", reapplied, upErr, tip)
 		}
 		var exists bool
-		if err = platform.Pool().QueryRow(ctx, `SELECT to_regclass('public.model_invocations') IS NOT NULL AND to_regclass('public.model_dispatch_attempts') IS NOT NULL AND to_regclass('public.model_egress_policy_versions') IS NOT NULL AND to_regclass('public.model_dispatcher_assignments') IS NOT NULL AND to_regclass('public.model_execution_principals') IS NOT NULL AND to_regclass('public.model_execution_identity_policy_versions') IS NOT NULL AND to_regclass('public.model_provider_requests') IS NOT NULL AND to_regclass('public.model_provider_outcomes') IS NOT NULL`).Scan(&exists); err != nil || !exists {
+		if err = platform.Pool().QueryRow(ctx, `SELECT to_regclass('public.model_invocations') IS NOT NULL AND to_regclass('public.model_invocation_inputs') IS NOT NULL AND to_regclass('public.model_dispatch_attempts') IS NOT NULL AND to_regclass('public.model_egress_policy_versions') IS NOT NULL AND to_regclass('public.model_dispatcher_assignments') IS NOT NULL AND to_regclass('public.model_execution_principals') IS NOT NULL AND to_regclass('public.model_execution_identity_policy_versions') IS NOT NULL AND to_regclass('public.model_provider_requests') IS NOT NULL AND to_regclass('public.model_provider_outcomes') IS NOT NULL`).Scan(&exists); err != nil || !exists {
 			t.Fatalf("reapply exists=%v err=%v", exists, err)
 		}
 		// Prove 000030's ALTER TABLE actually reran, not just that 000021's

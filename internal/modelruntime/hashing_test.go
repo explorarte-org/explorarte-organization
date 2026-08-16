@@ -41,27 +41,32 @@ func TestInvocationRequestHashPinsEgressPolicy(t *testing.T) {
 	}
 	policyHash := SHA256Bytes([]byte("policy"))
 	identityPolicyHash := SHA256Bytes([]byte("identity-policy"))
+	inputDigest := SHA256Bytes([]byte("model-input"))
 	assignment := fixtureResolvedAssignment()
-	first, err := invocationRequestHash(command, 7, binding, []ModelCapability{"structured.output"}, []byte(`{"type":"object"}`), 17, policyHash, 27, identityPolicyHash, assignment)
+	first, err := invocationRequestHash(command, 7, binding, []ModelCapability{"structured.output"}, []byte(`{"type":"object"}`), inputDigest, 17, policyHash, 27, identityPolicyHash, assignment)
 	if err != nil {
 		t.Fatal(err)
 	}
-	changedVersion, err := invocationRequestHash(command, 7, binding, []ModelCapability{"structured.output"}, []byte(`{"type":"object"}`), 18, policyHash, 27, identityPolicyHash, assignment)
+	changedVersion, err := invocationRequestHash(command, 7, binding, []ModelCapability{"structured.output"}, []byte(`{"type":"object"}`), inputDigest, 18, policyHash, 27, identityPolicyHash, assignment)
 	if err != nil {
 		t.Fatal(err)
 	}
-	changedHash, err := invocationRequestHash(command, 7, binding, []ModelCapability{"structured.output"}, []byte(`{"type":"object"}`), 17, SHA256Bytes([]byte("other-policy")), 27, identityPolicyHash, assignment)
+	changedHash, err := invocationRequestHash(command, 7, binding, []ModelCapability{"structured.output"}, []byte(`{"type":"object"}`), inputDigest, 17, SHA256Bytes([]byte("other-policy")), 27, identityPolicyHash, assignment)
 	if err != nil {
 		t.Fatal(err)
 	}
 	changedAssignment := assignment
 	changedAssignment.Assignment.ID = 999
-	changedAssignmentHash, err := invocationRequestHash(command, 7, binding, []ModelCapability{"structured.output"}, []byte(`{"type":"object"}`), 17, policyHash, 27, identityPolicyHash, changedAssignment)
+	changedAssignmentHash, err := invocationRequestHash(command, 7, binding, []ModelCapability{"structured.output"}, []byte(`{"type":"object"}`), inputDigest, 17, policyHash, 27, identityPolicyHash, changedAssignment)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if first == changedVersion || first == changedHash || changedVersion == changedHash || first == changedAssignmentHash {
 		t.Fatalf("egress policy or assignment was not pinned in request hash: %s %s %s %s", first, changedVersion, changedHash, changedAssignmentHash)
+	}
+	changedInput, err := invocationRequestHash(command, 7, binding, []ModelCapability{"structured.output"}, []byte(`{"type":"object"}`), SHA256Bytes([]byte("changed-input")), 17, policyHash, 27, identityPolicyHash, assignment)
+	if err != nil || changedInput == first {
+		t.Fatalf("model input digest was not pinned in request hash: first=%s changed=%s err=%v", first, changedInput, err)
 	}
 }
 

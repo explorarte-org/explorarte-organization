@@ -34,11 +34,24 @@ type chatRequest struct {
 	ResponseFormat      json.RawMessage `json:"response_format,omitempty"`
 	ReasoningEffort     string          `json:"reasoning_effort,omitempty"`
 	Stream              bool            `json:"stream"`
+	Tools               []chatTool      `json:"tools,omitempty"`
 }
 
 type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string         `json:"role"`
+	Content    string         `json:"content,omitempty"`
+	ToolCallID string         `json:"tool_call_id,omitempty"`
+	ToolCalls  []chatToolCall `json:"tool_calls,omitempty"`
+}
+
+type chatTool struct {
+	Type     string           `json:"type"`
+	Function chatToolFunction `json:"function"`
+}
+type chatToolFunction struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters"`
 }
 
 type chatResponse struct {
@@ -58,6 +71,8 @@ type chatResponseMessage struct {
 }
 
 type chatToolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type,omitempty"`
 	Function struct {
 		Name      string          `json:"name"`
 		Arguments json.RawMessage `json:"arguments"`
@@ -224,7 +239,7 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 		if strings.TrimSpace(call.Function.Name) == "" {
 			return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureResponseReceived, Outcome: responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", "tool_call_name_missing", false), Cause: modelruntime.ErrResponseRejected}
 		}
-		tools = append(tools, modelruntime.RawToolIntent{Name: call.Function.Name, Arguments: append([]byte(nil), call.Function.Arguments...)})
+		tools = append(tools, modelruntime.RawToolIntent{ID: call.ID, Name: call.Function.Name, Arguments: append([]byte(nil), call.Function.Arguments...)})
 	}
 	// A provider-side content block, or a truncated response with nothing
 	// usable, must never be classified as success: the caller would silently
@@ -257,11 +272,15 @@ func encodeRequest(request modelruntime.CanonicalRequest) ([]byte, error) {
 	if request.ProviderID != ProviderID || strings.TrimSpace(request.ProviderModelID) == "" || request.MaxOutputTokens <= 0 {
 		return nil, modelruntime.ErrInvalidRequest
 	}
+	messages, tools, err := encodeModelInput(request)
+	if err != nil {
+		return nil, err
+	}
 	payload := chatRequest{
 		Model:           request.ProviderModelID,
-		Messages:        []chatMessage{{Role: "user", Content: string(request.RenderedContext)}},
+		Messages:        messages,
 		Temperature:     request.Temperature,
-		ReasoningEffort: request.ReasoningEffort, Stream: false,
+		ReasoningEffort: request.ReasoningEffort, Stream: false, Tools: tools,
 	}
 	// Google's OpenAI-compatibility layer for Gemini accepts both max_tokens
 	// and max_completion_tokens plus reasoning_effort, and applies them to
@@ -293,6 +312,41 @@ func encodeRequest(request modelruntime.CanonicalRequest) ([]byte, error) {
 		}
 	}
 	return json.Marshal(payload)
+}
+
+func encodeModelInput(request modelruntime.CanonicalRequest) ([]chatMessage, []chatTool, error) {
+	input := request.ModelInput.Envelope
+	if input.SchemaVersion == "" {
+		if len(request.RenderedContext) == 0 {
+			return nil, nil, modelruntime.ErrInvalidRequest
+		}
+		return []chatMessage{{Role: "user", Content: string(request.RenderedContext)}}, nil, nil
+	}
+	if input.SchemaVersion != modelruntime.ModelInputEnvelopeSchemaV1 || input.ProviderContinuationRef != "" {
+		return nil, nil, modelruntime.ErrInvalidRequest
+	}
+	messages := make([]chatMessage, 0, len(input.StablePrefix)+len(input.VisibleHistory))
+	appendMessage := func(source modelruntime.ModelInputMessage) {
+		message := chatMessage{Role: string(source.Role), Content: source.Content, ToolCallID: source.ToolCallID}
+		for _, sourceCall := range source.ToolCalls {
+			call := chatToolCall{ID: sourceCall.ID, Type: "function"}
+			call.Function.Name = sourceCall.Name
+			call.Function.Arguments = append([]byte(nil), sourceCall.Arguments...)
+			message.ToolCalls = append(message.ToolCalls, call)
+		}
+		messages = append(messages, message)
+	}
+	for _, message := range input.StablePrefix {
+		appendMessage(message)
+	}
+	for _, message := range input.VisibleHistory {
+		appendMessage(message)
+	}
+	tools := make([]chatTool, 0, len(input.ToolDefinitions))
+	for _, source := range input.ToolDefinitions {
+		tools = append(tools, chatTool{Type: "function", Function: chatToolFunction{Name: source.Name, Description: source.Description, Parameters: append([]byte(nil), source.InputSchema...)}})
+	}
+	return messages, tools, nil
 }
 
 func decodeContent(raw json.RawMessage) ([]byte, error) {

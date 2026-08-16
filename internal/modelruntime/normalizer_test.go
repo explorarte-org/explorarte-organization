@@ -8,7 +8,7 @@ import (
 
 func TestNormalizerStripsHiddenReasoningAndCanonicalizesJSON(t *testing.T) {
 	inv := Invocation{ID: 1, OutputMode: OutputJSON, OutputSchema: json.RawMessage(`{"type":"object","required":["ok"],"properties":{"ok":{"type":"boolean"}},"additionalProperties":false}`)}
-	raw := RawResponse{Content: []byte(`{"ok":true}`), HiddenReasoning: bytes.Repeat([]byte("secret"), 10), ToolIntents: []RawToolIntent{{Name: "read.only", Arguments: []byte(`{"z":1,"a":2}`)}}}
+	raw := RawResponse{Content: []byte(`{"ok":true}`), HiddenReasoning: bytes.Repeat([]byte("secret"), 10), ToolIntents: []RawToolIntent{{ID: "call-1", Name: "read.only", Arguments: []byte(`{"z":1,"a":2}`)}}}
 	got, err := (Normalizer{MaxResponseBytes: 1024, MaxToolIntents: 2}).Normalize(inv, 2, raw)
 	if err != nil {
 		t.Fatal(err)
@@ -19,6 +19,9 @@ func TestNormalizerStripsHiddenReasoningAndCanonicalizesJSON(t *testing.T) {
 	}
 	if string(got.Result.ToolIntents[0].Arguments) != `{"a":2,"z":1}` {
 		t.Fatalf("arguments not canonical: %s", got.Result.ToolIntents[0].Arguments)
+	}
+	if got.Result.ToolIntents[0].ID != "call-1" {
+		t.Fatalf("provider tool call ID was not preserved: %+v", got.Result.ToolIntents[0])
 	}
 }
 func TestNormalizerRejectsSchemaMismatchAndTrailingJSON(t *testing.T) {

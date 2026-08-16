@@ -155,6 +155,7 @@ type RegistryStore interface {
 
 type InvocationStore interface {
 	CreateInvocation(context.Context, PreparedInvocation, int) (CreateInvocationResult, error)
+	GetModelInput(context.Context, int64) (PreparedModelInput, error)
 	GetInvocation(context.Context, int64) (Invocation, error)
 	ListInvocations(context.Context, string, int) ([]Invocation, error)
 	ClaimInvocation(context.Context, ClaimCommand, RuntimeConfig) (ClaimedInvocation, error)
@@ -188,6 +189,7 @@ type PreparedInvocation struct {
 	EgressPolicy           modelegress.ResolvedPolicy
 	IdentityPolicy         modelidentity.ResolvedPolicy
 	Assignment             modeldispatch.ResolvedAssignment
+	ModelInput             PreparedModelInput
 }
 type ClaimCommand struct {
 	InvocationID         int64

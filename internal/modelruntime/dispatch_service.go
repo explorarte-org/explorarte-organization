@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Mireuz13/explorarte-organization/internal/contentpolicy"
 	"github.com/Mireuz13/explorarte-organization/internal/modeldispatch"
 	"github.com/Mireuz13/explorarte-organization/internal/modelegress"
 	"github.com/Mireuz13/explorarte-organization/internal/modelidentity"
@@ -332,7 +333,23 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64) (Dis
 	if err = s.contexts.ValidateContextSnapshot(ctx, invocation.ContextSnapshotID); err != nil {
 		return failBeforeSend("context_drift", fmt.Errorf("%w: %v", ErrContextRejected, err), AuditInvocationFailed)
 	}
-	classifications, classificationsHash := modelegress.NormalizeClassifications(snapshot.DataClasses)
+	storedModelInput, err := s.store.GetModelInput(ctx, invocation.ID)
+	if err != nil {
+		return failBeforeSend("model_input_unavailable", err, AuditInvocationFailed)
+	}
+	modelInput, err := ValidateStoredModelInput(storedModelInput, snapshot)
+	if err != nil {
+		return failBeforeSend("model_input_invalid", err, AuditInvocationFailed)
+	}
+	effectiveClasses := append([]string(nil), snapshot.DataClasses...)
+	effectiveClasses = append(effectiveClasses, modelInput.Envelope.InputClassifications...)
+	// Output schemas may be rendered as provider-visible instructions by an
+	// adapter. They are durable on the invocation and must participate in the
+	// same secret gate as the envelope rather than bypassing it as metadata.
+	if contentpolicy.Analyze(string(invocation.OutputSchema)).HasCredentials() {
+		effectiveClasses = append(effectiveClasses, string(modelegress.ClassificationSecret))
+	}
+	classifications, classificationsHash := modelegress.NormalizeClassifications(effectiveClasses)
 	actionDigest, err = ActionDigest(invocation)
 	if err != nil {
 		return failBeforeSend("action_digest_failed", err, AuditInvocationFailed)
@@ -455,6 +472,9 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64) (Dis
 	if renderedHash != snapshot.RenderedHash {
 		return failBeforeSend("context_render_hash_mismatch", ErrContextRejected, AuditInvocationFailed)
 	}
+	if err = ValidateModelInputContextRender(modelInput, renderedContext); err != nil {
+		return failBeforeSend("model_input_context_drift", err, AuditInvocationFailed)
+	}
 	// R10.4: best-effort ProviderRender v1 telemetry (StablePrefix/
 	// DynamicSuffix hashes/bytes) -- observability only, never a dispatch
 	// gate. Both s.contexts and s.store are OPTIONAL capabilities here
@@ -462,10 +482,12 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64) (Dis
 	// doesn't support either (any test double, or any deployment that
 	// hasn't upgraded) leaves this whole block a no-op, exactly as before
 	// R10.4 existed.
-	if reader, ok := s.contexts.(ProviderRenderTelemetryReader); ok {
-		if telemetry, telemetryErr := reader.GetProviderRenderTelemetry(ctx, invocation.ContextSnapshotID); telemetryErr == nil {
-			if recorder, ok := s.store.(ProviderRenderTelemetryRecorder); ok {
-				_ = recorder.RecordProviderRenderTelemetry(persistCtx, invocation.ID, telemetry)
+	if isLegacySingleShotModelInput(modelInput, renderedContext) {
+		if reader, ok := s.contexts.(ProviderRenderTelemetryReader); ok {
+			if telemetry, telemetryErr := reader.GetProviderRenderTelemetry(ctx, invocation.ContextSnapshotID); telemetryErr == nil {
+				if recorder, ok := s.store.(ProviderRenderTelemetryRecorder); ok {
+					_ = recorder.RecordProviderRenderTelemetry(persistCtx, invocation.ID, telemetry)
+				}
 			}
 		}
 	}
@@ -473,7 +495,7 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64) (Dis
 	var costReservation CostReservation
 	reservationApplied, reservationSettled := false, false
 	if s.costGate != nil {
-		estimatedInputTokens := estimateTokenCount(renderedContext)
+		estimatedInputTokens := estimateTokenCount(modelInput.CanonicalBytes)
 		reserved, reserveErr := s.costGate.Reserve(ctx, CostReservationRequest{
 			OrganizationID: invocation.OrganizationID, TaskID: invocation.TaskID, InvocationID: invocation.ID,
 			ProviderID: invocation.ProviderID, ProviderModelID: invocation.ProviderModelID,
@@ -510,6 +532,7 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64) (Dis
 		ContextSnapshotID:      invocation.ContextSnapshotID,
 		ContextRenderedHash:    renderedHash,
 		RenderedContext:        renderedContext,
+		ModelInput:             modelInput,
 		RequiredCapabilities:   invocation.RequiredCapabilities,
 		OutputMode:             invocation.OutputMode,
 		OutputSchema:           invocation.OutputSchema,

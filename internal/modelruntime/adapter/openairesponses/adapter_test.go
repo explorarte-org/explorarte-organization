@@ -49,6 +49,33 @@ func validRequest(deadline time.Time) modelruntime.CanonicalRequest {
 	}
 }
 
+func TestEncodeRequestCarriesStructuredHistoryAndTools(t *testing.T) {
+	request := validRequest(time.Now().Add(time.Minute))
+	request.ModelInput = modelruntime.PreparedModelInput{Envelope: modelruntime.ModelInputEnvelope{
+		SchemaVersion: modelruntime.ModelInputEnvelopeSchemaV1,
+		StablePrefix:  []modelruntime.ModelInputMessage{{Role: modelruntime.ModelInputRoleUser, Content: "hello"}},
+		VisibleHistory: []modelruntime.ModelInputMessage{
+			{Role: modelruntime.ModelInputRoleAssistant, ToolCalls: []modelruntime.ModelInputToolCall{{ID: "call-1", Name: "lookup_fixture", Arguments: json.RawMessage(`{"id":"x"}`)}}},
+			{Role: modelruntime.ModelInputRoleTool, ToolCallID: "call-1", ToolName: "lookup_fixture", Content: `{"value":"ok"}`},
+		},
+		ToolDefinitions: []modelruntime.ModelInputToolDefinition{{Name: "lookup_fixture", InputSchema: json.RawMessage(`{"type":"object"}`)}},
+	}}
+	body, err := encodeRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload responsesRequest
+	if err = json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Input) != 3 || payload.Input[1].Type != "function_call" || payload.Input[1].CallID != "call-1" || payload.Input[2].Type != "function_call_output" || payload.Input[2].CallID != "call-1" {
+		t.Fatalf("structured Responses input was not preserved: %+v", payload.Input)
+	}
+	if len(payload.Tools) != 1 || payload.Tools[0].Name != "lookup_fixture" {
+		t.Fatalf("Responses tool definitions were not preserved: %+v", payload.Tools)
+	}
+}
+
 func TestConfigRequiresSecureExplicitEndpointAndCredentialReference(t *testing.T) {
 	credential := writeCredential(t, "test-provider-token")
 	for name, endpoint := range map[string]string{

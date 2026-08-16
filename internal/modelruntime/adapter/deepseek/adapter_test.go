@@ -176,6 +176,33 @@ func TestEncodeRequestUsesMaxTokensFieldMatchingReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestEncodeRequestCarriesStructuredHistoryAndTools(t *testing.T) {
+	request := validRequest(time.Now().Add(time.Minute))
+	request.ModelInput = modelruntime.PreparedModelInput{Envelope: modelruntime.ModelInputEnvelope{
+		SchemaVersion: modelruntime.ModelInputEnvelopeSchemaV1,
+		StablePrefix:  []modelruntime.ModelInputMessage{{Role: modelruntime.ModelInputRoleUser, Content: "hello"}},
+		VisibleHistory: []modelruntime.ModelInputMessage{
+			{Role: modelruntime.ModelInputRoleAssistant, ToolCalls: []modelruntime.ModelInputToolCall{{ID: "call-1", Name: "lookup_fixture", Arguments: json.RawMessage(`{"id":"x"}`)}}},
+			{Role: modelruntime.ModelInputRoleTool, ToolCallID: "call-1", ToolName: "lookup_fixture", Content: `{"value":"ok"}`},
+		},
+		ToolDefinitions: []modelruntime.ModelInputToolDefinition{{Name: "lookup_fixture", Description: "read fixture", InputSchema: json.RawMessage(`{"type":"object"}`)}},
+	}}
+	body, err := encodeRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload chatRequest
+	if err = json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Messages) != 3 || payload.Messages[1].ToolCalls[0].ID != "call-1" || payload.Messages[2].ToolCallID != "call-1" {
+		t.Fatalf("structured history was not preserved: %+v", payload.Messages)
+	}
+	if len(payload.Tools) != 1 || payload.Tools[0].Function.Name != "lookup_fixture" {
+		t.Fatalf("tool definitions were not preserved: %+v", payload.Tools)
+	}
+}
+
 // TestDispatchUsesStructuredOutputWithoutPersistingSchemaContent confirms
 // the request DeepSeek's real Chat Completions endpoint actually accepts:
 // response_format={"type":"json_object"}, never the native json_schema/

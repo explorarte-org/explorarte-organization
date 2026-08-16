@@ -46,11 +46,32 @@ type chatRequest struct {
 	Temperature         *float64        `json:"temperature,omitempty"`
 	ResponseFormat      json.RawMessage `json:"response_format,omitempty"`
 	Thinking            thinkingConfig  `json:"thinking"`
+	Tools               []chatTool      `json:"tools,omitempty"`
 }
 
 type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string         `json:"role"`
+	Content    string         `json:"content,omitempty"`
+	ToolCallID string         `json:"tool_call_id,omitempty"`
+	ToolCalls  []chatToolCall `json:"tool_calls,omitempty"`
+}
+
+type chatTool struct {
+	Type     string           `json:"type"`
+	Function chatToolFunction `json:"function"`
+}
+type chatToolFunction struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters"`
+}
+type chatToolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type,omitempty"`
+	Function struct {
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
+	} `json:"function"`
 }
 
 type chatResponse struct {
@@ -74,14 +95,15 @@ type chatResponseMessage struct {
 	// no equivalent field today (confirmed by reading its chatResponseMessage
 	// struct -- it has no hidden-reasoning field at all), so this is
 	// MiMo-specific wiring, not a shared pattern being reused.
-	ReasoningContent string `json:"reasoning_content"`
+	ReasoningContent string         `json:"reasoning_content"`
+	ToolCalls        []chatToolCall `json:"tool_calls"`
 }
 
 type chatUsage struct {
 	PromptTokens            int64                    `json:"prompt_tokens"`
 	CompletionTokens        int64                    `json:"completion_tokens"`
-	PromptTokensDetails     *promptTokensDetails      `json:"prompt_tokens_details"`
-	CompletionTokensDetails *completionTokensDetails  `json:"completion_tokens_details"`
+	PromptTokensDetails     *promptTokensDetails     `json:"prompt_tokens_details"`
+	CompletionTokensDetails *completionTokensDetails `json:"completion_tokens_details"`
 }
 
 type promptTokensDetails struct {
@@ -386,6 +408,10 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 		outcome := responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", "response_content_invalid", false, telemetry)
 		return usageOnlyResponse, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureResponseReceived, Outcome: outcome, Cause: err}
 	}
+	toolIntents := make([]modelruntime.RawToolIntent, 0, len(decoded.Choices[0].Message.ToolCalls))
+	for _, call := range decoded.Choices[0].Message.ToolCalls {
+		toolIntents = append(toolIntents, modelruntime.RawToolIntent{ID: call.ID, Name: call.Function.Name, Arguments: append([]byte(nil), call.Function.Arguments...)})
+	}
 	// finish_reason:"abort" was observed once, only on mimo-v2.5-pro, cause
 	// unknown (audit section C/D). Headers and a full body were received,
 	// so this is classified AdapterFailureResponseReceived like every other
@@ -396,7 +422,7 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 	case finishReason == "abort":
 		outcome := responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", "response_aborted", false, telemetry)
 		return usageOnlyResponse, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureResponseReceived, Outcome: outcome, Cause: modelruntime.ErrResponseRejected}
-	case finishReason == "length" && len(content) == 0:
+	case finishReason == "length" && len(content) == 0 && len(toolIntents) == 0:
 		// Same reasoning as deepseek: with thinking enabled, an
 		// insufficient max_completion_tokens budget can be entirely
 		// consumed by reasoning_content, leaving nothing usable in
@@ -417,7 +443,7 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 		RequestDuration: telemetry.requestDuration,
 	}
 	return modelruntime.RawResponse{
-		Content: content, ToolIntents: nil,
+		Content: content, ToolIntents: toolIntents,
 		HiddenReasoning:   []byte(decoded.Choices[0].Message.ReasoningContent),
 		ProviderRequestID: providerRequestID,
 		InputTokens:       decoded.Usage.PromptTokens, OutputTokens: decoded.Usage.CompletionTokens,
@@ -430,20 +456,24 @@ func encodeRequest(request modelruntime.CanonicalRequest) ([]byte, error) {
 	if request.ProviderID != ProviderID || strings.TrimSpace(request.ProviderModelID) == "" || request.MaxOutputTokens <= 0 {
 		return nil, modelruntime.ErrInvalidRequest
 	}
-	renderedContext := string(request.RenderedContext)
+	messages, tools, err := encodeModelInput(request)
+	if err != nil {
+		return nil, err
+	}
 	if request.OutputMode == modelruntime.OutputJSON && len(request.OutputSchema) > 0 {
 		instruction, err := jsonObjectModeInstruction(request.OutputSchema)
 		if err != nil {
 			return nil, err
 		}
-		renderedContext = renderedContext + "\n\n" + instruction
+		messages[0].Content = messages[0].Content + "\n\n" + instruction
 	}
 	payload := chatRequest{
 		Model:               request.ProviderModelID,
-		Messages:            []chatMessage{{Role: "user", Content: renderedContext}},
+		Messages:            messages,
 		Temperature:         request.Temperature,
 		MaxCompletionTokens: request.MaxOutputTokens,
 		Thinking:            alwaysEnabledThinking,
+		Tools:               tools,
 	}
 	if request.OutputMode == modelruntime.OutputJSON {
 		// MiMo documents response_format:{"type":"json_object"} as
@@ -456,6 +486,41 @@ func encodeRequest(request modelruntime.CanonicalRequest) ([]byte, error) {
 		payload.ResponseFormat = json.RawMessage(`{"type":"json_object"}`)
 	}
 	return json.Marshal(payload)
+}
+
+func encodeModelInput(request modelruntime.CanonicalRequest) ([]chatMessage, []chatTool, error) {
+	input := request.ModelInput.Envelope
+	if input.SchemaVersion == "" {
+		if len(request.RenderedContext) == 0 {
+			return nil, nil, modelruntime.ErrInvalidRequest
+		}
+		return []chatMessage{{Role: "user", Content: string(request.RenderedContext)}}, nil, nil
+	}
+	if input.SchemaVersion != modelruntime.ModelInputEnvelopeSchemaV1 || input.ProviderContinuationRef != "" {
+		return nil, nil, modelruntime.ErrInvalidRequest
+	}
+	messages := make([]chatMessage, 0, len(input.StablePrefix)+len(input.VisibleHistory))
+	appendMessage := func(source modelruntime.ModelInputMessage) {
+		message := chatMessage{Role: string(source.Role), Content: source.Content, ToolCallID: source.ToolCallID}
+		for _, sourceCall := range source.ToolCalls {
+			call := chatToolCall{ID: sourceCall.ID, Type: "function"}
+			call.Function.Name = sourceCall.Name
+			call.Function.Arguments = append([]byte(nil), sourceCall.Arguments...)
+			message.ToolCalls = append(message.ToolCalls, call)
+		}
+		messages = append(messages, message)
+	}
+	for _, message := range input.StablePrefix {
+		appendMessage(message)
+	}
+	for _, message := range input.VisibleHistory {
+		appendMessage(message)
+	}
+	tools := make([]chatTool, 0, len(input.ToolDefinitions))
+	for _, source := range input.ToolDefinitions {
+		tools = append(tools, chatTool{Type: "function", Function: chatToolFunction{Name: source.Name, Description: source.Description, Parameters: append([]byte(nil), source.InputSchema...)}})
+	}
+	return messages, tools, nil
 }
 
 // jsonObjectModeInstruction renders the output schema as an explicit

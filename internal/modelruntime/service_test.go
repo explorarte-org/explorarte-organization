@@ -158,6 +158,7 @@ type fakeStore struct {
 	created            bool
 	cancelled          bool
 	prepared           PreparedInvocation
+	modelInput         PreparedModelInput
 	allowEvaluation    *modelegress.PreSendEvaluation
 	denyEvaluation     *modelegress.PreSendEvaluation
 	egressPolicy       *modelegress.ResolvedPolicy
@@ -288,9 +289,13 @@ func (f *fakeStore) LoadExecutionPrivateKey(string) (ed25519.PrivateKey, error) 
 func (f *fakeStore) CreateInvocation(_ context.Context, p PreparedInvocation, _ int) (CreateInvocationResult, error) {
 	f.created = true
 	f.prepared = p
+	f.modelInput = p.ModelInput
 	v := f.invocation
 	v.RequestHash = p.RequestHash
 	return CreateInvocationResult{Invocation: v}, nil
+}
+func (f *fakeStore) GetModelInput(context.Context, int64) (PreparedModelInput, error) {
+	return f.modelInput, nil
 }
 func (f *fakeStore) GetInvocation(context.Context, int64) (Invocation, error) {
 	return f.invocation, nil
@@ -411,6 +416,11 @@ func serviceFixture() (*fakeStore, fakeCatalog, fakeTaskReader, *fakeContextRead
 	catalog := fakeCatalog{org: OrganizationRef{ID: "explorarte", RevisionID: 7, ModelEgressPolicyHash: SHA256Bytes([]byte("egress")), CapabilityMatrixHash: SHA256Bytes([]byte("matrix"))}, role: RoleRef{ID: "ingenieria_ia/code-runner", ModelPolicy: "department.worker", Enabled: true, Executable: true, AuthorityClass: "execution_service"}}
 	task := fakeTaskReader{ref: TaskAttemptRef{TaskID: 3, AttemptID: 4, OrganizationID: "explorarte", OrganizationRevisionID: 7, AssignedRoleID: "ingenieria_ia/code-runner", TaskStatus: "running", AttemptStatus: "running", LeaseHolderID: "test-worker", LeaseExpiresAt: now.Add(time.Hour)}}
 	contexts := &fakeContextReader{ref: ContextSnapshotRef{ID: 5, OrganizationID: "explorarte", OrganizationRevisionID: 7, ActorRoleID: "ingenieria_ia/code-runner", TaskRef: "3", Status: "ready", RenderedHash: SHA256Bytes(rendered), DataClasses: []string{"organizational"}}, rendered: rendered}
+	modelInput, err := PrepareModelInput(nil, contexts.ref, rendered)
+	if err != nil {
+		panic(err)
+	}
+	store.modelInput = modelInput
 	assignments := fakeAssignmentResolver{resolved: resolved}
 	principals := fakePrincipalResolver{principal: principal}
 	return store, catalog, task, contexts, assignments, principals, now
@@ -432,6 +442,148 @@ func TestInvocationServiceCreatesFrozenInvocation(t *testing.T) {
 	}
 	if store.prepared.EgressPolicy.Version.ID != 17 || store.prepared.EgressPolicy.CanonicalHash != SHA256Bytes([]byte("egress")) {
 		t.Fatalf("egress policy was not pinned: %#v", store.prepared.EgressPolicy)
+	}
+}
+
+func TestInvocationServicePersistsSuppliedModelInputBeforeDispatch(t *testing.T) {
+	store, catalog, task, contexts, assignments, _, now := serviceFixture()
+	service, err := NewInvocationService("explorarte", catalog, task, contexts, store, store, store, assignments, ClockFunc(func() time.Time { return now }), 10, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := &ModelInputEnvelope{
+		SchemaVersion: ModelInputEnvelopeSchemaV1, ContextSnapshotID: contexts.ref.ID,
+		CanonicalProjectionDigest: SHA256Bytes([]byte("run-1-turn-2")),
+		StablePrefix:              []ModelInputMessage{{Role: ModelInputRoleUser, Content: string(contexts.rendered)}},
+		VisibleHistory: []ModelInputMessage{
+			{Role: ModelInputRoleAssistant, ToolCalls: []ModelInputToolCall{{ID: "call-1", Name: "lookup_fixture", Arguments: json.RawMessage(`{"id":"fixture"}`)}}},
+			{Role: ModelInputRoleTool, ToolCallID: "call-1", ToolName: "lookup_fixture", Content: `{"value":"safe"}`},
+		},
+		ToolDefinitions: []ModelInputToolDefinition{{Name: "lookup_fixture", InputSchema: json.RawMessage(`{"type":"object"}`)}},
+	}
+	command := CreateInvocationCommand{OrganizationID: "explorarte", TaskID: 3, AttemptID: 4, SubjectRoleID: "ingenieria_ia/code-runner", ContextSnapshotID: 5, ModelInput: input, Purpose: "harness turn", RequiredCapabilities: []ModelCapability{"structured.output"}, OutputMode: OutputJSON, OutputSchema: json.RawMessage(`{"type":"object"}`), MaxOutputTokens: 100, ThinkingMode: ThinkingDisabled, IdempotencyKey: "harness-turn-2", Deadline: now.Add(time.Hour)}
+	created, err := service.Create(context.Background(), command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !store.created || store.prepared.ModelInput.Envelope.CanonicalProjectionDigest != input.CanonicalProjectionDigest || len(store.prepared.ModelInput.CanonicalBytes) == 0 {
+		t.Fatalf("model input was not durably prepared with invocation: %+v", store.prepared.ModelInput)
+	}
+	legacyCommand := command
+	legacyCommand.ModelInput = nil
+	legacyCommand.IdempotencyKey = "legacy-turn"
+	legacy, err := service.Create(context.Background(), legacyCommand)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Invocation.RequestHash == legacy.Invocation.RequestHash {
+		t.Fatal("invocation request hash did not bind supplied model input")
+	}
+}
+
+func TestInvocationServiceRejectsCredentialBearingModelInputBeforePersistence(t *testing.T) {
+	secret := "sk-abcdefghijklmnopqrstuvwxyz123456"
+	cases := []struct {
+		name         string
+		mutateInput  func(*ModelInputEnvelope)
+		outputSchema json.RawMessage
+	}{
+		{name: "assistant content", mutateInput: func(input *ModelInputEnvelope) {
+			input.VisibleHistory = []ModelInputMessage{{Role: ModelInputRoleAssistant, Content: "API_KEY=" + secret}}
+		}},
+		{name: "tool result", mutateInput: func(input *ModelInputEnvelope) {
+			input.VisibleHistory = []ModelInputMessage{
+				{Role: ModelInputRoleAssistant, ToolCalls: []ModelInputToolCall{{ID: "call-1", Name: "lookup_fixture", Arguments: json.RawMessage(`{"id":"fixture"}`)}}},
+				{Role: ModelInputRoleTool, ToolCallID: "call-1", ToolName: "lookup_fixture", Content: "API_KEY=" + secret},
+			}
+		}},
+		{name: "tool call arguments", mutateInput: func(input *ModelInputEnvelope) {
+			input.VisibleHistory = []ModelInputMessage{{Role: ModelInputRoleAssistant, ToolCalls: []ModelInputToolCall{{ID: "call-1", Name: "lookup_fixture", Arguments: json.RawMessage(`{"api_key":"` + secret + `"}`)}}}}
+		}},
+		{name: "tool definition schema", mutateInput: func(input *ModelInputEnvelope) {
+			input.ToolDefinitions = []ModelInputToolDefinition{{Name: "lookup_fixture", InputSchema: json.RawMessage(`{"type":"object","description":"API_KEY=` + secret + `"}`)}}
+		}},
+		{name: "explicit secret classification", mutateInput: func(input *ModelInputEnvelope) {
+			input.InputClassifications = []string{string(modelegress.ClassificationSecret)}
+		}},
+		{name: "provider visible output schema", outputSchema: json.RawMessage(`{"type":"object","description":"API_KEY=` + secret + `"}`)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store, catalog, task, contexts, assignments, _, now := serviceFixture()
+			service, err := NewInvocationService("explorarte", catalog, task, contexts, store, store, store, assignments, ClockFunc(func() time.Time { return now }), 10, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := &ModelInputEnvelope{
+				SchemaVersion: ModelInputEnvelopeSchemaV1, ContextSnapshotID: contexts.ref.ID,
+				CanonicalProjectionDigest: SHA256Bytes([]byte("credential-admission-" + tc.name)),
+				StablePrefix:              []ModelInputMessage{{Role: ModelInputRoleUser, Content: string(contexts.rendered)}},
+			}
+			if tc.mutateInput != nil {
+				tc.mutateInput(input)
+			}
+			outputSchema := tc.outputSchema
+			if len(outputSchema) == 0 {
+				outputSchema = json.RawMessage(`{"type":"object"}`)
+			}
+			command := CreateInvocationCommand{OrganizationID: "explorarte", TaskID: 3, AttemptID: 4, SubjectRoleID: "ingenieria_ia/code-runner", ContextSnapshotID: 5, ModelInput: input, Purpose: "credential admission", RequiredCapabilities: []ModelCapability{"structured.output"}, OutputMode: OutputJSON, OutputSchema: outputSchema, MaxOutputTokens: 100, ThinkingMode: ThinkingDisabled, IdempotencyKey: "credential-admission-" + tc.name, Deadline: now.Add(time.Hour)}
+			provider := &deterministicAdapter{}
+			_, err = service.Create(context.Background(), command)
+			if !errors.Is(err, ErrModelInputSecretRejected) {
+				t.Fatalf("credential-bearing input error=%v", err)
+			}
+			if store.created || len(store.prepared.ModelInput.CanonicalBytes) != 0 {
+				t.Fatalf("credential-bearing input crossed durable admission: created=%t prepared_bytes=%d", store.created, len(store.prepared.ModelInput.CanonicalBytes))
+			}
+			if provider.calls != 0 {
+				t.Fatalf("credential-bearing input reached provider: calls=%d", provider.calls)
+			}
+		})
+	}
+}
+
+func TestDispatchDeniesCredentialIntroducedByDynamicModelInput(t *testing.T) {
+	store, catalog, task, contexts, assignments, principals, now := serviceFixture()
+	input := ModelInputEnvelope{
+		SchemaVersion: ModelInputEnvelopeSchemaV1, ContextSnapshotID: contexts.ref.ID,
+		CanonicalProjectionDigest: SHA256Bytes([]byte("turn-2-projection")),
+		StablePrefix:              []ModelInputMessage{{Role: ModelInputRoleUser, Content: string(contexts.rendered)}},
+		VisibleHistory:            []ModelInputMessage{{Role: ModelInputRoleAssistant, Content: "API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456"}},
+	}
+	prepared, err := PrepareModelInput(&input, contexts.ref, contexts.rendered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.modelInput = prepared
+	provider := &deterministicAdapter{}
+	service, err := NewDispatchService("explorarte", dispatchCfgWithCostGate(), catalog, task, contexts, fakeEvaluator{allow: true}, store, modelegress.NewEvaluator(), store, principals, assignments, store, store, fakeAdapterRegistry{value: provider}, ClockFunc(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.Dispatch(context.Background(), 11)
+	if !errors.Is(err, ErrEgressDenied) {
+		t.Fatalf("dynamic credential was not denied: %v", err)
+	}
+	if provider.calls != 0 || contexts.renderCalls != 0 {
+		t.Fatalf("credential denial crossed pre-send boundary: provider_calls=%d render_calls=%d", provider.calls, contexts.renderCalls)
+	}
+	if store.denyEvaluation == nil || !containsModelInputClass(store.denyEvaluation.ContextClassifications, string(modelegress.ClassificationSecret)) {
+		t.Fatalf("effective egress evidence omitted dynamic secret: %+v", store.denyEvaluation)
+	}
+}
+
+func TestDispatchDeniesCredentialInProviderVisibleOutputContract(t *testing.T) {
+	store, catalog, task, contexts, assignments, principals, now := serviceFixture()
+	store.invocation.OutputSchema = json.RawMessage(`{"type":"object","description":"API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456"}`)
+	provider := &deterministicAdapter{}
+	service, err := NewDispatchService("explorarte", dispatchCfgWithCostGate(), catalog, task, contexts, fakeEvaluator{allow: true}, store, modelegress.NewEvaluator(), store, principals, assignments, store, store, fakeAdapterRegistry{value: provider}, ClockFunc(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.Dispatch(context.Background(), 11)
+	if !errors.Is(err, ErrEgressDenied) || provider.calls != 0 || contexts.renderCalls != 0 {
+		t.Fatalf("provider-visible output contract bypassed secret egress: err=%v provider_calls=%d render_calls=%d", err, provider.calls, contexts.renderCalls)
 	}
 }
 

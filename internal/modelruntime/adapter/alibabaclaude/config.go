@@ -12,7 +12,7 @@ import (
 const (
 	ProviderID            = "alibaba_token_plan_via_claude_code"
 	AdapterID             = "alibaba_claude_code_print"
-	AdapterVersion        = 1
+	AdapterVersion        = 2
 	RequestSchemaVersion  = "claude.code.print.request.v1"
 	ResponseSchemaVersion = "claude.code.print.response.v1"
 

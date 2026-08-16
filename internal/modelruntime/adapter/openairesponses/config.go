@@ -22,7 +22,7 @@ import (
 const (
 	ProviderID            = "openai_responses"
 	AdapterID             = "openai_responses_v1"
-	AdapterVersion        = 1
+	AdapterVersion        = 2
 	RequestSchemaVersion  = "openai.responses.request.v1"
 	ResponseSchemaVersion = "openai.responses.response.v1"
 

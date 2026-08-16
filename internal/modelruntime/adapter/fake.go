@@ -15,7 +15,7 @@ func NewFake() *Fake             { return &Fake{} }
 func (*Fake) ProviderID() string { return "test.fake" }
 func (*Fake) Descriptor() modelruntime.AdapterDescriptor {
 	return modelruntime.AdapterDescriptor{
-		ProviderID: "test.fake", AdapterID: "fake", AdapterVersion: 1,
+		ProviderID: "test.fake", AdapterID: "fake", AdapterVersion: 2,
 		Transport: modelruntime.TransportFake, RequestSchemaVersion: "test.fake.request.v1",
 		ResponseSchemaVersion: "test.fake.response.v1",
 		EndpointFingerprint:   modelruntime.SHA256Bytes([]byte("test.fake:endpoint")),
@@ -32,20 +32,24 @@ func (*Fake) Preflight(ctx context.Context, request modelruntime.ProviderPreflig
 	return nil
 }
 func (*Fake) Dispatch(ctx context.Context, req modelruntime.CanonicalRequest) (modelruntime.RawResponse, error) {
-	if strings.Contains(string(req.RenderedContext), "[fake-block]") || strings.Contains(req.ProviderModelID, "fake-block") {
+	visibleInput := req.RenderedContext
+	if len(req.ModelInput.CanonicalBytes) > 0 {
+		visibleInput = req.ModelInput.CanonicalBytes
+	}
+	if strings.Contains(string(visibleInput), "[fake-block]") || strings.Contains(req.ProviderModelID, "fake-block") {
 		<-ctx.Done()
 		return modelruntime.RawResponse{CancellationConfirmed: true}, ctx.Err()
 	}
-	hash := modelruntime.SHA256Bytes(append(append([]byte{}, req.RenderedContext...), []byte(fmt.Sprintf("|%d|%s", req.InvocationID, req.ProviderModelID))...))
-	response := modelruntime.RawResponse{ProviderRequestID: "fake-" + hash[:16], InputTokens: int64(len(req.RenderedContext) / 4), OutputTokens: 16, ProviderReported: false, HiddenReasoning: []byte("hidden fake reasoning must never persist")}
+	hash := modelruntime.SHA256Bytes(append(append([]byte{}, visibleInput...), []byte(fmt.Sprintf("|%d|%s", req.InvocationID, req.ProviderModelID))...))
+	response := modelruntime.RawResponse{ProviderRequestID: "fake-" + hash[:16], InputTokens: int64(len(visibleInput) / 4), OutputTokens: 16, ProviderReported: false, HiddenReasoning: []byte("hidden fake reasoning must never persist")}
 	if req.OutputMode == modelruntime.OutputJSON {
 		body, _ := json.Marshal(map[string]any{"context_hash": req.ContextRenderedHash, "invocation_id": req.InvocationID, "provider": "test.fake"})
 		response.Content = body
 	} else {
 		response.Content = []byte("fake:" + hash[:24])
 	}
-	if strings.Contains(string(req.RenderedContext), "[fake-tool-intent]") {
-		response.ToolIntents = []modelruntime.RawToolIntent{{Name: "fake.inspect", Arguments: []byte(`{"read_only":true}`)}}
+	if strings.Contains(string(visibleInput), "[fake-tool-intent]") {
+		response.ToolIntents = []modelruntime.RawToolIntent{{ID: "fake-call-1", Name: "fake.inspect", Arguments: []byte(`{"read_only":true}`)}}
 	}
 	response.ProviderOutcome = modelruntime.ProviderOutcome{
 		OutcomeClassification: modelruntime.ProviderOutcomeResponseReceived,
