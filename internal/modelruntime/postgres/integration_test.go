@@ -43,6 +43,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
+	taskdomain "github.com/Mireuz13/explorarte-organization/internal/tasks"
 	taskpostgres "github.com/Mireuz13/explorarte-organization/internal/tasks/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/testdbguard"
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
@@ -271,7 +272,12 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 	}
 
 	t.Run("execution harness turn traverses durable model runtime dispatch", func(t *testing.T) {
-		harnessTaskRef, harnessSnapshotRef := insertModelExecutionFixture(t, ctx, platform, fakeRevisionID, "ingenieria_ia/code-runner", "harness-modelruntime")
+		taskDB, taskErr := taskpostgres.New(platform)
+		if taskErr != nil {
+			t.Fatal(taskErr)
+		}
+		principalID := strconv.FormatInt(principal.ID, 10)
+		harnessTaskRef, harnessSnapshotRef, harnessLeaseToken := claimModelExecutionFixture(t, ctx, platform, taskDB, fakeRevisionID, "ingenieria_ia/code-runner", "executive-orchestrator", principalID, "harness-modelruntime")
 		fixtureAssignmentForExistingPrincipal(t, ctx, dispatchStore, harnessTaskRef, "ingenieria_ia/code-runner", "ingenieria_ia/code-runner", principal, "harness-modelruntime")
 		harnessContexts := &staticContextReader{ref: harnessSnapshotRef, rendered: []byte("safe integration context")}
 		harnessTasks := staticTaskReader{ref: harnessTaskRef}
@@ -284,20 +290,12 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		if newErr != nil {
 			t.Fatal(newErr)
 		}
-		taskDB, taskErr := taskpostgres.New(platform)
-		if taskErr != nil {
-			t.Fatal(taskErr)
-		}
 		principalReader, taskErr := tasksauthority.NewCanonicalPrincipalReader(dispatchStore)
 		if taskErr != nil {
 			t.Fatal(taskErr)
 		}
 		authority, taskErr := tasksauthority.New(taskDB, principalReader)
 		if taskErr != nil {
-			t.Fatal(taskErr)
-		}
-		principalID := strconv.FormatInt(principal.ID, 10)
-		if _, taskErr = platform.Pool().Exec(ctx, `UPDATE task_leases SET holder_id=$1 WHERE task_id=$2 AND attempt_id=$3`, principalID, harnessTaskRef.TaskID, harnessTaskRef.AttemptID); taskErr != nil {
 			t.Fatal(taskErr)
 		}
 		modelExecutor, newErr := harnessmodelruntime.New(harnessInvocations, harnessDispatch, harnessmodelruntime.ClockFunc(time.Now), harnessmodelruntime.Config{
@@ -313,7 +311,7 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 				TaskID: harnessTaskRef.TaskID, AttemptID: harnessTaskRef.AttemptID, RoleID: harnessTaskRef.AssignedRoleID,
 				ExecutionPrincipalID: principalID, CorrelationID: "pg-harness-modelruntime", CausationID: "pg-harness-entry",
 			},
-			LeaseToken: "lease",
+			LeaseToken: harnessLeaseToken,
 			Context: executionharness.InitialContext{
 				ID: strconv.FormatInt(harnessSnapshotRef.ID, 10), Version: "context-snapshot-v1",
 				Digest: modelruntime.SHA256Bytes([]byte(contextBody)), Content: contextBody,
@@ -1644,6 +1642,60 @@ func insertModelExecutionFixture(t *testing.T, ctx context.Context, store *platf
 		t.Fatal(err)
 	}
 	return modelruntime.TaskAttemptRef{TaskID: taskID, AttemptID: attemptID, OrganizationID: modelIntegrationOrganization, OrganizationRevisionID: revisionID, AssignedRoleID: roleID, TaskStatus: "running", AttemptStatus: "running", LeaseHolderID: "integration-worker", LeaseExpiresAt: leaseExpiry}, modelruntime.ContextSnapshotRef{ID: snapshotID, OrganizationID: modelIntegrationOrganization, OrganizationRevisionID: revisionID, ActorRoleID: roleID, TaskRef: strconv.FormatInt(taskID, 10), Status: "ready", RenderedHash: modelruntime.SHA256Bytes(rendered), DataClasses: []string{"organizational"}}
+}
+
+// availableAssignee accepts every candidate. Assignee availability has its own
+// coverage in the tasks package; here it would only add noise.
+func availableAssignee(context.Context, taskdomain.Task) (taskdomain.AssigneeCheck, error) {
+	return taskdomain.AssigneeCheck{Available: true}, nil
+}
+
+// claimModelExecutionFixture builds the Harness task through the productive
+// claim path instead of inserting task_leases by hand.
+//
+// The lease is issued by tasks/postgres to the canonical execution principal
+// through ClaimRequest.HolderPrincipalID, while the operational worker name
+// stays on the attempt and on the task transition. The attempt is then started
+// under the holder identity, because StartAttempt, Heartbeat and
+// RecordAttemptResult all require ActorID == task_leases.holder_id.
+//
+// Nothing here rewrites task_leases afterwards, and nothing should: an
+// out-of-band UPDATE would silently restore the implicit equality between the
+// worker name and the security principal that this fixture exists to disprove.
+func claimModelExecutionFixture(t *testing.T, ctx context.Context, store *platformpostgres.Store, taskDB *taskpostgres.Store, revisionID int64, roleID, workerID, holderPrincipalID, suffix string) (modelruntime.TaskAttemptRef, modelruntime.ContextSnapshotRef, string) {
+	t.Helper()
+	now := time.Now().UTC()
+	var taskID int64
+	if err := store.Pool().QueryRow(ctx, `INSERT INTO tasks(organization_id,organization_revision_id,assigned_role_id,assigned_unit_id,idempotency_key,request_hash,title,instructions,acceptance_criteria,status,priority,available_at,max_attempts,attempt_count,version) VALUES($1,$2,$3,'ingenieria_ia',$4,$5,'Model runtime integration','Exercise fake one-shot dispatch.','[]','ready',0,$6,5,0,1) RETURNING id`, modelIntegrationOrganization, revisionID, roleID, "model-runtime-integration-task-"+suffix, modelruntime.SHA256Bytes([]byte("task-"+suffix)), now).Scan(&taskID); err != nil {
+		t.Fatal(err)
+	}
+	rendered := []byte("safe integration context")
+	var snapshotID int64
+	if err := store.Pool().QueryRow(ctx, `INSERT INTO context_snapshots(organization_id,organization_revision_id,actor_role_id,purpose,task_ref,idempotency_key,request_hash,precedence_hash,canonical_bundle_hash,rendered_hash,status,version,segment_count,included_segment_count,omitted_segment_count,total_bytes,created_at) VALUES($1,$2,$3,'model invocation',$4,$5,$6,$7,$8,$9,'ready',1,0,0,0,0,$10) RETURNING id`, modelIntegrationOrganization, revisionID, roleID, strconv.FormatInt(taskID, 10), "model-runtime-integration-context-"+suffix, modelruntime.SHA256Bytes([]byte("context-request-"+suffix)), modelruntime.SHA256Bytes([]byte("precedence")), modelruntime.SHA256Bytes([]byte("bundle")), modelruntime.SHA256Bytes(rendered), now).Scan(&snapshotID); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := taskDB.ClaimSpecific(ctx, taskID, taskdomain.ClaimRequest{
+		OrganizationID:    modelIntegrationOrganization,
+		WorkerID:          workerID,
+		HolderPrincipalID: holderPrincipalID,
+		AssignedRoleID:    roleID,
+		LeaseDuration:     30 * time.Minute,
+	}, availableAssignee, 10)
+	if err != nil {
+		t.Fatalf("productive claim: %v", err)
+	}
+	if claimed.Lease.HolderID != holderPrincipalID {
+		t.Fatalf("lease issued to %q, want canonical execution principal %q", claimed.Lease.HolderID, holderPrincipalID)
+	}
+	if claimed.Attempt.WorkerID != workerID {
+		t.Fatalf("attempt attributed to %q, want operational worker %q", claimed.Attempt.WorkerID, workerID)
+	}
+	if _, err = taskDB.StartAttempt(ctx, taskdomain.LeaseCommand{
+		TaskID: taskID, AttemptID: claimed.Attempt.ID, LeaseToken: claimed.LeaseToken, ActorID: holderPrincipalID,
+	}, 10); err != nil {
+		t.Fatalf("start attempt under the lease holder identity: %v", err)
+	}
+	return modelruntime.TaskAttemptRef{TaskID: taskID, AttemptID: claimed.Attempt.ID, OrganizationID: modelIntegrationOrganization, OrganizationRevisionID: revisionID, AssignedRoleID: roleID, TaskStatus: "running", AttemptStatus: "running", LeaseHolderID: claimed.Lease.HolderID, LeaseExpiresAt: claimed.Lease.ExpiresAt}, modelruntime.ContextSnapshotRef{ID: snapshotID, OrganizationID: modelIntegrationOrganization, OrganizationRevisionID: revisionID, ActorRoleID: roleID, TaskRef: strconv.FormatInt(taskID, 10), Status: "ready", RenderedHash: modelruntime.SHA256Bytes(rendered), DataClasses: []string{"organizational"}}, claimed.LeaseToken
 }
 
 func validInvocationCommand(task modelruntime.TaskAttemptRef, snapshot modelruntime.ContextSnapshotRef, roleID, key string) modelruntime.CreateInvocationCommand {

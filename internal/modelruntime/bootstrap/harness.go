@@ -24,7 +24,7 @@ func (r *Runtime) NewHarnessModelExecutor(config modelruntimeadapter.Config) (*m
 // separate seam so callers cannot accidentally replace authority with the
 // Model Runtime adapter or a provider-facing identity.
 func (r *Runtime) NewHarnessAuthority() (*tasksauthority.Adapter, error) {
-	if r == nil || r.Dispatcher == nil || r.Store == nil {
+	if r == nil || r.Dispatcher == nil || r.Dispatcher.Store == nil || r.TaskLeases == nil {
 		return nil, errors.New("model runtime authority dependencies are not open")
 	}
 	principalReader, err := tasksauthority.NewCanonicalPrincipalReader(r.Dispatcher.Store)

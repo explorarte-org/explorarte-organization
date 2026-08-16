@@ -22,9 +22,13 @@ func (s *Service) ClaimTaskByID(ctx context.Context, taskID int64, request Claim
 		return ClaimedTask{}, fmt.Errorf("%w: organization_id is invalid", ErrInvalidInput)
 	}
 	request.WorkerID = strings.TrimSpace(request.WorkerID)
+	request.HolderPrincipalID = strings.TrimSpace(request.HolderPrincipalID)
 	request.AssignedRoleID = strings.TrimSpace(request.AssignedRoleID)
 	if request.WorkerID == "" || len(request.WorkerID) > 200 {
 		return ClaimedTask{}, fmt.Errorf("%w: worker_id is required and must be at most 200 bytes", ErrInvalidInput)
+	}
+	if len(request.HolderPrincipalID) > 200 {
+		return ClaimedTask{}, fmt.Errorf("%w: holder_principal_id must be at most 200 bytes", ErrInvalidInput)
 	}
 	if request.AssignedRoleID != "" && !rolePattern.MatchString(request.AssignedRoleID) {
 		return ClaimedTask{}, fmt.Errorf("%w: assigned_role_id is invalid", ErrInvalidInput)

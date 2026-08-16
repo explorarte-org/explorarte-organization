@@ -280,12 +280,40 @@ type TaskFilter struct {
 	Offset         int
 }
 
+// ClaimRequest carries two deliberately distinct identities.
+//
+// WorkerID is the operational identity of whatever is doing the work. It is
+// recorded on the attempt and as the actor of the task transition, and it is
+// meant to stay human-readable ("executive-orchestrator").
+//
+// HolderPrincipalID is the security identity the lease is issued to. It is the
+// value execution authority later matches against the canonical execution
+// principal (model_execution_principals.id), so it must be that principal's
+// identifier and nothing else. The two were previously collapsed into
+// WorkerID, which made a human name double as a security principal.
+//
+// When HolderPrincipalID is empty the lease falls back to WorkerID. That
+// fallback is legacy compatibility for callers that predate this field, and it
+// is deliberately NOT the security contract. Anything that executes work under
+// Execution Harness authority must set HolderPrincipalID explicitly: the
+// fallback issues the lease to an operational name that is not a canonical
+// execution principal, and authority will correctly deny every run under it.
 type ClaimRequest struct {
-	OrganizationID string        `json:"organization_id,omitempty"`
-	WorkerID       string        `json:"worker_id"`
-	AssignedRoleID string        `json:"assigned_role_id,omitempty"`
-	BatchSize      int           `json:"batch_size,omitempty"`
-	LeaseDuration  time.Duration `json:"-"`
+	OrganizationID    string        `json:"organization_id,omitempty"`
+	WorkerID          string        `json:"worker_id"`
+	HolderPrincipalID string        `json:"holder_principal_id,omitempty"`
+	AssignedRoleID    string        `json:"assigned_role_id,omitempty"`
+	BatchSize         int           `json:"batch_size,omitempty"`
+	LeaseDuration     time.Duration `json:"-"`
+}
+
+// LeaseHolder is the identity task_leases.holder_id must be issued to, and
+// therefore the ActorID every later lease operation on that lease must use.
+func (r ClaimRequest) LeaseHolder() string {
+	if r.HolderPrincipalID != "" {
+		return r.HolderPrincipalID
+	}
+	return r.WorkerID
 }
 
 type AssigneeCheck struct {

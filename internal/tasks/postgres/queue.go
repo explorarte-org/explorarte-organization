@@ -90,7 +90,7 @@ func claimOne(ctx context.Context, tx pgx.Tx, task tasks.Task, request tasks.Cla
 		INSERT INTO task_leases(task_id,attempt_id,token_hash,holder_id,status,expires_at)
 		VALUES($1,$2,$3,$4,'active',clock_timestamp()+make_interval(secs=>$5))
 		RETURNING id,task_id,attempt_id,holder_id,status,issued_at,heartbeat_at,expires_at,released_at,release_reason
-	`, task.ID, attempt.ID, tokenHash, request.WorkerID, request.LeaseDuration.Seconds()))
+	`, task.ID, attempt.ID, tokenHash, request.LeaseHolder(), request.LeaseDuration.Seconds()))
 	if err != nil {
 		return tasks.ClaimedTask{}, err
 	}

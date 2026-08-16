@@ -202,6 +202,33 @@ History is intentionally not rewritten.
 13. PostgreSQL mutation checks revoke the principal or revoke the lease after
     turn one. In both cases turn two is denied and no additional provider
     dispatch occurs; the original turn-one evidence remains append-only.
+14. Review identified that the first version of item 12 only held because the
+    integration test rewrote `task_leases.holder_id` after the fixture created
+    it. That rewrite hid a real defect rather than proving a property: the
+    lease holder and the canonical execution principal were two different
+    identity domains that `AuthorizeExecution` compared as if they were one.
+    Reproduced before fixing: with a lease claimed the productive way, no value
+    of `ExecutionPrincipalID` authorizes. `"executive-orchestrator"` satisfies
+    the lease and fails the canonical principal parse; the canonical numeric ID
+    satisfies the principal and finds no lease row. Both directions deny.
+15. The binding is now explicit at the producer. `tasks.ClaimRequest` carries
+    two separate identities: `WorkerID`, the operational name recorded on the
+    attempt and on the task transition, and `HolderPrincipalID`, the security
+    identity `task_leases.holder_id` is issued to. `HolderPrincipalID` empty
+    falls back to `WorkerID`, so no existing caller changes behaviour and no
+    migration is required. That fallback is legacy compatibility only and must
+    not be read as the Harness semantics: every consumer executing under
+    Harness authority is required to supply the canonical principal explicitly,
+    because a lease issued to an operational name will be denied. Authority was
+    not weakened anywhere: the fix is in the producer of the identity, never in
+    the consumer that enforces it.
+16. The PostgreSQL Harness fixture now claims through `ClaimSpecific` and
+    starts the attempt under the holder identity, because `StartAttempt`,
+    `Heartbeat` and `RecordAttemptResult` all require
+    `ActorID == task_leases.holder_id`. No `UPDATE task_leases` remains in the
+    proof. Both properties are mutation-checked: reverting `claimOne` to write
+    `WorkerID` as the holder fails the fixture, and starting the attempt under
+    the operational worker name fails it as well.
 
 ## Known gaps
 
@@ -212,6 +239,20 @@ History is intentionally not rewritten.
   a later slice. The current integration proof uses the disposable PostgreSQL
   harness and concrete task/model-runtime services; it does not claim a
   production daemon has been migrated.
+- Consumer migration carries a hard precondition, now expressible but not yet
+  adopted: any consumer that runs work under Harness authority must claim the
+  lease with `ClaimRequest.HolderPrincipalID` set to the canonical execution
+  principal ID, and must then use that same ID as `ActorID` for every later
+  lease operation on that lease. `internal/executive/orchestrator.go` still
+  claims with `WorkerID = "executive-orchestrator"` and no holder principal;
+  that is correct for today, because it does not run Harness work, and moving
+  it belongs to the consumer slice rather than here.
+- Authority error classification is unresolved: a transient PostgreSQL failure
+  reaching `CanonicalPrincipalReader` is reported as `ErrAuthorityDenied` with
+  the cause flattened by `%v`, so the Harness records a terminal
+  `authorization_denied` for what was an availability failure. Fixing it needs
+  a distinct failure class and retry semantics inside the Harness, which is a
+  separate slice; it is recorded here rather than patched in passing.
 - Provider-exposed reasoning telemetry is unavailable through current Model
   Runtime normalization and is not invented here.
 - Provider continuation remains opaque and currently fails closed for adapters

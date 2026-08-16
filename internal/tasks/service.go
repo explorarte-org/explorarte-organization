@@ -296,9 +296,13 @@ func (s *Service) ClaimTasks(ctx context.Context, request ClaimRequest) ([]Claim
 		return nil, fmt.Errorf("%w: organization_id is invalid", ErrInvalidInput)
 	}
 	request.WorkerID = strings.TrimSpace(request.WorkerID)
+	request.HolderPrincipalID = strings.TrimSpace(request.HolderPrincipalID)
 	request.AssignedRoleID = strings.TrimSpace(request.AssignedRoleID)
 	if request.WorkerID == "" || len(request.WorkerID) > 200 {
 		return nil, fmt.Errorf("%w: worker_id is required and must be at most 200 bytes", ErrInvalidInput)
+	}
+	if len(request.HolderPrincipalID) > 200 {
+		return nil, fmt.Errorf("%w: holder_principal_id must be at most 200 bytes", ErrInvalidInput)
 	}
 	// ORG-AUDIT-010 (partial, see commit message): AssignedRoleID is still
 	// an optional filter here -- omitting it claims the next ready task
