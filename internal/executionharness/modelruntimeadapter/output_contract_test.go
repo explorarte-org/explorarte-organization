@@ -202,3 +202,74 @@ func TestOutputContractConfigurationIsValidated(t *testing.T) {
 		t.Fatalf("default output mode=%q", adapter.config.OutputMode)
 	}
 }
+
+// Model Runtime normalizes a capability set before persisting it. If the
+// adapter hashed the caller's raw slice instead, a configuration with a
+// duplicate, a stray space or a different ordering would create an invocation
+// under one digest and then recompute a different one from the durable row --
+// reporting binding drift on a reuse that is in fact identical.
+func TestCapabilityCanonicalizationSurvivesDurableReuse(t *testing.T) {
+	spec := fixtureSpec()
+	request := project(t, spec, nil)
+	clock := ClockFunc(func() time.Time { return time.Unix(1_700_000_000, 0).UTC() })
+
+	canonicalConfig := Config{
+		MaxOutputTokens: 256, ThinkingMode: modelruntime.ThinkingDisabled, InvocationTTL: time.Hour,
+		RequiredCapabilities: []modelruntime.ModelCapability{"a", "b"},
+	}
+	messyConfig := canonicalConfig
+	messyConfig.RequiredCapabilities = []modelruntime.ModelCapability{" b ", "a", "a", "", "b"}
+
+	// A durable row as Model Runtime would have persisted it: normalized.
+	durable := successfulDispatch(1, "recovered answer", nil)
+	invocation := durable.Invocation
+	invocation.RequiredCapabilities = []modelruntime.ModelCapability{"a", "b"}
+
+	for _, tc := range []struct {
+		name   string
+		config Config
+	}{
+		{"already canonical", canonicalConfig},
+		{"duplicates, whitespace and permuted order", messyConfig},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			creator := &fakeCreator{found: &invocation, input: storedInput(request, 41), outcome: durable}
+			adapter, err := New(creator, &fakeDispatcher{}, clock, tc.config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := adapter.Invoke(context.Background(), spec.Identity, request)
+			if err != nil {
+				t.Fatalf("durable reuse reported drift for an identical capability set: %v", err)
+			}
+			if result.FinalOutput != "recovered answer" {
+				t.Fatalf("result=%+v", result)
+			}
+		})
+	}
+
+	// And both spellings must derive the same contract, so they address the
+	// same durable invocation rather than two.
+	canonicalAdapter, err := New(&fakeCreator{}, &fakeDispatcher{}, clock, canonicalConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	messyAdapter, err := New(&fakeCreator{}, &fakeDispatcher{}, clock, messyConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if canonicalAdapter.outputContract != messyAdapter.outputContract {
+		t.Fatalf("equivalent capability sets derived different contracts: %q vs %q", canonicalAdapter.outputContract, messyAdapter.outputContract)
+	}
+
+	// A genuinely different capability set must still be a different contract.
+	otherConfig := canonicalConfig
+	otherConfig.RequiredCapabilities = []modelruntime.ModelCapability{"a", "c"}
+	otherAdapter, err := New(&fakeCreator{}, &fakeDispatcher{}, clock, otherConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if otherAdapter.outputContract == canonicalAdapter.outputContract {
+		t.Fatal("a different capability set derived the same contract")
+	}
+}

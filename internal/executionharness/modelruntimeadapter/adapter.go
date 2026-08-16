@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -117,7 +116,12 @@ func New(invocations InvocationCreator, dispatch InvocationDispatcher, clock Clo
 	default:
 		return nil, errors.New("harness model runtime adapter output mode is invalid")
 	}
-	config.RequiredCapabilities = append([]modelruntime.ModelCapability(nil), config.RequiredCapabilities...)
+	// Model Runtime trims, de-duplicates and sorts capabilities before it
+	// persists them. Hashing the caller's raw slice instead would make a
+	// perfectly valid configuration produce one digest on creation and a
+	// different one when recomputed from the durable row, turning a correct
+	// reuse into a false binding drift.
+	config.RequiredCapabilities = modelruntime.NormalizeCapabilities(config.RequiredCapabilities)
 	if config.Temperature != nil {
 		value := *config.Temperature
 		config.Temperature = &value
@@ -135,8 +139,6 @@ func New(invocations InvocationCreator, dispatch InvocationDispatcher, clock Clo
 // idempotency key, because two runs with the same conversation and different
 // answer contracts are not the same invocation.
 func outputContractDigest(mode modelruntime.OutputMode, schema json.RawMessage, maxOutputTokens int, temperature *float64, thinking modelruntime.ThinkingMode, capabilities []modelruntime.ModelCapability) (string, error) {
-	sorted := append([]modelruntime.ModelCapability(nil), capabilities...)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
 	body, err := modelruntime.CanonicalJSON(struct {
 		OutputMode      modelruntime.OutputMode        `json:"output_mode"`
 		OutputSchema    string                         `json:"output_schema"`
@@ -144,7 +146,7 @@ func outputContractDigest(mode modelruntime.OutputMode, schema json.RawMessage, 
 		Temperature     *float64                       `json:"temperature"`
 		ThinkingMode    modelruntime.ThinkingMode      `json:"thinking_mode"`
 		Capabilities    []modelruntime.ModelCapability `json:"required_capabilities"`
-	}{mode, string(schema), maxOutputTokens, temperature, thinking, sorted})
+	}{mode, string(schema), maxOutputTokens, temperature, thinking, modelruntime.NormalizeCapabilities(capabilities)})
 	if err != nil {
 		return "", fmt.Errorf("canonicalize harness output contract: %w", err)
 	}

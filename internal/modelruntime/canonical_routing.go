@@ -447,6 +447,15 @@ func normalizeRouting(d *routingDocument) {
 	sort.Strings(d.RoutingInvariants)
 }
 
+// NormalizeCapabilities is the canonical representation of a capability set:
+// trimmed, empty entries dropped, deduplicated, sorted. It is exported because
+// callers that derive a durable identity from a capability set -- an
+// idempotency contract, a digest -- must derive it from the same bytes this
+// package persists, not from whatever the caller happened to pass in.
+func NormalizeCapabilities(values []ModelCapability) []ModelCapability {
+	return normalizeCapabilities(values)
+}
+
 func normalizeCapabilities(values []ModelCapability) []ModelCapability {
 	seen := map[string]struct{}{}
 	result := make([]ModelCapability, 0, len(values))
