@@ -7,22 +7,29 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/Mireuz13/explorarte-organization/internal/agentmessaging"
-	"github.com/Mireuz13/explorarte-organization/internal/modeldispatch"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	"github.com/Mireuz13/explorarte-organization/internal/workflowruntime"
 )
 
 const ceoRoleID = "empresa/ceo"
 
-// PrincipalReader is intentionally narrower than modeldispatch.PrincipalStore:
-// workflow authorization may inspect an existing identity but can never
-// register, disable, assign, or invoke through it.
+type PrincipalIdentity struct {
+	ID             string
+	OrganizationID string
+	RoleID         string
+	Active         bool
+}
+
+// PrincipalReader is intentionally a Workflow Runtime-owned read contract:
+// authorization may inspect an existing identity but can never register,
+// disable, assign, or invoke through it. A composition-root adapter may project
+// an existing identity store into this type without coupling the runtime to a
+// model or provider domain.
 type PrincipalReader interface {
-	GetPrincipal(context.Context, int64) (modeldispatch.ExecutionPrincipal, error)
+	GetPrincipal(context.Context, string) (PrincipalIdentity, error)
 }
 
 type Adapter struct {
@@ -101,15 +108,15 @@ func (a *Adapter) AuthorizeTaskAccess(ctx context.Context, actor workflowruntime
 }
 
 func (a *Adapter) authorizePrincipal(ctx context.Context, actor workflowruntime.Actor) error {
-	id, err := strconv.ParseInt(strings.TrimSpace(actor.ExecutionPrincipalID), 10, 64)
-	if err != nil || id <= 0 {
+	id := strings.TrimSpace(actor.ExecutionPrincipalID)
+	if id == "" {
 		return denied("execution principal ID is invalid")
 	}
 	principal, err := a.principals.GetPrincipal(ctx, id)
 	if err != nil {
-		return denied("execution principal %d is unavailable: %v", id, err)
+		return denied("execution principal %s is unavailable: %v", id, err)
 	}
-	if principal.ID != id || principal.OrganizationID != actor.OrganizationID || principal.DispatchActorRoleID != actor.RoleID || principal.Status != modeldispatch.PrincipalActive {
+	if principal.ID != id || principal.OrganizationID != actor.OrganizationID || principal.RoleID != actor.RoleID || !principal.Active {
 		return denied("execution principal is inactive or not bound to actor organization and role")
 	}
 	return nil

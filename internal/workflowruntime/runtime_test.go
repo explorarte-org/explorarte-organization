@@ -11,7 +11,6 @@ import (
 
 	"github.com/Mireuz13/explorarte-organization/internal/agentmessaging"
 	"github.com/Mireuz13/explorarte-organization/internal/agentmessaging/topologyfixture"
-	"github.com/Mireuz13/explorarte-organization/internal/modeldispatch"
 	"github.com/Mireuz13/explorarte-organization/internal/workflowruntime"
 	"github.com/Mireuz13/explorarte-organization/internal/workflowruntime/accessadapter"
 )
@@ -201,21 +200,18 @@ func (allowAllAuthorization) AuthorizeTaskAccess(context.Context, workflowruntim
 	return nil
 }
 
-type fakePrincipalReader map[int64]modeldispatch.ExecutionPrincipal
+type fakePrincipalReader map[string]accessadapter.PrincipalIdentity
 
-func (f fakePrincipalReader) GetPrincipal(_ context.Context, id int64) (modeldispatch.ExecutionPrincipal, error) {
+func (f fakePrincipalReader) GetPrincipal(_ context.Context, id string) (accessadapter.PrincipalIdentity, error) {
 	principal, ok := f[id]
 	if !ok {
-		return modeldispatch.ExecutionPrincipal{}, errors.New("principal not found")
+		return accessadapter.PrincipalIdentity{}, errors.New("principal not found")
 	}
 	return principal, nil
 }
 
-func activePrincipal(id int64, organizationID, roleID string) modeldispatch.ExecutionPrincipal {
-	return modeldispatch.ExecutionPrincipal{
-		ID: id, OrganizationID: organizationID, DispatchActorRoleID: roleID,
-		PrincipalKind: modeldispatch.PrincipalLocalProcess, Status: modeldispatch.PrincipalActive,
-	}
+func activePrincipal(id, organizationID, roleID string) accessadapter.PrincipalIdentity {
+	return accessadapter.PrincipalIdentity{ID: id, OrganizationID: organizationID, RoleID: roleID, Active: true}
 }
 
 func strictAuthorization(t *testing.T, principals fakePrincipalReader) workflowruntime.AuthorizationPort {
@@ -340,42 +336,42 @@ func TestInitiateAuthorizesAssignmentBeforeDurableTaskCreation(t *testing.T) {
 		name      string
 		actorRole string
 		assignee  string
-		principal modeldispatch.ExecutionPrincipal
+		principal accessadapter.PrincipalIdentity
 	}{
 		{
 			name: "worker to peer worker", actorRole: topologyfixture.RoleEngineeringA,
 			assignee:  topologyfixture.RoleEngineeringB,
-			principal: activePrincipal(1, topologyfixture.OrganizationID, topologyfixture.RoleEngineeringA),
+			principal: activePrincipal("1", topologyfixture.OrganizationID, topologyfixture.RoleEngineeringA),
 		},
 		{
 			name: "worker direct to CEO", actorRole: topologyfixture.RoleEngineeringA,
 			assignee:  topologyfixture.RoleCEO,
-			principal: activePrincipal(1, topologyfixture.OrganizationID, topologyfixture.RoleEngineeringA),
+			principal: activePrincipal("1", topologyfixture.OrganizationID, topologyfixture.RoleEngineeringA),
 		},
 		{
 			name: "leader to another department worker", actorRole: topologyfixture.RoleEngineeringLead,
 			assignee:  topologyfixture.RoleFinanceWorker,
-			principal: activePrincipal(1, topologyfixture.OrganizationID, topologyfixture.RoleEngineeringLead),
+			principal: activePrincipal("1", topologyfixture.OrganizationID, topologyfixture.RoleEngineeringLead),
 		},
 		{
 			name: "disabled principal", actorRole: topologyfixture.RoleEngineeringLead,
 			assignee: topologyfixture.RoleEngineeringA,
-			principal: func() modeldispatch.ExecutionPrincipal {
-				value := activePrincipal(1, topologyfixture.OrganizationID, topologyfixture.RoleEngineeringLead)
-				value.Status = modeldispatch.PrincipalDisabled
+			principal: func() accessadapter.PrincipalIdentity {
+				value := activePrincipal("1", topologyfixture.OrganizationID, topologyfixture.RoleEngineeringLead)
+				value.Active = false
 				return value
 			}(),
 		},
 		{
 			name: "cross organization principal", actorRole: topologyfixture.RoleEngineeringLead,
 			assignee:  topologyfixture.RoleEngineeringA,
-			principal: activePrincipal(1, "other-org", topologyfixture.RoleEngineeringLead),
+			principal: activePrincipal("1", "other-org", topologyfixture.RoleEngineeringLead),
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			tasks := newFakeTasks()
-			runtime := newRuntimeWithAuthorization(t, tasks, strictAuthorization(t, fakePrincipalReader{1: test.principal}))
+			runtime := newRuntimeWithAuthorization(t, tasks, strictAuthorization(t, fakePrincipalReader{"1": test.principal}))
 			work := childRequest(test.actorRole, test.assignee, "unauthorized", "cause")
 			_, _, err := runtime.Initiate(context.Background(), workflowruntime.InitiateCommand{
 				Actor: actor(test.actorRole, "1"), Work: work,
@@ -392,8 +388,8 @@ func TestInitiateAuthorizesAssignmentBeforeDurableTaskCreation(t *testing.T) {
 
 func TestInitiateAllowsSameRoleAndAuthorizedDelegation(t *testing.T) {
 	principals := fakePrincipalReader{
-		1: activePrincipal(1, topologyfixture.OrganizationID, topologyfixture.RoleEngineeringA),
-		2: activePrincipal(2, topologyfixture.OrganizationID, topologyfixture.RoleEngineeringLead),
+		"1": activePrincipal("1", topologyfixture.OrganizationID, topologyfixture.RoleEngineeringA),
+		"2": activePrincipal("2", topologyfixture.OrganizationID, topologyfixture.RoleEngineeringLead),
 	}
 	tasks := newFakeTasks()
 	runtime := newRuntimeWithAuthorization(t, tasks, strictAuthorization(t, principals))
@@ -423,16 +419,16 @@ func TestObserveUsesExplicitRoleAndPrincipalPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	disabled := activePrincipal(6, topologyfixture.OrganizationID, topologyfixture.RoleEngineeringA)
-	disabled.Status = modeldispatch.PrincipalDisabled
+	disabled := activePrincipal("6", topologyfixture.OrganizationID, topologyfixture.RoleEngineeringA)
+	disabled.Active = false
 	principals := fakePrincipalReader{
-		1: activePrincipal(1, topologyfixture.OrganizationID, topologyfixture.RoleEngineeringA),
-		2: activePrincipal(2, topologyfixture.OrganizationID, topologyfixture.RoleEngineeringLead),
-		3: activePrincipal(3, topologyfixture.OrganizationID, topologyfixture.RoleCEO),
-		4: activePrincipal(4, topologyfixture.OrganizationID, topologyfixture.RoleEngineeringB),
-		5: activePrincipal(5, topologyfixture.OrganizationID, topologyfixture.RoleFinanceLead),
-		6: disabled,
-		7: activePrincipal(7, "other-org", topologyfixture.RoleEngineeringA),
+		"1": activePrincipal("1", topologyfixture.OrganizationID, topologyfixture.RoleEngineeringA),
+		"2": activePrincipal("2", topologyfixture.OrganizationID, topologyfixture.RoleEngineeringLead),
+		"3": activePrincipal("3", topologyfixture.OrganizationID, topologyfixture.RoleCEO),
+		"4": activePrincipal("4", topologyfixture.OrganizationID, topologyfixture.RoleEngineeringB),
+		"5": activePrincipal("5", topologyfixture.OrganizationID, topologyfixture.RoleFinanceLead),
+		"6": disabled,
+		"7": activePrincipal("7", "other-org", topologyfixture.RoleEngineeringA),
 	}
 	runtime := newRuntimeWithAuthorization(t, tasks, strictAuthorization(t, principals))
 	tests := []struct {
@@ -472,9 +468,9 @@ func TestMutationRejectsInactivePrincipalWithoutChangingTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	disabled := activePrincipal(1, topologyfixture.OrganizationID, topologyfixture.RoleEngineeringA)
-	disabled.Status = modeldispatch.PrincipalDisabled
-	runtime := newRuntimeWithAuthorization(t, tasks, strictAuthorization(t, fakePrincipalReader{1: disabled}))
+	disabled := activePrincipal("1", topologyfixture.OrganizationID, topologyfixture.RoleEngineeringA)
+	disabled.Active = false
+	runtime := newRuntimeWithAuthorization(t, tasks, strictAuthorization(t, fakePrincipalReader{"1": disabled}))
 	_, err = runtime.StartExecution(context.Background(), workflowruntime.ExecutionCommand{
 		Actor: actor(topologyfixture.RoleEngineeringA, "1"), TaskID: target.TaskID, AttemptID: 1,
 		LeaseToken: "lease", CorrelationID: correlationID, CausationID: "cause",
