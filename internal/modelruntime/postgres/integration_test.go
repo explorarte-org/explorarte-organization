@@ -408,6 +408,58 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 			_, err := platform.Pool().Exec(ctx, `UPDATE task_leases SET status='active',released_at=NULL,release_reason=NULL WHERE task_id=$1 AND attempt_id=$2`, harnessTaskRef.TaskID, harnessTaskRef.AttemptID)
 			return err
 		})
+
+		// Expiry is a different scenario from revocation even though both must
+		// deny. Revocation flips the row's status; expiry leaves the lease
+		// active and only moves its deadline into the past, which is what the
+		// authority query actually tests with clock_timestamp() < expires_at.
+		// The assertion inside the mutation keeps the two from collapsing into
+		// each other: if the row ever came back non-active this would stop
+		// being an expiry test and silently become a second revocation test.
+		runMutation("pg-harness-lease-expired", func() error {
+			// task_leases enforces CHECK (expires_at > issued_at), so an
+			// expired lease is modelled as one issued two hours ago that
+			// lapsed an hour ago -- the state a lease reaper has not swept
+			// yet, which is exactly the dangerous one.
+			if _, err := platform.Pool().Exec(ctx, `UPDATE task_leases SET issued_at=clock_timestamp()-make_interval(secs=>7200),heartbeat_at=clock_timestamp()-make_interval(secs=>7200),expires_at=clock_timestamp()-make_interval(secs=>3600) WHERE task_id=$1 AND attempt_id=$2`, harnessTaskRef.TaskID, harnessTaskRef.AttemptID); err != nil {
+				return err
+			}
+			var status string
+			if err := platform.Pool().QueryRow(ctx, `SELECT status FROM task_leases WHERE task_id=$1 AND attempt_id=$2`, harnessTaskRef.TaskID, harnessTaskRef.AttemptID).Scan(&status); err != nil {
+				return err
+			}
+			if status != "active" {
+				return fmt.Errorf("expiry scenario degraded into revocation: lease status=%q", status)
+			}
+			return nil
+		}, func() error {
+			_, err := platform.Pool().Exec(ctx, `UPDATE task_leases SET issued_at=clock_timestamp(),heartbeat_at=clock_timestamp(),expires_at=clock_timestamp()+make_interval(secs=>1800) WHERE task_id=$1 AND attempt_id=$2`, harnessTaskRef.TaskID, harnessTaskRef.AttemptID)
+			return err
+		})
+
+		// The mirror of the expiry case: a lease renewed while it is still
+		// valid must NOT be denied. Without this, an authority that simply
+		// refused every second turn would pass every test above.
+		sequence.calls = 0
+		renewingTools := &integrationHarnessToolExecutor{beforeReply: func() error {
+			_, heartbeatErr := taskDB.Heartbeat(ctx, taskdomain.LeaseCommand{
+				TaskID: harnessTaskRef.TaskID, AttemptID: harnessTaskRef.AttemptID,
+				LeaseToken: harnessLeaseToken, ActorID: principalID, Extension: 30 * time.Minute,
+			}, 15*time.Minute)
+			return heartbeatErr
+		}}
+		renewedSpec := spec
+		renewedSpec.Identity.RunID = "pg-harness-lease-renewed"
+		renewedSpec.Identity.CorrelationID = "pg-harness-lease-renewed:correlation"
+		renewedSpec.Identity.CausationID = "pg-harness-lease-renewed:causation"
+		renewingHarness, renewErr := executionharness.New(authority, modelExecutor, integrationHarnessToolCatalog{definition: spec.Tools[0]}, renewingTools, executionharness.NewMemoryHistoryStore())
+		if renewErr != nil {
+			t.Fatal(renewErr)
+		}
+		renewed := renewingHarness.Execute(ctx, renewedSpec)
+		if renewed.Status != executionharness.StatusCompleted || sequence.calls != 2 || renewingTools.calls != 1 {
+			t.Fatalf("renewed lease was denied: result=%+v provider_calls=%d tool_calls=%d", renewed, sequence.calls, renewingTools.calls)
+		}
 	})
 
 	t.Run("credential-bearing model input is rejected before durable admission", func(t *testing.T) {

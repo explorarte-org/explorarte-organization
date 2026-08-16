@@ -232,8 +232,11 @@ History is intentionally not rewritten.
 
 ## Known gaps
 
-- Productive Execution Harness history persistence remains pending; this slice
-  does not claim that its in-memory history store is production durable.
+- Productive Execution Harness history persistence remains pending in THIS
+  slice; it does not claim that its in-memory history store is production
+  durable. Resolved afterwards by v2-harness-reliability-closeout-001, which
+  adds a durable PostgreSQL history store and proves restart/resume. No
+  production consumer is wired to it yet.
 - No daemon/CLI consumer starts Harness runs yet. The productive composition
   seam is available through Model Runtime bootstrap, but consumer migration is
   a later slice. The current integration proof uses the disposable PostgreSQL
@@ -247,12 +250,13 @@ History is intentionally not rewritten.
   claims with `WorkerID = "executive-orchestrator"` and no holder principal;
   that is correct for today, because it does not run Harness work, and moving
   it belongs to the consumer slice rather than here.
-- Authority error classification is unresolved: a transient PostgreSQL failure
-  reaching `CanonicalPrincipalReader` is reported as `ErrAuthorityDenied` with
-  the cause flattened by `%v`, so the Harness records a terminal
-  `authorization_denied` for what was an availability failure. Fixing it needs
-  a distinct failure class and retry semantics inside the Harness, which is a
-  separate slice; it is recorded here rather than patched in passing.
+- Authority error classification was unresolved in THIS slice: a transient
+  PostgreSQL failure reaching `CanonicalPrincipalReader` was reported as
+  `ErrAuthorityDenied` with the cause flattened by `%v`, so the Harness recorded
+  a terminal `authorization_denied` for what was an availability failure.
+  Resolved afterwards by v2-harness-reliability-closeout-001, which separates
+  `ErrAuthorityUnavailable` from `ErrAuthorityDenied`, preserves the cause with
+  `%w`, and makes the outage non-terminal and retryable.
 - Provider-exposed reasoning telemetry is unavailable through current Model
   Runtime normalization and is not invented here.
 - Provider continuation remains opaque and currently fails closed for adapters
