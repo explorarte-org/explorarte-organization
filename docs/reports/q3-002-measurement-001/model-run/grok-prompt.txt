@@ -1,0 +1,1750 @@
+
+AUDIT ONLY — REFORMULATED-Q3-002
+
+You may not collect evidence and have no tools. Audit the supplied DeepSeek packet
+against Q3_ONTOLOGY_V1 and the external accounting facts. No previous Q3-001 count,
+verdict, confidence, or expected number exists. A count in the packet is only a
+derived property and is unsupported if any positive record fails Q1-Q6.
+
+Frozen identity:
+- subject: organizational_capabilities_implemented_by_this_repository
+- relation: declared_or_configured_capability <-> surviving_runtime_evidence
+- universe: registered source space + surviving runtime evidence universe
+- required outputs: inventory, declaration/config provenance, runtime evidence,
+  limitations, completeness accounting
+- ontology normative hash: cbf4b72975b4a8d8c2650969181f470d7a91fbf5f35beeabd23eb66a03f6e11c
+
+External deterministic facts:
+- source registry: 1,060/1,060 tracked artifacts, hash a4a7bacbefb1d8f040f582e046a1ccdc0d2088b2c3ee2a42df65ec9d2ddfca43
+- runtime registry: 103/103 accessible tables, hash b22d3801be5d8989d1a0025a2bedab7c5cb7656e12f912f12e2ffbc631f406e7
+- DeepSeek accounted 70/70 navigation groups, but only 36/103 runtime relations.
+- the missing 67 runtime units are all zero-row tables in the sealed snapshot;
+  zero rows means no surviving observation, not historical mechanism absence.
+- DeepSeek falsely phrases the runtime packet as though only 36 units were
+  enumerated; externally all 103 were enumerated. Flag this unsupported statement.
+- completeness is reserved to the external checker and DeepSeek correctly set
+  coverage_complete=false.
+
+Audit every positive capability record for: stable responsibility, causal purpose,
+verifiable entry/transition, observable effect, Q5 supporting-artifact boundary,
+Q6 layout independence, complete behavioral contract, and adjacent boundary.
+Identify over-merged or over-split candidates and any runtime relation inferred
+from artifact identity alone. Distinguish a valid partial inventory from a complete
+inventory. Do not propose V2, expansion, deletion, or architecture changes.
+
+Return ONLY valid YAML, no fence and no prose:
+audit:
+  question_id: REFORMULATED-Q3-002
+  verdict: VALID_PARTIAL|VALID_COMPLETE|INVALID|UNMEASURABLE_AS_SPECIFIED|QUESTION_TARGET_DRIFT
+  confidence: <0..1>
+  observed_claims: []
+  unsupported_inferences: []
+  accepted_capability_ids: []
+  challenged_capabilities:
+    - capability_id: ...
+      issue: ...
+      ontology_rule: ...
+  counterevidence: []
+  measurement_limitations: []
+  completeness_assessment: ...
+  decision_relevance: ...
+  falsifier: ...
+  recommended_disposition: COMPLETE|PARTIAL|UNMEASURABLE_AS_SPECIFIED|QUESTION_TARGET_DRIFT
+
+FROZEN NORMATIVE ONTOLOGY
+---
+## 1. Operational definition
+
+An `ORGANIZATIONAL_CAPABILITY` is a repository-owned behavior with all of the
+following properties:
+
+1. It has one stable, nameable operational responsibility.
+2. It produces, restricts, transforms, selects, authorizes, routes, persists,
+   evaluates, or observes a system transition relevant to the organization.
+3. At least one repository-verifiable entrypoint, trigger, enforcement point,
+   transition rule, or behavioral contract invokes or enforces it.
+4. Its effect or restriction is observable at an interface, returned result,
+   durable state transition, emitted signal, authorization decision, rejection,
+   or invariant.
+5. The behavior is implemented by the repository. Merely invoking behavior
+   wholly supplied by an external dependency is insufficient.
+6. Its conceptual identity survives a change in persistent representation or
+   file/package layout, provided its responsibility, causal purpose, and
+   compatible entry/transition contract remain.
+7. It is distinguishable from artifacts that only store data, configure or
+   declare behavior, migrate schema, record execution evidence, support tests,
+   or provide a helper without autonomous operational responsibility.
+
+Operational tests for the terms above:
+
+- **repository-owned behavior**: an executable path or enforceable rule whose
+  branching, transition, invariant, orchestration, or policy is expressed in
+  repository source. A wrapper that only forwards to an external dependency
+  without adding such behavior fails this test.
+- **stable responsibility**: one sentence of the form "When `<entry/trigger>`
+  occurs, the system `<effect/restriction>` so that `<causal purpose>`" remains
+  true across representation-only refactors.
+- **verifiable**: provenance identifies repository path plus symbol, rule, or
+  line locator sufficient for another reviewer to inspect the contract.
+- **observable**: a caller, downstream component, persisted record, emitted
+  event, audit surface, or rejected operation can distinguish the behavior from
+  its absence. Tests may demonstrate this but test evidence alone cannot create
+  the behavior.
+- **autonomous operational responsibility**: removing the candidate changes a
+  named system behavior or invariant, not merely code reuse, formatting,
+  storage shape, wiring values, or test convenience.
+
+The unit of inventory is the behavior satisfying this definition, never an
+artifact solely because of its artifact type.
+
+## 2. Decision procedure
+
+Evaluate one candidate at a time and record every answer in order. Do not skip
+questions. `YES` and `NO` require provenance; where the available candidate
+packet cannot support either, use `UNKNOWN` and the terminal result prescribed
+below.
+
+### Q1 — repository-owned executable/enforceable behavior
+
+Does repository source express executable behavior or an enforceable rule,
+rather than only delegate unchanged external behavior?
+
+- `NO` -> `NOT_A_CAPABILITY`; stop.
+- `UNKNOWN` -> `UNRESOLVED`; stop.
+- `YES` -> Q2.
+
+### Q2 — stable operational responsibility
+
+Can the responsibility be stated as one stable behavioral sentence with a
+named effect/restriction and causal purpose?
+
+- `NO` -> `NOT_A_CAPABILITY`; stop.
+- `UNKNOWN` -> `UNRESOLVED`; stop.
+- `YES` -> Q3.
+
+### Q3 — verifiable entry or enforcement
+
+Is at least one entrypoint, trigger, rule, enforcement point, transition, or
+behavioral contract located in the supplied repository evidence?
+
+- `NO` -> `NOT_A_CAPABILITY`; stop.
+- `UNKNOWN` -> `UNRESOLVED`; stop.
+- `YES` -> Q4.
+
+### Q4 — specifiable effect or restriction
+
+Can the reviewer state the externally distinguishable change or restriction,
+including the relevant input/precondition and result, rejection, state change,
+or emitted observation?
+
+- `NO` or `UNKNOWN` -> `UNRESOLVED`; stop.
+- `YES` -> Q5.
+
+### Q5 — supporting artifact test
+
+Is this candidate only representation, declaration, configuration, runtime
+evidence, test material, or infrastructure supporting an already identified
+capability in the candidate packet?
+
+- `YES` -> `SUPPORTING_ARTIFACT_OF:<capability_id>`; stop.
+- `UNKNOWN` -> `UNRESOLVED`; stop.
+- `NO` -> Q6.
+
+The target ID is permitted only when the packet contains provenance for the
+supported capability. Otherwise Q5 is `UNKNOWN`.
+
+### Q6 — layout-dependent identity test
+
+Would the proposed identity cease to exist, merge, or split solely because
+files or packages were regrouped, with no change to responsibility, causal
+purpose, or entry/transition contract?
+
+- `YES` or `UNKNOWN` -> `UNRESOLVED`; stop.
+- `NO` -> `ORGANIZATIONAL_CAPABILITY`.
+
+### Terminal labels and boundary mapping
+
+Exact classification is one of:
+
+- `ORGANIZATIONAL_CAPABILITY`
+- `NOT_A_CAPABILITY`
+- `SUPPORTING_ARTIFACT_OF:<capability_id>`
+- `UNRESOLVED`
+
+For capability-boundary agreement only,
+`ORGANIZATIONAL_CAPABILITY = CAPABILITY`; all other terminal labels equal
+`NOT_CAPABILITY_OR_UNRESOLVED`. Artifact roles are measured separately and do
+not change the terminal label.
+
+A positive classification is invalid unless its complete required capability
+record is supplied. In particular, an unverifiable `behavioral_contract`
+forces `UNRESOLVED`, regardless of reviewer intuition.
+
+## 3. Artifact-role taxonomy
+
+Artifact roles describe evidence, not inventory units. One artifact may have
+multiple roles when each is justified.
+
+- `BEHAVIOR_IMPLEMENTATION`: repository source that implements branching,
+  transformation, enforcement, orchestration, invariant, or transition logic.
+- `DECLARATION`: schema, type, interface, manifest, constant, or document that
+  declares a vocabulary, contract surface, or allowed shape without by itself
+  executing the behavior.
+- `CONFIGURATION`: values or mappings consumed by behavior to choose policy,
+  wiring, limits, routing, roles, or operating parameters.
+- `PERSISTENCE_REPRESENTATION`: tables, columns, indexes, constraints,
+  migrations, serialization shapes, or store mappings representing durable
+  state. A database trigger can additionally be `BEHAVIOR_IMPLEMENTATION` only
+  when its enforceable transition is itself under evaluation.
+- `RUNTIME_EVIDENCE`: surviving records, event types, audit entries, logs,
+  metrics, or other observations showing that behavior may have executed.
+- `TEST_ONLY`: fixtures, fakes, test cases, test-only runners, or assertions not
+  reachable as production behavior.
+- `SUPPORTING_INFRASTRUCTURE`: generic transport, storage, scheduling, hashing,
+  adapters, or utilities supporting another behavior without owning its causal
+  purpose.
+- `EXTERNAL_DEPENDENCY`: behavior supplied outside this repository. A local
+  adapter may also have another role if it adds repository-owned rules.
+- `UNRESOLVED`: the supplied evidence cannot justify a more specific role.
+
+Forbidden identity shortcuts:
+
+`table != capability`, `migration != capability`, `role != capability`,
+`event_type != capability`, and `package != capability` by artifact identity
+alone. The same applies to every artifact named in the exclusion rules.
+
+## 4. Granularity and identity rules
+
+### Candidate formation
+
+A candidate must name a proposed behavior and cite at least one entry, trigger,
+enforcement, or transition locator. An artifact-only candidate is allowed so
+that exclusions can be tested, but it is not rewritten into a behavior during
+classification.
+
+### Merge rule
+
+Two implementations are one capability only when all three are demonstrated:
+
+1. the same behavioral responsibility;
+2. the same causal purpose; and
+3. compatible entry/transition contracts, meaning their preconditions,
+   principal effects/restrictions, and success/failure semantics do not express
+   independently operable responsibilities.
+
+Multiple packages may therefore implement one capability.
+
+### Split rule
+
+Split candidates when repository evidence demonstrates an independently
+invocable or enforceable operational responsibility with a distinct causal
+purpose or incompatible contract. Separate files, functions, tables, event
+types, endpoints, or packages are not sufficient reasons to split. One package
+may therefore contain multiple capabilities.
+
+### Representation stability test
+
+Ask whether changing table names, schemas, serialization, file paths, package
+boundaries, or deployment wiring while preserving behavior would change the
+candidate identity. If yes, the proposed identity is representation-bound and
+Q6 cannot pass.
+
+### Adjacent-boundary requirement
+
+Every positive record names its nearest plausible adjacent capability and
+states the behavioral distinction. If the distinction cannot be evidenced,
+classify `UNRESOLVED` rather than merge or split by intuition.
+
+Capability IDs use `OC-<normalized-responsibility>` and are stable identifiers,
+not sequence numbers. They must not encode package names or an expected count.
+
+## 5. Required positive capability record
+
+Every positive decision must materialize all fields below. Arrays may be empty
+only for declaration/configuration/runtime-evidence provenance when the
+reviewer explicitly states that the evidence class was not present in the
+candidate packet. All implementation and boundary fields are mandatory.
+
+```yaml
+capability_id: OC-<normalized-responsibility>
+name: <human-readable responsibility>
+behavioral_contract: >-
+  When <entry/trigger and preconditions>, the system <observable effect or
+  restriction and failure behavior>.
+causal_purpose: <why the organization needs this transition/restriction>
+entrypoints_or_triggers:
+  - <path:symbol-or-line>
+enforcement_or_transition_points:
+  - <path:symbol-or-line>
+reads_or_inputs:
+  - <input/precondition>
+writes_or_effects:
+  - <returned result, rejection, durable transition, or emitted observation>
+implementation_provenance:
+  - <path:symbol-or-line>
+declaration_provenance: []
+configuration_provenance: []
+possible_runtime_evidence: []
+boundary_with_adjacent_capabilities: >-
+  <nearest adjacent responsibility and the evidenced merge/split boundary>
+classification_basis: >-
+  <Q1-Q6 answers with concise evidence>
+```
+
+The `behavioral_contract` must name trigger/preconditions and observable
+success or restriction/failure semantics. A label, noun phrase, package
+description, or restatement of a type name is not a behavioral contract.
+
+## 6. Explicit exclusion rules
+
+None of the following counts by itself: table, index, constraint, migration,
+role, event type, struct, interface, package, endpoint, helper function,
+fixture, constant, or configuration row.
+
+Apply these mechanical rules:
+
+1. If the candidate packet contains only one of those artifacts and no
+   repository-owned executable/enforceable behavior, Q1=`NO` and
+   `NOT_A_CAPABILITY`.
+2. If the artifact is only evidence/configuration/representation for a
+   capability identified in the same packet, Q5=`YES` and
+   `SUPPORTING_ARTIFACT_OF:<capability_id>`.
+3. An endpoint is only an entry locator. Its routed behavior must still pass
+   Q1-Q6.
+4. A database constraint or trigger may pass Q1 only when evaluated as an
+   enforceable repository-authored rule with a specifiable transition
+   restriction; the table, migration file, or constraint name remains merely
+   provenance.
+5. A helper passes only if it owns an independently nameable operational
+   responsibility and causal purpose. Reuse or technical transformation alone
+   is insufficient.
+6. A declaration plus runtime evidence does not prove implementation. Missing
+   implementation provenance yields `UNRESOLVED`, not a positive decision.
+7. Absence from a collector's output is never proof of irrelevance.
+
+
+---
+
+EXTERNAL RUNTIME UNIT ACCOUNTING
+---
+- public.agent_budget_events: rows=0
+- public.agent_budgets: rows=0
+- public.agent_messages: rows=4
+- public.audit_events: rows=138
+- public.authorization_decisions: rows=42
+- public.authorization_requests: rows=42
+- public.authorization_uses: rows=42
+- public.context_segments: rows=0
+- public.context_snapshots: rows=0
+- public.decision_branch_events: rows=0
+- public.decision_budget_events: rows=0
+- public.decision_graph_budgets: rows=0
+- public.decision_graph_edges: rows=0
+- public.decision_graph_nodes: rows=0
+- public.decision_graph_runs: rows=0
+- public.decision_graph_versions: rows=0
+- public.decision_node_executions: rows=0
+- public.decision_observations: rows=0
+- public.decision_records: rows=0
+- public.decision_verifications: rows=0
+- public.embedding_invocations: rows=393
+- public.evaluation_run_outcomes: rows=0
+- public.evaluation_runs: rows=0
+- public.improvement_candidates: rows=0
+- public.improvement_promotion_decisions: rows=0
+- public.model_capability_snapshots: rows=7
+- public.model_dispatch_attempts: rows=0
+- public.model_dispatcher_assignment_uses: rows=0
+- public.model_dispatcher_assignments: rows=0
+- public.model_egress_evaluations: rows=0
+- public.model_egress_policy_versions: rows=1
+- public.model_egress_revision_bindings: rows=1
+- public.model_egress_rules: rows=14
+- public.model_execution_identity_assertions: rows=0
+- public.model_execution_identity_challenges: rows=0
+- public.model_execution_identity_keys: rows=0
+- public.model_execution_identity_policy_versions: rows=1
+- public.model_execution_principals: rows=3
+- public.model_invocation_render_telemetry: rows=0
+- public.model_invocation_results: rows=0
+- public.model_invocation_usage: rows=0
+- public.model_invocations: rows=0
+- public.model_pricing: rows=17
+- public.model_profile_versions: rows=7
+- public.model_profiles: rows=7
+- public.model_provider_outcomes: rows=0
+- public.model_provider_requests: rows=0
+- public.model_providers: rows=4
+- public.organization_registry_revision_documents: rows=36
+- public.organization_registry_revisions: rows=4
+- public.organization_reporting_lines: rows=200
+- public.organization_roles: rows=48
+- public.organizational_memory_embeddings: rows=0
+- public.organizational_memory_embeddings_bge_m3: rows=0
+- public.organizational_memory_entries: rows=0
+- public.organizational_memory_evidence_refs: rows=0
+- public.organizational_memory_idempotency: rows=0
+- public.organizational_memory_state_events: rows=0
+- public.organizational_memory_versions: rows=0
+- public.organizational_units: rows=6
+- public.organizations: rows=1
+- public.outbox_events: rows=1942
+- public.provider_wallet_events: rows=785
+- public.provider_wallets: rows=5
+- public.rag_chunk_embeddings: rows=383
+- public.rag_chunk_embeddings_bge_m3: rows=0
+- public.rag_embedding_batch_job_items: rows=0
+- public.rag_embedding_batch_jobs: rows=0
+- public.rag_index_generations: rows=1
+- public.rag_knowledge_chunks: rows=383
+- public.rag_knowledge_documents: rows=16
+- public.rag_knowledge_evidence_refs: rows=16
+- public.rag_knowledge_idempotency: rows=16
+- public.rag_knowledge_lifecycle_events: rows=32
+- public.rag_knowledge_versions: rows=16
+- public.role_model_bindings: rows=46
+- public.schema_migrations: rows=48
+- public.shadow_verifier_divergences: rows=0
+- public.shadow_verifier_runs: rows=0
+- public.skill_registry_assignment_events: rows=0
+- public.skill_registry_assignment_idempotency: rows=0
+- public.skill_registry_assignments: rows=0
+- public.skill_registry_lifecycle_events: rows=0
+- public.skill_registry_skill_idempotency: rows=0
+- public.skill_registry_skills: rows=0
+- public.skill_registry_versions: rows=0
+- public.staging_artifacts: rows=0
+- public.staging_checks: rows=0
+- public.staging_events: rows=0
+- public.staging_promotions: rows=0
+- public.staging_reviews: rows=0
+- public.staging_workspace_artifacts: rows=0
+- public.staging_workspaces: rows=0
+- public.task_attempts: rows=0
+- public.task_budgets: rows=0
+- public.task_dead_letters: rows=0
+- public.task_dependencies: rows=0
+- public.task_events: rows=0
+- public.task_evidence: rows=0
+- public.task_leases: rows=0
+- public.task_requirements: rows=0
+- public.tasks: rows=3
+- public.web_evidence: rows=0
+---
+
+DEEPSEEK PACKET (verbatim normalized fence payload; hash 7045a3181aafc7aac4524124587eda9957a8664666572b8ceeb3124c9be92c99)
+---
+evidence_packet:
+  question_id: REFORMULATED-Q3-002
+  conclusion: >-
+    Provisional inventory: the repository implements at least 21 repository-owned
+    organizational capabilities (task lifecycle, capability authorization,
+    executive orchestration, agent messaging, agent budgeting, cost ledgering,
+    model invocation dispatch, model egress policy, model execution identity,
+    model dispatch assignment, RAG knowledge lifecycle, memory lifecycle, skill
+    lifecycle, context compilation, organization registry, staging workspaces,
+    decision graph execution, improvement promotion, completion verification,
+    corpus census, and evidence object storage). 36 of the 103 claimed runtime
+    units were actually enumerated in the sealed runtime packet; these map to
+    surviving evidence for the above capabilities. The remaining 67 runtime units
+    were never enumerated to this call and are therefore unaccounted, not absent.
+  observations:
+    - >-
+      OBSERVED: internal/authorization/authorizer.go:evaluate enforces a
+      default-deny capability matrix with grant/hard-deny/approval-mode checks and
+      revision/matrix-hash drift detection (authorizer.go:165 evaluate).
+    - >-
+      OBSERVED: internal/tasks/postgres/mutate.go:AddDependency rejects cycles via a
+      recursive CTE and rejects dependency changes on terminal/leased/running tasks;
+      Finalize requires awaiting_verification and zero unsatisfied required
+      requirements (mutate.go:14, mutate.go:167).
+    - >-
+      OBSERVED: internal/agentmessaging/postgres/store.go:Send validates execution
+      principal, task ownership, registry-derived topology, capability authorization,
+      idempotency hash, and rate limits before persisting a message (store.go:78).
+    - >-
+      OBSERVED: internal/modelruntime/invocation_service.go:Create chains task/context/
+      assignment/egress/identity checks before recording an invocation; dispatch_service.go
+      performs principal/egress/identity pinning checks before adapter dispatch.
+    - >-
+      DERIVED: sealed runtime rows constitute surviving evidence for at least the
+      authorization (42 requests/decisions/uses, capability_id rag.publish_approved),
+      task (3 tasks, task.* outbox events), context (context.snapshot_created=296),
+      model invocation (model.invocation_* outbox events), cost ledger
+      (provider_wallet_events=785), RAG (rag_knowledge_* rows), and organization
+      registry (roles=48, reporting_lines=200, revisions=4) capabilities.
+  provenance:
+    - internal/authorization/authorizer.go:evaluate
+    - internal/authorization/service.go:RequestApproval
+    - internal/tasks/postgres/mutate.go:AddDependency
+    - internal/tasks/postgres/mutate.go:Finalize
+    - internal/executive/orchestrator.go:Submit
+    - internal/agentmessaging/postgres/store.go:Send
+    - internal/agentbudget/postgres/store.go:CreateRootBudget
+    - internal/costledger/postgres/store.go:Reserve
+    - internal/modelruntime/invocation_service.go:Create
+    - internal/modelruntime/dispatch_service.go:Dispatch
+    - internal/modelegress/evaluator.go:Evaluate
+    - internal/modelidentity/challenge_service.go:Issue
+    - internal/modeldispatch/assignment_service.go:Create
+    - internal/rag/manager.go:Propose
+    - internal/memory/manager.go:Propose
+    - internal/skillregistry/manager.go:Propose
+    - internal/contextengine/service.go:Build
+    - internal/organization/registry/service.go:CompareCanonical
+    - internal/staging/service.go:CreateWorkspace
+    - internal/decisiongraph/service.go:CreateRun
+    - internal/improvement/service.go:ProposeCandidate
+    - internal/completion/service.go:Verify
+    - internal/corpuscensus/corpuscensus_orchestrator.go:Run
+    - internal/objectstorage/client.go:PutObjectIfAbsent
+  counterevidence: []
+  unknowns:
+    - >-
+      The assignment states "103 runtime units" but the sealed runtime packet
+      enumerates only 36 tables/views with row counts. The other 67 units were not
+      supplied, so runtime_relations below covers only the 36 enumerated units; the
+      remaining 67 are UNKNOWN.
+    - >-
+      Groups internal/contextcompiler, corpuscluster, corpuscuration, corpusenrich,
+      corpussemantic, dataclassifier, embeddingruntime, evaluation, modelpricing,
+      pdfingest, platform, questionidentity, secrets, secretscan, securityaudit,
+      shadowverifier, webevidence, logicir were not read in this call; their exact
+      capability status is UNRESOLVED.
+  coverage_complete: false
+  cheapest_next_evidence: >-
+    An authoritative enumeration of the full 103 runtime unit names (the sealed
+    packet omits 67), plus targeted reads of internal/modelpricing/resolve.go,
+    internal/embeddingruntime/port.go, and internal/contextcompiler/
+    contextcompiler_compiler.go to resolve their capability vs supporting role.
+
+  capability_candidates:
+    - capability_id: OC-task-lifecycle-management
+      name: Durable task lifecycle and dependency/requirement state machine
+      behavioral_contract: >-
+        When a task is created (with optional dependencies, requirements, available_at),
+        the system sets initial Ready/Pending status; when a transition (dependency add,
+        requirement add, evidence record, lease, block/unblock, cancel, finalize) is
+        attempted, the system enforces the legal state machine, rejects illegal
+        transitions and dependency cycles, and rejects Finalize(completed) while required
+        requirements remain unsatisfied, persisting task events and outbox rows.
+      causal_purpose: >-
+        Provide lease-bounded, dependency-gated, auditable task execution that downstream
+        orchestrators and workers can claim and verify.
+      entrypoints_or_triggers:
+        - internal/tasks/service.go:CreateTask
+        - internal/tasks/postgres/mutate.go:AddDependency
+        - internal/tasks/postgres/mutate.go:Finalize
+      enforcement_or_transition_points:
+        - internal/tasks/postgres/mutate.go:AddDependency (cycle + terminal/leased reject)
+        - internal/tasks/postgres/mutate.go:Finalize (awaiting_verification + requirements check)
+        - internal/tasks/postgres/mutate.go:Block
+        - internal/tasks/postgres/mutate.go:Unblock
+      reads_or_inputs:
+        - task rows, task_dependencies, task_requirements, task_evidence, lease attempts
+      writes_or_effects:
+        - task status transitions, task_events, outbox events (task.created/ready/claimed/finalized)
+      implementation_provenance:
+        - internal/tasks/service.go:CreateTask
+        - internal/tasks/postgres/mutate.go:AddDependency
+        - internal/tasks/postgres/mutate.go:Finalize
+      declaration_provenance:
+        - internal/tasks/domain.go:Terminal
+      configuration_provenance: []
+      possible_runtime_evidence:
+        - public.tasks rows=3 (status no_action)
+        - public.outbox_events event_type task.created/claimed/finalized/failed/lease_expired
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to OC-executive-orchestration (which composes tasks but does not own the
+        task state machine) and OC-cellworker task dispatch (not separately verified).
+        Split on responsibility: the task state machine owns legal transitions; the
+        orchestrator owns planning/delegation.
+      classification_basis: "Q1=YES(repo state machine); Q2=YES(stable transition contract); Q3=YES(mutate.go); Q4=YES(status/events); Q5=NO; Q6=NO"
+
+    - capability_id: OC-capability-authorization
+      name: Capability approval request/decide/consume authorization
+      behavioral_contract: >-
+        When a capability-gated action is evaluated, the system applies a default-deny
+        capability matrix (grants, hard-denies, approval modes) with organization/revision/
+        matrix-hash/role checks; when approval is required it creates an approval request
+        that a decider must approve before the action can be consumed, and consumption is
+        rejected on pending/rejected/expired/consumed/cancelled or scope/policy drift.
+      causal_purpose: >-
+        Enforce least-privilege, auditable, drift-checked capability authorization across
+        the organization.
+      entrypoints_or_triggers:
+        - internal/authorization/authorizer.go:Evaluate
+        - internal/authorization/service.go:RequestApproval
+      enforcement_or_transition_points:
+        - internal/authorization/authorizer.go:evaluate
+        - internal/authorization/service.go:validateDecision
+        - internal/authorization/service.go:ConsumeApproval
+      reads_or_inputs:
+        - capability matrix, organization revision, role, capability id, action digest
+      writes_or_effects:
+        - allow/deny/approval-required effect; approval requests/decisions/uses; audit events
+      implementation_provenance:
+        - internal/authorization/authorizer.go:evaluate
+        - internal/authorization/service.go:RequestApproval
+        - internal/authorization/service.go:ConsumeApproval
+      declaration_provenance:
+        - internal/authorization/domain.go:Valid
+      configuration_provenance: []
+      possible_runtime_evidence:
+        - public.authorization_requests rows=42 (capability_id rag.publish_approved, status consumed)
+        - public.authorization_decisions rows=42
+        - public.authorization_uses rows=42
+        - public.audit_events event_type authorization.request_created/decision_approved/approval_consumed
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to OC-model-dispatch-assignment and OC-agent-messaging which call the
+        authorizer but do not own the matrix/approval state machine. Split on
+        responsibility: this capability owns the request/decide/consume lifecycle.
+      classification_basis: "Q1=YES(evaluate/validateDecision); Q2=YES(stable); Q3=YES(authorizer.go); Q4=YES(effect+requests); Q5=NO; Q6=NO"
+
+    - capability_id: OC-executive-orchestration
+      name: Owner-goal executive planning and department delegation
+      behavioral_contract: >-
+        When an owner submits a goal, the system creates a CEO root task, then on Resume
+        creates a CEO plan task, validates the plan against the current organization
+        revision, creates leader plan tasks per department, drives departments, and
+        materializes a closure task, blocking on ambiguous model outcomes, revision
+        drift, or missing evidence.
+      causal_purpose: >-
+        Turn an owner goal into a validated, revision-pinned, departmental decomposition
+        with verified closure.
+      entrypoints_or_triggers:
+        - internal/executive/orchestrator.go:Submit
+        - internal/executive/orchestrator.go:Resume
+      enforcement_or_transition_points:
+        - internal/executive/orchestrator.go:createCEOPlanTask
+        - internal/executive/orchestrator.go:driveDepartments
+        - internal/executive/orchestrator.go:blockRoot
+      reads_or_inputs:
+        - owner goal, organization revision, registry, task coordinator, model coordinator
+      writes_or_effects:
+        - root/plan/leader/closure tasks; task blocking; run projection
+      implementation_provenance:
+        - internal/executive/orchestrator.go:Submit
+        - internal/executive/orchestrator.go:Resume
+      declaration_provenance: []
+      configuration_provenance: []
+      possible_runtime_evidence:
+        - public.tasks rows=3 (root/child tasks no_action)
+        - public.outbox_events task.* event types
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to OC-task-lifecycle-management (owns the state machine this composes)
+        and OC-model-invocation-dispatch (drives typed tasks). Split: this owns planning/
+        delegation, not task transitions or provider dispatch.
+      classification_basis: "Q1=YES(orchestrator logic); Q2=YES(stable); Q3=YES(orchestrator.go); Q4=YES(tasks/blocking); Q5=NO; Q6=NO"
+
+    - capability_id: OC-agent-messaging
+      name: Topology-enforced durable agent delegation/completion messaging
+      behavioral_contract: >-
+        When an agent sends a message, the system verifies the execution principal binding,
+        task ownership, registry-derived topology (CEO<->leader, leader<->own workers,
+        worker->own leader only), capability grant, idempotency request hash, and rate
+        limit before persisting; claims are principal-verified and ack/nack settle delivery.
+      causal_purpose: >-
+        Provide durable, authorized, topology-restricted delegation/completion messaging
+        between organizational agents.
+      entrypoints_or_triggers:
+        - internal/agentmessaging/postgres/store.go:Send
+      enforcement_or_transition_points:
+        - internal/agentmessaging/postgres/store.go:validateExecutionPrincipalForSender
+        - internal/agentmessaging/postgres/store.go:validateTaskOwnership
+        - internal/agentmessaging/topology.go:ValidateEdge
+        - internal/agentmessaging/postgres/store.go:ClaimNext
+      reads_or_inputs:
+        - registry reader, execution principal, task rows, message rows, capability authorizer
+      writes_or_effects:
+        - agent_messages rows; delivered status; nack/ack transitions
+      implementation_provenance:
+        - internal/agentmessaging/postgres/store.go:Send
+        - internal/agentmessaging/topology.go:ValidateEdge
+      declaration_provenance:
+        - internal/agentmessaging/types.go:Validate
+      configuration_provenance: []
+      possible_runtime_evidence:
+        - public.agent_messages rows=4 (message_type completion/delegation, status delivered)
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to OC-capability-authorization (authorizes the send/claim grant) and
+        OC-task-lifecycle-management (owns task rows). Split: messaging owns the
+        message ledger + topology, not the approval matrix or task state machine.
+      classification_basis: "Q1=YES(Send topology+authz); Q2=YES(stable); Q3=YES(store.go); Q4=YES(message rows/delivery); Q5=NO; Q6=NO"
+
+    - capability_id: OC-agent-budgeting
+      name: Hierarchical agent budget reservation and inheritance
+      behavioral_contract: >-
+        When a root budget is created or a child inherits, the system debits/enforces
+        multidimensional limits (USD, tokens, model calls, wall time, depth, retries,
+        subagents) and rejects allocations exceeding parent remaining budget or max depth,
+        with idempotent event-based accounting and model-call consumption.
+      causal_purpose: >-
+        Bound agent resource consumption per task hierarchy before spend occurs.
+      entrypoints_or_triggers:
+        - internal/agentbudget/postgres/store.go:CreateRootBudget
+        - internal/agentbudget/postgres/store.go:InheritForChild
+      enforcement_or_transition_points:
+        - internal/agentbudget/postgres/store.go:InheritForChild (remaining-budget/depth checks)
+        - internal/agentbudget/postgres/store.go:ConsumeModelCall
+      reads_or_inputs:
+        - agent_budgets rows, agent_budget_events, task_budgets
+      writes_or_effects:
+        - budget rows/events; rejections on budget exceeded
+      implementation_provenance:
+        - internal/agentbudget/postgres/store.go:CreateRootBudget
+        - internal/agentbudget/postgres/store.go:InheritForChild
+      declaration_provenance:
+        - internal/agentbudget/types.go:Validate
+      configuration_provenance: []
+      possible_runtime_evidence: []
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to OC-cost-ledger (provider USD wallets) and OC-model-invocation-dispatch
+        (consumes budgets). Split: agent budgeting enforces per-task multidimensional
+        limits; cost ledger tracks real-money provider wallets.
+      classification_basis: "Q1=YES(budget rules); Q2=YES(stable); Q3=YES(store.go); Q4=YES(limit rejections/rows); Q5=NO; Q6=NO"
+
+    - capability_id: OC-cost-ledger
+      name: Provider wallet reserve/commit/release cost ledger
+      behavioral_contract: >-
+        When a model or embedding invocation reserves spend, the system reserves funds
+        against the provider wallet and later commits or releases exactly once; the
+        database-level terminal-event index rejects a reservation becoming both committed
+        and released, and orphaned reservations can be listed for reconciliation.
+      causal_purpose: >-
+        Track and bound real-money provider spend with double-settlement protection.
+      entrypoints_or_triggers:
+        - internal/costledger/postgres/store.go:Reserve
+        - internal/costledger/postgres/store.go:Reconcile
+        - internal/costledger/postgres/store.go:Release
+      enforcement_or_transition_points:
+        - internal/costledger/postgres/store.go:isUniqueViolation (terminal-event uniqueness)
+        - internal/costledger/postgres/store.go:ListOrphanedReservations
+      reads_or_inputs:
+        - provider_wallets, provider_wallet_events, model_invocations, model_pricing
+      writes_or_effects:
+        - reserved/committed/released wallet events; balance/reserved updates
+      implementation_provenance:
+        - internal/costledger/postgres/store.go:Reserve
+        - internal/costledger/postgres/store.go:ListOrphanedReservations
+      declaration_provenance:
+        - internal/costledger/types.go:Valid
+      configuration_provenance: []
+      possible_runtime_evidence:
+        - public.provider_wallet_events rows=785 (kind reserved=393, committed=392)
+        - public.provider_wallets rows=5
+        - public.embedding_invocations rows=393
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to OC-agent-budgeting (task-level limits) and OC-model-invocation-dispatch
+        (triggers reservations). Split: this owns provider-wallet money settlement.
+      classification_basis: "Q1=YES(settlement rules); Q2=YES(stable); Q3=YES(store.go); Q4=YES(wallet events); Q5=NO; Q6=NO"
+
+    - capability_id: OC-model-invocation-dispatch
+      name: Model invocation creation and provider dispatch
+      behavioral_contract: >-
+        When an invocation is created, the system validates task attempt, context snapshot,
+        role eligibility, model profile capabilities, executive scope/egress, and identity
+        policy before persisting; on Dispatch it verifies principal/egress/identity pins and
+        routes through a provider adapter, failing-before-send when pins are absent.
+      causal_purpose: >-
+        Produce auditable, policy-pinned model invocations and route them to configured
+        providers safely.
+      entrypoints_or_triggers:
+        - internal/modelruntime/invocation_service.go:Create
+        - internal/modelruntime/dispatch_service.go:Dispatch
+      enforcement_or_transition_points:
+        - internal/modelruntime/invocation_service.go:Create (eligibility/egress/identity checks)
+        - internal/modelruntime/dispatch_service.go:Dispatch (pin checks, fail-before-send)
+      reads_or_inputs:
+        - task attempt, context snapshot, model binding, egress policy, identity policy, assignment
+      writes_or_effects:
+        - model_invocations, dispatch attempts, invocation events (requested/succeeded/failed)
+      implementation_provenance:
+        - internal/modelruntime/invocation_service.go:Create
+        - internal/modelruntime/dispatch_service.go:Dispatch
+      declaration_provenance:
+        - internal/modelruntime/domain.go
+      configuration_provenance: []
+      possible_runtime_evidence:
+        - public.outbox_events event_type model.invocation_requested/succeeded/failed/ambiguous
+        - public.model_capability_snapshots rows=7
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to OC-model-dispatch-assignment (pins a principal to a task attempt),
+        OC-model-egress-policy and OC-model-execution-identity (consumed as gates). Split:
+        this owns invocation lifecycle and adapter routing.
+      classification_basis: "Q1=YES(create+dispatch logic); Q2=YES(stable); Q3=YES(invocation_service.go); Q4=YES(invocation rows/events); Q5=NO; Q6=NO"
+
+    - capability_id: OC-model-egress-policy
+      name: Canonical model egress policy sync and decision evaluation
+      behavioral_contract: >-
+        When the canonical egress policy is validated/synced, the system checks it against
+        the current organization revision and materializes rules; when a dispatch egress
+        decision is evaluated, it enforces default-deny data-classification rules and
+        hard-denies, emitting allow/deny with reason codes.
+      causal_purpose: >-
+        Control which data classifications may egress to which providers.
+      entrypoints_or_triggers:
+        - internal/modelegress/service.go:Sync
+        - internal/modelegress/evaluator.go:Evaluate
+      enforcement_or_transition_points:
+        - internal/modelegress/evaluator.go:Evaluate (hard-deny + per-classification rules)
+        - internal/modelegress/service.go:load (revision/policy hash match)
+      reads_or_inputs:
+        - canonical policy document, organization revision, provider, data classifications
+      writes_or_effects:
+        - materialized egress rules/versions/bindings; allow/deny decisions
+      implementation_provenance:
+        - internal/modelegress/service.go:Sync
+        - internal/modelegress/evaluator.go:Evaluate
+      declaration_provenance:
+        - internal/modelegress/canonical_policy.go:LoadCanonicalPolicy
+      configuration_provenance: []
+      possible_runtime_evidence:
+        - public.model_egress_policy_versions rows=1 (status materialized)
+        - public.model_egress_rules rows=14
+        - public.model_egress_revision_bindings rows=1
+        - public.audit_events event_type model.egress_registry_synced/validated
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to OC-model-invocation-dispatch (consumes egress decisions) and
+        OC-context-compilation (produces data classifications). Split: this owns the
+        policy materialization + decision rules.
+      classification_basis: "Q1=YES(evaluator rules); Q2=YES(stable); Q3=YES(evaluator.go); Q4=YES(decisions+materialized rules); Q5=NO; Q6=NO"
+
+    - capability_id: OC-model-execution-identity
+      name: Model execution principal challenge/verify identity
+      behavioral_contract: >-
+        When an invocation reaches dispatch, the system issues a signed challenge binding
+        the invocation/assignment/action digest to an active execution identity policy and
+        key, then verifies an ed25519 assertion signature with clock-skew tolerance, failing
+        closed on policy staleness or assertion mismatch.
+      causal_purpose: >-
+        Cryptographically bind model execution to a pinned execution principal.
+      entrypoints_or_triggers:
+        - internal/modelidentity/challenge_service.go:Issue
+        - internal/modelidentity/challenge_service.go:Verify
+      enforcement_or_transition_points:
+        - internal/modelidentity/challenge_service.go:Issue (policy pin/status checks)
+        - internal/modelidentity/challenge_service.go:Verify (signature + skew checks)
+      reads_or_inputs:
+        - execution identity policy version, key, action digest, request hash
+      writes_or_effects:
+        - challenges, verified assertions (allow/fail)
+      implementation_provenance:
+        - internal/modelidentity/challenge_service.go:Issue
+        - internal/modelidentity/challenge_service.go:Verify
+      declaration_provenance:
+        - internal/modelidentity/crypto.go:VerifyAssertion
+      configuration_provenance: []
+      possible_runtime_evidence:
+        - public.model_execution_identity_policy_versions rows=1 (status active)
+        - public.model_execution_principals rows=3 (status active)
+        - public.audit_events event_type model.execution_identity_policy_synced, model.execution_principal_registered
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to OC-model-dispatch-assignment (pins principal) and OC-model-invocation-dispatch
+        (calls challenge during dispatch). Split: this owns challenge issuance/verification.
+      classification_basis: "Q1=YES(challenge crypto flow); Q2=YES(stable); Q3=YES(challenge_service.go); Q4=YES(allow/fail); Q5=NO; Q6=NO"
+
+    - capability_id: OC-model-dispatch-assignment
+      name: Execution principal assignment to task attempts
+      behavioral_contract: >-
+        When an assignment is created, the system authorizes the actor, verifies the task
+        attempt lease and revision, requires an active execution principal whose dispatch
+        actor role is enabled/executable/execution_service, bounds assignment vigency by the
+        task lease, and persists an assignment with scope/request hashes.
+      causal_purpose: >-
+        Pin an eligible execution principal to a leased task attempt before invocation.
+      entrypoints_or_triggers:
+        - internal/modeldispatch/assignment_service.go:Create
+      enforcement_or_transition_points:
+        - internal/modeldispatch/assignment_service.go:Create (authorization, lease, principal eligibility)
+      reads_or_inputs:
+        - task attempt, lease, execution principal, role catalog, authorizer
+      writes_or_effects:
+        - dispatcher assignments (created/revoked/expired)
+      implementation_provenance:
+        - internal/modeldispatch/assignment_service.go:Create
+      declaration_provenance:
+        - internal/modeldispatch/domain.go:Terminal
+      configuration_provenance: []
+      possible_runtime_evidence: []
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to OC-model-execution-identity (uses pinned principal) and
+        OC-model-invocation-dispatch (consumes resolved assignment). Split: this owns the
+        assignment lifecycle.
+      classification_basis: "Q1=YES(assignment rules); Q2=YES(stable); Q3=YES(assignment_service.go); Q4=YES(assignments persisted); Q5=NO; Q6=NO"
+
+    - capability_id: OC-rag-knowledge-lifecycle
+      name: RAG knowledge propose/review/approve lifecycle and namespace read
+      behavioral_contract: >-
+        When knowledge is proposed, the system authorizes rag.propose_candidate and creates
+        a candidate version; review/deprecate/archive apply a state transition with expected
+        revision and authorization; publish requires a prior consumed approval
+        (rag.publish_approved); reads are gated by namespace authorization and revalidation.
+      causal_purpose: >-
+        Governed, approval-gated knowledge publication with namespace-scoped retrieval.
+      entrypoints_or_triggers:
+        - internal/rag/manager.go:Propose
+        - internal/rag/manager.go:Review
+      enforcement_or_transition_points:
+        - internal/rag/manager.go:authorizeMutation
+        - internal/rag/manager.go:authorizeNamespaceRead
+      reads_or_inputs:
+        - knowledge versions, namespace resolver, authorization gate, semantic search deps
+      writes_or_effects:
+        - rag_knowledge_versions/documents/chunks/embeddings, lifecycle events
+      implementation_provenance:
+        - internal/rag/manager.go:Propose
+        - internal/rag/manager.go:Review
+      declaration_provenance:
+        - internal/rag/manager.go:CapabilityPropose
+      configuration_provenance: []
+      possible_runtime_evidence:
+        - public.rag_knowledge_documents rows=16
+        - public.rag_knowledge_versions rows=16
+        - public.rag_knowledge_chunks rows=383
+        - public.rag_knowledge_lifecycle_events rows=32
+        - public.authorization_requests rows=42 (capability_id rag.publish_approved)
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to OC-memory-lifecycle (same pattern, different resource/namespace) and
+        OC-capability-authorization (authorizes publish). Split: this owns knowledge
+        document/chunk lifecycle and namespace reads.
+      classification_basis: "Q1=YES(lifecycle manager); Q2=YES(stable); Q3=YES(manager.go); Q4=YES(versions/events); Q5=NO; Q6=NO"
+
+    - capability_id: OC-memory-lifecycle
+      name: Organizational memory propose/review/approve lifecycle
+      behavioral_contract: >-
+        When a memory entry is proposed, the system authorizes memory.propose and creates a
+        candidate; review/deprecate/archive apply transitions with expected revision and
+        authorization; approved entries are embedded only after durable approval; reads are
+        role-namespace-gated.
+      causal_purpose: >-
+        Governed, role-scoped organizational memory with post-approval embedding.
+      entrypoints_or_triggers:
+        - internal/memory/manager.go:Propose
+        - internal/memory/manager.go:Review
+      enforcement_or_transition_points:
+        - internal/memory/manager.go:authorizeMutation
+        - internal/memory/manager.go:Get (role namespace gate)
+      reads_or_inputs:
+        - memory entries, role namespace, authorization gate, semantic search deps
+      writes_or_effects:
+        - memory entries/embeddings, lifecycle transitions
+      implementation_provenance:
+        - internal/memory/manager.go:Propose
+        - internal/memory/manager.go:Review
+      declaration_provenance:
+        - internal/memory/manager.go:CapabilityPropose
+      configuration_provenance: []
+      possible_runtime_evidence: []
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to OC-rag-knowledge-lifecycle (knowledge vs memory resource). Split: this
+        owns organizational memory entries, not knowledge documents.
+      classification_basis: "Q1=YES(manager transitions); Q2=YES(stable); Q3=YES(manager.go); Q4=YES(entries/embeddings); Q5=NO; Q6=NO"
+
+    - capability_id: OC-skill-lifecycle
+      name: Skill proposal/qualification/activation/assignment lifecycle
+      behavioral_contract: >-
+        When a skill is proposed, the system authorizes the proposal and creates a draft
+        version; lifecycle transitions (human approve, qualify candidate, activate, suspend,
+        retire) and assignments require authorization, expected-revision checks, and emit
+        lifecycle/assignment events.
+      causal_purpose: >-
+        Governed promotion of validated agent skills and their role assignments.
+      entrypoints_or_triggers:
+        - internal/skillregistry/manager.go:Propose
+        - internal/skillregistry/manager.go:Assign
+      enforcement_or_transition_points:
+        - internal/skillregistry/manager.go:transition (authorization + revision check)
+        - internal/skillregistry/manager.go:Assign
+      reads_or_inputs:
+        - skill versions, assignments, authorization gate
+      writes_or_effects:
+        - skill versions, lifecycle events, assignments
+      implementation_provenance:
+        - internal/skillregistry/manager.go:Propose
+        - internal/skillregistry/manager.go:transition
+      declaration_provenance:
+        - internal/skillregistry/manager.go:CapabilityPropose
+      configuration_provenance: []
+      possible_runtime_evidence: []
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to OC-improvement-promotion (promotion lifecycle for improvements) and
+        OC-capability-authorization (authorizes lifecycle changes). Split: this owns skill
+        manifest lifecycle + assignments.
+      classification_basis: "Q1=YES(lifecycle manager); Q2=YES(stable); Q3=YES(manager.go); Q4=YES(versions/events); Q5=NO; Q6=NO"
+
+    - capability_id: OC-context-compilation
+      name: Context snapshot build and validation
+      behavioral_contract: >-
+        When a context build is requested, the system resolves organization/revision/role/
+        sources/skills, assembles budget-bounded segments, computes request and rendered
+        hashes, rejects forbidden sources (secret/clinical/unsafe/path-escape), records
+        forbidden-source rejections, and persists an idempotent snapshot; revalidation
+        detects drift.
+      causal_purpose: >-
+        Produce verifiable, bounded, data-classification-safe context snapshots for model
+        invocations.
+      entrypoints_or_triggers:
+        - internal/contextengine/service.go:Build
+      enforcement_or_transition_points:
+        - internal/contextengine/service.go:Build (source resolution + idempotency)
+        - internal/contextengine/service.go:rejectBuild (forbidden source recording)
+      reads_or_inputs:
+        - organization registry, canonical bundle, memory/skills/tasks/rag providers
+      writes_or_effects:
+        - context snapshots, forbidden-source rejection events
+      implementation_provenance:
+        - internal/contextengine/service.go:Build
+      declaration_provenance:
+        - internal/contextengine/domain.go
+      configuration_provenance: []
+      possible_runtime_evidence:
+        - public.outbox_events event_type context.snapshot_created=296, context.snapshot_validation_failed=6, context.policy_drift_rejected=6
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to OC-context-compiler (task-class profiles, not verified) and
+        OC-model-invocation-dispatch (validates snapshots). Split: this owns snapshot
+        assembly/validation.
+      classification_basis: "Q1=YES(build/resolve logic); Q2=YES(stable); Q3=YES(service.go); Q4=YES(snapshot+rejections); Q5=NO; Q6=NO"
+
+    - capability_id: OC-organization-registry
+      name: Canonical organization registry load/compare/synchronize
+      behavioral_contract: >-
+        When the canonical registry is loaded, the system parses and validates YAML
+        documents into a snapshot with semantic hashes; CompareCanonical diffs canonical vs
+        persisted and SynchronizeCanonical applies the canonical snapshot when they differ,
+        with revision tracking.
+      causal_purpose: >-
+        Maintain a single revisioned, hash-verifiable source of truth for units/roles/
+        reporting lines.
+      entrypoints_or_triggers:
+        - internal/organization/registry/service.go:CompareCanonical
+        - internal/organization/registry/service.go:SynchronizeCanonical
+      enforcement_or_transition_points:
+        - internal/organization/registry/service.go:CompareCanonical (diff/hash check)
+        - internal/organization/registry/parser.go:Load
+      reads_or_inputs:
+        - canonical YAML documents (empresa/, ingenieria_ia/, etc.)
+      writes_or_effects:
+        - organization_registry_revisions/documents, organizations/roles/units/reporting_lines
+      implementation_provenance:
+        - internal/organization/registry/service.go:CompareCanonical
+        - internal/organization/registry/service.go:SynchronizeCanonical
+      declaration_provenance:
+        - internal/organization/registry/domain.go:Valid
+      configuration_provenance: []
+      possible_runtime_evidence:
+        - public.organization_registry_revisions rows=4 (status applied)
+        - public.organization_registry_revision_documents rows=36
+        - public.organization_roles rows=48
+        - public.organization_reporting_lines rows=200
+        - public.organizational_units rows=6
+        - public.audit_events event_type organization.registry_synced
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to OC-capability-authorization (reads registry for matrix/roles) and
+        OC-context-compilation (reads registry for role/source resolution). Split: this owns
+        canonical registry load/diff/sync.
+      classification_basis: "Q1=YES(loader/diff/sync); Q2=YES(stable); Q3=YES(service.go); Q4=YES(revisions/roles persisted); Q5=NO; Q6=NO"
+
+    - capability_id: OC-staging-workspace
+      name: Git worktree staging, sealing, and promotion
+      behavioral_contract: >-
+        When a workspace is created, the system verifies the active task lease, authorizes
+        code.stage_write, validates repository/target ref and base commit, creates a git
+        worktree, and activates it; sealing/promotion apply further lease/revision/ref
+        checks and quarantine roots.
+      causal_purpose: >-
+        Provide lease-gated, isolated code staging workspaces for agent code changes.
+      entrypoints_or_triggers:
+        - internal/staging/service.go:CreateWorkspace
+        - internal/staging/service.go:SealWorkspace
+      enforcement_or_transition_points:
+        - internal/staging/service.go:CreateWorkspace (lease + authorization + ref checks)
+        - internal/staging/service.go:PrepareRoots
+      reads_or_inputs:
+        - task lease, repository catalog, git refs, authorization
+      writes_or_effects:
+        - staging workspaces, worktrees, promotion refs
+      implementation_provenance:
+        - internal/staging/service.go:CreateWorkspace
+        - internal/staging/service.go:SealWorkspace
+      declaration_provenance:
+        - internal/staging/domain.go:Valid
+      configuration_provenance: []
+      possible_runtime_evidence: []
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to OC-task-lifecycle-management (owns lease verification this consumes) and
+        OC-completion-verification (reads staged artifacts). Split: this owns worktree
+        staging/promotion.
+      classification_basis: "Q1=YES(worktree/promote logic); Q2=YES(stable); Q3=YES(service.go); Q4=YES(workspace/worktree state); Q5=NO; Q6=NO"
+
+    - capability_id: OC-decision-graph-execution
+      name: DAG decision run branch transition and terminal decision
+      behavioral_contract: >-
+        When a decision run is created and a graph appended, the system computes ready
+        nodes/depths and detects dependency cycles; it then transitions branches, claims
+        ready nodes, records observations/verifications, and requires verified/inferred
+        verification for terminal decisions, with expired-execution recovery.
+      causal_purpose: >-
+        Execute multi-branch decision processes as a verifiable DAG with terminal selection.
+      entrypoints_or_triggers:
+        - internal/decisiongraph/service.go:CreateRun
+        - internal/decisiongraph/service.go:ClaimReadyNode
+      enforcement_or_transition_points:
+        - internal/decisiongraph/service.go:RecordTerminalDecision (verified/inferred only)
+        - internal/decisiongraph/service.go:RecoverExpiredExecutions
+      reads_or_inputs:
+        - decision graph nodes/edges, observations, verifications
+      writes_or_effects:
+        - decision runs, branch states, terminal decisions
+      implementation_provenance:
+        - internal/decisiongraph/service.go:CreateRun
+        - internal/decisiongraph/service.go:RecordTerminalDecision
+      declaration_provenance:
+        - internal/decisiongraph/records.go:Validate
+      configuration_provenance: []
+      possible_runtime_evidence: []
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to OC-completion-verification (reads branch state to reject reused rejected
+        branches). Split: this owns decision DAG execution/selection.
+      classification_basis: "Q1=YES(graph/branch logic); Q2=YES(stable); Q3=YES(service.go); Q4=YES(runs/branch state); Q5=NO; Q6=NO"
+
+    - capability_id: OC-improvement-promotion
+      name: Improvement candidate evaluation and gated promotion
+      behavioral_contract: >-
+        When a candidate is proposed, the system starts it in proposed state; evaluation
+        verdicts deterministically map pass/fail/inconclusive to approved/rejected/inconclusive;
+        promotion to canary/active requires an authorized promotion decision matching the
+        candidate and kind, with rolled-back support.
+      causal_purpose: >-
+        Governed promotion of validated improvements from proposal to active.
+      entrypoints_or_triggers:
+        - internal/improvement/service.go:ProposeCandidate
+        - internal/improvement/service.go:PromoteToCanary
+      enforcement_or_transition_points:
+        - internal/improvement/service.go:requestPromotion (gate authorization)
+        - internal/improvement/service.go:RecordEvaluationVerdict
+      reads_or_inputs:
+        - candidate, evaluation suite comparison, approval gate
+      writes_or_effects:
+        - candidate state transitions, promotion decisions
+      implementation_provenance:
+        - internal/improvement/service.go:ProposeCandidate
+        - internal/improvement/service.go:PromoteToCanary
+      declaration_provenance:
+        - internal/improvement/transitions.go:ValidateCandidateTransition
+      configuration_provenance: []
+      possible_runtime_evidence: []
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to OC-skill-lifecycle (different resource: improvements vs skills) and
+        OC-evaluation (provides comparison verdicts, not verified). Split: this owns
+        improvement promotion lifecycle.
+      classification_basis: "Q1=YES(state machine); Q2=YES(stable); Q3=YES(service.go); Q4=YES(candidate state); Q5=NO; Q6=NO"
+
+    - capability_id: OC-completion-verification
+      name: Task attempt completion obligation verification
+      behavioral_contract: >-
+        When a task attempt is verified, the system re-checks requirements satisfied,
+        artifact digest match, checks-passed evidence, approval consumption, and that no
+        rejected/superseded decision branch is reused, returning a verified/contradicted/
+        unknown verdict without mutating tasks.
+      causal_purpose: >-
+        Independently gate task finalization on Phase 2 obligations.
+      entrypoints_or_triggers:
+        - internal/completion/service.go:Verify
+      enforcement_or_transition_points:
+        - internal/completion/service.go:checkArtifactExists
+        - internal/completion/service.go:checkApprovalPresent
+        - internal/completion/service.go:checkNoRejectedBranchReused
+      reads_or_inputs:
+        - task facts, staging artifacts, check runs, approvals, decision branch state
+      writes_or_effects:
+        - verification verdict/obligations (no mutation of tasks)
+      implementation_provenance:
+        - internal/completion/service.go:Verify
+      declaration_provenance:
+        - internal/completion/types.go:Valid
+      configuration_provenance: []
+      possible_runtime_evidence: []
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to OC-task-lifecycle-management (Finalize gates on this verdict) and
+        OC-decision-graph-execution (provides branch state). Split: this owns obligation
+        re-checking.
+      classification_basis: "Q1=YES(verification checks); Q2=YES(stable); Q3=YES(service.go); Q4=YES(verdict/obligations); Q5=NO; Q6=NO"
+
+    - capability_id: OC-corpus-census
+      name: Research corpus dedup/classify/validate census
+      behavioral_contract: >-
+        When the census orchestrator runs, it groups works, selects canonical artifacts,
+        validates downloaded PDFs via Poppler with concurrency bounds and resumable state,
+        and builds a deterministic census counting duplicates/failures/unresolved rows.
+      causal_purpose: >-
+        Produce a deduplicated, validated census of the research corpus.
+      entrypoints_or_triggers:
+        - internal/corpuscensus/corpuscensus_orchestrator.go:Run
+      enforcement_or_transition_points:
+        - internal/corpuscensus/corpuscensus_orchestrator.go:processOne
+        - internal/corpuscensus/corpuscensus_validate.go:ValidatePDF
+      reads_or_inputs:
+        - bronze papers/sources, state store, PDF processor
+      writes_or_effects:
+        - silver records, census
+      implementation_provenance:
+        - internal/corpuscensus/corpuscensus_orchestrator.go:Run
+        - internal/corpuscensus/corpuscensus_orchestrator.go:processOne
+      declaration_provenance:
+        - internal/corpuscensus/corpuscensus_domain.go:Valid
+      configuration_provenance: []
+      possible_runtime_evidence: []
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to corpus cluster/curation/enrich/semantic packages (not verified) and
+        OC-evidence-object-storage (stores evidence). Split: this owns the census run.
+      classification_basis: "Q1=YES(orchestrator); Q2=YES(stable); Q3=YES(orchestrator.go); Q4=YES(census/records); Q5=NO; Q6=NO"
+
+    - capability_id: OC-evidence-object-storage
+      name: Immutable evidence object storage client
+      behavioral_contract: >-
+        When an object is written, the system signs the OCI request with an RSA private key;
+        PutObjectIfAbsent creates only-if-absent and rejects with an immutable-object conflict
+        when an existing key holds different content, so evidence keys cannot be silently
+        overwritten.
+      causal_purpose: >-
+        Persist evidence/provenance objects with immutability guarantees.
+      entrypoints_or_triggers:
+        - internal/objectstorage/client.go:PutObjectIfAbsent
+      enforcement_or_transition_points:
+        - internal/objectstorage/client.go:PutObjectIfAbsent (immutability conflict)
+        - internal/objectstorage/signer.go:sign
+      reads_or_inputs:
+        - object keys, bodies, RSA signing config
+      writes_or_effects:
+        - OCI objects (created / immutability conflict)
+      implementation_provenance:
+        - internal/objectstorage/client.go:PutObjectIfAbsent
+        - internal/objectstorage/client.go:PutObject
+      declaration_provenance:
+        - internal/objectstorage/keys.go:SourceObjectKey
+      configuration_provenance: []
+      possible_runtime_evidence: []
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to OC-corpus-census (stores its evidence) and generic transport. Split:
+        this owns signed immutable object persistence; upstream callers own object meaning.
+      classification_basis: "Q1=YES(signing+immutability rules); Q2=YES(stable); Q3=YES(client.go); Q4=YES(object create/conflict); Q5=NO; Q6=NO"
+
+  supporting_or_negative_candidates:
+    - id: migrations
+      classification: NOT_A_CAPABILITY
+      reason: "Schema migrations are persistence representation; a migration file/table is never a capability by identity (Q1=NO)."
+    - id: internal/agentmessagingfixtures
+      classification: NOT_A_CAPABILITY
+      reason: "Test fixtures only (prod_go symbols=0); TEST_ONLY role."
+    - id: internal/identifiers
+      classification: NOT_A_CAPABILITY
+      reason: "Helper function ExtractDigitRuns without autonomous operational responsibility."
+    - id: internal/modelpricing
+      classification: UNRESOLVED
+      reason: "Not read this call; likely supporting cost estimation (EstimateCost), could be a capability."
+    - id: internal/embeddingruntime
+      classification: UNRESOLVED
+      reason: "Not read; runtime embedding_invocations=393 suggests execution, but adapter ownership unverified."
+    - id: internal/contextcompiler
+      classification: UNRESOLVED
+      reason: "Not read; likely supports OC-context-compilation with task-class profiles."
+
+  navigation_group_accounting:
+    - group: .github
+      classification: IRRELEVANT_WITH_PROOF
+      capability_ids: []
+      reason: "CI/workflow configuration, no production behavior (prod_go=0)."
+      provenance: [".github (supplied index: artifacts=4, prod_go=0)"]
+    - group: cmd/orgctl
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-capability-authorization, OC-context-compilation, OC-rag-knowledge-lifecycle, OC-memory-lifecycle, OC-skill-lifecycle, OC-task-lifecycle-management]
+      reason: "CLI entrypoints (runAuthorization, runContext, runRag, runMemory, runSkill, runTasks) that invoke capability services; entry locators, not behavior owners."
+      provenance: ["cmd/orgctl/authorization.go:15:runAuthorization", "cmd/orgctl/context.go:21:runContext"]
+    - group: cmd/orgd
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: []
+      reason: "Server daemon composition entrypoint (main/run); not itself a capability."
+      provenance: ["cmd/orgd/main.go:24:main"]
+    - group: cmd/question-identity-gate
+      classification: UNRESOLVED
+      capability_ids: []
+      reason: "Measurement/gate harness entrypoint; not clearly an organizational capability; not read."
+      provenance: ["cmd/question-identity-gate/main.go:14:main"]
+    - group: config
+      classification: UNRESOLVED
+      capability_ids: []
+      reason: "Likely configuration artifact(s); not read."
+      provenance: ["config (supplied index: artifacts=1, prod_go=0)"]
+    - group: deployments
+      classification: IRRELEVANT_WITH_PROOF
+      capability_ids: []
+      reason: "Deployment manifests (prod_go=0)."
+      provenance: ["deployments (supplied index: artifacts=10, prod_go=0)"]
+    - group: docs
+      classification: IRRELEVANT_WITH_PROOF
+      capability_ids: []
+      reason: "Documentation only (prod_go=0)."
+      provenance: ["docs (supplied index: artifacts=114, prod_go=0)"]
+    - group: empresa
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-organization-registry]
+      reason: "Canonical org registry declaration documents (runtime role_id values empresa/ceo, empresa/ceo_observer)."
+      provenance: ["sealed runtime: organization_reporting_lines role_id empresa/ceo", "organization_roles rows=48"]
+    - group: ingenieria_ia
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-organization-registry]
+      reason: "Canonical org registry declaration documents (runtime role_id values ingenieria_ia/*)."
+      provenance: ["sealed runtime: organization_reporting_lines role_id ingenieria_ia/arquitecto_software"]
+    - group: internal/agentbudget
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-agent-budgeting]
+      reason: "Implements hierarchical budget reservation/inheritance."
+      provenance: ["internal/agentbudget/postgres/store.go:57:CreateRootBudget", "internal/agentbudget/postgres/store.go:110:InheritForChild"]
+    - group: internal/agentmessaging
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-agent-messaging]
+      reason: "Implements topology-enforced messaging Send/Claim/Ack."
+      provenance: ["internal/agentmessaging/postgres/store.go:78:Send", "internal/agentmessaging/topology.go:32:ValidateEdge"]
+    - group: internal/agentmessagingfixtures
+      classification: IRRELEVANT_WITH_PROOF
+      capability_ids: []
+      reason: "Test fixtures (prod_go symbols=0)."
+      provenance: ["internal/agentmessagingfixtures (supplied index)"]
+    - group: internal/app
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-task-lifecycle-management, OC-staging-workspace]
+      reason: "Composition root plus task/staging reconcilers (runTaskReconciler, runStagingReconciler)."
+      provenance: ["internal/app/app.go:253:runTaskReconciler", "internal/app/app.go:292:runStagingReconciler"]
+    - group: internal/authorization
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-capability-authorization]
+      reason: "Implements capability matrix evaluation + approval request/decide/consume."
+      provenance: ["internal/authorization/authorizer.go:165:evaluate", "internal/authorization/service.go:RequestApproval"]
+    - group: internal/cellworker
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-task-lifecycle-management]
+      reason: "Task dispatch worker loop (ListEligible/dispatchWithGrace) supporting task execution."
+      provenance: ["internal/cellworker/worker.go:55:Run", "internal/cellworker/postgres/store.go:39:ListEligible"]
+    - group: internal/codeexecutionfixtures
+      classification: IRRELEVANT_WITH_PROOF
+      capability_ids: []
+      reason: "Test fixtures (prod_go symbols=0)."
+      provenance: ["internal/codeexecutionfixtures (supplied index)"]
+    - group: internal/completion
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-completion-verification]
+      reason: "Implements attempt completion obligation verification."
+      provenance: ["internal/completion/service.go:32:Verify"]
+    - group: internal/config
+      classification: UNRESOLVED
+      capability_ids: []
+      reason: "Configuration loader (Load/Validate); supporting infrastructure; not read in detail."
+      provenance: ["internal/config/config.go:204:Load"]
+    - group: internal/contextcompiler
+      classification: UNRESOLVED
+      capability_ids: []
+      reason: "Task-class context compilation profiles/projections; not read."
+      provenance: ["internal/contextcompiler/contextcompiler_compiler.go:53:Compile"]
+    - group: internal/contextengine
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-context-compilation]
+      reason: "Implements context snapshot build/validation."
+      provenance: ["internal/contextengine/service.go:Build"]
+    - group: internal/corpuscensus
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-corpus-census]
+      reason: "Implements research corpus census orchestration."
+      provenance: ["internal/corpuscensus/corpuscensus_orchestrator.go:63:Run"]
+    - group: internal/corpuscluster
+      classification: UNRESOLVED
+      capability_ids: []
+      reason: "TF-IDF clustering stage; not read."
+      provenance: ["internal/corpuscluster/corpuscluster_cluster.go:147:BuildClusters"]
+    - group: internal/corpuscuration
+      classification: UNRESOLVED
+      capability_ids: []
+      reason: "Curation output contracts/gaps; not read."
+      provenance: ["internal/corpuscuration/corpuscuration_output_contract.go:138:ValidateCurationOutputContract"]
+    - group: internal/corpusenrich
+      classification: UNRESOLVED
+      capability_ids: []
+      reason: "Enrichment client/orchestrator; not read."
+      provenance: ["internal/corpusenrich/corpusenrich_orchestrator.go:55:Run"]
+    - group: internal/corpussemantic
+      classification: UNRESOLVED
+      capability_ids: []
+      reason: "Semantic clustering/embedding; not read."
+      provenance: ["internal/corpussemantic/corpussemantic_embed.go:51:Run"]
+    - group: internal/costledger
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-cost-ledger]
+      reason: "Implements provider wallet reserve/commit/release settlement."
+      provenance: ["internal/costledger/postgres/store.go:235:Reserve", "internal/costledger/postgres/store.go:286:Reconcile"]
+    - group: internal/costledgerfixtures
+      classification: IRRELEVANT_WITH_PROOF
+      capability_ids: []
+      reason: "Test fixtures (prod_go symbols=0)."
+      provenance: ["internal/costledgerfixtures (supplied index)"]
+    - group: internal/dataclassifier
+      classification: UNRESOLVED
+      capability_ids: []
+      reason: "Data classification detection; likely supports egress/context; not read."
+      provenance: ["internal/dataclassifier/detect.go:69:Detect"]
+    - group: internal/decisiongraph
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-decision-graph-execution]
+      reason: "Implements DAG decision run/branch/terminal decision."
+      provenance: ["internal/decisiongraph/service.go:CreateRun", "internal/decisiongraph/service.go:RecordTerminalDecision"]
+    - group: internal/decisiongraphfixtures
+      classification: IRRELEVANT_WITH_PROOF
+      capability_ids: []
+      reason: "Test fixtures (prod_go symbols=0)."
+      provenance: ["internal/decisiongraphfixtures (supplied index)"]
+    - group: internal/decisiongraphtrace
+      classification: UNRESOLVED
+      capability_ids: []
+      reason: "Trace read side; likely supports decision graph; not read."
+      provenance: ["internal/decisiongraphtrace/store.go:98:LoadTrace"]
+    - group: internal/embeddingruntime
+      classification: UNRESOLVED
+      capability_ids: []
+      reason: "Embedding adapters (bgem3/gemini); runtime embedding_invocations=393 suggests execution; not read."
+      provenance: ["internal/embeddingruntime/adapter/gemini/adapter.go:35:New"]
+    - group: internal/endtoendfixtures
+      classification: IRRELEVANT_WITH_PROOF
+      capability_ids: []
+      reason: "Test fixtures (prod_go symbols=0)."
+      provenance: ["internal/endtoendfixtures (supplied index)"]
+    - group: internal/evaluation
+      classification: UNRESOLVED
+      capability_ids: []
+      reason: "Evaluation/benchmark infrastructure (CompareResults, RecallAt); not clearly an org capability; not read."
+      provenance: ["internal/evaluation/service.go:36:EvaluateCase"]
+    - group: internal/evaluationdb
+      classification: UNRESOLVED
+      capability_ids: []
+      reason: "Disposable-database safety guard; supporting infra; not read."
+      provenance: ["internal/evaluationdb/safety.go:19:RequireDisposable"]
+    - group: internal/executive
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-executive-orchestration]
+      reason: "Implements owner-goal planning/delegation/closure."
+      provenance: ["internal/executive/orchestrator.go:77:Submit", "internal/executive/orchestrator.go:165:Resume"]
+    - group: internal/identifiers
+      classification: IRRELEVANT_WITH_PROOF
+      capability_ids: []
+      reason: "Helper (ExtractDigitRuns) without autonomous operational responsibility."
+      provenance: ["internal/identifiers/identifiers.go:28:ExtractDigitRuns"]
+    - group: internal/improvement
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-improvement-promotion]
+      reason: "Implements improvement candidate promotion lifecycle."
+      provenance: ["internal/improvement/service.go:30:ProposeCandidate", "internal/improvement/service.go:155:PromoteToCanary"]
+    - group: internal/logicir
+      classification: UNRESOLVED
+      capability_ids: []
+      reason: "Logic IR validation; not read."
+      provenance: ["internal/logicir/logicir.go:123:Validate"]
+    - group: internal/memory
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-memory-lifecycle]
+      reason: "Implements memory propose/review/approve lifecycle."
+      provenance: ["internal/memory/manager.go:78:Propose", "internal/memory/manager.go:103:Review"]
+    - group: internal/modeldispatch
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-model-dispatch-assignment]
+      reason: "Implements execution principal assignment lifecycle."
+      provenance: ["internal/modeldispatch/assignment_service.go:35:Create"]
+    - group: internal/modelegress
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-model-egress-policy]
+      reason: "Implements egress policy sync and decision evaluation."
+      provenance: ["internal/modelegress/service.go:44:Validate", "internal/modelegress/evaluator.go:12:Evaluate"]
+    - group: internal/modelidentity
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-model-execution-identity]
+      reason: "Implements execution principal challenge/verify."
+      provenance: ["internal/modelidentity/challenge_service.go:37:Issue", "internal/modelidentity/challenge_service.go:66:Verify"]
+    - group: internal/modelpricing
+      classification: UNRESOLVED
+      capability_ids: []
+      reason: "Pricing resolve/estimate; likely supports cost ledger; not read."
+      provenance: ["internal/modelpricing/resolve.go:29:Resolve"]
+    - group: internal/modelruntime
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-model-invocation-dispatch]
+      reason: "Implements invocation creation and provider dispatch."
+      provenance: ["internal/modelruntime/invocation_service.go:Create", "internal/modelruntime/dispatch_service.go:Dispatch"]
+    - group: internal/objectstorage
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-evidence-object-storage]
+      reason: "Implements signed immutable evidence object storage."
+      provenance: ["internal/objectstorage/client.go:181:PutObjectIfAbsent"]
+    - group: internal/organization
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-organization-registry]
+      reason: "Implements canonical org registry load/compare/sync."
+      provenance: ["internal/organization/registry/service.go:CompareCanonical", "internal/organization/registry/service.go:SynchronizeCanonical"]
+    - group: internal/pdfingest
+      classification: UNRESOLVED
+      capability_ids: []
+      reason: "PDF processing (poppler); supports corpus pipeline; not read."
+      provenance: ["internal/pdfingest/poppler/poppler.go:192:Process"]
+    - group: internal/platform
+      classification: UNRESOLVED
+      capability_ids: []
+      reason: "Generic http/postgres/migrations infrastructure; not read."
+      provenance: ["internal/platform/httpserver/server.go:53:Start"]
+    - group: internal/questionidentity
+      classification: UNRESOLVED
+      capability_ids: []
+      reason: "Question identity gate/measurement harness; not read."
+      provenance: ["internal/questionidentity/gate.go:161:Evaluate"]
+    - group: internal/rag
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-rag-knowledge-lifecycle]
+      reason: "Implements RAG knowledge lifecycle + namespace reads."
+      provenance: ["internal/rag/manager.go:58:Propose", "internal/rag/manager.go:93:Review"]
+    - group: internal/retrievalfixtures
+      classification: IRRELEVANT_WITH_PROOF
+      capability_ids: []
+      reason: "Test fixtures (prod_go symbols=0)."
+      provenance: ["internal/retrievalfixtures (supplied index)"]
+    - group: internal/secrets
+      classification: UNRESOLVED
+      capability_ids: []
+      reason: "Secret loaders (Ed25519 key, bearer token); supporting infra; not read."
+      provenance: ["internal/secrets/file_resolver.go:18:LoadEd25519PrivateKey"]
+    - group: internal/secretscan
+      classification: UNRESOLVED
+      capability_ids: []
+      reason: "Secret scanning/redaction; not read."
+      provenance: ["internal/secretscan/secretscan.go:142:Scan"]
+    - group: internal/securityaudit
+      classification: UNRESOLVED
+      capability_ids: []
+      reason: "Covert channel audit rules; not read."
+      provenance: ["internal/securityaudit/covert_channels.go:503:CheckViolations"]
+    - group: internal/shadowverifier
+      classification: UNRESOLVED
+      capability_ids: []
+      reason: "Shadow authorization verification; not read."
+      provenance: ["internal/shadowverifier/service.go:80:VerifyExhaustive"]
+    - group: internal/skillregistry
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-skill-lifecycle]
+      reason: "Implements skill lifecycle + assignments."
+      provenance: ["internal/skillregistry/manager.go:39:Propose", "internal/skillregistry/manager.go:132:Assign"]
+    - group: internal/staging
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-staging-workspace]
+      reason: "Implements git worktree staging/seal/promote."
+      provenance: ["internal/staging/service.go:CreateWorkspace", "internal/staging/service.go:SealWorkspace"]
+    - group: internal/tasks
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-task-lifecycle-management]
+      reason: "Implements task state machine, dependencies, requirements, evidence, leases, outbox."
+      provenance: ["internal/tasks/service.go:CreateTask", "internal/tasks/postgres/mutate.go:AddDependency", "internal/tasks/postgres/mutate.go:Finalize"]
+    - group: internal/testdbguard
+      classification: IRRELEVANT_WITH_PROOF
+      capability_ids: []
+      reason: "Test-only database guard (RequireTestDatabase)."
+      provenance: ["internal/testdbguard/testdbguard.go:57:RequireTestDatabase"]
+    - group: internal/webevidence
+      classification: UNRESOLVED
+      capability_ids: []
+      reason: "Web evidence ingest/rank/sanitize; not read."
+      provenance: ["internal/webevidence/ingest.go:33:Ingest"]
+    - group: internal/webevidencefixtures
+      classification: IRRELEVANT_WITH_PROOF
+      capability_ids: []
+      reason: "Test fixtures (prod_go symbols=0)."
+      provenance: ["internal/webevidencefixtures (supplied index)"]
+    - group: investigacion
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-organization-registry]
+      reason: "Canonical org registry declaration documents (runtime role_id values investigacion/*)."
+      provenance: ["sealed runtime: organization_reporting_lines role_id investigacion/auditor_cerebro_empresa"]
+    - group: migrations
+      classification: IRRELEVANT_WITH_PROOF
+      capability_ids: []
+      reason: "Schema migrations (persistence representation); never a capability by identity."
+      provenance: ["migrations/embed.go", "sealed runtime: schema_migrations rows=48"]
+    - group: negocio
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-organization-registry]
+      reason: "Canonical org registry declaration documents (runtime role_id values negocio/*)."
+      provenance: ["sealed runtime: organization_reporting_lines role_id negocio/administrador_financiero"]
+    - group: recursos_agenticos
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-organization-registry]
+      reason: "Canonical org registry declaration documents (runtime role_id values recursos_agenticos/*)."
+      provenance: ["sealed runtime: organization_reporting_lines role_id recursos_agenticos/curador_catalogo"]
+    - group: root
+      classification: IRRELEVANT_WITH_PROOF
+      capability_ids: []
+      reason: "Repository root files (module/go config); no production behavior."
+      provenance: ["root (supplied index: artifacts=16, prod_go=0)"]
+    - group: scripts
+      classification: IRRELEVANT_WITH_PROOF
+      capability_ids: []
+      reason: "Scripts (prod_go=0)."
+      provenance: ["scripts (supplied index: artifacts=31, prod_go=0)"]
+    - group: servicios
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-organization-registry]
+      reason: "Canonical org registry declaration documents (runtime role_id values servicios/*)."
+      provenance: ["sealed runtime: organization_reporting_lines role_id servicios/analista_calidad"]
+    - group: tools
+      classification: IRRELEVANT_WITH_PROOF
+      capability_ids: []
+      reason: "Tooling (prod_go=0)."
+      provenance: ["tools (supplied index: artifacts=7, prod_go=0)"]
+
+  runtime_relations:
+    - runtime_unit: public.agent_messages
+      capability_ids: [OC-agent-messaging]
+      relation: SURVIVING_EVIDENCE
+      reason: "4 rows; message_type completion/delegation, status delivered evidence messaging execution."
+    - runtime_unit: public.audit_events
+      capability_ids: [OC-capability-authorization, OC-model-egress-policy, OC-model-execution-identity, OC-model-invocation-dispatch, OC-organization-registry]
+      relation: SURVIVING_EVIDENCE
+      reason: "138 rows; event_type values authorization.*, model.egress_registry_*, model.execution_identity_policy_synced, model.execution_principal_registered, model.registry_*, organization.registry_synced."
+    - runtime_unit: public.authorization_decisions
+      capability_ids: [OC-capability-authorization]
+      relation: SURVIVING_EVIDENCE
+      reason: "42 rows of approval decisions."
+    - runtime_unit: public.authorization_requests
+      capability_ids: [OC-capability-authorization]
+      relation: SURVIVING_EVIDENCE
+      reason: "42 rows; capability_id rag.publish_approved, status consumed."
+    - runtime_unit: public.authorization_uses
+      capability_ids: [OC-capability-authorization]
+      relation: SURVIVING_EVIDENCE
+      reason: "42 rows of approval consumption."
+    - runtime_unit: public.embedding_invocations
+      capability_ids: [OC-cost-ledger]
+      relation: SURVIVING_EVIDENCE
+      reason: "393 rows; embedding spend reservation/reconciliation tracked by costledger embeddings ledger."
+    - runtime_unit: public.model_capability_snapshots
+      capability_ids: [OC-model-invocation-dispatch]
+      relation: DECLARATION_OR_CONFIGURATION_ONLY
+      reason: "7 rows of capability set snapshots pinned to model profiles; declaration data."
+    - runtime_unit: public.model_egress_policy_versions
+      capability_ids: [OC-model-egress-policy]
+      relation: SURVIVING_EVIDENCE
+      reason: "1 row status materialized."
+    - runtime_unit: public.model_egress_revision_bindings
+      capability_ids: [OC-model-egress-policy]
+      relation: SURVIVING_EVIDENCE
+      reason: "1 row binding egress policy to revision."
+    - runtime_unit: public.model_egress_rules
+      capability_ids: [OC-model-egress-policy]
+      relation: SURVIVING_EVIDENCE
+      reason: "14 materialized egress rules."
+    - runtime_unit: public.model_execution_identity_policy_versions
+      capability_ids: [OC-model-execution-identity]
+      relation: SURVIVING_EVIDENCE
+      reason: "1 row status active."
+    - runtime_unit: public.model_execution_principals
+      capability_ids: [OC-model-execution-identity]
+      relation: SURVIVING_EVIDENCE
+      reason: "3 rows status active."
+    - runtime_unit: public.model_pricing
+      capability_ids: [OC-cost-ledger]
+      relation: DECLARATION_OR_CONFIGURATION_ONLY
+      reason: "17 pricing tier rows; configuration data consumed by cost estimation."
+    - runtime_unit: public.model_profile_versions
+      capability_ids: [OC-model-invocation-dispatch]
+      relation: DECLARATION_OR_CONFIGURATION_ONLY
+      reason: "7 model profile version declarations."
+    - runtime_unit: public.model_profiles
+      capability_ids: [OC-model-invocation-dispatch]
+      relation: DECLARATION_OR_CONFIGURATION_ONLY
+      reason: "7 model profile declarations."
+    - runtime_unit: public.model_providers
+      capability_ids: [OC-model-invocation-dispatch]
+      relation: DECLARATION_OR_CONFIGURATION_ONLY
+      reason: "4 provider declarations."
+    - runtime_unit: public.organization_registry_revision_documents
+      capability_ids: [OC-organization-registry]
+      relation: SURVIVING_EVIDENCE
+      reason: "36 canonical registry documents persisted."
+    - runtime_unit: public.organization_registry_revisions
+      capability_ids: [OC-organization-registry]
+      relation: SURVIVING_EVIDENCE
+      reason: "4 rows status applied."
+    - runtime_unit: public.organization_reporting_lines
+      capability_ids: [OC-organization-registry]
+      relation: SURVIVING_EVIDENCE
+      reason: "200 reporting edges materialized from canonical docs."
+    - runtime_unit: public.organization_roles
+      capability_ids: [OC-organization-registry]
+      relation: SURVIVING_EVIDENCE
+      reason: "48 roles."
+    - runtime_unit: public.organizational_units
+      capability_ids: [OC-organization-registry]
+      relation: SURVIVING_EVIDENCE
+      reason: "6 units; kinds executive_layer, operational_department, independent_audit_and_research."
+    - runtime_unit: public.organizations
+      capability_ids: [OC-organization-registry]
+      relation: SURVIVING_EVIDENCE
+      reason: "1 organization row."
+    - runtime_unit: public.outbox_events
+      capability_ids: [OC-capability-authorization, OC-context-compilation, OC-model-invocation-dispatch, OC-task-lifecycle-management]
+      relation: SURVIVING_EVIDENCE
+      reason: "1942 rows; event_type values authorization.*, context.*, model.invocation_*, task.*; shared durable event transport."
+    - runtime_unit: public.provider_wallet_events
+      capability_ids: [OC-cost-ledger]
+      relation: SURVIVING_EVIDENCE
+      reason: "785 rows; kind reserved=393, committed=392."
+    - runtime_unit: public.provider_wallets
+      capability_ids: [OC-cost-ledger]
+      relation: SURVIVING_EVIDENCE
+      reason: "5 provider wallets."
+    - runtime_unit: public.rag_chunk_embeddings
+      capability_ids: [OC-rag-knowledge-lifecycle]
+      relation: SURVIVING_EVIDENCE
+      reason: "383 chunk embeddings."
+    - runtime_unit: public.rag_index_generations
+      capability_ids: [OC-rag-knowledge-lifecycle]
+      relation: SURVIVING_EVIDENCE
+      reason: "1 row status active."
+    - runtime_unit: public.rag_knowledge_chunks
+      capability_ids: [OC-rag-knowledge-lifecycle]
+      relation: SURVIVING_EVIDENCE
+      reason: "383 chunks."
+    - runtime_unit: public.rag_knowledge_documents
+      capability_ids: [OC-rag-knowledge-lifecycle]
+      relation: SURVIVING_EVIDENCE
+      reason: "16 documents."
+    - runtime_unit: public.rag_knowledge_evidence_refs
+      capability_ids: [OC-rag-knowledge-lifecycle]
+      relation: SURVIVING_EVIDENCE
+      reason: "16 evidence refs."
+    - runtime_unit: public.rag_knowledge_idempotency
+      capability_ids: [OC-rag-knowledge-lifecycle]
+      relation: SURVIVING_EVIDENCE
+      reason: "16 idempotency records."
+    - runtime_unit: public.rag_knowledge_lifecycle_events
+      capability_ids: [OC-rag-knowledge-lifecycle]
+      relation: SURVIVING_EVIDENCE
+      reason: "32 lifecycle events."
+    - runtime_unit: public.rag_knowledge_versions
+      capability_ids: [OC-rag-knowledge-lifecycle]
+      relation: SURVIVING_EVIDENCE
+      reason: "16 knowledge versions."
+    - runtime_unit: public.role_model_bindings
+      capability_ids: [OC-model-invocation-dispatch]
+      relation: DECLARATION_OR_CONFIGURATION_ONLY
+      reason: "46 role→model profile bindings (wiring/configuration data)."
+    - runtime_unit: public.schema_migrations
+      capability_ids: []
+      relation: IRRELEVANT_WITH_PROOF
+      reason: "48 applied migrations; schema bookkeeping, not a capability."
+    - runtime_unit: public.tasks
+      capability_ids: [OC-task-lifecycle-management]
+      relation: SURVIVING_EVIDENCE
+      reason: "3 rows status no_action."
+---

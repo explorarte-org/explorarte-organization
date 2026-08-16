@@ -1,0 +1,12 @@
+{
+  "ledger": {
+    "deepseek": 0.11211162200000002,
+    "grok": 0.5690875,
+    "luna": 0.0007792,
+    "mission": 0.681978322
+  },
+  "luna_disposition": "ACCEPT",
+  "measurement_disposition": "PARTIAL",
+  "question_id": "REFORMULATED-Q3-002",
+  "raw_sha256": "22655acc6c5508dc185b492655bc695af0445c3e374e1d75244c7fa348e5b9b2"
+}

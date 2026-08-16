@@ -1,0 +1,990 @@
+
+SECOND AUDIT — MATERIAL TYPED REFINEMENT OF REFORMULATED-Q3-002
+
+Audit only the supplied gated refinement. It used the allowlisted profile
+resolve_unclassified_source_entries_against_proposed_capabilities and retained
+the frozen subject/relation/universes/output schema. The gate returned
+ACCEPT_IDENTITY_PRESERVED before the provider call. No tools are available.
+
+The initial audit was VALID_PARTIAL and accepted 21 proposed capabilities while
+challenging four boundaries. The refinement accounts for the 23 formerly
+UNRESOLVED navigation groups, proposes 14 new positive records, and leaves zero
+groups unresolved. This is material new evidence, but completeness remains an
+external property and runtime has 67 zero-row units with no surviving evidence.
+
+Apply Q1-Q6 strictly to each of the 14 new candidates. Pay special attention to:
+- helpers/algorithms versus autonomous operational responsibility;
+- generic adapters/infrastructure versus organizational behavior (Q5);
+- external services versus repository-owned orchestration (Q1);
+- test/evaluation/security-audit tooling relevance to organization behavior;
+- over-splitting corpus processing into independent capabilities;
+- questionidentity as implemented repository behavior, not merely a package/CLI;
+- behavioral contracts and adjacent boundaries.
+
+Return ONLY valid YAML (a sole YAML fence is tolerated as transport formatting):
+refinement_audit:
+  question_id: REFORMULATED-Q3-002
+  verdict: VALID_PARTIAL|VALID_COMPLETE|INVALID|QUESTION_TARGET_DRIFT
+  confidence: <0..1>
+  accepted_new_capability_ids: []
+  rejected_new_capabilities:
+    - capability_id: ...
+      terminal_classification: NOT_A_CAPABILITY|SUPPORTING_ARTIFACT_OF:<id>|UNRESOLVED
+      reason: ...
+      ontology_rule: ...
+  challenged_new_capabilities:
+    - capability_id: ...
+      issue: ...
+      ontology_rule: ...
+  observed_claims: []
+  unsupported_inferences: []
+  measurement_limitations: []
+  completeness_assessment: ...
+  recommended_disposition: COMPLETE|PARTIAL|UNMEASURABLE_AS_SPECIFIED|QUESTION_TARGET_DRIFT
+  falsifier: ...
+
+FROZEN NORMATIVE ONTOLOGY
+---
+## 1. Operational definition
+
+An `ORGANIZATIONAL_CAPABILITY` is a repository-owned behavior with all of the
+following properties:
+
+1. It has one stable, nameable operational responsibility.
+2. It produces, restricts, transforms, selects, authorizes, routes, persists,
+   evaluates, or observes a system transition relevant to the organization.
+3. At least one repository-verifiable entrypoint, trigger, enforcement point,
+   transition rule, or behavioral contract invokes or enforces it.
+4. Its effect or restriction is observable at an interface, returned result,
+   durable state transition, emitted signal, authorization decision, rejection,
+   or invariant.
+5. The behavior is implemented by the repository. Merely invoking behavior
+   wholly supplied by an external dependency is insufficient.
+6. Its conceptual identity survives a change in persistent representation or
+   file/package layout, provided its responsibility, causal purpose, and
+   compatible entry/transition contract remain.
+7. It is distinguishable from artifacts that only store data, configure or
+   declare behavior, migrate schema, record execution evidence, support tests,
+   or provide a helper without autonomous operational responsibility.
+
+Operational tests for the terms above:
+
+- **repository-owned behavior**: an executable path or enforceable rule whose
+  branching, transition, invariant, orchestration, or policy is expressed in
+  repository source. A wrapper that only forwards to an external dependency
+  without adding such behavior fails this test.
+- **stable responsibility**: one sentence of the form "When `<entry/trigger>`
+  occurs, the system `<effect/restriction>` so that `<causal purpose>`" remains
+  true across representation-only refactors.
+- **verifiable**: provenance identifies repository path plus symbol, rule, or
+  line locator sufficient for another reviewer to inspect the contract.
+- **observable**: a caller, downstream component, persisted record, emitted
+  event, audit surface, or rejected operation can distinguish the behavior from
+  its absence. Tests may demonstrate this but test evidence alone cannot create
+  the behavior.
+- **autonomous operational responsibility**: removing the candidate changes a
+  named system behavior or invariant, not merely code reuse, formatting,
+  storage shape, wiring values, or test convenience.
+
+The unit of inventory is the behavior satisfying this definition, never an
+artifact solely because of its artifact type.
+
+## 2. Decision procedure
+
+Evaluate one candidate at a time and record every answer in order. Do not skip
+questions. `YES` and `NO` require provenance; where the available candidate
+packet cannot support either, use `UNKNOWN` and the terminal result prescribed
+below.
+
+### Q1 — repository-owned executable/enforceable behavior
+
+Does repository source express executable behavior or an enforceable rule,
+rather than only delegate unchanged external behavior?
+
+- `NO` -> `NOT_A_CAPABILITY`; stop.
+- `UNKNOWN` -> `UNRESOLVED`; stop.
+- `YES` -> Q2.
+
+### Q2 — stable operational responsibility
+
+Can the responsibility be stated as one stable behavioral sentence with a
+named effect/restriction and causal purpose?
+
+- `NO` -> `NOT_A_CAPABILITY`; stop.
+- `UNKNOWN` -> `UNRESOLVED`; stop.
+- `YES` -> Q3.
+
+### Q3 — verifiable entry or enforcement
+
+Is at least one entrypoint, trigger, rule, enforcement point, transition, or
+behavioral contract located in the supplied repository evidence?
+
+- `NO` -> `NOT_A_CAPABILITY`; stop.
+- `UNKNOWN` -> `UNRESOLVED`; stop.
+- `YES` -> Q4.
+
+### Q4 — specifiable effect or restriction
+
+Can the reviewer state the externally distinguishable change or restriction,
+including the relevant input/precondition and result, rejection, state change,
+or emitted observation?
+
+- `NO` or `UNKNOWN` -> `UNRESOLVED`; stop.
+- `YES` -> Q5.
+
+### Q5 — supporting artifact test
+
+Is this candidate only representation, declaration, configuration, runtime
+evidence, test material, or infrastructure supporting an already identified
+capability in the candidate packet?
+
+- `YES` -> `SUPPORTING_ARTIFACT_OF:<capability_id>`; stop.
+- `UNKNOWN` -> `UNRESOLVED`; stop.
+- `NO` -> Q6.
+
+The target ID is permitted only when the packet contains provenance for the
+supported capability. Otherwise Q5 is `UNKNOWN`.
+
+### Q6 — layout-dependent identity test
+
+Would the proposed identity cease to exist, merge, or split solely because
+files or packages were regrouped, with no change to responsibility, causal
+purpose, or entry/transition contract?
+
+- `YES` or `UNKNOWN` -> `UNRESOLVED`; stop.
+- `NO` -> `ORGANIZATIONAL_CAPABILITY`.
+
+### Terminal labels and boundary mapping
+
+Exact classification is one of:
+
+- `ORGANIZATIONAL_CAPABILITY`
+- `NOT_A_CAPABILITY`
+- `SUPPORTING_ARTIFACT_OF:<capability_id>`
+- `UNRESOLVED`
+
+For capability-boundary agreement only,
+`ORGANIZATIONAL_CAPABILITY = CAPABILITY`; all other terminal labels equal
+`NOT_CAPABILITY_OR_UNRESOLVED`. Artifact roles are measured separately and do
+not change the terminal label.
+
+A positive classification is invalid unless its complete required capability
+record is supplied. In particular, an unverifiable `behavioral_contract`
+forces `UNRESOLVED`, regardless of reviewer intuition.
+
+## 3. Artifact-role taxonomy
+
+Artifact roles describe evidence, not inventory units. One artifact may have
+multiple roles when each is justified.
+
+- `BEHAVIOR_IMPLEMENTATION`: repository source that implements branching,
+  transformation, enforcement, orchestration, invariant, or transition logic.
+- `DECLARATION`: schema, type, interface, manifest, constant, or document that
+  declares a vocabulary, contract surface, or allowed shape without by itself
+  executing the behavior.
+- `CONFIGURATION`: values or mappings consumed by behavior to choose policy,
+  wiring, limits, routing, roles, or operating parameters.
+- `PERSISTENCE_REPRESENTATION`: tables, columns, indexes, constraints,
+  migrations, serialization shapes, or store mappings representing durable
+  state. A database trigger can additionally be `BEHAVIOR_IMPLEMENTATION` only
+  when its enforceable transition is itself under evaluation.
+- `RUNTIME_EVIDENCE`: surviving records, event types, audit entries, logs,
+  metrics, or other observations showing that behavior may have executed.
+- `TEST_ONLY`: fixtures, fakes, test cases, test-only runners, or assertions not
+  reachable as production behavior.
+- `SUPPORTING_INFRASTRUCTURE`: generic transport, storage, scheduling, hashing,
+  adapters, or utilities supporting another behavior without owning its causal
+  purpose.
+- `EXTERNAL_DEPENDENCY`: behavior supplied outside this repository. A local
+  adapter may also have another role if it adds repository-owned rules.
+- `UNRESOLVED`: the supplied evidence cannot justify a more specific role.
+
+Forbidden identity shortcuts:
+
+`table != capability`, `migration != capability`, `role != capability`,
+`event_type != capability`, and `package != capability` by artifact identity
+alone. The same applies to every artifact named in the exclusion rules.
+
+## 4. Granularity and identity rules
+
+### Candidate formation
+
+A candidate must name a proposed behavior and cite at least one entry, trigger,
+enforcement, or transition locator. An artifact-only candidate is allowed so
+that exclusions can be tested, but it is not rewritten into a behavior during
+classification.
+
+### Merge rule
+
+Two implementations are one capability only when all three are demonstrated:
+
+1. the same behavioral responsibility;
+2. the same causal purpose; and
+3. compatible entry/transition contracts, meaning their preconditions,
+   principal effects/restrictions, and success/failure semantics do not express
+   independently operable responsibilities.
+
+Multiple packages may therefore implement one capability.
+
+### Split rule
+
+Split candidates when repository evidence demonstrates an independently
+invocable or enforceable operational responsibility with a distinct causal
+purpose or incompatible contract. Separate files, functions, tables, event
+types, endpoints, or packages are not sufficient reasons to split. One package
+may therefore contain multiple capabilities.
+
+### Representation stability test
+
+Ask whether changing table names, schemas, serialization, file paths, package
+boundaries, or deployment wiring while preserving behavior would change the
+candidate identity. If yes, the proposed identity is representation-bound and
+Q6 cannot pass.
+
+### Adjacent-boundary requirement
+
+Every positive record names its nearest plausible adjacent capability and
+states the behavioral distinction. If the distinction cannot be evidenced,
+classify `UNRESOLVED` rather than merge or split by intuition.
+
+Capability IDs use `OC-<normalized-responsibility>` and are stable identifiers,
+not sequence numbers. They must not encode package names or an expected count.
+
+## 5. Required positive capability record
+
+Every positive decision must materialize all fields below. Arrays may be empty
+only for declaration/configuration/runtime-evidence provenance when the
+reviewer explicitly states that the evidence class was not present in the
+candidate packet. All implementation and boundary fields are mandatory.
+
+```yaml
+capability_id: OC-<normalized-responsibility>
+name: <human-readable responsibility>
+behavioral_contract: >-
+  When <entry/trigger and preconditions>, the system <observable effect or
+  restriction and failure behavior>.
+causal_purpose: <why the organization needs this transition/restriction>
+entrypoints_or_triggers:
+  - <path:symbol-or-line>
+enforcement_or_transition_points:
+  - <path:symbol-or-line>
+reads_or_inputs:
+  - <input/precondition>
+writes_or_effects:
+  - <returned result, rejection, durable transition, or emitted observation>
+implementation_provenance:
+  - <path:symbol-or-line>
+declaration_provenance: []
+configuration_provenance: []
+possible_runtime_evidence: []
+boundary_with_adjacent_capabilities: >-
+  <nearest adjacent responsibility and the evidenced merge/split boundary>
+classification_basis: >-
+  <Q1-Q6 answers with concise evidence>
+```
+
+The `behavioral_contract` must name trigger/preconditions and observable
+success or restriction/failure semantics. A label, noun phrase, package
+description, or restatement of a type name is not a behavioral contract.
+
+## 6. Explicit exclusion rules
+
+None of the following counts by itself: table, index, constraint, migration,
+role, event type, struct, interface, package, endpoint, helper function,
+fixture, constant, or configuration row.
+
+Apply these mechanical rules:
+
+1. If the candidate packet contains only one of those artifacts and no
+   repository-owned executable/enforceable behavior, Q1=`NO` and
+   `NOT_A_CAPABILITY`.
+2. If the artifact is only evidence/configuration/representation for a
+   capability identified in the same packet, Q5=`YES` and
+   `SUPPORTING_ARTIFACT_OF:<capability_id>`.
+3. An endpoint is only an entry locator. Its routed behavior must still pass
+   Q1-Q6.
+4. A database constraint or trigger may pass Q1 only when evaluated as an
+   enforceable repository-authored rule with a specifiable transition
+   restriction; the table, migration file, or constraint name remains merely
+   provenance.
+5. A helper passes only if it owns an independently nameable operational
+   responsibility and causal purpose. Reuse or technical transformation alone
+   is insufficient.
+6. A declaration plus runtime evidence does not prove implementation. Missing
+   implementation provenance yields `UNRESOLVED`, not a positive decision.
+7. Absence from a collector's output is never proof of irrelevance.
+
+
+---
+
+INITIAL AUDIT SUMMARY
+---
+verdict: VALID_PARTIAL
+accepted_capability_ids: ["OC-task-lifecycle-management", "OC-capability-authorization", "OC-executive-orchestration", "OC-agent-messaging", "OC-agent-budgeting", "OC-cost-ledger", "OC-model-invocation-dispatch", "OC-model-egress-policy", "OC-model-execution-identity", "OC-model-dispatch-assignment", "OC-rag-knowledge-lifecycle", "OC-memory-lifecycle", "OC-skill-lifecycle", "OC-context-compilation", "OC-organization-registry", "OC-staging-workspace", "OC-decision-graph-execution", "OC-improvement-promotion", "OC-completion-verification", "OC-corpus-census", "OC-evidence-object-storage"]
+challenged_capabilities: [{"capability_id": "OC-executive-orchestration", "issue": "Behavioral contract references specific CEO root/plan/leader/closure task types and run projection; these may be representation-dependent on current task schema, risking Q6 violation on refactor that preserves responsibility but alters task subtypes.", "ontology_rule": "Q6 layout independence and representation stability test (stable responsibility must survive change in persistent representation)"}, {"capability_id": "OC-corpus-census", "issue": "Enforcement points rely on Poppler (external PDF processor) for ValidatePDF; supplied provenance does not clearly separate repository-owned branching/invariants from EXTERNAL_DEPENDENCY adapter behavior, making Q1/Q4 boundary unverifiable from packet alone.", "ontology_rule": "Q1 repository-owned executable/enforceable behavior and artifact-role taxonomy (EXTERNAL_DEPENDENCY vs BEHAVIOR_IMPLEMENTATION)"}, {"capability_id": "OC-evidence-object-storage", "issue": "Primarily provides signed OCI PutObjectIfAbsent with immutability conflict; packet argues autonomous responsibility but ontology explicitly excludes generic storage/adapters unless repository-owned orchestration dominates; adjacent boundary with generic transport is not sharply evidenced.", "ontology_rule": "Q1 repository-owned behavior, Q5 supporting-artifact test, and explicit exclusion for SUPPORTING_INFRASTRUCTURE without autonomous operational responsibility"}, {"capability_id": "OC-context-compilation", "issue": "Boundary references OC-context-compiler (unresolved in packet) as adjacent for task-class profiles; adjacent-boundary requirement not fully evidenced for merge/split distinction when dependent package was not read.", "ontology_rule": "Adjacent-boundary requirement (every positive record must name nearest plausible adjacent capability with evidenced distinction)"}]
+---
+
+GATED REFINEMENT PACKET (hash 7a5e503a66e8c9aa89c1a036952ffbdbbfd4b2ef7a8255715160b3d45adbec1a)
+---
+refinement_packet:
+  question_id: REFORMULATED-Q3-002
+  profile: resolve_unclassified_source_entries_against_proposed_capabilities
+  observations:
+    - OBSERVED: internal/contextcompiler.Compile projects a canonical contextengine.Snapshot through registered per-SourceReference ProjectionFuncs, falls back to canonical when a RequiredTiers segment is missing, and CompileForTaskClass keys on TaskClassOf(ActorRoleID) with only research_worker_hourly roles mapped.
+    - OBSERVED: internal/corpuscluster builds deterministic TF-IDF vectors over Work titles and clusters via single-link union-find; package doc states it never calls a model and never writes to org Postgres.
+    - OBSERVED: internal/corpuscuration.ValidateCurationOutputContract enforces a closed tier vocabulary {P0,P1,silver_only,review_required} plus exact work_id set equality on schema-valid curator output.
+    - OBSERVED: internal/corpusenrich.Orchestrator.Run batches Semantic Scholar fetches with bounded 429 backoff and stops loudly on rate-limit.
+    - OBSERVED: internal/corpussemantic.Run embeds SemanticInputs via embeddingruntime.OnlineAdapter and AverageLinkCluster runs UPGMA clustering.
+    - OBSERVED: internal/dataclassifier.Detect deterministically flags secret/clinical markers; call sites observed via grep in internal/rag/validation.go, internal/rag/semantic.go, internal/memory/types.go, internal/memory/semantic.go.
+    - OBSERVED: internal/decisiongraphtrace.Store implements evaluation.TraceSource, reconstructing a canonical trace payload and verifying hash match on LoadTrace.
+    - OBSERVED: internal/embeddingruntime defines OnlineAdapter/BatchAdapter boundaries and gemini adapter carries its own circuitBreaker; bgem3 adapter has validateVector/inputHash/requestIdempotencyKey.
+    - OBSERVED: internal/evaluation.Service orchestrates EvaluateSuite/RunComparison and CompareResults reduces baseline/candidate to OverallVerdict.
+    - OBSERVED: internal/modelpricing.Resolve selects a PriceTier by billing-mode + largest MinInputTokens <= estimate, failing closed when none matches.
+    - OBSERVED: internal/questionidentity gate pins CanonicalContractSHA256 and EvaluatePayload strictly decodes/validates protected fields; ExecutionPath.RunNext orders source -> decode -> gate -> drift-record-or-model-call.
+    - OBSERVED: internal/secretscan.Scan returns Kind-tagged Findings without matched text; internal/tasks/validation.go calls it and rejects with ErrSecretRejected.
+    - OBSERVED: internal/securityaudit provides Catalog() of covert-channel surfaces plus Rules/CheckViolations.
+    - OBSERVED: internal/shadowverifier.Service is observe-and-compare-only; VerifyExhaustive re-derives role/leader/capability facts and compares against real engines.
+    - OBSERVED: internal/webevidence.Ingest ties fetch->Sanitize->hash->chunk into validated Evidence; RankChunks does RRF fusion; Sanitize is injection-audit-only.
+    - OBSERVED: internal/config config.Load/Validate parse/validate Database/Tasks/Authorization/Context/Staging; top-level config/ holds only repositories.example.yaml.
+    - OBSERVED: internal/evaluationdb.RequireDisposable rejects non-disposable database names for stateful evaluation.
+    - OBSERVED: internal/logicir doc states it is a versioned IR contract "not wired to block or alter a production decision".
+    - OBSERVED: internal/platform is generic HTTP server/migrations/postgres store/logging/build-info; internal/secrets is bounded file loading of Ed25519 key and bearer token.
+    - DERIVED: 14 groups hold independently nameable operational responsibilities not covered by the 21 proposed capabilities; 6 groups are configuration/declaration/infrastructure; 3 groups are supporting evidence of proposed capabilities.
+  provenance:
+    - internal/contextcompiler/contextcompiler_compiler.go:Compile, CompileForTaskClass, TaskClassOf
+    - internal/corpuscluster/corpuscluster_cluster.go:BuildTFIDF, BuildClusters, package doc
+    - internal/corpuscuration/corpuscuration_output_contract.go:ValidateCurationOutputContract, validOutputTiers
+    - internal/corpusenrich/corpusenrich_orchestrator.go:Run, fetchWithBackoff
+    - internal/corpussemantic/corpussemantic_embed.go:Run, corpussemantic_cluster.go:AverageLinkCluster
+    - internal/dataclassifier/detect.go:Detect
+    - internal/decisiongraphtrace/store.go:LoadTrace, TraceRefForRun, RunSummary
+    - internal/embeddingruntime/port.go, adapter/gemini/breaker.go
+    - internal/evaluation/service.go:RunComparison, comparison.go:CompareResults
+    - internal/modelpricing/resolve.go:Resolve, types.go:USDNanos/PriceTier
+    - internal/questionidentity/gate.go, execution.go:RunNext, EvaluatePayload
+    - internal/secretscan/secretscan.go:Scan, Kind
+    - internal/securityaudit/covert_channels.go:Catalog, CheckViolations
+    - internal/shadowverifier/service.go:VerifyExhaustive, derive.go, matrix.go
+    - internal/webevidence/ingest.go:Ingest, sanitize.go:Sanitize, rank.go:RankChunks
+    - internal/config/config.go:Load, Validate
+    - internal/evaluationdb/safety.go:RequireDisposable
+    - internal/logicir/logicir.go:package doc, validate
+    - internal/platform/postgres/store.go, httpserver/server.go, migrations/runner.go
+    - internal/secrets/file_resolver.go, token_file.go
+    - cmd/question-identity-gate/main.go:main, run
+    - config/repositories.example.yaml (only entry in config/)
+  new_capability_candidates:
+    - capability_id: OC-context-profile-projection
+      name: Per-task-class context profile projection over canonical snapshots
+      behavioral_contract: >-
+        When a canonical contextengine.Snapshot is presented to Compile/CompileForTaskClass,
+        the system selects a ContextProfile by TaskClassOf(actorRoleID), fails closed to the
+        unprojected canonical view (FellBackToCanonical=true) when a RequiredTiers segment is
+        missing or the task class is unregistered, and otherwise applies only registered
+        per-SourceReference projections that can shrink (never grow or reorder) segment content,
+        recomputing per-segment content hashes.
+      causal_purpose: Reduce token/budget exposure for specific task classes without letting a
+        partial view silently omit a required tier.
+      entrypoints_or_triggers:
+        - internal/contextcompiler/contextcompiler_compiler.go:53:Compile
+        - internal/contextcompiler/contextcompiler_compiler.go:124:CompileForTaskClass
+      enforcement_or_transition_points:
+        - internal/contextcompiler/contextcompiler_compiler.go:23:TaskClassOf
+        - internal/contextcompiler/contextcompiler_compiler.go:137:finalize
+      reads_or_inputs:
+        - ContextProfile (RequiredTiers, Projections) and contextengine.Snapshot
+      writes_or_effects:
+        - CompilationResult with Projected snapshot, SegmentDiffs, FellBackToCanonical flag
+      implementation_provenance:
+        - internal/contextcompiler/contextcompiler_compiler.go
+        - internal/contextcompiler/contextcompiler_profiles.go
+        - internal/contextcompiler/contextcompiler_output_budget.go
+      declaration_provenance:
+        - internal/contextcompiler/contextcompiler_domain.go
+      configuration_provenance: []
+      possible_runtime_evidence: []
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to OC-context-compilation (owns snapshot assembly/validation; this consumes the
+        canonical snapshot) and OC-model-invocation-dispatch (consumes the projected snapshot).
+        Split: this owns task-class-specific projection/fail-closed fallback, not snapshot assembly.
+      classification_basis: >-
+        Q1 YES (Compile is repository executable projection logic); Q2 YES (one stable sentence);
+        Q3 YES (Compile/CompileForTaskClass located); Q4 YES (projected snapshot + fallback flag);
+        Q5 NO (not a supporting artifact of OC-context-compilation which builds snapshots);
+        Q6 NO (identity survives file regrouping).
+    - capability_id: OC-corpus-work-clustering
+      name: Deterministic TF-IDF title-based corpus work clustering
+      behavioral_contract: >-
+        When a set of WorkInput titles is provided, the system tokenizes with a stopword list,
+        builds sparse TF-IDF vectors, and groups Works into clusters via threshold-based
+        single-link union-find whose cluster IDs are stable hashes of sorted member WorkIDs,
+        producing deterministic, reproducible cluster assignments without any model call.
+      causal_purpose: Cheap reproducible subproblem grouping feeding later curation.
+      entrypoints_or_triggers:
+        - internal/corpuscluster/corpuscluster_cluster.go:94:BuildTFIDF
+        - internal/corpuscluster/corpuscluster_cluster.go:147:BuildClusters
+      enforcement_or_transition_points:
+        - internal/corpuscluster/corpuscluster_unionfind.go:13:newClusterUnionFind
+      reads_or_inputs:
+        - "[]WorkInput{WorkID, Title}"
+      writes_or_effects:
+        - map[workID]sparseVector; []Cluster{ID, WorkIDs}
+      implementation_provenance:
+        - internal/corpuscluster/corpuscluster_cluster.go
+        - internal/corpuscluster/corpuscluster_unionfind.go
+      declaration_provenance: []
+      configuration_provenance: []
+      possible_runtime_evidence: []
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to OC-corpus-census (owns census run) and OC-corpus-curation-output-contract
+        (consumes clusters). Split: this owns deterministic clustering only, never knowledge
+        proposal or Postgres writes.
+      classification_basis: >-
+        Q1 YES; Q2 YES; Q3 YES (BuildTFIDF/BuildClusters); Q4 YES (clusters+IDs); Q5 NO;
+        Q6 NO (identity stable).
+    - capability_id: OC-corpus-curation-output-contract
+      name: Curator model output semantic-contract validation
+      behavioral_contract: >-
+        When a schema-valid curation output is validated, the system enforces the closed wire
+        tier vocabulary {P0,P1,silver_only,review_required} and exact work_id set equality
+        (detecting missing/extra/duplicate work_ids), treating cluster_id mismatch as
+        diagnostic-only and returning a typed OutputContractViolation so callers can distinguish
+        contract-invalid from provider/schema errors.
+      causal_purpose: Catch schema-valid-but-semantically-wrong curator output that silently drops Works.
+      entrypoints_or_triggers:
+        - internal/corpuscuration/corpuscuration_output_contract.go:138:ValidateCurationOutputContract
+      enforcement_or_transition_points:
+        - internal/corpuscuration/corpuscuration_output_contract.go:107:ValidateAdjudicationOutputContract
+      reads_or_inputs:
+        - CurationOutput{ClusterID, []CurationOutputWork}
+      writes_or_effects:
+        - OutputContractViolation or nil (valid)
+      implementation_provenance:
+        - internal/corpuscuration/corpuscuration_output_contract.go
+        - internal/corpuscuration/corpuscuration_adjudication_contract.go
+      declaration_provenance:
+        - internal/corpuscuration/corpuscuration_domain.go
+      configuration_provenance: []
+      possible_runtime_evidence: []
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to OC-corpus-census (produces Works) and OC-corpus-work-clustering (produces
+        clusters). Split: this owns output-contract validation, not census or clustering.
+      classification_basis: >-
+        Q1 YES; Q2 YES; Q3 YES (ValidateCurationOutputContract); Q4 YES (violation struct);
+        Q5 NO; Q6 NO.
+    - capability_id: OC-corpus-abstract-enrichment
+      name: External abstract fetch orchestration with bounded backoff
+      behavioral_contract: >-
+        When paper IDs are processed, the system batches them under a configured size, skips
+        already-cached IDs (resumable), fetches through a client with a bounded number of
+        exponential-backoff retries on 429, stops immediately and reports RateLimitedStop when
+        retries are exhausted, and checkpoints the store per batch.
+      causal_purpose: Enrich corpus Works with abstracts while staying a well-behaved anonymous client.
+      entrypoints_or_triggers:
+        - internal/corpusenrich/corpusenrich_orchestrator.go:55:Run
+      enforcement_or_transition_points:
+        - internal/corpusenrich/corpusenrich_orchestrator.go:123:fetchWithBackoff
+      reads_or_inputs:
+        - "[]string paperIDs, OrchestratorConfig, Client, Store"
+      writes_or_effects:
+        - RunResult{Requested,Fetched,AbstractsFound,RateLimitedStop,...}; store checkpoints
+      implementation_provenance:
+        - internal/corpusenrich/corpusenrich_orchestrator.go
+        - internal/corpusenrich/corpusenrich_client.go
+        - internal/corpusenrich/corpusenrich_store.go
+      declaration_provenance:
+        - internal/corpusenrich/corpusenrich_domain.go
+      configuration_provenance: []
+      possible_runtime_evidence: []
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to OC-corpus-census and OC-corpus-semantic-embedding-clustering (consumes
+        enriched abstracts). Split: this owns fetch/backoff/checkpoint, not embedding or census.
+      classification_basis: >-
+        Q1 YES; Q2 YES; Q3 YES (Run); Q4 YES (RunResult + stop behavior); Q5 NO; Q6 NO.
+    - capability_id: OC-corpus-semantic-embedding-clustering
+      name: Embedding-driven average-link semantic clustering of corpus works
+      behavioral_contract: >-
+        When SemanticInputs are presented, the system skips already-valid cached embeddings,
+        embeds pending inputs through an OnlineAdapter in batches, checkpoints per batch, and
+        then clusters vectors via average-link (UPGMA) agglomerative clustering that stops
+        merging when the best similarity drops below threshold, yielding clusters with
+        mean/min/centroid similarity statistics.
+      causal_purpose: Produce non-chaining semantic clusters that avoid single-link mega-cluster collapse.
+      entrypoints_or_triggers:
+        - internal/corpussemantic/corpussemantic_embed.go:51:Run
+        - internal/corpussemantic/corpussemantic_cluster.go:78:AverageLinkCluster
+      enforcement_or_transition_points:
+        - internal/corpussemantic/corpussemantic_cluster.go:60:cosineSimilarityMatrix
+      reads_or_inputs:
+        - "[]SemanticInput{WorkID, SemanticInput, InputHash}; EmbedConfig; OnlineAdapter"
+      writes_or_effects:
+        - EmbedResult; []SemanticCluster{ID,WorkIDs,MeanSimilarity,...}; store checkpoints
+      implementation_provenance:
+        - internal/corpussemantic/corpussemantic_embed.go
+        - internal/corpussemantic/corpussemantic_cluster.go
+      declaration_provenance:
+        - internal/corpussemantic/corpussemantic_domain.go
+      configuration_provenance: []
+      possible_runtime_evidence: []
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to OC-corpus-work-clustering (TF-IDF single-link, this is embedding average-link)
+        and OC-embedding-provider-dispatch (owns adapter routing). Split: this owns embed+cluster
+        orchestration; the adapter owns provider dispatch.
+      classification_basis: >-
+        Q1 YES; Q2 YES; Q3 YES (Run/AverageLinkCluster); Q4 YES (clusters + stats); Q5 NO; Q6 NO.
+    - capability_id: OC-secret-clinical-detection
+      name: Deterministic secret/clinical content backstop detection
+      behavioral_contract: >-
+        When content is scanned via Detect, the system matches deterministic secret patterns
+        (PEM private key, AWS/GitHub/Slack/JWT/bearer/credential-assignment) and clinical
+        terminology markers, returning a Finding{Secret, Clinical} with reasons that never
+        include the matched text, serving as a backstop against caller-declared data classes.
+      causal_purpose: Reject obvious secret/clinical content sailing through under a public/organizational label.
+      entrypoints_or_triggers:
+        - internal/dataclassifier/detect.go:69:Detect
+      enforcement_or_transition_points:
+        - internal/dataclassifier/detect.go:26:Any
+      reads_or_inputs:
+        - body string
+      writes_or_effects:
+        - Finding{Secret, SecretReason, Clinical, ClinicalReason}
+      implementation_provenance:
+        - internal/dataclassifier/detect.go
+      declaration_provenance: []
+      configuration_provenance: []
+      possible_runtime_evidence:
+        - internal/rag/validation.go:100 (Detect call), internal/memory/types.go:193, internal/rag/semantic.go:168
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to OC-context-compilation (which consumes secret/clinical rejection for forbidden
+        sources) and OC-model-egress-policy (which consumes data classifications). Split: this owns
+        deterministic marker detection; context/egress own source/policy enforcement.
+      classification_basis: >-
+        Q1 YES; Q2 YES; Q3 YES (Detect); Q4 YES (Finding flags); Q5 NO (not merely supporting a
+        single proposed capability; consumed by several); Q6 NO.
+    - capability_id: OC-embedding-provider-dispatch
+      name: Embedding provider adapter boundary and dispatch
+      behavioral_contract: >-
+        When an embedding request is dispatched, the system validates item shape (key, valid task
+        kind, exactly one of text/media), routes through a provider adapter (online or asynchronous
+        batch), enforces a circuit breaker for the gemini adapter, validates returned vectors,
+        computes request idempotency keys, and returns provider-confirmed input-token counts for
+        ledger reconciliation.
+      causal_purpose: Provide a text-in/vector-out boundary separate from chat dispatch with its own reliability and identity controls.
+      entrypoints_or_triggers:
+        - internal/embeddingruntime/port.go:OnlineAdapter.Embed
+        - internal/embeddingruntime/adapter/gemini/batch.go:115:CreateBatch
+      enforcement_or_transition_points:
+        - internal/embeddingruntime/adapter/gemini/breaker.go:19:newCircuitBreaker
+        - internal/embeddingruntime/adapter/bgem3/adapter.go:236:validateVector
+      reads_or_inputs:
+        - EmbedRequest{ProviderID, ProviderModelID, OutputDimensionality, PromptTemplateVersion, Items}
+      writes_or_effects:
+        - EmbedResponse{Results, InputTokens, ProviderRequestID}
+      implementation_provenance:
+        - internal/embeddingruntime/port.go
+        - internal/embeddingruntime/adapter/bgem3/adapter.go
+        - internal/embeddingruntime/adapter/gemini/adapter.go
+        - internal/embeddingruntime/adapter/gemini/breaker.go
+      declaration_provenance:
+        - internal/embeddingruntime/errors.go
+      configuration_provenance:
+        - internal/embeddingruntime/adapter/gemini/config.go
+      possible_runtime_evidence: []
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to OC-model-invocation-dispatch (chat dispatch, not embeddings) and
+        OC-corpus-semantic-embedding-clustering / OC-rag-knowledge-lifecycle (consumers). Split:
+        this owns the embedding adapter boundary, not chat dispatch or consumer orchestration.
+      classification_basis: >-
+        Q1 YES (breaker/idempotency/vector validation are repository behavior); Q2 YES; Q3 YES
+        (port/adapter symbols); Q4 YES (vectors + token counts); Q5 NO; Q6 NO.
+    - capability_id: OC-evaluation-comparison
+      name: Evaluation suite execution and baseline/candidate comparison
+      behavioral_contract: >-
+        When a suite is evaluated, the system loads each case's trace, verifies the evaluator
+        result is actually about the requested case/role/trace, runs baseline and candidate roles,
+        and reduces per-case metric deltas into a SuiteComparisonResult whose OverallVerdict is
+        safety-gating (any fail/inconclusive poisons it) with a weighted pass ratio that never
+        overrides the verdict; an empty/fabricated comparison is rejected.
+      causal_purpose: Provide deterministic pass/fail evidence for improvement promotion decisions.
+      entrypoints_or_triggers:
+        - internal/evaluation/service.go:77:EvaluateSuite
+        - internal/evaluation/service.go:94:RunComparison
+      enforcement_or_transition_points:
+        - internal/evaluation/comparison.go:31:CompareResults
+        - internal/evaluation/comparison.go:93:overallVerdict
+      reads_or_inputs:
+        - EvaluationSuite, TraceSource, Evaluator, subject IDs/artifact hashes
+      writes_or_effects:
+        - "[]EvaluationResult; SuiteComparisonResult{OverallVerdict, WeightedPassRatio}"
+      implementation_provenance:
+        - internal/evaluation/service.go
+        - internal/evaluation/comparison.go
+        - internal/evaluation/types.go
+      declaration_provenance:
+        - internal/evaluation/ports.go
+      configuration_provenance: []
+      possible_runtime_evidence:
+        - internal/evaluation/postgres/store.go (CreateRun/CompleteRun/RecordOutcome)
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to OC-improvement-promotion (consumes comparison verdicts to gate promotion) and
+        OC-decision-graph-execution (provides traces via decisiongraphtrace). Split: this owns
+        evaluation/comparison; promotion owns gated adoption.
+      classification_basis: >-
+        Q1 YES; Q2 YES; Q3 YES (RunComparison/CompareResults); Q4 YES (verdicts); Q5 NO; Q6 NO.
+    - capability_id: OC-model-pricing-resolution
+      name: Model rate-card tier resolution and cost estimation
+      behavioral_contract: >-
+        When pricing is resolved for a provider/model/token-estimate/billing-mode at a point in
+        time, the system ignores mismatched billing modes, selects the tier with the largest
+        MinInputTokens not exceeding the estimate, breaks ties by latest EffectiveAt, and fails
+        closed when no tier applies; cost estimation stays exact in integer nanodollars.
+      causal_purpose: Deterministically price model/embedding calls without float money arithmetic or undefined SQL row order.
+      entrypoints_or_triggers:
+        - internal/modelpricing/resolve.go:29:Resolve
+        - internal/modelpricing/resolve.go:69:Service.Resolve
+      enforcement_or_transition_points:
+        - internal/modelpricing/types.go:107:EstimateCost
+      reads_or_inputs:
+        - "[]PriceTier, estimatedInputTokens, BillingMode, asOf"
+      writes_or_effects:
+        - selected PriceTier or ErrNoPricingResolved
+      implementation_provenance:
+        - internal/modelpricing/resolve.go
+        - internal/modelpricing/types.go
+      declaration_provenance:
+        - internal/modelpricing/ports.go
+      configuration_provenance: []
+      possible_runtime_evidence:
+        - internal/modelpricing/postgres/store.go (ListTiers/Upsert)
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to OC-cost-ledger (owns provider-wallet reserve/commit/release settlement) and
+        OC-agent-budgeting (owns per-task limits). Split: this owns rate-card lookup/estimation;
+        cost-ledger owns money settlement.
+      classification_basis: >-
+        Q1 YES; Q2 YES; Q3 YES (Resolve); Q4 YES (selected tier/error); Q5 NO; Q6 NO.
+    - capability_id: OC-question-identity-gate
+      name: Fail-closed semantic identity gate for question refinements
+      behavioral_contract: >-
+        When a refinement candidate payload is evaluated, the system strictly decodes the envelope,
+        rejects unknown fields/trailing JSON/unknown versions/contract-hash mismatches, verifies the
+        canonical subject/relation/measurement-universe/output-schema against the frozen
+        CanonicalContractSHA256, and either accepts (model call allowed) or records a deterministic
+        drift record with the payload hash; RunNext fixes the order source -> decode -> gate ->
+        drift-record-or-model-call.
+      causal_purpose: Mechanically prevent question-target drift before any resource-spending model call.
+      entrypoints_or_triggers:
+        - internal/questionidentity/execution.go:121:EvaluatePayload
+        - internal/questionidentity/execution.go:85:RunNext
+      enforcement_or_transition_points:
+        - internal/questionidentity/gate.go:161:Evaluate
+        - internal/questionidentity/gate.go:213:verifyCanonicalContract
+      reads_or_inputs:
+        - candidate payload bytes; RefinementContract; CanonicalContractSHA256
+      writes_or_effects:
+        - Decision{status}; ExecutionOutcome{ModelCallAllowed, ModelCallCompleted}; DriftRecord
+      implementation_provenance:
+        - internal/questionidentity/gate.go
+        - internal/questionidentity/execution.go
+        - internal/questionidentity/controller_binding.go
+      declaration_provenance: []
+      configuration_provenance: []
+      possible_runtime_evidence: []
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to OC-evaluation-comparison (separate benchmark machinery) and OC-executive-orchestration
+        (spends model resources only after this gate). Split: this owns identity-preservation gating
+        of the question, not the downstream measurement.
+      classification_basis: >-
+        Q1 YES; Q2 YES; Q3 YES (Evaluate/RunNext); Q4 YES (accept/drift record); Q5 NO; Q6 NO.
+    - capability_id: OC-secret-scanning
+      name: Credential-material ingress rejection and observability redaction
+      behavioral_contract: >-
+        When free text is scanned, the system matches precision-tuned detector patterns for
+        unambiguous credential kinds (api_token, password, private_key, cloud/session/webhook/
+        oauth/service-account credentials), returns Kind-tagged Findings with only offsets (never
+        the matched value), supports Redact for observability, and call sites reject ingress text
+        carrying findings rather than silently rewriting it.
+      causal_purpose: Hard-reject unambiguous secrets at ingress while leaving classification to data-class/access-control machinery.
+      entrypoints_or_triggers:
+        - internal/secretscan/secretscan.go:142:Scan
+      enforcement_or_transition_points:
+        - internal/tasks/validation.go:304 (rejects with ErrSecretRejected)
+      reads_or_inputs:
+        - free-text string
+      writes_or_effects:
+        - "[]Finding{Kind, Start, End}; Redact output"
+      implementation_provenance:
+        - internal/secretscan/secretscan.go
+      declaration_provenance: []
+      configuration_provenance: []
+      possible_runtime_evidence:
+        - internal/tasks/validation.go:304
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to OC-secret-clinical-detection (detection backstop for data classification) and
+        OC-context-compilation (forbidden-source rejection). Split: this owns credential-pattern
+        ingress rejection/redaction; the classifier owns data-class backstop.
+      classification_basis: >-
+        Q1 YES; Q2 YES; Q3 YES (Scan + call site); Q4 YES (findings/rejection); Q5 NO; Q6 NO.
+    - capability_id: OC-covert-channel-audit
+      name: Deterministic covert-channel surface catalog and violation detection
+      behavioral_contract: >-
+        When the audit runs, it enumerates a deterministic catalog of channels (who can write/read,
+        authorization boundary, org/role scope, data class, size bound, durability, context/capability
+        influence), applies detection rules to each, and reports violations (e.g. missing-auth-boundary)
+        with severity, as a static/structural authorization-gap detector over agent communication
+        and persistence surfaces.
+      causal_purpose: Surface authorization gaps where one agent can influence another without an intended boundary.
+      entrypoints_or_triggers:
+        - internal/securityaudit/covert_channels.go:39:Catalog
+        - internal/securityaudit/covert_channels.go:503:CheckViolations
+      enforcement_or_transition_points:
+        - internal/securityaudit/covert_channels.go:362:Rules
+      reads_or_inputs:
+        - Channel catalog, Rule checks
+      writes_or_effects:
+        - "[]Channel; violation findings with severity"
+      implementation_provenance:
+        - internal/securityaudit/covert_channels.go
+      declaration_provenance: []
+      configuration_provenance: []
+      possible_runtime_evidence: []
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to OC-capability-authorization (owns the real enforcement matrix this audits) and
+        OC-agent-messaging (owns the message ledger/topology this audits). Split: this owns audit
+        catalog/detection, not enforcement.
+      classification_basis: >-
+        Q1 YES; Q2 YES; Q3 YES (Catalog/CheckViolations); Q4 YES (violation report); Q5 NO; Q6 NO.
+    - capability_id: OC-shadow-verification
+      name: Independent shadow re-derivation and parity verification of organizational facts
+      behavioral_contract: >-
+        When a verification run executes, the system independently re-derives role/department/leader/
+        capability-granted facts from a snapshot plus matrix hash, compares them against the real
+        engines over the finite fact space, and records findings as observe-and-compare-only (never
+        blocking or mutating other branches); ReplayRecorded re-derives capability_granted for
+        recorded authorization traffic and tallies stale-vs-divergent.
+      causal_purpose: Detect drift between the canonical engine and an independent shadow without affecting production.
+      entrypoints_or_triggers:
+        - internal/shadowverifier/service.go:80:VerifyExhaustive
+        - internal/shadowverifier/service.go:113:ReplayRecorded
+      enforcement_or_transition_points:
+        - internal/shadowverifier/derive.go:260:EvaluateCapability
+        - internal/shadowverifier/matrix.go:93:LoadMatrix
+      reads_or_inputs:
+        - Snapshot, matrix hash, leader-worker map, recorded authorization requests
+      writes_or_effects:
+        - RunReport with findings (observe-and-compare-only)
+      implementation_provenance:
+        - internal/shadowverifier/service.go
+        - internal/shadowverifier/derive.go
+        - internal/shadowverifier/matrix.go
+      declaration_provenance:
+        - internal/shadowverifier/types.go
+        - internal/shadowverifier/ports.go
+      configuration_provenance: []
+      possible_runtime_evidence:
+        - internal/shadowverifier/postgres/store.go (StartRun/FinishRun/RecordFindings)
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to OC-organization-registry (owns canonical registry load/sync this re-derives from)
+        and OC-capability-authorization (owns the matrix this verifies). Split: this owns independent
+        re-derivation/parity reporting, never the canonical engine.
+      classification_basis: >-
+        Q1 YES; Q2 YES; Q3 YES (VerifyExhaustive); Q4 YES (RunReport findings); Q5 NO; Q6 NO.
+    - capability_id: OC-web-evidence-ingest
+      name: Ephemeral web evidence ingest, sanitize, and rank
+      behavioral_contract: >-
+        When a URL is ingested, the system fetches through a Fetcher, sanitizes/chunks the body into
+        bounded ephemeral chunks (<=1200 bytes) with audit-only injection detection, computes a
+        content hash, validates TTL within [MinTTL,MaxTTL], and returns validated Evidence without
+        persisting; RankChunks later fuses lexical keyword overlap with optional vector similarity via
+        RRF (k=60) for per-query ranking.
+      causal_purpose: Provide validated, bounded, non-instructional web evidence chunks for per-task ranking.
+      entrypoints_or_triggers:
+        - internal/webevidence/ingest.go:33:Ingest
+        - internal/webevidence/rank.go:70:RankChunks
+      enforcement_or_transition_points:
+        - internal/webevidence/sanitize.go:45:Sanitize
+        - internal/webevidence/types.go:88:Validate
+      reads_or_inputs:
+        - url, RawPage, ttl, IDGenerator
+      writes_or_effects:
+        - validated Evidence{Chunks, SanitizationFindings, ContentHash}; []RankedChunk
+      implementation_provenance:
+        - internal/webevidence/ingest.go
+        - internal/webevidence/sanitize.go
+        - internal/webevidence/rank.go
+        - internal/webevidence/types.go
+      declaration_provenance:
+        - internal/webevidence/store.go
+      configuration_provenance: []
+      possible_runtime_evidence:
+        - internal/webevidence/postgres/store.go (Save/Get/ListForTask/Reap)
+      boundary_with_adjacent_capabilities: >-
+        Adjacent to OC-rag-knowledge-lifecycle (permanent approved-knowledge retrieval) and
+        OC-evidence-object-storage (immutable object persistence). Split: this owns ephemeral web
+        evidence ingest/rank; RAG owns approved knowledge; object storage owns immutable persistence.
+      classification_basis: >-
+        Q1 YES; Q2 YES; Q3 YES (Ingest/RankChunks); Q4 YES (validated Evidence); Q5 NO; Q6 NO.
+  supporting_relations:
+    - group: cmd/question-identity-gate
+      capability_ids: [OC-question-identity-gate]
+      reason: main.go is the CLI entry that reads stdin and calls questionidentity.BindControllerPayload; it adds no behavior beyond IO wiring into the gate.
+      provenance:
+        - cmd/question-identity-gate/main.go:14:main, :21:run
+    - group: internal/decisiongraphtrace
+      capability_ids: [OC-decision-graph-execution]
+      reason: Store implements evaluation.TraceSource by reconstructing decision_graph_runs trace payloads and verifying hashes; it is the evidence-reader for decision runs feeding evaluation, not an independent transition owner.
+      provenance:
+        - internal/decisiongraphtrace/store.go:28:New, :115:LoadTrace, :73:RunSummary
+    - group: internal/pdfingest
+      capability_ids: [OC-corpus-census]
+      reason: poppler.Processor is the production PDF validation/text extraction implementation the corpus census contract names ("validates downloaded PDFs via Poppler"); it supplies the census's parser step rather than owning the census run.
+      provenance:
+        - internal/pdfingest/poppler/poppler.go:89:New, :192:Process, :314:isPageAmplified
+  resolved_group_accounting:
+    - group: cmd/question-identity-gate
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-question-identity-gate]
+      reason: CLI entrypoint for the gate capability; no independent operational responsibility.
+      provenance:
+        - cmd/question-identity-gate/main.go:14:main, :21:run
+    - group: config
+      classification: IRRELEVANT_WITH_PROOF
+      capability_ids: []
+      reason: Directory contains only repositories.example.yaml (prod_go=0); pure configuration, no repository-owned executable behavior.
+      provenance:
+        - config/repositories.example.yaml
+    - group: internal/config
+      classification: IRRELEVANT_WITH_PROOF
+      capability_ids: []
+      reason: Load/Validate parse and validate Database/Tasks/Authorization/Context/Staging settings; configuration loading and validation (SUPPORTING_INFRASTRUCTURE/CONFIGURATION), not an autonomous organizational transition.
+      provenance:
+        - internal/config/config.go:204:Load, :545:Validate, :302:loadDatabase
+    - group: internal/contextcompiler
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-context-profile-projection]
+      reason: Compile/CompileForTaskClass own task-class-specific projection with fail-closed fallback.
+      provenance:
+        - internal/contextcompiler/contextcompiler_compiler.go:53:Compile, :124:CompileForTaskClass
+    - group: internal/corpuscluster
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-corpus-work-clustering]
+      reason: BuildTFIDF/BuildClusters own deterministic title clustering; never a model call.
+      provenance:
+        - internal/corpuscluster/corpuscluster_cluster.go:94:BuildTFIDF, :147:BuildClusters
+    - group: internal/corpuscuration
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-corpus-curation-output-contract]
+      reason: ValidateCurationOutputContract/ValidateAdjudicationOutputContract own the semantic contract validation.
+      provenance:
+        - internal/corpuscuration/corpuscuration_output_contract.go:138:ValidateCurationOutputContract
+    - group: internal/corpusenrich
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-corpus-abstract-enrichment]
+      reason: Orchestrator.Run owns bounded fetch/backoff/checkpoint enrichment.
+      provenance:
+        - internal/corpusenrich/corpusenrich_orchestrator.go:55:Run, :123:fetchWithBackoff
+    - group: internal/corpussemantic
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-corpus-semantic-embedding-clustering]
+      reason: Run + AverageLinkCluster own embedding orchestration and average-link clustering.
+      provenance:
+        - internal/corpussemantic/corpussemantic_embed.go:51:Run, corpussemantic_cluster.go:78:AverageLinkCluster
+    - group: internal/dataclassifier
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-secret-clinical-detection]
+      reason: Detect owns deterministic secret/clinical backstop detection consumed by rag/memory validation.
+      provenance:
+        - internal/dataclassifier/detect.go:69:Detect
+    - group: internal/decisiongraphtrace
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-decision-graph-execution]
+      reason: TraceSource store that reads/verifies decision-run trace evidence; supporting evidence reader.
+      provenance:
+        - internal/decisiongraphtrace/store.go:28:New, :115:LoadTrace
+    - group: internal/embeddingruntime
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-embedding-provider-dispatch]
+      reason: Adapter boundary with repository-owned breaker/idempotency/vector validation, separate from chat dispatch.
+      provenance:
+        - internal/embeddingruntime/port.go, adapter/gemini/breaker.go:19:newCircuitBreaker, adapter/bgem3/adapter.go:236:validateVector
+    - group: internal/evaluation
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-evaluation-comparison]
+      reason: Service/CompareResults own suite evaluation and baseline/candidate comparison.
+      provenance:
+        - internal/evaluation/service.go:94:RunComparison, comparison.go:31:CompareResults
+    - group: internal/evaluationdb
+      classification: IRRELEVANT_WITH_PROOF
+      capability_ids: []
+      reason: RequireDisposable is a fail-closed test/fixture guard (SUPPORTING_INFRASTRUCTURE) over disposable database names, not an organizational transition.
+      provenance:
+        - internal/evaluationdb/safety.go:19:RequireDisposable
+    - group: internal/logicir
+      classification: IRRELEVANT_WITH_PROOF
+      capability_ids: []
+      reason: Package doc states it is the ADR-0006 IR contract and is "not wired to block or alter a production decision"; declaration/validation for a future shadow solver, not an operational capability today.
+      provenance:
+        - internal/logicir/logicir.go:package doc, :123:Validate
+    - group: internal/modelpricing
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-model-pricing-resolution]
+      reason: Resolve/EstimateCost own deterministic rate-card tier selection and nanodollar estimation.
+      provenance:
+        - internal/modelpricing/resolve.go:29:Resolve, types.go:107:EstimateCost
+    - group: internal/pdfingest
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-corpus-census]
+      reason: Poppler processor implements the PDF validation step the corpus census contract names; supporting implementation for census.
+      provenance:
+        - internal/pdfingest/poppler/poppler.go:192:Process, :314:isPageAmplified
+    - group: internal/platform
+      classification: IRRELEVANT_WITH_PROOF
+      capability_ids: []
+      reason: HTTP server, migrations runner, postgres store/unit-of-work, logging, build info are generic SUPPORTING_INFRASTRUCTURE without an autonomous organizational responsibility.
+      provenance:
+        - internal/platform/httpserver/server.go:30:New, migrations/runner.go:151:Up, postgres/store.go:18:Open
+    - group: internal/questionidentity
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-question-identity-gate]
+      reason: gate.go/execution.go own the fail-closed identity gate and ordered execution path.
+      provenance:
+        - internal/questionidentity/gate.go:161:Evaluate, execution.go:85:RunNext
+    - group: internal/secrets
+      classification: IRRELEVANT_WITH_PROOF
+      capability_ids: []
+      reason: Bounded loading of Ed25519 private key and bearer token with permission checks; SUPPORTING_INFRASTRUCTURE for model-execution-identity and provider credentials, not an independent transition owner.
+      provenance:
+        - internal/secrets/file_resolver.go:18:LoadEd25519PrivateKey, token_file.go:17:LoadBearerToken
+    - group: internal/secretscan
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-secret-scanning]
+      reason: Scan owns credential-pattern detection; tasks/validation.go enforces ingress rejection on its findings.
+      provenance:
+        - internal/secretscan/secretscan.go:142:Scan, internal/tasks/validation.go:304
+    - group: internal/securityaudit
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-covert-channel-audit]
+      reason: Catalog/Rules/CheckViolations own deterministic covert-channel surface detection.
+      provenance:
+        - internal/securityaudit/covert_channels.go:39:Catalog, :362:Rules, :503:CheckViolations
+    - group: internal/shadowverifier
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-shadow-verification]
+      reason: Service.VerifyExhaustive/ReplayRecorded own independent fact re-derivation and parity reporting.
+      provenance:
+        - internal/shadowverifier/service.go:80:VerifyExhaustive, :113:ReplayRecorded, derive.go:260:EvaluateCapability
+    - group: internal/webevidence
+      classification: RELEVANT_CAPABILITY_EVIDENCE
+      capability_ids: [OC-web-evidence-ingest]
+      reason: Ingest/Sanitize/RankChunks own ephemeral web evidence ingest and ranking.
+      provenance:
+        - internal/webevidence/ingest.go:33:Ingest, sanitize.go:45:Sanitize, rank.go:70:RankChunks
+  remaining_unknowns:
+    - UNKNOWN: internal/corpuscuration also contains identity_preflight.go (CollapseDuplicateWorksInCluster) and gaps.go (BuildDepartmentKnowledgeProfile) which may be additional independent capabilities; not fully separated here.
+    - UNKNOWN: internal/evaluation postgres store and metrics (RecallAt/NDCGAt/IdentifierPrecisionAt) were not read in full; metric computation may warrant its own record.
+    - UNKNOWN: internal/embeddingruntime gemini online/batch adapter full request/idempotency flow was only partially read.
+    - UNKNOWN: whether internal/corpuscuration store (OpenStore/Put/All/Flush) is generic supporting infra or part of the contract-validation capability.
+  coverage_complete: false
+  cheapest_next_evidence: >-
+    read internal/corpuscuration/corpuscuration_identity_preflight.go and internal/evaluation/metrics/metrics.go to
+    decide whether to split additional capabilities or fold them as supporting artifacts.
+---

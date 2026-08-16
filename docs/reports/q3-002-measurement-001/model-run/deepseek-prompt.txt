@@ -1,0 +1,812 @@
+
+STRICT MEASUREMENT ASSIGNMENT
+
+question_id: REFORMULATED-Q3-002
+initial_epistemic_state: UNKNOWN
+measurement_root: /home/ubuntu/campaign-588db11
+measurement_sha: 588db11599d701fb1e2ecbae19aa00828663dc2b
+ontology_version: Q3_ONTOLOGY_V1
+ontology_whole_file_sha256: 0da2f727ceff769469c0ffad32c165690b3f4c1e5deac31d6e099117f9f1f974
+ontology_normative_sha256: cbf4b72975b4a8d8c2650969181f470d7a91fbf5f35beeabd23eb66a03f6e11c
+question_identity_contract_sha256: 5d14179555b1634238ffd197bc56afa42bc5b1dc93e5605f5d2e58f368e48f9c
+
+SUBJECT: organizational_capabilities_implemented_by_this_repository
+REQUESTED_RELATION: declared_or_configured_capability <-> surviving_runtime_evidence
+MEASUREMENT_UNIVERSE: deterministically_registered_accessible_source_space + surviving_runtime_evidence_universe
+
+The source universe (1,060 tracked artifacts) and runtime universe (103 accessible
+tables/views) were sealed externally before this call. You do NOT decide whether
+enumeration is complete. You assist classification and relation-building only.
+There is no expected capability count. Never optimize toward a number and never
+replace the task with a literal phrase/count question.
+
+Apply Q1-Q6 in order to every proposed positive capability. A positive candidate
+without every required record field and a verifiable behavioral_contract is
+invalid and must be UNRESOLVED. Package, file, table, migration, role, event type,
+endpoint, struct, interface, fixture, helper, or config row is never a capability
+by artifact identity. Merge/split by responsibility, causal purpose, and compatible
+entry/transition contract only.
+
+Use read_file/grep_repo/list_dir against the exact frozen root to inspect actual
+implementation. Do not query the database: the sealed runtime observations below
+are the only runtime packet for this call. Cite repository paths with exact line
+or symbol locators that you actually inspected. Treat zero observations as no
+surviving evidence, never as historical absence.
+
+Return ONLY valid YAML with exactly this top-level shape:
+
+evidence_packet:
+  question_id: REFORMULATED-Q3-002
+  conclusion: <provisional inventory statement, not a bare count>
+  observations: [<non-empty OBSERVED/DERIVED items>]
+  provenance: [<non-empty path:line-or-symbol items>]
+  counterevidence: []
+  unknowns: []
+  coverage_complete: false
+  cheapest_next_evidence: <specific>
+  capability_candidates:
+    - capability_id: OC-...
+      name: ...
+      behavioral_contract: ...
+      causal_purpose: ...
+      entrypoints_or_triggers: []
+      enforcement_or_transition_points: []
+      reads_or_inputs: []
+      writes_or_effects: []
+      implementation_provenance: []
+      declaration_provenance: []
+      configuration_provenance: []
+      possible_runtime_evidence: []
+      boundary_with_adjacent_capabilities: ...
+      classification_basis: "Q1=...; Q2=...; Q3=...; Q4=...; Q5=...; Q6=..."
+  supporting_or_negative_candidates: []
+  navigation_group_accounting:
+    - group: internal/example
+      classification: RELEVANT_CAPABILITY_EVIDENCE|IRRELEVANT_WITH_PROOF|UNRESOLVED
+      capability_ids: []
+      reason: ...
+      provenance: []
+  runtime_relations:
+    - runtime_unit: public.example
+      capability_ids: []
+      relation: SURVIVING_EVIDENCE|DECLARATION_OR_CONFIGURATION_ONLY|IRRELEVANT_WITH_PROOF|UNRESOLVED
+      reason: ...
+
+The 70 navigation groups must each appear exactly once in navigation_group_accounting.
+All 103 runtime units must each appear exactly once in runtime_relations, including
+empty tables. Honest UNRESOLVED is required when evidence is insufficient. Set
+coverage_complete=false because completeness is reserved to the external checker.
+
+FROZEN NORMATIVE ONTOLOGY REGION
+---
+## 1. Operational definition
+
+An `ORGANIZATIONAL_CAPABILITY` is a repository-owned behavior with all of the
+following properties:
+
+1. It has one stable, nameable operational responsibility.
+2. It produces, restricts, transforms, selects, authorizes, routes, persists,
+   evaluates, or observes a system transition relevant to the organization.
+3. At least one repository-verifiable entrypoint, trigger, enforcement point,
+   transition rule, or behavioral contract invokes or enforces it.
+4. Its effect or restriction is observable at an interface, returned result,
+   durable state transition, emitted signal, authorization decision, rejection,
+   or invariant.
+5. The behavior is implemented by the repository. Merely invoking behavior
+   wholly supplied by an external dependency is insufficient.
+6. Its conceptual identity survives a change in persistent representation or
+   file/package layout, provided its responsibility, causal purpose, and
+   compatible entry/transition contract remain.
+7. It is distinguishable from artifacts that only store data, configure or
+   declare behavior, migrate schema, record execution evidence, support tests,
+   or provide a helper without autonomous operational responsibility.
+
+Operational tests for the terms above:
+
+- **repository-owned behavior**: an executable path or enforceable rule whose
+  branching, transition, invariant, orchestration, or policy is expressed in
+  repository source. A wrapper that only forwards to an external dependency
+  without adding such behavior fails this test.
+- **stable responsibility**: one sentence of the form "When `<entry/trigger>`
+  occurs, the system `<effect/restriction>` so that `<causal purpose>`" remains
+  true across representation-only refactors.
+- **verifiable**: provenance identifies repository path plus symbol, rule, or
+  line locator sufficient for another reviewer to inspect the contract.
+- **observable**: a caller, downstream component, persisted record, emitted
+  event, audit surface, or rejected operation can distinguish the behavior from
+  its absence. Tests may demonstrate this but test evidence alone cannot create
+  the behavior.
+- **autonomous operational responsibility**: removing the candidate changes a
+  named system behavior or invariant, not merely code reuse, formatting,
+  storage shape, wiring values, or test convenience.
+
+The unit of inventory is the behavior satisfying this definition, never an
+artifact solely because of its artifact type.
+
+## 2. Decision procedure
+
+Evaluate one candidate at a time and record every answer in order. Do not skip
+questions. `YES` and `NO` require provenance; where the available candidate
+packet cannot support either, use `UNKNOWN` and the terminal result prescribed
+below.
+
+### Q1 — repository-owned executable/enforceable behavior
+
+Does repository source express executable behavior or an enforceable rule,
+rather than only delegate unchanged external behavior?
+
+- `NO` -> `NOT_A_CAPABILITY`; stop.
+- `UNKNOWN` -> `UNRESOLVED`; stop.
+- `YES` -> Q2.
+
+### Q2 — stable operational responsibility
+
+Can the responsibility be stated as one stable behavioral sentence with a
+named effect/restriction and causal purpose?
+
+- `NO` -> `NOT_A_CAPABILITY`; stop.
+- `UNKNOWN` -> `UNRESOLVED`; stop.
+- `YES` -> Q3.
+
+### Q3 — verifiable entry or enforcement
+
+Is at least one entrypoint, trigger, rule, enforcement point, transition, or
+behavioral contract located in the supplied repository evidence?
+
+- `NO` -> `NOT_A_CAPABILITY`; stop.
+- `UNKNOWN` -> `UNRESOLVED`; stop.
+- `YES` -> Q4.
+
+### Q4 — specifiable effect or restriction
+
+Can the reviewer state the externally distinguishable change or restriction,
+including the relevant input/precondition and result, rejection, state change,
+or emitted observation?
+
+- `NO` or `UNKNOWN` -> `UNRESOLVED`; stop.
+- `YES` -> Q5.
+
+### Q5 — supporting artifact test
+
+Is this candidate only representation, declaration, configuration, runtime
+evidence, test material, or infrastructure supporting an already identified
+capability in the candidate packet?
+
+- `YES` -> `SUPPORTING_ARTIFACT_OF:<capability_id>`; stop.
+- `UNKNOWN` -> `UNRESOLVED`; stop.
+- `NO` -> Q6.
+
+The target ID is permitted only when the packet contains provenance for the
+supported capability. Otherwise Q5 is `UNKNOWN`.
+
+### Q6 — layout-dependent identity test
+
+Would the proposed identity cease to exist, merge, or split solely because
+files or packages were regrouped, with no change to responsibility, causal
+purpose, or entry/transition contract?
+
+- `YES` or `UNKNOWN` -> `UNRESOLVED`; stop.
+- `NO` -> `ORGANIZATIONAL_CAPABILITY`.
+
+### Terminal labels and boundary mapping
+
+Exact classification is one of:
+
+- `ORGANIZATIONAL_CAPABILITY`
+- `NOT_A_CAPABILITY`
+- `SUPPORTING_ARTIFACT_OF:<capability_id>`
+- `UNRESOLVED`
+
+For capability-boundary agreement only,
+`ORGANIZATIONAL_CAPABILITY = CAPABILITY`; all other terminal labels equal
+`NOT_CAPABILITY_OR_UNRESOLVED`. Artifact roles are measured separately and do
+not change the terminal label.
+
+A positive classification is invalid unless its complete required capability
+record is supplied. In particular, an unverifiable `behavioral_contract`
+forces `UNRESOLVED`, regardless of reviewer intuition.
+
+## 3. Artifact-role taxonomy
+
+Artifact roles describe evidence, not inventory units. One artifact may have
+multiple roles when each is justified.
+
+- `BEHAVIOR_IMPLEMENTATION`: repository source that implements branching,
+  transformation, enforcement, orchestration, invariant, or transition logic.
+- `DECLARATION`: schema, type, interface, manifest, constant, or document that
+  declares a vocabulary, contract surface, or allowed shape without by itself
+  executing the behavior.
+- `CONFIGURATION`: values or mappings consumed by behavior to choose policy,
+  wiring, limits, routing, roles, or operating parameters.
+- `PERSISTENCE_REPRESENTATION`: tables, columns, indexes, constraints,
+  migrations, serialization shapes, or store mappings representing durable
+  state. A database trigger can additionally be `BEHAVIOR_IMPLEMENTATION` only
+  when its enforceable transition is itself under evaluation.
+- `RUNTIME_EVIDENCE`: surviving records, event types, audit entries, logs,
+  metrics, or other observations showing that behavior may have executed.
+- `TEST_ONLY`: fixtures, fakes, test cases, test-only runners, or assertions not
+  reachable as production behavior.
+- `SUPPORTING_INFRASTRUCTURE`: generic transport, storage, scheduling, hashing,
+  adapters, or utilities supporting another behavior without owning its causal
+  purpose.
+- `EXTERNAL_DEPENDENCY`: behavior supplied outside this repository. A local
+  adapter may also have another role if it adds repository-owned rules.
+- `UNRESOLVED`: the supplied evidence cannot justify a more specific role.
+
+Forbidden identity shortcuts:
+
+`table != capability`, `migration != capability`, `role != capability`,
+`event_type != capability`, and `package != capability` by artifact identity
+alone. The same applies to every artifact named in the exclusion rules.
+
+## 4. Granularity and identity rules
+
+### Candidate formation
+
+A candidate must name a proposed behavior and cite at least one entry, trigger,
+enforcement, or transition locator. An artifact-only candidate is allowed so
+that exclusions can be tested, but it is not rewritten into a behavior during
+classification.
+
+### Merge rule
+
+Two implementations are one capability only when all three are demonstrated:
+
+1. the same behavioral responsibility;
+2. the same causal purpose; and
+3. compatible entry/transition contracts, meaning their preconditions,
+   principal effects/restrictions, and success/failure semantics do not express
+   independently operable responsibilities.
+
+Multiple packages may therefore implement one capability.
+
+### Split rule
+
+Split candidates when repository evidence demonstrates an independently
+invocable or enforceable operational responsibility with a distinct causal
+purpose or incompatible contract. Separate files, functions, tables, event
+types, endpoints, or packages are not sufficient reasons to split. One package
+may therefore contain multiple capabilities.
+
+### Representation stability test
+
+Ask whether changing table names, schemas, serialization, file paths, package
+boundaries, or deployment wiring while preserving behavior would change the
+candidate identity. If yes, the proposed identity is representation-bound and
+Q6 cannot pass.
+
+### Adjacent-boundary requirement
+
+Every positive record names its nearest plausible adjacent capability and
+states the behavioral distinction. If the distinction cannot be evidenced,
+classify `UNRESOLVED` rather than merge or split by intuition.
+
+Capability IDs use `OC-<normalized-responsibility>` and are stable identifiers,
+not sequence numbers. They must not encode package names or an expected count.
+
+## 5. Required positive capability record
+
+Every positive decision must materialize all fields below. Arrays may be empty
+only for declaration/configuration/runtime-evidence provenance when the
+reviewer explicitly states that the evidence class was not present in the
+candidate packet. All implementation and boundary fields are mandatory.
+
+```yaml
+capability_id: OC-<normalized-responsibility>
+name: <human-readable responsibility>
+behavioral_contract: >-
+  When <entry/trigger and preconditions>, the system <observable effect or
+  restriction and failure behavior>.
+causal_purpose: <why the organization needs this transition/restriction>
+entrypoints_or_triggers:
+  - <path:symbol-or-line>
+enforcement_or_transition_points:
+  - <path:symbol-or-line>
+reads_or_inputs:
+  - <input/precondition>
+writes_or_effects:
+  - <returned result, rejection, durable transition, or emitted observation>
+implementation_provenance:
+  - <path:symbol-or-line>
+declaration_provenance: []
+configuration_provenance: []
+possible_runtime_evidence: []
+boundary_with_adjacent_capabilities: >-
+  <nearest adjacent responsibility and the evidenced merge/split boundary>
+classification_basis: >-
+  <Q1-Q6 answers with concise evidence>
+```
+
+The `behavioral_contract` must name trigger/preconditions and observable
+success or restriction/failure semantics. A label, noun phrase, package
+description, or restatement of a type name is not a behavioral contract.
+
+## 6. Explicit exclusion rules
+
+None of the following counts by itself: table, index, constraint, migration,
+role, event type, struct, interface, package, endpoint, helper function,
+fixture, constant, or configuration row.
+
+Apply these mechanical rules:
+
+1. If the candidate packet contains only one of those artifacts and no
+   repository-owned executable/enforceable behavior, Q1=`NO` and
+   `NOT_A_CAPABILITY`.
+2. If the artifact is only evidence/configuration/representation for a
+   capability identified in the same packet, Q5=`YES` and
+   `SUPPORTING_ARTIFACT_OF:<capability_id>`.
+3. An endpoint is only an entry locator. Its routed behavior must still pass
+   Q1-Q6.
+4. A database constraint or trigger may pass Q1 only when evaluated as an
+   enforceable repository-authored rule with a specifiable transition
+   restriction; the table, migration file, or constraint name remains merely
+   provenance.
+5. A helper passes only if it owns an independently nameable operational
+   responsibility and causal purpose. Reuse or technical transformation alone
+   is insufficient.
+6. A declaration plus runtime evidence does not prove implementation. Missing
+   implementation provenance yields `UNRESOLVED`, not a positive decision.
+7. Absence from a collector's output is never proof of irrelevance.
+
+
+---
+
+DETERMINISTIC COMPACT NAVIGATION INDEX
+---
+# Q3-002 compact deterministic navigation index
+
+Navigation groups are not capabilities. No expected count exists.
+All 1,060 source units and all runtime units remain registered externally.
+
+## .github — artifacts=4, prod_go=0, symbols=0
+
+## cmd/orgctl — artifacts=50, prod_go=35, symbols=222
+paths: `cmd/orgctl/agents.go`, `cmd/orgctl/authorization.go`, `cmd/orgctl/budget.go`, `cmd/orgctl/completion.go`, `cmd/orgctl/context.go`, `cmd/orgctl/contextcompiler_cli.go`, `cmd/orgctl/corpus.go`, `cmd/orgctl/corpus_cluster_cli.go`, `cmd/orgctl/corpus_enrich_cli.go`, `cmd/orgctl/corpus_semantic_cli.go`, `cmd/orgctl/corpuscuration_dedup_cli.go`, `cmd/orgctl/cost.go`, `cmd/orgctl/curation_cli.go`, `cmd/orgctl/decision.go`, `cmd/orgctl/evaluation.go`, `cmd/orgctl/executive.go`, `cmd/orgctl/executive_entry.go`, `cmd/orgctl/executive_smoke_cli.go`, `cmd/orgctl/improvement.go`, `cmd/orgctl/main.go`, `cmd/orgctl/memory.go`, `cmd/orgctl/model_assignment.go`, `cmd/orgctl/model_egress.go`, `cmd/orgctl/model_identity.go`, `cmd/orgctl/model_principal.go`, `cmd/orgctl/models.go`, `cmd/orgctl/objectstorage.go`, `cmd/orgctl/postrun.go`, `cmd/orgctl/rag.go`, `cmd/orgctl/shadow.go`, `cmd/orgctl/skill.go`, `cmd/orgctl/sleep.go`, `cmd/orgctl/staging.go`, `cmd/orgctl/tasks.go`, `cmd/orgctl/worker.go`
+locators: `cmd/orgctl/agents.go:15:runAgents`, `cmd/orgctl/agents.go:46:runAgentsTree`, `cmd/orgctl/agents.go:132:printAgentsUsage`, `cmd/orgctl/authorization.go:15:runAuthorization`, `cmd/orgctl/authorization.go:51:openAuthorizationRuntime`, `cmd/orgctl/authorization.go:84:authorizationEvaluate`, `cmd/orgctl/authorization.go:122:authorizationRequest`, `cmd/orgctl/authorization.go:147:authorizationGet`, `cmd/orgctl/authorization.go:165:authorizationList`, `cmd/orgctl/authorization.go:184:authorizationDecide`, `cmd/orgctl/authorization.go:209:authorizationConsume`, `cmd/orgctl/authorization.go:233:authorizationCancel`, `cmd/orgctl/authorization.go:255:authorizationExpire`, `cmd/orgctl/authorization.go:271:authorizationError`, `cmd/orgctl/authorization.go:295:printAuthorizationUsage`, `cmd/orgctl/budget.go:19:runBudget`, `cmd/orgctl/budget.go:40:runBudgetStatus`, `cmd/orgctl/budget.go:93:runBudgetSetPrice`, `cmd/orgctl/budget.go:168:runBudgetSetBalance`, `cmd/orgctl/budget.go:227:runBudgetCreateRoot`, `cmd/orgctl/budget.go:293:printBudgetUsage`, `cmd/orgctl/completion.go:14:printCompletionUsage`, `cmd/orgctl/completion.go:24:runCompletion`, `cmd/orgctl/completion.go:70:completionVerify`, `cmd/orgctl/context.go:21:runContext`, `cmd/orgctl/context.go:56:openContextRuntime`, `cmd/orgctl/context.go:101:contextValidateSource`, `cmd/orgctl/context.go:177:contextBuild`, `cmd/orgctl/context.go:209:contextGet`, `cmd/orgctl/context.go:233:contextList`, `cmd/orgctl/context.go:255:contextRender`, `cmd/orgctl/context.go:290:contextValidate`, `cmd/orgctl/context.go:310:contextInvalidate`, `cmd/orgctl/context.go:333:contextError`, `cmd/orgctl/context.go:351:redactedSegments`, `cmd/orgctl/context.go:362:String`, `cmd/orgctl/context.go:363:Set`, `cmd/orgctl/context.go:372:printContextUsage`, `cmd/orgctl/contextcompiler_cli.go:21:runContextCompiler`, `cmd/orgctl/contextcompiler_cli.go:117:reductionPct`
+additional_symbol_count: 182
+
+## cmd/orgd — artifacts=1, prod_go=1, symbols=2
+paths: `cmd/orgd/main.go`
+locators: `cmd/orgd/main.go:24:main`, `cmd/orgd/main.go:31:run`
+
+## cmd/question-identity-gate — artifacts=2, prod_go=1, symbols=2
+paths: `cmd/question-identity-gate/main.go`
+locators: `cmd/question-identity-gate/main.go:14:main`, `cmd/question-identity-gate/main.go:21:run`
+
+## config — artifacts=1, prod_go=0, symbols=0
+
+## deployments — artifacts=10, prod_go=0, symbols=0
+
+## docs — artifacts=114, prod_go=0, symbols=0
+
+## empresa — artifacts=3, prod_go=0, symbols=0
+
+## ingenieria_ia — artifacts=11, prod_go=0, symbols=0
+
+## internal/agentbudget — artifacts=7, prod_go=5, symbols=10
+paths: `internal/agentbudget/doc.go`, `internal/agentbudget/errors.go`, `internal/agentbudget/ports.go`, `internal/agentbudget/postgres/store.go`, `internal/agentbudget/types.go`
+locators: `internal/agentbudget/postgres/store.go:19:New`, `internal/agentbudget/postgres/store.go:32:scanBudget`, `internal/agentbudget/postgres/store.go:46:GetBudget`, `internal/agentbudget/postgres/store.go:57:CreateRootBudget`, `internal/agentbudget/postgres/store.go:110:InheritForChild`, `internal/agentbudget/postgres/store.go:243:ConsumeModelCall`, `internal/agentbudget/postgres/store.go:286:ResolveBudgetForTask`, `internal/agentbudget/types.go:23:Validate`, `internal/agentbudget/types.go:35:DefaultLimits`, `internal/agentbudget/types.go:65:Reserve`
+
+## internal/agentmessaging — artifacts=10, prod_go=7, symbols=22
+paths: `internal/agentmessaging/doc.go`, `internal/agentmessaging/errors.go`, `internal/agentmessaging/ports.go`, `internal/agentmessaging/postgres/store.go`, `internal/agentmessaging/topology.go`, `internal/agentmessaging/topologyfixture/fixture.go`, `internal/agentmessaging/types.go`
+locators: `internal/agentmessaging/postgres/store.go:39:New`, `internal/agentmessaging/postgres/store.go:64:scanMessage`, `internal/agentmessaging/postgres/store.go:78:Send`, `internal/agentmessaging/postgres/store.go:194:validateExecutionPrincipalForSender`, `internal/agentmessaging/postgres/store.go:228:validateTaskOwnership`, `internal/agentmessaging/postgres/store.go:253:computeCanonicalRequestHash`, `internal/agentmessaging/postgres/store.go:284:ClaimNext`, `internal/agentmessaging/postgres/store.go:404:validateExecutionPrincipalForClaim`, `internal/agentmessaging/postgres/store.go:433:Ack`, `internal/agentmessaging/postgres/store.go:459:Nack`, `internal/agentmessaging/postgres/store.go:489:verifyClaimWithPrincipal`, `internal/agentmessaging/postgres/store.go:545:newToken`, `internal/agentmessaging/postgres/store.go:554:hashToken`, `internal/agentmessaging/postgres/store.go:559:nullableString`, `internal/agentmessaging/topology.go:26:NewTopologyValidator`, `internal/agentmessaging/topology.go:32:ValidateEdge`, `internal/agentmessaging/topology.go:140:extractUnitFromRole`, `internal/agentmessaging/topology.go:149:senderUnitHasWorker`, `internal/agentmessaging/types.go:36:Valid`, `internal/agentmessaging/types.go:105:Validate`, `internal/agentmessaging/types.go:180:rejectDuplicateJSONKeys`, `internal/agentmessaging/types.go:239:validateSemanticInvariants`
+
+## internal/agentmessagingfixtures — artifacts=4, prod_go=2, symbols=0
+paths: `internal/agentmessagingfixtures/activate.go`, `internal/agentmessagingfixtures/runner.go`
+
+## internal/app — artifacts=2, prod_go=1, symbols=11
+paths: `internal/app/app.go`
+locators: `internal/app/app.go:67:New`, `internal/app/app.go:125:newWithDependencies`, `internal/app/app.go:138:Run`, `internal/app/app.go:199:prepareDatabase`, `internal/app/app.go:253:runTaskReconciler`, `internal/app/app.go:268:reconcileTasksOnce`, `internal/app/app.go:292:runStagingReconciler`, `internal/app/app.go:307:reconcileStagingOnce`, `internal/app/app.go:325:ensureSchema`, `internal/app/app.go:346:Ready`, `internal/app/app.go:376:Addr`
+
+## internal/authorization — artifacts=19, prod_go=13, symbols=74
+paths: `internal/authorization/authorizer.go`, `internal/authorization/bootstrap/bootstrap.go`, `internal/authorization/domain.go`, `internal/authorization/errors.go`, `internal/authorization/hash.go`, `internal/authorization/interfaces.go`, `internal/authorization/postgres/helpers.go`, `internal/authorization/postgres/requests.go`, `internal/authorization/postgres/store.go`, `internal/authorization/postgres/transitions.go`, `internal/authorization/service.go`, `internal/authorization/state_machine.go`, `internal/authorization/validation.go`
+locators: `internal/authorization/authorizer.go:35:GetOrganization`, `internal/authorization/authorizer.go:38:GetCurrentRevision`, `internal/authorization/authorizer.go:41:GetAuthorizationRole`, `internal/authorization/authorizer.go:54:New`, `internal/authorization/authorizer.go:61:NewWithPolicyReader`, `internal/authorization/authorizer.go:100:newAuthorizer`, `internal/authorization/authorizer.go:155:Evaluate`, `internal/authorization/authorizer.go:165:evaluate`, `internal/authorization/authorizer.go:252:Authorize`, `internal/authorization/authorizer.go:270:legacyEvaluationError`, `internal/authorization/authorizer.go:292:MatrixHash`, `internal/authorization/authorizer.go:294:KnownCapabilities`, `internal/authorization/authorizer.go:303:Capability`, `internal/authorization/authorizer.go:308:globalHardDenied`, `internal/authorization/authorizer.go:312:authorityHardDenied`, `internal/authorization/authorizer.go:316:authorityKnown`, `internal/authorization/authorizer.go:321:hardDenied`, `internal/authorization/authorizer.go:325:contains`, `internal/authorization/bootstrap/bootstrap.go:21:Open`, `internal/authorization/domain.go:73:Valid`, `internal/authorization/domain.go:82:Terminal`, `internal/authorization/domain.go:98:Valid`, `internal/authorization/hash.go:11:RequestHash`, `internal/authorization/interfaces.go:34:Now`, `internal/authorization/postgres/helpers.go:19:scanRequest`, `internal/authorization/postgres/helpers.go:28:scanUse`, `internal/authorization/postgres/helpers.go:34:transitionUpdateError`, `internal/authorization/postgres/helpers.go:41:rollback`, `internal/authorization/postgres/helpers.go:47:appendEvent`, `internal/authorization/postgres/helpers.go:112:getOrganizationTx`, `internal/authorization/postgres/helpers.go:123:getRoleTx`, `internal/authorization/postgres/helpers.go:127:getRevisionTx`, `internal/authorization/postgres/helpers.go:131:lockRequest`, `internal/authorization/postgres/helpers.go:135:eventExists`, `internal/authorization/postgres/helpers.go:141:withEventCorrelation`, `internal/authorization/postgres/helpers.go:151:authorizationErrorForReason`, `internal/authorization/postgres/requests.go:14:CreateRequest`, `internal/authorization/postgres/requests.go:100:GetRequest`, `internal/authorization/postgres/requests.go:104:ListRequests`, `internal/authorization/postgres/requests.go:137:DecideRequest`
+additional_symbol_count: 34
+
+## internal/cellworker — artifacts=14, prod_go=8, symbols=16
+paths: `internal/cellworker/backoff.go`, `internal/cellworker/config.go`, `internal/cellworker/env.go`, `internal/cellworker/errors.go`, `internal/cellworker/interfaces.go`, `internal/cellworker/observer.go`, `internal/cellworker/postgres/store.go`, `internal/cellworker/worker.go`
+locators: `internal/cellworker/backoff.go:19:newBackoff`, `internal/cellworker/backoff.go:26:Next`, `internal/cellworker/backoff.go:48:Reset`, `internal/cellworker/config.go:36:Validate`, `internal/cellworker/env.go:25:LoadConfig`, `internal/cellworker/env.go:56:envInt`, `internal/cellworker/env.go:68:envDuration`, `internal/cellworker/interfaces.go:38:Now`, `internal/cellworker/interfaces.go:40:Sleep`, `internal/cellworker/observer.go:19:OnListError`, `internal/cellworker/observer.go:20:OnDispatchError`, `internal/cellworker/postgres/store.go:23:New`, `internal/cellworker/postgres/store.go:39:ListEligible`, `internal/cellworker/worker.go:32:New`, `internal/cellworker/worker.go:55:Run`, `internal/cellworker/worker.go:150:dispatchWithGrace`
+
+## internal/codeexecutionfixtures — artifacts=6, prod_go=4, symbols=0
+paths: `internal/codeexecutionfixtures/activate.go`, `internal/codeexecutionfixtures/gobugfix.go`, `internal/codeexecutionfixtures/postgresmigration.go`, `internal/codeexecutionfixtures/runner.go`
+
+## internal/completion — artifacts=8, prod_go=6, symbols=22
+paths: `internal/completion/errors.go`, `internal/completion/fake.go`, `internal/completion/ports.go`, `internal/completion/postgres/store.go`, `internal/completion/service.go`, `internal/completion/types.go`
+locators: `internal/completion/fake.go:15:TaskFacts`, `internal/completion/fake.go:30:ArtifactDigest`, `internal/completion/fake.go:42:CheckPassed`, `internal/completion/fake.go:50:ApprovalConsumed`, `internal/completion/fake.go:63:CurrentBranchStateForAttempt`, `internal/completion/ports.go:118:Now`, `internal/completion/postgres/store.go:26:New`, `internal/completion/postgres/store.go:45:TaskFacts`, `internal/completion/postgres/store.go:99:ArtifactDigest`, `internal/completion/postgres/store.go:114:CheckPassed`, `internal/completion/postgres/store.go:133:ApprovalConsumed`, `internal/completion/postgres/store.go:155:CurrentBranchStateForAttempt`, `internal/completion/service.go:19:NewService`, `internal/completion/service.go:32:Verify`, `internal/completion/service.go:71:checkRequirementsSatisfied`, `internal/completion/service.go:85:checkArtifactExists`, `internal/completion/service.go:105:checkChecksPassed`, `internal/completion/service.go:119:checkApprovalPresent`, `internal/completion/service.go:137:checkNoRejectedBranchReused`, `internal/completion/service.go:155:aggregateVerdict`, `internal/completion/service.go:171:itoa`, `internal/completion/types.go:24:Valid`
+
+## internal/config — artifacts=2, prod_go=1, symbols=22
+paths: `internal/config/config.go`
+locators: `internal/config/config.go:204:Load`, `internal/config/config.go:208:LoadFrom`, `internal/config/config.go:302:loadDatabase`, `internal/config/config.go:379:loadTasks`, `internal/config/config.go:440:loadAuthorization`, `internal/config/config.go:460:loadContext`, `internal/config/config.go:500:loadStaging`, `internal/config/config.go:545:Validate`, `internal/config/config.go:599:Validate`, `internal/config/config.go:624:Validate`, `internal/config/config.go:640:Validate`, `internal/config/config.go:668:Validate`, `internal/config/config.go:708:Validate`, `internal/config/config.go:751:ConnectionString`, `internal/config/config.go:772:text`, `internal/config/config.go:780:optionalText`, `internal/config/config.go:788:duration`, `internal/config/config.go:803:integer`, `internal/config/config.go:818:integer64`, `internal/config/config.go:833:boolean`, `internal/config/config.go:845:logLevel`, `internal/config/config.go:861:validateAddr`
+
+## internal/contextcompiler — artifacts=7, prod_go=5, symbols=8
+paths: `internal/contextcompiler/contextcompiler_compiler.go`, `internal/contextcompiler/contextcompiler_domain.go`, `internal/contextcompiler/contextcompiler_output_budget.go`, `internal/contextcompiler/contextcompiler_profiles.go`, `internal/contextcompiler/contextcompiler_projections.go`
+locators: `internal/contextcompiler/contextcompiler_compiler.go:23:TaskClassOf`, `internal/contextcompiler/contextcompiler_compiler.go:53:Compile`, `internal/contextcompiler/contextcompiler_compiler.go:124:CompileForTaskClass`, `internal/contextcompiler/contextcompiler_compiler.go:137:finalize`, `internal/contextcompiler/contextcompiler_output_budget.go:43:CorpusCurateOutputTokenBudget`, `internal/contextcompiler/contextcompiler_profiles.go:21:ResearchCorpusCurateV1`, `internal/contextcompiler/contextcompiler_profiles.go:45:Registry`, `internal/contextcompiler/contextcompiler_projections.go:32:RoleCatalogSelfEntry`
+
+## internal/contextengine — artifacts=35, prod_go=21, symbols=133
+paths: `internal/contextengine/assembler.go`, `internal/contextengine/bootstrap/bootstrap.go`, `internal/contextengine/canonical/provider.go`, `internal/contextengine/canonical/skills.go`, `internal/contextengine/clock.go`, `internal/contextengine/document/loader.go`, `internal/contextengine/document/markdown.go`, `internal/contextengine/document/path_security.go`, `internal/contextengine/document/yaml.go`, `internal/contextengine/domain.go`, `internal/contextengine/errors.go`, `internal/contextengine/hashing.go`, `internal/contextengine/interfaces.go`, `internal/contextengine/postgres/store.go`, `internal/contextengine/precedence.go`, `internal/contextengine/providerrender.go`, `internal/contextengine/providers.go`, `internal/contextengine/renderer.go`, `internal/contextengine/service.go`, `internal/contextengine/state_machine.go`, `internal/contextengine/validation.go`
+locators: `internal/contextengine/assembler.go:11:NewAssembler`, `internal/contextengine/assembler.go:13:Assemble`, `internal/contextengine/assembler.go:123:optionalIndexes`, `internal/contextengine/assembler.go:135:applyCountLimit`, `internal/contextengine/assembler.go:146:omissionCandidates`, `internal/contextengine/assembler.go:159:lessOmittable`, `internal/contextengine/assembler.go:169:optionalSource`, `internal/contextengine/assembler.go:173:includedBytes`, `internal/contextengine/bootstrap/bootstrap.go:35:Open`, `internal/contextengine/canonical/provider.go:49:New`, `internal/contextengine/canonical/provider.go:67:Load`, `internal/contextengine/canonical/provider.go:117:Validate`, `internal/contextengine/canonical/provider.go:131:read`, `internal/contextengine/canonical/provider.go:154:schemaVersion`, `internal/contextengine/canonical/provider.go:175:validatePrecedence`, `internal/contextengine/canonical/provider.go:187:digestBundle`, `internal/contextengine/canonical/skills.go:35:NewSkillProvider`, `internal/contextengine/canonical/skills.go:64:normalizeLifecycle`, `internal/contextengine/canonical/skills.go:83:ListActiveForRole`, `internal/contextengine/canonical/skills.go:96:GetActiveForRole`, `internal/contextengine/canonical/skills.go:113:ValidateVersion`, `internal/contextengine/canonical/skills.go:127:Record`, `internal/contextengine/canonical/skills.go:132:validateSkillCatalogNode`, `internal/contextengine/canonical/skills.go:139:sourceFileName`, `internal/contextengine/clock.go:7:Now`, `internal/contextengine/document/loader.go:22:NewLoader`, `internal/contextengine/document/loader.go:44:Root`, `internal/contextengine/document/loader.go:46:Load`, `internal/contextengine/document/markdown.go:20:NormalizeText`, `internal/contextengine/document/markdown.go:32:ParseMarkdown`, `internal/contextengine/document/path_security.go:11:resolveWithinRoot`, `internal/contextengine/document/path_security.go:33:ensureContained`, `internal/contextengine/document/path_security.go:44:validateOpenedFile`, `internal/contextengine/document/yaml.go:18:ParseStrictYAML`, `internal/contextengine/document/yaml.go:38:validateNode`, `internal/contextengine/document/yaml.go:92:Error`, `internal/contextengine/document/yaml.go:96:DecodeStringMap`, `internal/contextengine/document/yaml.go:110:CanonicalYAML`, `internal/contextengine/document/yaml.go:122:encodeCanonical`, `internal/contextengine/document/yaml.go:161:normalizeTag`
+additional_symbol_count: 93
+
+## internal/corpuscensus — artifacts=15, prod_go=9, symbols=40
+paths: `internal/corpuscensus/corpuscensus_bronze.go`, `internal/corpuscensus/corpuscensus_census.go`, `internal/corpuscensus/corpuscensus_checkpoint.go`, `internal/corpuscensus/corpuscensus_classify.go`, `internal/corpuscensus/corpuscensus_dedup.go`, `internal/corpuscensus/corpuscensus_domain.go`, `internal/corpuscensus/corpuscensus_orchestrator.go`, `internal/corpuscensus/corpuscensus_topics_v2.go`, `internal/corpuscensus/corpuscensus_validate.go`
+locators: `internal/corpuscensus/corpuscensus_bronze.go:35:str`, `internal/corpuscensus/corpuscensus_bronze.go:71:NewSQLiteCLIReader`, `internal/corpuscensus/corpuscensus_bronze.go:83:query`, `internal/corpuscensus/corpuscensus_bronze.go:103:ListPapers`, `internal/corpuscensus/corpuscensus_bronze.go:111:ListSources`, `internal/corpuscensus/corpuscensus_census.go:91:classifyCoverageTier`, `internal/corpuscensus/corpuscensus_census.go:104:BuildCensus`, `internal/corpuscensus/corpuscensus_census.go:263:SortedTopics`, `internal/corpuscensus/corpuscensus_checkpoint.go:30:OpenStateStore`, `internal/corpuscensus/corpuscensus_checkpoint.go:63:isTerminal`, `internal/corpuscensus/corpuscensus_checkpoint.go:71:Get`, `internal/corpuscensus/corpuscensus_checkpoint.go:76:Put`, `internal/corpuscensus/corpuscensus_checkpoint.go:80:All`, `internal/corpuscensus/corpuscensus_checkpoint.go:93:Flush`, `internal/corpuscensus/corpuscensus_classify.go:24:TopicsForCollection`, `internal/corpuscensus/corpuscensus_classify.go:40:ClassifyAuthorityTier`, `internal/corpuscensus/corpuscensus_classify.go:55:DeterministicQuality`, `internal/corpuscensus/corpuscensus_classify.go:82:ClassifySourceType`, `internal/corpuscensus/corpuscensus_classify.go:109:DetectLanguage`, `internal/corpuscensus/corpuscensus_classify.go:141:LooksLikeReferencesPage`, `internal/corpuscensus/corpuscensus_dedup.go:14:ResolveWorkIdentity`, `internal/corpuscensus/corpuscensus_dedup.go:42:normalizeTitle`, `internal/corpuscensus/corpuscensus_dedup.go:50:titleYearKey`, `internal/corpuscensus/corpuscensus_dedup.go:68:newUnionFind`, `internal/corpuscensus/corpuscensus_dedup.go:72:find`, `internal/corpuscensus/corpuscensus_dedup.go:86:union`, `internal/corpuscensus/corpuscensus_dedup.go:98:GroupWorks`, `internal/corpuscensus/corpuscensus_dedup.go:143:SelectCanonicalArtifact`, `internal/corpuscensus/corpuscensus_dedup.go:161:yearOf`, `internal/corpuscensus/corpuscensus_domain.go:63:Valid`, `internal/corpuscensus/corpuscensus_domain.go:135:Score`, `internal/corpuscensus/corpuscensus_orchestrator.go:32:resolvedConcurrency`, `internal/corpuscensus/corpuscensus_orchestrator.go:63:Run`, `internal/corpuscensus/corpuscensus_orchestrator.go:144:processOne`, `internal/corpuscensus/corpuscensus_topics_v2.go:57:TopicsForTitle`, `internal/corpuscensus/corpuscensus_topics_v2.go:73:CombineTopics`, `internal/corpuscensus/corpuscensus_topics_v2.go:90:sortStrings`, `internal/corpuscensus/corpuscensus_validate.go:25:DefaultValidationConfig`, `internal/corpuscensus/corpuscensus_validate.go:34:ValidatePDF`, `internal/corpuscensus/corpuscensus_validate.go:98:runWithTimeoutPolicy`
+
+## internal/corpuscluster — artifacts=3, prod_go=2, symbols=10
+paths: `internal/corpuscluster/corpuscluster_cluster.go`, `internal/corpuscluster/corpuscluster_unionfind.go`
+locators: `internal/corpuscluster/corpuscluster_cluster.go:42:tokenize`, `internal/corpuscluster/corpuscluster_cluster.go:66:norm`, `internal/corpuscluster/corpuscluster_cluster.go:74:cosineSimilarity`, `internal/corpuscluster/corpuscluster_cluster.go:94:BuildTFIDF`, `internal/corpuscluster/corpuscluster_cluster.go:147:BuildClusters`, `internal/corpuscluster/corpuscluster_cluster.go:204:pairKeyOf`, `internal/corpuscluster/corpuscluster_unionfind.go:13:newClusterUnionFind`, `internal/corpuscluster/corpuscluster_unionfind.go:17:find`, `internal/corpuscluster/corpuscluster_unionfind.go:31:union`, `internal/corpuscluster/corpuscluster_unionfind.go:43:clusterIDOf`
+
+## internal/corpuscuration — artifacts=12, prod_go=7, symbols=21
+paths: `internal/corpuscuration/corpuscuration_adjudication_contract.go`, `internal/corpuscuration/corpuscuration_domain.go`, `internal/corpuscuration/corpuscuration_external_import.go`, `internal/corpuscuration/corpuscuration_gaps.go`, `internal/corpuscuration/corpuscuration_identity_preflight.go`, `internal/corpuscuration/corpuscuration_output_contract.go`, `internal/corpuscuration/corpuscuration_store.go`
+locators: `internal/corpuscuration/corpuscuration_adjudication_contract.go:64:Error`, `internal/corpuscuration/corpuscuration_adjudication_contract.go:107:ValidateAdjudicationOutputContract`, `internal/corpuscuration/corpuscuration_domain.go:41:Valid`, `internal/corpuscuration/corpuscuration_external_import.go:39:ValidateExternalResultBatch`, `internal/corpuscuration/corpuscuration_gaps.go:59:BuildDepartmentKnowledgeProfile`, `internal/corpuscuration/corpuscuration_identity_preflight.go:39:normalizeTitleForIdentity`, `internal/corpuscuration/corpuscuration_identity_preflight.go:92:CollapseDuplicateWorksInCluster`, `internal/corpuscuration/corpuscuration_identity_preflight.go:116:CollapseDuplicateWorksInClusterWithIdentifiers`, `internal/corpuscuration/corpuscuration_identity_preflight.go:181:pickCanonical`, `internal/corpuscuration/corpuscuration_identity_preflight.go:195:isBetterCanonical`, `internal/corpuscuration/corpuscuration_identity_preflight.go:207:mergeIdentifiers`, `internal/corpuscuration/corpuscuration_identity_preflight.go:228:sortedKeys`, `internal/corpuscuration/corpuscuration_output_contract.go:92:Error`, `internal/corpuscuration/corpuscuration_output_contract.go:138:ValidateCurationOutputContract`, `internal/corpuscuration/corpuscuration_store.go:18:InputHashOf`, `internal/corpuscuration/corpuscuration_store.go:43:recordKey`, `internal/corpuscuration/corpuscuration_store.go:45:OpenStore`, `internal/corpuscuration/corpuscuration_store.go:78:Valid`, `internal/corpuscuration/corpuscuration_store.go:93:Put`, `internal/corpuscuration/corpuscuration_store.go:97:All`, `internal/corpuscuration/corpuscuration_store.go:105:Flush`
+
+## internal/corpusenrich — artifacts=6, prod_go=4, symbols=13
+paths: `internal/corpusenrich/corpusenrich_client.go`, `internal/corpusenrich/corpusenrich_domain.go`, `internal/corpusenrich/corpusenrich_orchestrator.go`, `internal/corpusenrich/corpusenrich_store.go`
+locators: `internal/corpusenrich/corpusenrich_client.go:24:NewClient`, `internal/corpusenrich/corpusenrich_client.go:52:FetchBatch`, `internal/corpusenrich/corpusenrich_client.go:114:boundedPreview`, `internal/corpusenrich/corpusenrich_domain.go:30:HasAbstract`, `internal/corpusenrich/corpusenrich_orchestrator.go:23:DefaultOrchestratorConfig`, `internal/corpusenrich/corpusenrich_orchestrator.go:55:Run`, `internal/corpusenrich/corpusenrich_orchestrator.go:123:fetchWithBackoff`, `internal/corpusenrich/corpusenrich_store.go:22:OpenStore`, `internal/corpusenrich/corpusenrich_store.go:48:Has`, `internal/corpusenrich/corpusenrich_store.go:53:Put`, `internal/corpusenrich/corpusenrich_store.go:55:All`, `internal/corpusenrich/corpusenrich_store.go:63:Len`, `internal/corpusenrich/corpusenrich_store.go:65:Flush`
+
+## internal/corpussemantic — artifacts=7, prod_go=5, symbols=16
+paths: `internal/corpussemantic/corpussemantic_cluster.go`, `internal/corpussemantic/corpussemantic_domain.go`, `internal/corpussemantic/corpussemantic_embed.go`, `internal/corpussemantic/corpussemantic_hash.go`, `internal/corpussemantic/corpussemantic_store.go`
+locators: `internal/corpussemantic/corpussemantic_cluster.go:20:dot`, `internal/corpussemantic/corpussemantic_cluster.go:28:norm2`, `internal/corpussemantic/corpussemantic_cluster.go:36:cosineSimilarityMatrix`, `internal/corpussemantic/corpussemantic_cluster.go:60:sqrtApprox`, `internal/corpussemantic/corpussemantic_cluster.go:78:AverageLinkCluster`, `internal/corpussemantic/corpussemantic_cluster.go:202:intraClusterSimilarity`, `internal/corpussemantic/corpussemantic_cluster.go:222:centroidSimilarity`, `internal/corpussemantic/corpussemantic_cluster.go:259:clusterIDOf`, `internal/corpussemantic/corpussemantic_embed.go:33:DefaultEmbedConfig`, `internal/corpussemantic/corpussemantic_embed.go:51:Run`, `internal/corpussemantic/corpussemantic_hash.go:9:hashStrings`, `internal/corpussemantic/corpussemantic_store.go:15:OpenStore`, `internal/corpussemantic/corpussemantic_store.go:44:Valid`, `internal/corpussemantic/corpussemantic_store.go:52:Put`, `internal/corpussemantic/corpussemantic_store.go:54:All`, `internal/corpussemantic/corpussemantic_store.go:62:Flush`
+
+## internal/costledger — artifacts=7, prod_go=6, symbols=21
+paths: `internal/costledger/doc.go`, `internal/costledger/errors.go`, `internal/costledger/ports.go`, `internal/costledger/postgres/embeddings.go`, `internal/costledger/postgres/store.go`, `internal/costledger/types.go`
+locators: `internal/costledger/postgres/embeddings.go:15:CreateEmbeddingInvocation`, `internal/costledger/postgres/embeddings.go:47:ReserveEmbedding`, `internal/costledger/postgres/embeddings.go:94:ReconcileEmbedding`, `internal/costledger/postgres/embeddings.go:142:ReleaseEmbedding`, `internal/costledger/postgres/store.go:23:isUniqueViolation`, `internal/costledger/postgres/store.go:32:New`, `internal/costledger/postgres/store.go:42:ListCallBreakdowns`, `internal/costledger/postgres/store.go:140:ListEvents`, `internal/costledger/postgres/store.go:154:ListOrphanedReservations`, `internal/costledger/postgres/store.go:175:scanWalletEvents`, `internal/costledger/postgres/store.go:193:GetWallet`, `internal/costledger/postgres/store.go:210:SetBalance`, `internal/costledger/postgres/store.go:235:Reserve`, `internal/costledger/postgres/store.go:286:Reconcile`, `internal/costledger/postgres/store.go:334:Release`, `internal/costledger/postgres/store.go:383:MarkPendingReconciliation`, `internal/costledger/postgres/store.go:430:RecordSubscriptionConsumption`, `internal/costledger/postgres/store.go:446:lockWalletAndReservation`, `internal/costledger/types.go:19:Available`, `internal/costledger/types.go:29:Valid`, `internal/costledger/types.go:67:Valid`
+
+## internal/costledgerfixtures — artifacts=4, prod_go=2, symbols=0
+paths: `internal/costledgerfixtures/activate.go`, `internal/costledgerfixtures/runner.go`
+
+## internal/dataclassifier — artifacts=2, prod_go=1, symbols=3
+paths: `internal/dataclassifier/detect.go`
+locators: `internal/dataclassifier/detect.go:26:Any`, `internal/dataclassifier/detect.go:55:joinAlternatives`, `internal/dataclassifier/detect.go:69:Detect`
+
+## internal/decisiongraph — artifacts=15, prod_go=12, symbols=71
+paths: `internal/decisiongraph/budget.go`, `internal/decisiongraph/decision.go`, `internal/decisiongraph/doc.go`, `internal/decisiongraph/errors.go`, `internal/decisiongraph/graph.go`, `internal/decisiongraph/hashing.go`, `internal/decisiongraph/ports.go`, `internal/decisiongraph/postgres/store.go`, `internal/decisiongraph/records.go`, `internal/decisiongraph/service.go`, `internal/decisiongraph/transitions.go`, `internal/decisiongraph/types.go`
+locators: `internal/decisiongraph/budget.go:40:Error`, `internal/decisiongraph/budget.go:44:Unwrap`, `internal/decisiongraph/budget.go:46:Validate`, `internal/decisiongraph/budget.go:59:Validate`, `internal/decisiongraph/budget.go:72:Reserve`, `internal/decisiongraph/budget.go:120:safeAdd`, `internal/decisiongraph/decision.go:13:Validate`, `internal/decisiongraph/decision.go:34:validateTypedReferences`, `internal/decisiongraph/graph.go:13:NewGraph`, `internal/decisiongraph/graph.go:54:Nodes`, `internal/decisiongraph/graph.go:63:Edges`, `internal/decisiongraph/graph.go:80:ReadyNodeIDs`, `internal/decisiongraph/graph.go:123:Depths`, `internal/decisiongraph/graph.go:184:hasDependencyCycle`, `internal/decisiongraph/hashing.go:22:CanonicalHash`, `internal/decisiongraph/ports.go:29:Now`, `internal/decisiongraph/postgres/store.go:26:New`, `internal/decisiongraph/postgres/store.go:36:CreateRun`, `internal/decisiongraph/postgres/store.go:109:AppendGraph`, `internal/decisiongraph/postgres/store.go:240:StartRun`, `internal/decisiongraph/postgres/store.go:268:TransitionBranch`, `internal/decisiongraph/postgres/store.go:330:ClaimReadyNode`, `internal/decisiongraph/postgres/store.go:468:FinishExecution`, `internal/decisiongraph/postgres/store.go:617:RecordObservation`, `internal/decisiongraph/postgres/store.go:656:RecordVerification`, `internal/decisiongraph/postgres/store.go:772:RecordTerminalDecision`, `internal/decisiongraph/postgres/store.go:948:CloseUnselectedRun`, `internal/decisiongraph/postgres/store.go:1022:RecoverExpiredExecutions`, `internal/decisiongraph/postgres/store.go:1182:TraceRef`, `internal/decisiongraph/postgres/store.go:1250:scanRun`, `internal/decisiongraph/postgres/store.go:1271:loadRunByIdempotency`, `internal/decisiongraph/postgres/store.go:1309:sameCreateRequest`, `internal/decisiongraph/postgres/store.go:1320:nullableTerminalTime`, `internal/decisiongraph/postgres/store.go:1329:newClaimToken`, `internal/decisiongraph/postgres/store.go:1338:claimDigest`, `internal/decisiongraph/postgres/store.go:1343:elapsedMilliseconds`, `internal/decisiongraph/postgres/store.go:1355:eventDigest`, `internal/decisiongraph/postgres/store.go:1364:mapNotFound`, `internal/decisiongraph/records.go:38:Validate`, `internal/decisiongraph/records.go:92:Validate`
+additional_symbol_count: 31
+
+## internal/decisiongraphfixtures — artifacts=4, prod_go=3, symbols=0
+paths: `internal/decisiongraphfixtures/activate.go`, `internal/decisiongraphfixtures/runner.go`, `internal/decisiongraphfixtures/scenario.go`
+
+## internal/decisiongraphtrace — artifacts=6, prod_go=4, symbols=8
+paths: `internal/decisiongraphtrace/doc.go`, `internal/decisiongraphtrace/errors.go`, `internal/decisiongraphtrace/store.go`, `internal/decisiongraphtrace/types.go`
+locators: `internal/decisiongraphtrace/store.go:28:New`, `internal/decisiongraphtrace/store.go:46:TraceRefForRun`, `internal/decisiongraphtrace/store.go:73:RunSummary`, `internal/decisiongraphtrace/store.go:98:LoadTrace`, `internal/decisiongraphtrace/store.go:115:loadTrace`, `internal/decisiongraphtrace/store.go:189:loadNodes`, `internal/decisiongraphtrace/store.go:215:loadEdges`, `internal/decisiongraphtrace/store.go:251:loadDecision`
+
+## internal/embeddingruntime — artifacts=19, prod_go=15, symbols=54
+paths: `internal/embeddingruntime/adapter/bgem3/adapter.go`, `internal/embeddingruntime/adapter/bgem3/config.go`, `internal/embeddingruntime/adapter/bgem3/errors.go`, `internal/embeddingruntime/adapter/bgem3/health.go`, `internal/embeddingruntime/adapter/bgem3/metrics.go`, `internal/embeddingruntime/adapter/bgem3/wire.go`, `internal/embeddingruntime/adapter/gemini/adapter.go`, `internal/embeddingruntime/adapter/gemini/batch.go`, `internal/embeddingruntime/adapter/gemini/breaker.go`, `internal/embeddingruntime/adapter/gemini/config.go`, `internal/embeddingruntime/adapter/gemini/errors.go`, `internal/embeddingruntime/adapter/gemini/online.go`, `internal/embeddingruntime/adapter/gemini/prompt.go`, `internal/embeddingruntime/errors.go`, `internal/embeddingruntime/port.go`
+locators: `internal/embeddingruntime/adapter/bgem3/adapter.go:42:New`, `internal/embeddingruntime/adapter/bgem3/adapter.go:46:newAdapter`, `internal/embeddingruntime/adapter/bgem3/adapter.go:76:Metrics`, `internal/embeddingruntime/adapter/bgem3/adapter.go:89:Embed`, `internal/embeddingruntime/adapter/bgem3/adapter.go:178:acquire`, `internal/embeddingruntime/adapter/bgem3/adapter.go:187:release`, `internal/embeddingruntime/adapter/bgem3/adapter.go:192:doJSON`, `internal/embeddingruntime/adapter/bgem3/adapter.go:236:validateVector`, `internal/embeddingruntime/adapter/bgem3/adapter.go:253:inputHash`, `internal/embeddingruntime/adapter/bgem3/adapter.go:258:requestIdempotencyKey`, `internal/embeddingruntime/adapter/bgem3/adapter.go:266:boundedPreview`, `internal/embeddingruntime/adapter/bgem3/config.go:105:LoadConfig`, `internal/embeddingruntime/adapter/bgem3/config.go:157:Validate`, `internal/embeddingruntime/adapter/bgem3/config.go:210:validateLoopbackURL`, `internal/embeddingruntime/adapter/bgem3/config.go:238:isLoopbackHost`, `internal/embeddingruntime/adapter/bgem3/config.go:246:defaultHTTPClient`, `internal/embeddingruntime/adapter/bgem3/config.go:267:envBool`, `internal/embeddingruntime/adapter/bgem3/config.go:279:envInt`, `internal/embeddingruntime/adapter/bgem3/config.go:291:envDuration`, `internal/embeddingruntime/adapter/bgem3/health.go:35:Healthy`, `internal/embeddingruntime/adapter/bgem3/metrics.go:30:recordCall`, `internal/embeddingruntime/adapter/bgem3/metrics.go:39:recordQueueRejection`, `internal/embeddingruntime/adapter/bgem3/metrics.go:43:Snapshot`, `internal/embeddingruntime/adapter/bgem3/wire.go:82:Ready`, `internal/embeddingruntime/adapter/gemini/adapter.go:35:New`, `internal/embeddingruntime/adapter/gemini/adapter.go:39:newAdapter`, `internal/embeddingruntime/adapter/gemini/adapter.go:75:token`, `internal/embeddingruntime/adapter/gemini/adapter.go:86:doJSON`, `internal/embeddingruntime/adapter/gemini/adapter.go:168:isTextTooLongError`, `internal/embeddingruntime/adapter/gemini/adapter.go:177:boundedPreview`, `internal/embeddingruntime/adapter/gemini/batch.go:87:mapJobState`, `internal/embeddingruntime/adapter/gemini/batch.go:115:CreateBatch`, `internal/embeddingruntime/adapter/gemini/batch.go:171:GetBatch`, `internal/embeddingruntime/adapter/gemini/batch.go:194:CancelBatch`, `internal/embeddingruntime/adapter/gemini/batch.go:202:ReadBatchResults`, `internal/embeddingruntime/adapter/gemini/breaker.go:19:newCircuitBreaker`, `internal/embeddingruntime/adapter/gemini/breaker.go:23:allow`, `internal/embeddingruntime/adapter/gemini/breaker.go:37:success`, `internal/embeddingruntime/adapter/gemini/breaker.go:44:failure`, `internal/embeddingruntime/adapter/gemini/config.go:51:LoadConfig`
+additional_symbol_count: 14
+
+## internal/endtoendfixtures — artifacts=6, prod_go=4, symbols=0
+paths: `internal/endtoendfixtures/activate.go`, `internal/endtoendfixtures/research.go`, `internal/endtoendfixtures/runner.go`, `internal/endtoendfixtures/support.go`
+
+## internal/evaluation — artifacts=16, prod_go=12, symbols=40
+paths: `internal/evaluation/comparison.go`, `internal/evaluation/doc.go`, `internal/evaluation/errors.go`, `internal/evaluation/fake.go`, `internal/evaluation/fixtures/catalog.go`, `internal/evaluation/fixtures/fixture.go`, `internal/evaluation/fixtures/runner.go`, `internal/evaluation/metrics/metrics.go`, `internal/evaluation/ports.go`, `internal/evaluation/postgres/store.go`, `internal/evaluation/service.go`, `internal/evaluation/types.go`
+locators: `internal/evaluation/comparison.go:31:CompareResults`, `internal/evaluation/comparison.go:93:overallVerdict`, `internal/evaluation/comparison.go:121:Validate`, `internal/evaluation/comparison.go:144:CompareSuite`, `internal/evaluation/comparison.go:202:worseVerdict`, `internal/evaluation/fake.go:18:NewFakeTraceSource`, `internal/evaluation/fake.go:25:Seed`, `internal/evaluation/fake.go:32:cloneBytes`, `internal/evaluation/fake.go:42:SetError`, `internal/evaluation/fake.go:48:LoadTrace`, `internal/evaluation/fake.go:74:NewFakeEvaluator`, `internal/evaluation/fake.go:76:SetScoreFunc`, `internal/evaluation/fake.go:82:Evaluate`, `internal/evaluation/metrics/metrics.go:15:RecallAt`, `internal/evaluation/metrics/metrics.go:34:NDCGAt`, `internal/evaluation/metrics/metrics.go:65:ReciprocalRank`, `internal/evaluation/metrics/metrics.go:80:IdentifierPrecisionAt`, `internal/evaluation/metrics/metrics.go:100:NumericFalsePositiveRate`, `internal/evaluation/ports.go:27:Now`, `internal/evaluation/postgres/store.go:29:New`, `internal/evaluation/postgres/store.go:55:CreateRun`, `internal/evaluation/postgres/store.go:77:CompleteRun`, `internal/evaluation/postgres/store.go:91:RecordOutcome`, `internal/evaluation/postgres/store.go:122:GetRun`, `internal/evaluation/postgres/store.go:138:ListOutcomes`, `internal/evaluation/service.go:18:NewService`, `internal/evaluation/service.go:36:EvaluateCase`, `internal/evaluation/service.go:77:EvaluateSuite`, `internal/evaluation/service.go:94:RunComparison`, `internal/evaluation/types.go:21:Validate`, `internal/evaluation/types.go:46:ContentHash`, `internal/evaluation/types.go:51:Validate`, `internal/evaluation/types.go:77:Validate`, `internal/evaluation/types.go:102:Validate`, `internal/evaluation/types.go:128:caseByID`, `internal/evaluation/types.go:146:Valid`, `internal/evaluation/types.go:167:Validate`, `internal/evaluation/types.go:203:Validate`, `internal/evaluation/types.go:222:Valid`, `internal/evaluation/types.go:242:Validate`
+
+## internal/evaluationdb — artifacts=2, prod_go=1, symbols=1
+paths: `internal/evaluationdb/safety.go`
+locators: `internal/evaluationdb/safety.go:19:RequireDisposable`
+
+## internal/executive — artifacts=59, prod_go=39, symbols=192
+paths: `internal/executive/bootstrap/runtime.go`, `internal/executive/budget.go`, `internal/executive/doc.go`, `internal/executive/errors.go`, `internal/executive/orchestrator.go`, `internal/executive/parser.go`, `internal/executive/ports.go`, `internal/executive/postrun/doc.go`, `internal/executive/postrun/ports.go`, `internal/executive/postrun/service.go`, `internal/executive/postrun/tasksadapter.go`, `internal/executive/postrun/types.go`, `internal/executive/projector.go`, `internal/executive/recovery.go`, `internal/executive/runtimeadapter/agentbudgets.go`, `internal/executive/runtimeadapter/agentmessages.go`, `internal/executive/runtimeadapter/budget_models.go`, `internal/executive/runtimeadapter/context.go`, `internal/executive/runtimeadapter/dag_tasks.go`, `internal/executive/runtimeadapter/decisions.go`, `internal/executive/runtimeadapter/evidence_tasks.go`, `internal/executive/runtimeadapter/models.go`, `internal/executive/runtimeadapter/registry.go`, `internal/executive/runtimeadapter/roots.go`, `internal/executive/runtimeadapter/tasks.go`, `internal/executive/schemas.go`, `internal/executive/sleep/candidate.go`, `internal/executive/sleep/doc.go`, `internal/executive/sleep/grouping.go`, `internal/executive/sleep/ports.go`, `internal/executive/sleep/postgres.go`, `internal/executive/sleep/service.go`, `internal/executive/sleep/types.go`, `internal/executive/smoke/hardening.go`, `internal/executive/smoke/smoke.go`, `internal/executive/types.go`, `internal/executive/validator.go`, `internal/executive/worker.go`, `internal/executive/worker_result.go`
+locators: `internal/executive/bootstrap/runtime.go:34:Open`, `internal/executive/budget.go:12:Total`, `internal/executive/budget.go:13:NormalExpectedCalls`, `internal/executive/budget.go:19:Validate`, `internal/executive/orchestrator.go:45:WithAgentBudgets`, `internal/executive/orchestrator.go:52:WithAgentMessaging`, `internal/executive/orchestrator.go:56:NewOrchestrator`, `internal/executive/orchestrator.go:77:Submit`, `internal/executive/orchestrator.go:142:Status`, `internal/executive/orchestrator.go:165:Resume`, `internal/executive/orchestrator.go:311:createCEOPlanTask`, `internal/executive/orchestrator.go:329:createLeaderPlanTask`, `internal/executive/orchestrator.go:355:attachChildCoordination`, `internal/executive/orchestrator.go:391:driveInProgress`, `internal/executive/orchestrator.go:396:driveDepartments`, `internal/executive/orchestrator.go:543:materializeWorkerTasks`, `internal/executive/orchestrator.go:569:appendResultRequirement`, `internal/executive/orchestrator.go:579:createReviewTask`, `internal/executive/orchestrator.go:595:createClosureTask`, `internal/executive/orchestrator.go:607:driveTypedTask`, `internal/executive/orchestrator.go:729:gatedComplete`, `internal/executive/orchestrator.go:778:ReconcileGatedCompletions`, `internal/executive/orchestrator.go:811:completeRoot`, `internal/executive/orchestrator.go:836:validateRunCompletionEvidence`, `internal/executive/orchestrator.go:861:resultForCompletedTask`, `internal/executive/orchestrator.go:877:handlePhaseError`, `internal/executive/orchestrator.go:895:blockRoot`, `internal/executive/orchestrator.go:903:anyProvisionedLeasedTask`, `internal/executive/orchestrator.go:919:localLease`, `internal/executive/orchestrator.go:925:rememberLease`, `internal/executive/orchestrator.go:930:forgetLease`, `internal/executive/orchestrator.go:936:correlationID`, `internal/executive/orchestrator.go:941:childKey`, `internal/executive/orchestrator.go:944:taskCausation`, `internal/executive/orchestrator.go:945:attemptCausation`, `internal/executive/orchestrator.go:948:withoutRoot`, `internal/executive/orchestrator.go:957:findTaskByMarker`, `internal/executive/orchestrator.go:965:findTaskByKey`, `internal/executive/orchestrator.go:973:isTerminalTask`, `internal/executive/orchestrator.go:981:latestFinishedAttemptID`
+additional_symbol_count: 152
+
+## internal/identifiers — artifacts=2, prod_go=1, symbols=1
+paths: `internal/identifiers/identifiers.go`
+locators: `internal/identifiers/identifiers.go:28:ExtractDigitRuns`
+
+## internal/improvement — artifacts=11, prod_go=9, symbols=41
+paths: `internal/improvement/doc.go`, `internal/improvement/errors.go`, `internal/improvement/fake.go`, `internal/improvement/hashing.go`, `internal/improvement/ports.go`, `internal/improvement/postgres/store.go`, `internal/improvement/service.go`, `internal/improvement/transitions.go`, `internal/improvement/types.go`
+locators: `internal/improvement/fake.go:16:NewFakeApprovalGate`, `internal/improvement/fake.go:18:SetDecide`, `internal/improvement/fake.go:24:AuthorizePromotion`, `internal/improvement/fake.go:49:NewFakeClock`, `internal/improvement/fake.go:51:Set`, `internal/improvement/fake.go:57:Now`, `internal/improvement/hashing.go:18:CanonicalHash`, `internal/improvement/ports.go:47:Now`, `internal/improvement/postgres/store.go:28:New`, `internal/improvement/postgres/store.go:41:ProposeCandidate`, `internal/improvement/postgres/store.go:74:GetCandidate`, `internal/improvement/postgres/store.go:97:SaveCandidate`, `internal/improvement/postgres/store.go:134:RecordPromotionDecision`, `internal/improvement/postgres/store.go:175:scanCandidate`, `internal/improvement/postgres/store.go:216:stringOrEmpty`, `internal/improvement/postgres/store.go:223:nullableString`, `internal/improvement/postgres/store.go:230:isUniqueViolation`, `internal/improvement/service.go:19:NewService`, `internal/improvement/service.go:30:ProposeCandidate`, `internal/improvement/service.go:60:transition`, `internal/improvement/service.go:78:ValidateCandidate`, `internal/improvement/service.go:83:BeginEvaluation`, `internal/improvement/service.go:90:RecordEvaluationVerdict`, `internal/improvement/service.go:110:requestPromotion`, `internal/improvement/service.go:155:PromoteToCanary`, `internal/improvement/service.go:160:PromoteToActive`, `internal/improvement/service.go:166:Deprecate`, `internal/improvement/service.go:172:RollBack`, `internal/improvement/transitions.go:35:ValidateCandidateTransition`, `internal/improvement/types.go:19:Validate`, `internal/improvement/types.go:40:Validate`, `internal/improvement/types.go:50:IsRoot`, `internal/improvement/types.go:69:Valid`, `internal/improvement/types.go:81:Terminal`, `internal/improvement/types.go:100:Validate`, `internal/improvement/types.go:126:Validate`, `internal/improvement/types.go:168:Valid`, `internal/improvement/types.go:179:expectedTransition`, `internal/improvement/types.go:207:Validate`, `internal/improvement/types.go:244:Valid`
+additional_symbol_count: 1
+
+## internal/logicir — artifacts=2, prod_go=1, symbols=7
+paths: `internal/logicir/logicir.go`
+locators: `internal/logicir/logicir.go:66:validate`, `internal/logicir/logicir.go:93:validate`, `internal/logicir/logicir.go:123:Validate`, `internal/logicir/logicir.go:164:DefaultLimits`, `internal/logicir/logicir.go:168:Validate`, `internal/logicir/logicir.go:199:Validate`, `internal/logicir/logicir.go:234:NewDivergence`
+
+## internal/memory — artifacts=25, prod_go=17, symbols=74
+paths: `internal/memory/authz/gate.go`, `internal/memory/bootstrap/bootstrap.go`, `internal/memory/contextprovider/provider.go`, `internal/memory/doc.go`, `internal/memory/errors.go`, `internal/memory/hashing.go`, `internal/memory/manager.go`, `internal/memory/ports.go`, `internal/memory/postgres/backfill.go`, `internal/memory/postgres/embeddings.go`, `internal/memory/postgres/embeddings_bge_m3.go`, `internal/memory/postgres/search.go`, `internal/memory/postgres/store.go`, `internal/memory/semantic.go`, `internal/memory/service.go`, `internal/memory/transitions.go`, `internal/memory/types.go`
+locators: `internal/memory/authz/gate.go:28:New`, `internal/memory/authz/gate.go:42:Authorize`, `internal/memory/bootstrap/bootstrap.go:52:activeEmbeddingProfile`, `internal/memory/bootstrap/bootstrap.go:73:Open`, `internal/memory/bootstrap/bootstrap.go:118:openSemanticSearch`, `internal/memory/bootstrap/bootstrap.go:131:sharedSpendControls`, `internal/memory/bootstrap/bootstrap.go:151:openGeminiSemanticSearch`, `internal/memory/bootstrap/bootstrap.go:191:openBGEM3SemanticSearch`, `internal/memory/contextprovider/provider.go:23:New`, `internal/memory/contextprovider/provider.go:48:ListApproved`, `internal/memory/contextprovider/provider.go:98:ValidateVersion`, `internal/memory/contextprovider/provider.go:136:sourceRecord`, `internal/memory/contextprovider/provider.go:167:mapDataClass`, `internal/memory/hashing.go:16:CanonicalHash`, `internal/memory/manager.go:44:NewManager`, `internal/memory/manager.go:78:Propose`, `internal/memory/manager.go:103:Review`, `internal/memory/manager.go:133:Deprecate`, `internal/memory/manager.go:148:Archive`, `internal/memory/manager.go:165:Get`, `internal/memory/manager.go:200:List`, `internal/memory/manager.go:222:GetForRevalidation`, `internal/memory/manager.go:272:Search`, `internal/memory/manager.go:337:backfillDigest`, `internal/memory/manager.go:353:BackfillEmbeddings`, `internal/memory/manager.go:438:ListApproved`, `internal/memory/manager.go:451:loadMutationTarget`, `internal/memory/manager.go:471:authorizeMutation`, `internal/memory/manager.go:486:mutationDigest`, `internal/memory/ports.go:115:Validate`, `internal/memory/postgres/backfill.go:22:PendingEntryEmbeddings`, `internal/memory/postgres/embeddings.go:23:encodeVector`, `internal/memory/postgres/embeddings.go:39:InsertEntryEmbedding`, `internal/memory/postgres/embeddings.go:70:NearestEntries`, `internal/memory/postgres/embeddings_bge_m3.go:19:encodeVectorBGEM3`, `internal/memory/postgres/embeddings_bge_m3.go:35:InsertBGEM3EntryEmbedding`, `internal/memory/postgres/embeddings_bge_m3.go:68:NearestBGEM3Entries`, `internal/memory/postgres/search.go:23:vectorChannelClause`, `internal/memory/postgres/search.go:63:rrfCandidatePoolSize`, `internal/memory/postgres/search.go:81:Search`
+additional_symbol_count: 34
+
+## internal/modeldispatch — artifacts=20, prod_go=15, symbols=53
+paths: `internal/modeldispatch/assignment_service.go`, `internal/modeldispatch/bootstrap/runtime.go`, `internal/modeldispatch/config.go`, `internal/modeldispatch/domain.go`, `internal/modeldispatch/errors.go`, `internal/modeldispatch/events.go`, `internal/modeldispatch/hashing.go`, `internal/modeldispatch/interfaces.go`, `internal/modeldispatch/postgres/assignments.go`, `internal/modeldispatch/postgres/errors.go`, `internal/modeldispatch/postgres/principals.go`, `internal/modeldispatch/postgres/scans.go`, `internal/modeldispatch/postgres/store.go`, `internal/modeldispatch/principal_service.go`, `internal/modeldispatch/validation.go`
+locators: `internal/modeldispatch/assignment_service.go:22:NewAssignmentService`, `internal/modeldispatch/assignment_service.go:35:Create`, `internal/modeldispatch/assignment_service.go:103:Get`, `internal/modeldispatch/assignment_service.go:110:List`, `internal/modeldispatch/assignment_service.go:123:Revoke`, `internal/modeldispatch/assignment_service.go:139:Expire`, `internal/modeldispatch/bootstrap/runtime.go:25:Open`, `internal/modeldispatch/bootstrap/runtime.go:60:CurrentRevision`, `internal/modeldispatch/bootstrap/runtime.go:71:GetRole`, `internal/modeldispatch/bootstrap/runtime.go:81:GetTaskAttempt`, `internal/modeldispatch/config.go:25:LoadDispatchConfig`, `internal/modeldispatch/config.go:46:Validate`, `internal/modeldispatch/config.go:62:envInt`, `internal/modeldispatch/config.go:74:envDuration`, `internal/modeldispatch/domain.go:28:Terminal`, `internal/modeldispatch/hashing.go:10:sha256Hex`, `internal/modeldispatch/hashing.go:15:formatTime`, `internal/modeldispatch/hashing.go:17:PrincipalRequestHash`, `internal/modeldispatch/hashing.go:31:AssignmentRequestHash`, `internal/modeldispatch/hashing.go:55:AssignmentScopeHash`, `internal/modeldispatch/hashing.go:74:UsageHash`, `internal/modeldispatch/interfaces.go:11:Now`, `internal/modeldispatch/postgres/assignments.go:14:insertAssignmentAudit`, `internal/modeldispatch/postgres/assignments.go:39:CreateAssignment`, `internal/modeldispatch/postgres/assignments.go:76:GetAssignment`, `internal/modeldispatch/postgres/assignments.go:80:ListAssignments`, `internal/modeldispatch/postgres/assignments.go:97:RevokeAssignment`, `internal/modeldispatch/postgres/assignments.go:125:ExpireAssignments`, `internal/modeldispatch/postgres/assignments.go:167:ResolveActive`, `internal/modeldispatch/postgres/assignments.go:179:GetByID`, `internal/modeldispatch/postgres/assignments.go:187:withPrincipal`, `internal/modeldispatch/postgres/errors.go:14:mapError`, `internal/modeldispatch/postgres/principals.go:13:insertPrincipalAudit`, `internal/modeldispatch/postgres/principals.go:32:RegisterPrincipal`, `internal/modeldispatch/postgres/principals.go:67:GetPrincipal`, `internal/modeldispatch/postgres/principals.go:71:ListPrincipals`, `internal/modeldispatch/postgres/principals.go:88:DisablePrincipal`, `internal/modeldispatch/postgres/principals.go:112:ResolveByKey`, `internal/modeldispatch/postgres/principals.go:134:ResolveActiveForRole`, `internal/modeldispatch/postgres/scans.go:11:scanPrincipal`
+additional_symbol_count: 13
+
+## internal/modelegress — artifacts=18, prod_go=12, symbols=48
+paths: `internal/modelegress/bootstrap/runtime.go`, `internal/modelegress/canonical_policy.go`, `internal/modelegress/domain.go`, `internal/modelegress/errors.go`, `internal/modelegress/evaluator.go`, `internal/modelegress/events.go`, `internal/modelegress/executive_scope.go`, `internal/modelegress/hashing.go`, `internal/modelegress/interfaces.go`, `internal/modelegress/postgres/store.go`, `internal/modelegress/service.go`, `internal/modelegress/validation.go`
+locators: `internal/modelegress/bootstrap/runtime.go:22:Open`, `internal/modelegress/bootstrap/runtime.go:43:CurrentOrganization`, `internal/modelegress/bootstrap/runtime.go:60:ProviderIDs`, `internal/modelegress/canonical_policy.go:52:ProductiveLoadOptions`, `internal/modelegress/canonical_policy.go:77:LoadCanonicalPolicy`, `internal/modelegress/canonical_policy.go:117:decodeStrictPolicyYAML`, `internal/modelegress/canonical_policy.go:151:validatePolicyYAMLNode`, `internal/modelegress/canonical_policy.go:195:policyRulesToDomain`, `internal/modelegress/canonical_policy.go:203:normalizePolicyDocument`, `internal/modelegress/canonical_policy.go:228:validatePolicyDocument`, `internal/modelegress/canonical_policy.go:298:productiveAllowApproved`, `internal/modelegress/canonical_policy.go:311:validDeclaredClassification`, `internal/modelegress/canonical_policy.go:320:validReasonCode`, `internal/modelegress/evaluator.go:10:NewEvaluator`, `internal/modelegress/evaluator.go:12:Evaluate`, `internal/modelegress/evaluator.go:92:validRuntimeClassification`, `internal/modelegress/executive_scope.go:14:ExecutiveScopeMarker`, `internal/modelegress/executive_scope.go:39:scopedDepartmentRole`, `internal/modelegress/executive_scope.go:47:scopeRequired`, `internal/modelegress/executive_scope.go:61:scopeAllows`, `internal/modelegress/executive_scope.go:82:scopeVerifiedReason`, `internal/modelegress/executive_scope.go:99:ValidateExecutiveScope`, `internal/modelegress/hashing.go:12:SHA256Bytes`, `internal/modelegress/hashing.go:17:InvocationActionDigest`, `internal/modelegress/hashing.go:34:NormalizeClassifications`, `internal/modelegress/hashing.go:57:NormalizeReasonCodes`, `internal/modelegress/hashing.go:73:DecisionHash`, `internal/modelegress/postgres/store.go:24:expectedMaterializedRules`, `internal/modelegress/postgres/store.go:41:materializedRules`, `internal/modelegress/postgres/store.go:62:equalRules`, `internal/modelegress/postgres/store.go:74:New`, `internal/modelegress/postgres/store.go:81:mapError`, `internal/modelegress/postgres/store.go:124:RecordValidated`, `internal/modelegress/postgres/store.go:132:Status`, `internal/modelegress/postgres/store.go:172:Apply`, `internal/modelegress/postgres/store.go:309:ResolveForRevision`, `internal/modelegress/service.go:17:NewService`, `internal/modelegress/service.go:24:load`, `internal/modelegress/service.go:44:Validate`, `internal/modelegress/service.go:55:Diff`
+additional_symbol_count: 8
+
+## internal/modelidentity — artifacts=21, prod_go=17, symbols=59
+paths: `internal/modelidentity/bootstrap/runtime.go`, `internal/modelidentity/canonical_policy.go`, `internal/modelidentity/challenge_service.go`, `internal/modelidentity/crypto.go`, `internal/modelidentity/domain.go`, `internal/modelidentity/errors.go`, `internal/modelidentity/events.go`, `internal/modelidentity/hashing.go`, `internal/modelidentity/interfaces.go`, `internal/modelidentity/key_service.go`, `internal/modelidentity/policy_service.go`, `internal/modelidentity/postgres/audit.go`, `internal/modelidentity/postgres/challenges.go`, `internal/modelidentity/postgres/keys.go`, `internal/modelidentity/postgres/policy.go`, `internal/modelidentity/postgres/scans.go`, `internal/modelidentity/postgres/store.go`
+locators: `internal/modelidentity/bootstrap/runtime.go:25:Open`, `internal/modelidentity/bootstrap/runtime.go:63:CurrentRevision`, `internal/modelidentity/bootstrap/runtime.go:74:GetRole`, `internal/modelidentity/canonical_policy.go:39:LoadCanonicalPolicy`, `internal/modelidentity/canonical_policy.go:91:validateYAML`, `internal/modelidentity/canonical_policy.go:101:validateNode`, `internal/modelidentity/challenge_service.go:15:NewChallengeService`, `internal/modelidentity/challenge_service.go:25:ResolvePolicy`, `internal/modelidentity/challenge_service.go:29:ResolvePolicyByID`, `internal/modelidentity/challenge_service.go:33:ResolveActiveKeyByFingerprint`, `internal/modelidentity/challenge_service.go:37:Issue`, `internal/modelidentity/challenge_service.go:66:Verify`, `internal/modelidentity/crypto.go:12:DecodePublicKey`, `internal/modelidentity/crypto.go:23:NewNonce`, `internal/modelidentity/crypto.go:31:VerifyAssertion`, `internal/modelidentity/hashing.go:10:SHA256Bytes`, `internal/modelidentity/hashing.go:15:PublicKeyFingerprint`, `internal/modelidentity/hashing.go:17:KeyRequestHash`, `internal/modelidentity/hashing.go:32:BuildAssertionPayload`, `internal/modelidentity/hashing.go:54:canonicalAssertionTime`, `internal/modelidentity/hashing.go:61:AssertionHash`, `internal/modelidentity/hashing.go:69:formatOptionalTime`, `internal/modelidentity/interfaces.go:13:Now`, `internal/modelidentity/key_service.go:20:validOpaqueSecretRef`, `internal/modelidentity/key_service.go:36:validIdempotencyKey`, `internal/modelidentity/key_service.go:57:NewKeyService`, `internal/modelidentity/key_service.go:67:prepare`, `internal/modelidentity/key_service.go:120:Register`, `internal/modelidentity/key_service.go:128:Rotate`, `internal/modelidentity/key_service.go:136:Get`, `internal/modelidentity/key_service.go:143:List`, `internal/modelidentity/key_service.go:153:Retire`, `internal/modelidentity/key_service.go:168:Revoke`, `internal/modelidentity/policy_service.go:14:NewPolicyService`, `internal/modelidentity/policy_service.go:21:Validate`, `internal/modelidentity/policy_service.go:25:Status`, `internal/modelidentity/policy_service.go:33:Diff`, `internal/modelidentity/policy_service.go:35:Sync`, `internal/modelidentity/postgres/audit.go:11:insertAudit`, `internal/modelidentity/postgres/audit.go:20:subjectID`
+additional_symbol_count: 19
+
+## internal/modelpricing — artifacts=8, prod_go=6, symbols=14
+paths: `internal/modelpricing/doc.go`, `internal/modelpricing/errors.go`, `internal/modelpricing/ports.go`, `internal/modelpricing/postgres/store.go`, `internal/modelpricing/resolve.go`, `internal/modelpricing/types.go`
+locators: `internal/modelpricing/postgres/store.go:18:New`, `internal/modelpricing/postgres/store.go:27:ListTiers`, `internal/modelpricing/postgres/store.go:74:Upsert`, `internal/modelpricing/resolve.go:29:Resolve`, `internal/modelpricing/resolve.go:62:NewService`, `internal/modelpricing/resolve.go:69:Resolve`, `internal/modelpricing/resolve.go:77:Upsert`, `internal/modelpricing/types.go:33:Valid`, `internal/modelpricing/types.go:44:USD`, `internal/modelpricing/types.go:49:USDFromDollars`, `internal/modelpricing/types.go:53:String`, `internal/modelpricing/types.go:74:Validate`, `internal/modelpricing/types.go:107:EstimateCost`, `internal/modelpricing/types.go:144:scaleNanos`
+
+## internal/modelruntime — artifacts=84, prod_go=57, symbols=334
+paths: `internal/modelruntime/adapter/alibabaclaude/adapter.go`, `internal/modelruntime/adapter/alibabaclaude/config.go`, `internal/modelruntime/adapter/alibabaclaude/host_config.go`, `internal/modelruntime/adapter/alibabaclaude/preflight.go`, `internal/modelruntime/adapter/alibabaclaude/process_unix.go`, `internal/modelruntime/adapter/alibabaclaude/response.go`, `internal/modelruntime/adapter/alibabaclaude/settings.go`, `internal/modelruntime/adapter/deepseek/adapter.go`, `internal/modelruntime/adapter/deepseek/breaker.go`, `internal/modelruntime/adapter/deepseek/config.go`, `internal/modelruntime/adapter/fake.go`, `internal/modelruntime/adapter/gemini/adapter.go`, `internal/modelruntime/adapter/gemini/breaker.go`, `internal/modelruntime/adapter/gemini/config.go`, `internal/modelruntime/adapter/mimo/adapter.go`, `internal/modelruntime/adapter/mimo/breaker.go`, `internal/modelruntime/adapter/mimo/config.go`, `internal/modelruntime/adapter/openaicompat/adapter.go`, `internal/modelruntime/adapter/openaicompat/breaker.go`, `internal/modelruntime/adapter/openaicompat/config.go`, `internal/modelruntime/adapter/openairesponses/adapter.go`, `internal/modelruntime/adapter/openairesponses/breaker.go`, `internal/modelruntime/adapter/openairesponses/config.go`, `internal/modelruntime/adapter/registry.go`, `internal/modelruntime/bootstrap/coordinator.go`, `internal/modelruntime/bootstrap/runtime.go`, `internal/modelruntime/canonical_routing.go`, `internal/modelruntime/compiled_availability_r21.go`, `internal/modelruntime/config.go`, `internal/modelruntime/costgate.go`, `internal/modelruntime/costgate/gate.go`, `internal/modelruntime/dispatch_service.go`, `internal/modelruntime/domain.go`, `internal/modelruntime/errors.go`, `internal/modelruntime/events.go`, `internal/modelruntime/hashing.go`, `internal/modelruntime/interfaces.go`, `internal/modelruntime/invocation_service.go`, `internal/modelruntime/normalizer.go`, `internal/modelruntime/postgres/cancellation.go`, `internal/modelruntime/postgres/claims.go`, `internal/modelruntime/postgres/errors.go`, `internal/modelruntime/postgres/events.go`, `internal/modelruntime/postgres/invocations.go`, `internal/modelruntime/postgres/presend.go`, `internal/modelruntime/postgres/reconcile.go`, `internal/modelruntime/postgres/registry.go`, `internal/modelruntime/postgres/render_telemetry.go`, `internal/modelruntime/postgres/result_reader.go`, `internal/modelruntime/postgres/results.go`, `internal/modelruntime/postgres/scans.go`, `internal/modelruntime/postgres/store.go`, `internal/modelruntime/provider_adapter.go`, `internal/modelruntime/provider_request.go`, `internal/modelruntime/registry_service.go`, `internal/modelruntime/result_reader.go`, `internal/modelruntime/validation.go`
+locators: `internal/modelruntime/adapter/alibabaclaude/adapter.go:37:New`, `internal/modelruntime/adapter/alibabaclaude/adapter.go:39:newAdapter`, `internal/modelruntime/adapter/alibabaclaude/adapter.go:66:ProviderID`, `internal/modelruntime/adapter/alibabaclaude/adapter.go:67:Descriptor`, `internal/modelruntime/adapter/alibabaclaude/adapter.go:69:Preflight`, `internal/modelruntime/adapter/alibabaclaude/adapter.go:85:Dispatch`, `internal/modelruntime/adapter/alibabaclaude/adapter.go:156:arguments`, `internal/modelruntime/adapter/alibabaclaude/adapter.go:183:parseCLIResponse`, `internal/modelruntime/adapter/alibabaclaude/adapter.go:216:beforeRequest`, `internal/modelruntime/adapter/alibabaclaude/adapter.go:223:ambiguous`, `internal/modelruntime/adapter/alibabaclaude/adapter.go:232:effectiveTimeout`, `internal/modelruntime/adapter/alibabaclaude/adapter.go:243:validEffort`, `internal/modelruntime/adapter/alibabaclaude/adapter.go:252:classifyCLIError`, `internal/modelruntime/adapter/alibabaclaude/config.go:47:LoadConfig`, `internal/modelruntime/adapter/alibabaclaude/config.go:95:Validate`, `internal/modelruntime/adapter/alibabaclaude/config.go:142:validateRuntimePath`, `internal/modelruntime/adapter/alibabaclaude/config.go:156:validSHA256`, `internal/modelruntime/adapter/alibabaclaude/config.go:168:envBool`, `internal/modelruntime/adapter/alibabaclaude/config.go:180:envInt`, `internal/modelruntime/adapter/alibabaclaude/config.go:192:envDuration`, `internal/modelruntime/adapter/alibabaclaude/host_config.go:24:validateClaudeGlobalConfig`, `internal/modelruntime/adapter/alibabaclaude/preflight.go:20:validateInstallation`, `internal/modelruntime/adapter/alibabaclaude/preflight.go:78:validateWorkDir`, `internal/modelruntime/adapter/alibabaclaude/preflight.go:92:childEnvironment`, `internal/modelruntime/adapter/alibabaclaude/process_unix.go:35:newBoundedBuffer`, `internal/modelruntime/adapter/alibabaclaude/process_unix.go:46:Write`, `internal/modelruntime/adapter/alibabaclaude/process_unix.go:67:Bytes`, `internal/modelruntime/adapter/alibabaclaude/process_unix.go:73:Overflow`, `internal/modelruntime/adapter/alibabaclaude/process_unix.go:84:runCLI`, `internal/modelruntime/adapter/alibabaclaude/process_unix.go:132:stopProcessGroup`, `internal/modelruntime/adapter/alibabaclaude/process_unix.go:148:processExitCode`, `internal/modelruntime/adapter/alibabaclaude/response.go:10:UnmarshalJSON`, `internal/modelruntime/adapter/alibabaclaude/settings.go:39:validateSettingsFile`, `internal/modelruntime/adapter/alibabaclaude/settings.go:95:validOpaqueTokenJSON`, `internal/modelruntime/adapter/alibabaclaude/settings.go:108:validModelID`, `internal/modelruntime/adapter/deepseek/adapter.go:84:validateCacheTokens`, `internal/modelruntime/adapter/deepseek/adapter.go:130:requestTelemetry`, `internal/modelruntime/adapter/deepseek/adapter.go:139:withDuration`, `internal/modelruntime/adapter/deepseek/adapter.go:144:withResponseBytes`, `internal/modelruntime/adapter/deepseek/adapter.go:149:withFinishReason`
+additional_symbol_count: 294
+
+## internal/objectstorage — artifacts=8, prod_go=4, symbols=35
+paths: `internal/objectstorage/client.go`, `internal/objectstorage/config.go`, `internal/objectstorage/keys.go`, `internal/objectstorage/signer.go`
+locators: `internal/objectstorage/client.go:48:New`, `internal/objectstorage/client.go:75:ListObjects`, `internal/objectstorage/client.go:106:GetObject`, `internal/objectstorage/client.go:116:PutObject`, `internal/objectstorage/client.go:181:PutObjectIfAbsent`, `internal/objectstorage/client.go:201:reconcileExisting`, `internal/objectstorage/client.go:231:localSummary`, `internal/objectstorage/client.go:244:DeleteObject`, `internal/objectstorage/client.go:254:HeadObject`, `internal/objectstorage/client.go:269:objectsURL`, `internal/objectstorage/client.go:278:objectURL`, `internal/objectstorage/client.go:287:baseURL`, `internal/objectstorage/client.go:298:overrideBaseURLForTest`, `internal/objectstorage/client.go:308:do`, `internal/objectstorage/client.go:317:doRequest`, `internal/objectstorage/client.go:388:sanitizeOCIErrorBody`, `internal/objectstorage/client.go:396:sanitizeErrorField`, `internal/objectstorage/client.go:418:DebugRequestNamespace`, `internal/objectstorage/config.go:48:LoadConfig`, `internal/objectstorage/config.go:73:Validate`, `internal/objectstorage/config.go:104:Host`, `internal/objectstorage/config.go:108:BaseURL`, `internal/objectstorage/config.go:112:KeyID`, `internal/objectstorage/config.go:116:defaultHTTPClient`, `internal/objectstorage/config.go:138:envString`, `internal/objectstorage/config.go:146:envBool`, `internal/objectstorage/config.go:158:envDuration`, `internal/objectstorage/keys.go:24:SourceObjectKey`, `internal/objectstorage/keys.go:45:ParserRunManifestKey`, `internal/objectstorage/keys.go:67:PageObjectKey`, `internal/objectstorage/keys.go:86:validateSHA256Hex`, `internal/objectstorage/keys.go:93:validateParserIdentity`, `internal/objectstorage/signer.go:30:newSigner`, `internal/objectstorage/signer.go:46:parseRSAPrivateKey`, `internal/objectstorage/signer.go:66:sign`
+
+## internal/organization — artifacts=17, prod_go=10, symbols=94
+paths: `internal/organization/registry/canonical_types.go`, `internal/organization/registry/diff.go`, `internal/organization/registry/domain.go`, `internal/organization/registry/hash.go`, `internal/organization/registry/identifier.go`, `internal/organization/registry/parser.go`, `internal/organization/registry/postgres_repository.go`, `internal/organization/registry/repository.go`, `internal/organization/registry/service.go`, `internal/organization/registry/validation.go`
+locators: `internal/organization/registry/diff.go:33:roleForHash`, `internal/organization/registry/diff.go:45:reportingKey`, `internal/organization/registry/diff.go:59:CompareSnapshots`, `internal/organization/registry/diff.go:79:compareEntities`, `internal/organization/registry/diff.go:102:jsonEqual`, `internal/organization/registry/diff.go:108:organizationComparable`, `internal/organization/registry/diff.go:115:unitComparableMap`, `internal/organization/registry/diff.go:127:roleComparableMap`, `internal/organization/registry/diff.go:135:reportingComparableMap`, `internal/organization/registry/diff.go:144:unitIDs`, `internal/organization/registry/diff.go:152:roleIDs`, `internal/organization/registry/diff.go:160:reportingIDs`, `internal/organization/registry/domain.go:135:HasChanges`, `internal/organization/registry/domain.go:142:Totals`, `internal/organization/registry/domain.go:160:Valid`, `internal/organization/registry/domain.go:164:Error`, `internal/organization/registry/hash.go:12:hashDocuments`, `internal/organization/registry/hash.go:44:countSnapshot`, `internal/organization/registry/hash.go:64:schemaVersions`, `internal/organization/registry/hash.go:74:documentHashes`, `internal/organization/registry/hash.go:82:sortedKeys`, `internal/organization/registry/identifier.go:12:ValidateUnitID`, `internal/organization/registry/identifier.go:13:ValidateRoleID`, `internal/organization/registry/identifier.go:15:validateIdentifier`, `internal/organization/registry/identifier.go:34:ValidateReferencePath`, `internal/organization/registry/parser.go:43:NewLoader`, `internal/organization/registry/parser.go:50:Directory`, `internal/organization/registry/parser.go:52:Load`, `internal/organization/registry/parser.go:76:readDocuments`, `internal/organization/registry/parser.go:120:readFile`, `internal/organization/registry/parser.go:144:decodeStrictYAML`, `internal/organization/registry/parser.go:171:validateYAMLNode`, `internal/organization/registry/parser.go:216:normalizeDocuments`, `internal/organization/registry/parser.go:306:stableSourceReference`, `internal/organization/registry/parser.go:314:materialize`, `internal/organization/registry/parser.go:385:cloneString`, `internal/organization/registry/parser.go:393:displayNameFromID`, `internal/organization/registry/parser.go:405:hashValue`, `internal/organization/registry/postgres_repository.go:30:NewPostgresRepository`, `internal/organization/registry/postgres_repository.go:37:GetOrganization`
+additional_symbol_count: 54
+
+## internal/pdfingest — artifacts=7, prod_go=2, symbols=16
+paths: `internal/pdfingest/poppler/poppler.go`, `internal/pdfingest/processor.go`
+locators: `internal/pdfingest/poppler/poppler.go:60:DefaultConfig`, `internal/pdfingest/poppler/poppler.go:89:New`, `internal/pdfingest/poppler/poppler.go:114:resolveGsVersion`, `internal/pdfingest/poppler/poppler.go:130:resolveVersion`, `internal/pdfingest/poppler/poppler.go:152:classifyFailure`, `internal/pdfingest/poppler/poppler.go:163:firstLine`, `internal/pdfingest/poppler/poppler.go:170:run`, `internal/pdfingest/poppler/poppler.go:192:Process`, `internal/pdfingest/poppler/poppler.go:314:isPageAmplified`, `internal/pdfingest/poppler/poppler.go:333:rebuildPageWithGhostscript`, `internal/pdfingest/poppler/poppler.go:358:extractText`, `internal/pdfingest/poppler/poppler.go:385:stripNULBytes`, `internal/pdfingest/poppler/poppler.go:394:pageNumberOf`, `internal/pdfingest/processor.go:29:Valid`, `internal/pdfingest/processor.go:87:Valid`, `internal/pdfingest/processor.go:105:Error`
+
+## internal/platform — artifacts=11, prod_go=6, symbols=32
+paths: `internal/platform/buildinfo/info.go`, `internal/platform/httpserver/server.go`, `internal/platform/logging/logging.go`, `internal/platform/migrations/runner.go`, `internal/platform/postgres/store.go`, `internal/platform/postgres/unit_of_work.go`
+locators: `internal/platform/buildinfo/info.go:17:String`, `internal/platform/buildinfo/info.go:26:valueOr`, `internal/platform/httpserver/server.go:30:New`, `internal/platform/httpserver/server.go:53:Start`, `internal/platform/httpserver/server.go:76:Shutdown`, `internal/platform/httpserver/server.go:83:Addr`, `internal/platform/httpserver/server.go:92:handleHealth`, `internal/platform/httpserver/server.go:96:handleReady`, `internal/platform/httpserver/server.go:111:handleVersion`, `internal/platform/httpserver/server.go:115:logRequest`, `internal/platform/httpserver/server.go:123:recoverPanic`, `internal/platform/httpserver/server.go:135:writeJSON`, `internal/platform/logging/logging.go:8:New`, `internal/platform/migrations/runner.go:52:New`, `internal/platform/migrations/runner.go:63:Load`, `internal/platform/migrations/runner.go:151:Up`, `internal/platform/migrations/runner.go:199:Status`, `internal/platform/migrations/runner.go:247:validateApplied`, `internal/platform/migrations/runner.go:295:Tip`, `internal/platform/migrations/runner.go:318:ensureSchemaTable`, `internal/platform/migrations/runner.go:334:schemaTableExists`, `internal/platform/migrations/runner.go:342:readApplied`, `internal/platform/migrations/runner.go:363:rollbackMigration`, `internal/platform/postgres/store.go:18:Open`, `internal/platform/postgres/store.go:41:Ping`, `internal/platform/postgres/store.go:51:Close`, `internal/platform/postgres/store.go:57:Pool`, `internal/platform/postgres/store.go:64:UnitOfWork`, `internal/platform/postgres/store.go:71:PingWithTimeout`, `internal/platform/postgres/unit_of_work.go:23:NewUnitOfWork`, `internal/platform/postgres/unit_of_work.go:27:WithinTransaction`, `internal/platform/postgres/unit_of_work.go:58:rollback`
+
+## internal/questionidentity — artifacts=6, prod_go=3, symbols=21
+paths: `internal/questionidentity/controller_binding.go`, `internal/questionidentity/execution.go`, `internal/questionidentity/gate.go`
+locators: `internal/questionidentity/controller_binding.go:56:BindControllerPayload`, `internal/questionidentity/controller_binding.go:109:decodeControllerRequest`, `internal/questionidentity/controller_binding.go:126:authorizedTask`, `internal/questionidentity/execution.go:25:CanonicalEnvelope`, `internal/questionidentity/execution.go:72:NewExecutionPath`, `internal/questionidentity/execution.go:85:RunNext`, `internal/questionidentity/execution.go:121:EvaluatePayload`, `internal/questionidentity/execution.go:149:decodeEnvelope`, `internal/questionidentity/execution.go:166:rejectFields`, `internal/questionidentity/gate.go:144:Accepted`, `internal/questionidentity/gate.go:149:CanonicalContract`, `internal/questionidentity/gate.go:161:Evaluate`, `internal/questionidentity/gate.go:213:verifyCanonicalContract`, `internal/questionidentity/gate.go:233:exactSetReason`, `internal/questionidentity/gate.go:248:exactRequiredOutputReason`, `internal/questionidentity/gate.go:263:duplicateOrBlank`, `internal/questionidentity/gate.go:277:validateSupplements`, `internal/questionidentity/gate.go:294:validatePredicates`, `internal/questionidentity/gate.go:312:orderedChangedFields`, `internal/questionidentity/gate.go:331:normalize`, `internal/questionidentity/gate.go:354:marshalCanonicalJSON`
+
+## internal/rag — artifacts=32, prod_go=21, symbols=104
+paths: `internal/rag/authz/gate.go`, `internal/rag/bootstrap/bootstrap.go`, `internal/rag/canonical_time.go`, `internal/rag/chunking.go`, `internal/rag/contextprovider/provider.go`, `internal/rag/domain.go`, `internal/rag/errors.go`, `internal/rag/events.go`, `internal/rag/hashing.go`, `internal/rag/interfaces.go`, `internal/rag/manager.go`, `internal/rag/postgres/backfill.go`, `internal/rag/postgres/embeddings.go`, `internal/rag/postgres/embeddings_bge_m3.go`, `internal/rag/postgres/hybrid_query.go`, `internal/rag/postgres/store.go`, `internal/rag/roles/resolver.go`, `internal/rag/semantic.go`, `internal/rag/service.go`, `internal/rag/transitions.go`, `internal/rag/validation.go`
+locators: `internal/rag/authz/gate.go:28:New`, `internal/rag/authz/gate.go:44:Authorize`, `internal/rag/bootstrap/bootstrap.go:56:activeEmbeddingProfile`, `internal/rag/bootstrap/bootstrap.go:78:Open`, `internal/rag/bootstrap/bootstrap.go:140:openSemanticSearch`, `internal/rag/bootstrap/bootstrap.go:160:FetchMedia`, `internal/rag/bootstrap/bootstrap.go:170:openMediaFetcher`, `internal/rag/bootstrap/bootstrap.go:185:sharedSpendControls`, `internal/rag/bootstrap/bootstrap.go:205:openGeminiSemanticSearch`, `internal/rag/bootstrap/bootstrap.go:246:openBGEM3SemanticSearch`, `internal/rag/canonical_time.go:15:canonicalPersistenceTime`, `internal/rag/chunking.go:17:ChunkBody`, `internal/rag/chunking.go:104:splitParagraphs`, `internal/rag/chunking.go:126:splitBytes`, `internal/rag/contextprovider/provider.go:24:New`, `internal/rag/contextprovider/provider.go:40:ListApprovedEvidence`, `internal/rag/contextprovider/provider.go:82:ValidateVersion`, `internal/rag/contextprovider/provider.go:137:encodeVersion`, `internal/rag/contextprovider/provider.go:141:parseVersion`, `internal/rag/contextprovider/provider.go:149:sourceRecord`, `internal/rag/contextprovider/provider.go:180:mapDataClass`, `internal/rag/domain.go:15:Valid`, `internal/rag/domain.go:24:AllowedInApprovedKnowledge`, `internal/rag/domain.go:41:Valid`, `internal/rag/domain.go:57:Valid`, `internal/rag/domain.go:69:Valid`, `internal/rag/domain.go:183:Valid`, `internal/rag/domain.go:194:IsMedia`, `internal/rag/domain.go:204:Valid`, `internal/rag/hashing.go:10:ContentHash`, `internal/rag/hashing.go:15:ComputeCanonicalHash`, `internal/rag/interfaces.go:80:Validate`, `internal/rag/manager.go:34:NewManager`, `internal/rag/manager.go:58:Propose`, `internal/rag/manager.go:93:Review`, `internal/rag/manager.go:108:Deprecate`, `internal/rag/manager.go:123:Archive`, `internal/rag/manager.go:138:Get`, `internal/rag/manager.go:161:GetForRevalidation`, `internal/rag/manager.go:170:List`
+additional_symbol_count: 64
+
+## internal/retrievalfixtures — artifacts=5, prod_go=3, symbols=0
+paths: `internal/retrievalfixtures/activate.go`, `internal/retrievalfixtures/runner.go`, `internal/retrievalfixtures/support.go`
+
+## internal/secrets — artifacts=5, prod_go=3, symbols=4
+paths: `internal/secrets/file_resolver.go`, `internal/secrets/ref.go`, `internal/secrets/token_file.go`
+locators: `internal/secrets/file_resolver.go:18:LoadEd25519PrivateKey`, `internal/secrets/token_file.go:17:LoadBearerToken`, `internal/secrets/token_file.go:51:Zero`, `internal/secrets/token_file.go:53:zero`
+
+## internal/secretscan — artifacts=2, prod_go=1, symbols=6
+paths: `internal/secretscan/secretscan.go`
+locators: `internal/secretscan/secretscan.go:67:String`, `internal/secretscan/secretscan.go:131:isPlaceholder`, `internal/secretscan/secretscan.go:142:Scan`, `internal/secretscan/secretscan.go:163:collapse`, `internal/secretscan/secretscan.go:189:Kinds`, `internal/secretscan/secretscan.go:207:Redact`
+
+## internal/securityaudit — artifacts=3, prod_go=1, symbols=5
+paths: `internal/securityaudit/covert_channels.go`
+locators: `internal/securityaudit/covert_channels.go:39:Catalog`, `internal/securityaudit/covert_channels.go:362:Rules`, `internal/securityaudit/covert_channels.go:503:CheckViolations`, `internal/securityaudit/covert_channels.go:531:formatSize`, `internal/securityaudit/covert_channels.go:549:formatBool`
+
+## internal/shadowverifier — artifacts=12, prod_go=8, symbols=49
+paths: `internal/shadowverifier/canon.go`, `internal/shadowverifier/derive.go`, `internal/shadowverifier/errors.go`, `internal/shadowverifier/matrix.go`, `internal/shadowverifier/ports.go`, `internal/shadowverifier/postgres/store.go`, `internal/shadowverifier/service.go`, `internal/shadowverifier/types.go`
+locators: `internal/shadowverifier/canon.go:32:LoadLeaderWorkerMap`, `internal/shadowverifier/derive.go:18:RoleExists`, `internal/shadowverifier/derive.go:26:DepartmentExists`, `internal/shadowverifier/derive.go:40:LeaderOf`, `internal/shadowverifier/derive.go:67:reportingEdge`, `internal/shadowverifier/derive.go:89:MayDelegate`, `internal/shadowverifier/derive.go:122:MayMessage`, `internal/shadowverifier/derive.go:171:CheckDependencyClosed`, `internal/shadowverifier/derive.go:205:detectCycles`, `internal/shadowverifier/derive.go:260:EvaluateCapability`, `internal/shadowverifier/matrix.go:93:LoadMatrix`, `internal/shadowverifier/matrix.go:169:CapabilityIDs`, `internal/shadowverifier/matrix.go:178:containsString`, `internal/shadowverifier/ports.go:70:Now`, `internal/shadowverifier/postgres/store.go:28:New`, `internal/shadowverifier/postgres/store.go:49:LoadSnapshot`, `internal/shadowverifier/postgres/store.go:141:RecordedRequests`, `internal/shadowverifier/postgres/store.go:164:StartRun`, `internal/shadowverifier/postgres/store.go:174:FinishRun`, `internal/shadowverifier/postgres/store.go:190:RecordFindings`, `internal/shadowverifier/postgres/store.go:206:GetRun`, `internal/shadowverifier/postgres/store.go:230:ListRuns`, `internal/shadowverifier/postgres/store.go:256:RunFindings`, `internal/shadowverifier/service.go:36:NewService`, `internal/shadowverifier/service.go:74:OrganizationID`, `internal/shadowverifier/service.go:80:VerifyExhaustive`, `internal/shadowverifier/service.go:113:ReplayRecorded`, `internal/shadowverifier/service.go:168:loadAndCheckSnapshot`, `internal/shadowverifier/service.go:188:checkExistenceFacts`, `internal/shadowverifier/service.go:237:checkLeaderFacts`, `internal/shadowverifier/service.go:288:checkCapabilityFacts`, `internal/shadowverifier/service.go:336:compareCapabilityVerdicts`, `internal/shadowverifier/service.go:352:checkDelegateCanonCrossCheck`, `internal/shadowverifier/service.go:435:checkMessageObserverClause`, `internal/shadowverifier/service.go:467:checkDependencyClosed`, `internal/shadowverifier/service.go:505:finishRun`, `internal/shadowverifier/service.go:530:add`, `internal/shadowverifier/service.go:550:abort`, `internal/shadowverifier/service.go:556:compareBool`, `internal/shadowverifier/service.go:569:compareBoolUnit`
+additional_symbol_count: 9
+
+## internal/skillregistry — artifacts=16, prod_go=12, symbols=72
+paths: `internal/skillregistry/authz/gate.go`, `internal/skillregistry/bootstrap/bootstrap.go`, `internal/skillregistry/domain.go`, `internal/skillregistry/errors.go`, `internal/skillregistry/events.go`, `internal/skillregistry/hashing.go`, `internal/skillregistry/interfaces.go`, `internal/skillregistry/manager.go`, `internal/skillregistry/postgres/store.go`, `internal/skillregistry/service.go`, `internal/skillregistry/transitions.go`, `internal/skillregistry/validation.go`
+locators: `internal/skillregistry/authz/gate.go:29:Now`, `internal/skillregistry/authz/gate.go:38:New`, `internal/skillregistry/authz/gate.go:54:AuthorizeProposal`, `internal/skillregistry/authz/gate.go:58:AuthorizeLifecycleChange`, `internal/skillregistry/authz/gate.go:67:AuthorizeAssignmentChange`, `internal/skillregistry/authz/gate.go:72:authorize`, `internal/skillregistry/authz/gate.go:113:actionDigest`, `internal/skillregistry/bootstrap/bootstrap.go:26:Open`, `internal/skillregistry/domain.go:16:Valid`, `internal/skillregistry/domain.go:32:Valid`, `internal/skillregistry/domain.go:41:Valid`, `internal/skillregistry/hashing.go:10:HashManifest`, `internal/skillregistry/hashing.go:20:HashVersionIdentity`, `internal/skillregistry/manager.go:21:NewManager`, `internal/skillregistry/manager.go:39:Propose`, `internal/skillregistry/manager.go:62:HumanApprove`, `internal/skillregistry/manager.go:68:QualifyCandidate`, `internal/skillregistry/manager.go:74:Activate`, `internal/skillregistry/manager.go:80:Suspend`, `internal/skillregistry/manager.go:84:Retire`, `internal/skillregistry/manager.go:88:transition`, `internal/skillregistry/manager.go:132:Assign`, `internal/skillregistry/manager.go:173:RevokeAssignment`, `internal/skillregistry/manager.go:213:GetSkill`, `internal/skillregistry/manager.go:221:GetVersion`, `internal/skillregistry/manager.go:229:ListVersions`, `internal/skillregistry/manager.go:237:GetAssignment`, `internal/skillregistry/manager.go:245:ListActiveAssignmentsForRole`, `internal/skillregistry/postgres/store.go:27:New`, `internal/skillregistry/postgres/store.go:40:CreateSkill`, `internal/skillregistry/postgres/store.go:117:insertVersion`, `internal/skillregistry/postgres/store.go:140:GetSkill`, `internal/skillregistry/postgres/store.go:151:GetVersion`, `internal/skillregistry/postgres/store.go:162:ListVersions`, `internal/skillregistry/postgres/store.go:194:SaveVersion`, `internal/skillregistry/postgres/store.go:260:CreateAssignment`, `internal/skillregistry/postgres/store.go:317:GetAssignment`, `internal/skillregistry/postgres/store.go:328:ListActiveAssignmentsForRole`, `internal/skillregistry/postgres/store.go:360:SaveAssignment`, `internal/skillregistry/postgres/store.go:414:getSkill`
+additional_symbol_count: 32
+
+## internal/staging — artifacts=19, prod_go=15, symbols=124
+paths: `internal/staging/artifactfs/store.go`, `internal/staging/bootstrap/bootstrap.go`, `internal/staging/catalog.go`, `internal/staging/domain.go`, `internal/staging/errors.go`, `internal/staging/gitexec/backend.go`, `internal/staging/postgres/helpers.go`, `internal/staging/postgres/promotions.go`, `internal/staging/postgres/store.go`, `internal/staging/postgres/workspaces.go`, `internal/staging/reconcile.go`, `internal/staging/repository.go`, `internal/staging/service.go`, `internal/staging/state_machine.go`, `internal/staging/validation.go`
+locators: `internal/staging/artifactfs/store.go:22:New`, `internal/staging/artifactfs/store.go:33:Put`, `internal/staging/artifactfs/store.go:119:Stat`, `internal/staging/artifactfs/store.go:134:Open`, `internal/staging/artifactfs/store.go:155:Verify`, `internal/staging/artifactfs/store.go:163:resolve`, `internal/staging/artifactfs/store.go:179:stored`, `internal/staging/artifactfs/store.go:183:verifyFile`, `internal/staging/artifactfs/store.go:206:syncDirectory`, `internal/staging/artifactfs/store.go:220:Read`, `internal/staging/bootstrap/bootstrap.go:25:Open`, `internal/staging/bootstrap/bootstrap.go:87:Authorize`, `internal/staging/catalog.go:25:LoadRepositoryCatalog`, `internal/staging/catalog.go:98:List`, `internal/staging/catalog.go:107:Get`, `internal/staging/catalog.go:116:Validate`, `internal/staging/catalog.go:127:ValidateRootSeparation`, `internal/staging/catalog.go:137:TargetAllowed`, `internal/staging/domain.go:21:Valid`, `internal/staging/domain.go:30:Terminal`, `internal/staging/domain.go:47:Valid`, `internal/staging/domain.go:56:Terminal`, `internal/staging/gitexec/backend.go:28:New`, `internal/staging/gitexec/backend.go:52:ValidateRepository`, `internal/staging/gitexec/backend.go:102:ResolveCommit`, `internal/staging/gitexec/backend.go:117:CreateWorktree`, `internal/staging/gitexec/backend.go:144:InspectWorktree`, `internal/staging/gitexec/backend.go:173:SealWorktree`, `internal/staging/gitexec/backend.go:264:RemoveWorktree`, `internal/staging/gitexec/backend.go:288:ReadTarget`, `internal/staging/gitexec/backend.go:299:PromoteRef`, `internal/staging/gitexec/backend.go:332:validateWorkspaceRef`, `internal/staging/gitexec/backend.go:345:ensureTargetNotCheckedOut`, `internal/staging/gitexec/backend.go:358:changedFiles`, `internal/staging/gitexec/backend.go:366:changedFilesCached`, `internal/staging/gitexec/backend.go:374:parseRawDiff`, `internal/staging/gitexec/backend.go:408:marshalManifest`, `internal/staging/gitexec/backend.go:417:newCanonicalJSONEncoder`, `internal/staging/gitexec/backend.go:435:validateChangedSymlinks`, `internal/staging/gitexec/backend.go:458:inspectAttributes`
+additional_symbol_count: 84
+
+## internal/tasks — artifacts=29, prod_go=21, symbols=126
+paths: `internal/tasks/backoff.go`, `internal/tasks/contextprovider/provider.go`, `internal/tasks/domain.go`, `internal/tasks/errors.go`, `internal/tasks/interfaces.go`, `internal/tasks/postgres/create.go`, `internal/tasks/postgres/helpers.go`, `internal/tasks/postgres/lease_verification.go`, `internal/tasks/postgres/mutate.go`, `internal/tasks/postgres/outbox.go`, `internal/tasks/postgres/queue.go`, `internal/tasks/postgres/read.go`, `internal/tasks/postgres/reconcile.go`, `internal/tasks/postgres/requirement_verification.go`, `internal/tasks/postgres/specific_claim.go`, `internal/tasks/postgres/store.go`, `internal/tasks/registryadapter/adapter.go`, `internal/tasks/service.go`, `internal/tasks/specific_claim.go`, `internal/tasks/state_machine.go`, `internal/tasks/validation.go`
+locators: `internal/tasks/backoff.go:10:Delay`, `internal/tasks/contextprovider/provider.go:17:New`, `internal/tasks/contextprovider/provider.go:24:GetTaskContext`, `internal/tasks/contextprovider/provider.go:72:ValidateVersion`, `internal/tasks/contextprovider/provider.go:97:parseRef`, `internal/tasks/contextprovider/provider.go:145:sourceRecord`, `internal/tasks/domain.go:33:Valid`, `internal/tasks/domain.go:35:Terminal`, `internal/tasks/domain.go:54:Valid`, `internal/tasks/postgres/create.go:18:Create`, `internal/tasks/postgres/helpers.go:25:qualifyColumns`, `internal/tasks/postgres/helpers.go:33:scanTask`, `internal/tasks/postgres/helpers.go:79:rollback`, `internal/tasks/postgres/helpers.go:85:lockTask`, `internal/tasks/postgres/helpers.go:89:transitionTask`, `internal/tasks/postgres/helpers.go:133:appendTaskEvent`, `internal/tasks/postgres/helpers.go:217:statusValue`, `internal/tasks/postgres/helpers.go:224:newToken`, `internal/tasks/postgres/helpers.go:234:hashToken`, `internal/tasks/postgres/helpers.go:239:nullableString`, `internal/tasks/postgres/helpers.go:246:requiredValue`, `internal/tasks/postgres/lease_verification.go:12:VerifyActiveExecutionLease`, `internal/tasks/postgres/mutate.go:14:AddDependency`, `internal/tasks/postgres/mutate.go:71:AddRequirement`, `internal/tasks/postgres/mutate.go:101:RecordEvidence`, `internal/tasks/postgres/mutate.go:167:Finalize`, `internal/tasks/postgres/mutate.go:219:Block`, `internal/tasks/postgres/mutate.go:249:Unblock`, `internal/tasks/postgres/mutate.go:279:Cancel`, `internal/tasks/postgres/mutate.go:306:touchTask`, `internal/tasks/postgres/mutate.go:324:inspectDependencies`, `internal/tasks/postgres/mutate.go:338:activeLeaseAttempt`, `internal/tasks/postgres/mutate.go:350:revokeLease`, `internal/tasks/postgres/outbox.go:14:ClaimOutbox`, `internal/tasks/postgres/outbox.go:62:AckOutbox`, `internal/tasks/postgres/outbox.go:88:NackOutbox`, `internal/tasks/postgres/outbox.go:119:RecoverOutbox`, `internal/tasks/postgres/outbox.go:125:recoverOutboxTx`, `internal/tasks/postgres/outbox.go:169:OutboxStats`, `internal/tasks/postgres/outbox.go:181:scanOutbox`
+additional_symbol_count: 86
+
+## internal/testdbguard — artifacts=2, prod_go=1, symbols=2
+paths: `internal/testdbguard/testdbguard.go`
+locators: `internal/testdbguard/testdbguard.go:57:RequireTestDatabase`, `internal/testdbguard/testdbguard.go:84:RequireDestructive`
+
+## internal/webevidence — artifacts=11, prod_go=6, symbols=18
+paths: `internal/webevidence/ingest.go`, `internal/webevidence/postgres/store.go`, `internal/webevidence/rank.go`, `internal/webevidence/sanitize.go`, `internal/webevidence/store.go`, `internal/webevidence/types.go`
+locators: `internal/webevidence/ingest.go:33:Ingest`, `internal/webevidence/postgres/store.go:24:New`, `internal/webevidence/postgres/store.go:37:Save`, `internal/webevidence/postgres/store.go:71:Get`, `internal/webevidence/postgres/store.go:88:ListForTask`, `internal/webevidence/postgres/store.go:114:Reap`, `internal/webevidence/postgres/store.go:132:scanEvidence`, `internal/webevidence/rank.go:23:tokenize`, `internal/webevidence/rank.go:31:keywordOverlapScore`, `internal/webevidence/rank.go:45:cosineSimilarity`, `internal/webevidence/rank.go:70:RankChunks`, `internal/webevidence/sanitize.go:45:Sanitize`, `internal/webevidence/sanitize.go:58:chunkText`, `internal/webevidence/sanitize.go:84:detectInjection`, `internal/webevidence/types.go:46:contentHash`, `internal/webevidence/types.go:88:Validate`, `internal/webevidence/types.go:133:Expired`, `internal/webevidence/types.go:153:NewCitation`
+
+## internal/webevidencefixtures — artifacts=5, prod_go=3, symbols=0
+paths: `internal/webevidencefixtures/activate.go`, `internal/webevidencefixtures/render.go`, `internal/webevidencefixtures/runner.go`
+
+## investigacion — artifacts=4, prod_go=0, symbols=0
+
+## migrations — artifacts=99, prod_go=1, symbols=0
+paths: `migrations/embed.go`
+
+## negocio — artifacts=19, prod_go=0, symbols=0
+
+## recursos_agenticos — artifacts=2, prod_go=0, symbols=0
+
+## root — artifacts=16, prod_go=0, symbols=0
+
+## scripts — artifacts=31, prod_go=0, symbols=0
+
+## servicios — artifacts=8, prod_go=0, symbols=0
+
+## tools — artifacts=7, prod_go=0, symbols=0
+
+# Runtime
+
+Registered units: 103
+- `public.agent_messages` rows=4
+- `public.audit_events` rows=138
+- `public.authorization_decisions` rows=42
+- `public.authorization_requests` rows=42
+- `public.authorization_uses` rows=42
+- `public.embedding_invocations` rows=393
+- `public.model_capability_snapshots` rows=7
+- `public.model_egress_policy_versions` rows=1
+- `public.model_egress_revision_bindings` rows=1
+- `public.model_egress_rules` rows=14
+- `public.model_execution_identity_policy_versions` rows=1
+- `public.model_execution_principals` rows=3
+- `public.model_pricing` rows=17
+- `public.model_profile_versions` rows=7
+- `public.model_profiles` rows=7
+- `public.model_providers` rows=4
+- `public.organization_registry_revision_documents` rows=36
+- `public.organization_registry_revisions` rows=4
+- `public.organization_reporting_lines` rows=200
+- `public.organization_roles` rows=48
+- `public.organizational_units` rows=6
+- `public.organizations` rows=1
+- `public.outbox_events` rows=1942
+- `public.provider_wallet_events` rows=785
+- `public.provider_wallets` rows=5
+- `public.rag_chunk_embeddings` rows=383
+- `public.rag_index_generations` rows=1
+- `public.rag_knowledge_chunks` rows=383
+- `public.rag_knowledge_documents` rows=16
+- `public.rag_knowledge_evidence_refs` rows=16
+- `public.rag_knowledge_idempotency` rows=16
+- `public.rag_knowledge_lifecycle_events` rows=32
+- `public.rag_knowledge_versions` rows=16
+- `public.role_model_bindings` rows=46
+- `public.schema_migrations` rows=48
+- `public.tasks` rows=3
+
+
+---
+
+SEALED RUNTIME CATEGORICAL OBSERVATIONS (JSONL)
+---
+{"column":"message_type","record_type":"categorical_value","row_count":2,"schema":"public","table":"agent_messages","value":"completion"}
+{"column":"message_type","record_type":"categorical_value","row_count":2,"schema":"public","table":"agent_messages","value":"delegation"}
+{"column":"status","record_type":"categorical_value","row_count":4,"schema":"public","table":"agent_messages","value":"delivered"}
+{"column":"event_type","record_type":"categorical_value","row_count":42,"schema":"public","table":"audit_events","value":"authorization.approval_consumed"}
+{"column":"event_type","record_type":"categorical_value","row_count":42,"schema":"public","table":"audit_events","value":"authorization.decision_approved"}
+{"column":"event_type","record_type":"categorical_value","row_count":42,"schema":"public","table":"audit_events","value":"authorization.request_created"}
+{"column":"event_type","record_type":"categorical_value","row_count":1,"schema":"public","table":"audit_events","value":"model.egress_registry_synced"}
+{"column":"event_type","record_type":"categorical_value","row_count":1,"schema":"public","table":"audit_events","value":"model.egress_registry_validated"}
+{"column":"event_type","record_type":"categorical_value","row_count":1,"schema":"public","table":"audit_events","value":"model.execution_identity_policy_synced"}
+{"column":"event_type","record_type":"categorical_value","row_count":3,"schema":"public","table":"audit_events","value":"model.execution_principal_registered"}
+{"column":"event_type","record_type":"categorical_value","row_count":1,"schema":"public","table":"audit_events","value":"model.registry_synced"}
+{"column":"event_type","record_type":"categorical_value","row_count":1,"schema":"public","table":"audit_events","value":"model.registry_validated"}
+{"column":"event_type","record_type":"categorical_value","row_count":4,"schema":"public","table":"audit_events","value":"organization.registry_synced"}
+{"column":"capability_id","record_type":"categorical_value","row_count":42,"schema":"public","table":"authorization_requests","value":"rag.publish_approved"}
+{"column":"status","record_type":"categorical_value","row_count":42,"schema":"public","table":"authorization_requests","value":"consumed"}
+{"column":"status","record_type":"categorical_value","row_count":1,"schema":"public","table":"model_egress_policy_versions","value":"materialized"}
+{"column":"status","record_type":"categorical_value","row_count":1,"schema":"public","table":"model_execution_identity_policy_versions","value":"active"}
+{"column":"status","record_type":"categorical_value","row_count":3,"schema":"public","table":"model_execution_principals","value":"active"}
+{"column":"decision_status","record_type":"categorical_value","row_count":1,"schema":"public","table":"model_profile_versions","value":"owner_confirmation_required"}
+{"column":"status","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_registry_revisions","value":"applied"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"empresa/ceo"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"empresa/ceo_observer"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"ingenieria_ia/arquitecto_software"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"ingenieria_ia/ciberseguridad"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"ingenieria_ia/code-runner"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"ingenieria_ia/data_engineer"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"ingenieria_ia/frontend"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"ingenieria_ia/ingeniero_ia"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"ingenieria_ia/ml_data_scientist"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"ingenieria_ia/orquestador"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"ingenieria_ia/qa"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"ingenieria_ia/razonamiento_logico"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"ingenieria_ia/semantic_engineer"}
+{"column":"role_id","record_type":"categorical_value","row_count":8,"schema":"public","table":"organization_reporting_lines","value":"investigacion/auditor_cerebro_empresa"}
+{"column":"role_id","record_type":"categorical_value","row_count":8,"schema":"public","table":"organization_reporting_lines","value":"investigacion/research_worker_hourly"}
+{"column":"role_id","record_type":"categorical_value","row_count":8,"schema":"public","table":"organization_reporting_lines","value":"investigacion/research_worker_hourly_mimo_canary"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"negocio/administrador_financiero"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"negocio/analista_audiencias"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"negocio/analista_costos"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"negocio/analista_kpis"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"negocio/analista_performance"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"negocio/community_manager"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"negocio/copywriter"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"negocio/director_negocio"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"negocio/disenador"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"negocio/editor_contenido_marca"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"negocio/editor_video"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"negocio/estratega_crecimiento"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"negocio/estratega_expansion"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"negocio/fotografo"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"negocio/ilustrador"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"negocio/ingeniero_industrial"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"negocio/investigador_consumidor"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"negocio/rrpp_alianzas"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"recursos_agenticos/curador_catalogo"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"recursos_agenticos/desarrollo_organizacional"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"recursos_agenticos/disenador_perfiles"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"recursos_agenticos/disenador_skills"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"recursos_agenticos/evaluador_agentes"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"recursos_agenticos/investigacion_ra"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"servicios/analista_calidad"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"servicios/disenador_uxui"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"servicios/operaciones_servicio"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"servicios/product_manager_portafolio"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"servicios/responsable_datos"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"servicios/service_designer"}
+{"column":"role_id","record_type":"categorical_value","row_count":4,"schema":"public","table":"organization_reporting_lines","value":"servicios/soporte_usuario"}
+{"column":"kind","record_type":"categorical_value","row_count":1,"schema":"public","table":"organizational_units","value":"executive_layer"}
+{"column":"kind","record_type":"categorical_value","row_count":1,"schema":"public","table":"organizational_units","value":"independent_audit_and_research"}
+{"column":"kind","record_type":"categorical_value","row_count":4,"schema":"public","table":"organizational_units","value":"operational_department"}
+{"column":"event_type","record_type":"categorical_value","row_count":58,"schema":"public","table":"outbox_events","value":"authorization.approval_consumed"}
+{"column":"event_type","record_type":"categorical_value","row_count":58,"schema":"public","table":"outbox_events","value":"authorization.decision_approved"}
+{"column":"event_type","record_type":"categorical_value","row_count":58,"schema":"public","table":"outbox_events","value":"authorization.request_created"}
+{"column":"event_type","record_type":"categorical_value","row_count":6,"schema":"public","table":"outbox_events","value":"context.policy_drift_rejected"}
+{"column":"event_type","record_type":"categorical_value","row_count":296,"schema":"public","table":"outbox_events","value":"context.snapshot_created"}
+{"column":"event_type","record_type":"categorical_value","row_count":6,"schema":"public","table":"outbox_events","value":"context.snapshot_validation_failed"}
+{"column":"event_type","record_type":"categorical_value","row_count":1,"schema":"public","table":"outbox_events","value":"model.invocation_ambiguous"}
+{"column":"event_type","record_type":"categorical_value","row_count":184,"schema":"public","table":"outbox_events","value":"model.invocation_failed"}
+{"column":"event_type","record_type":"categorical_value","row_count":278,"schema":"public","table":"outbox_events","value":"model.invocation_requested"}
+{"column":"event_type","record_type":"categorical_value","row_count":91,"schema":"public","table":"outbox_events","value":"model.invocation_succeeded"}
+{"column":"event_type","record_type":"categorical_value","row_count":80,"schema":"public","table":"outbox_events","value":"task.attempt_finished"}
+{"column":"event_type","record_type":"categorical_value","row_count":175,"schema":"public","table":"outbox_events","value":"task.attempt_started"}
+{"column":"event_type","record_type":"categorical_value","row_count":78,"schema":"public","table":"outbox_events","value":"task.cancelled"}
+{"column":"event_type","record_type":"categorical_value","row_count":194,"schema":"public","table":"outbox_events","value":"task.claimed"}
+{"column":"event_type","record_type":"categorical_value","row_count":192,"schema":"public","table":"outbox_events","value":"task.created"}
+{"column":"event_type","record_type":"categorical_value","row_count":3,"schema":"public","table":"outbox_events","value":"task.dead_lettered"}
+{"column":"event_type","record_type":"categorical_value","row_count":26,"schema":"public","table":"outbox_events","value":"task.failed"}
+{"column":"event_type","record_type":"categorical_value","row_count":80,"schema":"public","table":"outbox_events","value":"task.finalized"}
+{"column":"event_type","record_type":"categorical_value","row_count":39,"schema":"public","table":"outbox_events","value":"task.lease_expired"}
+{"column":"event_type","record_type":"categorical_value","row_count":39,"schema":"public","table":"outbox_events","value":"task.ready"}
+{"column":"status","record_type":"categorical_value","row_count":1942,"schema":"public","table":"outbox_events","value":"pending"}
+{"column":"kind","record_type":"categorical_value","row_count":392,"schema":"public","table":"provider_wallet_events","value":"committed"}
+{"column":"kind","record_type":"categorical_value","row_count":393,"schema":"public","table":"provider_wallet_events","value":"reserved"}
+{"column":"status","record_type":"categorical_value","row_count":1,"schema":"public","table":"rag_index_generations","value":"active"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"empresa/ceo"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"empresa/ceo_observer"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"ingenieria_ia/arquitecto_software"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"ingenieria_ia/ciberseguridad"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"ingenieria_ia/data_engineer"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"ingenieria_ia/frontend"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"ingenieria_ia/ingeniero_ia"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"ingenieria_ia/ml_data_scientist"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"ingenieria_ia/orquestador"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"ingenieria_ia/qa"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"ingenieria_ia/razonamiento_logico"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"ingenieria_ia/semantic_engineer"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"investigacion/auditor_cerebro_empresa"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"investigacion/research_worker_hourly"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"investigacion/research_worker_hourly_mimo_canary"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"negocio/administrador_financiero"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"negocio/analista_audiencias"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"negocio/analista_costos"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"negocio/analista_kpis"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"negocio/analista_performance"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"negocio/community_manager"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"negocio/copywriter"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"negocio/director_negocio"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"negocio/disenador"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"negocio/editor_contenido_marca"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"negocio/editor_video"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"negocio/estratega_crecimiento"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"negocio/estratega_expansion"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"negocio/fotografo"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"negocio/ilustrador"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"negocio/ingeniero_industrial"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"negocio/investigador_consumidor"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"negocio/rrpp_alianzas"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"recursos_agenticos/curador_catalogo"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"recursos_agenticos/desarrollo_organizacional"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"recursos_agenticos/disenador_perfiles"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"recursos_agenticos/disenador_skills"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"recursos_agenticos/evaluador_agentes"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"recursos_agenticos/investigacion_ra"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"servicios/analista_calidad"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"servicios/disenador_uxui"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"servicios/operaciones_servicio"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"servicios/product_manager_portafolio"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"servicios/responsable_datos"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"servicios/service_designer"}
+{"column":"role_id","record_type":"categorical_value","row_count":1,"schema":"public","table":"role_model_bindings","value":"servicios/soporte_usuario"}
+{"column":"status","record_type":"categorical_value","row_count":3,"schema":"public","table":"tasks","value":"no_action"}
+
+---

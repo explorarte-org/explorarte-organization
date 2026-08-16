@@ -1,0 +1,89 @@
+
+QUESTION_ID: REFORMULATED-Q3-002
+
+Return exactly one word: ACCEPT, REJECT, or DEFER.
+
+Decide whether to accept the measurement artifact as an honest PARTIAL result,
+not whether to claim completeness and not whether to authorize V2, expansion,
+redesign, deletion, or another question.
+
+Frozen question identity was preserved. Q3_ONTOLOGY_V1 was unchanged. Source and
+runtime universes were registered before model calls. The question-identity gate
+accepted the sole typed narrowing before its provider call. No expected count was
+used. Completeness was computed externally, never self-attested by a model.
+
+External accounting:
+{
+  "accepted_with_challenge": 6,
+  "capability_inventory_sha256": "b81460712888bfb206bc1c60f9ed73bad003dff3606ad09848d448e5ddf71f98",
+  "completeness_self_attested_by_model": false,
+  "derived_inventory_size": 28,
+  "expected_capability_count": null,
+  "expected_count_used": false,
+  "measurement_disposition": "PARTIAL",
+  "missing_evidence_implies_missing_capability": false,
+  "non_positive_candidates": 7,
+  "question_id": "REFORMULATED-Q3-002",
+  "question_target_drift": false,
+  "reason": "required output schema preserved and every registered unit accounted, but explicit unresolved source/runtime units remain",
+  "runtime_accounted": 103,
+  "runtime_accounting_sha256": "679d8f7f201da7f77a7f26811f1141ecfd6d15e6c6c2f8d9e49f5715f4c29291",
+  "runtime_counts": {
+    "DECLARATION_OR_CONFIGURATION_ONLY": 6,
+    "IRRELEVANT_WITH_PROOF": 1,
+    "SURVIVING_EVIDENCE": 29,
+    "UNRESOLVED": 67
+  },
+  "runtime_omitted": 0,
+  "runtime_registered": 103,
+  "source_accounted": 1060,
+  "source_accounting_sha256": "858665f589aeeb02e9040fe00d4507cff6a58676e97fec06bc17e05c36662e42",
+  "source_counts": {
+    "CAPABILITY_EVIDENCE": 701,
+    "IRRELEVANT_WITH_PROOF": 342,
+    "UNRESOLVED": 17
+  },
+  "source_omitted": 0,
+  "source_registered": 1060,
+  "zero_runtime_observations_imply_historical_absence": false
+}
+
+Initial Grok audit:
+{
+  "accepted_capability_count": 21,
+  "audit_gate_pass": true,
+  "challenged_capability_count": 4,
+  "confidence": 0.62,
+  "normalization_rule": "extract the sole ```yaml fenced payload verbatim; no semantic edits",
+  "normalized_sha256": "769866e0b599e806b57c85c186f372e6b3cde34ea8b5307b97aba70bcbfddb09",
+  "raw_sha256": "d6acdbd59a3f7ad4aa0e0abced3a1dc8e91574461072bab0d9dc1d1ce0dcf445",
+  "recommended_disposition": "PARTIAL",
+  "verdict": "VALID_PARTIAL"
+}
+
+Typed-refinement Grok audit:
+{
+  "accepted_new_capabilities": 7,
+  "audit_sha256": "600c48bd89f55376a455e2f84ac37950b09cb7f31f1f2bf6b55524b4c69aa9d7",
+  "challenged_new_capabilities": 2,
+  "confidence": 0.55,
+  "ledger": {
+    "deepseek": 0.11211162200000002,
+    "grok": 0.5690875,
+    "luna": 0.0,
+    "mission": 0.681199122
+  },
+  "normalization": "sole YAML fence extracted verbatim",
+  "recommended_disposition": "PARTIAL",
+  "rejected_new_capabilities": 7,
+  "verdict": "VALID_PARTIAL"
+}
+
+Interpretation:
+- ACCEPT = accept this as a valid PARTIAL measurement with explicit unknowns.
+- REJECT = measurement is invalid (target drift, root/integrity failure, invalid
+  positive records, or required output schema lost).
+- DEFER = evidence does not yet support accepting or rejecting even the PARTIAL
+  measurement.
+
+Return exactly one word and nothing else.

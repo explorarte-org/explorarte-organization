@@ -1,0 +1,49 @@
+{
+  "categorical_allowlist": [
+    "capability",
+    "capability_id",
+    "channel",
+    "decision_status",
+    "event_type",
+    "invocation_type",
+    "kind",
+    "message_type",
+    "operation_type",
+    "provider",
+    "role",
+    "role_id",
+    "status",
+    "task_type"
+  ],
+  "categorical_observation_count": 141,
+  "categorical_summary_count": 46,
+  "db_identity": {
+    "database": "explorarte_org",
+    "database_create": false,
+    "database_temp": true,
+    "default_transaction_read_only": "on",
+    "public_schema_create": false,
+    "public_schema_usage": true,
+    "role": "redesign_audit_readonly",
+    "statement_timeout": "15s",
+    "transaction_read_only": "on"
+  },
+  "expected_capability_count": null,
+  "measurement_sha": "588db11599d701fb1e2ecbae19aa00828663dc2b",
+  "model_calls_before_registration": 0,
+  "phase": "REFORMULATED_Q3_002_MEASUREMENT_001",
+  "production_mutated": false,
+  "query_mode": "single REPEATABLE READ READ ONLY observation transaction after catalog registration",
+  "question_id": "REFORMULATED-Q3-002",
+  "runtime_categorical_evidence_sha256": "60e8b65b1e343cb53494a4e5de3d7e9c5de0e971b886befa3a61df1ea57137bc",
+  "runtime_observations_sha256": "a73dfe6cbe73c7ff5da52cae44051cc7cb73b3e726ed67508e9c2aacc5b7b78e",
+  "runtime_unit_count": 103,
+  "runtime_universe_sha256": "b22d3801be5d8989d1a0025a2bedab7c5cb7656e12f912f12e2ffbc631f406e7",
+  "table_count_observation_count": 103,
+  "table_grants": [
+    {
+      "grants": 103,
+      "privilege_type": "SELECT"
+    }
+  ]
+}

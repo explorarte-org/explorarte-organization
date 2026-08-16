@@ -1,0 +1,25 @@
+{
+  "expected_capability_count": null,
+  "go_symbol_count": 4576,
+  "go_symbol_universe_sha256": "2d5a15df73f8b62a8fd67ad53dcc7ce45c91fce5cb051cd24e339ba53ec58b1f",
+  "measurement_root": "/home/ubuntu/campaign-588db11",
+  "measurement_sha": "588db11599d701fb1e2ecbae19aa00828663dc2b",
+  "model_calls_before_registration": 0,
+  "phase": "REFORMULATED_Q3_002_MEASUREMENT_001",
+  "question_id": "REFORMULATED-Q3-002",
+  "registration_algorithm": "git ls-files -z; exact tracked bytes; one source unit per tracked path; no semantic classification",
+  "registration_kind_counts": {
+    "configuration_or_declaration": 87,
+    "deployment_or_build_infrastructure": 4,
+    "documentation_or_data": 94,
+    "external_dependency_declaration": 2,
+    "go_source": 467,
+    "migration": 96,
+    "other": 2,
+    "supporting_script_signal": 38,
+    "test_only_signal": 270
+  },
+  "root_clean": true,
+  "source_unit_count": 1060,
+  "source_universe_sha256": "a4a7bacbefb1d8f040f582e046a1ccdc0d2088b2c3ee2a42df65ec9d2ddfca43"
+}

@@ -1,0 +1,50 @@
+{
+  "citation_count": 89,
+  "coverage_complete_claim": false,
+  "evidence_gate_pass": true,
+  "fence_rule": "raw response used",
+  "group_records": 23,
+  "lexical_changes": [
+    {
+      "line": 101,
+      "normalized": "        - \"[]WorkInput{WorkID, Title}\"",
+      "original": "        - []WorkInput{WorkID, Title}"
+    },
+    {
+      "line": 160,
+      "normalized": "        - \"[]string paperIDs, OrchestratorConfig, Client, Store\"",
+      "original": "        - []string paperIDs, OrchestratorConfig, Client, Store"
+    },
+    {
+      "line": 191,
+      "normalized": "        - \"[]SemanticInput{WorkID, SemanticInput, InputHash}; EmbedConfig; OnlineAdapter\"",
+      "original": "        - []SemanticInput{WorkID, SemanticInput, InputHash}; EmbedConfig; OnlineAdapter"
+    },
+    {
+      "line": 290,
+      "normalized": "        - \"[]EvaluationResult; SuiteComparisonResult{OverallVerdict, WeightedPassRatio}\"",
+      "original": "        - []EvaluationResult; SuiteComparisonResult{OverallVerdict, WeightedPassRatio}"
+    },
+    {
+      "line": 320,
+      "normalized": "        - \"[]PriceTier, estimatedInputTokens, BillingMode, asOf\"",
+      "original": "        - []PriceTier, estimatedInputTokens, BillingMode, asOf"
+    },
+    {
+      "line": 386,
+      "normalized": "        - \"[]Finding{Kind, Start, End}; Redact output\"",
+      "original": "        - []Finding{Kind, Start, End}; Redact output"
+    },
+    {
+      "line": 416,
+      "normalized": "        - \"[]Channel; violation findings with severity\"",
+      "original": "        - []Channel; violation findings with severity"
+    }
+  ],
+  "lexical_repair_rule": "JSON-quote list-item scalars beginning with literal [] only; preserve scalar characters",
+  "new_capability_candidates": 14,
+  "packet_sha256": "7a5e503a66e8c9aa89c1a036952ffbdbbfd4b2ef7a8255715160b3d45adbec1a",
+  "raw_sha256": "7877464ea8cf84b1d2bbc5bde1b7b0573c75acaa39a59f7baed2cf071ca2aea6",
+  "remaining_unresolved_groups": 0,
+  "unresolved_citations": []
+}

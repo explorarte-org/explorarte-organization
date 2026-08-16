@@ -1,0 +1,62 @@
+```yaml
+audit:
+  question_id: REFORMULATED-Q3-002
+  verdict: VALID_PARTIAL
+  confidence: 0.62
+  observed_claims:
+    - "OBSERVED: internal/authorization/authorizer.go:evaluate enforces a default-deny capability matrix with grant/hard-deny/approval-mode checks and revision/matrix-hash drift detection (authorizer.go:165 evaluate)."
+    - "OBSERVED: internal/tasks/postgres/mutate.go:AddDependency rejects cycles via a recursive CTE and rejects dependency changes on terminal/leased/running tasks; Finalize requires awaiting_verification and zero unsatisfied required requirements (mutate.go:14, mutate.go:167)."
+    - "OBSERVED: internal/agentmessaging/postgres/store.go:Send validates execution principal, task ownership, registry-derived topology, capability authorization, idempotency hash, and rate limits before persisting a message (store.go:78)."
+    - "DERIVED: sealed runtime rows constitute surviving evidence for at least the authorization (42 requests/decisions/uses, capability_id rag.publish_approved), task (3 tasks, task.* outbox events), context (context.snapshot_created=296), model invocation (model.invocation_* outbox events), cost ledger (provider_wallet_events=785), RAG (rag_knowledge_* rows), and organization registry (roles=48, reporting_lines=200) capabilities."
+  unsupported_inferences:
+    - "Runtime packet phrased as 'only 36 units were actually enumerated'; external facts confirm all 103 runtime units were enumerated (67 zero-row tables in sealed snapshot). Zero rows indicate no surviving observation, not absence of mechanism."
+    - "Provisional count of at least 21 capabilities is a derived property only; unsupported as complete inventory given explicit coverage_complete=false, multiple UNRESOLVED navigation groups, and no prior expected number."
+    - "Several runtime relations (e.g. public.outbox_events, public.audit_events) map to capabilities based on event_type content rather than table identity alone, but packet conclusion treats unenumerated zero-row tables as unaccounted rather than enumerated with null observations."
+  accepted_capability_ids:
+    - OC-task-lifecycle-management
+    - OC-capability-authorization
+    - OC-executive-orchestration
+    - OC-agent-messaging
+    - OC-agent-budgeting
+    - OC-cost-ledger
+    - OC-model-invocation-dispatch
+    - OC-model-egress-policy
+    - OC-model-execution-identity
+    - OC-model-dispatch-assignment
+    - OC-rag-knowledge-lifecycle
+    - OC-memory-lifecycle
+    - OC-skill-lifecycle
+    - OC-context-compilation
+    - OC-organization-registry
+    - OC-staging-workspace
+    - OC-decision-graph-execution
+    - OC-improvement-promotion
+    - OC-completion-verification
+    - OC-corpus-census
+    - OC-evidence-object-storage
+  challenged_capabilities:
+    - capability_id: OC-executive-orchestration
+      issue: Behavioral contract references specific CEO root/plan/leader/closure task types and run projection; these may be representation-dependent on current task schema, risking Q6 violation on refactor that preserves responsibility but alters task subtypes.
+      ontology_rule: Q6 layout independence and representation stability test (stable responsibility must survive change in persistent representation)
+    - capability_id: OC-corpus-census
+      issue: Enforcement points rely on Poppler (external PDF processor) for ValidatePDF; supplied provenance does not clearly separate repository-owned branching/invariants from EXTERNAL_DEPENDENCY adapter behavior, making Q1/Q4 boundary unverifiable from packet alone.
+      ontology_rule: Q1 repository-owned executable/enforceable behavior and artifact-role taxonomy (EXTERNAL_DEPENDENCY vs BEHAVIOR_IMPLEMENTATION)
+    - capability_id: OC-evidence-object-storage
+      issue: Primarily provides signed OCI PutObjectIfAbsent with immutability conflict; packet argues autonomous responsibility but ontology explicitly excludes generic storage/adapters unless repository-owned orchestration dominates; adjacent boundary with generic transport is not sharply evidenced.
+      ontology_rule: Q1 repository-owned behavior, Q5 supporting-artifact test, and explicit exclusion for SUPPORTING_INFRASTRUCTURE without autonomous operational responsibility
+    - capability_id: OC-context-compilation
+      issue: Boundary references OC-context-compiler (unresolved in packet) as adjacent for task-class profiles; adjacent-boundary requirement not fully evidenced for merge/split distinction when dependent package was not read.
+      ontology_rule: Adjacent-boundary requirement (every positive record must name nearest plausible adjacent capability with evidenced distinction)
+  counterevidence:
+    - "67 runtime units with zero rows were enumerated in external runtime registry (hash b22d3801be5d8989d1a0025a2bedab7c5cb7656e12f912f12e2ffbc631f406e7) but packet states they were never enumerated."
+    - "Multiple navigation groups (internal/contextcompiler, corpuscluster, corpuscuration, corpusenrich, corpussemantic, dataclassifier, embeddingruntime, evaluation, modelpricing, pdfingest, platform, questionidentity, secrets, secretscan, securityaudit, shadowverifier, webevidence, logicir) explicitly marked UNRESOLVED; prevents complete inventory claim."
+  measurement_limitations:
+    - "Audit restricted to supplied DeepSeek packet with no tools for additional evidence collection or code inspection of unresolved groups."
+    - "Zero-row tables (e.g. decision_graph_*, skill_registry_*, organizational_memory_*, task_budgets, improvement_candidates) provide no surviving observations, limiting observable-effect verification for some capabilities."
+    - "Completeness assessment reserved to external checker; packet correctly sets coverage_complete=false but contains unsupported phrasing on runtime enumeration."
+    - "Positive records supply all required fields but classification_basis strings are abbreviated ('Q1=YES...') rather than full per-Q answers; adjacent boundaries reference unresolved packages."
+  completeness_assessment: Valid partial inventory only. All 21 positive records supply required capability record fields, cite verifiable entrypoints/enforcement points in repository source, state stable behavioral contracts with observable effects/restrictions, name causal purposes, provide adjacent boundaries, and assert Q1-Q6 passage on supplied provenance. No positive record is solely an excluded artifact (table/migration/role/event_type/package). No clear over-merge (distinct responsibilities/purposes/contracts preserved) or over-split (no evidence of independent invocable responsibilities collapsed). However, packet explicitly leaves many navigation groups and their potential capabilities UNRESOLVED, 67 zero-row runtime units show absence of surviving observation rather than absence of mechanism, and external facts contradict the packet's enumeration claim. This is therefore a valid but incomplete accounting of organizational_capabilities_implemented_by_this_repository; a complete inventory would require measurement of all groups and confirmation that no additional records satisfy Q1-Q6.
+  decision_relevance: Supports identification of core implemented behaviors (task state machine, authorization matrix/approvals, executive orchestration, agent messaging/budgeting, model invocation/dispatch/egress/identity/assignment, RAG/memory/skill lifecycles, context snapshots, organization registry, staging workspaces, decision DAG, improvement promotion, completion verification, corpus census, immutable object storage) with runtime evidence mapping where observations exist. Insufficient for full repository capability surface or confirmation that unresolved packages contain zero additional ORGANIZATIONAL_CAPABILITY records.
+  falsifier: Targeted inspection of any unresolved package (e.g. internal/contextcompiler/contextcompiler_compiler.go, internal/embeddingruntime/port.go, internal/modelpricing/resolve.go or shadowverifier) revealing a behavior that satisfies all Q1-Q6, or re-examination of any accepted record's cited files showing failure of Q1 (external delegation only), Q3 (no verifiable repository contract), Q4 (no specifiable observable effect/restriction), Q5 (supporting artifact only), or Q6 (representation-bound identity).
+  recommended_disposition: PARTIAL
+```

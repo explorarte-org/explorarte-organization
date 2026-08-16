@@ -1,0 +1,11 @@
+{
+  "accepted_capability_count": 21,
+  "audit_gate_pass": true,
+  "challenged_capability_count": 4,
+  "confidence": 0.62,
+  "normalization_rule": "extract the sole ```yaml fenced payload verbatim; no semantic edits",
+  "normalized_sha256": "769866e0b599e806b57c85c186f372e6b3cde34ea8b5307b97aba70bcbfddb09",
+  "raw_sha256": "d6acdbd59a3f7ad4aa0e0abced3a1dc8e91574461072bab0d9dc1d1ce0dcf445",
+  "recommended_disposition": "PARTIAL",
+  "verdict": "VALID_PARTIAL"
+}

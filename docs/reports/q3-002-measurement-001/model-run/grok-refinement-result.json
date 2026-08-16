@@ -1,0 +1,16 @@
+{
+  "accepted_new_capabilities": 7,
+  "audit_sha256": "600c48bd89f55376a455e2f84ac37950b09cb7f31f1f2bf6b55524b4c69aa9d7",
+  "challenged_new_capabilities": 2,
+  "confidence": 0.55,
+  "ledger": {
+    "deepseek": 0.11211162200000002,
+    "grok": 0.5690875,
+    "luna": 0.0,
+    "mission": 0.681199122
+  },
+  "normalization": "sole YAML fence extracted verbatim",
+  "recommended_disposition": "PARTIAL",
+  "rejected_new_capabilities": 7,
+  "verdict": "VALID_PARTIAL"
+}

@@ -1,0 +1,67 @@
+refinement_audit:
+  question_id: REFORMULATED-Q3-002
+  verdict: VALID_PARTIAL
+  confidence: 0.55
+  accepted_new_capability_ids:
+    - OC-question-identity-gate
+    - OC-secret-clinical-detection
+    - OC-secret-scanning
+    - OC-model-pricing-resolution
+    - OC-web-evidence-ingest
+    - OC-shadow-verification
+    - OC-evaluation-comparison
+  rejected_new_capabilities:
+    - capability_id: OC-context-profile-projection
+      terminal_classification: SUPPORTING_ARTIFACT_OF:OC-context-compilation
+      reason: Projection and task-class fallback logic implements a registered per-SourceReference transformation inside the canonical snapshot compilation flow (Compile calls TaskClassOf then applies Projections before finalize); it lacks an independent causal purpose or invocable contract separable from snapshot assembly. Packet observations confirm it is the primary implemented behavior of the contextcompiler package.
+      ontology_rule: Q5 supporting artifact test; granularity and identity rules (split rule requires distinct causal purpose and incompatible contracts; representation stability ties it to contextengine.Snapshot)
+    - capability_id: OC-corpus-work-clustering
+      terminal_classification: SUPPORTING_ARTIFACT_OF:OC-corpus-census
+      reason: TF-IDF vectorization and single-link union-find is a deterministic sub-step explicitly feeding curation; package doc and observations show no independent trigger, no Postgres write, and no model call—pure reusable transformation inside the census pipeline.
+      ontology_rule: Q5 supporting artifact test and explicit exclusion for helpers/algorithms without autonomous operational responsibility; over-splitting corpus processing
+    - capability_id: OC-corpus-curation-output-contract
+      terminal_classification: SUPPORTING_ARTIFACT_OF:OC-corpus-census
+      reason: Closed-tier vocabulary and work_id set equality check is a post-processing validation step on curator output that already depends on census Works and clusters; contract violation is diagnostic only and consumed inside the same corpus flow.
+      ontology_rule: Q5 supporting artifact test; merge rule (same responsibility and causal purpose as preventing silent drops inside census/curation)
+    - capability_id: OC-corpus-abstract-enrichment
+      terminal_classification: SUPPORTING_ARTIFACT_OF:OC-corpus-census
+      reason: Batch fetch, 429 backoff, resumable cache skip and checkpoint are orchestration around an external Semantic Scholar client; no autonomous organizational transition beyond enriching the census data model.
+      ontology_rule: Q1 repository-owned behavior (external delegation dominates); Q5 supporting artifact test; external services versus repository-owned orchestration
+    - capability_id: OC-corpus-semantic-embedding-clustering
+      terminal_classification: SUPPORTING_ARTIFACT_OF:OC-corpus-census
+      reason: OnlineAdapter embedding + UPGMA average-link clustering with checkpoints is the semantic stage of the same corpus pipeline that begins with title clustering and curation; shares causal purpose of reproducible subproblem grouping.
+      ontology_rule: Q5 supporting artifact test and over-splitting corpus processing into independent capabilities; adjacent-boundary requirement not evidenced independently of OC-corpus-census
+    - capability_id: OC-embedding-provider-dispatch
+      terminal_classification: SUPPORTING_ARTIFACT_OF:OC-rag-knowledge-lifecycle
+      reason: OnlineAdapter/BatchAdapter boundaries, circuitBreaker, vector validation and idempotency keys are generic infrastructure adapters routing to external providers; no organizational transition beyond supporting embedding calls consumed by RAG, corpus semantic and memory.
+      ontology_rule: Q5 supporting artifact test; generic adapters/infrastructure versus organizational behavior
+    - capability_id: OC-covert-channel-audit
+      terminal_classification: SUPPORTING_ARTIFACT_OF:OC-capability-authorization
+      reason: Deterministic catalog of surfaces and rule-based violation detection is a static structural analysis tool; produces only findings with no enforcement, no runtime transition, and no authorization decision—pure audit surface.
+      ontology_rule: Q5 supporting artifact test; test/evaluation/security-audit tooling relevance to organization behavior (does not itself produce/restrict a system transition)
+  challenged_new_capabilities:
+    - capability_id: OC-evaluation-comparison
+      issue: Behavioral contract and causal purpose center on suite execution, trace verification and OverallVerdict reduction that feeds OC-improvement-promotion; however packet leaves evaluation postgres store, metrics (RecallAt/NDCGAt) and full comparison.go unexamined, making Q4 observable effect and Q6 representation independence unverifiable. Evaluation tooling may be meta rather than core organizational behavior.
+      ontology_rule: Adjacent-boundary requirement, Q4 specifiable effect and measurement limitations on test/evaluation tooling
+    - capability_id: OC-question-identity-gate
+      issue: Gate and RunNext order are repository behavior, but candidate packet includes cmd/question-identity-gate/main as primary entrypoint that only performs IO wiring into BindControllerPayload; behavioral_contract mixes gate verification with CLI execution path, risking layout-dependent identity if the gate is reused outside the refinement CLI (violates "not merely a package/CLI").
+      ontology_rule: Q3 verifiable entry or enforcement, Q6 layout-dependent identity test and special attention to questionidentity as implemented repository behavior
+  observed_claims:
+    - OBSERVED: contextcompiler.Compile projects canonical Snapshot via per-SourceReference ProjectionFuncs with fail-closed fallback on missing RequiredTiers; CompileForTaskClass keys strictly on TaskClassOf(ActorRoleID).
+    - OBSERVED: corpuscluster implements deterministic TF-IDF + single-link union-find with stable cluster ID hashes; explicitly never calls models or writes to Postgres.
+    - OBSERVED: corpuscuration.ValidateCurationOutputContract enforces closed tier set and exact work_id equality (cluster_id diagnostic only).
+    - OBSERVED: corpusenrich.Orchestrator.Run implements batching, cache skip, bounded 429 backoff and loud RateLimitedStop.
+    - OBSERVED: questionidentity gate pins CanonicalContractSHA256, strictly validates protected fields and orders source->decode->gate->drift-or-model.
+    - OBSERVED: shadowverifier is observe-and-compare-only, re-derives facts from snapshot+matrix and tallies divergences without mutation.
+    - DERIVED: 14 groups hold independently nameable responsibilities (but packet explicitly lists remaining_unknowns in corpuscuration, evaluation metrics and embedding flows).
+  unsupported_inferences:
+    - The derivation that all 14 candidates are independent ORGANIZATIONAL_CAPABILITYs is unsupported; multiple corpus candidates share causal purpose and entrypoints with the already-accepted OC-corpus-census and fail the split rule.
+    - Inference that embeddingruntime adapters constitute autonomous dispatch behavior is unsupported; they are generic provider adapters (circuitBreaker, validateVector) consumed by multiple capabilities without owning an organizational transition.
+  measurement_limitations:
+    - 67 zero-row units with no surviving evidence from initial audit remain unaddressed.
+    - Packet coverage_complete: false; cheapest_next_evidence explicitly calls for reading corpuscuration_identity_preflight.go, gaps.go, evaluation/metrics.go and full embedding adapter.
+    - No provenance supplied for runtime evidence, configuration or full enforcement points in several candidates; behavioral_contracts sometimes restate type names rather than observable transitions.
+    - No full repository scan or decision-ledger state; classification relies on grep-derived call sites only.
+  completeness_assessment: Refinement supplies material new evidence via detailed behavioral contracts, provenance locators and resolved_group_accounting that maps 23 prior UNRESOLVED groups. It correctly marks config, platform, logicir, evaluationdb and secrets as irrelevant/supporting. However, it leaves explicit remaining_unknowns, does not achieve coverage_complete, over-splits the corpus pipeline into four staged capabilities that share responsibility with OC-corpus-census, and contains several Q5 violations for generic adapters, algorithms and audit tooling. Completeness remains external and unmeasurable as specified.
+  recommended_disposition: PARTIAL
+  falsifier: Reading the three remaining_unknown files (corpuscuration identity_preflight/gaps, evaluation/metrics, full embeddingruntime adapters) yields either (a) an additional independent capability with distinct causal purpose and entrypoint that cannot be folded as SUPPORTING_ARTIFACT_OF an accepted capability, or (b) evidence that any accepted new capability shares the exact behavioral sentence, causal purpose and contract with an initial-audit capability (e.g. OC-context-compilation or OC-rag-knowledge-lifecycle), forcing reclassification under the merge rule.
