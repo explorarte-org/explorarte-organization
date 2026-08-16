@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Mireuz13/explorarte-organization/internal/dataclassifier"
+	"github.com/Mireuz13/explorarte-organization/internal/contentpolicy"
 )
 
 type Status string
@@ -190,10 +190,8 @@ func (e Entry) Validate() error {
 	if err := e.Admission.Validate(); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidEntry, err)
 	}
-	if finding := dataclassifier.Detect(e.Problem + "\n" + e.Correction); finding.Secret && e.Admission.DataClass != DataSecret {
-		return fmt.Errorf("%w: %w: body matches a %s but is declared %q", ErrInvalidEntry, ErrForbiddenDataClass, finding.SecretReason, e.Admission.DataClass)
-	} else if finding.Clinical && e.Admission.DataClass != DataClinical {
-		return fmt.Errorf("%w: %w: body matches a %s but is declared %q", ErrInvalidEntry, ErrForbiddenDataClass, finding.ClinicalReason, e.Admission.DataClass)
+	if finding, ok := contentpolicy.Analyze(e.Problem + "\n" + e.Correction).First(); ok && e.Admission.DataClass != DataSecret {
+		return fmt.Errorf("%w: %w: body matches a %s but is declared %q", ErrInvalidEntry, ErrForbiddenDataClass, finding.Kind, e.Admission.DataClass)
 	}
 	if e.SupersedesEntryID == e.ID && e.SupersedesEntryID != "" {
 		return fmt.Errorf("%w: an entry cannot supersede itself", ErrInvalidEntry)

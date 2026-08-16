@@ -38,7 +38,7 @@ func (s TextExtractionStatus) Valid() bool {
 // Page is one page of a processed PDF: its own self-contained single-page
 // PDF (PDFBytes/SHA256 -- what gets uploaded to Object Storage and later
 // embedded multimodally) and its independently extracted text (what
-// becomes a chunk's Content, and what dataclassifier.Detect scans).
+// becomes a chunk's Content, and what contentpolicy.Analyze scans).
 type Page struct {
 	PageNumber           int
 	PDFBytes             []byte

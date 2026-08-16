@@ -16,7 +16,7 @@ import (
 
 	"github.com/Mireuz13/explorarte-organization/internal/authorization"
 	"github.com/Mireuz13/explorarte-organization/internal/config"
-	"github.com/Mireuz13/explorarte-organization/internal/dataclassifier"
+	"github.com/Mireuz13/explorarte-organization/internal/contentpolicy"
 	"github.com/Mireuz13/explorarte-organization/internal/pdfingest"
 	"github.com/Mireuz13/explorarte-organization/internal/pdfingest/poppler"
 	"github.com/Mireuz13/explorarte-organization/internal/rag"
@@ -228,7 +228,7 @@ func runRAGIngestPDF(ctx context.Context, runtime *ragbootstrap.Runtime, input r
 	// question about its own knowledge corpus. Secret-shaped content
 	// (API keys, tokens, credentials) stays a real Organization concern
 	// and is still checked.
-	if finding := dataclassifier.Detect(bodyText); finding.Secret {
+	if contentpolicy.Analyze(bodyText).HasCredentials() {
 		return ragIngestPDFResult{}, fmt.Errorf("%w: extracted text matched a forbidden data pattern, refusing to propose", rag.ErrInvalidRequest)
 	}
 
