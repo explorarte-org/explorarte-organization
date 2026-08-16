@@ -190,10 +190,7 @@ func (e Entry) Validate() error {
 	if err := e.Admission.Validate(); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidEntry, err)
 	}
-	assessment := contentpolicy.Analyze(e.Problem + "\n" + e.Correction)
-	if finding, ok := assessment.First(contentpolicy.RiskCredential); ok && e.Admission.DataClass != DataSecret {
-		return fmt.Errorf("%w: %w: body matches a %s but is declared %q", ErrInvalidEntry, ErrForbiddenDataClass, finding.Kind, e.Admission.DataClass)
-	} else if finding, ok := assessment.First(contentpolicy.RiskClinical); ok && e.Admission.DataClass != DataClinical {
+	if finding, ok := contentpolicy.Analyze(e.Problem + "\n" + e.Correction).First(); ok && e.Admission.DataClass != DataSecret {
 		return fmt.Errorf("%w: %w: body matches a %s but is declared %q", ErrInvalidEntry, ErrForbiddenDataClass, finding.Kind, e.Admission.DataClass)
 	}
 	if e.SupersedesEntryID == e.ID && e.SupersedesEntryID != "" {

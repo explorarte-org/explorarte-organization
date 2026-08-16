@@ -85,8 +85,7 @@ func (m *Manager) embed(ctx context.Context, organizationID, actorRoleID, text s
 	defer func() {
 		slog.Default().Info("memory embedding channel status", "provider_id", deps.ProviderID, "provider_model_id", deps.ProviderModelID, "operation", operation, "degraded", vector == nil)
 	}()
-	assessment := contentpolicy.Analyze(text)
-	if assessment.Has(contentpolicy.RiskCredential) || assessment.Has(contentpolicy.RiskClinical) {
+	if contentpolicy.Analyze(text).HasCredentials() {
 		slog.Default().Warn("memory embedding skipped: text matched a forbidden data pattern", "organization_id", organizationID, "operation", operation)
 		return nil
 	}

@@ -1,6 +1,7 @@
 package contentpolicy
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -8,18 +9,23 @@ import (
 const (
 	fakeGitHub = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	fakeAWS    = "AKIAIOSFODNN7EXAMPLE"
+	fakeJWT    = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk"
 )
 
-func TestAnalyzeClassifiesCredentialAndClinicalSignalsIndependently(t *testing.T) {
-	assessment := Analyze("Patient record references " + fakeGitHub)
-	if !assessment.Has(RiskCredential) || !assessment.Has(RiskClinical) {
-		t.Fatalf("expected both typed risks, got %+v", assessment.Findings)
+func TestAnalyzeDetectsCredentialAlongsideOrdinaryPatientVocabulary(t *testing.T) {
+	assessment := Analyze("Patient workflow reference uses " + fakeGitHub)
+	if !assessment.HasCredentials() {
+		t.Fatal("credential was not detected")
 	}
-	if got := assessment.Kinds(RiskCredential); len(got) != 1 || got[0] != string(KindAPIToken) {
-		t.Fatalf("credential kinds = %v", got)
+	if len(assessment.Findings) != 1 || assessment.Findings[0].Kind != KindAPIToken {
+		t.Fatalf("findings = %+v, want exactly one credential finding", assessment.Findings)
 	}
-	if got := assessment.Kinds(RiskClinical); len(got) != 1 || got[0] != string(KindClinicalTerminology) {
-		t.Fatalf("clinical kinds = %v", got)
+}
+
+func TestAnalyzeDoesNotInferClinicalDataFromVocabulary(t *testing.T) {
+	text := "The patient model is used in healthcare workflow examples"
+	if assessment := Analyze(text); assessment.HasCredentials() || len(assessment.Findings) != 0 {
+		t.Fatalf("ordinary organizational knowledge produced findings: %+v", assessment.Findings)
 	}
 }
 
@@ -29,13 +35,23 @@ func TestAnalyzeCoversDeclaredCredentialKinds(t *testing.T) {
 		kind Kind
 		text string
 	}{
-		{"api token", KindAPIToken, fakeGitHub},
+		{"openai style token", KindAPIToken, "sk-abcdefghijklmnopqrstuvwxyz012345"},
+		{"anthropic token", KindAPIToken, "sk-ant-api03-AAAABBBBCCCCDDDDEEEEFFFF"},
+		{"github token", KindAPIToken, fakeGitHub},
+		{"slack token", KindAPIToken, "xoxb-1234567890-ABCDEFGHIJKLMNOP"},
+		{"google api key", KindAPIToken, "AIzaSyABCDEFGHIJKLMNOPQRSTUVWXYZ0123456"},
 		{"password", KindPassword, `password=Tr0ub4dor&3xyz`},
 		{"private key", KindPrivateKey, "-----BEGIN OPENSSH PRIVATE KEY-----"},
 		{"cloud", KindCloudCredential, fakeAWS},
+		{"aws secret", KindCloudCredential, "aws_secret_access_key=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY123"},
+		{"azure account key", KindCloudCredential, "AccountKey=abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGH=="},
 		{"database url", KindDatabaseURLCredential, "postgres://app:s3cr3tpassword@db.internal:5432/orgdb"},
+		{"mongodb url", KindDatabaseURLCredential, "mongodb+srv://svc:PleaseRotateMe@cluster0.example.net"},
 		{"session", KindSessionToken, "Authorization: Bearer abcdef0123456789abcdef"},
+		{"jwt", KindSessionToken, fakeJWT},
+		{"session cookie", KindSessionToken, "sessionid=abcdef0123456789abcdef0123"},
 		{"webhook", KindWebhookSigningSecret, "whsec_ABCDEFGHIJKLMNOPQRSTUV"},
+		{"assigned webhook", KindWebhookSigningSecret, `signing_secret: "a1b2c3d4e5f6a7b8"`},
 		{"oauth", KindOAuthClientSecret, `client_secret=abcdefghijklmnop`},
 		{"service account", KindServiceAccountCredential, `{"type":"service_account","private_key":"-----BEGIN"}`},
 		{"generic assignment", KindCredentialAssignment, `api_key: "abcdefgh12345678"`},
@@ -43,7 +59,7 @@ func TestAnalyzeCoversDeclaredCredentialKinds(t *testing.T) {
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
 			assessment := Analyze(testCase.text)
-			finding, ok := assessment.First(RiskCredential)
+			finding, ok := assessment.First()
 			if !ok {
 				t.Fatalf("no credential finding for %q", testCase.text)
 			}
@@ -54,32 +70,33 @@ func TestAnalyzeCoversDeclaredCredentialKinds(t *testing.T) {
 	}
 }
 
-func TestAnalyzeLeavesPlaceholdersAndOrdinaryTextAlone(t *testing.T) {
-	clean := []string{
-		"Ask the patient to reset their password before the next session.",
-		"Set password=<REDACTED> in the example configuration.",
-		"Use password=${DB_PASSWORD} from the environment.",
+func TestAnalyzeAllowsDocumentedPlaceholders(t *testing.T) {
+	placeholders := []string{
 		"api_key: your-api-key-here",
-		"Review commit 7cd60785683cb197b3941974d1727311447af4fa.",
+		"api_key: your_api_key",
+		"password=<REDACTED>",
+		"password=${DB_PASSWORD}",
+		"access_token=$TOKEN",
+		"password=changeme",
+		"password=example",
+		"password=dummy",
+		"password=placeholder",
 	}
-	for _, text := range clean {
-		if assessment := Analyze(text); assessment.Has(RiskCredential) {
-			t.Fatalf("ordinary text classified as credential: %q -> %+v", text, assessment.Findings)
+	for _, text := range placeholders {
+		if assessment := Analyze(text); assessment.HasCredentials() {
+			t.Fatalf("documented placeholder classified as credential: %q -> %+v", text, assessment.Findings)
 		}
 	}
 }
 
-func TestRedactCredentialsPreservesClinicalTextAndRemovesValues(t *testing.T) {
-	text := "patient history used " + fakeGitHub + " against the registry"
-	redacted, findings := RedactCredentials(text)
-	if len(findings) != 1 {
-		t.Fatalf("credential findings = %+v", findings)
-	}
-	if strings.Contains(redacted, fakeGitHub) {
-		t.Fatalf("redacted text leaked credential: %q", redacted)
-	}
-	if !strings.Contains(redacted, "patient history") || !strings.Contains(redacted, "credential_type=api_token") {
-		t.Fatalf("redaction lost safe context or category: %q", redacted)
+func TestPlaceholderPrefixDoesNotCreateBypass(t *testing.T) {
+	for _, text := range []string{
+		"api_key: your-production-token-ABCD1234",
+		"api_key: my-real-secret-123456",
+	} {
+		if assessment := Analyze(text); !assessment.HasCredentials() {
+			t.Fatalf("credential-shaped value bypassed through placeholder prefix: %q", text)
+		}
 	}
 }
 
@@ -92,9 +109,49 @@ func TestFindingsNeverContainMatchedContent(t *testing.T) {
 	}
 }
 
-func TestOverlappingCredentialDetectorsReportOnce(t *testing.T) {
-	assessment := Analyze("key sk-ant-api03-AAAABBBBCCCCDDDDEEEEFFFF")
-	if got := len(assessment.For(RiskCredential)); got != 1 {
-		t.Fatalf("credential findings = %d, want 1: %+v", got, assessment.Findings)
+func TestRedactCredentialsRemovesValuePreservesContextAndIsDeterministic(t *testing.T) {
+	text := "patient workflow used " + fakeGitHub + " against the registry"
+	first, findings := RedactCredentials(text)
+	second, secondFindings := RedactCredentials(text)
+	if strings.Contains(first, fakeGitHub) {
+		t.Fatalf("redacted text leaked credential: %q", first)
+	}
+	if !strings.Contains(first, "patient workflow used ") || !strings.Contains(first, " against the registry") {
+		t.Fatalf("redaction lost surrounding text: %q", first)
+	}
+	if first != second || !reflect.DeepEqual(findings, secondFindings) {
+		t.Fatalf("redaction is not deterministic: %q/%+v != %q/%+v", first, findings, second, secondFindings)
+	}
+}
+
+func TestCollapseUnionsOverlapsKeepsAdjacentFindingsAndSortsStably(t *testing.T) {
+	input := []Finding{
+		{Kind: KindPassword, Start: 100, End: 120}, // adjacent to the union
+		{Kind: KindAPIToken, Start: 50, End: 100},  // partial overlap extends it
+		{Kind: KindCloudCredential, Start: 15, End: 30},
+		{Kind: KindPrivateKey, Start: 0, End: 60},
+		{Kind: KindSessionToken, Start: 20, End: 25}, // contained
+	}
+	want := []Finding{
+		{Kind: KindPrivateKey, Start: 0, End: 100},
+		{Kind: KindPassword, Start: 100, End: 120},
+	}
+	if got := collapse(append([]Finding(nil), input...)); !reflect.DeepEqual(got, want) {
+		t.Fatalf("collapse = %+v, want %+v", got, want)
+	}
+	if got := collapse(append([]Finding(nil), input...)); !reflect.DeepEqual(got, want) {
+		t.Fatalf("second collapse changed output: %+v", got)
+	}
+}
+
+func TestOverlappingCredentialDetectorsProduceOneRedactionSpanWithoutPanic(t *testing.T) {
+	text := "Authorization: Bearer " + fakeJWT
+	assessment := Analyze(text)
+	if len(assessment.Findings) != 1 {
+		t.Fatalf("overlapping detectors produced %+v, want one safe span", assessment.Findings)
+	}
+	redacted, findings := RedactCredentials(text)
+	if len(findings) != 1 || strings.Contains(redacted, fakeJWT) {
+		t.Fatalf("unsafe overlapping redaction: text=%q findings=%+v", redacted, findings)
 	}
 }

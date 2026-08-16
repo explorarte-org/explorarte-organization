@@ -228,7 +228,7 @@ func runRAGIngestPDF(ctx context.Context, runtime *ragbootstrap.Runtime, input r
 	// question about its own knowledge corpus. Secret-shaped content
 	// (API keys, tokens, credentials) stays a real Organization concern
 	// and is still checked.
-	if contentpolicy.Analyze(bodyText).Has(contentpolicy.RiskCredential) {
+	if contentpolicy.Analyze(bodyText).HasCredentials() {
 		return ragIngestPDFResult{}, fmt.Errorf("%w: extracted text matched a forbidden data pattern, refusing to propose", rag.ErrInvalidRequest)
 	}
 

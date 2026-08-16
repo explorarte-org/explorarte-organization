@@ -160,14 +160,14 @@ func TestProposeRejectsSecretContentDeclaredAsLowerDataClass(t *testing.T) {
 	}
 }
 
-func TestProposeRejectsClinicalContentDeclaredAsLowerDataClass(t *testing.T) {
+func TestProposeAllowsHealthcareVocabularyWithoutInferringClinicalData(t *testing.T) {
 	now := time.Date(2026, 8, 7, 4, 0, 0, 0, time.UTC)
 	clock := &fixedClock{now: now}
 	service := NewService(clock)
 	command := validCommand(now)
-	command.Problem = "El paciente presenta síntomas tras el despliegue del nuevo modelo."
-	if _, err := service.Propose(command); !errors.Is(err, ErrForbiddenDataClass) {
-		t.Fatalf("propose clinical-shaped problem under %q: err=%v want ErrForbiddenDataClass", command.Admission.DataClass, err)
+	command.Problem = "Analiza cómo una empresa de salud organiza el historial del paciente."
+	if _, err := service.Propose(command); err != nil {
+		t.Fatalf("ordinary healthcare knowledge under %q was rejected: %v", command.Admission.DataClass, err)
 	}
 }
 

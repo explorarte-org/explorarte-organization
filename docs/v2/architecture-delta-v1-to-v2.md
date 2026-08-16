@@ -31,8 +31,9 @@ bootstrapped features with explicit composition around these responsibilities:
    RAG knowledge, with namespace-specific read projections.
 7. **Evidence ingestion** — corpus and web acquisition through typed adapters;
    object storage is supporting infrastructure, not an autonomous capability.
-8. **Content policy** — one detector inventory emitting typed credential and
-   clinical signals; each ingress boundary owns disposition.
+8. **Content policy** — one deterministic credential detector inventory; each
+   organizational boundary owns reject, skip-provider, or redact disposition.
+   Clinical-data classification remains outside this heuristic kernel.
 9. **Change assurance** — evaluation, shadow comparison, staging, and promotion
    form one evidence-to-promotion chain.
 10. **Skill lifecycle** — retained separately because executable skill adoption
@@ -67,8 +68,8 @@ organizational work execution.
 | `OC-organization-registry` | KEEP | Canonical control and revision identity for all other boundaries. |
 | `OC-question-identity-gate` | KEEP | Campaign instrument only; identity is its typed semantic gate, not its CLI layout. |
 | `OC-rag-knowledge-lifecycle` | MERGE | Governed knowledge with namespace-scoped retrieval projection. |
-| `OC-secret-clinical-detection` | MERGE | Content policy; typed clinical signal, never an automatic credential disposition. |
-| `OC-secret-scanning` | MERGE | Content policy; typed credential signal supports reject/redact dispositions. |
+| `OC-secret-clinical-detection` | DELETE | Clinical vocabulary does not prove clinical data. Explicit upstream `DataClinical` sentinels remain enforceable at organization/cell boundaries. |
+| `OC-secret-scanning` | SIMPLIFY | Content policy; one precise credential detector supports reject, skip-provider, and redact dispositions. |
 | `OC-shadow-verification` | SIMPLIFY | Change assurance; independent parity result remains non-authoritative until promotion. |
 | `OC-skill-lifecycle` | KEEP | Separate executable-artifact governance boundary. |
 | `OC-staging-workspace` | MERGE | Change assurance; isolated workspace/seal is the artifact phase before promotion. |
@@ -119,15 +120,16 @@ Branch: `v2/content-policy-kernel-001`
 
 This slice replaces `internal/dataclassifier` and `internal/secretscan` with
 `internal/contentpolicy` and migrates all production consumers. Detection emits
-typed, audit-safe findings. Task ingress rejects only credential findings;
-memory verifies credential and clinical declarations; RAG rejects credential
-signals but does not treat ordinary clinical vocabulary as clinical data; and
-redaction removes credentials without removing clinical content.
+audit-safe credential findings only. Task ingress rejects credential findings;
+memory enforces credential declarations while retaining explicit upstream
+`DataClinical` rejection; RAG rejects credentials but permits ordinary
+healthcare/research vocabulary; and redaction removes credentials without
+changing surrounding content.
 
 Acceptance invariants:
 
 - one detector inventory and no remaining imports of the two V1 packages;
-- credential and clinical signals can coexist without collapsing categories;
+- ordinary healthcare vocabulary produces no inferred data classification;
 - findings never retain or render matched credential values;
 - placeholders remain accepted;
 - task, memory, RAG, and CLI boundary behavior stays covered by tests;

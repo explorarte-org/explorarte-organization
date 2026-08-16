@@ -165,7 +165,7 @@ func (m *Manager) embedItem(ctx context.Context, organizationID, actorRoleID, cl
 	// overlapping the clinical word list (RAG-EMBED-COMPLETENESS-001).
 	// Secret-shaped content stays a real Organization concern and is
 	// still checked; clinical vocabulary is not.
-	if contentpolicy.Analyze(classifierText).Has(contentpolicy.RiskCredential) {
+	if contentpolicy.Analyze(classifierText).HasCredentials() {
 		slog.Default().Warn("rag embedding skipped: text matched a forbidden data pattern", "organization_id", organizationID, "operation", operation)
 		return nil
 	}

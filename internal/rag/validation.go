@@ -97,7 +97,7 @@ func (v KnowledgeVersion) Validate() error {
 	// DataClass value only so AllowedInApprovedKnowledge's existing
 	// architectural rejection of it keeps working, not because content
 	// is ever expected to be classified as clinical here.
-	if finding, ok := contentpolicy.Analyze(v.Body).First(contentpolicy.RiskCredential); ok && v.Admission.DataClass != DataSecret {
+	if finding, ok := contentpolicy.Analyze(v.Body).First(); ok && v.Admission.DataClass != DataSecret {
 		return fmt.Errorf("%w: body matches a %s but is declared %q", ErrForbiddenDataClass, finding.Kind, v.Admission.DataClass)
 	}
 	if v.ContentHash != ContentHash(v.Body) {

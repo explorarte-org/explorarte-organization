@@ -294,28 +294,16 @@ func TestEmbedMediaSkipsWhenClassifierTextMatchesForbiddenPattern(t *testing.T) 
 	}
 }
 
-// TestEmbedMediaAllowsClinicalVocabularyText is the RAG-EMBED-COMPLETENESS-001
-// regression: ARCH-BOUNDARY-001 already established that Organization's RAG
-// domain has no clinical data concept (cmd/orgctl/rag.go's runRAGIngestPDF,
-// internal/rag/validation.go's KnowledgeVersion.Validate), but this third
-// call site -- the embedding path itself -- was missed and kept using
-// finding.Any() (Secret OR Clinical), silently degrading embeddings for any
-// media-backed chunk whose extracted page text happened to contain ordinary
-// engineering vocabulary overlapping the clinical word list. Asserts the
-// precondition through the real contentpolicy.Analyze (never a
-// reimplementation of its decision) before checking that embedMedia now
-// proceeds to the adapter and returns a real vector.
-func TestEmbedMediaAllowsClinicalVocabularyText(t *testing.T) {
+// TestEmbedMediaAllowsOrdinaryHealthcareVocabulary proves the organization
+// does not infer a clinical record from words used in legitimate research.
+func TestEmbedMediaAllowsOrdinaryHealthcareVocabulary(t *testing.T) {
 	// "patient histories" as a memory-system example -- the exact shape of
 	// false positive found in the real 16-paper audit corpus (MemOS, page
 	// 13): ordinary engineering prose, not clinical data.
 	pageText := "The system caches frequently accessed knowledge, such as patient histories, for fast retrieval during diagnosis."
 	assessment := contentpolicy.Analyze(pageText)
-	if !assessment.Has(contentpolicy.RiskClinical) {
-		t.Fatalf("test fixture does not exercise the clinical-vocabulary path: findings=%+v", assessment.Findings)
-	}
-	if assessment.Has(contentpolicy.RiskCredential) {
-		t.Fatalf("test fixture unexpectedly also matches a credential pattern: findings=%+v", assessment.Findings)
+	if assessment.HasCredentials() || len(assessment.Findings) != 0 {
+		t.Fatalf("ordinary research vocabulary produced credential findings: %+v", assessment.Findings)
 	}
 
 	ledger := &fakeEmbeddingLedger{balanceOK: true}
@@ -340,7 +328,7 @@ func TestEmbedMediaAllowsClinicalVocabularyText(t *testing.T) {
 func TestEmbedMediaStillSkipsSecretShapedText(t *testing.T) {
 	pageText := `api_key: "abcdefgh12345678"`
 	assessment := contentpolicy.Analyze(pageText)
-	if !assessment.Has(contentpolicy.RiskCredential) {
+	if !assessment.HasCredentials() {
 		t.Fatalf("test fixture does not exercise the credential path: findings=%+v", assessment.Findings)
 	}
 

@@ -71,16 +71,14 @@ func TestCreateRequestRejectsSecretsInEveryAgentVisibleField(t *testing.T) {
 	}
 }
 
-// TestCreateRequestCarriesSensitiveButNonSecretData pins the other half of
-// the policy. Clinical and personal material is governed by classification
-// and access control, not refused at ingress; rejecting it here would make
-// the product unusable for its actual purpose.
-func TestCreateRequestCarriesSensitiveButNonSecretData(t *testing.T) {
+// TestCreateRequestAllowsHealthcareVocabulary pins the organization/cell
+// boundary: words about patients or diagnosis are not proof of a clinical
+// record and must not be heuristically rejected by the organization.
+func TestCreateRequestAllowsHealthcareVocabulary(t *testing.T) {
 	request := validRequest()
-	request.Instructions = "Redacta el informe de la paciente Sonia Silva (TH001-PX-001), " +
-		"diagnóstico TDAH inatento, incluyendo los resultados de la última sesión."
+	request.Instructions = "Analiza cómo una empresa de salud organiza el historial del paciente en ejemplos de workflow."
 	if err := ValidateCreateRequest(NormalizeCreateRequest(request)); err != nil {
-		t.Fatalf("clinical data must be carried, not rejected: %v", err)
+		t.Fatalf("ordinary healthcare vocabulary must not be rejected: %v", err)
 	}
 }
 

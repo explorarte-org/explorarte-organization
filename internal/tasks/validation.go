@@ -301,9 +301,9 @@ func rejectSecrets(request CreateRequest) error {
 		}{fmt.Sprintf("requirements[%d].description", index), requirement.Description})
 	}
 	for _, field := range fields {
-		if assessment := contentpolicy.Analyze(field.text); assessment.Has(contentpolicy.RiskCredential) {
+		if assessment := contentpolicy.Analyze(field.text); assessment.HasCredentials() {
 			return fmt.Errorf("%w: %s contains %s; store the credential in the secret store and reference it instead",
-				ErrSecretRejected, field.name, strings.Join(assessment.Kinds(contentpolicy.RiskCredential), ", "))
+				ErrSecretRejected, field.name, strings.Join(assessment.Kinds(), ", "))
 		}
 	}
 	return nil
