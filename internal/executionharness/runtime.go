@@ -161,9 +161,11 @@ func (r *Runtime) Execute(ctx context.Context, spec RunSpec) RunResult {
 			}
 			if err := r.authority.AuthorizeExecution(ctx, AuthorityRequest{Identity: spec.Identity, LeaseToken: spec.LeaseToken}); err != nil {
 				if errors.Is(err, ErrAuthorityUnavailable) {
-					// The tool has not run, so no side effect exists to record.
-					// The trailing tool_call_requested event stays unresolved,
-					// which resume treats as never-observed rather than replay.
+					// Nothing has been written for this tool call yet: the
+					// request is made durable further down, immediately before
+					// the executor runs. Returning here therefore leaves no
+					// trace of a call that never happened, and the run resumes
+					// cleanly at this same boundary.
 					return result(spec, events, StatusAuthorityUnavailable, "execution authority unavailable", "", lastModelOutput, turnsUsed, toolCallsUsed)
 				}
 				events, _ = r.append(ctx, spec, events, Event{Type: EventToolCallDenied, ToolRequest: &toolRequest, ErrorCode: "authorization_denied", Reason: err.Error()})
@@ -302,11 +304,15 @@ func sameToolDefinition(left, right ToolDefinition) bool {
 
 // requestedToolCallIDs seeds the in-run replay guard from history. It counts
 // only tool calls that were RESOLVED -- executed or denied -- because those are
-// the only ones Project surfaces back to the model. A tool call that was
-// requested and never resolved was never observable by the model, so a resumed
-// run re-proposing that same ID is ordinary continuation, not a replay. The
-// in-process guard is unaffected: the live loop still marks every requested ID
-// as it goes, so duplicates within one run are caught as before.
+// the only ones Project surfaces back to the model. The in-process guard is
+// unaffected: the live loop still marks every requested ID as it goes, so
+// duplicates within one run are caught as before.
+//
+// This is NOT the rule that decides what happens to an unresolved request. An
+// unresolved tool_call_requested means the executor was entered and its outcome
+// is unknown, and unresolvedToolCall terminalizes the run before the model is
+// ever called again. Reading this function as permission to re-run such a call
+// is what produced a duplicate-side-effect defect here once already.
 func requestedToolCallIDs(events []Event) map[string]bool {
 	result := make(map[string]bool)
 	for _, event := range events {

@@ -124,7 +124,15 @@ entered.
 
 **An unresolved request is terminal, not retried.** On reload the Harness fails
 closed with `indeterminate_tool_execution` and hands the run to reconciliation.
-It calls neither the provider nor the tool, and the verdict is durable.
+It calls neither the provider nor the tool.
+
+The verdict is persisted when the history store is available -- not guaranteed
+against a second simultaneous failure of that store. If PostgreSQL is also down
+while the terminal event is being written, `Execute` still returns
+`indeterminate_tool_execution` but the terminal event is not durable. That is
+not a safety hole: the unresolved request is still in the ledger, so the next
+entry blocks again before any side effect. It only means the verdict may have to
+be re-derived rather than read back.
 
 This is deliberately not exactly-once. A local commit and a remote effect cannot
 be made atomic from here; a ledger would move the window, not close it. Real
@@ -177,6 +185,10 @@ reload.
   as `indeterminate_tool_execution` and requires reconciliation. Removing that
   stop needs an idempotent or reconcilable `ToolExecutor` keyed by organization,
   run and tool call id; that is a port contract change for the consumer slice.
+- The DOWN of migration 000050 is destructive: it drops `execution_run_events`
+  and also removes the `tasks (id, organization_id)` unique constraint it added.
+  That is coherent for a table-creating migration, but it must not be run
+  against an environment whose trajectories are meant to survive.
 - The PostgreSQL integration suites are not idempotent across runs on the same
   database: a second run fails because the down-migration subtest leaves the
   schema behind. This predates the Harness work and every result here was taken
