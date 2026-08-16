@@ -1,0 +1,71 @@
+{
+  "schema_version": "Q3_002_SCIENTIFIC_CAMPAIGN_BINDING_V1",
+  "mission_id": "ORGANIZATION-REDESIGN-001",
+  "question_id": "REFORMULATED-Q3-002",
+  "binding_role": "SCIENTIFIC_MEASUREMENT_CANDIDATE",
+  "declared_base_sha": "588db11599d701fb1e2ecbae19aa00828663dc2b",
+  "remote_main_sha_at_freeze": "588db11599d701fb1e2ecbae19aa00828663dc2b",
+  "measurement_roots": {
+    "measurement_root": "/home/ubuntu/campaign-588db11",
+    "tool_root": "/home/ubuntu/campaign-588db11",
+    "citation_root": "/home/ubuntu/campaign-588db11",
+    "integrity_root": "/home/ubuntu/campaign-588db11"
+  },
+  "active_questions": [
+    "REFORMULATED-Q3-002"
+  ],
+  "initial_epistemic_state": "UNKNOWN",
+  "initial_state": {
+    "artifact": "/home/ubuntu/campaign-588db11/tools/instrumentv4/testdata/q3-002-clean-initial-state.json",
+    "sha256": "2f41f95dfe95131bb9763909a4aaed2babce9448dbecef93e00c28e1aa17a47e",
+    "construction_method": "CONSTRUCTED_FROM_SCHEMA_WHITELIST",
+    "historical_source": null,
+    "historical_state_subtraction": false
+  },
+  "controller": {
+    "instrument": "INSTRUMENT_V4",
+    "path": "/home/ubuntu/redesign-001/loop_controller.py",
+    "sha256": "3547b61eba43b3aad6d14eec7313fdab1b480483c7d5d55b2368aba558066c8f",
+    "bytes": 66401
+  },
+  "question_identity": {
+    "contract_sha256": "5d14179555b1634238ffd197bc56afa42bc5b1dc93e5605f5d2e58f368e48f9c",
+    "binding_schema": "INSTRUMENT_V4_CONTROLLER_BINDING_V1",
+    "source_set_sha256": "5b1dd340e26a27879f30830d0b51068220b07665b0a459aaaa1f7b512d4c307a",
+    "gate_binary_path": "/home/ubuntu/q3-002-full-entry-gate-001/bin/question-identity-gate",
+    "gate_binary_sha256": "43b25561ed645231d4c74b499a99fc8c375aeb7ee947dcd86a9470e2a467f0cd",
+    "gate_binary_bytes": 3114724
+  },
+  "ontology": {
+    "version": "Q3_ONTOLOGY_V1",
+    "artifact": "docs/canonical/q3-organizational-capability-ontology-v1.md",
+    "whole_file_sha256": "0da2f727ceff769469c0ffad32c165690b3f4c1e5deac31d6e099117f9f1f974",
+    "normative_sha256": "cbf4b72975b4a8d8c2650969181f470d7a91fbf5f35beeabd23eb66a03f6e11c",
+    "normative_start_offset": 415,
+    "normative_end_offset_exclusive": 11987,
+    "normative_bytes": 11572
+  },
+  "repair_protection": {
+    "campaign_manifest_sha256": "1bb69e5778e9f6a9fde0ce7d2b9f70b226dc78afb6f4ce8b12f024fe3bb28ecd",
+    "report_sha256": "497bc99dca818097a3c06b6e761b0d25eae28191dd3c35265752512778828739",
+    "entry_gate_sha256": "5824388c2c158652360a81144711eb72d3d52373088e31f6e36ba0ff9b705142",
+    "tests_sha256": "d565d4de27c85109d75f57426ff17dcaa0f4865d72f7aec4bb51cf154d9e1df3",
+    "initial_state_sha256": "2f41f95dfe95131bb9763909a4aaed2babce9448dbecef93e00c28e1aa17a47e"
+  },
+  "offline_harness": {
+    "legacy_controller_harness": "/home/ubuntu/redesign-001/_fixtest/test_loop_fix.py",
+    "repair_tests": "tools/instrumentv4/q3_002_campaign_entry_gate_test.py",
+    "controller_replay": "tools/instrumentv4/replay_controller.py",
+    "historical_drift_fixture": "tools/instrumentv4/testdata/q3-001-target-drift-assignment.json",
+    "typed_positive_fixture": "tools/instrumentv4/testdata/legitimate-narrowing.json",
+    "minimum_legacy_checks": 98
+  },
+  "execution_constraints": {
+    "database_access_before_full_gate_pass_allowed": false,
+    "model_calls_before_full_gate_pass_allowed": false,
+    "q3_002_execution_inside_full_gate_allowed": false,
+    "historical_campaign_state_reuse_allowed": false,
+    "question_expansion_allowed": false,
+    "v2_allowed": false
+  }
+}
