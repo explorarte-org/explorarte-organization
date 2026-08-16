@@ -34,18 +34,13 @@ type AgentMessages struct {
 	OrganizationID string
 }
 
-var (
-	ErrNoActivePrincipal     = errors.New("no active execution principal found")
-	ErrPrincipalRoleMismatch = errors.New("principal dispatch_actor_role_id does not match sender role")
-)
+// ErrNoActivePrincipal used to be returned here when the principal store
+// failed. It no longer exists: a store that could not answer is reported with
+// its own typed cause, and an identity that exists but is unusable is
+// ErrRoleBoundPrincipalNotActive. Neither is "no principal found".
+var ErrPrincipalRoleMismatch = errors.New("principal dispatch_actor_role_id does not match sender role")
 
 var _ executive.AgentMessagingProvider = AgentMessages{}
-
-// roleBoundProvisionerRoleID attributes auto-provisioned principals in
-// registered_by_role_id/audit_events. It is not a role FK (that column has
-// none), only an audit label identifying the runtime component that
-// provisioned the row.
-const roleBoundProvisionerRoleID = "executive/orchestrator"
 
 // resolveOrProvisionPrincipalForRole delegates to the shared resolver so that
 // messaging and every other consumer of role-bound identity derive the same

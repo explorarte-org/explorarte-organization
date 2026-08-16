@@ -3,6 +3,7 @@ package runtimeadapter
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -24,6 +25,20 @@ type principalRows struct {
 
 func newPrincipalRows() *principalRows {
 	return &principalRows{byRole: map[string]modeldispatch.ExecutionPrincipal{}, byKey: map[string]modeldispatch.ExecutionPrincipal{}}
+}
+
+// disable reproduces DisablePrincipal: the row stays, keyed the same way, but
+// it is no longer an active role binding.
+func (s *principalRows) disable(id int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for role, principal := range s.byRole {
+		if principal.ID == id {
+			delete(s.byRole, role)
+			principal.Status = modeldispatch.PrincipalDisabled
+			s.byKey[principal.IdempotencyKey] = principal
+		}
+	}
 }
 
 func (s *principalRows) ResolveActiveForRole(_ context.Context, organizationID, roleID string) (modeldispatch.ExecutionPrincipal, error) {
@@ -73,7 +88,9 @@ func newResolver(t *testing.T, store RoleBoundPrincipalStore) RoleBoundPrincipal
 func TestRoleBoundResolverReusesTheExistingActivePrincipal(t *testing.T) {
 	store := newPrincipalRows()
 	store.byRole["explorarte|empresa/ceo"] = modeldispatch.ExecutionPrincipal{
-		ID: 41, OrganizationID: "explorarte", DispatchActorRoleID: "empresa/ceo", Status: modeldispatch.PrincipalActive,
+		ID: 41, OrganizationID: "explorarte", DispatchActorRoleID: "empresa/ceo",
+		PrincipalKey: modeldispatch.RoleBoundPrincipalKeyPrefix + "empresa/ceo",
+		Status:       modeldispatch.PrincipalActive,
 	}
 
 	principal, err := newResolver(t, store).Resolve(context.Background(), "empresa/ceo")
@@ -160,18 +177,85 @@ func TestRoleBoundResolverConcurrentCallersConvergeOnOnePrincipal(t *testing.T) 
 	}
 }
 
-// A store failure that is not "absent" must not be mistaken for absence and
-// silently turned into provisioning a new identity.
-func TestRoleBoundResolverDoesNotProvisionOnStoreFailure(t *testing.T) {
-	store := newPrincipalRows()
-	store.resolveErr = errors.New("principal store unreachable")
+// A store that could not answer is not a store that answered "none". The typed
+// cause has to stay reachable, or the Executive cannot tell an availability
+// failure from a definite absence of identity -- the same distinction execution
+// authority already makes between unavailable and denied.
+func TestRoleBoundResolverPreservesTheCauseOfAStoreFailure(t *testing.T) {
+	for _, cause := range []error{
+		fmt.Errorf("%w: PostgreSQL 08006", modeldispatch.ErrDatabaseUnavailable),
+		context.DeadlineExceeded,
+		context.Canceled,
+	} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			store := newPrincipalRows()
+			store.resolveErr = cause
 
-	_, err := newResolver(t, store).Resolve(context.Background(), "empresa/ceo")
-	if !errors.Is(err, ErrNoActivePrincipal) {
-		t.Fatalf("error=%v want ErrNoActivePrincipal", err)
+			_, err := newResolver(t, store).Resolve(context.Background(), "empresa/ceo")
+			if err == nil {
+				t.Fatal("a failing store produced a principal")
+			}
+			if !errors.Is(err, cause) {
+				t.Fatalf("the typed cause was lost: %v", err)
+			}
+			if errors.Is(err, modeldispatch.ErrNotFound) {
+				t.Fatalf("an availability failure was reported as absence: %v", err)
+			}
+			if store.registered != 0 {
+				t.Fatal("a store failure provisioned a new principal")
+			}
+		})
 	}
-	if store.registered != 0 {
-		t.Fatal("a store failure provisioned a new principal")
+}
+
+// The path the fakes did not model before: disabling a principal makes
+// ResolveActiveForRole report absence, which sends the resolver down the
+// provisioning path, where the deterministic idempotency key returns the very
+// same disabled row. Returning it would look like success and then be denied
+// by execution authority on every attempt.
+func TestRoleBoundResolverRefusesAReusedDisabledPrincipal(t *testing.T) {
+	store := newPrincipalRows()
+	resolver := newResolver(t, store)
+
+	principal, err := resolver.Resolve(context.Background(), "empresa/ceo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.disable(principal.ID)
+
+	_, err = resolver.Resolve(context.Background(), "empresa/ceo")
+	if !errors.Is(err, ErrRoleBoundPrincipalNotActive) {
+		t.Fatalf("error=%v want ErrRoleBoundPrincipalNotActive: a revoked identity was handed back as usable", err)
+	}
+	if store.registered != 1 {
+		t.Fatalf("registered=%d: the resolver re-created an identity somebody had revoked", store.registered)
+	}
+}
+
+// The store must not be able to answer with somebody else's identity.
+func TestRoleBoundResolverRefusesAMismatchedPrincipal(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*modeldispatch.ExecutionPrincipal)
+	}{
+		{"wrong organization", func(p *modeldispatch.ExecutionPrincipal) { p.OrganizationID = "otra-org" }},
+		{"wrong role", func(p *modeldispatch.ExecutionPrincipal) { p.DispatchActorRoleID = "empresa/otro" }},
+		{"not the role-bound key", func(p *modeldispatch.ExecutionPrincipal) { p.PrincipalKey = "technical/dispatcher" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newPrincipalRows()
+			principal := modeldispatch.ExecutionPrincipal{
+				ID: 41, OrganizationID: "explorarte", DispatchActorRoleID: "empresa/ceo",
+				PrincipalKey: modeldispatch.RoleBoundPrincipalKeyPrefix + "empresa/ceo",
+				Status:       modeldispatch.PrincipalActive,
+			}
+			tc.mutate(&principal)
+			store.byRole["explorarte|empresa/ceo"] = principal
+
+			if _, err := newResolver(t, store).Resolve(context.Background(), "empresa/ceo"); !errors.Is(err, ErrRoleBoundPrincipalMismatch) {
+				t.Fatalf("error=%v want ErrRoleBoundPrincipalMismatch", err)
+			}
+		})
 	}
 }
 
