@@ -47,48 +47,12 @@ var _ executive.AgentMessagingProvider = AgentMessages{}
 // provisioned the row.
 const roleBoundProvisionerRoleID = "executive/orchestrator"
 
-// resolveOrProvisionPrincipalForRole returns the single active principal
-// bound to roleID, registering one on first use if none exists yet.
-// Registration is idempotent by construction: the idempotency key and
-// principal key are both deterministic functions of (organizationID,
-// roleID), so a concurrent caller racing this one either creates the row
-// or observes the same one just created, never a duplicate -- the same
-// idempotency contract every other RegisterPrincipal caller in this
-// codebase already relies on.
-//
-// roleID is never taken from caller/model/task-text input here; it must be
-// the AssignedRoleID off an already-persisted, already-registry-validated
-// TaskRecord (task creation validates AssignedRoleID against the registry
-// before a task can exist), so this does not itself re-validate role
-// executability -- doing so would require wiring a registry/catalog
-// dependency into this adapter purely to re-check a fact task creation
-// already established.
+// resolveOrProvisionPrincipalForRole delegates to the shared resolver so that
+// messaging and every other consumer of role-bound identity derive the same
+// principal from the same rows. The mechanism lives in
+// RoleBoundPrincipalResolver; the messaging policy around it stays here.
 func (a AgentMessages) resolveOrProvisionPrincipalForRole(ctx context.Context, roleID string) (modeldispatch.ExecutionPrincipal, error) {
-	principal, err := a.PrincipalStore.ResolveActiveForRole(ctx, a.OrganizationID, roleID)
-	if err == nil {
-		return principal, nil
-	}
-	if !errors.Is(err, modeldispatch.ErrNotFound) {
-		return modeldispatch.ExecutionPrincipal{}, fmt.Errorf("%w: %v", ErrNoActivePrincipal, err)
-	}
-
-	principalKey := modeldispatch.RoleBoundPrincipalKeyPrefix + roleID
-	command := modeldispatch.RegisterPrincipalCommand{
-		OrganizationID: a.OrganizationID, PrincipalKey: principalKey,
-		DispatchActorRoleID: roleID, PrincipalKind: modeldispatch.PrincipalLocalProcess,
-		IdempotencyKey: "role-bound-principal:" + a.OrganizationID + ":" + roleID,
-	}
-	requestHash, hashErr := modeldispatch.PrincipalRequestHash(command.OrganizationID, command.PrincipalKey, command.DispatchActorRoleID, command.PrincipalKind, roleBoundProvisionerRoleID)
-	if hashErr != nil {
-		return modeldispatch.ExecutionPrincipal{}, fmt.Errorf("compute role-bound principal request hash: %w", hashErr)
-	}
-	result, registerErr := a.PrincipalStore.RegisterPrincipal(ctx, modeldispatch.PreparedRegisterPrincipal{
-		Command: command, RequestHash: requestHash, RegisteredByRoleID: roleBoundProvisionerRoleID,
-	})
-	if registerErr != nil {
-		return modeldispatch.ExecutionPrincipal{}, fmt.Errorf("provision role-bound execution principal for %q: %w", roleID, registerErr)
-	}
-	return result.Principal, nil
+	return RoleBoundPrincipalResolver{Principals: a.PrincipalStore, OrganizationID: a.OrganizationID}.Resolve(ctx, roleID)
 }
 
 // validateSenderRoleWithPrincipal validates that principal.dispatch_actor_role_id == sender.role.
