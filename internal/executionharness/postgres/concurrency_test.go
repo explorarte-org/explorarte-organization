@@ -84,7 +84,7 @@ func TestForgedAuthorityUnavailableTerminalFailsClosedOnReload(t *testing.T) {
 	f := newFixture(t)
 	defer f.cleanup()
 
-	spec := restartSpec(f.taskID)
+	spec := restartSpec(f.taskID, f.attemptID)
 	spec.Identity.RunID = "run-forged-terminal"
 
 	// A legitimate, non-terminal history: the first check finds authority down.

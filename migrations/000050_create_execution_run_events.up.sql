@@ -10,12 +10,20 @@
 -- Ordering is an explicit per-run ordinal, never a timestamp: clock_timestamp()
 -- is not monotonic enough to reconstruct a trajectory, and two events written
 -- inside the same millisecond must still have an unambiguous order.
+
+-- Needed so run history can be bound to a task AND its organization in one
+-- constraint rather than to each independently. Same device 000049 used to
+-- bind a model invocation to its context snapshot. tasks.id is already the
+-- primary key, so this adds an index, never a restriction.
+ALTER TABLE tasks
+    ADD CONSTRAINT tasks_id_organization_unique UNIQUE (id, organization_id);
+
 CREATE TABLE execution_run_events (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
     run_id TEXT NOT NULL CHECK (run_id <> '' AND length(run_id) <= 200),
     sequence BIGINT NOT NULL CHECK (sequence > 0),
-    task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE RESTRICT,
+    task_id BIGINT NOT NULL,
     attempt_id BIGINT NOT NULL CHECK (attempt_id > 0),
     event_type TEXT NOT NULL CHECK (event_type <> ''),
     correlation_id TEXT NOT NULL,
@@ -23,11 +31,38 @@ CREATE TABLE execution_run_events (
     terminal_status TEXT NOT NULL DEFAULT '',
     payload JSONB NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
     recorded_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+
     -- The run ordinal is unique per organization, so two organizations may use
     -- the same run identifier without ever sharing or interleaving a history.
     -- This constraint is also the read index: history is always fetched as the
     -- ordered prefix of one run.
-    CONSTRAINT execution_run_events_run_sequence_unique UNIQUE (organization_id, run_id, sequence)
+    CONSTRAINT execution_run_events_run_sequence_unique UNIQUE (organization_id, run_id, sequence),
+
+    -- Identity is enforced as a whole, not field by field. Without these an
+    -- organization could accumulate append-only history pointing at another
+    -- organization's task, or at an attempt belonging to a different task;
+    -- authority would later deny the run, but the wrong row would already be
+    -- durable and unamendable.
+    CONSTRAINT execution_run_events_task_organization_fk
+        FOREIGN KEY (task_id, organization_id)
+        REFERENCES tasks(id, organization_id)
+        ON DELETE RESTRICT,
+    CONSTRAINT execution_run_events_task_attempt_fk
+        FOREIGN KEY (attempt_id, task_id)
+        REFERENCES task_attempts(id, task_id)
+        ON DELETE RESTRICT,
+
+    -- terminal_status is either absent or one of the Harness's terminal run
+    -- statuses. authority_unavailable is deliberately NOT in this list: an
+    -- authority outage is never a terminal outcome, and the schema refuses to
+    -- store a claim the runtime would reject on reload anyway.
+    CONSTRAINT execution_run_events_terminal_status_valid CHECK (
+        terminal_status IN (
+            '', 'completed', 'limit_reached', 'model_error', 'tool_error',
+            'authorization_denied', 'identity_drift', 'history_error',
+            'cancelled', 'indeterminate_tool_execution'
+        )
+    )
 );
 
 -- Append-only, matching every other durable ledger in this schema

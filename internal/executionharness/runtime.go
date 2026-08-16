@@ -48,6 +48,13 @@ func (r *Runtime) Execute(ctx context.Context, spec RunSpec) RunResult {
 		return terminal
 	}
 
+	if call, found := unresolvedToolCall(events); found {
+		reason := "tool call " + call + " was made durable before execution and never resolved"
+		events, _ = r.append(ctx, spec, events, Event{Type: EventRunFailed, TerminalStatus: StatusIndeterminateToolExecution,
+			ErrorCode: "indeterminate_tool_execution", Reason: reason})
+		return result(spec, events, StatusIndeterminateToolExecution, reason, "", lastModelOutput(events), countTurns(events), countToolCalls(events))
+	}
+
 	turnsUsed := countTurns(events)
 	toolCallsUsed := countToolCalls(events)
 	seenCalls := requestedToolCallIDs(events)
@@ -119,10 +126,6 @@ func (r *Runtime) Execute(ctx context.Context, spec RunSpec) RunResult {
 		}
 
 		for _, toolRequest := range modelResult.ToolRequests {
-			events, err = r.append(ctx, spec, events, Event{Type: EventToolCallRequested, ToolRequest: &toolRequest})
-			if err != nil {
-				return historyFailure(spec, events, err)
-			}
 			canonicalArgs, canonicalErr := canonicalJSON(toolRequest.Arguments)
 			if canonicalErr == nil {
 				toolRequest.Arguments = canonicalArgs
@@ -171,6 +174,17 @@ func (r *Runtime) Execute(ctx context.Context, spec RunSpec) RunResult {
 				events, _ = r.append(ctx, spec, events, Event{Type: EventToolCallDenied, ToolRequest: &toolRequest, ErrorCode: "invalid_tool_arguments", Reason: err.Error()})
 				events, _ = r.append(ctx, spec, events, Event{Type: EventRunFailed, TerminalStatus: StatusToolError, ErrorCode: "invalid_tool_arguments", Reason: "invalid tool arguments"})
 				return result(spec, events, StatusToolError, "invalid tool arguments", "", lastModelOutput, turnsUsed, toolCallsUsed)
+			}
+			// The request is made durable here and nowhere earlier. That single
+			// placement is what gives an unresolved tool_call_requested one
+			// meaning on reload: the executor was entered and the outcome is
+			// unknown. Recording it before the denial checks would have made the
+			// same row also mean "never ran", and the two cannot be told apart
+			// afterwards -- which is exactly how a crash could duplicate an
+			// external side effect.
+			events, err = r.append(ctx, spec, events, Event{Type: EventToolCallRequested, ToolRequest: &toolRequest})
+			if err != nil {
+				return historyFailure(spec, events, err)
 			}
 			toolResult, toolErr := r.tools.Execute(ctx, spec.Identity, toolRequest)
 			toolCallsUsed++
@@ -243,7 +257,8 @@ func terminalStatusMatches(eventType EventType, status RunStatus) bool {
 		return status == StatusCancelled
 	case EventRunFailed:
 		switch status {
-		case StatusModelError, StatusToolError, StatusAuthorizationDenied, StatusIdentityDrift, StatusHistoryError:
+		case StatusModelError, StatusToolError, StatusAuthorizationDenied, StatusIdentityDrift,
+			StatusHistoryError, StatusIndeterminateToolExecution:
 			return true
 		}
 	}
@@ -303,6 +318,29 @@ func requestedToolCallIDs(events []Event) map[string]bool {
 		}
 	}
 	return result
+}
+
+// unresolvedToolCall reports a durable tool request with no matching result or
+// denial. Because the request is appended immediately before the executor runs,
+// such a record means the side effect may already have happened. The Harness
+// refuses to re-run it: re-execution is the one failure mode that reaches
+// outside the system and cannot be undone.
+func unresolvedToolCall(events []Event) (string, bool) {
+	resolved := make(map[string]bool)
+	for _, event := range events {
+		switch event.Type {
+		case EventToolResultRecorded, EventToolCallDenied:
+			if event.ToolRequest != nil {
+				resolved[event.ToolRequest.ToolCallID] = true
+			}
+		}
+	}
+	for _, event := range events {
+		if event.Type == EventToolCallRequested && event.ToolRequest != nil && !resolved[event.ToolRequest.ToolCallID] {
+			return event.ToolRequest.ToolCallID, true
+		}
+	}
+	return "", false
 }
 
 func countTurns(events []Event) int {

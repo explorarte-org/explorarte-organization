@@ -71,7 +71,7 @@ the same conflict.
 and DELETE, matching every other durable ledger here.
 
 **Resume.** A new process with a new pool, a new store and a new runtime loads
-the history and continues. A non-terminal history resumes at the right point
+the history and continues, subject to the tool-execution rule below. A non-terminal history resumes at the right point
 without repeating the model turn or the tool side effect. A terminal history
 replays its result and calls neither the provider nor a tool.
 
@@ -101,20 +101,56 @@ The mirror case is proven too: a lease renewed through `Heartbeat` while still
 valid is **not** denied, and the run completes. Without it, an authority that
 simply refused every second turn would pass every denial test above.
 
-## Observation left for review
+## Tool execution is never repeated after a crash
 
-`authority_unavailable` can never be produced as a terminal status by the
-Harness: both unavailability branches return without appending, and
-`terminalStatusMatches` does not accept it. The durable store, however, does
-**not** refuse such an event at write time -- a caller that violated the port
-contract could persist one. What protects the system is the read side: a
-history carrying that impossible state is rejected as `ErrHistoryCorrupt` on
-reload, the run reports `history_error`, and no provider or tool is touched.
-`TestForgedAuthorityUnavailableTerminalFailsClosedOnReload` pins exactly that.
+Independent review found a real duplicate-side-effect window, and it was
+introduced by the earlier resume fix in this same branch. Narrowing the replay
+guard to resolved tool calls made an interrupted run resumable, but it also made
+an unresolved `tool_call_requested` mean "never ran" -- when it could equally
+mean "ran, produced its external effect, and died before the result was
+durable". The two are indistinguishable from the record, the `ToolExecutor` port
+carries no idempotency key, and re-running is the one failure mode that reaches
+outside the system and cannot be undone.
 
-This is weaker than a schema `CHECK` on `terminal_status`, and it is recorded
-here rather than hardened preemptively. Whether it needs the constraint before
-merge is a decision for review, not for the worker who wrote the code.
+Two changes make the record unambiguous instead of guessing at it.
+
+**The request is made durable immediately before the side effect and nowhere
+earlier.** It used to be appended before the denial checks, so the same row also
+covered calls that were rejected and never ran. Now every denial path -- replay,
+unknown tool, policy, authority, argument validation -- resolves before anything
+is written, and an authority outage at the tool boundary writes nothing at all.
+A durable `tool_call_requested` therefore has one meaning: the executor was
+entered.
+
+**An unresolved request is terminal, not retried.** On reload the Harness fails
+closed with `indeterminate_tool_execution` and hands the run to reconciliation.
+It calls neither the provider nor the tool, and the verdict is durable.
+
+This is deliberately not exactly-once. A local commit and a remote effect cannot
+be made atomic from here; a ledger would move the window, not close it. Real
+exactly-once needs the executor to be idempotent or reconcilable under a stable
+key (organization + run + tool call id), which is a change to the `ToolExecutor`
+contract and belongs to the consumer slice. What is guaranteed today is that the
+Harness never runs a tool whose outcome it does not know.
+
+## Durable identity is enforced as a whole
+
+Also from review: the ledger constrained organization, task and attempt
+independently, so an append-only row could name one organization's history and
+another's task, or an attempt belonging to a different task. Authority would
+deny the run afterwards, but the wrong row was already durable.
+
+Migration 000050 now binds them together with composite foreign keys --
+`(task_id, organization_id) -> tasks(id, organization_id)` and
+`(attempt_id, task_id) -> task_attempts(id, task_id)` -- following the device
+000049 used for invocations and context snapshots, and adding the
+`tasks (id, organization_id)` unique constraint the first one needs.
+
+The same migration now also constrains `terminal_status` to the statuses the
+Harness can actually reach. `authority_unavailable` is excluded, which closes
+the observation left open by the previous round: the impossible terminal state
+is now refused by the database at write time rather than only rejected on
+reload.
 
 ## Known gaps
 
@@ -136,6 +172,11 @@ merge is a decision for review, not for the worker who wrote the code.
   context errors. A transport failure that neither store maps to those
   sentinels is conservatively treated as a denial.
 - Only fake providers are exercised. `LIVE_PROVIDER_CALLS` remains 0 by design.
+- Tool execution is at-most-once with an explicit unknown, not exactly-once. A
+  run interrupted between a tool's external effect and its durable record ends
+  as `indeterminate_tool_execution` and requires reconciliation. Removing that
+  stop needs an idempotent or reconcilable `ToolExecutor` keyed by organization,
+  run and tool call id; that is a port contract change for the consumer slice.
 - The PostgreSQL integration suites are not idempotent across runs on the same
   database: a second run fails because the down-migration subtest leaves the
   schema behind. This predates the Harness work and every result here was taken

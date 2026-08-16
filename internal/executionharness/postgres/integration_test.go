@@ -18,6 +18,7 @@ import (
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/testdbguard"
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const (
@@ -26,11 +27,12 @@ const (
 )
 
 type fixture struct {
-	ctx     context.Context
-	store   *platformpostgres.Store
-	history *harnesspostgres.Store
-	taskID  int64
-	cleanup func()
+	ctx       context.Context
+	store     *platformpostgres.Store
+	history   *harnesspostgres.Store
+	taskID    int64
+	attemptID int64
+	cleanup   func()
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -111,17 +113,26 @@ func newFixture(t *testing.T) *fixture {
 		RETURNING id`, historyOrganization, revisionID, historyRole).Scan(&taskID); err != nil {
 		fail("insert task: %v", err)
 	}
+	// The ledger binds run history to a real attempt of a real task in this
+	// organization, so the fixture has to create one rather than assert an id.
+	var attemptID int64
+	if err = platformStore.Pool().QueryRow(ctx, `
+		INSERT INTO task_attempts(task_id,ordinal,state,worker_id,leased_at,started_at,created_at,updated_at)
+		VALUES($1,1,'running','execution-history-fixture',NOW(),NOW(),NOW(),NOW())
+		RETURNING id`, taskID).Scan(&attemptID); err != nil {
+		fail("insert task attempt: %v", err)
+	}
 	history, err := harnesspostgres.New(platformStore, historyOrganization)
 	if err != nil {
 		fail("history store: %v", err)
 	}
-	return &fixture{ctx: ctx, store: platformStore, history: history, taskID: taskID,
+	return &fixture{ctx: ctx, store: platformStore, history: history, taskID: taskID, attemptID: attemptID,
 		cleanup: func() { platformStore.Close(); cancel() }}
 }
 
 func (f *fixture) event(runID string, eventType executionharness.EventType) executionharness.Event {
 	return executionharness.Event{
-		RunID: runID, OrganizationID: historyOrganization, TaskID: f.taskID, AttemptID: 1,
+		RunID: runID, OrganizationID: historyOrganization, TaskID: f.taskID, AttemptID: f.attemptID,
 		Type: eventType, CorrelationID: runID + ":corr", CausationID: runID + ":cause",
 	}
 }
@@ -145,7 +156,7 @@ func TestDurableExecutionHistoryPostgreSQL17(t *testing.T) {
 		if len(events) != 1 || events[0].Sequence != 1 || events[0].Type != executionharness.EventRunStarted {
 			t.Fatalf("read=%+v", events)
 		}
-		if events[0].OrganizationID != historyOrganization || events[0].TaskID != f.taskID || events[0].AttemptID != 1 {
+		if events[0].OrganizationID != historyOrganization || events[0].TaskID != f.taskID || events[0].AttemptID != f.attemptID {
 			t.Fatalf("execution identity was not preserved: %+v", events[0])
 		}
 	})
@@ -245,6 +256,63 @@ func TestDurableExecutionHistoryPostgreSQL17(t *testing.T) {
 		crossed.OrganizationID = "otra-organizacion"
 		if _, err = f.history.Append(f.ctx, "run-shared", 1, crossed); !errors.Is(err, executionharness.ErrHistoryCorrupt) {
 			t.Fatalf("cross-organization append error=%v want ErrHistoryCorrupt", err)
+		}
+	})
+
+	t.Run("the ledger cannot bind a run to a foreign task or a foreign attempt", func(t *testing.T) {
+		// Identity is enforced as a whole. The two composite foreign keys are
+		// asserted by name so it is unambiguous which one refused: a pair that
+		// does not exist in tasks(id, organization_id) is exactly how a
+		// cross-organization binding would present itself, and an attempt of a
+		// different task is checked directly.
+		requireConstraint := func(err error, want string) {
+			t.Helper()
+			if err == nil {
+				t.Fatalf("the ledger accepted a row that %s should have refused", want)
+			}
+			var pgErr *pgconn.PgError
+			if !errors.As(err, &pgErr) {
+				t.Fatalf("expected a PostgreSQL constraint violation, got %v", err)
+			}
+			if pgErr.ConstraintName != want {
+				t.Fatalf("refused by %q, expected %q", pgErr.ConstraintName, want)
+			}
+		}
+
+		foreignTask := f.event("run-foreign-task", executionharness.EventRunStarted)
+		foreignTask.TaskID = f.taskID + 100000
+		_, err := f.history.Append(f.ctx, "run-foreign-task", 0, foreignTask)
+		requireConstraint(err, "execution_run_events_task_organization_fk")
+
+		var revisionID, otherTask, otherAttempt int64
+		if err = f.store.Pool().QueryRow(f.ctx, `SELECT organization_revision_id FROM tasks WHERE id=$1`, f.taskID).Scan(&revisionID); err != nil {
+			t.Fatal(err)
+		}
+		if err = f.store.Pool().QueryRow(f.ctx, `
+			INSERT INTO tasks(organization_id,organization_revision_id,assigned_role_id,assigned_unit_id,idempotency_key,request_hash,
+			                  title,instructions,acceptance_criteria,status,priority,available_at,max_attempts,attempt_count,version)
+			VALUES($1,$2,$3,'ingenieria_ia','execution-history-fixture-2',repeat('b',64),'Second fixture','Bind check.','[]','running',0,NOW(),5,1,1)
+			RETURNING id`, historyOrganization, revisionID, historyRole).Scan(&otherTask); err != nil {
+			t.Fatal(err)
+		}
+		if err = f.store.Pool().QueryRow(f.ctx, `
+			INSERT INTO task_attempts(task_id,ordinal,state,worker_id,leased_at,started_at,created_at,updated_at)
+			VALUES($1,1,'running','execution-history-fixture-2',NOW(),NOW(),NOW(),NOW())
+			RETURNING id`, otherTask).Scan(&otherAttempt); err != nil {
+			t.Fatal(err)
+		}
+		mismatched := f.event("run-foreign-attempt", executionharness.EventRunStarted)
+		mismatched.AttemptID = otherAttempt
+		_, err = f.history.Append(f.ctx, "run-foreign-attempt", 0, mismatched)
+		requireConstraint(err, "execution_run_events_task_attempt_fk")
+	})
+
+	t.Run("the schema refuses a terminal status the runtime can never produce", func(t *testing.T) {
+		forged := f.event("run-impossible-terminal", executionharness.EventRunFailed)
+		forged.TerminalStatus = executionharness.StatusAuthorityUnavailable
+		forged.Reason = "forged"
+		if _, err := f.history.Append(f.ctx, "run-impossible-terminal", 0, forged); err == nil {
+			t.Fatal("the ledger accepted authority_unavailable as a terminal status")
 		}
 	})
 

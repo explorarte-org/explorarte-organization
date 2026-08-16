@@ -69,11 +69,11 @@ func (e *countingTool) Execute(context.Context, executionharness.RunIdentity, ex
 	return executionharness.ToolExecutionResult{Content: json.RawMessage(`{"value":"durable fixture"}`), Provenance: "postgres/restart"}, nil
 }
 
-func restartSpec(taskID int64) executionharness.RunSpec {
+func restartSpec(taskID, attemptID int64) executionharness.RunSpec {
 	body := "durable restart fixture"
 	return executionharness.RunSpec{
 		Identity: executionharness.RunIdentity{
-			RunID: "run-restart-1", OrganizationID: historyOrganization, TaskID: taskID, AttemptID: 1,
+			RunID: "run-restart-1", OrganizationID: historyOrganization, TaskID: taskID, AttemptID: attemptID,
 			RoleID: historyRole, ExecutionPrincipalID: "41", CorrelationID: "restart:corr", CausationID: "restart:cause",
 		},
 		LeaseToken: "lease",
@@ -130,7 +130,7 @@ func openInstance(t *testing.T, ctx context.Context, spec executionharness.RunSp
 func TestHarnessRestartResumesFromDurableHistory(t *testing.T) {
 	f := newFixture(t)
 	defer f.cleanup()
-	spec := restartSpec(f.taskID)
+	spec := restartSpec(f.taskID, f.attemptID)
 
 	// Instance A: authority is consulted for turn 1 and for the tool, then
 	// becomes unavailable at the turn-2 boundary.
@@ -191,7 +191,7 @@ func TestHarnessRestartResumesFromDurableHistory(t *testing.T) {
 		if event.Sequence != uint64(index+1) {
 			t.Fatalf("durable order broke at %d: %+v", index, event)
 		}
-		if event.OrganizationID != historyOrganization || event.TaskID != f.taskID || event.AttemptID != 1 {
+		if event.OrganizationID != historyOrganization || event.TaskID != f.taskID || event.AttemptID != f.attemptID {
 			t.Fatalf("event %d lost its execution identity: %+v", index, event)
 		}
 	}

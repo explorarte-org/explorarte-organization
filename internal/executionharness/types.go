@@ -163,7 +163,15 @@ const (
 	StatusAuthorityUnavailable RunStatus = "authority_unavailable"
 	StatusIdentityDrift        RunStatus = "identity_drift"
 	StatusHistoryError         RunStatus = "history_error"
-	StatusCancelled            RunStatus = "cancelled"
+	// StatusIndeterminateToolExecution means a tool call was made durable
+	// immediately before execution and never resolved. The Harness cannot tell
+	// "died before the executor ran" from "the executor ran, the external side
+	// effect happened, and the result never became durable", and the
+	// ToolExecutor port carries no idempotency key and offers no
+	// reconciliation. Running it again could duplicate an external effect, so
+	// the run fails closed and is handed to reconciliation instead of guessing.
+	StatusIndeterminateToolExecution RunStatus = "indeterminate_tool_execution"
+	StatusCancelled                  RunStatus = "cancelled"
 )
 
 type RunResult struct {
