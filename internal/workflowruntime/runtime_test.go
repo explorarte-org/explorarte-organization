@@ -299,8 +299,6 @@ func TestWorkflowRuntimeComposesDurableMultiHopFlow(t *testing.T) {
 	}
 	// Use the executive-generated correlation for every descendant.
 	rootCorrelation := root.CorrelationID
-	correlationIDBefore := correlationID
-	_ = correlationIDBefore
 
 	leaderRequest := childRequest(topologyfixture.RoleCEO, topologyfixture.RoleEngineeringLead, "leader-work", fmt.Sprintf("task:%d", root.TaskID))
 	leaderRequest.CorrelationID = rootCorrelation
@@ -530,11 +528,17 @@ func TestRetryAppendsAndNeverRewritesPriorDurableEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	historical := append([]workflowruntime.DurableEvent(nil), first.Events...)
-	second, err := runtime.RecordOutcome(context.Background(), workflowruntime.OutcomeCommand{ExecutionCommand: execution, Outcome: workflowruntime.OutcomeSucceeded})
+	retryExecution := execution
+	retryExecution.AttemptID = 2
+	retryExecution.LeaseToken = "lease-retry"
+	if _, err = runtime.StartExecution(context.Background(), retryExecution); err != nil {
+		t.Fatal(err)
+	}
+	second, err := runtime.RecordOutcome(context.Background(), workflowruntime.OutcomeCommand{ExecutionCommand: retryExecution, Outcome: workflowruntime.OutcomeSucceeded})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(second.Events) != len(historical)+1 || !reflect.DeepEqual(second.Events[:len(historical)], historical) {
+	if len(second.Events) != len(historical)+2 || !reflect.DeepEqual(second.Events[:len(historical)], historical) || len(second.Attempts) != 2 {
 		t.Fatalf("history was rewritten: before=%+v after=%+v", historical, second.Events)
 	}
 }
