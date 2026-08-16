@@ -9,6 +9,9 @@ Scientific evidence referenced, not inherited:
 
 Superseded stacked implementation: `5cca27c962f478763d2cdf2a1406ebe94cf69ea3`
 
+Corrected functional implementation commit:
+`84fe0bbea0fb479dc8be939938e5b3f6a4162afd`
+
 ## Scope
 
 The branch implements the first item in
@@ -86,8 +89,35 @@ offline repository gates and must be recorded before the branch is frozen.
    only in `internal/rag/bootstrap` and `internal/memory/bootstrap` because the
    local managed sandbox denied `httptest` listener creation with
    `socket: operation not permitted`. No result was rewritten to PASS.
-2. A new VPS execution event must demonstrate the focused and complete gates
-   in an environment that permits loopback test listeners.
+2. `VPS focused rerun @ 84fe0bbe`: `go test
+   ./internal/contentpolicy/...` passed. The focused consumer command covering
+   tasks, RAG, memory, PDF ingest, security audit, and orgctl passed, including
+   both bootstrap packages that failed to create listeners locally.
+3. `VPS static gate @ 84fe0bbe`: `go vet ./...` passed with no output.
+4. `VPS complete gate @ 84fe0bbe`: `go test ./...` passed for every package.
+5. Static searches found zero `RiskClinical`, `KindClinicalTerminology`, or
+   `clinicalPattern` hits; zero production Go imports of `internal/dataclassifier`
+   or `internal/secretscan`; and no Q3-002 measurement tree or model artifacts
+   in the branch. Remaining old-package names occur only in this migration
+   record, the V2 delta, and frozen historical implementation documents.
+
+## Semantic verification by surface
+
+- **Tasks:** real credential fixtures in every agent-visible field return
+  `ErrSecretRejected`; ordinary healthcare vocabulary validates.
+- **RAG admission:** healthcare vocabulary validates; credential assignments
+  return `ErrForbiddenDataClass`.
+- **RAG embedding:** a credential produces zero adapter entries and zero wallet
+  invocations; ordinary healthcare vocabulary reaches the fake adapter once.
+- **Memory:** vocabulary no longer derives `DataClinical`; an explicit upstream
+  `DataClinical` or `DataSecret` declaration remains rejected by the existing
+  admission contract.
+- **PDF/RAG CLI:** extracted credential text is rejected before proposal.
+- **Observability:** `Finding.String` contains kind/offsets only, and redaction
+  removes values while preserving surrounding text.
+- **Overlap:** hand-built contained/partial/adjacent spans and real overlapping
+  bearer/JWT detectors produce stable ordered non-overlapping output without a
+  panic.
 
 ## Known limitations
 
