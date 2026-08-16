@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/agentbudget"
+	"github.com/Mireuz13/explorarte-organization/internal/contentpolicy"
 	"github.com/Mireuz13/explorarte-organization/internal/costledger"
-	"github.com/Mireuz13/explorarte-organization/internal/dataclassifier"
 	"github.com/Mireuz13/explorarte-organization/internal/embeddingruntime"
 	"github.com/Mireuz13/explorarte-organization/internal/modelpricing"
 )
@@ -85,7 +85,8 @@ func (m *Manager) embed(ctx context.Context, organizationID, actorRoleID, text s
 	defer func() {
 		slog.Default().Info("memory embedding channel status", "provider_id", deps.ProviderID, "provider_model_id", deps.ProviderModelID, "operation", operation, "degraded", vector == nil)
 	}()
-	if finding := dataclassifier.Detect(text); finding.Any() {
+	assessment := contentpolicy.Analyze(text)
+	if assessment.Has(contentpolicy.RiskCredential) || assessment.Has(contentpolicy.RiskClinical) {
 		slog.Default().Warn("memory embedding skipped: text matched a forbidden data pattern", "organization_id", organizationID, "operation", operation)
 		return nil
 	}

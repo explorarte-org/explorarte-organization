@@ -133,7 +133,7 @@ func Catalog() []Channel {
 			OrgScope:     "org_isolated",
 			RoleScope:    "assigned_role_id",
 			// Free text, but credential material is refused at ingress by
-			// ValidateCreateRequest (see internal/secretscan). Sensitive
+			// ValidateCreateRequest (see internal/contentpolicy). Sensitive
 			// non-credential data -- personal, clinical, commercial -- is
 			// deliberately carried and governed by classification instead.
 			DataClass:         "free_text_with_secret_rejection",

@@ -311,7 +311,7 @@ type BackfillEmbeddingsRequest struct {
 	// BatchSize caps how many chunks a single call embeds — a backfill is
 	// deliberately paged rather than looping to exhaustion internally, so
 	// a chunk that permanently fails to embed (e.g. it matches
-	// dataclassifier.Detect) can never turn a single call into an infinite
+	// contentpolicy.Analyze) can never turn a single call into an infinite
 	// loop: the caller (see cmd/orgctl) simply keeps calling until Done is
 	// true, and each call's own page always terminates.
 	BatchSize         int
@@ -326,7 +326,7 @@ type BackfillEmbeddingsResult struct {
 	// and (b) skipped none of them. RAG-EMBED-COMPLETENESS-001: Done used
 	// to be decided from (a) alone, before any chunk was even attempted,
 	// so a page that was entirely Skipped (e.g. every chunk permanently
-	// fails dataclassifier.Detect) still reported Done=true -- the CLI
+	// fails contentpolicy.Analyze) still reported Done=true -- the CLI
 	// loop (see cmd/orgctl) stops the instant it sees that, so a batch
 	// could report completion while chunks with no embedding at all were
 	// left behind, silently, forever. A chunk that failed to embed this

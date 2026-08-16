@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/agentbudget"
+	"github.com/Mireuz13/explorarte-organization/internal/contentpolicy"
 	"github.com/Mireuz13/explorarte-organization/internal/costledger"
-	"github.com/Mireuz13/explorarte-organization/internal/dataclassifier"
 	"github.com/Mireuz13/explorarte-organization/internal/embeddingruntime"
 	"github.com/Mireuz13/explorarte-organization/internal/modelpricing"
 )
@@ -184,7 +184,7 @@ func TestQuerySkipsEmbeddingWhenQueryTextIsClassifiedSecret(t *testing.T) {
 	adapter := &fakeOnlineAdapter{vector: []float32{0.1}, tokens: 5}
 	manager, repo := newSemanticQueryManager(t, testSemanticDeps(ledger, adapter, nil, t))
 
-	// AWS-style access key pattern — matched by internal/dataclassifier as a
+	// AWS-style access key pattern — matched by contentpolicy as a
 	// secret. A query containing one must never reach the embedding
 	// provider, even though it's just a search string, not stored content.
 	secretQuery := "find the incident involving AKIAABCDEFGHIJKLMNOP"
@@ -282,7 +282,7 @@ func TestEmbedMediaSkipsWhenClassifierTextMatchesForbiddenPattern(t *testing.T) 
 	adapter := &fakeOnlineAdapter{vector: []float32{0.4, 0.5}, tokens: 300}
 	manager, _ := newSemanticQueryManager(t, testSemanticDeps(ledger, adapter, nil, t))
 
-	// A credential-assignment pattern (see dataclassifier.secretPatterns) —
+	// A credential-assignment pattern from the shared content policy —
 	// even though this text is never itself the embed payload, it stands
 	// in for the page's extracted text, which the media path still scans.
 	vector := manager.embedMedia(context.Background(), "explorarte", "empresa/human", `api_key: "abcdefgh12345678"`, "application/pdf", []byte("%PDF-1.4"), nil, embeddingruntime.TaskDocument, costledger.EmbeddingOperationRAGReindex)
@@ -302,7 +302,7 @@ func TestEmbedMediaSkipsWhenClassifierTextMatchesForbiddenPattern(t *testing.T) 
 // finding.Any() (Secret OR Clinical), silently degrading embeddings for any
 // media-backed chunk whose extracted page text happened to contain ordinary
 // engineering vocabulary overlapping the clinical word list. Asserts the
-// precondition through the real dataclassifier.Detect (never a
+// precondition through the real contentpolicy.Analyze (never a
 // reimplementation of its decision) before checking that embedMedia now
 // proceeds to the adapter and returns a real vector.
 func TestEmbedMediaAllowsClinicalVocabularyText(t *testing.T) {
@@ -310,12 +310,12 @@ func TestEmbedMediaAllowsClinicalVocabularyText(t *testing.T) {
 	// false positive found in the real 16-paper audit corpus (MemOS, page
 	// 13): ordinary engineering prose, not clinical data.
 	pageText := "The system caches frequently accessed knowledge, such as patient histories, for fast retrieval during diagnosis."
-	finding := dataclassifier.Detect(pageText)
-	if !finding.Clinical {
-		t.Fatalf("test fixture does not exercise the clinical-vocabulary path: finding=%+v", finding)
+	assessment := contentpolicy.Analyze(pageText)
+	if !assessment.Has(contentpolicy.RiskClinical) {
+		t.Fatalf("test fixture does not exercise the clinical-vocabulary path: findings=%+v", assessment.Findings)
 	}
-	if finding.Secret {
-		t.Fatalf("test fixture unexpectedly also matches a secret pattern: finding=%+v", finding)
+	if assessment.Has(contentpolicy.RiskCredential) {
+		t.Fatalf("test fixture unexpectedly also matches a credential pattern: findings=%+v", assessment.Findings)
 	}
 
 	ledger := &fakeEmbeddingLedger{balanceOK: true}
@@ -336,12 +336,12 @@ func TestEmbedMediaAllowsClinicalVocabularyText(t *testing.T) {
 // secret-shaped content must still never reach the embedding provider.
 // Reuses the same credential-assignment fixture as
 // TestEmbedMediaSkipsWhenClassifierTextMatchesForbiddenPattern, but asserts
-// the precondition through the real dataclassifier.Detect first.
+// the precondition through the real contentpolicy.Analyze first.
 func TestEmbedMediaStillSkipsSecretShapedText(t *testing.T) {
 	pageText := `api_key: "abcdefgh12345678"`
-	finding := dataclassifier.Detect(pageText)
-	if !finding.Secret {
-		t.Fatalf("test fixture does not exercise the secret path: finding=%+v", finding)
+	assessment := contentpolicy.Analyze(pageText)
+	if !assessment.Has(contentpolicy.RiskCredential) {
+		t.Fatalf("test fixture does not exercise the credential path: findings=%+v", assessment.Findings)
 	}
 
 	ledger := &fakeEmbeddingLedger{balanceOK: true}
