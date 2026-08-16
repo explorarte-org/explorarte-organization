@@ -27,6 +27,17 @@ type DecisionPort interface {
 	Evaluate(context.Context, BranchRequest) (BranchDecision, error)
 }
 
+// AuthorizationPort is the fail-closed policy boundary in front of durable
+// work creation and workflow reads/mutations. AuthorizeInitiation must run
+// before TaskPort.Initiate so an invalid delegation cannot leave durable work
+// behind. AuthorizeTaskAccess distinguishes read visibility from mutation:
+// managers may observe authorized descendants, while mutation remains bound to
+// the task's assigned role.
+type AuthorizationPort interface {
+	AuthorizeInitiation(context.Context, Actor, WorkRequest) error
+	AuthorizeTaskAccess(context.Context, Actor, Snapshot, TaskAccess) error
+}
+
 // CoordinationPort is reserved for authorized cross-role coordination. Same-
 // role execution never reaches this port.
 type CoordinationPort interface {

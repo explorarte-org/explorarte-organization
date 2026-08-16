@@ -10,4 +10,5 @@ var (
 	ErrSameRoleCoordination = errors.New("workflow runtime same-role coordination is a task transition")
 	ErrDecisionBinding      = errors.New("workflow runtime decision binding mismatch")
 	ErrUnsupportedAction    = errors.New("workflow runtime unsupported branch action")
+	ErrAuthorizationDenied  = errors.New("workflow runtime authorization denied")
 )

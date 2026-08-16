@@ -149,6 +149,18 @@ type InitiateCommand struct {
 	Work  WorkRequest
 }
 
+type TaskAccess string
+
+const (
+	TaskAccessObserve TaskAccess = "observe"
+	TaskAccessMutate  TaskAccess = "mutate"
+)
+
+type ObserveCommand struct {
+	Actor  Actor
+	TaskID int64
+}
+
 type ExecutionCommand struct {
 	Actor         Actor
 	TaskID        int64

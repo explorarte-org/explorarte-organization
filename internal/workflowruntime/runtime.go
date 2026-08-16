@@ -8,18 +8,22 @@ import (
 )
 
 type Runtime struct {
-	tasks        TaskPort
-	completion   CompletionPort
-	decisions    DecisionPort
-	coordination CoordinationPort
-	executive    ExecutivePort
+	tasks         TaskPort
+	completion    CompletionPort
+	decisions     DecisionPort
+	authorization AuthorizationPort
+	coordination  CoordinationPort
+	executive     ExecutivePort
 }
 
-func New(tasks TaskPort, completion CompletionPort, decisions DecisionPort, coordination CoordinationPort, executive ExecutivePort) (*Runtime, error) {
-	if tasks == nil || completion == nil || decisions == nil || coordination == nil || executive == nil {
-		return nil, errors.New("workflow runtime requires tasks, completion, decisions, coordination, and executive ports")
+func New(tasks TaskPort, completion CompletionPort, decisions DecisionPort, authorization AuthorizationPort, coordination CoordinationPort, executive ExecutivePort) (*Runtime, error) {
+	if tasks == nil || completion == nil || decisions == nil || authorization == nil || coordination == nil || executive == nil {
+		return nil, errors.New("workflow runtime requires tasks, completion, decisions, authorization, coordination, and executive ports")
 	}
-	return &Runtime{tasks: tasks, completion: completion, decisions: decisions, coordination: coordination, executive: executive}, nil
+	return &Runtime{
+		tasks: tasks, completion: completion, decisions: decisions, authorization: authorization,
+		coordination: coordination, executive: executive,
+	}, nil
 }
 
 func (r *Runtime) Initiate(ctx context.Context, command InitiateCommand) (Snapshot, bool, error) {
@@ -32,6 +36,12 @@ func (r *Runtime) Initiate(ctx context.Context, command InitiateCommand) (Snapsh
 		work.RequestedByRoleID != command.Actor.RoleID || strings.TrimSpace(work.CorrelationID) == "" {
 		return Snapshot{}, false, ErrTaskBinding
 	}
+	// Authorization is deliberately before the only durable mutation. An
+	// invalid same-role principal or cross-role topology edge therefore leaves
+	// zero tasks and zero task events behind.
+	if err := r.authorization.AuthorizeInitiation(ctx, command.Actor, work); err != nil {
+		return Snapshot{}, false, err
+	}
 	snapshot, reused, err := r.tasks.Initiate(ctx, work, command.Actor)
 	if err != nil {
 		return Snapshot{}, false, err
@@ -42,12 +52,15 @@ func (r *Runtime) Initiate(ctx context.Context, command InitiateCommand) (Snapsh
 	return r.enrichCompletion(ctx, snapshot), reused, nil
 }
 
-func (r *Runtime) Observe(ctx context.Context, taskID int64) (Snapshot, error) {
-	if taskID <= 0 {
+func (r *Runtime) Observe(ctx context.Context, command ObserveCommand) (Snapshot, error) {
+	if err := validateActor(command.Actor); err != nil || command.TaskID <= 0 {
 		return Snapshot{}, ErrInvalidRequest
 	}
-	snapshot, err := r.tasks.Observe(ctx, taskID)
+	snapshot, err := r.tasks.Observe(ctx, command.TaskID)
 	if err != nil {
+		return Snapshot{}, err
+	}
+	if err := r.authorization.AuthorizeTaskAccess(ctx, command.Actor, snapshot, TaskAccessObserve); err != nil {
 		return Snapshot{}, err
 	}
 	return r.enrichCompletion(ctx, snapshot), nil
@@ -223,6 +236,9 @@ func (r *Runtime) boundTask(ctx context.Context, actor Actor, taskID int64, corr
 	}
 	if snapshot.OrganizationID != actor.OrganizationID || snapshot.AssignedRoleID != actor.RoleID || snapshot.CorrelationID != correlationID || snapshot.CausationID != causationID {
 		return Snapshot{}, ErrTaskBinding
+	}
+	if err := r.authorization.AuthorizeTaskAccess(ctx, actor, snapshot, TaskAccessMutate); err != nil {
+		return Snapshot{}, err
 	}
 	return snapshot, nil
 }

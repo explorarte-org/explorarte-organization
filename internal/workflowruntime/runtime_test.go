@@ -11,7 +11,9 @@ import (
 
 	"github.com/Mireuz13/explorarte-organization/internal/agentmessaging"
 	"github.com/Mireuz13/explorarte-organization/internal/agentmessaging/topologyfixture"
+	"github.com/Mireuz13/explorarte-organization/internal/modeldispatch"
 	"github.com/Mireuz13/explorarte-organization/internal/workflowruntime"
+	"github.com/Mireuz13/explorarte-organization/internal/workflowruntime/accessadapter"
 )
 
 const correlationID = "workflow:test-001"
@@ -189,6 +191,42 @@ func (f fakeDecision) Evaluate(_ context.Context, request workflowruntime.Branch
 	}, nil
 }
 
+type allowAllAuthorization struct{}
+
+func (allowAllAuthorization) AuthorizeInitiation(context.Context, workflowruntime.Actor, workflowruntime.WorkRequest) error {
+	return nil
+}
+
+func (allowAllAuthorization) AuthorizeTaskAccess(context.Context, workflowruntime.Actor, workflowruntime.Snapshot, workflowruntime.TaskAccess) error {
+	return nil
+}
+
+type fakePrincipalReader map[int64]modeldispatch.ExecutionPrincipal
+
+func (f fakePrincipalReader) GetPrincipal(_ context.Context, id int64) (modeldispatch.ExecutionPrincipal, error) {
+	principal, ok := f[id]
+	if !ok {
+		return modeldispatch.ExecutionPrincipal{}, errors.New("principal not found")
+	}
+	return principal, nil
+}
+
+func activePrincipal(id int64, organizationID, roleID string) modeldispatch.ExecutionPrincipal {
+	return modeldispatch.ExecutionPrincipal{
+		ID: id, OrganizationID: organizationID, DispatchActorRoleID: roleID,
+		PrincipalKind: modeldispatch.PrincipalLocalProcess, Status: modeldispatch.PrincipalActive,
+	}
+}
+
+func strictAuthorization(t *testing.T, principals fakePrincipalReader) workflowruntime.AuthorizationPort {
+	t.Helper()
+	authorization, err := accessadapter.New(topologyfixture.NewReader(), principals)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return authorization
+}
+
 type principal struct {
 	organizationID string
 	roleID         string
@@ -247,11 +285,32 @@ func newRuntime(t *testing.T, tasks *fakeTasks, completion workflowruntime.Compl
 	t.Helper()
 	runtime, err := workflowruntime.New(tasks, completion, fakeDecision{action: workflowruntime.BranchAction{
 		Kind: workflowruntime.BranchActionBlock, ReasonCode: "branch_blocked", Reason: "selected branch requires more evidence",
-	}}, coordination, fakeExecutive{tasks: tasks})
+	}}, allowAllAuthorization{}, coordination, fakeExecutive{tasks: tasks})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return runtime
+}
+
+func newRuntimeWithAuthorization(t *testing.T, tasks *fakeTasks, authorization workflowruntime.AuthorizationPort) *workflowruntime.Runtime {
+	t.Helper()
+	runtime, err := workflowruntime.New(tasks, fakeCompletion{}, fakeDecision{action: workflowruntime.BranchAction{
+		Kind: workflowruntime.BranchActionBlock, ReasonCode: "branch_blocked", Reason: "selected branch requires more evidence",
+	}}, authorization, newTopologyCoordination(), fakeExecutive{tasks: tasks})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return runtime
+}
+
+func TestRuntimeConstructionFailsClosedWithoutAuthorization(t *testing.T) {
+	tasks := newFakeTasks()
+	_, err := workflowruntime.New(tasks, fakeCompletion{}, fakeDecision{action: workflowruntime.BranchAction{
+		Kind: workflowruntime.BranchActionBlock, ReasonCode: "blocked", Reason: "blocked",
+	}}, nil, newTopologyCoordination(), fakeExecutive{tasks: tasks})
+	if err == nil {
+		t.Fatal("runtime accepted a nil authorization port")
+	}
 }
 
 func actor(role, principalID string) workflowruntime.Actor {
@@ -273,6 +332,158 @@ func childRequest(requester, assignee, key, causation string, requirements ...wo
 		IdempotencyKey: key, Title: key, Instructions: "perform bounded organizational work",
 		AcceptanceCriteria: []string{"return evidence"}, MaxAttempts: 3,
 		CorrelationID: correlationID, CausationID: causation, Requirements: requirements,
+	}
+}
+
+func TestInitiateAuthorizesAssignmentBeforeDurableTaskCreation(t *testing.T) {
+	tests := []struct {
+		name      string
+		actorRole string
+		assignee  string
+		principal modeldispatch.ExecutionPrincipal
+	}{
+		{
+			name: "worker to peer worker", actorRole: topologyfixture.RoleEngineeringA,
+			assignee:  topologyfixture.RoleEngineeringB,
+			principal: activePrincipal(1, topologyfixture.OrganizationID, topologyfixture.RoleEngineeringA),
+		},
+		{
+			name: "worker direct to CEO", actorRole: topologyfixture.RoleEngineeringA,
+			assignee:  topologyfixture.RoleCEO,
+			principal: activePrincipal(1, topologyfixture.OrganizationID, topologyfixture.RoleEngineeringA),
+		},
+		{
+			name: "leader to another department worker", actorRole: topologyfixture.RoleEngineeringLead,
+			assignee:  topologyfixture.RoleFinanceWorker,
+			principal: activePrincipal(1, topologyfixture.OrganizationID, topologyfixture.RoleEngineeringLead),
+		},
+		{
+			name: "disabled principal", actorRole: topologyfixture.RoleEngineeringLead,
+			assignee: topologyfixture.RoleEngineeringA,
+			principal: func() modeldispatch.ExecutionPrincipal {
+				value := activePrincipal(1, topologyfixture.OrganizationID, topologyfixture.RoleEngineeringLead)
+				value.Status = modeldispatch.PrincipalDisabled
+				return value
+			}(),
+		},
+		{
+			name: "cross organization principal", actorRole: topologyfixture.RoleEngineeringLead,
+			assignee:  topologyfixture.RoleEngineeringA,
+			principal: activePrincipal(1, "other-org", topologyfixture.RoleEngineeringLead),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			tasks := newFakeTasks()
+			runtime := newRuntimeWithAuthorization(t, tasks, strictAuthorization(t, fakePrincipalReader{1: test.principal}))
+			work := childRequest(test.actorRole, test.assignee, "unauthorized", "cause")
+			_, _, err := runtime.Initiate(context.Background(), workflowruntime.InitiateCommand{
+				Actor: actor(test.actorRole, "1"), Work: work,
+			})
+			if !errors.Is(err, workflowruntime.ErrAuthorizationDenied) {
+				t.Fatalf("Initiate err=%v, want authorization denial", err)
+			}
+			if len(tasks.tasks) != 0 || tasks.nextID != 1 {
+				t.Fatalf("denied initiation created durable work: tasks=%d nextID=%d", len(tasks.tasks), tasks.nextID)
+			}
+		})
+	}
+}
+
+func TestInitiateAllowsSameRoleAndAuthorizedDelegation(t *testing.T) {
+	principals := fakePrincipalReader{
+		1: activePrincipal(1, topologyfixture.OrganizationID, topologyfixture.RoleEngineeringA),
+		2: activePrincipal(2, topologyfixture.OrganizationID, topologyfixture.RoleEngineeringLead),
+	}
+	tasks := newFakeTasks()
+	runtime := newRuntimeWithAuthorization(t, tasks, strictAuthorization(t, principals))
+
+	if _, _, err := runtime.Initiate(context.Background(), workflowruntime.InitiateCommand{
+		Actor: actor(topologyfixture.RoleEngineeringA, "1"),
+		Work:  childRequest(topologyfixture.RoleEngineeringA, topologyfixture.RoleEngineeringA, "same-role-authorized", "cause"),
+	}); err != nil {
+		t.Fatalf("same-role initiation: %v", err)
+	}
+	if _, _, err := runtime.Initiate(context.Background(), workflowruntime.InitiateCommand{
+		Actor: actor(topologyfixture.RoleEngineeringLead, "2"),
+		Work:  childRequest(topologyfixture.RoleEngineeringLead, topologyfixture.RoleEngineeringB, "delegation-authorized", "cause"),
+	}); err != nil {
+		t.Fatalf("authorized delegation: %v", err)
+	}
+	if len(tasks.tasks) != 2 {
+		t.Fatalf("created tasks=%d want 2", len(tasks.tasks))
+	}
+}
+
+func TestObserveUsesExplicitRoleAndPrincipalPolicy(t *testing.T) {
+	tasks := newFakeTasks()
+	target, _, err := tasks.Initiate(context.Background(), childRequest(
+		topologyfixture.RoleCEO, topologyfixture.RoleEngineeringA, "observable", "cause",
+	), actor(topologyfixture.RoleCEO, "seed"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabled := activePrincipal(6, topologyfixture.OrganizationID, topologyfixture.RoleEngineeringA)
+	disabled.Status = modeldispatch.PrincipalDisabled
+	principals := fakePrincipalReader{
+		1: activePrincipal(1, topologyfixture.OrganizationID, topologyfixture.RoleEngineeringA),
+		2: activePrincipal(2, topologyfixture.OrganizationID, topologyfixture.RoleEngineeringLead),
+		3: activePrincipal(3, topologyfixture.OrganizationID, topologyfixture.RoleCEO),
+		4: activePrincipal(4, topologyfixture.OrganizationID, topologyfixture.RoleEngineeringB),
+		5: activePrincipal(5, topologyfixture.OrganizationID, topologyfixture.RoleFinanceLead),
+		6: disabled,
+		7: activePrincipal(7, "other-org", topologyfixture.RoleEngineeringA),
+	}
+	runtime := newRuntimeWithAuthorization(t, tasks, strictAuthorization(t, principals))
+	tests := []struct {
+		name      string
+		actor     workflowruntime.Actor
+		wantAllow bool
+	}{
+		{"assignee", actor(topologyfixture.RoleEngineeringA, "1"), true},
+		{"own department leader", actor(topologyfixture.RoleEngineeringLead, "2"), true},
+		{"CEO descendant visibility", actor(topologyfixture.RoleCEO, "3"), true},
+		{"peer worker", actor(topologyfixture.RoleEngineeringB, "4"), false},
+		{"other department leader", actor(topologyfixture.RoleFinanceLead, "5"), false},
+		{"disabled principal", actor(topologyfixture.RoleEngineeringA, "6"), false},
+		{"cross organization principal", actor(topologyfixture.RoleEngineeringA, "7"), false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			observed, observeErr := runtime.Observe(context.Background(), workflowruntime.ObserveCommand{Actor: test.actor, TaskID: target.TaskID})
+			if test.wantAllow {
+				if observeErr != nil || observed.TaskID != target.TaskID {
+					t.Fatalf("Observe=%+v err=%v", observed, observeErr)
+				}
+				return
+			}
+			if !errors.Is(observeErr, workflowruntime.ErrAuthorizationDenied) || !reflect.DeepEqual(observed, workflowruntime.Snapshot{}) {
+				t.Fatalf("unauthorized Observe leaked snapshot=%+v err=%v", observed, observeErr)
+			}
+		})
+	}
+}
+
+func TestMutationRejectsInactivePrincipalWithoutChangingTask(t *testing.T) {
+	tasks := newFakeTasks()
+	target, _, err := tasks.Initiate(context.Background(), childRequest(
+		topologyfixture.RoleEngineeringA, topologyfixture.RoleEngineeringA, "inactive-mutation", "cause",
+	), actor(topologyfixture.RoleEngineeringA, "seed"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabled := activePrincipal(1, topologyfixture.OrganizationID, topologyfixture.RoleEngineeringA)
+	disabled.Status = modeldispatch.PrincipalDisabled
+	runtime := newRuntimeWithAuthorization(t, tasks, strictAuthorization(t, fakePrincipalReader{1: disabled}))
+	_, err = runtime.StartExecution(context.Background(), workflowruntime.ExecutionCommand{
+		Actor: actor(topologyfixture.RoleEngineeringA, "1"), TaskID: target.TaskID, AttemptID: 1,
+		LeaseToken: "lease", CorrelationID: correlationID, CausationID: "cause",
+	})
+	if !errors.Is(err, workflowruntime.ErrAuthorizationDenied) {
+		t.Fatalf("StartExecution err=%v, want authorization denial", err)
+	}
+	if got := tasks.tasks[target.TaskID]; got.Status != workflowruntime.StatusReady || len(got.Events) != 1 {
+		t.Fatalf("denied mutation changed task: %+v", got)
 	}
 }
 
