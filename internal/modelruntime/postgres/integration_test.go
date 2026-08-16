@@ -347,6 +347,7 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		for _, event := range events {
 			if event.Type == executionharness.EventModelResponseRecorded && event.ModelResult != nil {
 				invocationRef = event.ModelResult.InvocationRef
+				break
 			}
 		}
 		invocationID, parseErr := strconv.ParseInt(invocationRef, 10, 64)
@@ -363,7 +364,7 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 			t.Fatal(projectErr)
 		}
 		recovered, recoverErr := modelExecutor.Invoke(ctx, spec.Identity, request)
-		if recoverErr != nil || recovered.InvocationRef != invocationRef || recovered.FinalOutput != result.FinalOutput {
+		if recoverErr != nil || recovered.InvocationRef != invocationRef || len(recovered.ToolRequests) != 1 || recovered.ToolRequests[0].ToolCallID != "harness-call-1" {
 			t.Fatalf("idempotent durable recovery=%+v err=%v", recovered, recoverErr)
 		}
 		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_invocation_inputs WHERE invocation_id=$1`, invocationID, 1)
