@@ -890,6 +890,11 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 			version int
 			file    string
 		}{
+			// 000049 owns a FK to model_invocations, so its immutable input
+			// table must come down before 000007 drops the invocation table.
+			// Reapplying the ordered migration set recreates the 1:1 input
+			// representation only after the Model Runtime gateway exists.
+			{49, "000049_create_model_invocation_inputs.down.sql"},
 			// 000044 replaced 000008 cross-table CHECK constraints with
 			// deferrable constraint triggers, so 000008 down cannot drop
 			// constraints that no longer exist. Its own down restores them
@@ -959,8 +964,8 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		// runner's Up loop walks every migration, setting Current even for
 		// ones already applied) — migration 19 is untouched by this
 		// rollback/reapply cycle (it depends on 17, not any version rolled
-		// back here), so only the 7 explicitly rolled-back versions above
-		// are expected in Applied, while Current still reports the real tip.
+		// back here), so only the explicitly rolled-back versions above are
+		// expected in Applied, while Current still reports the real tip.
 		loadedForTip, tipErr := platformmigrations.Load(rootmigrations.Files)
 		if tipErr != nil {
 			t.Fatal(tipErr)
@@ -974,7 +979,7 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 			t.Fatalf("reapply=%+v err=%v want current=%d", reapplied, upErr, tip)
 		}
 		var exists bool
-		if err = platform.Pool().QueryRow(ctx, `SELECT to_regclass('public.model_invocations') IS NOT NULL AND to_regclass('public.model_dispatch_attempts') IS NOT NULL AND to_regclass('public.model_egress_policy_versions') IS NOT NULL AND to_regclass('public.model_dispatcher_assignments') IS NOT NULL AND to_regclass('public.model_execution_principals') IS NOT NULL AND to_regclass('public.model_execution_identity_policy_versions') IS NOT NULL AND to_regclass('public.model_provider_requests') IS NOT NULL AND to_regclass('public.model_provider_outcomes') IS NOT NULL`).Scan(&exists); err != nil || !exists {
+		if err = platform.Pool().QueryRow(ctx, `SELECT to_regclass('public.model_invocations') IS NOT NULL AND to_regclass('public.model_invocation_inputs') IS NOT NULL AND to_regclass('public.model_dispatch_attempts') IS NOT NULL AND to_regclass('public.model_egress_policy_versions') IS NOT NULL AND to_regclass('public.model_dispatcher_assignments') IS NOT NULL AND to_regclass('public.model_execution_principals') IS NOT NULL AND to_regclass('public.model_execution_identity_policy_versions') IS NOT NULL AND to_regclass('public.model_provider_requests') IS NOT NULL AND to_regclass('public.model_provider_outcomes') IS NOT NULL`).Scan(&exists); err != nil || !exists {
 			t.Fatalf("reapply exists=%v err=%v", exists, err)
 		}
 		// Prove 000030's ALTER TABLE actually reran, not just that 000021's
