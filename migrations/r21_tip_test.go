@@ -24,7 +24,7 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const wantCount = 49
+	const wantCount = 50
 	if len(loaded) != wantCount {
 		t.Fatalf("migration count=%d want %d", len(loaded), wantCount)
 	}
@@ -47,6 +47,8 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		// EXEC-PRINCIPAL-001 remediation:
 		48: "enforce_single_active_execution_principal_per_role",
 		49: "create_model_invocation_inputs",
+		// HARNESS-RELIABILITY-CLOSEOUT-001:
+		50: "create_execution_run_events",
 	}
 	byVersion := make(map[int64]string, len(loaded))
 	for _, migration := range loaded {
@@ -58,8 +60,8 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		}
 	}
 
-	if tip := loaded[len(loaded)-1]; tip.Version != 49 {
-		t.Fatalf("migration tip=%06d want 000049", tip.Version)
+	if tip := loaded[len(loaded)-1]; tip.Version != 50 {
+		t.Fatalf("migration tip=%06d want 000050", tip.Version)
 	}
 }
 

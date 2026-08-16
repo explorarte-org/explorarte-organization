@@ -126,7 +126,14 @@ const (
 // Event is deliberately a value-only append record. Sequence is assigned by
 // the store; no API exists to update, delete, or replace it.
 type Event struct {
-	RunID          string          `json:"run_id"`
+	RunID string `json:"run_id"`
+	// OrganizationID, TaskID and AttemptID are stamped by the Harness from the
+	// run identity. They exist so a durable store can scope and constrain a
+	// history without the port having to carry the whole RunIdentity; the
+	// authoritative drift check remains the identity digest on the first event.
+	OrganizationID string          `json:"organization_id,omitempty"`
+	TaskID         int64           `json:"task_id,omitempty"`
+	AttemptID      int64           `json:"attempt_id,omitempty"`
 	Sequence       uint64          `json:"sequence"`
 	Type           EventType       `json:"type"`
 	CorrelationID  string          `json:"correlation_id"`

@@ -252,6 +252,9 @@ func terminalStatusMatches(eventType EventType, status RunStatus) bool {
 
 func (r *Runtime) append(ctx context.Context, spec RunSpec, events []Event, event Event) ([]Event, error) {
 	event.RunID = spec.Identity.RunID
+	event.OrganizationID = spec.Identity.OrganizationID
+	event.TaskID = spec.Identity.TaskID
+	event.AttemptID = spec.Identity.AttemptID
 	event.CorrelationID = spec.Identity.CorrelationID
 	event.CausationID = spec.Identity.CausationID
 	appended, err := r.history.Append(ctx, spec.Identity.RunID, uint64(len(events)), event)
