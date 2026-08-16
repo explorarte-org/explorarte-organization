@@ -256,8 +256,8 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		if _, createErr := invocations.Create(ctx, command); !errors.Is(createErr, modelruntime.ErrModelInputSecretRejected) {
 			t.Fatalf("credential-bearing model input error=%v", createErr)
 		}
-		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_invocations WHERE organization_id=$1 AND idempotency_key=$2`, modelIntegrationOrganization, idempotencyKey, 0)
-		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_invocation_inputs i JOIN model_invocations v ON v.id=i.invocation_id WHERE v.organization_id=$1 AND v.idempotency_key=$2`, modelIntegrationOrganization, idempotencyKey, 0)
+		assertModelCountTwo(t, ctx, platform, `SELECT count(*) FROM model_invocations WHERE organization_id=$1 AND idempotency_key=$2`, modelIntegrationOrganization, idempotencyKey, 0)
+		assertModelCountTwo(t, ctx, platform, `SELECT count(*) FROM model_invocation_inputs i JOIN model_invocations v ON v.id=i.invocation_id WHERE v.organization_id=$1 AND v.idempotency_key=$2`, modelIntegrationOrganization, idempotencyKey, 0)
 	})
 
 	t.Run("create reuse conflict and fake one-shot dispatch are durable", func(t *testing.T) {
