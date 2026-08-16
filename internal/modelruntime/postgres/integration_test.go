@@ -25,6 +25,8 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/authorization"
 	"github.com/Mireuz13/explorarte-organization/internal/config"
 	costledgerpostgres "github.com/Mireuz13/explorarte-organization/internal/costledger/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/executionharness"
+	harnessmodelruntime "github.com/Mireuz13/explorarte-organization/internal/executionharness/modelruntimeadapter"
 	"github.com/Mireuz13/explorarte-organization/internal/modeldispatch"
 	dispatchpostgres "github.com/Mireuz13/explorarte-organization/internal/modeldispatch/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/modelegress"
@@ -45,6 +47,28 @@ import (
 )
 
 const modelIntegrationOrganization = "explorarte"
+
+type allowHarnessAuthority struct{}
+
+func (allowHarnessAuthority) AuthorizeExecution(context.Context, executionharness.AuthorityRequest) error {
+	return nil
+}
+
+type emptyHarnessToolCatalog struct{}
+
+func (emptyHarnessToolCatalog) Lookup(context.Context, string) (executionharness.ToolDefinition, bool) {
+	return executionharness.ToolDefinition{}, false
+}
+
+func (emptyHarnessToolCatalog) ValidateArguments(context.Context, executionharness.ToolDefinition, []byte) error {
+	return errors.New("no tools are exposed in this integration fixture")
+}
+
+type rejectHarnessToolExecutor struct{}
+
+func (rejectHarnessToolExecutor) Execute(context.Context, executionharness.RunIdentity, executionharness.ToolRequest) (executionharness.ToolExecutionResult, error) {
+	return executionharness.ToolExecutionResult{}, errors.New("no tool execution is allowed in this integration fixture")
+}
 
 func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
@@ -243,6 +267,83 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	t.Run("execution harness turn traverses durable model runtime dispatch", func(t *testing.T) {
+		harnessTaskRef, harnessSnapshotRef := insertModelExecutionFixture(t, ctx, platform, fakeRevisionID, "ingenieria_ia/code-runner", "harness-modelruntime")
+		fixtureAssignmentForExistingPrincipal(t, ctx, dispatchStore, harnessTaskRef, "ingenieria_ia/code-runner", "ingenieria_ia/code-runner", principal, "harness-modelruntime")
+		harnessContexts := &staticContextReader{ref: harnessSnapshotRef, rendered: []byte("safe integration context")}
+		harnessTasks := staticTaskReader{ref: harnessTaskRef}
+		harnessInvocations, newErr := modelruntime.NewInvocationService(modelIntegrationOrganization, fakeCatalog, harnessTasks, harnessContexts, store, egressStore, identityStore, assignments, modelruntime.ClockFunc(time.Now), 10, false)
+		if newErr != nil {
+			t.Fatal(newErr)
+		}
+		harnessDispatch, newErr := modelruntime.NewDispatchService(modelIntegrationOrganization, cfg, fakeCatalog, harnessTasks, harnessContexts, capabilityEvaluator, egressStore, modelegress.NewEvaluator(), store, principals, assignments, identityService, store, adapter.NewRegistry(adapter.NewFake()), modelruntime.ClockFunc(time.Now))
+		if newErr != nil {
+			t.Fatal(newErr)
+		}
+		modelExecutor, newErr := harnessmodelruntime.New(harnessInvocations, harnessDispatch, harnessmodelruntime.ClockFunc(time.Now), harnessmodelruntime.Config{
+			MaxOutputTokens: 256, ThinkingMode: modelruntime.ThinkingDisabled, InvocationTTL: 20 * time.Minute,
+		})
+		if newErr != nil {
+			t.Fatal(newErr)
+		}
+		contextBody := string(harnessContexts.rendered)
+		spec := executionharness.RunSpec{
+			Identity: executionharness.RunIdentity{
+				RunID: "pg-harness-modelruntime-1", OrganizationID: modelIntegrationOrganization,
+				TaskID: harnessTaskRef.TaskID, AttemptID: harnessTaskRef.AttemptID, RoleID: harnessTaskRef.AssignedRoleID,
+				ExecutionPrincipalID: harnessTaskRef.LeaseHolderID, CorrelationID: "pg-harness-modelruntime", CausationID: "pg-harness-entry",
+			},
+			LeaseToken: "integration-lease-token",
+			Context: executionharness.InitialContext{
+				ID: strconv.FormatInt(harnessSnapshotRef.ID, 10), Version: "context-snapshot-v1",
+				Digest: modelruntime.SHA256Bytes([]byte(contextBody)), Content: contextBody,
+			},
+			Policy: executionharness.RunPolicy{MaxTurns: 1, MaxToolCalls: 0, ExecutionProfileID: "standard-v1", ModelPolicyRef: "canonical-role-binding", BuildRef: "integration-build"},
+		}
+		history := executionharness.NewMemoryHistoryStore()
+		harness, newErr := executionharness.New(allowHarnessAuthority{}, modelExecutor, emptyHarnessToolCatalog{}, rejectHarnessToolExecutor{}, history)
+		if newErr != nil {
+			t.Fatal(newErr)
+		}
+		result := harness.Execute(ctx, spec)
+		if result.Status != executionharness.StatusCompleted || result.FinalOutput == "" {
+			t.Fatalf("harness result=%+v", result)
+		}
+		events, readErr := history.Read(ctx, spec.Identity.RunID)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		invocationRef := ""
+		for _, event := range events {
+			if event.Type == executionharness.EventModelResponseRecorded && event.ModelResult != nil {
+				invocationRef = event.ModelResult.InvocationRef
+			}
+		}
+		invocationID, parseErr := strconv.ParseInt(invocationRef, 10, 64)
+		if parseErr != nil {
+			t.Fatalf("invocation ref=%q: %v", invocationRef, parseErr)
+		}
+		input, inputErr := store.GetModelInput(ctx, invocationID)
+		if inputErr != nil || input.Envelope.CanonicalProjectionDigest == "" || input.Envelope.ContextSnapshotID != harnessSnapshotRef.ID ||
+			len(input.Envelope.StablePrefix) != 1 || input.Envelope.StablePrefix[0].Content != contextBody {
+			t.Fatalf("durable harness model input=%+v err=%v", input, inputErr)
+		}
+		request, projectErr := executionharness.Project(spec, nil)
+		if projectErr != nil {
+			t.Fatal(projectErr)
+		}
+		recovered, recoverErr := modelExecutor.Invoke(ctx, spec.Identity, request)
+		if recoverErr != nil || recovered.InvocationRef != invocationRef || recovered.FinalOutput != result.FinalOutput {
+			t.Fatalf("idempotent durable recovery=%+v err=%v", recovered, recoverErr)
+		}
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_invocation_inputs WHERE invocation_id=$1`, invocationID, 1)
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_invocation_results WHERE invocation_id=$1`, invocationID, 1)
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_invocation_usage WHERE invocation_id=$1`, invocationID, 1)
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_provider_requests WHERE invocation_id=$1 AND provider_id='test.fake'`, invocationID, 1)
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_execution_identity_assertions WHERE invocation_id=$1 AND verification_effect='allow'`, invocationID, 1)
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_dispatcher_assignment_uses WHERE invocation_id=$1`, invocationID, 1)
+	})
 
 	t.Run("credential-bearing model input is rejected before durable admission", func(t *testing.T) {
 		const idempotencyKey = "pg-secret-admission"

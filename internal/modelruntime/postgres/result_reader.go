@@ -35,6 +35,35 @@ FROM model_invocation_results WHERE invocation_id=$1`, invocationID).Scan(
 	return result, nil
 }
 
+func (s *Store) GetInvocationOutcome(ctx context.Context, invocationID int64) (modelruntime.DispatchResult, error) {
+	invocation, err := s.GetInvocation(ctx, invocationID)
+	if err != nil {
+		return modelruntime.DispatchResult{}, err
+	}
+	if invocation.Status != modelruntime.InvocationSucceeded {
+		return modelruntime.DispatchResult{}, modelruntime.ErrConflict
+	}
+	result, err := s.GetInvocationResult(ctx, invocationID)
+	if err != nil {
+		return modelruntime.DispatchResult{}, err
+	}
+	var usage modelruntime.Usage
+	err = s.pool.QueryRow(ctx, `
+SELECT invocation_id,dispatch_attempt_id,input_tokens,output_tokens,total_tokens,provider_reported,
+       prompt_cache_hit_tokens,prompt_cache_miss_tokens
+FROM model_invocation_usage WHERE invocation_id=$1`, invocationID).Scan(
+		&usage.InvocationID, &usage.DispatchAttemptID, &usage.InputTokens, &usage.OutputTokens,
+		&usage.TotalTokens, &usage.ProviderReported, &usage.PromptCacheHitTokens, &usage.PromptCacheMissTokens,
+	)
+	if err != nil {
+		return modelruntime.DispatchResult{}, mapError(err)
+	}
+	if result.InvocationID != invocation.ID || usage.InvocationID != invocation.ID || result.DispatchAttemptID != usage.DispatchAttemptID {
+		return modelruntime.DispatchResult{}, modelruntime.ErrConflict
+	}
+	return modelruntime.DispatchResult{Invocation: invocation, Result: &result, Usage: &usage}, nil
+}
+
 func (s *Store) FindInvocationsByTaskAttempt(ctx context.Context, organizationID string, taskID, attemptID int64) ([]modelruntime.Invocation, error) {
 	rows, err := s.pool.Query(ctx, `SELECT `+invocationColumns+` FROM model_invocations WHERE organization_id=$1 AND task_id=$2 AND attempt_id=$3 ORDER BY id`, organizationID, taskID, attemptID)
 	if err != nil {
@@ -56,3 +85,4 @@ func (s *Store) FindInvocationsByTaskAttempt(ctx context.Context, organizationID
 }
 
 var _ modelruntime.InvocationResultReader = (*Store)(nil)
+var _ modelruntime.InvocationOutcomeReader = (*Store)(nil)
