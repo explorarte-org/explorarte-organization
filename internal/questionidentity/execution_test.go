@@ -151,6 +151,32 @@ func TestExecutionPathSingleFieldDriftNeverCallsModel(t *testing.T) {
 	}
 }
 
+func TestExecutionPathAdditionalOutputNeverCallsModel(t *testing.T) {
+	envelope := CanonicalEnvelope()
+	envelope.Contract.RequiredOutputSchema = append(envelope.Contract.RequiredOutputSchema, "literal_phrase_exists")
+	source := &fakeRefinementSource{payload: mustJSON(t, envelope)}
+	model := &countingModelAdapter{}
+	recorder := &recordingDriftRecorder{}
+	path := mustExecutionPath(t, source, model, recorder)
+
+	modelCallsBefore := model.calls
+	outcome, err := path.RunNext(context.Background())
+	if err != nil {
+		t.Fatalf("RunNext() error = %v", err)
+	}
+	modelCallsAfter := model.calls
+	if modelCallsBefore != 0 || modelCallsAfter != 0 {
+		t.Fatalf("foreign output reached model: before=%d after=%d", modelCallsBefore, modelCallsAfter)
+	}
+	if outcome.ModelCallAllowed || outcome.ModelCallCompleted {
+		t.Fatalf("foreign output was marked callable: %#v", outcome)
+	}
+	assertRejectedWithFields(t, outcome.Decision, []ContractField{FieldRequiredOutputSchema})
+	if len(recorder.records) != 1 {
+		t.Fatalf("output-schema drift was not recorded exactly once: %#v", recorder.records)
+	}
+}
+
 func TestExecutionPathMalformedOrUnknownInputFailsClosed(t *testing.T) {
 	unknownSchema := CanonicalEnvelope()
 	unknownSchema.SchemaVersion = "INSTRUMENT_V5"
