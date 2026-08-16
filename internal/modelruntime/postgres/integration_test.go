@@ -397,17 +397,17 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		}
 
 		runMutation("pg-harness-principal-revoked", func() error {
-			_, err := platform.Pool().Exec(ctx, `UPDATE model_execution_principals SET status='disabled',disabled_at=clock_timestamp() WHERE id=$1`, principal.ID)
+			_, err := platform.Pool().Exec(ctx, `UPDATE model_execution_principals SET status='disabled',disabled_at=clock_timestamp(),disabled_by_role_id='empresa/human',disable_reason_code='integration_revoke' WHERE id=$1`, principal.ID)
 			return err
 		}, func() error {
-			_, err := platform.Pool().Exec(ctx, `UPDATE model_execution_principals SET status='active',disabled_at=NULL WHERE id=$1`, principal.ID)
+			_, err := platform.Pool().Exec(ctx, `UPDATE model_execution_principals SET status='active',disabled_at=NULL,disabled_by_role_id=NULL,disable_reason_code=NULL WHERE id=$1`, principal.ID)
 			return err
 		})
 		runMutation("pg-harness-lease-revoked", func() error {
-			_, err := platform.Pool().Exec(ctx, `UPDATE task_leases SET status='revoked' WHERE task_id=$1 AND attempt_id=$2`, harnessTaskRef.TaskID, harnessTaskRef.AttemptID)
+			_, err := platform.Pool().Exec(ctx, `UPDATE task_leases SET status='revoked',released_at=clock_timestamp(),release_reason='integration_revoke' WHERE task_id=$1 AND attempt_id=$2`, harnessTaskRef.TaskID, harnessTaskRef.AttemptID)
 			return err
 		}, func() error {
-			_, err := platform.Pool().Exec(ctx, `UPDATE task_leases SET status='active' WHERE task_id=$1 AND attempt_id=$2`, harnessTaskRef.TaskID, harnessTaskRef.AttemptID)
+			_, err := platform.Pool().Exec(ctx, `UPDATE task_leases SET status='active',released_at=NULL,release_reason=NULL WHERE task_id=$1 AND attempt_id=$2`, harnessTaskRef.TaskID, harnessTaskRef.AttemptID)
 			return err
 		})
 	})
