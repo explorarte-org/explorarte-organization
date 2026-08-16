@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -51,6 +52,13 @@ type Config struct {
 	Temperature          *float64
 	ThinkingMode         modelruntime.ThinkingMode
 	InvocationTTL        time.Duration
+	// OutputMode and OutputSchema are the run's output contract. They default
+	// to free text, which is what a tool-calling trajectory wants. A consumer
+	// that needs a structured answer -- the Executive validates every model
+	// result against a per-task JSON schema -- sets them here rather than
+	// post-parsing whatever text came back.
+	OutputMode   modelruntime.OutputMode
+	OutputSchema json.RawMessage
 }
 
 // Adapter deliberately enters Model Runtime through its two application
@@ -61,6 +69,11 @@ type Adapter struct {
 	dispatch    InvocationDispatcher
 	clock       Clock
 	config      Config
+	// outputContract is the digest of the output contract this adapter will
+	// create invocations under. It participates in the idempotency key so a
+	// re-entry under a different contract cannot silently adopt an invocation
+	// created under the previous one.
+	outputContract string
 }
 
 var _ executionharness.ModelExecutor = (*Adapter)(nil)
@@ -80,12 +93,62 @@ func New(invocations InvocationCreator, dispatch InvocationDispatcher, clock Clo
 	default:
 		return nil, errors.New("harness model runtime adapter thinking mode is invalid")
 	}
+	if config.OutputMode == "" {
+		config.OutputMode = modelruntime.OutputText
+	}
+	switch config.OutputMode {
+	case modelruntime.OutputText:
+		if len(config.OutputSchema) > 0 {
+			return nil, errors.New("harness model runtime adapter text output must not carry a schema")
+		}
+	case modelruntime.OutputJSON:
+		if len(config.OutputSchema) == 0 {
+			return nil, errors.New("harness model runtime adapter json output requires a schema")
+		}
+		// Canonicalized once, here, with Model Runtime's own primitive: the
+		// schema that is hashed must be byte-identical to the schema that is
+		// persisted, or the durable comparison below would be comparing two
+		// different renderings of the same document.
+		canonical, err := modelruntime.CanonicalizeRawJSON(config.OutputSchema)
+		if err != nil {
+			return nil, fmt.Errorf("canonicalize harness output schema: %w", err)
+		}
+		config.OutputSchema = canonical
+	default:
+		return nil, errors.New("harness model runtime adapter output mode is invalid")
+	}
 	config.RequiredCapabilities = append([]modelruntime.ModelCapability(nil), config.RequiredCapabilities...)
 	if config.Temperature != nil {
 		value := *config.Temperature
 		config.Temperature = &value
 	}
-	return &Adapter{invocations: invocations, dispatch: dispatch, clock: clock, config: config}, nil
+	contract, err := outputContractDigest(config.OutputMode, config.OutputSchema, config.MaxOutputTokens, config.Temperature, config.ThinkingMode, config.RequiredCapabilities)
+	if err != nil {
+		return nil, err
+	}
+	return &Adapter{invocations: invocations, dispatch: dispatch, clock: clock, config: config, outputContract: contract}, nil
+}
+
+// outputContractDigest is a stable digest of everything that decides what the
+// provider is asked to produce. The harness projection digest describes the
+// conversation; this describes the answer contract. Both belong in the
+// idempotency key, because two runs with the same conversation and different
+// answer contracts are not the same invocation.
+func outputContractDigest(mode modelruntime.OutputMode, schema json.RawMessage, maxOutputTokens int, temperature *float64, thinking modelruntime.ThinkingMode, capabilities []modelruntime.ModelCapability) (string, error) {
+	sorted := append([]modelruntime.ModelCapability(nil), capabilities...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	body, err := modelruntime.CanonicalJSON(struct {
+		OutputMode      modelruntime.OutputMode        `json:"output_mode"`
+		OutputSchema    string                         `json:"output_schema"`
+		MaxOutputTokens int                            `json:"max_output_tokens"`
+		Temperature     *float64                       `json:"temperature"`
+		ThinkingMode    modelruntime.ThinkingMode      `json:"thinking_mode"`
+		Capabilities    []modelruntime.ModelCapability `json:"required_capabilities"`
+	}{mode, string(schema), maxOutputTokens, temperature, thinking, sorted})
+	if err != nil {
+		return "", fmt.Errorf("canonicalize harness output contract: %w", err)
+	}
+	return modelruntime.SHA256Bytes(body), nil
 }
 
 func (a *Adapter) Invoke(ctx context.Context, identity executionharness.RunIdentity, request executionharness.NormalizedModelRequest) (executionharness.ModelResult, error) {
@@ -101,9 +164,9 @@ func (a *Adapter) Invoke(ctx context.Context, identity executionharness.RunIdent
 	if err != nil {
 		return executionharness.ModelResult{}, err
 	}
-	idempotencyKey := "execution-harness:" + request.CanonicalDigest
+	idempotencyKey := "execution-harness:" + request.CanonicalDigest + ":" + a.outputContract
 	if existing, stored, findErr := a.invocations.FindIdempotent(ctx, idempotencyKey); findErr == nil {
-		if err = validateExistingInvocation(existing, stored, identity, contextSnapshotID, request.CanonicalDigest); err != nil {
+		if err = a.validateExistingInvocation(existing, stored, identity, contextSnapshotID, request.CanonicalDigest); err != nil {
 			return executionharness.ModelResult{}, err
 		}
 		return a.resume(ctx, existing)
@@ -120,7 +183,8 @@ func (a *Adapter) Invoke(ctx context.Context, identity executionharness.RunIdent
 		ModelInput:           &envelope,
 		Purpose:              "execution harness turn " + request.CanonicalDigest,
 		RequiredCapabilities: append([]modelruntime.ModelCapability(nil), a.config.RequiredCapabilities...),
-		OutputMode:           modelruntime.OutputText,
+		OutputMode:           a.config.OutputMode,
+		OutputSchema:         append(json.RawMessage(nil), a.config.OutputSchema...),
 		MaxOutputTokens:      a.config.MaxOutputTokens,
 		Temperature:          cloneFloat(a.config.Temperature),
 		ThinkingMode:         a.config.ThinkingMode,
@@ -133,7 +197,7 @@ func (a *Adapter) Invoke(ctx context.Context, identity executionharness.RunIdent
 		if errors.Is(err, modelruntime.ErrConflict) {
 			existing, stored, findErr := a.invocations.FindIdempotent(ctx, idempotencyKey)
 			if findErr == nil {
-				if validateErr := validateExistingInvocation(existing, stored, identity, contextSnapshotID, request.CanonicalDigest); validateErr != nil {
+				if validateErr := a.validateExistingInvocation(existing, stored, identity, contextSnapshotID, request.CanonicalDigest); validateErr != nil {
 					return executionharness.ModelResult{}, validateErr
 				}
 				return a.resume(ctx, existing)
@@ -290,9 +354,20 @@ func validateCreatedInvocation(invocation modelruntime.Invocation, identity exec
 	return nil
 }
 
-func validateExistingInvocation(invocation modelruntime.Invocation, input modelruntime.PreparedModelInput, identity executionharness.RunIdentity, contextSnapshotID int64, projectionDigest string) error {
+func (a *Adapter) validateExistingInvocation(invocation modelruntime.Invocation, input modelruntime.PreparedModelInput, identity executionharness.RunIdentity, contextSnapshotID int64, projectionDigest string) error {
 	if err := validateCreatedInvocation(invocation, identity, contextSnapshotID); err != nil {
 		return err
+	}
+	// The idempotency key already carries the contract digest, so a mismatch
+	// here means the durable row disagrees with the key that found it. Compare
+	// against persisted state rather than trusting the key alone: a key is a
+	// lookup, not a guarantee about what was stored.
+	stored, err := outputContractDigest(invocation.OutputMode, invocation.OutputSchema, invocation.MaxOutputTokens, invocation.Temperature, invocation.ThinkingMode, invocation.RequiredCapabilities)
+	if err != nil {
+		return err
+	}
+	if stored != a.outputContract {
+		return fmt.Errorf("%w: durable invocation was created under a different output contract", ErrBindingDrift)
 	}
 	if input.Envelope.SchemaVersion != modelruntime.ModelInputEnvelopeSchemaV1 || input.Envelope.ContextSnapshotID != contextSnapshotID ||
 		input.Envelope.CanonicalProjectionDigest != projectionDigest || input.CanonicalDigest == "" || digest(input.CanonicalBytes) != input.CanonicalDigest {
@@ -326,7 +401,18 @@ func mapDispatchResult(created modelruntime.Invocation, dispatched modelruntime.
 		return result, nil
 	}
 	result.FinishReason = executionharness.FinishFinal
-	result.FinalOutput = dispatched.Result.TextOutput
+	switch created.OutputMode {
+	case modelruntime.OutputJSON:
+		// Model Runtime already canonicalized this on the way in; the Harness
+		// carries the canonical bytes through unchanged so the consumer parses
+		// exactly what was persisted and hashed.
+		if len(dispatched.Result.JSONOutput) == 0 {
+			return executionharness.ModelResult{}, fmt.Errorf("%w: json output contract produced no canonical JSON", ErrInvalidResult)
+		}
+		result.FinalOutput = string(dispatched.Result.JSONOutput)
+	default:
+		result.FinalOutput = dispatched.Result.TextOutput
+	}
 	return result, nil
 }
 
