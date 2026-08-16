@@ -161,6 +161,87 @@ func TestDirectCompletion(t *testing.T) {
 	}
 }
 
+func TestTerminalRunsCannotBeReplayed(t *testing.T) {
+	t.Run("completed", func(t *testing.T) {
+		spec := baseSpec()
+		model := &fakeModel{results: []ModelResult{{FinishReason: FinishFinal, FinalOutput: "done", InvocationRef: "inv-1"}}}
+		tools := &fakeToolExecutor{}
+		store := NewMemoryHistoryStore()
+		runtime := newTestRuntime(t, &fakeAuthority{}, model, tools, fakeCatalog{definitions: map[string]ToolDefinition{"lookup_fixture": spec.Tools[0]}}, store)
+		first := runtime.Execute(context.Background(), spec)
+		assertTerminalReplay(t, runtime, store, spec, first, model, tools)
+	})
+
+	t.Run("failed", func(t *testing.T) {
+		spec := baseSpec()
+		model := &fakeModel{}
+		tools := &fakeToolExecutor{}
+		store := NewMemoryHistoryStore()
+		runtime := newTestRuntime(t, &fakeAuthority{denyAt: 1}, model, tools, fakeCatalog{definitions: map[string]ToolDefinition{"lookup_fixture": spec.Tools[0]}}, store)
+		first := runtime.Execute(context.Background(), spec)
+		assertTerminalReplay(t, runtime, store, spec, first, model, tools)
+	})
+
+	t.Run("limit reached", func(t *testing.T) {
+		spec := baseSpec()
+		spec.Policy.MaxTurns = 1
+		model := &fakeModel{results: []ModelResult{{FinishReason: FinishTools, ToolRequests: []ToolRequest{toolRequest("call-1", "lookup_fixture")}}}}
+		tools := &fakeToolExecutor{}
+		store := NewMemoryHistoryStore()
+		runtime := newTestRuntime(t, &fakeAuthority{}, model, tools, fakeCatalog{definitions: map[string]ToolDefinition{"lookup_fixture": spec.Tools[0]}}, store)
+		first := runtime.Execute(context.Background(), spec)
+		assertTerminalReplay(t, runtime, store, spec, first, model, tools)
+	})
+
+	t.Run("cancelled", func(t *testing.T) {
+		spec := baseSpec()
+		_, digest, err := validateSpec(spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		model := &fakeModel{}
+		tools := &fakeToolExecutor{}
+		store := NewMemoryHistoryStore()
+		_, err = store.Append(context.Background(), spec.Identity.RunID, 0, Event{RunID: spec.Identity.RunID, Type: EventRunStarted, IdentityDigest: digest, CorrelationID: spec.Identity.CorrelationID, CausationID: spec.Identity.CausationID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = store.Append(context.Background(), spec.Identity.RunID, 1, Event{RunID: spec.Identity.RunID, Type: EventRunCancelled, TerminalStatus: StatusCancelled, ErrorCode: "context_cancelled", Reason: "execution context cancelled", CorrelationID: spec.Identity.CorrelationID, CausationID: spec.Identity.CausationID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		runtime := newTestRuntime(t, &fakeAuthority{}, model, tools, fakeCatalog{definitions: map[string]ToolDefinition{"lookup_fixture": spec.Tools[0]}}, store)
+		first := runtime.Execute(context.Background(), spec)
+		assertTerminalReplay(t, runtime, store, spec, first, model, tools)
+	})
+}
+
+func assertTerminalReplay(t *testing.T, runtime *Runtime, store *MemoryHistoryStore, spec RunSpec, first RunResult, model *fakeModel, tools *fakeToolExecutor) {
+	t.Helper()
+	if first.Status != StatusCompleted && first.Status != StatusAuthorizationDenied && first.Status != StatusLimitReached && first.Status != StatusCancelled {
+		t.Fatalf("first execution was not the expected terminal result: %+v", first)
+	}
+	before, err := store.Read(context.Background(), spec.Identity.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelCalls, toolCalls := model.calls, tools.calls
+	second := runtime.Execute(context.Background(), spec)
+	after, err := store.Read(context.Background(), spec.Identity.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(second, first) {
+		t.Fatalf("terminal replay changed result: first=%+v second=%+v", first, second)
+	}
+	if model.calls != modelCalls || tools.calls != toolCalls {
+		t.Fatalf("terminal replay caused side effects: model delta=%d tool delta=%d", model.calls-modelCalls, tools.calls-toolCalls)
+	}
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("terminal replay mutated history: before=%+v after=%+v", before, after)
+	}
+}
+
 func TestAuthorityDenialHasZeroSideEffects(t *testing.T) {
 	spec := baseSpec()
 	authority := &fakeAuthority{denyAt: 1}
@@ -345,6 +426,32 @@ func TestHistoryStoreIsAppendOnlyAndReturnsDeepCopies(t *testing.T) {
 	again, _ := store.Read(context.Background(), "run-1")
 	if !reflect.DeepEqual(again[0], appended) {
 		t.Fatalf("caller mutation changed stored history: got=%+v want=%+v", again[0], appended)
+	}
+}
+
+func TestEventAfterTerminalFailsClosed(t *testing.T) {
+	spec := baseSpec()
+	_, digest, err := validateSpec(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewMemoryHistoryStore()
+	events := []Event{
+		{RunID: spec.Identity.RunID, Type: EventRunStarted, IdentityDigest: digest},
+		{RunID: spec.Identity.RunID, Type: EventRunCompleted, TerminalStatus: StatusCompleted, Reason: "final output"},
+		{RunID: spec.Identity.RunID, Type: EventModelRequestPrepared, RequestDigest: sha256Bytes([]byte("invalid continuation"))},
+	}
+	for index, event := range events {
+		if _, err = store.Append(context.Background(), spec.Identity.RunID, uint64(index), event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	model := &fakeModel{}
+	tools := &fakeToolExecutor{}
+	runtime := newTestRuntime(t, &fakeAuthority{}, model, tools, fakeCatalog{definitions: map[string]ToolDefinition{"lookup_fixture": spec.Tools[0]}}, store)
+	got := runtime.Execute(context.Background(), spec)
+	if got.Status != StatusHistoryError || model.calls != 0 || tools.calls != 0 {
+		t.Fatalf("post-terminal history did not fail closed: %+v calls=%d/%d", got, model.calls, tools.calls)
 	}
 }
 

@@ -137,6 +137,7 @@ type Event struct {
 	ToolRequest    *ToolRequest    `json:"tool_request,omitempty"`
 	ToolResult     json.RawMessage `json:"tool_result,omitempty"`
 	ToolProvenance string          `json:"tool_provenance,omitempty"`
+	TerminalStatus RunStatus       `json:"terminal_status,omitempty"`
 	ErrorCode      string          `json:"error_code,omitempty"`
 	Reason         string          `json:"reason,omitempty"`
 }

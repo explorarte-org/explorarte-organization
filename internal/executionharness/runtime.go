@@ -42,6 +42,11 @@ func (r *Runtime) Execute(ctx context.Context, spec RunSpec) RunResult {
 	} else if err = validateHistory(spec.Identity.RunID, events, identityDigest); err != nil {
 		return result(spec, events, StatusIdentityDrift, "stable run identity, context, tool set, or policy changed", "", "", countTurns(events), countToolCalls(events))
 	}
+	if terminal, found, terminalErr := terminalResult(spec, events); terminalErr != nil {
+		return historyFailure(spec, events, terminalErr)
+	} else if found {
+		return terminal
+	}
 
 	turnsUsed := countTurns(events)
 	toolCallsUsed := countToolCalls(events)
@@ -50,15 +55,15 @@ func (r *Runtime) Execute(ctx context.Context, spec RunSpec) RunResult {
 
 	for {
 		if err := ctx.Err(); err != nil {
-			events, _ = r.append(context.WithoutCancel(ctx), spec, events, Event{Type: EventRunCancelled, ErrorCode: "context_cancelled", Reason: err.Error()})
+			events, _ = r.append(context.WithoutCancel(ctx), spec, events, Event{Type: EventRunCancelled, TerminalStatus: StatusCancelled, ErrorCode: "context_cancelled", Reason: "execution context cancelled"})
 			return result(spec, events, StatusCancelled, "execution context cancelled", "", lastModelOutput, turnsUsed, toolCallsUsed)
 		}
 		if turnsUsed >= spec.Policy.MaxTurns {
-			events, _ = r.append(ctx, spec, events, Event{Type: EventRunLimitReached, ErrorCode: "max_turns", Reason: "model turn limit exhausted"})
+			events, _ = r.append(ctx, spec, events, Event{Type: EventRunLimitReached, TerminalStatus: StatusLimitReached, ErrorCode: "max_turns", Reason: "max turns exhausted"})
 			return result(spec, events, StatusLimitReached, "max turns exhausted", "", lastModelOutput, turnsUsed, toolCallsUsed)
 		}
 		if err := r.authority.AuthorizeExecution(ctx, AuthorityRequest{Identity: spec.Identity, LeaseToken: spec.LeaseToken}); err != nil {
-			events, _ = r.append(ctx, spec, events, Event{Type: EventRunFailed, ErrorCode: "authorization_denied", Reason: err.Error()})
+			events, _ = r.append(ctx, spec, events, Event{Type: EventRunFailed, TerminalStatus: StatusAuthorizationDenied, ErrorCode: "authorization_denied", Reason: "execution authority denied"})
 			return result(spec, events, StatusAuthorizationDenied, "execution authority denied", "", lastModelOutput, turnsUsed, toolCallsUsed)
 		}
 
@@ -73,7 +78,7 @@ func (r *Runtime) Execute(ctx context.Context, spec RunSpec) RunResult {
 		modelResult, invokeErr := r.models.Invoke(ctx, spec.Identity, request)
 		turnsUsed++
 		if invokeErr != nil {
-			events, _ = r.append(ctx, spec, events, Event{Type: EventRunFailed, ErrorCode: "model_error", Reason: invokeErr.Error()})
+			events, _ = r.append(ctx, spec, events, Event{Type: EventRunFailed, TerminalStatus: StatusModelError, ErrorCode: "model_error", Reason: "model execution failed"})
 			return result(spec, events, StatusModelError, "model execution failed", "", lastModelOutput, turnsUsed, toolCallsUsed)
 		}
 		modelResult.ToolRequests = cloneToolRequests(modelResult.ToolRequests)
@@ -92,19 +97,19 @@ func (r *Runtime) Execute(ctx context.Context, spec RunSpec) RunResult {
 		}
 		lastModelOutput = modelResult.FinalOutput
 		if invalidModelArguments {
-			events, _ = r.append(ctx, spec, events, Event{Type: EventRunFailed, ErrorCode: "invalid_model_tool_arguments"})
+			events, _ = r.append(ctx, spec, events, Event{Type: EventRunFailed, TerminalStatus: StatusModelError, ErrorCode: "invalid_model_tool_arguments", Reason: "model returned non-canonical tool arguments"})
 			return result(spec, events, StatusModelError, "model returned non-canonical tool arguments", "", lastModelOutput, turnsUsed, toolCallsUsed)
 		}
 
 		if modelResult.FinishReason == FinishFinal && len(modelResult.ToolRequests) == 0 {
-			events, err = r.append(ctx, spec, events, Event{Type: EventRunCompleted, Reason: "model returned final output"})
+			events, err = r.append(ctx, spec, events, Event{Type: EventRunCompleted, TerminalStatus: StatusCompleted, Reason: "final output"})
 			if err != nil {
 				return historyFailure(spec, events, err)
 			}
 			return result(spec, events, StatusCompleted, "final output", modelResult.FinalOutput, lastModelOutput, turnsUsed, toolCallsUsed)
 		}
 		if modelResult.FinishReason != FinishTools || len(modelResult.ToolRequests) == 0 {
-			events, _ = r.append(ctx, spec, events, Event{Type: EventRunFailed, ErrorCode: "invalid_model_result", Reason: "finish reason and tool requests disagree"})
+			events, _ = r.append(ctx, spec, events, Event{Type: EventRunFailed, TerminalStatus: StatusModelError, ErrorCode: "invalid_model_result", Reason: "invalid normalized model result"})
 			return result(spec, events, StatusModelError, "invalid normalized model result", "", lastModelOutput, turnsUsed, toolCallsUsed)
 		}
 
@@ -140,33 +145,33 @@ func (r *Runtime) Execute(ctx context.Context, spec RunSpec) RunResult {
 			if denialCode != "" {
 				events, _ = r.append(ctx, spec, events, Event{Type: EventToolCallDenied, ToolRequest: &toolRequest, ErrorCode: denialCode})
 				if denialCode == "max_tool_calls" {
-					events, _ = r.append(ctx, spec, events, Event{Type: EventRunLimitReached, ErrorCode: denialCode})
+					events, _ = r.append(ctx, spec, events, Event{Type: EventRunLimitReached, TerminalStatus: StatusLimitReached, ErrorCode: denialCode, Reason: "max tool calls exhausted"})
 					return result(spec, events, StatusLimitReached, "max tool calls exhausted", "", lastModelOutput, turnsUsed, toolCallsUsed)
 				}
-				events, _ = r.append(ctx, spec, events, Event{Type: EventRunFailed, ErrorCode: denialCode})
+				events, _ = r.append(ctx, spec, events, Event{Type: EventRunFailed, TerminalStatus: StatusToolError, ErrorCode: denialCode, Reason: denialCode})
 				return result(spec, events, StatusToolError, denialCode, "", lastModelOutput, turnsUsed, toolCallsUsed)
 			}
 			if err := r.authority.AuthorizeExecution(ctx, AuthorityRequest{Identity: spec.Identity, LeaseToken: spec.LeaseToken}); err != nil {
 				events, _ = r.append(ctx, spec, events, Event{Type: EventToolCallDenied, ToolRequest: &toolRequest, ErrorCode: "authorization_denied", Reason: err.Error()})
-				events, _ = r.append(ctx, spec, events, Event{Type: EventRunFailed, ErrorCode: "authorization_denied"})
+				events, _ = r.append(ctx, spec, events, Event{Type: EventRunFailed, TerminalStatus: StatusAuthorizationDenied, ErrorCode: "authorization_denied", Reason: "execution authority denied before tool"})
 				return result(spec, events, StatusAuthorizationDenied, "execution authority denied before tool", "", lastModelOutput, turnsUsed, toolCallsUsed)
 			}
 			if err := r.catalog.ValidateArguments(ctx, catalogDefinition, toolRequest.Arguments); err != nil {
 				events, _ = r.append(ctx, spec, events, Event{Type: EventToolCallDenied, ToolRequest: &toolRequest, ErrorCode: "invalid_tool_arguments", Reason: err.Error()})
-				events, _ = r.append(ctx, spec, events, Event{Type: EventRunFailed, ErrorCode: "invalid_tool_arguments"})
+				events, _ = r.append(ctx, spec, events, Event{Type: EventRunFailed, TerminalStatus: StatusToolError, ErrorCode: "invalid_tool_arguments", Reason: "invalid tool arguments"})
 				return result(spec, events, StatusToolError, "invalid tool arguments", "", lastModelOutput, turnsUsed, toolCallsUsed)
 			}
 			toolResult, toolErr := r.tools.Execute(ctx, spec.Identity, toolRequest)
 			toolCallsUsed++
 			if toolErr != nil {
 				events, _ = r.append(ctx, spec, events, Event{Type: EventToolResultRecorded, ToolRequest: &toolRequest, ErrorCode: "tool_error", Reason: toolErr.Error()})
-				events, _ = r.append(ctx, spec, events, Event{Type: EventRunFailed, ErrorCode: "tool_error"})
+				events, _ = r.append(ctx, spec, events, Event{Type: EventRunFailed, TerminalStatus: StatusToolError, ErrorCode: "tool_error", Reason: "tool execution failed"})
 				return result(spec, events, StatusToolError, "tool execution failed", "", lastModelOutput, turnsUsed, toolCallsUsed)
 			}
 			canonicalResult, err := canonicalJSON(toolResult.Content)
 			if err != nil {
 				events, _ = r.append(ctx, spec, events, Event{Type: EventToolResultRecorded, ToolRequest: &toolRequest, ErrorCode: "invalid_tool_result", Reason: err.Error()})
-				events, _ = r.append(ctx, spec, events, Event{Type: EventRunFailed, ErrorCode: "invalid_tool_result"})
+				events, _ = r.append(ctx, spec, events, Event{Type: EventRunFailed, TerminalStatus: StatusToolError, ErrorCode: "invalid_tool_result", Reason: "invalid tool result"})
 				return result(spec, events, StatusToolError, "invalid tool result", "", lastModelOutput, turnsUsed, toolCallsUsed)
 			}
 			events, err = r.append(ctx, spec, events, Event{Type: EventToolResultRecorded, ToolRequest: &toolRequest, ToolResult: canonicalResult, ToolProvenance: toolResult.Provenance})
@@ -185,6 +190,53 @@ func cloneRunSpec(spec RunSpec) RunSpec {
 		result.Tools[index].InputSchema = append([]byte(nil), tool.InputSchema...)
 	}
 	return result
+}
+
+func terminalResult(spec RunSpec, events []Event) (RunResult, bool, error) {
+	for index, event := range events {
+		if !terminalEventType(event.Type) {
+			continue
+		}
+		if index != len(events)-1 {
+			return RunResult{}, false, fmt.Errorf("%w: event follows terminal run event", ErrHistoryCorrupt)
+		}
+		if event.Reason == "" || !terminalStatusMatches(event.Type, event.TerminalStatus) {
+			return RunResult{}, false, fmt.Errorf("%w: terminal event lacks a valid status/reason", ErrHistoryCorrupt)
+		}
+		last := lastModelOutput(events)
+		final := ""
+		if event.TerminalStatus == StatusCompleted {
+			final = last
+		}
+		return result(spec, events, event.TerminalStatus, event.Reason, final, last, countTurns(events), countToolCalls(events)), true, nil
+	}
+	return RunResult{}, false, nil
+}
+
+func terminalEventType(eventType EventType) bool {
+	switch eventType {
+	case EventRunCompleted, EventRunFailed, EventRunLimitReached, EventRunCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+func terminalStatusMatches(eventType EventType, status RunStatus) bool {
+	switch eventType {
+	case EventRunCompleted:
+		return status == StatusCompleted
+	case EventRunLimitReached:
+		return status == StatusLimitReached
+	case EventRunCancelled:
+		return status == StatusCancelled
+	case EventRunFailed:
+		switch status {
+		case StatusModelError, StatusToolError, StatusAuthorizationDenied, StatusIdentityDrift, StatusHistoryError:
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Runtime) append(ctx context.Context, spec RunSpec, events []Event, event Event) ([]Event, error) {

@@ -138,6 +138,13 @@ error. Limit exhaustion never fabricates an assistant answer. If the last
 allowed turn produces and executes a tool result, that result remains in
 history and the run returns `LIMIT_REACHED` with no final output.
 
+Every terminal event carries its structured `RunStatus` and termination
+reason. On a later `Execute` with the same RunID, the runtime reconstructs the
+same `RunResult` and returns before authority, projection, model, tool, or
+history append. A terminal event followed by any later event is corrupt
+history, not an implicit resume. Retry/resume would require a future explicit
+operation and execution identity.
+
 ## Reasoning telemetry
 
 The only supported term is `provider_exposed_reasoning_trace`. Telemetry may
@@ -180,6 +187,17 @@ its content.
    imports, SQL, migrations/deployment, history mutation APIs, shell runtime,
    and clinical heuristics: **PASS**. Final ancestry and clean-tree results are
    recorded in the handoff after the freeze commit.
+9. Human review found that calling `Execute` on a completed/failed/limited/
+   cancelled Run could enter the loop again because terminal history was not
+   checked. `TERMINAL_RUN_REPLAY`: **FAIL (review finding preserved)**.
+10. Added typed status/reason to terminal events and pre-loop terminal-result
+    reconstruction. Histories containing any event after a terminal now fail
+    closed instead of resuming.
+11. Added replay tests for completed, failed, limit-reached, and cancelled
+    histories. Each returns the same result, causes zero additional model/tool
+    calls, and leaves history unchanged. Harness race tests and vet: **PASS**.
+12. Added a corrupt-history regression: any event after a terminal event
+    returns `history_error` with zero model/tool calls. **PASS**.
 
 ## Security invariants
 
