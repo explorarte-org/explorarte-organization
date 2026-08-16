@@ -64,6 +64,18 @@ FROM model_invocation_usage WHERE invocation_id=$1`, invocationID).Scan(
 	return modelruntime.DispatchResult{Invocation: invocation, Result: &result, Usage: &usage}, nil
 }
 
+func (s *Store) GetInvocationByIdempotency(ctx context.Context, organizationID, idempotencyKey string) (modelruntime.Invocation, modelruntime.PreparedModelInput, error) {
+	invocation, err := scanInvocation(s.pool.QueryRow(ctx, `SELECT `+invocationColumns+` FROM model_invocations WHERE organization_id=$1 AND idempotency_key=$2`, organizationID, idempotencyKey))
+	if err != nil {
+		return modelruntime.Invocation{}, modelruntime.PreparedModelInput{}, err
+	}
+	input, err := s.GetModelInput(ctx, invocation.ID)
+	if err != nil {
+		return modelruntime.Invocation{}, modelruntime.PreparedModelInput{}, err
+	}
+	return invocation, input, nil
+}
+
 func (s *Store) FindInvocationsByTaskAttempt(ctx context.Context, organizationID string, taskID, attemptID int64) ([]modelruntime.Invocation, error) {
 	rows, err := s.pool.Query(ctx, `SELECT `+invocationColumns+` FROM model_invocations WHERE organization_id=$1 AND task_id=$2 AND attempt_id=$3 ORDER BY id`, organizationID, taskID, attemptID)
 	if err != nil {
@@ -86,3 +98,4 @@ func (s *Store) FindInvocationsByTaskAttempt(ctx context.Context, organizationID
 
 var _ modelruntime.InvocationResultReader = (*Store)(nil)
 var _ modelruntime.InvocationOutcomeReader = (*Store)(nil)
+var _ modelruntime.IdempotentInvocationReader = (*Store)(nil)

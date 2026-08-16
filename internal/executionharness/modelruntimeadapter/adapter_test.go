@@ -20,6 +20,9 @@ type fakeCreator struct {
 	reused   *modelruntime.Invocation
 	outcome  modelruntime.DispatchResult
 	outcomes int
+	found    *modelruntime.Invocation
+	input    modelruntime.PreparedModelInput
+	findErr  error
 }
 
 func (f *fakeCreator) Create(_ context.Context, command modelruntime.CreateInvocationCommand) (modelruntime.CreateInvocationResult, error) {
@@ -47,6 +50,16 @@ func (f *fakeCreator) Create(_ context.Context, command modelruntime.CreateInvoc
 func (f *fakeCreator) Outcome(_ context.Context, _ int64) (modelruntime.DispatchResult, error) {
 	f.outcomes++
 	return f.outcome, nil
+}
+
+func (f *fakeCreator) FindIdempotent(_ context.Context, _ string) (modelruntime.Invocation, modelruntime.PreparedModelInput, error) {
+	if f.findErr != nil {
+		return modelruntime.Invocation{}, modelruntime.PreparedModelInput{}, f.findErr
+	}
+	if f.found == nil {
+		return modelruntime.Invocation{}, modelruntime.PreparedModelInput{}, modelruntime.ErrNotFound
+	}
+	return *f.found, f.input, nil
 }
 
 type fakeDispatcher struct {
@@ -276,32 +289,51 @@ func TestToolIntentWithoutStableCallIDIsRejected(t *testing.T) {
 
 func TestSucceededInvocationReuseReadsDurableOutcomeWithoutRedispatch(t *testing.T) {
 	spec := fixtureSpec()
+	request := project(t, spec, nil)
 	durable := successfulDispatch(7, "recovered answer", nil)
 	invocation := durable.Invocation
-	creator := &fakeCreator{reused: &invocation, outcome: durable}
+	creator := &fakeCreator{found: &invocation, input: storedInput(request, 41), outcome: durable}
 	dispatcher := &fakeDispatcher{}
 	adapter := newAdapter(t, creator, dispatcher)
-	result, err := adapter.Invoke(context.Background(), spec.Identity, project(t, spec, nil))
+	result, err := adapter.Invoke(context.Background(), spec.Identity, request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.FinalOutput != "recovered answer" || result.InvocationRef != "7" || creator.outcomes != 1 || len(dispatcher.calls) != 0 {
+	if result.FinalOutput != "recovered answer" || result.InvocationRef != "7" || creator.outcomes != 1 || len(dispatcher.calls) != 0 || len(creator.commands) != 0 {
 		t.Fatalf("recovery redispatched or lost outcome: result=%+v outcomes=%d dispatch=%d", result, creator.outcomes, len(dispatcher.calls))
 	}
 }
 
 func TestNonterminalInvocationReuseFailsWithoutRedispatch(t *testing.T) {
 	spec := fixtureSpec()
+	request := project(t, spec, nil)
 	invocation := successfulDispatch(7, "", nil).Invocation
 	invocation.Status = modelruntime.InvocationClaimed
-	creator := &fakeCreator{reused: &invocation}
+	creator := &fakeCreator{found: &invocation, input: storedInput(request, 41)}
 	dispatcher := &fakeDispatcher{}
 	adapter := newAdapter(t, creator, dispatcher)
-	if _, err := adapter.Invoke(context.Background(), spec.Identity, project(t, spec, nil)); !errors.Is(err, ErrInvalidResult) {
+	if _, err := adapter.Invoke(context.Background(), spec.Identity, request); !errors.Is(err, ErrInvalidResult) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if creator.outcomes != 0 || len(dispatcher.calls) != 0 {
 		t.Fatal("nonterminal reused invocation caused a duplicate side effect")
+	}
+}
+
+func TestExistingProjectionDriftFailsWithoutDispatch(t *testing.T) {
+	spec := fixtureSpec()
+	request := project(t, spec, nil)
+	invocation := successfulDispatch(7, "", nil).Invocation
+	input := storedInput(request, 41)
+	input.Envelope.CanonicalProjectionDigest = digest([]byte("other projection"))
+	creator := &fakeCreator{found: &invocation, input: input}
+	dispatcher := &fakeDispatcher{}
+	adapter := newAdapter(t, creator, dispatcher)
+	if _, err := adapter.Invoke(context.Background(), spec.Identity, request); !errors.Is(err, ErrBindingDrift) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(creator.commands) != 0 || creator.outcomes != 0 || len(dispatcher.calls) != 0 {
+		t.Fatal("drifted durable input caused a side effect")
 	}
 }
 
@@ -342,6 +374,17 @@ func successfulDispatchWithUsage(id int64, text string, intents []modelruntime.T
 	assignmentID, principalID := int64(100+id), int64(200+id)
 	invocation := modelruntime.Invocation{ID: id, OrganizationID: "explorarte", TaskID: 11, AttemptID: 22, SubjectRoleID: "research/worker", ContextSnapshotID: 41, CorrelationID: "corr-1", CausationID: "cause-1", DispatcherAssignmentID: &assignmentID, ExecutionPrincipalID: &principalID, Status: modelruntime.InvocationSucceeded}
 	return modelruntime.DispatchResult{Invocation: invocation, Result: &modelruntime.InvocationResult{InvocationID: id, OutputMode: modelruntime.OutputText, TextOutput: text, ToolIntents: intents}, Usage: &usage}
+}
+
+func storedInput(request executionharness.NormalizedModelRequest, contextSnapshotID int64) modelruntime.PreparedModelInput {
+	body := []byte(`{"stored":"fixture"}`)
+	return modelruntime.PreparedModelInput{
+		Envelope: modelruntime.ModelInputEnvelope{
+			SchemaVersion: modelruntime.ModelInputEnvelopeSchemaV1, ContextSnapshotID: contextSnapshotID,
+			CanonicalProjectionDigest: request.CanonicalDigest,
+		},
+		CanonicalBytes: body, CanonicalDigest: digest(body),
+	}
 }
 
 func cloneRequest(input executionharness.NormalizedModelRequest) executionharness.NormalizedModelRequest {

@@ -30,6 +30,7 @@ var (
 type InvocationCreator interface {
 	Create(context.Context, modelruntime.CreateInvocationCommand) (modelruntime.CreateInvocationResult, error)
 	Outcome(context.Context, int64) (modelruntime.DispatchResult, error)
+	FindIdempotent(context.Context, string) (modelruntime.Invocation, modelruntime.PreparedModelInput, error)
 }
 
 type InvocationDispatcher interface {
@@ -100,6 +101,15 @@ func (a *Adapter) Invoke(ctx context.Context, identity executionharness.RunIdent
 	if err != nil {
 		return executionharness.ModelResult{}, err
 	}
+	idempotencyKey := "execution-harness:" + request.CanonicalDigest
+	if existing, stored, findErr := a.invocations.FindIdempotent(ctx, idempotencyKey); findErr == nil {
+		if err = validateExistingInvocation(existing, stored, identity, contextSnapshotID, request.CanonicalDigest); err != nil {
+			return executionharness.ModelResult{}, err
+		}
+		return a.resume(ctx, existing)
+	} else if !errors.Is(findErr, modelruntime.ErrNotFound) {
+		return executionharness.ModelResult{}, findErr
+	}
 	now := a.clock.Now().UTC()
 	created, err := a.invocations.Create(ctx, modelruntime.CreateInvocationCommand{
 		OrganizationID:       identity.OrganizationID,
@@ -114,30 +124,53 @@ func (a *Adapter) Invoke(ctx context.Context, identity executionharness.RunIdent
 		MaxOutputTokens:      a.config.MaxOutputTokens,
 		Temperature:          cloneFloat(a.config.Temperature),
 		ThinkingMode:         a.config.ThinkingMode,
-		IdempotencyKey:       "execution-harness:" + request.CanonicalDigest,
+		IdempotencyKey:       idempotencyKey,
 		CorrelationID:        identity.CorrelationID,
 		CausationID:          identity.CausationID,
 		Deadline:             now.Add(a.config.InvocationTTL),
 	})
 	if err != nil {
+		if errors.Is(err, modelruntime.ErrConflict) {
+			existing, stored, findErr := a.invocations.FindIdempotent(ctx, idempotencyKey)
+			if findErr == nil {
+				if validateErr := validateExistingInvocation(existing, stored, identity, contextSnapshotID, request.CanonicalDigest); validateErr != nil {
+					return executionharness.ModelResult{}, validateErr
+				}
+				return a.resume(ctx, existing)
+			}
+		}
 		return executionharness.ModelResult{}, err
 	}
 	if err = validateCreatedInvocation(created.Invocation, identity, contextSnapshotID); err != nil {
 		return executionharness.ModelResult{}, err
 	}
-	var dispatched modelruntime.DispatchResult
 	if created.Reused {
-		if created.Invocation.Status != modelruntime.InvocationSucceeded {
-			return executionharness.ModelResult{}, fmt.Errorf("%w: reused invocation is not a completed outcome", ErrInvalidResult)
-		}
-		dispatched, err = a.invocations.Outcome(ctx, created.Invocation.ID)
-	} else {
-		dispatched, err = a.dispatch.Dispatch(ctx, created.Invocation.ID)
+		return a.resume(ctx, created.Invocation)
 	}
+	dispatched, err := a.dispatch.Dispatch(ctx, created.Invocation.ID)
 	if err != nil {
 		return executionharness.ModelResult{}, err
 	}
 	return mapDispatchResult(created.Invocation, dispatched)
+}
+
+func (a *Adapter) resume(ctx context.Context, invocation modelruntime.Invocation) (executionharness.ModelResult, error) {
+	var (
+		dispatched modelruntime.DispatchResult
+		err        error
+	)
+	switch invocation.Status {
+	case modelruntime.InvocationRequested:
+		dispatched, err = a.dispatch.Dispatch(ctx, invocation.ID)
+	case modelruntime.InvocationSucceeded:
+		dispatched, err = a.invocations.Outcome(ctx, invocation.ID)
+	default:
+		return executionharness.ModelResult{}, fmt.Errorf("%w: existing invocation is not safely resumable", ErrInvalidResult)
+	}
+	if err != nil {
+		return executionharness.ModelResult{}, err
+	}
+	return mapDispatchResult(invocation, dispatched)
 }
 
 type harnessWire struct {
@@ -253,6 +286,17 @@ func validateCreatedInvocation(invocation modelruntime.Invocation, identity exec
 		invocation.ContextSnapshotID != contextSnapshotID || invocation.CorrelationID != identity.CorrelationID ||
 		invocation.CausationID != identity.CausationID || invocation.DispatcherAssignmentID == nil || invocation.ExecutionPrincipalID == nil {
 		return ErrBindingDrift
+	}
+	return nil
+}
+
+func validateExistingInvocation(invocation modelruntime.Invocation, input modelruntime.PreparedModelInput, identity executionharness.RunIdentity, contextSnapshotID int64, projectionDigest string) error {
+	if err := validateCreatedInvocation(invocation, identity, contextSnapshotID); err != nil {
+		return err
+	}
+	if input.Envelope.SchemaVersion != modelruntime.ModelInputEnvelopeSchemaV1 || input.Envelope.ContextSnapshotID != contextSnapshotID ||
+		input.Envelope.CanonicalProjectionDigest != projectionDigest || input.CanonicalDigest == "" || digest(input.CanonicalBytes) != input.CanonicalDigest {
+		return fmt.Errorf("%w: durable model input does not match the harness projection", ErrBindingDrift)
 	}
 	return nil
 }

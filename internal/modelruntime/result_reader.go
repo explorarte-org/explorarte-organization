@@ -3,6 +3,7 @@ package modelruntime
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 type InvocationResultReader interface {
@@ -15,6 +16,10 @@ type InvocationResultReader interface {
 // invocation never needs a second provider dispatch after a caller crash.
 type InvocationOutcomeReader interface {
 	GetInvocationOutcome(context.Context, int64) (DispatchResult, error)
+}
+
+type IdempotentInvocationReader interface {
+	GetInvocationByIdempotency(context.Context, string, string) (Invocation, PreparedModelInput, error)
 }
 
 func (s *InvocationService) Result(ctx context.Context, invocationID int64) (InvocationResult, error) {
@@ -37,6 +42,18 @@ func (s *InvocationService) Outcome(ctx context.Context, invocationID int64) (Di
 		return DispatchResult{}, fmt.Errorf("%w: invocation outcome reader unavailable", ErrDatabaseUnavailable)
 	}
 	return reader.GetInvocationOutcome(ctx, invocationID)
+}
+
+func (s *InvocationService) FindIdempotent(ctx context.Context, idempotencyKey string) (Invocation, PreparedModelInput, error) {
+	idempotencyKey = strings.TrimSpace(idempotencyKey)
+	if idempotencyKey == "" || len(idempotencyKey) > 200 {
+		return Invocation{}, PreparedModelInput{}, fmt.Errorf("%w: invalid idempotency key", ErrInvalidRequest)
+	}
+	reader, ok := s.store.(IdempotentInvocationReader)
+	if !ok {
+		return Invocation{}, PreparedModelInput{}, fmt.Errorf("%w: idempotent invocation reader unavailable", ErrDatabaseUnavailable)
+	}
+	return reader.GetInvocationByIdempotency(ctx, s.organizationID, idempotencyKey)
 }
 
 func (s *InvocationService) FindTaskAttempt(ctx context.Context, taskID, attemptID int64) ([]Invocation, error) {
