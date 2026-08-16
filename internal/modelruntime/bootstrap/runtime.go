@@ -73,6 +73,7 @@ type Runtime struct {
 	Registry    *modelruntime.RegistryService
 	Invocations *modelruntime.InvocationService
 	Dispatch    *modelruntime.DispatchService
+	TaskLeases  tasks.ExecutionLeaseVerifier
 	Store       *modelpostgres.Store
 	Dispatcher  *dispatchbootstrap.Runtime
 	Identity    *identitybootstrap.Runtime
@@ -223,7 +224,7 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	if err != nil {
 		return nil, err
 	}
-	return &Runtime{Config: runtimeCfg, Registry: registryService, Invocations: invocationService, Dispatch: dispatchService, Store: modelStore, Dispatcher: dispatchRuntime, Identity: identityRuntime}, nil
+	return &Runtime{Config: runtimeCfg, Registry: registryService, Invocations: invocationService, Dispatch: dispatchService, TaskLeases: taskStore, Store: modelStore, Dispatcher: dispatchRuntime, Identity: identityRuntime}, nil
 }
 
 type catalogAdapter struct{ reader registry.Reader }

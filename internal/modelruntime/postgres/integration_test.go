@@ -27,6 +27,7 @@ import (
 	costledgerpostgres "github.com/Mireuz13/explorarte-organization/internal/costledger/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/executionharness"
 	harnessmodelruntime "github.com/Mireuz13/explorarte-organization/internal/executionharness/modelruntimeadapter"
+	"github.com/Mireuz13/explorarte-organization/internal/executionharness/tasksauthority"
 	"github.com/Mireuz13/explorarte-organization/internal/modeldispatch"
 	dispatchpostgres "github.com/Mireuz13/explorarte-organization/internal/modeldispatch/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/modelegress"
@@ -42,6 +43,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
+	taskpostgres "github.com/Mireuz13/explorarte-organization/internal/tasks/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/testdbguard"
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 )
@@ -277,9 +279,26 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		if newErr != nil {
 			t.Fatal(newErr)
 		}
-		harnessDispatch, newErr := modelruntime.NewDispatchService(modelIntegrationOrganization, cfg, fakeCatalog, harnessTasks, harnessContexts, capabilityEvaluator, egressStore, modelegress.NewEvaluator(), store, principals, assignments, identityService, store, adapter.NewRegistry(adapter.NewFake()), modelruntime.ClockFunc(time.Now))
+		sequence := &harnessSequenceAdapter{}
+		harnessDispatch, newErr := modelruntime.NewDispatchService(modelIntegrationOrganization, cfg, fakeCatalog, harnessTasks, harnessContexts, capabilityEvaluator, egressStore, modelegress.NewEvaluator(), store, principals, assignments, identityService, store, adapter.NewRegistry(sequence), modelruntime.ClockFunc(time.Now))
 		if newErr != nil {
 			t.Fatal(newErr)
+		}
+		taskDB, taskErr := taskpostgres.New(platform)
+		if taskErr != nil {
+			t.Fatal(taskErr)
+		}
+		principalReader, taskErr := tasksauthority.NewCanonicalPrincipalReader(dispatchStore)
+		if taskErr != nil {
+			t.Fatal(taskErr)
+		}
+		authority, taskErr := tasksauthority.New(taskDB, principalReader)
+		if taskErr != nil {
+			t.Fatal(taskErr)
+		}
+		principalID := strconv.FormatInt(principal.ID, 10)
+		if _, taskErr = platform.Pool().Exec(ctx, `UPDATE task_leases SET holder_id=$1 WHERE task_id=$2 AND attempt_id=$3`, principalID, harnessTaskRef.TaskID, harnessTaskRef.AttemptID); taskErr != nil {
+			t.Fatal(taskErr)
 		}
 		modelExecutor, newErr := harnessmodelruntime.New(harnessInvocations, harnessDispatch, harnessmodelruntime.ClockFunc(time.Now), harnessmodelruntime.Config{
 			MaxOutputTokens: 256, ThinkingMode: modelruntime.ThinkingDisabled, InvocationTTL: 20 * time.Minute,
@@ -292,27 +311,37 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 			Identity: executionharness.RunIdentity{
 				RunID: "pg-harness-modelruntime-1", OrganizationID: modelIntegrationOrganization,
 				TaskID: harnessTaskRef.TaskID, AttemptID: harnessTaskRef.AttemptID, RoleID: harnessTaskRef.AssignedRoleID,
-				ExecutionPrincipalID: harnessTaskRef.LeaseHolderID, CorrelationID: "pg-harness-modelruntime", CausationID: "pg-harness-entry",
+				ExecutionPrincipalID: principalID, CorrelationID: "pg-harness-modelruntime", CausationID: "pg-harness-entry",
 			},
-			LeaseToken: "integration-lease-token",
+			LeaseToken: "lease",
 			Context: executionharness.InitialContext{
 				ID: strconv.FormatInt(harnessSnapshotRef.ID, 10), Version: "context-snapshot-v1",
 				Digest: modelruntime.SHA256Bytes([]byte(contextBody)), Content: contextBody,
 			},
-			Policy: executionharness.RunPolicy{MaxTurns: 1, MaxToolCalls: 0, ExecutionProfileID: "standard-v1", ModelPolicyRef: "canonical-role-binding", BuildRef: "integration-build"},
+			Tools:  []executionharness.ToolDefinition{{Name: "lookup_fixture", Description: "read deterministic fixture", InputSchema: json.RawMessage(`{"type":"object"}`)}},
+			Policy: executionharness.RunPolicy{MaxTurns: 3, MaxToolCalls: 2, ExecutionProfileID: "standard-v1", ModelPolicyRef: "canonical-role-binding", BuildRef: "integration-build"},
 		}
 		history := executionharness.NewMemoryHistoryStore()
-		harness, newErr := executionharness.New(allowHarnessAuthority{}, modelExecutor, emptyHarnessToolCatalog{}, rejectHarnessToolExecutor{}, history)
+		harness, newErr := executionharness.New(authority, modelExecutor, integrationHarnessToolCatalog{definition: spec.Tools[0]}, &integrationHarnessToolExecutor{}, history)
 		if newErr != nil {
 			t.Fatal(newErr)
 		}
 		result := harness.Execute(ctx, spec)
-		if result.Status != executionharness.StatusCompleted || result.FinalOutput == "" {
+		if result.Status != executionharness.StatusCompleted || result.FinalOutput != "integration final" || sequence.calls != 2 {
 			t.Fatalf("harness result=%+v", result)
 		}
 		events, readErr := history.Read(ctx, spec.Identity.RunID)
 		if readErr != nil {
 			t.Fatal(readErr)
+		}
+		var invocationRefs []string
+		for _, event := range events {
+			if event.Type == executionharness.EventModelResponseRecorded && event.ModelResult != nil {
+				invocationRefs = append(invocationRefs, event.ModelResult.InvocationRef)
+			}
+		}
+		if len(invocationRefs) != 2 || invocationRefs[0] == invocationRefs[1] {
+			t.Fatalf("expected two distinct durable invocation IDs, got %v", invocationRefs)
 		}
 		invocationRef := ""
 		for _, event := range events {
@@ -343,6 +372,43 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_provider_requests WHERE invocation_id=$1 AND provider_id='test.fake'`, invocationID, 1)
 		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_execution_identity_assertions WHERE invocation_id=$1 AND verification_effect='allow'`, invocationID, 1)
 		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_dispatcher_assignment_uses WHERE invocation_id=$1`, invocationID, 1)
+
+		runMutation := func(name string, mutate func() error, restore func() error) {
+			sequence.calls = 0
+			mutatingTools := &integrationHarnessToolExecutor{beforeReply: mutate}
+			mutatingHistory := executionharness.NewMemoryHistoryStore()
+			mutatingHarness, harnessErr := executionharness.New(authority, modelExecutor, integrationHarnessToolCatalog{definition: spec.Tools[0]}, mutatingTools, mutatingHistory)
+			if harnessErr != nil {
+				t.Fatal(harnessErr)
+			}
+			mutatedSpec := spec
+			mutatedSpec.Identity.RunID = name
+			mutatedSpec.Identity.CorrelationID = name + ":correlation"
+			mutatedSpec.Identity.CausationID = name + ":causation"
+			got := mutatingHarness.Execute(ctx, mutatedSpec)
+			restoreErr := restore()
+			if restoreErr != nil {
+				t.Fatal(restoreErr)
+			}
+			if got.Status != executionharness.StatusAuthorizationDenied || sequence.calls != 1 || mutatingTools.calls != 1 {
+				t.Fatalf("mid-run authority mutation was not fail-closed: result=%+v provider_calls=%d tool_calls=%d", got, sequence.calls, mutatingTools.calls)
+			}
+		}
+
+		runMutation("pg-harness-principal-revoked", func() error {
+			_, err := platform.Pool().Exec(ctx, `UPDATE model_execution_principals SET status='disabled',disabled_at=clock_timestamp() WHERE id=$1`, principal.ID)
+			return err
+		}, func() error {
+			_, err := platform.Pool().Exec(ctx, `UPDATE model_execution_principals SET status='active',disabled_at=NULL WHERE id=$1`, principal.ID)
+			return err
+		})
+		runMutation("pg-harness-lease-revoked", func() error {
+			_, err := platform.Pool().Exec(ctx, `UPDATE task_leases SET status='revoked' WHERE task_id=$1 AND attempt_id=$2`, harnessTaskRef.TaskID, harnessTaskRef.AttemptID)
+			return err
+		}, func() error {
+			_, err := platform.Pool().Exec(ctx, `UPDATE task_leases SET status='active' WHERE task_id=$1 AND attempt_id=$2`, harnessTaskRef.TaskID, harnessTaskRef.AttemptID)
+			return err
+		})
 	})
 
 	t.Run("credential-bearing model input is rejected before durable admission", func(t *testing.T) {
@@ -1288,6 +1354,69 @@ func (d denyEvaluator) EvaluateDispatch(context.Context, string, int64, string, 
 }
 
 type countingAdapter struct{ calls int }
+
+type harnessSequenceAdapter struct{ calls int }
+
+func (a *harnessSequenceAdapter) ProviderID() string { return "test.fake" }
+func (a *harnessSequenceAdapter) Descriptor() modelruntime.AdapterDescriptor {
+	return modelruntime.AdapterDescriptor{
+		ProviderID: "test.fake", AdapterID: "harness-sequence", AdapterVersion: 1,
+		Transport: modelruntime.TransportFake, RequestSchemaVersion: "test.fake.request.v1",
+		ResponseSchemaVersion: "test.fake.response.v1",
+		EndpointFingerprint:   modelruntime.SHA256Bytes([]byte("harness-sequence:endpoint")),
+		CredentialRefHash:     modelruntime.SHA256Bytes([]byte("harness-sequence:credential")),
+	}
+}
+func (a *harnessSequenceAdapter) Preflight(ctx context.Context, request modelruntime.ProviderPreflightRequest) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if request.ProviderID != "test.fake" || request.ProviderModelID == "" || request.Deadline.IsZero() {
+		return modelruntime.ErrInvalidRequest
+	}
+	return nil
+}
+func (a *harnessSequenceAdapter) Dispatch(_ context.Context, request modelruntime.CanonicalRequest) (modelruntime.RawResponse, error) {
+	a.calls++
+	response := modelruntime.RawResponse{ProviderRequestID: fmt.Sprintf("harness-%d", a.calls), InputTokens: 12, OutputTokens: 4, ProviderReported: false}
+	if a.calls == 1 {
+		response.ToolIntents = []modelruntime.RawToolIntent{{ID: "harness-call-1", Name: "lookup_fixture", Arguments: []byte(`{"key":"alpha"}`)}}
+	} else {
+		response.Content = []byte("integration final")
+	}
+	response.ProviderOutcome = modelruntime.ProviderOutcome{
+		OutcomeClassification: modelruntime.ProviderOutcomeResponseReceived,
+		ProviderRequestID:     response.ProviderRequestID, HTTPStatus: 200,
+		ResponseHash: modelruntime.SHA256Bytes(response.Content), ResponseSchemaVersion: "test.fake.response.v1",
+	}
+	return response, nil
+}
+
+type integrationHarnessToolCatalog struct {
+	definition executionharness.ToolDefinition
+}
+
+func (c integrationHarnessToolCatalog) Lookup(context.Context, string) (executionharness.ToolDefinition, bool) {
+	return c.definition, true
+}
+func (integrationHarnessToolCatalog) ValidateArguments(context.Context, executionharness.ToolDefinition, []byte) error {
+	return nil
+}
+
+type integrationHarnessToolExecutor struct {
+	calls       int
+	beforeReply func() error
+}
+
+func (e *integrationHarnessToolExecutor) Execute(context.Context, executionharness.RunIdentity, executionharness.ToolRequest) (executionharness.ToolExecutionResult, error) {
+	e.calls++
+	if e.beforeReply != nil {
+		if err := e.beforeReply(); err != nil {
+			return executionharness.ToolExecutionResult{}, err
+		}
+	}
+	return executionharness.ToolExecutionResult{Content: json.RawMessage(`{"value":"integration fixture"}`), Provenance: "postgres/integration"}, nil
+}
 
 func (a *countingAdapter) ProviderID() string { return "test.fake" }
 func (a *countingAdapter) Descriptor() modelruntime.AdapterDescriptor {

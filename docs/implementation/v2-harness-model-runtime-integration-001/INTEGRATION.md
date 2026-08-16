@@ -189,6 +189,19 @@ History is intentionally not rewritten.
    preconditions 4/4; suites 1 passed, 0 failed; accounting 31/31; final status
    `COMPLETE_GREEN`. Evidence manifest SHA-256:
    `bafea7c4de4202c193d59150ee1e026334f486c35e473720ca4a5c19b67700f4`.
+10. Human review identified that the initial PostgreSQL Harness composition
+    used an allow-all authority and therefore did not prove productive task
+    lease/principal reauthorization. This finding was preserved; no prior
+    result was rewritten.
+11. The closure adds `CanonicalPrincipalReader`, backed by the canonical
+    `modeldispatch.PrincipalStore`, and composes it with the real task lease
+    verifier through `modelruntime/bootstrap.NewHarnessAuthority`.
+12. The PostgreSQL Harness flow now uses the real `tasks/postgres` lease
+    verifier and canonical execution-principal store. It proves two model
+    invocations with one tool call and distinct invocation references.
+13. PostgreSQL mutation checks revoke the principal or revoke the lease after
+    turn one. In both cases turn two is denied and no additional provider
+    dispatch occurs; the original turn-one evidence remains append-only.
 
 ## Known gaps
 
@@ -196,7 +209,9 @@ History is intentionally not rewritten.
   does not claim that its in-memory history store is production durable.
 - No daemon/CLI consumer starts Harness runs yet. The productive composition
   seam is available through Model Runtime bootstrap, but consumer migration is
-  a later slice.
+  a later slice. The current integration proof uses the disposable PostgreSQL
+  harness and concrete task/model-runtime services; it does not claim a
+  production daemon has been migrated.
 - Provider-exposed reasoning telemetry is unavailable through current Model
   Runtime normalization and is not invented here.
 - Provider continuation remains opaque and currently fails closed for adapters
