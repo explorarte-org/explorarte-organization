@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/agentbudget"
+	"github.com/Mireuz13/explorarte-organization/internal/contentpolicy"
 	"github.com/Mireuz13/explorarte-organization/internal/costledger"
-	"github.com/Mireuz13/explorarte-organization/internal/dataclassifier"
 	"github.com/Mireuz13/explorarte-organization/internal/embeddingruntime"
 	"github.com/Mireuz13/explorarte-organization/internal/modelpricing"
 )
@@ -91,7 +91,7 @@ func (m *Manager) embed(ctx context.Context, organizationID, actorRoleID, text s
 // ...) for a media-backed chunk (see rag_knowledge_chunks.media_source_ref)
 // — a thin wrapper over embedItem for the multimodal case. classifierText
 // is the SAME page's already-extracted text (chunk.Content) even though it
-// is not what gets sent to the provider: dataclassifier.Detect only
+// is not what gets sent to the provider: contentpolicy.Analyze only
 // understands text patterns, so scanning the extracted text is the only
 // secret defense-in-depth check available for a media item —
 // there is no equivalent scan of the raw bytes. This is a real, documented
@@ -157,15 +157,15 @@ func (m *Manager) embedItem(ctx context.Context, organizationID, actorRoleID, cl
 	// ARCH-BOUNDARY-001: Organization's RAG domain has no clinical data
 	// concept — see cmd/orgctl/rag.go's runRAGIngestPDF and
 	// internal/rag/validation.go's KnowledgeVersion.Validate for the full
-	// rationale, both already scoped to finding.Secret only. This was the
-	// third call site into dataclassifier.Detect on RAG content and was
+	// rationale, both already scoped to credential findings only. This was the
+	// third content-policy call site on RAG content and was
 	// missed in that fix: it kept using finding.Any() (Secret OR
 	// Clinical), silently degrading embeddings for any chunk whose
 	// extracted text happened to contain ordinary engineering vocabulary
 	// overlapping the clinical word list (RAG-EMBED-COMPLETENESS-001).
 	// Secret-shaped content stays a real Organization concern and is
 	// still checked; clinical vocabulary is not.
-	if finding := dataclassifier.Detect(classifierText); finding.Secret {
+	if contentpolicy.Analyze(classifierText).Has(contentpolicy.RiskCredential) {
 		slog.Default().Warn("rag embedding skipped: text matched a forbidden data pattern", "organization_id", organizationID, "operation", operation)
 		return nil
 	}

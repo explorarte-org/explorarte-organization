@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Mireuz13/explorarte-organization/internal/secretscan"
+	"github.com/Mireuz13/explorarte-organization/internal/contentpolicy"
 )
 
 const maxJSONInput = 1 << 20
@@ -301,9 +301,9 @@ func rejectSecrets(request CreateRequest) error {
 		}{fmt.Sprintf("requirements[%d].description", index), requirement.Description})
 	}
 	for _, field := range fields {
-		if findings := secretscan.Scan(field.text); len(findings) > 0 {
+		if assessment := contentpolicy.Analyze(field.text); assessment.Has(contentpolicy.RiskCredential) {
 			return fmt.Errorf("%w: %s contains %s; store the credential in the secret store and reference it instead",
-				ErrSecretRejected, field.name, strings.Join(secretscan.Kinds(findings), ", "))
+				ErrSecretRejected, field.name, strings.Join(assessment.Kinds(contentpolicy.RiskCredential), ", "))
 		}
 	}
 	return nil
