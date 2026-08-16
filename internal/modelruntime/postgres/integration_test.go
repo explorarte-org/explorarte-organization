@@ -244,6 +244,22 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	t.Run("credential-bearing model input is rejected before durable admission", func(t *testing.T) {
+		const idempotencyKey = "pg-secret-admission"
+		command := validInvocationCommand(taskRef, snapshotRef, "ingenieria_ia/code-runner", idempotencyKey)
+		command.ModelInput = &modelruntime.ModelInputEnvelope{
+			SchemaVersion: modelruntime.ModelInputEnvelopeSchemaV1, ContextSnapshotID: snapshotRef.ID,
+			CanonicalProjectionDigest: modelruntime.SHA256Bytes([]byte("secret-admission-projection")),
+			StablePrefix:              []modelruntime.ModelInputMessage{{Role: modelruntime.ModelInputRoleUser, Content: string(contexts.rendered)}},
+			VisibleHistory:            []modelruntime.ModelInputMessage{{Role: modelruntime.ModelInputRoleAssistant, Content: "API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456"}},
+		}
+		if _, createErr := invocations.Create(ctx, command); !errors.Is(createErr, modelruntime.ErrModelInputSecretRejected) {
+			t.Fatalf("credential-bearing model input error=%v", createErr)
+		}
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_invocations WHERE organization_id=$1 AND idempotency_key=$2`, modelIntegrationOrganization, idempotencyKey, 0)
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_invocation_inputs i JOIN model_invocations v ON v.id=i.invocation_id WHERE v.organization_id=$1 AND v.idempotency_key=$2`, modelIntegrationOrganization, idempotencyKey, 0)
+	})
+
 	t.Run("create reuse conflict and fake one-shot dispatch are durable", func(t *testing.T) {
 		command := validInvocationCommand(taskRef, snapshotRef, "ingenieria_ia/code-runner", "pg-fake-dispatch")
 		created, createErr := invocations.Create(ctx, command)
