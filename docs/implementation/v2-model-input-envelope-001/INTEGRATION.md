@@ -8,6 +8,7 @@
 - Architecture decision: `EXTEND_MODEL_RUNTIME_WITH_DURABLE_MODEL_INPUT_ENVELOPE`
 - Production mutation: none
 - Provider/model calls during implementation: zero
+- Database access: PostgreSQL 17 disposable test database only
 
 ## Scope
 
@@ -80,8 +81,15 @@ Egress now evaluates the union of:
 - deterministic Content Policy analysis of a provider-visible output schema.
 
 A credential introduced by a tool/model result classifies the complete input
-as `secret` and reaches the existing hard-deny path before context rendering,
-cost reservation, or provider dispatch. Tests assert zero provider calls.
+as `secret`. `InvocationService.Create` rejects that input before
+`Store.CreateInvocation`, so neither an invocation nor canonical input bytes
+are persisted. The rejection message contains no matched material and directs
+the caller to store credentials in the secret store and pass a reference.
+
+Dispatch independently retains the existing hard-deny path before context
+rendering, cost reservation, or provider dispatch. This is defense in depth
+for corrupt or externally injected durable records, not the normal admission
+path. Tests assert zero provider calls in both cases.
 
 No clinical vocabulary heuristic was introduced. Ordinary words such as
 `patient` remain ordinary organizational knowledge. Explicit upstream
@@ -183,6 +191,42 @@ The following sequence is intentionally append-only.
     the build result.
 12. `make build` passed for both `orgd` and `orgctl`. No provider, production,
     shared database, or disposable database was contacted.
+13. Human review identified that the first implementation classified dynamic
+    credentials but persisted the canonical envelope before Dispatch denied
+    egress. This was accepted as a blocking at-rest admission defect.
+14. `InvocationService.Create` was changed to reject effective `secret`
+    classifications before calling the store. Unit negatives for assistant
+    content, tool results, tool-call arguments, tool schemas, explicit secret
+    classification, and provider-visible output schema passed. The artificial
+    stored-secret Dispatch denial remained passing.
+15. The first PostgreSQL runtime attempt on the local host stopped at
+    `postgres-healthy`: the installed Docker client has no Compose plugin.
+    Isolation and destructive-authorization preconditions passed; the result
+    was recorded as `INFRASTRUCTURE_ABORT`, not a database-test result.
+16. The same committed bytes were replayed in an isolated VPS worktree with
+    Docker Compose and PostgreSQL 17. All safety/bootstrap preconditions
+    passed, then the integration-tagged package failed to compile because the
+    new zero-row assertions called a one-argument helper with two SQL
+    parameters.
+17. The assertions were corrected to use the existing two-argument helper.
+    The next isolated PostgreSQL 17 replay compiled and ran, then correctly
+    exposed a migration reversibility gap: migration 49's FK prevented the
+    test from dropping migration 7's `model_invocations` table.
+18. The down/reapply test was corrected to roll back migration 49 before 7
+    and to verify `model_invocation_inputs` after ordered reapplication. No
+    `CASCADE` or integrity weakening was introduced.
+19. The third isolated replay on commit
+    `8ff221e890b39bc0f7861943c08697ae7ffb84af` passed all harness
+    preconditions and `modelruntime-postgres`. Evidence manifest SHA-256 was
+    `443dcc8d31fc9c90c07246eefef96e983c0ef372937f3458e38facf52d5e8e97`.
+    Evidence accounting was
+    `31/31`, with the selected suite passing, 30 non-selected suites explicitly
+    skipped, zero failed/blocked/unknown, and final status `COMPLETE_GREEN`.
+    This run exercised real durable insert, immutable UPDATE/DELETE denial,
+    idempotent reuse, dispatch, secret-admission zero rows, rollback, and
+    reapplication against the disposable database `explorarte_test`.
+20. `go test ./...` and `go vet ./...` passed after the PostgreSQL fixes.
+    No live provider or production resource was contacted.
 
 ## Known gaps
 
@@ -190,9 +234,6 @@ The following sequence is intentionally append-only.
   `NormalizedModelRequest` into this envelope and create/dispatch one
   invocation per turn.
 - The migration was not applied to production or any shared database.
-- The PostgreSQL integration test for insert/immutability is checked in and
-  compiles, but was not executed because no guarded disposable test database
-  was configured in this environment.
 - Opaque provider continuation is durable but unsupported by current adapter
   transports; non-empty values fail closed.
 - Provider wire bytes remain adapter-derived. The provider-independent
@@ -202,7 +243,5 @@ The following sequence is intentionally append-only.
 ## Follow-ups
 
 1. Implement the narrow Harness `ModelExecutor` adapter using this envelope.
-2. Run migration/integration tests against a disposable PostgreSQL database
-   protected by `testdbguard` before merge if CI does not provide one.
-3. Define a verified provider-specific continuation contract before enabling
+2. Define a verified provider-specific continuation contract before enabling
    opaque continuation for any adapter.
