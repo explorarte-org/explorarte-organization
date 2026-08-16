@@ -63,6 +63,11 @@ func (r *Runtime) Execute(ctx context.Context, spec RunSpec) RunResult {
 			return result(spec, events, StatusLimitReached, "max turns exhausted", "", lastModelOutput, turnsUsed, toolCallsUsed)
 		}
 		if err := r.authority.AuthorizeExecution(ctx, AuthorityRequest{Identity: spec.Identity, LeaseToken: spec.LeaseToken}); err != nil {
+			if errors.Is(err, ErrAuthorityUnavailable) {
+				// Nothing is appended and no provider call happens. The run is
+				// left exactly as it was so the same run identity resumes here.
+				return result(spec, events, StatusAuthorityUnavailable, "execution authority unavailable", "", lastModelOutput, turnsUsed, toolCallsUsed)
+			}
 			events, _ = r.append(ctx, spec, events, Event{Type: EventRunFailed, TerminalStatus: StatusAuthorizationDenied, ErrorCode: "authorization_denied", Reason: "execution authority denied"})
 			return result(spec, events, StatusAuthorizationDenied, "execution authority denied", "", lastModelOutput, turnsUsed, toolCallsUsed)
 		}
@@ -152,6 +157,12 @@ func (r *Runtime) Execute(ctx context.Context, spec RunSpec) RunResult {
 				return result(spec, events, StatusToolError, denialCode, "", lastModelOutput, turnsUsed, toolCallsUsed)
 			}
 			if err := r.authority.AuthorizeExecution(ctx, AuthorityRequest{Identity: spec.Identity, LeaseToken: spec.LeaseToken}); err != nil {
+				if errors.Is(err, ErrAuthorityUnavailable) {
+					// The tool has not run, so no side effect exists to record.
+					// The trailing tool_call_requested event stays unresolved,
+					// which resume treats as never-observed rather than replay.
+					return result(spec, events, StatusAuthorityUnavailable, "execution authority unavailable", "", lastModelOutput, turnsUsed, toolCallsUsed)
+				}
 				events, _ = r.append(ctx, spec, events, Event{Type: EventToolCallDenied, ToolRequest: &toolRequest, ErrorCode: "authorization_denied", Reason: err.Error()})
 				events, _ = r.append(ctx, spec, events, Event{Type: EventRunFailed, TerminalStatus: StatusAuthorizationDenied, ErrorCode: "authorization_denied", Reason: "execution authority denied before tool"})
 				return result(spec, events, StatusAuthorizationDenied, "execution authority denied before tool", "", lastModelOutput, turnsUsed, toolCallsUsed)
@@ -271,11 +282,21 @@ func sameToolDefinition(left, right ToolDefinition) bool {
 		leftNormalized[0].Description == rightNormalized[0].Description && string(leftBody) == string(rightBody)
 }
 
+// requestedToolCallIDs seeds the in-run replay guard from history. It counts
+// only tool calls that were RESOLVED -- executed or denied -- because those are
+// the only ones Project surfaces back to the model. A tool call that was
+// requested and never resolved was never observable by the model, so a resumed
+// run re-proposing that same ID is ordinary continuation, not a replay. The
+// in-process guard is unaffected: the live loop still marks every requested ID
+// as it goes, so duplicates within one run are caught as before.
 func requestedToolCallIDs(events []Event) map[string]bool {
 	result := make(map[string]bool)
 	for _, event := range events {
-		if event.Type == EventToolCallRequested && event.ToolRequest != nil {
-			result[event.ToolRequest.ToolCallID] = true
+		switch event.Type {
+		case EventToolResultRecorded, EventToolCallDenied:
+			if event.ToolRequest != nil {
+				result[event.ToolRequest.ToolCallID] = true
+			}
 		}
 	}
 	return result
@@ -317,7 +338,8 @@ func result(spec RunSpec, events []Event, status RunStatus, reason, final, last 
 		lastSequence = events[len(events)-1].Sequence
 	}
 	return RunResult{RunID: spec.Identity.RunID, Status: status, FinalOutput: final, LastModelOutput: last,
-		LastSequence: lastSequence, TurnsUsed: turns, ToolCallsUsed: tools, TerminationReason: reason, Provenance: "executionharness/v1"}
+		LastSequence: lastSequence, TurnsUsed: turns, ToolCallsUsed: tools, TerminationReason: reason,
+		Retryable: status == StatusAuthorityUnavailable, Provenance: "executionharness/v1"}
 }
 
 func historyFailure(spec RunSpec, events []Event, err error) RunResult {

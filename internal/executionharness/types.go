@@ -150,9 +150,13 @@ const (
 	StatusModelError          RunStatus = "model_error"
 	StatusToolError           RunStatus = "tool_error"
 	StatusAuthorizationDenied RunStatus = "authorization_denied"
-	StatusIdentityDrift       RunStatus = "identity_drift"
-	StatusHistoryError        RunStatus = "history_error"
-	StatusCancelled           RunStatus = "cancelled"
+	// StatusAuthorityUnavailable is deliberately NOT a terminal status: it is
+	// absent from terminalStatusMatches, no terminal event carries it, and the
+	// run history is left untouched so a later attempt resumes in place.
+	StatusAuthorityUnavailable RunStatus = "authority_unavailable"
+	StatusIdentityDrift        RunStatus = "identity_drift"
+	StatusHistoryError         RunStatus = "history_error"
+	StatusCancelled            RunStatus = "cancelled"
 )
 
 type RunResult struct {
@@ -164,5 +168,9 @@ type RunResult struct {
 	TurnsUsed         int       `json:"turns_used"`
 	ToolCallsUsed     int       `json:"tool_calls_used"`
 	TerminationReason string    `json:"termination_reason"`
-	Provenance        string    `json:"provenance"`
+	// Retryable reports that the run stopped without reaching a terminal state
+	// and may be re-entered with the same run identity. It is true only for
+	// StatusAuthorityUnavailable; every terminal status is false.
+	Retryable  bool   `json:"retryable"`
+	Provenance string `json:"provenance"`
 }
