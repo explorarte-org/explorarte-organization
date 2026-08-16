@@ -101,6 +101,21 @@ The mirror case is proven too: a lease renewed through `Heartbeat` while still
 valid is **not** denied, and the run completes. Without it, an authority that
 simply refused every second turn would pass every denial test above.
 
+## Observation left for review
+
+`authority_unavailable` can never be produced as a terminal status by the
+Harness: both unavailability branches return without appending, and
+`terminalStatusMatches` does not accept it. The durable store, however, does
+**not** refuse such an event at write time -- a caller that violated the port
+contract could persist one. What protects the system is the read side: a
+history carrying that impossible state is rejected as `ErrHistoryCorrupt` on
+reload, the run reports `history_error`, and no provider or tool is touched.
+`TestForgedAuthorityUnavailableTerminalFailsClosedOnReload` pins exactly that.
+
+This is weaker than a schema `CHECK` on `terminal_status`, and it is recorded
+here rather than hardened preemptively. Whether it needs the constraint before
+merge is a decision for review, not for the worker who wrote the code.
+
 ## Known gaps
 
 - No daemon/CLI consumer starts Harness runs yet. The composition seam exists
