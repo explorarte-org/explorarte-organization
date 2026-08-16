@@ -37,20 +37,34 @@ type Adapter struct {
 //   - usage uses input_tokens/output_tokens (not prompt_tokens/
 //     completion_tokens).
 type responsesRequest struct {
-	Model           string             `json:"model"`
-	Input           []responseInputMsg `json:"input"`
-	Instructions    string             `json:"instructions,omitempty"`
-	MaxOutputTokens int                `json:"max_output_tokens,omitempty"`
-	Temperature     *float64           `json:"temperature,omitempty"`
-	Reasoning       *reasoningConfig   `json:"reasoning,omitempty"`
-	Text            *textConfig        `json:"text,omitempty"`
-	Store           bool               `json:"store"`
-	Stream          bool               `json:"stream"`
+	Model           string              `json:"model"`
+	Input           []responseInputItem `json:"input"`
+	Instructions    string              `json:"instructions,omitempty"`
+	MaxOutputTokens int                 `json:"max_output_tokens,omitempty"`
+	Temperature     *float64            `json:"temperature,omitempty"`
+	Reasoning       *reasoningConfig    `json:"reasoning,omitempty"`
+	Text            *textConfig         `json:"text,omitempty"`
+	Store           bool                `json:"store"`
+	Stream          bool                `json:"stream"`
+	Tools           []responseTool      `json:"tools,omitempty"`
 }
 
-type responseInputMsg struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+type responseInputItem struct {
+	Type      string          `json:"type,omitempty"`
+	Role      string          `json:"role,omitempty"`
+	Content   string          `json:"content,omitempty"`
+	CallID    string          `json:"call_id,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
+	Output    string          `json:"output,omitempty"`
+}
+
+type responseTool struct {
+	Type        string          `json:"type"`
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters"`
+	Strict      bool            `json:"strict"`
 }
 
 type reasoningConfig struct {
@@ -294,12 +308,18 @@ func encodeRequest(request modelruntime.CanonicalRequest) ([]byte, error) {
 	}
 	payload := responsesRequest{
 		Model:           request.ProviderModelID,
-		Input:           []responseInputMsg{{Role: "user", Content: string(request.RenderedContext)}},
+		Input:           nil,
 		MaxOutputTokens: request.MaxOutputTokens,
 		Temperature:     request.Temperature,
 		Store:           false,
 		Stream:          false,
 	}
+	input, tools, err := encodeModelInput(request)
+	if err != nil {
+		return nil, err
+	}
+	payload.Input = input
+	payload.Tools = tools
 	if strings.TrimSpace(request.ReasoningEffort) != "" {
 		payload.Reasoning = &reasoningConfig{Effort: request.ReasoningEffort}
 	}
@@ -319,6 +339,44 @@ func encodeRequest(request modelruntime.CanonicalRequest) ([]byte, error) {
 		}
 	}
 	return json.Marshal(payload)
+}
+
+func encodeModelInput(request modelruntime.CanonicalRequest) ([]responseInputItem, []responseTool, error) {
+	input := request.ModelInput.Envelope
+	if input.SchemaVersion == "" {
+		if len(request.RenderedContext) == 0 {
+			return nil, nil, modelruntime.ErrInvalidRequest
+		}
+		return []responseInputItem{{Type: "message", Role: "user", Content: string(request.RenderedContext)}}, nil, nil
+	}
+	if input.SchemaVersion != modelruntime.ModelInputEnvelopeSchemaV1 || input.ProviderContinuationRef != "" {
+		return nil, nil, modelruntime.ErrInvalidRequest
+	}
+	items := make([]responseInputItem, 0, len(input.StablePrefix)+len(input.VisibleHistory)*2)
+	appendMessage := func(message modelruntime.ModelInputMessage) {
+		switch message.Role {
+		case modelruntime.ModelInputRoleTool:
+			items = append(items, responseInputItem{Type: "function_call_output", CallID: message.ToolCallID, Output: message.Content})
+		default:
+			if message.Content != "" {
+				items = append(items, responseInputItem{Type: "message", Role: string(message.Role), Content: message.Content})
+			}
+			for _, call := range message.ToolCalls {
+				items = append(items, responseInputItem{Type: "function_call", CallID: call.ID, Name: call.Name, Arguments: append([]byte(nil), call.Arguments...)})
+			}
+		}
+	}
+	for _, message := range input.StablePrefix {
+		appendMessage(message)
+	}
+	for _, message := range input.VisibleHistory {
+		appendMessage(message)
+	}
+	tools := make([]responseTool, 0, len(input.ToolDefinitions))
+	for _, source := range input.ToolDefinitions {
+		tools = append(tools, responseTool{Type: "function", Name: source.Name, Description: source.Description, Parameters: append([]byte(nil), source.InputSchema...), Strict: true})
+	}
+	return items, tools, nil
 }
 
 // decodeOutput walks the Responses API output array. Only "message" items
@@ -341,7 +399,7 @@ func decodeOutput(items []responseOutput) ([]byte, []modelruntime.RawToolIntent,
 			if strings.TrimSpace(item.Name) == "" {
 				return nil, nil, fmt.Errorf("function_call output item missing name")
 			}
-			tools = append(tools, modelruntime.RawToolIntent{Name: item.Name, Arguments: append([]byte(nil), item.Arguments...)})
+			tools = append(tools, modelruntime.RawToolIntent{ID: item.CallID, Name: item.Name, Arguments: append([]byte(nil), item.Arguments...)})
 		case "reasoning":
 			// Deliberately not surfaced as content: see doc comment above.
 		}

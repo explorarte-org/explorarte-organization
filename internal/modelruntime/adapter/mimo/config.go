@@ -16,7 +16,7 @@ import (
 const (
 	ProviderID            = "mimo"
 	AdapterID             = "mimo_chat_completions"
-	AdapterVersion        = 1
+	AdapterVersion        = 2
 	RequestSchemaVersion  = "mimo.chat.completions.request.v1"
 	ResponseSchemaVersion = "mimo.chat.completions.response.v1"
 

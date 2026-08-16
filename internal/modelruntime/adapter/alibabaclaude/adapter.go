@@ -86,7 +86,8 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 	if request.ProviderID != ProviderID || !validModelID(strings.TrimSpace(request.ProviderModelID)) || request.MaxOutputTokens <= 0 || request.Deadline.IsZero() {
 		return modelruntime.RawResponse{}, a.beforeRequest("request", "request_invalid", modelruntime.ErrInvalidRequest)
 	}
-	if len(request.RenderedContext) == 0 || len(request.RenderedContext) > maxClaudeStdinBytes {
+	stdin, err := encodeModelInput(request)
+	if err != nil || len(stdin) == 0 || len(stdin) > maxClaudeStdinBytes {
 		return modelruntime.RawResponse{}, a.beforeRequest("request", "stdin_size_invalid", modelruntime.ErrInvalidRequest)
 	}
 	if request.OutputMode != modelruntime.OutputText && request.OutputMode != modelruntime.OutputJSON {
@@ -122,7 +123,7 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 	)
 	stdout, started, exitCode, runErr := runCLI(ctx, cliRunRequest{
 		Executable: a.config.Executable, Args: args, Env: env, Dir: a.config.WorkDir,
-		Stdin: request.RenderedContext, MaxStdoutBytes: a.config.MaxStdoutBytes,
+		Stdin: stdin, MaxStdoutBytes: a.config.MaxStdoutBytes,
 		MaxStderrBytes: a.config.MaxStderrBytes, Timeout: a.effectiveTimeout(request.Deadline), KillGrace: a.config.KillGrace,
 	})
 	if runErr != nil {
@@ -151,6 +152,26 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 		Content: content, InputTokens: inputTokens, OutputTokens: outputTokens,
 		ProviderReported: inputTokens > 0 || outputTokens > 0, ProviderOutcome: outcome,
 	}, nil
+}
+
+func encodeModelInput(request modelruntime.CanonicalRequest) ([]byte, error) {
+	input := request.ModelInput.Envelope
+	if input.SchemaVersion == "" {
+		return append([]byte(nil), request.RenderedContext...), nil
+	}
+	if input.SchemaVersion != modelruntime.ModelInputEnvelopeSchemaV1 || input.ProviderContinuationRef != "" || len(input.ToolDefinitions) != 0 {
+		return nil, modelruntime.ErrInvalidRequest
+	}
+	messages := append([]modelruntime.ModelInputMessage(nil), input.StablePrefix...)
+	for _, message := range input.VisibleHistory {
+		if message.Role == modelruntime.ModelInputRoleTool || len(message.ToolCalls) != 0 {
+			return nil, modelruntime.ErrInvalidRequest
+		}
+		messages = append(messages, message)
+	}
+	return modelruntime.CanonicalJSON(struct {
+		Messages []modelruntime.ModelInputMessage `json:"messages"`
+	}{Messages: messages})
 }
 
 func (a *Adapter) arguments(request modelruntime.CanonicalRequest) []string {

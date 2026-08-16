@@ -142,7 +142,7 @@ func canonicalNumberJSON(v any) ([]byte, error) {
 	}
 }
 
-func invocationRequestHash(c CreateInvocationCommand, revision int64, binding ResolvedBinding, caps []ModelCapability, schema []byte, policyVersionID int64, policyHash string, identityPolicyVersionID int64, identityPolicyHash string, assignment modeldispatch.ResolvedAssignment) (string, error) {
+func invocationRequestHash(c CreateInvocationCommand, revision int64, binding ResolvedBinding, caps []ModelCapability, schema []byte, modelInputDigest string, policyVersionID int64, policyHash string, identityPolicyVersionID int64, identityPolicyHash string, assignment modeldispatch.ResolvedAssignment) (string, error) {
 	value := map[string]any{
 		"organization_id":                      c.OrganizationID,
 		"organization_revision_id":             revision,
@@ -155,6 +155,7 @@ func invocationRequestHash(c CreateInvocationCommand, revision int64, binding Re
 		"dispatch_actor_role_id":               assignment.Principal.DispatchActorRoleID,
 		"subject_role_id":                      c.SubjectRoleID,
 		"context_snapshot_id":                  c.ContextSnapshotID,
+		"model_input_digest":                   modelInputDigest,
 		"purpose":                              strings.TrimSpace(c.Purpose),
 		"profile_id":                           binding.Profile.ID,
 		"profile_version_id":                   binding.Version.ID,

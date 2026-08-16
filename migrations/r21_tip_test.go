@@ -1,6 +1,7 @@
 package migrations_test
 
 import (
+	"strings"
 	"testing"
 
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
@@ -23,7 +24,7 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const wantCount = 48
+	const wantCount = 49
 	if len(loaded) != wantCount {
 		t.Fatalf("migration count=%d want %d", len(loaded), wantCount)
 	}
@@ -45,6 +46,7 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		47: "seed_openai_responses_pricing_and_wallet",
 		// EXEC-PRINCIPAL-001 remediation:
 		48: "enforce_single_active_execution_principal_per_role",
+		49: "create_model_invocation_inputs",
 	}
 	byVersion := make(map[int64]string, len(loaded))
 	for _, migration := range loaded {
@@ -56,7 +58,39 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		}
 	}
 
-	if tip := loaded[len(loaded)-1]; tip.Version != 48 {
-		t.Fatalf("migration tip=%06d want 000048", tip.Version)
+	if tip := loaded[len(loaded)-1]; tip.Version != 49 {
+		t.Fatalf("migration tip=%06d want 000049", tip.Version)
+	}
+}
+
+func TestModelInvocationInputMigrationContract(t *testing.T) {
+	loaded, err := platformmigrations.Load(rootmigrations.Files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var up string
+	for _, migration := range loaded {
+		if migration.Version == 49 {
+			up = migration.UpSQL
+			break
+		}
+	}
+	for _, required := range []string{
+		"CREATE TABLE model_invocation_inputs",
+		"invocation_id BIGINT PRIMARY KEY",
+		"FOREIGN KEY (invocation_id, context_snapshot_id)",
+		"canonical_bytes BYTEA NOT NULL",
+		"canonical_digest TEXT NOT NULL",
+		"BEFORE UPDATE OR DELETE ON model_invocation_inputs",
+		"cannot install model input envelopes while nonterminal model invocations exist",
+	} {
+		if !strings.Contains(up, required) {
+			t.Fatalf("migration 49 missing immutable input contract %q", required)
+		}
+	}
+	for _, forbidden := range []string{"harness_history", "workflow_events", "session_events"} {
+		if strings.Contains(up, forbidden) {
+			t.Fatalf("migration 49 added out-of-scope persistence %q", forbidden)
+		}
 	}
 }

@@ -16,7 +16,7 @@ import (
 const (
 	ProviderID            = "openai_compatible"
 	AdapterID             = "openai_chat_completions"
-	AdapterVersion        = 1
+	AdapterVersion        = 2
 	RequestSchemaVersion  = "openai.chat.completions.request.v1"
 	ResponseSchemaVersion = "openai.chat.completions.response.v1"
 

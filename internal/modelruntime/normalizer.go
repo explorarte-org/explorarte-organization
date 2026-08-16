@@ -40,8 +40,19 @@ func (n Normalizer) Normalize(invocation Invocation, dispatchAttemptID int64, ra
 		OutputMode:        invocation.OutputMode,
 		ToolIntents:       make([]ToolIntent, 0, len(raw.ToolIntents)),
 	}
+	seenToolCallIDs := make(map[string]struct{}, len(raw.ToolIntents))
 	totalBytes := len(raw.Content)
 	for _, rawIntent := range raw.ToolIntents {
+		callID := strings.TrimSpace(rawIntent.ID)
+		if callID != "" {
+			if !modelInputCallIDPattern.MatchString(callID) {
+				return NormalizedResponse{}, fmt.Errorf("%w: invalid tool call ID", ErrResponseRejected)
+			}
+			if _, duplicate := seenToolCallIDs[callID]; duplicate {
+				return NormalizedResponse{}, fmt.Errorf("%w: duplicate tool call ID", ErrResponseRejected)
+			}
+			seenToolCallIDs[callID] = struct{}{}
+		}
 		name := strings.TrimSpace(rawIntent.Name)
 		if !toolNamePattern.MatchString(name) {
 			return NormalizedResponse{}, fmt.Errorf("%w: invalid tool intent name", ErrResponseRejected)
@@ -54,7 +65,7 @@ func (n Normalizer) Normalize(invocation Invocation, dispatchAttemptID int64, ra
 		if totalBytes > n.MaxResponseBytes {
 			return NormalizedResponse{}, fmt.Errorf("%w: response exceeds byte limit", ErrResponseRejected)
 		}
-		result.ToolIntents = append(result.ToolIntents, ToolIntent{Name: name, Arguments: arguments})
+		result.ToolIntents = append(result.ToolIntents, ToolIntent{ID: callID, Name: name, Arguments: arguments})
 	}
 	if totalBytes > n.MaxResponseBytes {
 		return NormalizedResponse{}, fmt.Errorf("%w: response exceeds byte limit", ErrResponseRejected)

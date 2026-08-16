@@ -41,7 +41,7 @@ func TestMigration047_NoPreexistingRows(t *testing.T) {
 	if wallet.balance != 9700000000 || wallet.reserved != 0 {
 		t.Fatalf("wallet=%+v want balance=9700000000 reserved=0 (fresh placeholder seed)", wallet)
 	}
-	requireSchemaTip(t, ctx, store, 48)
+	requireSchemaTip(t, ctx, store, 49)
 }
 
 // The production-like case: exercises every invariant the operator
@@ -87,7 +87,7 @@ func TestMigration047_WalletAndBothTiersPreexisting_ProductionLike(t *testing.T)
 		t.Fatalf("long_context tier effective_at=%v want unchanged %v (a newer duplicate must not have been inserted)", got, longContextEffectiveAt)
 	}
 
-	requireSchemaTip(t, ctx, store, 48)
+	requireSchemaTip(t, ctx, store, 49)
 }
 
 func TestMigration047_WalletPreexisting_PricingAbsent(t *testing.T) {
@@ -115,7 +115,7 @@ func TestMigration047_WalletPreexisting_PricingAbsent(t *testing.T) {
 	if len(tiers) != 2 {
 		t.Fatalf("tier count=%d want 2 (both freshly seeded, since neither pre-existed): %+v", len(tiers), tiers)
 	}
-	requireSchemaTip(t, ctx, store, 48)
+	requireSchemaTip(t, ctx, store, 49)
 }
 
 func TestMigration047_OneTierPreexisting_OtherAbsent(t *testing.T) {
@@ -148,7 +148,7 @@ func TestMigration047_OneTierPreexisting_OtherAbsent(t *testing.T) {
 	if wallet.balance != 9700000000 || wallet.reserved != 0 {
 		t.Fatalf("wallet=%+v want the fresh placeholder seed since no wallet pre-existed", wallet)
 	}
-	requireSchemaTip(t, ctx, store, 48)
+	requireSchemaTip(t, ctx, store, 49)
 }
 
 // ---- shared test plumbing ----

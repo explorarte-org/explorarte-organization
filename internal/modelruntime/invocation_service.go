@@ -87,6 +87,14 @@ func (s *InvocationService) Create(ctx context.Context, command CreateInvocation
 	if err = s.contexts.ValidateContextSnapshot(ctx, prepared.ContextSnapshotID); err != nil {
 		return CreateInvocationResult{}, fmt.Errorf("%w: %v", ErrContextRejected, err)
 	}
+	renderedContext, err := s.contexts.RenderContextSnapshot(ctx, prepared.ContextSnapshotID)
+	if err != nil {
+		return CreateInvocationResult{}, fmt.Errorf("%w: context render failed: %v", ErrContextRejected, err)
+	}
+	modelInput, err := PrepareModelInput(prepared.ModelInput, snapshot, renderedContext)
+	if err != nil {
+		return CreateInvocationResult{}, err
+	}
 	binding, err := s.store.GetBinding(ctx, prepared.OrganizationID, org.RevisionID, prepared.SubjectRoleID)
 	if err != nil {
 		return CreateInvocationResult{}, err
@@ -117,11 +125,11 @@ func (s *InvocationService) Create(ctx context.Context, command CreateInvocation
 	if identityPolicy.Version.Status != "active" {
 		return CreateInvocationResult{}, ErrExecutionIdentityUnpinned
 	}
-	hash, err := invocationRequestHash(prepared, org.RevisionID, binding, caps, schema, policy.Version.ID, policy.CanonicalHash, identityPolicy.Version.ID, identityPolicy.Version.CanonicalHash, resolved)
+	hash, err := invocationRequestHash(prepared, org.RevisionID, binding, caps, schema, modelInput.CanonicalDigest, policy.Version.ID, policy.CanonicalHash, identityPolicy.Version.ID, identityPolicy.Version.CanonicalHash, resolved)
 	if err != nil {
 		return CreateInvocationResult{}, err
 	}
-	return s.store.CreateInvocation(ctx, PreparedInvocation{Command: prepared, OrganizationRevisionID: org.RevisionID, Binding: binding, RequestHash: hash, RequiredCapabilities: caps, OutputSchema: schema, EgressPolicy: policy, IdentityPolicy: identityPolicy, Assignment: resolved}, s.outboxMaxAttempts)
+	return s.store.CreateInvocation(ctx, PreparedInvocation{Command: prepared, OrganizationRevisionID: org.RevisionID, Binding: binding, RequestHash: hash, RequiredCapabilities: caps, OutputSchema: schema, EgressPolicy: policy, IdentityPolicy: identityPolicy, Assignment: resolved, ModelInput: modelInput}, s.outboxMaxAttempts)
 }
 
 func (s *InvocationService) Get(ctx context.Context, id int64) (Invocation, error) {

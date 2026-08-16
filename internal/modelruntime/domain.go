@@ -138,22 +138,23 @@ type RoleBinding struct {
 }
 
 type CreateInvocationCommand struct {
-	OrganizationID       string            `json:"organization_id"`
-	TaskID               int64             `json:"task_id"`
-	AttemptID            int64             `json:"attempt_id"`
-	SubjectRoleID        string            `json:"subject_role_id"`
-	ContextSnapshotID    int64             `json:"context_snapshot_id"`
-	Purpose              string            `json:"purpose"`
-	RequiredCapabilities []ModelCapability `json:"required_capabilities,omitempty"`
-	OutputMode           OutputMode        `json:"output_mode"`
-	OutputSchema         json.RawMessage   `json:"output_schema,omitempty"`
-	MaxOutputTokens      int               `json:"max_output_tokens"`
-	Temperature          *float64          `json:"temperature,omitempty"`
-	ThinkingMode         ThinkingMode      `json:"thinking_mode"`
-	IdempotencyKey       string            `json:"idempotency_key"`
-	CorrelationID        string            `json:"correlation_id,omitempty"`
-	CausationID          string            `json:"causation_id,omitempty"`
-	Deadline             time.Time         `json:"deadline"`
+	OrganizationID       string              `json:"organization_id"`
+	TaskID               int64               `json:"task_id"`
+	AttemptID            int64               `json:"attempt_id"`
+	SubjectRoleID        string              `json:"subject_role_id"`
+	ContextSnapshotID    int64               `json:"context_snapshot_id"`
+	ModelInput           *ModelInputEnvelope `json:"model_input,omitempty"`
+	Purpose              string              `json:"purpose"`
+	RequiredCapabilities []ModelCapability   `json:"required_capabilities,omitempty"`
+	OutputMode           OutputMode          `json:"output_mode"`
+	OutputSchema         json.RawMessage     `json:"output_schema,omitempty"`
+	MaxOutputTokens      int                 `json:"max_output_tokens"`
+	Temperature          *float64            `json:"temperature,omitempty"`
+	ThinkingMode         ThinkingMode        `json:"thinking_mode"`
+	IdempotencyKey       string              `json:"idempotency_key"`
+	CorrelationID        string              `json:"correlation_id,omitempty"`
+	CausationID          string              `json:"causation_id,omitempty"`
+	Deadline             time.Time           `json:"deadline"`
 }
 
 type Invocation struct {
@@ -224,6 +225,7 @@ type ClaimedInvocation struct {
 }
 
 type ToolIntent struct {
+	ID        string          `json:"id,omitempty"`
 	Name      string          `json:"name"`
 	Arguments json.RawMessage `json:"arguments"`
 }
@@ -274,6 +276,7 @@ type CanonicalRequest struct {
 	ContextSnapshotID      int64
 	ContextRenderedHash    string
 	RenderedContext        []byte
+	ModelInput             PreparedModelInput
 	RequiredCapabilities   []ModelCapability
 	OutputMode             OutputMode
 	OutputSchema           json.RawMessage
@@ -284,6 +287,7 @@ type CanonicalRequest struct {
 }
 
 type RawToolIntent struct {
+	ID        string
 	Name      string
 	Arguments []byte
 }

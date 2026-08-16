@@ -250,6 +250,17 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		if createErr != nil || created.Reused {
 			t.Fatalf("created=%+v err=%v", created, createErr)
 		}
+		input, inputErr := store.GetModelInput(ctx, created.Invocation.ID)
+		if inputErr != nil || input.Envelope.SchemaVersion != modelruntime.ModelInputEnvelopeSchemaV1 || input.Envelope.ContextSnapshotID != snapshotRef.ID || len(input.CanonicalBytes) == 0 || modelruntime.SHA256Bytes(input.CanonicalBytes) != input.CanonicalDigest {
+			t.Fatalf("durable model input=%+v err=%v", input, inputErr)
+		}
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_invocation_inputs WHERE invocation_id=$1`, created.Invocation.ID, 1)
+		if _, mutationErr := platform.Pool().Exec(ctx, `UPDATE model_invocation_inputs SET schema_version='mutated' WHERE invocation_id=$1`, created.Invocation.ID); mutationErr == nil {
+			t.Fatal("model invocation input accepted mutation")
+		}
+		if _, mutationErr := platform.Pool().Exec(ctx, `DELETE FROM model_invocation_inputs WHERE invocation_id=$1`, created.Invocation.ID); mutationErr == nil {
+			t.Fatal("model invocation input accepted deletion")
+		}
 		reused, createErr := invocations.Create(ctx, command)
 		if createErr != nil || !reused.Reused || reused.Invocation.ID != created.Invocation.ID {
 			t.Fatalf("reused=%+v err=%v", reused, createErr)
