@@ -247,6 +247,10 @@ The sequence below preserves failures and later corrections.
     small runtime-owned identity and cannot register, disable, assign, or invoke
     anything. Workflowruntime tests, vet, and the no-model/provider import check:
     **PASS**.
+19. Corrected VPS worktree verification at the recorded branch head: focused
+    tests, `go test ./...`, `go vet ./...`, gofmt, diff, no-SQL/model/provider
+    dependency, no migration/configuration/topology change, and clean-worktree
+    guards: **PASS**.
 
 No database was opened by this work. PostgreSQL integration suites remain
 guarded by their existing disposable test DB requirements and were not enabled.
