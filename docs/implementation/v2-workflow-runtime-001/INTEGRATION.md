@@ -194,6 +194,14 @@ The sequence below preserves failures and later corrections.
 12. Static gates: gofmt clean; no SQL or model/provider dependency in
     workflowruntime; no migration, production configuration, workflow, or V1
     topology file changed. Result: **PASS**.
+13. Final remote verification after the documentation commit: focused tests,
+    `go test ./...`, and `go vet ./...` all completed successfully. The combined
+    static-check command then reported `gofmt: command not found` because the
+    non-interactive SSH PATH also omitted the formatter. Result for that static
+    invocation: **FAIL**; the successful test and vet results remain valid.
+14. The static gates were repeated with `/usr/local/go/bin/gofmt` and the same
+    explicit worktree. Formatting, diff, dependency, migration/configuration,
+    topology-file, and clean-worktree guards all passed. Result: **PASS**.
 
 No database was opened by this work. PostgreSQL integration suites remain
 guarded by their existing disposable test DB requirements and were not enabled.
