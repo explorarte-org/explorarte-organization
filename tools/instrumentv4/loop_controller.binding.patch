@@ -1,0 +1,151 @@
+--- loop_controller.py.original
++++ loop_controller.py.bound
+@@ -7,7 +7,7 @@
+ DeepSeek already return (stop.required, assignments, disposition) --
+ never by an LLM judgment call inside this controller.
+ """
+-import sys, os, re, json, time, traceback, datetime
++import sys, os, re, json, time, traceback, datetime, hashlib, subprocess
+ sys.path.insert(0, "/home/ubuntu/redesign-001")
+ import worker
+ 
+@@ -19,6 +19,10 @@
+ MAX_REFINEMENTS_PER_QUESTION = 3  # REQUEST_EVIDENCE rounds on one question before forced DEFER
+ EVIDENCE_ATTEMPTS_PER_QUESTION = 2  # recolecciones por pregunta antes de degradarla
+ DEEPSEEK_MAX_ITERS = 32  # turnos de herramientas; ambas recolecciones de RERUN-001 agotaron 24
++QUESTION_IDENTITY_GATE_BIN = os.environ.get("QUESTION_IDENTITY_GATE_BIN")
++QUESTION_IDENTITY_GATE_SHA256 = os.environ.get("QUESTION_IDENTITY_GATE_SHA256")
++QUESTION_IDENTITY_CONTRACT_SHA256 = "5d14179555b1634238ffd197bc56afa42bc5b1dc93e5605f5d2e58f368e48f9c"
++QUESTION_IDENTITY_BINDING_SCHEMA = "INSTRUMENT_V4_CONTROLLER_BINDING_V1"
+ 
+ def now_iso():
+     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+@@ -37,6 +41,70 @@
+ def log(msg):
+     print(f"[{now_iso()}] {msg}", flush=True)
+ 
++def bind_question_refinement(candidate, state):
++    """Invoke the single versioned Go gate before accepting a refined task.
++
++    The model candidate is passed byte-for-byte as structured JSON. The Python
++    controller neither reproduces semantic rules nor copies candidate prose
++    into the authorized task; only the Go component may return that task.
++    """
++    if not QUESTION_IDENTITY_GATE_BIN or not QUESTION_IDENTITY_GATE_SHA256:
++        raise MandateHalt("instrument_regression",
++                          "question identity gate path/hash is not configured")
++    if not os.path.isfile(QUESTION_IDENTITY_GATE_BIN):
++        raise MandateHalt("instrument_regression",
++                          f"question identity gate missing: {QUESTION_IDENTITY_GATE_BIN}")
++    with open(QUESTION_IDENTITY_GATE_BIN, "rb") as gate_file:
++        actual_sha = hashlib.sha256(gate_file.read()).hexdigest()
++    if actual_sha != QUESTION_IDENTITY_GATE_SHA256:
++        raise MandateHalt("instrument_regression",
++                          f"question identity gate SHA mismatch: {actual_sha} != "
++                          f"{QUESTION_IDENTITY_GATE_SHA256}")
++    payload = json.dumps(candidate, sort_keys=True, separators=(",", ":")).encode("utf-8")
++    try:
++        proc = subprocess.run(
++            [QUESTION_IDENTITY_GATE_BIN], input=payload, capture_output=True,
++            timeout=15, check=False,
++        )
++    except (OSError, subprocess.SubprocessError) as exc:
++        raise MandateHalt("instrument_regression",
++                          f"question identity gate execution failed: {exc}") from exc
++    if proc.returncode != 0:
++        raise MandateHalt("instrument_regression",
++                          "question identity gate returned operational failure "
++                          f"rc={proc.returncode}: {proc.stderr.decode('utf-8', 'replace')[:300]}")
++    try:
++        outcome = json.loads(proc.stdout)
++    except Exception as exc:
++        raise MandateHalt("instrument_regression",
++                          f"question identity gate emitted invalid JSON: {exc}") from exc
++    if outcome.get("canonical_contract_sha256") != QUESTION_IDENTITY_CONTRACT_SHA256:
++        raise MandateHalt("instrument_regression",
++                          "question identity gate returned unexpected contract identity")
++    if outcome.get("controller_binding_schema") != QUESTION_IDENTITY_BINDING_SCHEMA:
++        raise MandateHalt("instrument_regression",
++                          "question identity gate returned unexpected binding schema")
++    decision = outcome.get("decision") or {}
++    allowed = outcome.get("provider_call_allowed") is True
++    accepted = (decision.get("status") == "ACCEPT_IDENTITY_PRESERVED" and
++                decision.get("disposition") == "ACCEPT_IDENTITY_PRESERVED")
++    if allowed != accepted:
++        raise MandateHalt("instrument_regression",
++                          "question identity gate decision/provider permission mismatch")
++    if allowed and not isinstance(outcome.get("authorized_task"), dict):
++        raise MandateHalt("instrument_regression",
++                          "accepted refinement has no controller-owned authorized task")
++    if not allowed and outcome.get("authorized_task") is not None:
++        raise MandateHalt("instrument_regression",
++                          "rejected refinement unexpectedly returned an authorized task")
++    state["question_identity_gate_provenance"] = {
++        "binary_path": QUESTION_IDENTITY_GATE_BIN,
++        "binary_sha256": actual_sha,
++        "canonical_contract_sha256": QUESTION_IDENTITY_CONTRACT_SHA256,
++        "binding_schema": QUESTION_IDENTITY_BINDING_SCHEMA,
++    }
++    return outcome
++
+ # Raíz única: se toma del worker, nunca se declara aparte. Duplicar esta
+ # constante fue exactamente el defecto que rompió el límite de medición.
+ WORKTREE = worker.MEASUREMENT_ROOT
+@@ -882,7 +950,16 @@
+ Put your disposition in executive_result.decisions[0] with fields
+ question_id, selected_option (one of the four above), rationale.
+ If REQUEST_EVIDENCE, also include a refined assignment in
+-executive_result.assignments[0] (same shape as before). You have used
++executive_result.assignments[0]. A refinement assignment MUST contain exactly
++these four fields and no others:
++schema_version: INSTRUMENT_V4_CONTROLLER_BINDING_V1
++canonical_contract_sha256: 5d14179555b1634238ffd197bc56afa42bc5b1dc93e5605f5d2e58f368e48f9c
++question_id: {qid}
++refinement_profile: one of
++  resolve_unclassified_source_entries_against_proposed_capabilities
++  runtime_evidence_observation_timestamps_where_present
++The controller will discard free-form assignments and the versioned gate will
++generate the executable task. You have used
+ {state.get('refinement_counts', {}).get(qid, 0)} of {MAX_REFINEMENTS_PER_QUESTION}
+ REQUEST_EVIDENCE rounds on this question; on exhaustion it is DEFERred
+ automatically, so spend them only when the next round can plausibly
+@@ -919,15 +996,30 @@
+             disposition = "DEFER"
+             log(f"{qid}: refinement cap reached ({used}/{MAX_REFINEMENTS_PER_QUESTION}) -- forced DEFER")
+         else:
+-            counts[qid] = used + 1
+-            refined = assignments[0]
+-            refined["question_id"] = qid  # keep identity across refinement
+-            state["current_task"] = refined
+-            state["current_question_id"] = qid
+-            state["mission_phase"] = "DEEPSEEK_EVIDENCE_REQUIRED"
+-            log(f"{qid}: REQUEST_EVIDENCE round {counts[qid]}/{MAX_REFINEMENTS_PER_QUESTION} "
+-                f"-> {refined.get('task_id') or refined.get('assignment_id')}")
+-            return state
++            outcome = bind_question_refinement(assignments[0], state)
++            if not outcome.get("provider_call_allowed"):
++                disposition = "DEFER"
++                state.setdefault("question_target_drift_records", []).append({
++                    "question_id": qid,
++                    "decision": outcome.get("decision"),
++                    "candidate_payload_sha256": outcome.get("candidate_payload_sha256"),
++                    "gate_binary_sha256": state["question_identity_gate_provenance"]["binary_sha256"],
++                    "canonical_contract_sha256": QUESTION_IDENTITY_CONTRACT_SHA256,
++                    "at": now_iso(),
++                })
++                log(f"{qid}: QUESTION_TARGET_DRIFT rejected before evidence provider call")
++            else:
++                counts[qid] = used + 1
++                refined = outcome["authorized_task"]
++                if refined.get("question_id") != qid:
++                    raise MandateHalt("question_identity_loss",
++                                      "gate-authorized refinement changed question_id")
++                state["current_task"] = refined
++                state["current_question_id"] = qid
++                state["mission_phase"] = "DEEPSEEK_EVIDENCE_REQUIRED"
++                log(f"{qid}: REQUEST_EVIDENCE round {counts[qid]}/{MAX_REFINEMENTS_PER_QUESTION} "
++                    f"-> {refined.get('assignment_id')}")
++                return state
+     # An ACCEPT is a claim about the system under study. It may only stand on an
+     # instrument that actually observed something.
+     if disposition == "ACCEPT":

@@ -1,0 +1,116 @@
+schema_version: INSTRUMENT_V4_CONTROLLER_BINDING_PROVENANCE_V1
+phase: INSTRUMENT_V4_CONTROLLER_BINDING_001
+base_sha: 7cfcbe5cfdda9e8939a9b6927219d9dc9f8a9e71
+
+question_identity:
+  canonical_contract_sha256: 5d14179555b1634238ffd197bc56afa42bc5b1dc93e5605f5d2e58f368e48f9c
+  controller_binding_schema: INSTRUMENT_V4_CONTROLLER_BINDING_V1
+
+historical_controller:
+  path: /home/ubuntu/redesign-001/loop_controller.py
+  backup_path: /home/ubuntu/redesign-001/loop_controller.py.instrument-v4-controller-binding-001.original
+  original_sha256: 3fc02a8ae20a43d6b4cd0a167af488aa6b72ddd0b4acaa7e084d4886b8be7962
+  original_bytes: 60978
+  bound_sha256: 3547b61eba43b3aad6d14eec7313fdab1b480483c7d5d55b2368aba558066c8f
+  bound_bytes: 66401
+  unified_patch_path: tools/instrumentv4/loop_controller.binding.patch
+  unified_patch_sha256: 799df9c2085cd3a1a990a7c37e5f229d93a9939631f9235c673c62cffcb3fc2e
+  unified_patch_bytes: 8525
+  patch_reconstruction_byte_exact: true
+  patch_derivation: >-
+    diff -u --label loop_controller.py.original --label loop_controller.py.bound
+    ORIGINAL_CONTROLLER BOUND_CONTROLLER; hash exact stdout bytes without
+    normalization, trimming, newline conversion, or reserialization
+
+original_locators:
+  refinement_step: "step_luna_disposition:852"
+  disposition_provider_call: "worker.call_luna:898"
+  assignments_extracted: "assignments = er.get(\"assignments\"):913"
+  free_form_assignment_selected: "refined = assignments[0]:923"
+  current_task_mutated: "state[\"current_task\"] = refined:925"
+  evidence_phase_selected: "DEEPSEEK_EVIDENCE_REQUIRED:927"
+  evidence_step: "step_deepseek_evidence:713"
+  first_evidence_provider_call: "worker.call_deepseek_with_tools:732"
+  repair_evidence_provider_call: "worker.call_deepseek_with_tools:753"
+
+bound_locators:
+  binding_entrypoint: "bind_question_refinement:44"
+  evidence_step: "step_deepseek_evidence:781"
+  first_evidence_provider_call: "worker.call_deepseek_with_tools:800"
+  disposition_step: "step_luna_disposition:920"
+  disposition_provider_call: "worker.call_luna:975"
+  assignments_extracted: "assignments = er.get(\"assignments\"):990"
+  reject_before_task_mutation: "provider_call_allowed branch:1000"
+  authorized_task_mutated: "state[\"current_task\"] = refined:1017"
+
+gate_binary:
+  source_set_sha256: 5b1dd340e26a27879f30830d0b51068220b07665b0a459aaaa1f7b512d4c307a
+  source_set_derivation: >-
+    sha256sum go.mod go.sum and every non-test *.go file under
+    cmd/question-identity-gate and internal/questionidentity; sort resulting
+    "sha256  relative-path" lines by relative path and hash exact stdout bytes
+  build_command: >-
+    go build -trimpath -buildvcs=false -o bin/question-identity-gate
+    ./cmd/question-identity-gate
+  sha256: 43b25561ed645231d4c74b499a99fc8c375aeb7ee947dcd86a9470e2a467f0cd
+  bytes: 3114724
+  consecutive_reproducible_builds: 2
+  reproduction_byte_exact: true
+
+fixtures:
+  historical_target_drift:
+    path: tools/instrumentv4/testdata/q3-001-target-drift-assignment.json
+    sha256: 84dbb392c06d3977975bf3933789aeae65ba9f6c5733fbc7829ac2ddc04cdb0b
+    bytes: 2411
+    derivation: >-
+      jq -c '.accepted_findings[0].task'
+      /home/ubuntu/redesign-001/state/campaign_q3_state.json; exact stdout bytes
+    source_extract_sha256: 84dbb392c06d3977975bf3933789aeae65ba9f6c5733fbc7829ac2ddc04cdb0b
+  legitimate_typed_narrowing:
+    path: tools/instrumentv4/testdata/legitimate-narrowing.json
+    sha256: 4d395c06d80276c60bb911369eb54eeaec7cf1d0161ca870b1e821914a0f272e
+    bytes: 265
+    historical: false
+    refinement_profile: runtime_evidence_observation_timestamps_where_present
+    preregistered_at: 2026-08-16T02:54:44Z
+    expected_status: ACCEPT_IDENTITY_PRESERVED
+    expected_authorized_assignment_id: Q3-002-RUNTIME-EVIDENCE-TIMESTAMPS
+    expected_downstream_provider_calls: 1
+
+protocol_amendment:
+  id: INSTRUMENT_V4_VALIDATION_PROTOCOL_AMENDMENT_001
+  decision: ACCEPT
+  historical_positive_replay: WAIVED_DUE_TO_PROVEN_UNAVAILABILITY
+  reconstruction_prohibited: true
+  further_search_prohibited: true
+  substitute: PRE_REGISTERED_TYPED_LEGITIMATE_NARROWING
+  historical_target_drift_requirement_changed: false
+
+replay:
+  path: tools/instrumentv4/replay_controller.py
+  sha256: b0e40c10ff9a6157ee994353e49de023fb11c71bb22a8814cf1c3adb7125b687
+  bytes: 7715
+  network: false
+  database: false
+  models: false
+  fake_provider: true
+  historical_target_drift_status: QUESTION_TARGET_DRIFT
+  historical_target_drift_downstream_provider_calls_before: 0
+  historical_target_drift_downstream_provider_calls_after: 0
+  drift_records: 1
+  legitimate_typed_narrowing_status: ACCEPT_IDENTITY_PRESERVED
+  legitimate_typed_narrowing_authorized_assignment_id: Q3-002-RUNTIME-EVIDENCE-TIMESTAMPS
+  legitimate_typed_narrowing_provider_calls: 1
+  amended_replay_executed_at: 2026-08-16T02:55:45Z
+  deterministic: true
+  wrong_gate_identity_fails_closed: true
+
+status:
+  controller_binding_implementation: VALIDATED_OFFLINE
+  historical_legitimate_narrowing_replay: UNAVAILABLE_WITH_PROOF
+  preregistered_typed_positive_replay: PASS
+  instrument_v4: INSTRUMENT_V4_VALIDATED
+  q3_002_executed: false
+  model_spend: "$0.00"
+  production_mutated: false
+  database_writes: 0
