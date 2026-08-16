@@ -95,11 +95,11 @@ offline repository gates and must be recorded before the branch is frozen.
    both bootstrap packages that failed to create listeners locally.
 3. `VPS static gate @ 84fe0bbe`: `go vet ./...` passed with no output.
 4. `VPS complete gate @ 84fe0bbe`: `go test ./...` passed for every package.
-5. Static searches found zero `RiskClinical`, `KindClinicalTerminology`, or
-   `clinicalPattern` hits; zero production Go imports of `internal/dataclassifier`
-   or `internal/secretscan`; and no Q3-002 measurement tree or model artifacts
-   in the branch. Remaining old-package names occur only in this migration
-   record, the V2 delta, and frozen historical implementation documents.
+5. Static searches found zero clinical-risk symbols or terminology-regex
+   implementations; zero production Go imports of `internal/dataclassifier` or
+   `internal/secretscan`; and no Q3-002 measurement tree or model artifacts in
+   the branch. Remaining old-package names occur only in this migration record,
+   the V2 delta, and frozen historical implementation documents.
 
 ## Semantic verification by surface
 
