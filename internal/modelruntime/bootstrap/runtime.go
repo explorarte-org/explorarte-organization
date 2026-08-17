@@ -13,6 +13,7 @@ import (
 	authorizationbootstrap "github.com/Mireuz13/explorarte-organization/internal/authorization/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/config"
 	"github.com/Mireuz13/explorarte-organization/internal/contextcompiler"
+	contextcompilerpostgres "github.com/Mireuz13/explorarte-organization/internal/contextcompiler/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/contextengine"
 	contextbootstrap "github.com/Mireuz13/explorarte-organization/internal/contextengine/bootstrap"
 	costledgerpostgres "github.com/Mireuz13/explorarte-organization/internal/costledger/postgres"
@@ -123,9 +124,13 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	if err != nil {
 		return nil, fmt.Errorf("open model execution identity runtime: %w", err)
 	}
+	executionContextViewStore, err := contextcompilerpostgres.New(platformStore)
+	if err != nil {
+		return nil, fmt.Errorf("open execution context view store: %w", err)
+	}
 	catalog := catalogAdapter{reader: registryRepo}
 	tasksAdapter := taskAdapter{reader: taskStore}
-	contexts := contextAdapter{service: contextRuntime.Service}
+	contexts := contextAdapter{service: contextRuntime.Service, store: executionContextViewStore}
 	evaluator := authorizationAdapter{evaluator: authorizationRuntime.Authorizer}
 	registryService, err := modelruntime.NewRegistryService(cfg.Registry.CanonicalDir, cfg.Tasks.OrganizationID, catalog, modelStore)
 	if err != nil {
@@ -295,21 +300,31 @@ func (a taskAdapter) GetTaskAttempt(ctx context.Context, taskID, attemptID int64
 	return modelruntime.TaskAttemptRef{TaskID: detail.Task.ID, AttemptID: attempt.ID, OrganizationID: detail.Task.OrganizationID, OrganizationRevisionID: detail.Task.OrganizationRevisionID, AssignedRoleID: detail.Task.AssignedRoleID, TaskStatus: string(detail.Task.Status), AttemptStatus: string(attempt.State), LeaseHolderID: detail.ActiveLease.HolderID, LeaseExpiresAt: detail.ActiveLease.ExpiresAt}, nil
 }
 
-type contextAdapter struct{ service contextengine.Service }
+type contextAdapter struct {
+	service contextengine.Service
+	// store persists the durable ExecutionContextView (M1.1) through the
+	// same contextcompiler.ContextAssemblyService Executive's context
+	// adapter uses (internal/executive/runtimeadapter/context.go), so the
+	// two resolve/persist the identical view identity for the same
+	// canonical snapshot rather than two independently reconstructed byte
+	// slices.
+	store contextcompiler.ExecutionContextViewStore
+}
 
 // resolveRender is a trivial delegating adapter to
-// contextcompiler.ResolveProviderContext, the single shared deterministic
-// provider-visible render resolution algorithm (also used by Executive's
-// context adapter, internal/executive/runtimeadapter/context.go). It exists
-// only so GetContextSnapshot (pre-dispatch integrity hash),
-// RenderContextSnapshot (the bytes actually sent to the provider), and
-// GetProviderRenderTelemetry (observability) below keep a single, local call
-// site rather than three separate calls into contextcompiler. This is the
-// same single-source-of-truth invariant that fixed the R10
-// context_render_hash_mismatch bug, now extended across package boundaries
-// so Executive and Model Runtime can never independently diverge either.
-func resolveRender(ctx context.Context, snapshot contextengine.Snapshot) (contextcompiler.ResolvedProviderContext, error) {
-	return contextcompiler.ResolveProviderContext(ctx, snapshot)
+// contextcompiler.ContextAssemblyService.ResolveAndPersist, which itself
+// wraps the single shared deterministic provider-visible render resolution
+// algorithm (contextcompiler.ResolveProviderContext, also used by
+// Executive's context adapter) with durable persistence. It exists only so
+// GetContextSnapshot (pre-dispatch integrity hash), RenderContextSnapshot
+// (the bytes actually sent to the provider), and GetProviderRenderTelemetry
+// (observability) below keep a single, local call site rather than three
+// separate calls. This is the same single-source-of-truth invariant that
+// fixed the R10 context_render_hash_mismatch bug, now extended across
+// package boundaries so Executive and Model Runtime can never independently
+// diverge either -- and, since M1.1, extended to durable identity too.
+func resolveRender(ctx context.Context, store contextcompiler.ExecutionContextViewStore, snapshot contextengine.Snapshot) (contextcompiler.ExecutionContextView, error) {
+	return contextcompiler.ContextAssemblyService{Store: store}.ResolveAndPersist(ctx, snapshot)
 }
 
 func (a contextAdapter) GetContextSnapshot(ctx context.Context, id int64) (modelruntime.ContextSnapshotRef, error) {
@@ -336,8 +351,8 @@ func (a contextAdapter) GetContextSnapshot(ctx context.Context, id int64) (model
 	// retains the canonical task:<id> reference.
 	taskRef := strings.TrimPrefix(snapshot.TaskRef, "task:")
 	renderedHash := snapshot.RenderedHash
-	if render, renderErr := resolveRender(ctx, snapshot); renderErr == nil {
-		renderedHash = render.Digest
+	if render, renderErr := resolveRender(ctx, a.store, snapshot); renderErr == nil {
+		renderedHash = render.ProviderVisibleDigest
 	}
 	return modelruntime.ContextSnapshotRef{
 		ID: snapshot.ID, OrganizationID: snapshot.OrganizationID, OrganizationRevisionID: snapshot.OrganizationRevisionID,
@@ -376,11 +391,11 @@ func (a contextAdapter) RenderContextSnapshot(ctx context.Context, id int64) ([]
 	if !validation.Valid {
 		return nil, contextengine.ErrSnapshotStale
 	}
-	render, err := resolveRender(ctx, snapshot)
+	render, err := resolveRender(ctx, a.store, snapshot)
 	if err != nil {
 		return nil, err
 	}
-	return render.Bytes, nil
+	return render.ProviderVisibleBytes, nil
 }
 
 // GetProviderRenderTelemetry implements modelruntime.ProviderRenderTelemetryReader
@@ -392,22 +407,22 @@ func (a contextAdapter) GetProviderRenderTelemetry(ctx context.Context, id int64
 	if err != nil {
 		return modelruntime.ProviderRenderTelemetry{}, err
 	}
-	render, err := resolveRender(ctx, snapshot)
+	render, err := resolveRender(ctx, a.store, snapshot)
 	if err != nil {
 		return modelruntime.ProviderRenderTelemetry{}, err
 	}
-	if render.FellBack {
+	if render.FellBackToCanonical {
 		return modelruntime.ProviderRenderTelemetry{
 			FallbackToLegacy: true, FallbackReason: render.FallbackReason,
-			ProviderRenderHash: render.Digest, ProviderVisibleBytes: len(render.Bytes),
+			ProviderRenderHash: render.ProviderVisibleDigest, ProviderVisibleBytes: render.ProviderVisibleByteCount,
 		}, nil
 	}
-	pr := render.ProviderRender
+	pr := render
 	return modelruntime.ProviderRenderTelemetry{
-		Version: pr.Version, FallbackToLegacy: false,
+		Version: pr.ProviderRenderVersion, FallbackToLegacy: false,
 		StablePrefixHash: pr.StablePrefixHash, StablePrefixBytes: pr.StablePrefixBytes,
 		DynamicSuffixHash: pr.DynamicSuffixHash, DynamicSuffixBytes: pr.DynamicSuffixBytes,
-		ProviderRenderHash: pr.ProviderRenderHash, ProviderVisibleBytes: pr.ProviderVisibleBytes,
+		ProviderRenderHash: pr.ProviderVisibleDigest, ProviderVisibleBytes: pr.ProviderVisibleByteCount,
 	}, nil
 }
 

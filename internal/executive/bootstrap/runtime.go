@@ -11,6 +11,8 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/completion"
 	completionpostgres "github.com/Mireuz13/explorarte-organization/internal/completion/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/config"
+	"github.com/Mireuz13/explorarte-organization/internal/contextcompiler"
+	contextcompilerpostgres "github.com/Mireuz13/explorarte-organization/internal/contextcompiler/postgres"
 	contextbootstrap "github.com/Mireuz13/explorarte-organization/internal/contextengine/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/decisiongraph"
 	decisiongraphpostgres "github.com/Mireuz13/explorarte-organization/internal/decisiongraph/postgres"
@@ -160,6 +162,10 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create executive harness authority: %w", err)
 	}
+	executionContextViewStore, err := contextcompilerpostgres.New(store)
+	if err != nil {
+		return nil, fmt.Errorf("create executive execution context view store: %w", err)
+	}
 	harness := runtimeadapter.Harness{
 		OrganizationID: cfg.Tasks.OrganizationID,
 		Authority:      harnessAuthority,
@@ -175,7 +181,7 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 			OrganizationID: cfg.Tasks.OrganizationID,
 			Registry:       runtimeadapter.Registry{Reader: registryRepository, OrganizationID: cfg.Tasks.OrganizationID},
 			Tasks:          dagTasks,
-			Contexts:       runtimeadapter.Context{Service: contextRuntime.Service, OrganizationID: cfg.Tasks.OrganizationID},
+			Contexts:       runtimeadapter.Context{Service: contextRuntime.Service, Assembly: contextcompiler.ContextAssemblyService{Store: executionContextViewStore}, OrganizationID: cfg.Tasks.OrganizationID},
 			Assignments:    runtimeadapter.Assignment{Resolver: modelRuntime.Dispatcher.Store, OrganizationID: cfg.Tasks.OrganizationID},
 			Principals:     runtimeadapter.RoleBoundPrincipals{Resolver: roleBoundResolver},
 			Models:         baseModels,
