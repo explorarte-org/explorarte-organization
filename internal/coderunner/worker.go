@@ -21,10 +21,15 @@ type Queue interface {
 type PlanExecutor interface {
 	Execute(context.Context, Plan) ([]Result, error)
 }
+type WorkspacePort interface {
+	Open(context.Context, tasks.ClaimedTask, string) (string, int64, error)
+	Seal(context.Context, int64, tasks.ClaimedTask, string) (any, error)
+}
 
 type Worker struct {
 	Queue             Queue
 	Executor          PlanExecutor
+	Workspace         WorkspacePort
 	WorkerID          string
 	HolderPrincipalID string
 	LeaseDuration     time.Duration
@@ -54,6 +59,16 @@ func (w Worker) run(ctx context.Context, item tasks.ClaimedTask) error {
 	if _, err := w.Queue.StartAttempt(ctx, lease); err != nil {
 		return err
 	}
+	if w.Workspace == nil {
+		return fmt.Errorf("code-runner workspace boundary is required")
+	}
+	path, workspaceID, err := w.Workspace.Open(ctx, item, w.HolderPrincipalID)
+	if err != nil {
+		return err
+	}
+	if setter, ok := w.Executor.(interface{ SetWorkspace(string) }); ok {
+		setter.SetWorkspace(path)
+	}
 	plan, err := ParsePlan([]byte(item.Task.Instructions))
 	if err != nil {
 		return w.record(ctx, lease, tasks.OutcomeNonRetryableFailure, "invalid_execution_plan", err)
@@ -76,6 +91,9 @@ func (w Worker) run(ctx context.Context, item tasks.ClaimedTask) error {
 		case out := <-resultCh:
 			if out.err != nil {
 				return w.record(ctx, lease, tasks.OutcomeRetryableFailure, "execution_failed", out.err)
+			}
+			if _, e := w.Workspace.Seal(ctx, workspaceID, item, w.HolderPrincipalID); e != nil {
+				return w.record(ctx, lease, tasks.OutcomeNonRetryableFailure, "seal_failed", e)
 			}
 			return w.record(ctx, lease, tasks.OutcomeSucceeded, "", jsonSummary(out.results))
 		case <-ticker.C:
