@@ -8,6 +8,11 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/modeldispatch"
 )
 
+// The failure surface here is deliberately three-way, because collapsing it is
+// how a database outage once became "this role has no identity": a store that
+// could not answer keeps its own typed cause, an identity that exists but is
+// unusable is ErrRoleBoundPrincipalNotActive, and genuine absence is the only
+// case that provisions.
 var (
 	// ErrRoleBoundPrincipalNotActive means an identity exists for the role but
 	// is not usable. It is deliberately distinct from "none exists": the

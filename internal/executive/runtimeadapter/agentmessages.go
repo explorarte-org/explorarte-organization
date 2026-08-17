@@ -34,10 +34,6 @@ type AgentMessages struct {
 	OrganizationID string
 }
 
-// ErrNoActivePrincipal used to be returned here when the principal store
-// failed. It no longer exists: a store that could not answer is reported with
-// its own typed cause, and an identity that exists but is unusable is
-// ErrRoleBoundPrincipalNotActive. Neither is "no principal found".
 var ErrPrincipalRoleMismatch = errors.New("principal dispatch_actor_role_id does not match sender role")
 
 var _ executive.AgentMessagingProvider = AgentMessages{}
