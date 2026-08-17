@@ -678,6 +678,15 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 	if task.Status == "awaiting_verification" {
 		return o.gatedComplete(ctx, task)
 	}
+	// Before anything else -- before a claim, before a budget charge, before
+	// the Harness -- ask whether an earlier execution of this task is still
+	// unresolved at the provider boundary. This runs ahead of the claim on
+	// purpose: a fresh attempt beside an in-flight provider call is already the
+	// duplicate this guard exists to prevent, so the attempt must not be
+	// created either.
+	if handled, blocked, barrierErr := o.priorExecutionBarrier(ctx, root, task); handled {
+		return blocked, barrierErr
+	}
 	lease, haveLease := o.localLease(task.ID)
 	if task.Status == "ready" {
 		// The principal is resolved exactly once per attempt, here, before the
@@ -756,14 +765,6 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 	}
 	if len(invocations) > 1 {
 		return task, fmt.Errorf("%w: multiple invocations for one task attempt", ErrContractRejected)
-	}
-	// An attempt whose durable invocation is already ambiguous must not enter
-	// the Harness at all. Model Runtime cannot resume such an invocation and
-	// the Harness would create a second one; the whole point of the ambiguous
-	// state is that nobody knows whether the first request reached the
-	// provider.
-	if handled, blocked, ambiguityErr := o.ambiguityGuard(ctx, root, task, lease.AttemptID); handled {
-		return blocked, ambiguityErr
 	}
 	snapshot, err := o.contexts.Build(ctx, ContextRequest{
 		OrganizationRevisionID: task.OrganizationRevisionID, ActorRoleID: task.AssignedRoleID,
@@ -849,6 +850,62 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 // every duplicate a new provider call.
 func harnessRunID(organizationID string, taskID, attemptID int64, purpose ExecutionPurpose) string {
 	return fmt.Sprintf("executive:%s:task:%d:attempt:%d:%s:v1", organizationID, taskID, attemptID, purpose)
+}
+
+// priorExecutionBarrier refuses to start new work for a task while any of its
+// executions may already have reached the provider without a resolved outcome.
+//
+// It deliberately restates none of Model Runtime's state machine. Model Runtime
+// answers "may this have reached the provider" itself
+// (InvocationStatus.ProviderExecutionMayHaveStarted), and its reconciler is
+// what later turns an expired send into the durable ambiguous verdict. This
+// only enforces the consequence: while that answer is yes and no verdict
+// exists, the Executive waits.
+//
+// The window this closes is an ordering race between two independent
+// reconcilers. The Task Engine expires a lease and makes the task ready again
+// on its own schedule; Model Runtime classifies an expired dispatch on its own.
+// If the task became retryable first, the Executive would previously claim a
+// fresh attempt and issue a second provider call for work whose first call may
+// already be in flight. Task reconciliation running before model
+// reconciliation is now safe, because readiness alone no longer authorizes
+// execution.
+//
+// Every attempt of the task is inspected, not only the current one: the unsafe
+// invocation belongs to the attempt that died, and the whole point is that a
+// NEW attempt must not execute beside it.
+func (o *Orchestrator) priorExecutionBarrier(ctx context.Context, root, task TaskRecord) (bool, TaskRecord, error) {
+	var ambiguous, unresolved InvocationRecord
+	for _, attempt := range task.Attempts {
+		invocations, err := o.models.FindTaskAttemptInvocations(ctx, task.ID, attempt.ID)
+		if err != nil {
+			return true, task, err
+		}
+		for _, invocation := range invocations {
+			if invocation.Status == "ambiguous" && ambiguous.ID == 0 {
+				ambiguous = invocation
+			}
+			if invocation.ProviderExecutionMayHaveStarted && unresolved.ID == 0 {
+				unresolved = invocation
+			}
+		}
+	}
+	// A resolved ambiguous verdict wins: it is durable, terminal, and requires
+	// explicit reconciliation rather than waiting.
+	if ambiguous.ID != 0 {
+		_, _ = o.tasks.BlockTask(ctx, root.ID, "model_outcome_ambiguous",
+			fmt.Sprintf("task=%d attempt=%d invocation=%d requires explicit inspection", task.ID, ambiguous.AttemptID, ambiguous.ID),
+			"service", orchestratorWorkerID)
+		return true, task, ErrModelOutcomeAmbiguous
+	}
+	if unresolved.ID != 0 {
+		// Fail closed and stay retryable: nothing durable changes, no attempt is
+		// created, no budget is charged, and the next pass re-asks once Model
+		// Runtime has had the chance to reconcile.
+		return true, task, fmt.Errorf("%w: task=%d attempt=%d invocation=%d is %q",
+			ErrPriorExecutionUnresolved, task.ID, unresolved.AttemptID, unresolved.ID, unresolved.Status)
+	}
+	return false, task, nil
 }
 
 // ambiguityGuard is the safety property that survived the migration intact:
@@ -1189,6 +1246,7 @@ func isNonBlockingPhaseError(err error) bool {
 		errors.Is(err, ErrLeaseLost),
 		errors.Is(err, ErrExecutionAuthorityUnavailable),
 		errors.Is(err, ErrExecutionPrincipalUnavailable),
+		errors.Is(err, ErrPriorExecutionUnresolved),
 		errors.Is(err, ErrExecutionInterrupted):
 		return true
 	}

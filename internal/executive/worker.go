@@ -63,6 +63,9 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 			errors.Is(runErr, ErrLeaseLost) ||
 			errors.Is(runErr, ErrExecutionAuthorityUnavailable) ||
 			errors.Is(runErr, ErrExecutionPrincipalUnavailable) ||
+			// An unresolved provider-side execution resolves itself once Model
+			// Runtime reconciles it; the worker just comes back later.
+			errors.Is(runErr, ErrPriorExecutionUnresolved) ||
 			errors.Is(runErr, ErrExecutionInterrupted) {
 			continue
 		}

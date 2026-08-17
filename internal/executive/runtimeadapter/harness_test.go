@@ -13,6 +13,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/executionharness"
 	"github.com/Mireuz13/explorarte-organization/internal/executionharness/modelruntimeadapter"
 	"github.com/Mireuz13/explorarte-organization/internal/executive"
+	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
 )
 
 // memoryHistory is the durable execution history, in memory. It keeps the same
@@ -242,5 +243,38 @@ func TestExecutiveRunRefusesAnIncompleteCommand(t *testing.T) {
 				t.Fatalf("model was invoked %d times despite an invalid command", model.calls)
 			}
 		})
+	}
+}
+
+// TestInvocationMappingCarriesModelRuntimesOwnSafetyAnswer proves the Executive
+// consumes Model Runtime's classification instead of restating it. Every status
+// Model Runtime defines is mapped, and the flag the Executive branches on is
+// always exactly what Model Runtime itself says about that status -- so a later
+// change to the state machine cannot leave a stale copy behind in the Executive.
+func TestInvocationMappingCarriesModelRuntimesOwnSafetyAnswer(t *testing.T) {
+	statuses := []modelruntime.InvocationStatus{
+		modelruntime.InvocationRequested, modelruntime.InvocationClaimed,
+		modelruntime.InvocationSendStarted, modelruntime.InvocationResponseReceived,
+		modelruntime.InvocationSucceeded, modelruntime.InvocationFailed,
+		modelruntime.InvocationCancelled, modelruntime.InvocationAmbiguous,
+	}
+	unsafe := 0
+	for _, status := range statuses {
+		mapped := mapInvocation(modelruntime.Invocation{ID: 1, Status: status})
+		if mapped.Status != string(status) {
+			t.Fatalf("status %q mapped to %q", status, mapped.Status)
+		}
+		if mapped.ProviderExecutionMayHaveStarted != status.ProviderExecutionMayHaveStarted() {
+			t.Fatalf("status %q: executive says %v, model runtime says %v",
+				status, mapped.ProviderExecutionMayHaveStarted, status.ProviderExecutionMayHaveStarted())
+		}
+		if mapped.ProviderExecutionMayHaveStarted {
+			unsafe++
+		}
+	}
+	// A sanity floor, not a second rule: if this ever reaches zero the flag has
+	// stopped meaning anything and every barrier built on it is dead code.
+	if unsafe == 0 {
+		t.Fatal("no invocation status is classified as possibly having reached the provider")
 	}
 }

@@ -62,6 +62,30 @@ func (s InvocationStatus) Terminal() bool {
 	return s == InvocationSucceeded || s == InvocationFailed || s == InvocationCancelled || s == InvocationAmbiguous
 }
 
+// ProviderExecutionMayHaveStarted reports whether the request behind this
+// invocation may already have crossed the provider boundary while the
+// invocation has not yet reached a terminal state.
+//
+// It exists so consumers do not have to restate this state machine. Model
+// Runtime already draws the line in its reconciler: an expired dispatch attempt
+// in DispatchClaimed is released as safe_before_send and the invocation returns
+// to requested, while one in DispatchSendStarted becomes ambiguous with
+// retry_safety not_retryable and outcome ambiguous_external_outcome. Everything
+// from send_started onward therefore means "the provider may have seen this",
+// and until reconciliation says which, nobody may issue another call for the
+// same logical work.
+//
+// A consumer that wants to know whether it is safe to execute again should ask
+// this, not compare status strings: the set of states on each side of the line
+// belongs to Model Runtime and may grow.
+func (s InvocationStatus) ProviderExecutionMayHaveStarted() bool {
+	switch s {
+	case InvocationSendStarted, InvocationResponseReceived:
+		return true
+	}
+	return false
+}
+
 type DispatchStatus string
 
 const (

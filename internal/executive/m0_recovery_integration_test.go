@@ -354,3 +354,93 @@ func harnessCommandCarriesNoToolField(t *testing.T) {
 		}
 	}
 }
+
+// TestM0PostgresUnresolvedSendSurvivesTaskReconcileAndNeverDuplicates is the
+// case-B adversarial proof, and it is deliberately run in the dangerous order.
+//
+// Two reconcilers work independently: the Task Engine expires leases and makes
+// tasks retryable, Model Runtime classifies expired dispatches. Nothing
+// coordinates them. The dangerous interleaving is the one where the task
+// becomes eligible for retry FIRST, while the previous attempt's request may
+// still be somewhere between this system and the provider. Readiness alone must
+// not authorize execution.
+func TestM0PostgresUnresolvedSendSurvivesTaskReconcileAndNeverDuplicates(t *testing.T) {
+	h := newIntegrationHarness(t)
+	defer h.close()
+	models := newIntegrationModelRuntime()
+	rootID, childID, lease := leasedChildTask(t, h, models)
+
+	// The dead attempt left a request that may already have reached the
+	// provider. Model Runtime has not classified it yet.
+	invocationID := models.seedUnresolvedSend(childID, lease.attemptID)
+	callsBefore := models.ensureCalls
+
+	// TASK RECONCILIATION RUNS FIRST -- before Model Runtime's.
+	if _, err := h.store.Pool().Exec(h.ctx, expireLeaseSQL, lease.id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Reconcile(h.ctx, 100); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.store.Pool().Exec(h.ctx,
+		`UPDATE tasks SET available_at=clock_timestamp()-interval '1 second' WHERE id=$1`, childID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Reconcile(h.ctx, 100); err != nil {
+		t.Fatal(err)
+	}
+	if status := readTaskStatus(t, h, childID); status != string(tasks.StatusReady) {
+		t.Fatalf("task status=%q: the race requires the task to be retryable first", status)
+	}
+
+	// The task is ready, the lease is gone, and every task-level obstacle has
+	// been removed. The only thing standing between this run and a duplicate
+	// provider call is the unresolved invocation.
+	restarted := newOrchestrator(t, h, models, integrationAssignments{}, &countingCompletion{delegate: h.completion})
+	for i := 0; i < 3; i++ {
+		if _, err := restarted.ResumeDurable(h.ctx, rootID); err == nil {
+			t.Fatalf("resume %d: a fresh attempt executed beside an unresolved provider call", i)
+		}
+	}
+	if models.ensureCalls != callsBefore {
+		t.Fatalf("provider calls %d -> %d: duplicate execution of an unresolved request", callsBefore, models.ensureCalls)
+	}
+	var attemptCount int
+	if err := h.store.Pool().QueryRow(h.ctx, `SELECT count(*) FROM task_attempts WHERE task_id=$1`, childID).Scan(&attemptCount); err != nil {
+		t.Fatal(err)
+	}
+	if attemptCount != 1 {
+		t.Fatalf("task_attempts=%d: no fresh attempt may be created while the prior call is unresolved", attemptCount)
+	}
+	var activeLeases int
+	if err := h.store.Pool().QueryRow(h.ctx, `SELECT count(*) FROM task_leases WHERE task_id=$1 AND status='active'`, childID).Scan(&activeLeases); err != nil {
+		t.Fatal(err)
+	}
+	if activeLeases != 0 {
+		t.Fatalf("active leases=%d: nothing may be claimed while the prior call is unresolved", activeLeases)
+	}
+
+	// NOW Model Runtime reconciles the expired send.
+	models.reconcileToAmbiguous(childID, lease.attemptID, invocationID)
+
+	if _, err := restarted.ResumeDurable(h.ctx, rootID); err == nil {
+		t.Fatal("an ambiguous outcome must be reported, not resolved")
+	}
+	var status, reason string
+	if err := h.store.Pool().QueryRow(h.ctx,
+		`SELECT status, COALESCE(status_reason_code,'') FROM tasks WHERE id=$1`, rootID).Scan(&status, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if status != "blocked" || reason != "model_outcome_ambiguous" {
+		t.Fatalf("root status=%q reason=%q want blocked/model_outcome_ambiguous", status, reason)
+	}
+	if models.ensureCalls != callsBefore {
+		t.Fatalf("provider calls=%d want exactly %d for the whole sequence", models.ensureCalls, callsBefore)
+	}
+	if err := h.store.Pool().QueryRow(h.ctx, `SELECT count(*) FROM task_attempts WHERE task_id=$1`, childID).Scan(&attemptCount); err != nil {
+		t.Fatal(err)
+	}
+	if attemptCount != 1 {
+		t.Fatalf("task_attempts=%d after the full hand-off", attemptCount)
+	}
+}

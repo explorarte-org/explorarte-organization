@@ -239,6 +239,13 @@ type InvocationRecord struct {
 	ErrorCode     string
 	CorrelationID string
 	CausationID   string
+	// ProviderExecutionMayHaveStarted is Model Runtime's own answer to "may
+	// this request already have reached the provider, without a resolved
+	// outcome yet". The Executive stores the answer rather than the rule: the
+	// states on either side of that line belong to Model Runtime, and copying
+	// them here would create a second state machine that could drift from the
+	// one that actually reconciles.
+	ProviderExecutionMayHaveStarted bool
 }
 
 type InvocationResult struct {

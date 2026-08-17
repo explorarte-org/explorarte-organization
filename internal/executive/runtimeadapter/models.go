@@ -55,14 +55,15 @@ func (a Models) GetResult(ctx context.Context, id int64) (executive.InvocationRe
 
 func mapInvocation(value modelruntime.Invocation) executive.InvocationRecord {
 	return executive.InvocationRecord{
-		ID:            value.ID,
-		TaskID:        value.TaskID,
-		AttemptID:     value.AttemptID,
-		SubjectRoleID: value.SubjectRoleID,
-		Status:        string(value.Status),
-		ErrorCode:     value.ErrorCode,
-		CorrelationID: value.CorrelationID,
-		CausationID:   value.CausationID,
+		ProviderExecutionMayHaveStarted: value.Status.ProviderExecutionMayHaveStarted(),
+		ID:                              value.ID,
+		TaskID:                          value.TaskID,
+		AttemptID:                       value.AttemptID,
+		SubjectRoleID:                   value.SubjectRoleID,
+		Status:                          string(value.Status),
+		ErrorCode:                       value.ErrorCode,
+		CorrelationID:                   value.CorrelationID,
+		CausationID:                     value.CausationID,
 	}
 }
 

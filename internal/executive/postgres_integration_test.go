@@ -271,6 +271,30 @@ type integrationModelRuntime struct {
 	stopWithoutVerdict bool
 }
 
+// seedUnresolvedSend plants the state Model Runtime holds while a request may
+// already have crossed the provider boundary and nothing has classified it yet:
+// the dispatch was sent, no outcome came back, and Model Runtime's own
+// reconciler has not run. The flag is the answer Model Runtime itself gives for
+// that status (see modelruntime.InvocationStatus.ProviderExecutionMayHaveStarted),
+// carried through the same field the real adapter populates.
+func (f *integrationModelRuntime) seedUnresolvedSend(taskID, attemptID int64) int64 {
+	f.nextID++
+	f.byAttempt[modelAttemptKey(taskID, attemptID)] = []executive.InvocationRecord{{
+		ID: f.nextID, TaskID: taskID, AttemptID: attemptID, Status: "send_started",
+		ProviderExecutionMayHaveStarted: true,
+	}}
+	return f.nextID
+}
+
+// reconcileToAmbiguous is what Model Runtime's reconciler does to an expired
+// send: ambiguous, not retryable, external outcome unknown. The Executive
+// neither performs nor models this transition; it only reads the result.
+func (f *integrationModelRuntime) reconcileToAmbiguous(taskID, attemptID, invocationID int64) {
+	f.byAttempt[modelAttemptKey(taskID, attemptID)] = []executive.InvocationRecord{{
+		ID: invocationID, TaskID: taskID, AttemptID: attemptID, Status: "ambiguous",
+	}}
+}
+
 // seedDurableResult plants the durable Model Runtime state a crashed run would
 // have left behind for an attempt that never got recorded at the task level.
 func (f *integrationModelRuntime) seedDurableResult(taskID, attemptID int64, status string) {

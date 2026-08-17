@@ -51,4 +51,10 @@ var (
 	// ErrRunIdentityDrift means the durable run identity no longer matches the
 	// run being entered.
 	ErrRunIdentityDrift = errors.New("executive harness run identity drift")
+	// ErrPriorExecutionUnresolved means an earlier execution of this task may
+	// already have reached the provider and has no resolved outcome yet. No new
+	// execution may begin beside it; Model Runtime's reconciliation decides
+	// what that earlier call was, and until it does, the correct behavior is to
+	// wait rather than to guess.
+	ErrPriorExecutionUnresolved = errors.New("executive prior model execution is unresolved at the provider boundary")
 )
