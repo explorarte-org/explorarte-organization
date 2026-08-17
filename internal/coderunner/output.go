@@ -1,6 +1,7 @@
 package coderunner
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"hash"
@@ -67,20 +68,59 @@ func (r *ringBuffer) Bytes() []byte {
 // outputBudget is a trusted, plan-level aggregate guard on real bytes
 // produced across every operation in a single plan execution. It is never
 // derived from task-supplied instructions.
+//
+// add() does more than count: it cancels the currently-bound operation the
+// moment the running total crosses max, so a single operation that would
+// otherwise stream well past the budget is interrupted mid-flight -- not
+// merely detected after that operation happens to finish on its own.
+// bindCancel is called once per operation (by capture) with that
+// operation's own context.CancelFunc, so cancellation always lands on
+// whichever operation is actually in flight when the budget trips.
 type outputBudget struct {
 	max     int64
 	written int64
+
+	mu     sync.Mutex
+	cancel context.CancelFunc
 }
 
 func newOutputBudget(max int64) *outputBudget {
 	return &outputBudget{max: max}
 }
 
+// bindCancel rebinds which operation's context add() cancels once the
+// budget is exceeded. Safe to call between operations only: Execute runs
+// operations sequentially, and exec.Cmd's Wait() does not return until its
+// stdout/stderr copying goroutines (the only callers of add()) have
+// finished, so there is never a live Write for a previous operation still
+// in flight when this rebinds for the next one.
+func (b *outputBudget) bindCancel(cancel context.CancelFunc) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	b.cancel = cancel
+	b.mu.Unlock()
+}
+
 func (b *outputBudget) add(n int64) {
 	if b == nil {
 		return
 	}
-	atomic.AddInt64(&b.written, n)
+	total := atomic.AddInt64(&b.written, n)
+	if b.max <= 0 || total <= b.max {
+		return
+	}
+	b.mu.Lock()
+	cancel := b.cancel
+	b.mu.Unlock()
+	if cancel != nil {
+		// context.CancelFunc is safe to call from any goroutine and is
+		// idempotent, so no extra guard is needed even if several Write
+		// calls race past the threshold concurrently (e.g. stdout and
+		// stderr both writing at once).
+		cancel()
+	}
 }
 
 func (b *outputBudget) exceeded() bool {
