@@ -118,7 +118,7 @@ func (s *contextService) Build(ctx context.Context, request BuildRequest) (Build
 		Purpose: request.Purpose, ProjectRef: request.ProjectRef, TaskRef: request.TaskRef,
 		TaskClass: request.TaskClass, ExecutionPurpose: request.ExecutionPurpose, ActorUnitID: request.ActorUnitID,
 		IdempotencyKey: request.IdempotencyKey,
-		Status: SnapshotReady, Version: 1, RequestHash: requestHash, PrecedenceHash: bundle.PrecedenceHash,
+		Status:         SnapshotReady, Version: 1, RequestHash: requestHash, PrecedenceHash: bundle.PrecedenceHash,
 		CanonicalBundleHash: bundle.BundleHash, SegmentCount: assembly.SegmentCount,
 		IncludedSegmentCount: assembly.IncludedSegmentCount, OmittedSegmentCount: assembly.OmittedSegmentCount,
 		TotalBytes: assembly.TotalBytes, CorrelationID: request.CorrelationID, CausationID: request.CausationID,
@@ -177,6 +177,20 @@ func (s *contextService) reconcileSelectorFacts(ctx context.Context, existing Sn
 		bound, err := s.store.BindSelectorFacts(ctx, existing.ID, canonical.Request.TaskClass, canonical.Request.ExecutionPurpose, canonical.Request.ActorUnitID)
 		if err != nil {
 			return Snapshot{}, err
+		}
+		// BindSelectorFacts is race-free at the ROW level (COALESCE never
+		// lets a second writer overwrite a first writer's value), but that
+		// only guarantees storage integrity, not caller-facing correctness:
+		// if a concurrent caller won the bind first, bound now carries THAT
+		// caller's selector identity, not necessarily this caller's own
+		// proposed one. Re-validating bound against this caller's own
+		// freshHash/canonical is what turns "the row is internally
+		// consistent" into "this caller's request was actually compatible
+		// with what got persisted" -- a losing concurrent first-resume must
+		// fail closed here, not silently receive the winner's identity
+		// (independent review round 3).
+		if !requestHashCompatible(bound, freshHash, canonical) {
+			return Snapshot{}, ErrIdempotencyConflict
 		}
 		return bound, nil
 	}

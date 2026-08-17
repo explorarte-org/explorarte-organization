@@ -135,6 +135,152 @@ func TestServiceBuild_HistoricalSelectorBindingThenContradiction(t *testing.T) {
 	}
 }
 
+// TestServiceBuild_ConcurrentFirstBindContradiction is independent review
+// round 3's required proof (CONCURRENT_FIRST_BIND_CONTRADICTION_PROOF):
+// Store.BindSelectorFacts is race-free at the ROW level (COALESCE never
+// lets a second writer overwrite a first writer's already-persisted
+// value), but reconcileSelectorFacts must not simply trust its own
+// proposed values after calling it -- the row that comes back may belong
+// to a DIFFERENT concurrent caller who won the bind first. Without
+// re-validating the returned row against this caller's own request, a
+// losing caller proposing a genuinely contradictory selector tuple would
+// receive a silent SUCCESS carrying the winner's identity instead of
+// ErrIdempotencyConflict. Exactly one of two concurrent, contradictory
+// first-resume calls must succeed; the other must fail closed; and the
+// durable snapshot must end up holding exactly the winner's tuple, never
+// a mix of the two.
+func TestServiceBuild_ConcurrentFirstBindContradiction(t *testing.T) {
+	fixture := newServiceFixture(t)
+	ctx := t.Context()
+	svc := &contextService{store: fixture.store}
+
+	historical := BuildRequest{OrganizationID: "explorarte", OrganizationRevisionID: 1, ActorRoleID: "ingenieria_ia/qa", Purpose: "unit test", IdempotencyKey: "concurrent-first-bind"}
+	base := CanonicalBuildRequest{Request: historical, PrecedenceHash: DigestMarkdown([]byte("p")), CanonicalBundleHash: DigestMarkdown([]byte("c"))}
+	legacyHash := digestBuildRequestLegacy(base)
+	seedID, err := fixture.store.AllocateID(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := Snapshot{
+		ID: seedID, OrganizationID: historical.OrganizationID, OrganizationRevisionID: historical.OrganizationRevisionID,
+		ActorRoleID: historical.ActorRoleID, Purpose: historical.Purpose, IdempotencyKey: historical.IdempotencyKey,
+		Status: SnapshotReady, Version: 1, RequestHash: legacyHash, RenderedHash: DigestMarkdown([]byte("historical render")),
+		CreatedAt: time.Now().UTC(),
+	}
+	createResult, err := fixture.store.Create(ctx, CreateSnapshotCommand{Snapshot: seed, Now: seed.CreatedAt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := createResult.Snapshot
+
+	callA := base
+	callA.Request.TaskClass, callA.Request.ExecutionPurpose, callA.Request.ActorUnitID = "research.corpus_curate", "department-worker", "investigacion"
+	callB := base
+	callB.Request.TaskClass, callB.Request.ExecutionPurpose, callB.Request.ActorUnitID = "coordination.ceo_plan", "ceo-plan", "empresa"
+
+	type outcome struct {
+		snapshot Snapshot
+		err      error
+	}
+	results := make([]outcome, 2)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		snap, err := svc.reconcileSelectorFacts(ctx, first, DigestBuildRequest(callA), callA)
+		results[0] = outcome{snap, err}
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		snap, err := svc.reconcileSelectorFacts(ctx, first, DigestBuildRequest(callB), callB)
+		results[1] = outcome{snap, err}
+	}()
+	close(start)
+	wg.Wait()
+
+	var successes, conflicts int
+	var winner Snapshot
+	for _, r := range results {
+		switch {
+		case r.err == nil:
+			successes++
+			winner = r.snapshot
+		case errors.Is(r.err, ErrIdempotencyConflict):
+			conflicts++
+		default:
+			t.Fatalf("unexpected error from concurrent reconcileSelectorFacts: %v", r.err)
+		}
+	}
+	if successes != 1 || conflicts != 1 {
+		t.Fatalf("want exactly one success and one ErrIdempotencyConflict for two contradictory concurrent first-resumes, got successes=%d conflicts=%d results=%+v", successes, conflicts, results)
+	}
+
+	reloaded, err := fixture.store.Get(ctx, first.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.TaskClass != winner.TaskClass || reloaded.ExecutionPurpose != winner.ExecutionPurpose || reloaded.ActorUnitID != winner.ActorUnitID {
+		t.Fatalf("durable snapshot must hold exactly the winner's selector tuple, got reloaded=%+v winner=%+v", reloaded, winner)
+	}
+	isA := winner.TaskClass == "research.corpus_curate" && winner.ExecutionPurpose == "department-worker" && winner.ActorUnitID == "investigacion"
+	isB := winner.TaskClass == "coordination.ceo_plan" && winner.ExecutionPurpose == "ceo-plan" && winner.ActorUnitID == "empresa"
+	if !isA && !isB {
+		t.Fatalf("winner must hold exactly one of the two proposed tuples, not a mix: %+v", winner)
+	}
+
+	// Control: two concurrent callers proposing the SAME selector tuple
+	// under a different idempotency key must both be accepted as ordinary
+	// idempotent reuse -- concurrency alone must never cause a spurious
+	// conflict between callers who actually agree.
+	agreeing := BuildRequest{OrganizationID: "explorarte", OrganizationRevisionID: 1, ActorRoleID: "ingenieria_ia/qa", Purpose: "unit test", IdempotencyKey: "concurrent-first-bind-agree"}
+	agreeBase := CanonicalBuildRequest{Request: agreeing, PrecedenceHash: DigestMarkdown([]byte("p2")), CanonicalBundleHash: DigestMarkdown([]byte("c2"))}
+	agreeLegacyHash := digestBuildRequestLegacy(agreeBase)
+	agreeID, err := fixture.store.AllocateID(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agreeSeed := Snapshot{
+		ID: agreeID, OrganizationID: agreeing.OrganizationID, OrganizationRevisionID: agreeing.OrganizationRevisionID,
+		ActorRoleID: agreeing.ActorRoleID, Purpose: agreeing.Purpose, IdempotencyKey: agreeing.IdempotencyKey,
+		Status: SnapshotReady, Version: 1, RequestHash: agreeLegacyHash, RenderedHash: DigestMarkdown([]byte("historical render 2")),
+		CreatedAt: time.Now().UTC(),
+	}
+	agreeCreateResult, err := fixture.store.Create(ctx, CreateSnapshotCommand{Snapshot: agreeSeed, Now: agreeSeed.CreatedAt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agreeFirst := agreeCreateResult.Snapshot
+	sameTuple := agreeBase
+	sameTuple.Request.TaskClass, sameTuple.Request.ExecutionPurpose, sameTuple.Request.ActorUnitID = "research.corpus_curate", "department-worker", "investigacion"
+
+	agreeResults := make([]outcome, 2)
+	agreeStart := make(chan struct{})
+	var agreeWg sync.WaitGroup
+	agreeWg.Add(2)
+	for i := 0; i < 2; i++ {
+		go func(i int) {
+			defer agreeWg.Done()
+			<-agreeStart
+			snap, err := svc.reconcileSelectorFacts(ctx, agreeFirst, DigestBuildRequest(sameTuple), sameTuple)
+			agreeResults[i] = outcome{snap, err}
+		}(i)
+	}
+	close(agreeStart)
+	agreeWg.Wait()
+
+	for i, r := range agreeResults {
+		if r.err != nil {
+			t.Fatalf("concurrent callers proposing the SAME selector tuple must both succeed, got err=%v at index %d", r.err, i)
+		}
+		if r.snapshot.TaskClass != "research.corpus_curate" || r.snapshot.ExecutionPurpose != "department-worker" || r.snapshot.ActorUnitID != "investigacion" {
+			t.Fatalf("agreeing concurrent caller got unexpected selector tuple: %+v", r.snapshot)
+		}
+	}
+}
+
 func TestServiceBuildRejectsRoleStatesAndAllowsHumanOwner(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
