@@ -33,7 +33,19 @@ func testSnapshot(actorRoleID string, roleCatalogContent []byte) contextengine.S
 		{Ordinal: 6, RenderOrdinal: 6, AuthorityPriority: 4, AuthorityTier: contextengine.TierRoleProfile, SourceReference: "investigacion/research_worker_hourly/PERFIL.md", Included: true, Content: []byte("perfil"), ByteCount: 6, ContentHash: "h6"},
 		{Ordinal: 7, RenderOrdinal: 7, AuthorityPriority: 5, AuthorityTier: contextengine.TierTask, SourceReference: "task:1", Included: true, Content: []byte("task payload"), ByteCount: 12, ContentHash: "h7"},
 	}
-	return contextengine.Snapshot{ID: 1, ActorRoleID: actorRoleID, Segments: segments}
+	snap := contextengine.Snapshot{ID: 1, ActorRoleID: actorRoleID, Segments: segments}
+	// M1.3: TaskClass/ActorUnitID are durable selector facts a real
+	// research task would already carry (host-assigned/propagated by
+	// Executive, never inferred here) -- set them exactly as a real
+	// research.corpus_curate execution for these two roles would, so
+	// every existing fixture built through this helper keeps exercising
+	// the SAME positive-path scenario it always did. A non-research
+	// actorRoleID gets neither, and correctly canonical-falls-back.
+	if actorRoleID == researchWorkerHourlyRoleID || actorRoleID == researchWorkerHourlyMimoCanaryRoleID {
+		snap.TaskClass = ResearchCorpusCurateV1TaskClass
+		snap.ActorUnitID = researchUnitID
+	}
+	return snap
 }
 
 func TestCompile_RoleCatalogProjectedToSelfEntry(t *testing.T) {

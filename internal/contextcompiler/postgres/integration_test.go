@@ -81,6 +81,7 @@ func TestExecutionContextViewPostgreSQL17(t *testing.T) {
 		base := contextcompiler.ExecutionContextView{
 			OrganizationID: integrationOrganization, ContextSnapshotID: other.ID,
 			FellBackToCanonical: true, FallbackReason: "task_class_not_projected",
+			SelectionKind: contextcompiler.SelectionCanonical, SelectorAlgorithmVersion: contextcompiler.SelectorAlgorithmVersion,
 			AuthorityOrderHash: sha256Hex(t, "order"), CompiledContentHash: sha256Hex(t, "content"),
 			ProviderVisibleBytes: []byte("original bytes"), ProviderVisibleDigest: sha256HexBytes([]byte("original bytes")), ProviderVisibleByteCount: len("original bytes"),
 		}
@@ -111,8 +112,9 @@ func TestExecutionContextViewPostgreSQL17(t *testing.T) {
 			return contextcompiler.ExecutionContextView{
 				OrganizationID: integrationOrganization, ContextSnapshotID: snapshotID,
 				ContextProfileID: "research.corpus_curate", ContextProfileVersion: "v1",
-				FellBackToCanonical: false, ProviderRenderVersion: "research-corpus-curate-render/v2",
-				StablePrefixHash: "s1", StablePrefixBytes: 10, DynamicSuffixHash: "d1", DynamicSuffixBytes: 20,
+				FellBackToCanonical: false, SelectionKind: contextcompiler.SelectionTaskClass, SelectorAlgorithmVersion: contextcompiler.SelectorAlgorithmVersion,
+				ProviderRenderVersion: "research-corpus-curate-render/v2",
+				StablePrefixHash:      "s1", StablePrefixBytes: 10, DynamicSuffixHash: "d1", DynamicSuffixBytes: 20,
 				AuthorityOrderHash: sha256Hex(t, "order-metadata"), CompiledContentHash: sha256Hex(t, "content-metadata"),
 				SegmentDiffs:         []contextcompiler.SegmentDiff{{SourceReference: "docs/canonical/role-catalog.yaml", Projected: true, Reason: "projected_subset:role_catalog_self_entry"}},
 				ProviderVisibleBytes: sameBytes, ProviderVisibleDigest: sha256HexBytes(sameBytes), ProviderVisibleByteCount: len(sameBytes),
@@ -179,6 +181,7 @@ func TestExecutionContextViewPostgreSQL17(t *testing.T) {
 		invalid := contextcompiler.ExecutionContextView{
 			OrganizationID: integrationOrganization, ContextSnapshotID: snap.ID,
 			FellBackToCanonical: true, FallbackReason: "task_class_not_projected",
+			SelectionKind: contextcompiler.SelectionCanonical, SelectorAlgorithmVersion: contextcompiler.SelectorAlgorithmVersion,
 			AuthorityOrderHash: sha256Hex(t, "order-bytecount"), CompiledContentHash: sha256Hex(t, "content-bytecount"),
 			ProviderVisibleBytes: []byte("hello"), ProviderVisibleDigest: sha256HexBytes([]byte("hello")),
 			ProviderVisibleByteCount: 999, // wrong on purpose: len("hello") == 5
@@ -276,6 +279,7 @@ func TestExecutionContextViewPostgreSQL17(t *testing.T) {
 		wrongOrg := contextcompiler.ExecutionContextView{
 			OrganizationID: "some-other-organization", ContextSnapshotID: snap.ID,
 			FellBackToCanonical: true, FallbackReason: "task_class_not_projected",
+			SelectionKind: contextcompiler.SelectionCanonical, SelectorAlgorithmVersion: contextcompiler.SelectorAlgorithmVersion,
 			AuthorityOrderHash: sha256Hex(t, "order2"), CompiledContentHash: sha256Hex(t, "content2"),
 			ProviderVisibleBytes: []byte("bytes"), ProviderVisibleDigest: sha256HexBytes([]byte("bytes")), ProviderVisibleByteCount: len("bytes"),
 		}
@@ -375,6 +379,12 @@ roles:
 		RequestHash: sha256Hex(t, "request-"+idempotencyKey), PrecedenceHash: sha256Hex(t, "precedence-"+idempotencyKey), CanonicalBundleHash: sha256Hex(t, "bundle-"+idempotencyKey),
 		SegmentCount: len(segments), IncludedSegmentCount: len(segments), TotalBytes: total,
 		CorrelationID: "correlation", CausationID: "causation", Segments: segments, CreatedAt: time.Now().UTC(),
+	}
+	// M1.3: the durable selector facts a real research task would carry
+	// (never inferred from ActorRoleID alone anymore).
+	if actorRoleID == "investigacion/research_worker_hourly" {
+		snapshot.TaskClass = contextcompiler.ResearchCorpusCurateV1TaskClass
+		snapshot.ActorUnitID = "investigacion"
 	}
 	rendered, err := contextengine.NewRenderer().Render(ctx, snapshot)
 	if err != nil {

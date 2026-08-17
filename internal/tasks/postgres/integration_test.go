@@ -418,6 +418,67 @@ func TestDurableTaskEnginePostgreSQL17(t *testing.T) {
 			t.Fatalf("sequences not sorted: %+v", sequences)
 		}
 	})
+
+	// TASK_IDEMPOTENCY_PROOF (M1.3 section 9/18.A): a task row created
+	// before TaskClass existed -- its stored request_hash computed by the
+	// exact pre-M1.3 algorithm, with no task_class concept at all -- must
+	// remain resumable through the SAME idempotency key once the caller
+	// upgrades and starts supplying a real TaskClass. A resumed request
+	// whose OTHER fields genuinely differ from the historical row must
+	// still fail closed with ErrIdempotencyConflict.
+	t.Run("pre-M1.3 idempotent task remains resumable, contradictory identity fails closed", func(t *testing.T) {
+		h.resetTasks(t)
+		const key = "upgrade-compat"
+		historical := tasks.CreateRequest{
+			// OrganizationID must match exactly what Service.CreateTask
+			// itself defaults an empty request.OrganizationID to
+			// (s.cfg.OrganizationID) -- it is part of the hashed request,
+			// so a mismatch here would make even the LEGACY-shape
+			// comparison fail for reasons unrelated to TaskClass.
+			OrganizationID: "explorarte",
+			AssignedRoleID: testRole, IdempotencyKey: key,
+			Title: "Historical task", Instructions: "Pre-M1.3 instructions.",
+			AcceptanceCriteria: []string{"criterion"},
+			// MaxAttempts must likewise match what Service.CreateTask
+			// defaults an unset request.MaxAttempts to before hashing
+			// (s.cfg.DefaultMaxAttempts) -- also part of the hashed
+			// request. Matches the raw INSERT's max_attempts below.
+			MaxAttempts: 5,
+		} // TaskClass intentionally left empty: this IS the pre-M1.3 shape.
+		legacyHash, err := tasks.HashCreateRequestLegacy(historical)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var historicalID int64
+		if err := h.store.Pool().QueryRow(h.ctx, `
+			INSERT INTO tasks(
+				organization_id,organization_revision_id,assigned_role_id,assigned_unit_id,
+				idempotency_key,request_hash,title,instructions,acceptance_criteria,status,priority,available_at,max_attempts
+			) VALUES('explorarte',1,$1,'ingenieria_ia',$2,$3,$4,$5,'["criterion"]'::jsonb,'ready',0,clock_timestamp(),5)
+			RETURNING id`,
+			testRole, key, legacyHash, historical.Title, historical.Instructions,
+		).Scan(&historicalID); err != nil {
+			t.Fatalf("simulate pre-M1.3 historical row: %v", err)
+		}
+		var storedTaskClass string
+		if err := h.store.Pool().QueryRow(h.ctx, `SELECT task_class FROM tasks WHERE id=$1`, historicalID).Scan(&storedTaskClass); err != nil || storedTaskClass != "legacy.unspecified" {
+			t.Fatalf("historical row task_class=%q err=%v, want the migration default", storedTaskClass, err)
+		}
+
+		resumed := historical
+		resumed.TaskClass = "general.work" // a real M1.3-era resume now supplies this
+		reused, inserted, err := h.tasks.CreateTask(h.ctx, resumed, "human", "eduardo")
+		if err != nil || inserted || reused.ID != historicalID {
+			t.Fatalf("resumed pre-M1.3 idempotent create: task=%+v inserted=%v err=%v", reused, inserted, err)
+		}
+
+		contradictory := historical
+		contradictory.TaskClass = "general.work"
+		contradictory.Instructions = "This is not the same task."
+		if _, _, err := h.tasks.CreateTask(h.ctx, contradictory, "human", "eduardo"); !errors.Is(err, tasks.ErrIdempotencyConflict) {
+			t.Fatalf("want ErrIdempotencyConflict for a genuinely different request under the same key, got %v", err)
+		}
+	})
 }
 
 func newHarness(t *testing.T) *harness {

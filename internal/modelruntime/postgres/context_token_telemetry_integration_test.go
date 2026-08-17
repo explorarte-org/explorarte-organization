@@ -53,8 +53,13 @@ func TestContextTokenTelemetryPostgreSQL17(t *testing.T) {
 		if err != nil {
 			t.Fatalf("up: %v", err)
 		}
-		if applied.Current != 52 {
-			t.Fatalf("migration tip after up=%d, want 52 (000051 must be the real prior tip)", applied.Current)
+		loadedForTip, tipErr := platformmigrations.Load(rootmigrations.Files)
+		if tipErr != nil {
+			t.Fatal(tipErr)
+		}
+		realTip := loadedForTip[len(loadedForTip)-1].Version
+		if applied.Current != realTip {
+			t.Fatalf("migration tip after up=%d, want %d (the real repo tip)", applied.Current, realTip)
 		}
 		hasColumn := func() bool {
 			var exists bool
@@ -80,8 +85,8 @@ func TestContextTokenTelemetryPostgreSQL17(t *testing.T) {
 			t.Fatal("down migration did not remove execution_context_view_id")
 		}
 		reapplied, err := runner.Up(ctx)
-		if err != nil || len(reapplied.Applied) != 1 || reapplied.Current != 52 {
-			t.Fatalf("reapply=%+v err=%v", reapplied, err)
+		if err != nil || len(reapplied.Applied) != 1 || reapplied.Current != realTip {
+			t.Fatalf("reapply=%+v err=%v want current=%d", reapplied, err, realTip)
 		}
 		if !hasColumn() {
 			t.Fatal("reapplied up migration did not restore execution_context_view_id")
@@ -169,8 +174,9 @@ INSERT INTO model_invocations(
 		view := contextcompiler.ExecutionContextView{
 			OrganizationID: modelIntegrationOrganization, ContextSnapshotID: snapshotID,
 			ContextProfileID: "research.corpus_curate", ContextProfileVersion: "v1",
-			FellBackToCanonical: false, ProviderRenderVersion: "research-corpus-curate-render/v2",
-			StablePrefixHash: modelruntime.SHA256Bytes([]byte("stable")), StablePrefixBytes: 30,
+			FellBackToCanonical: false, SelectionKind: contextcompiler.SelectionTaskClass, SelectorAlgorithmVersion: contextcompiler.SelectorAlgorithmVersion,
+			ProviderRenderVersion: "research-corpus-curate-render/v2",
+			StablePrefixHash:      modelruntime.SHA256Bytes([]byte("stable")), StablePrefixBytes: 30,
 			DynamicSuffixHash: modelruntime.SHA256Bytes([]byte("dynamic")), DynamicSuffixBytes: 15,
 			AuthorityOrderHash: modelruntime.SHA256Bytes([]byte("order")), CompiledContentHash: modelruntime.SHA256Bytes([]byte("content")),
 			// A non-fallback (FellBackToCanonical=false) view must carry

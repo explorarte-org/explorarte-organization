@@ -56,7 +56,14 @@ roles:
 		{Ordinal: 6, RenderOrdinal: 6, AuthorityPriority: 4, AuthorityTier: contextengine.TierRoleProfile, SourceReference: actorRoleID + "/PERFIL.md", Included: true, Content: []byte("perfil"), ByteCount: 6, ContentHash: "h6"},
 		{Ordinal: 7, RenderOrdinal: 7, AuthorityPriority: 5, AuthorityTier: contextengine.TierTask, SourceReference: "task:1", Included: true, Content: []byte("task payload"), ByteCount: 12, ContentHash: "h7"},
 	}
-	return contextengine.Snapshot{ID: 1, Version: 1, Status: contextengine.SnapshotReady, OrganizationID: "explorarte", ActorRoleID: actorRoleID, Segments: segments}
+	snap := contextengine.Snapshot{ID: 1, Version: 1, Status: contextengine.SnapshotReady, OrganizationID: "explorarte", ActorRoleID: actorRoleID, Segments: segments}
+	// M1.3: the durable selector facts a real research task would carry
+	// (never inferred from ActorRoleID alone anymore).
+	if actorRoleID == "investigacion/research_worker_hourly" {
+		snap.TaskClass = contextcompiler.ResearchCorpusCurateV1TaskClass
+		snap.ActorUnitID = "investigacion"
+	}
+	return snap
 }
 
 // TestContextAdapter_GenericFallbackAndProjectedResearch proves Model

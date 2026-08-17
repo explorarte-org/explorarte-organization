@@ -1124,6 +1124,16 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 			// 000021 drops that table outright, same rule as everything else
 			// in this list.
 			{47, "000047_seed_openai_responses_pricing_and_wallet.down.sql"},
+			// 000053 and 000052 both ALTER model_invocation_render_telemetry
+			// (000053 also alters execution_context_views/tasks/
+			// context_snapshots, none of which this list drops, so only its
+			// effect on this specific table matters here) -- 000040's own
+			// down.sql DROPs that table outright, so both must come down
+			// first or this down/reapply cycle silently corrupts them,
+			// exactly the failure mode every other entry in this list
+			// documents.
+			{53, "000053_add_semantic_selector_facts.down.sql"},
+			{52, "000052_add_context_token_telemetry.down.sql"},
 			{40, "000040_add_provider_render_telemetry.down.sql"},
 			// 000039 replaces the CHECK constraints 000037 defines on
 			// provider_wallet_events (adding the subscription_resource_consumed
