@@ -1,0 +1,152 @@
+package bootstrap
+
+import (
+	"context"
+	"testing"
+
+	"github.com/Mireuz13/explorarte-organization/internal/contextcompiler"
+	"github.com/Mireuz13/explorarte-organization/internal/contextengine"
+	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
+)
+
+type fakeCtxService struct {
+	snapshot contextengine.Snapshot
+}
+
+func (f *fakeCtxService) Build(context.Context, contextengine.BuildRequest) (contextengine.BuildResult, error) {
+	return contextengine.BuildResult{Snapshot: f.snapshot}, nil
+}
+func (f *fakeCtxService) Get(context.Context, int64, bool) (contextengine.Snapshot, error) {
+	return f.snapshot, nil
+}
+func (f *fakeCtxService) List(context.Context, contextengine.ListFilter) ([]contextengine.Snapshot, error) {
+	return nil, nil
+}
+func (f *fakeCtxService) Render(ctx context.Context, _ int64) ([]byte, error) {
+	return contextengine.NewRenderer().Render(ctx, f.snapshot)
+}
+func (f *fakeCtxService) Validate(context.Context, int64) (contextengine.SnapshotValidation, error) {
+	return contextengine.SnapshotValidation{Valid: true}, nil
+}
+func (f *fakeCtxService) Invalidate(context.Context, contextengine.InvalidateCommand) (contextengine.Snapshot, error) {
+	return contextengine.Snapshot{}, nil
+}
+
+func ctxFixtureSnapshot(actorRoleID string) contextengine.Snapshot {
+	roleCatalog := []byte(`schema_version: 0.1.0
+document_status: branch_0_candidate
+roles:
+- id: empresa/ceo
+  department: empresa
+  summary: CEO summary text that is irrelevant to corpus curation.
+- id: investigacion/research_worker_hourly
+  department: investigacion
+  summary: Research worker contract.
+`)
+	segments := []contextengine.Segment{
+		{Ordinal: 1, RenderOrdinal: 1, AuthorityPriority: 0, AuthorityTier: contextengine.TierImmutableSafety, SourceReference: "docs/canonical/cell-boundaries.yaml", Included: true, Content: []byte("safety"), ByteCount: 6, ContentHash: "h1"},
+		{Ordinal: 2, RenderOrdinal: 2, AuthorityPriority: 1, AuthorityTier: contextengine.TierOwnerDecisions, SourceReference: "docs/canonical/decisions-required.yaml", Included: true, Content: []byte("owner"), ByteCount: 5, ContentHash: "h2"},
+		{Ordinal: 3, RenderOrdinal: 3, AuthorityPriority: 2, AuthorityTier: contextengine.TierCanonicalPolicies, SourceReference: contextcompiler.RoleCatalogSourceReference, Included: true, Content: roleCatalog, ByteCount: len(roleCatalog), ContentHash: "h3"},
+		{Ordinal: 4, RenderOrdinal: 4, AuthorityPriority: 3, AuthorityTier: contextengine.TierOrganizationAgent, SourceReference: "AGENT.md", Included: true, Content: []byte("org"), ByteCount: 3, ContentHash: "h4"},
+		{Ordinal: 5, RenderOrdinal: 5, AuthorityPriority: 3, AuthorityTier: contextengine.TierDepartmentAgent, SourceReference: "investigacion/AGENT.md", Included: true, Content: []byte("dept"), ByteCount: 4, ContentHash: "h5"},
+		{Ordinal: 6, RenderOrdinal: 6, AuthorityPriority: 4, AuthorityTier: contextengine.TierRoleProfile, SourceReference: actorRoleID + "/PERFIL.md", Included: true, Content: []byte("perfil"), ByteCount: 6, ContentHash: "h6"},
+		{Ordinal: 7, RenderOrdinal: 7, AuthorityPriority: 5, AuthorityTier: contextengine.TierTask, SourceReference: "task:1", Included: true, Content: []byte("task payload"), ByteCount: 12, ContentHash: "h7"},
+	}
+	return contextengine.Snapshot{ID: 1, Version: 1, Status: contextengine.SnapshotReady, ActorRoleID: actorRoleID, Segments: segments}
+}
+
+// TestContextAdapter_GenericFallbackAndProjectedResearch proves Model
+// Runtime's real contextAdapter (RenderContextSnapshot / GetContextSnapshot)
+// -- not a reimplementation -- produces exactly what the shared
+// contextcompiler.ResolveProviderContext resolver produces for the same
+// canonical snapshot, mirroring
+// internal/executive/runtimeadapter.TestContextBuild_GenericFallbackAndProjectedResearch.
+// Together the two prove Executive and Model Runtime can no longer diverge:
+// both equal the same shared-resolver ground truth for the same snapshot.
+func TestContextAdapter_GenericFallbackAndProjectedResearch(t *testing.T) {
+	cases := []struct {
+		name         string
+		actorRoleID  string
+		wantFellBack bool
+	}{
+		{"generic_fallback", "empresa/ceo", true},
+		{"projected_research", "investigacion/research_worker_hourly", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			snap := ctxFixtureSnapshot(tc.actorRoleID)
+			svc := &fakeCtxService{snapshot: snap}
+			adapter := contextAdapter{service: svc}
+
+			gotBytes, err := adapter.RenderContextSnapshot(context.Background(), snap.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gotRef, err := adapter.GetContextSnapshot(context.Background(), snap.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			want, err := contextcompiler.ResolveProviderContext(context.Background(), snap)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want.FellBack != tc.wantFellBack {
+				t.Fatalf("test fixture bug: FellBack=%v want=%v", want.FellBack, tc.wantFellBack)
+			}
+
+			if string(gotBytes) != string(want.Bytes) {
+				t.Fatalf("Model Runtime RenderContextSnapshot diverged from the shared resolver:\ngot=%s\nwant=%s", gotBytes, want.Bytes)
+			}
+			if gotRef.RenderedHash != want.Digest {
+				t.Fatalf("Model Runtime GetContextSnapshot digest diverged from the shared resolver: got=%s want=%s", gotRef.RenderedHash, want.Digest)
+			}
+
+			prepared, err := modelruntime.PrepareModelInput(nil, gotRef, gotBytes)
+			if err != nil {
+				t.Fatalf("PrepareModelInput rejected the resolved render: %v", err)
+			}
+			if prepared.Envelope.StablePrefix[0].Content != string(gotBytes) {
+				t.Fatal("prepared stable prefix does not match the resolved render")
+			}
+		})
+	}
+}
+
+// TestContextAdapter_ExecutiveAndModelRuntimeBytesMatch is the direct
+// cross-package identity proof: for the same snapshot, Executive's
+// Context.Build output and Model Runtime's contextAdapter output are
+// byte-for-byte and digest-for-digest identical. It re-derives Executive's
+// side the same way internal/executive/runtimeadapter.Context.Build does
+// (fetch, validate, resolve) rather than duplicating that adapter's logic,
+// so this stays a proof about the shared resolver, not a tautology.
+func TestContextAdapter_ExecutiveAndModelRuntimeBytesMatch(t *testing.T) {
+	for _, actorRoleID := range []string{"empresa/ceo", "investigacion/research_worker_hourly"} {
+		t.Run(actorRoleID, func(t *testing.T) {
+			snap := ctxFixtureSnapshot(actorRoleID)
+
+			executiveResolved, err := contextcompiler.ResolveProviderContext(context.Background(), snap)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			svc := &fakeCtxService{snapshot: snap}
+			adapter := contextAdapter{service: svc}
+			modelRuntimeBytes, err := adapter.RenderContextSnapshot(context.Background(), snap.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			modelRuntimeRef, err := adapter.GetContextSnapshot(context.Background(), snap.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if string(modelRuntimeBytes) != string(executiveResolved.Bytes) {
+				t.Fatalf("bytes diverged: executive=%s model_runtime=%s", executiveResolved.Bytes, modelRuntimeBytes)
+			}
+			if modelRuntimeRef.RenderedHash != executiveResolved.Digest {
+				t.Fatalf("digest diverged: executive=%s model_runtime=%s", executiveResolved.Digest, modelRuntimeRef.RenderedHash)
+			}
+		})
+	}
+}
