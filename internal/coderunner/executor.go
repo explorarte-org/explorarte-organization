@@ -47,7 +47,7 @@ type Executor struct {
 
 func (e *Executor) SetWorkspace(path string) { e.Workspace = path }
 
-func (e Executor) path(rel string) (string, error) {
+func (e *Executor) path(rel string) (string, error) {
 	real, err := realPath(e.Workspace, rel)
 	if err != nil {
 		return "", err
@@ -62,14 +62,14 @@ func (e Executor) path(rel string) (string, error) {
 	return real, nil
 }
 
-func (e Executor) opTimeout() time.Duration {
+func (e *Executor) opTimeout() time.Duration {
 	if e.OperationTimeout <= 0 {
 		return defaultOperationTimeout
 	}
 	return e.OperationTimeout
 }
 
-func (e Executor) headTail() (int, int) {
+func (e *Executor) headTail() (int, int) {
 	h, t := e.HeadBudget, e.TailBudget
 	if h <= 0 {
 		h = defaultHeadBudget
@@ -80,10 +80,14 @@ func (e Executor) headTail() (int, int) {
 	return h, t
 }
 
+// capture must only be called through the same *Executor Execute
+// initialized: budget is deliberately a field mutated via pointer receiver,
+// not a local/copied value, so every operation in one Execute call shares
+// the identical *outputBudget instance and their real bytes produced add up
+// correctly. All Executor methods use pointer receivers for exactly this
+// reason -- a value receiver anywhere in this chain would silently make
+// budget-sharing operate on a throwaway copy instead of e itself.
 func (e *Executor) capture() *boundedOutput {
-	if e.budget == nil && e.PlanOutputBudget > 0 {
-		e.budget = newOutputBudget(e.PlanOutputBudget)
-	}
 	h, t := e.headTail()
 	return newBoundedOutput(h, t, e.budget)
 }
@@ -95,7 +99,7 @@ func (e *Executor) budgetExceeded() bool {
 	return e.budget != nil && e.budget.exceeded()
 }
 
-func (e Executor) run(ctx context.Context, typ OperationType, name string, args ...string) (Result, error) {
+func (e *Executor) run(ctx context.Context, typ OperationType, name string, args ...string) (Result, error) {
 	capture := e.capture()
 	runCtx, cancel := context.WithTimeout(ctx, e.opTimeout())
 	defer cancel()
@@ -129,7 +133,19 @@ func toResult(typ OperationType, exitCode int, runErr error, capture *boundedOut
 	}, nil
 }
 
-func (e Executor) Execute(ctx context.Context, plan Plan) ([]Result, error) {
+// Execute runs plan sequentially against a single, shared aggregate output
+// budget for this call only: budget is reset here on every call so it can
+// never leak across separate plans/tasks that happen to reuse the same
+// *Executor instance (orgctl constructs one Executor for the whole worker
+// process lifetime, not one per task). Execute is not safe to call
+// concurrently on the same *Executor -- the worker never does, since a
+// single worker processes one claimed task at a time.
+func (e *Executor) Execute(ctx context.Context, plan Plan) ([]Result, error) {
+	if e.PlanOutputBudget > 0 {
+		e.budget = newOutputBudget(e.PlanOutputBudget)
+	} else {
+		e.budget = nil
+	}
 	results := make([]Result, 0, len(plan.Operations))
 	for _, op := range plan.Operations {
 		r, err := e.ExecuteOperation(ctx, op)
@@ -147,7 +163,7 @@ func (e Executor) Execute(ctx context.Context, plan Plan) ([]Result, error) {
 	return results, nil
 }
 
-func (e Executor) ExecuteOperation(ctx context.Context, op Operation) (Result, error) {
+func (e *Executor) ExecuteOperation(ctx context.Context, op Operation) (Result, error) {
 	if err := opValidate(op); err != nil {
 		return Result{}, err
 	}
@@ -226,7 +242,7 @@ func (e Executor) ExecuteOperation(ctx context.Context, op Operation) (Result, e
 // the workspace and is reported as a deterministic failure, not retried as
 // an infrastructure error. git's own path protections are never the sole
 // guard: validatePatchPaths runs first and independently.
-func (e Executor) applyPatch(ctx context.Context, op Operation) (Result, error) {
+func (e *Executor) applyPatch(ctx context.Context, op Operation) (Result, error) {
 	if err := validatePatchPaths(op.Patch); err != nil {
 		return Result{Type: op.Type, Success: false, Output: err.Error()}, nil
 	}
@@ -248,7 +264,7 @@ func (e Executor) applyPatch(ctx context.Context, op Operation) (Result, error) 
 	return toResult(op.Type, code, runErr, capture, nil)
 }
 
-func (e Executor) limit() int {
+func (e *Executor) limit() int {
 	if e.MaxOutput <= 0 {
 		return 1 << 20
 	}
