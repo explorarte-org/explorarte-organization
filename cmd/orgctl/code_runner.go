@@ -13,6 +13,34 @@ import (
 	"time"
 )
 
+// codeRunnerOperationTimeout and codeRunnerPlanOutputBudget are trusted
+// runtime configuration read from the worker's own environment, never from
+// a claimed task's instructions. They are deliberately separate from lease
+// TTL: lease TTL is authority liveness, this is an execution resource
+// boundary.
+const (
+	defaultCodeRunnerOperationTimeout = 5 * time.Minute
+	defaultCodeRunnerPlanOutputBudget = int64(64 << 20) // 64 MiB aggregate real bytes per plan
+)
+
+func codeRunnerOperationTimeout() time.Duration {
+	if raw := os.Getenv("ORG_CODE_RUNNER_OPERATION_TIMEOUT"); raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+			return d
+		}
+	}
+	return defaultCodeRunnerOperationTimeout
+}
+
+func codeRunnerPlanOutputBudget() int64 {
+	if raw := os.Getenv("ORG_CODE_RUNNER_PLAN_OUTPUT_BUDGET_BYTES"); raw != "" {
+		if n, err := strconv.ParseInt(raw, 10, 64); err == nil && n > 0 {
+			return n
+		}
+	}
+	return defaultCodeRunnerPlanOutputBudget
+}
+
 func runCodeRunner(args []string, stdout, stderr io.Writer) int {
 	if len(args) != 2 || args[0] != "worker" || args[1] != "run" {
 		fmt.Fprintln(stderr, "usage: orgctl code-runner worker run")
@@ -61,8 +89,9 @@ func runCodeRunner(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "code-runner principal is not active/canonical")
 		return exitDenied
 	}
-	executor := &coderunner.Executor{Workspace: "", MaxOutput: 1 << 20}
-	worker := coderunner.Worker{Queue: taskService, Executor: executor, Workspace: coderunner.StagingAdapter{Service: stagingRuntime.Service, WorkspaceRoot: cfg.Staging.WorkspaceRoot, RepositoryID: repo, BaseCommit: base, TargetRef: target}, WorkerID: workerID, HolderPrincipalID: principal, LeaseDuration: cfg.Tasks.DefaultLeaseDuration}
+	executor := &coderunner.Executor{Workspace: "", MaxOutput: 1 << 20, OperationTimeout: codeRunnerOperationTimeout(), PlanOutputBudget: codeRunnerPlanOutputBudget()}
+	runtimeVersion := os.Getenv("ORG_CODE_RUNNER_RUNTIME_VERSION")
+	worker := coderunner.Worker{Queue: taskService, Executor: executor, Workspace: coderunner.StagingAdapter{Service: stagingRuntime.Service, Tasks: taskService, WorkspaceRoot: cfg.Staging.WorkspaceRoot, RepositoryID: repo, BaseCommit: base, TargetRef: target}, WorkerID: workerID, HolderPrincipalID: principal, LeaseDuration: cfg.Tasks.DefaultLeaseDuration, RuntimeVersion: runtimeVersion}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	fmt.Fprintf(stdout, "code-runner worker starting: role=%s worker=%s\n", coderunner.RoleID, workerID)
