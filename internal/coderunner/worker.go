@@ -142,9 +142,22 @@ func (w Worker) run(ctx context.Context, item tasks.ClaimedTask) error {
 // proven and the caller learns that explicitly via ErrIndeterminateExecution
 // instead of the worker silently walking away from a possibly-still-running
 // process.
+//
+// If the executor goroutine does report back within the grace window, its
+// own outcome is not discarded in favor of the trigger error alone: an
+// operation-level indeterminate result (runSupervised's own killGrace
+// elapsed while reaping a process group, independently of this outer
+// cancellation) is joined onto the returned error so errors.Is(...,
+// ErrIndeterminateExecution) still sees it. No RecordAttemptResult call
+// happens on this path either way -- the lease is already gone or the
+// parent is shutting down -- so this only affects what gets logged/returned
+// to the caller, never the seal-safety invariant.
 func (w Worker) awaitShutdown(resultCh <-chan execOutcome, triggerErr error) error {
 	select {
-	case <-resultCh:
+	case out := <-resultCh:
+		if out.err != nil {
+			return errors.Join(triggerErr, out.err)
+		}
 		return triggerErr
 	case <-time.After(w.shutdownGrace()):
 		return fmt.Errorf("%v; execution could not be confirmed terminated within shutdown grace: %w", triggerErr, ErrIndeterminateExecution)
