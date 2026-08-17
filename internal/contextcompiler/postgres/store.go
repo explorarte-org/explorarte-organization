@@ -4,8 +4,6 @@ package postgres
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,12 +32,19 @@ func New(store *platformpostgres.Store) (*Store, error) {
 // against what IS durably recorded; any mismatch is
 // contextcompiler.ErrExecutionContextViewDrift, never a silent overwrite or
 // a silent acceptance of the caller's possibly-wrong attempt.
+//
+// ValidateIntegrity runs here FIRST, in Go, before any query is even built:
+// this store does not rely on the database's own CHECK
+// (octet_length(provider_visible_bytes) = provider_visible_byte_count) to
+// be the only thing catching an invalid view -- an invalid view is rejected
+// with contextcompiler.ErrExecutionContextViewIntegrity identically to
+// MemoryStore, which has no schema/CHECK constraint to fall back on at all.
 func (s *Store) Persist(ctx context.Context, view contextcompiler.ExecutionContextView) (contextcompiler.ExecutionContextView, error) {
 	if view.OrganizationID == "" || view.ContextSnapshotID <= 0 {
 		return contextcompiler.ExecutionContextView{}, errors.New("execution context view requires organization_id and context_snapshot_id")
 	}
-	if view.ProviderVisibleDigest != sha256Hex(view.ProviderVisibleBytes) {
-		return contextcompiler.ExecutionContextView{}, fmt.Errorf("%w: digest does not match bytes at persist time", contextcompiler.ErrExecutionContextViewIntegrity)
+	if err := contextcompiler.ValidateIntegrity(view); err != nil {
+		return contextcompiler.ExecutionContextView{}, err
 	}
 	// CompileForTaskClass's fallback branch (no registered ContextProfile
 	// for this task class) leaves SegmentDiffs as its Go zero value, a nil
@@ -131,19 +136,15 @@ func scanView(row pgx.Row) (contextcompiler.ExecutionContextView, error) {
 	if err := json.Unmarshal(diffsJSON, &v.SegmentDiffs); err != nil {
 		return contextcompiler.ExecutionContextView{}, fmt.Errorf("unmarshal segment diffs: %w", err)
 	}
-	// Integrity check on every read: a loaded view whose persisted digest
-	// does not match SHA-256 of its persisted bytes is never returned as
-	// valid, regardless of how the mismatch happened (corruption, direct
-	// DB tampering, a future bug elsewhere).
-	if v.ProviderVisibleDigest != sha256Hex(v.ProviderVisibleBytes) {
-		return contextcompiler.ExecutionContextView{}, fmt.Errorf("%w: view id=%d", contextcompiler.ErrExecutionContextViewIntegrity, v.ID)
+	// Integrity check on every read: a loaded view whose persisted digest or
+	// byte count does not match its own persisted bytes is never returned
+	// as valid, regardless of how the mismatch happened (corruption, direct
+	// DB tampering, a future bug elsewhere) -- the same ValidateIntegrity
+	// Persist already ran, not a narrower ad hoc check.
+	if err := contextcompiler.ValidateIntegrity(v); err != nil {
+		return contextcompiler.ExecutionContextView{}, fmt.Errorf("view id=%d: %w", v.ID, err)
 	}
 	return v, nil
-}
-
-func sha256Hex(b []byte) string {
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
 }
 
 func mapError(err error) error {

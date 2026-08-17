@@ -189,7 +189,10 @@ func TestResolveAndPersist_MetadataOnlyDriftFailsClosed(t *testing.T) {
 		"segment_diffs": func(v *ExecutionContextView) {
 			v.SegmentDiffs = []SegmentDiff{{SourceReference: "different", Projected: false}}
 		},
-		"fell_back_to_canonical": func(v *ExecutionContextView) { v.FellBackToCanonical = true },
+		"fell_back_to_canonical":  func(v *ExecutionContextView) { v.FellBackToCanonical = true },
+		"context_profile_id":      func(v *ExecutionContextView) { v.ContextProfileID = "some.other.profile" },
+		"context_profile_version": func(v *ExecutionContextView) { v.ContextProfileVersion = "v2" },
+		"compiled_content_hash":   func(v *ExecutionContextView) { v.CompiledContentHash = "changed" },
 	}
 
 	var snapshotID int64 = 100
@@ -270,12 +273,63 @@ func TestGet_RejectsTamperedIntegrity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store.CorruptForTest(view.ID, []byte("tampered bytes"), "")
+	store.CorruptForTest(view.ID, []byte("tampered bytes"), "", -1)
 	if _, err := store.Get(context.Background(), view.ID); !errors.Is(err, ErrExecutionContextViewIntegrity) {
 		t.Fatalf("want ErrExecutionContextViewIntegrity, got %v", err)
 	}
 	if _, err := store.GetByContextSnapshot(context.Background(), "explorarte", snap.ID); !errors.Is(err, ErrExecutionContextViewIntegrity) {
 		t.Fatalf("want ErrExecutionContextViewIntegrity via GetByContextSnapshot, got %v", err)
+	}
+}
+
+// TestGet_RejectsCorruptedByteCount is the read-integrity half of the
+// byte-count validation gap the independent review found: a stored view
+// whose declared ProviderVisibleByteCount no longer matches its actual
+// ProviderVisibleBytes must be rejected on read exactly like a digest
+// mismatch, not just a bytes/digest mismatch.
+func TestGet_RejectsCorruptedByteCount(t *testing.T) {
+	store := NewMemoryStore()
+	svc := ContextAssemblyService{Store: store}
+	snap := orgSnapshot(7, "empresa/ceo", roleCatalogYAML())
+	view, err := svc.ResolveAndPersist(context.Background(), snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.CorruptForTest(view.ID, nil, "", view.ProviderVisibleByteCount+1)
+	if _, err := store.Get(context.Background(), view.ID); !errors.Is(err, ErrExecutionContextViewIntegrity) {
+		t.Fatalf("want ErrExecutionContextViewIntegrity for a corrupted byte count, got %v", err)
+	}
+	if _, err := store.GetByContextSnapshot(context.Background(), "explorarte", snap.ID); !errors.Is(err, ErrExecutionContextViewIntegrity) {
+		t.Fatalf("want ErrExecutionContextViewIntegrity via GetByContextSnapshot, got %v", err)
+	}
+}
+
+// TestPersist_RejectsInvalidByteCountBeforeWriting proves Persist rejects a
+// view whose declared ProviderVisibleByteCount does not match its actual
+// ProviderVisibleBytes on the FIRST attempt, in Go, before ever writing
+// anything -- not merely relying on a database CHECK constraint to catch it
+// later (PostgreSQL has one; MemoryStore has no schema at all and must
+// enforce this itself).
+func TestPersist_RejectsInvalidByteCountBeforeWriting(t *testing.T) {
+	store := NewMemoryStore()
+	invalid := ExecutionContextView{
+		OrganizationID: "explorarte", ContextSnapshotID: 8,
+		FellBackToCanonical: true, FallbackReason: "task_class_not_projected",
+		AuthorityOrderHash: "a", CompiledContentHash: "b",
+		ProviderVisibleBytes: []byte("hello"), ProviderVisibleDigest: memSHA256Hex([]byte("hello")),
+		ProviderVisibleByteCount: 999, // wrong on purpose: len("hello") == 5
+	}
+	if _, err := store.Persist(context.Background(), invalid); !errors.Is(err, ErrExecutionContextViewIntegrity) {
+		t.Fatalf("want ErrExecutionContextViewIntegrity, got %v", err)
+	}
+	if _, err := store.GetByContextSnapshot(context.Background(), "explorarte", 8); !errors.Is(err, ErrExecutionContextViewNotFound) {
+		t.Fatalf("rejected persist must not have written anything, got %v", err)
+	}
+
+	valid := invalid
+	valid.ProviderVisibleByteCount = len(valid.ProviderVisibleBytes)
+	if _, err := store.Persist(context.Background(), valid); err != nil {
+		t.Fatalf("a view with a correct byte count must persist normally: %v", err)
 	}
 }
 

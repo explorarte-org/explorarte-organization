@@ -2,8 +2,6 @@ package contextcompiler
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"sync"
 	"time"
@@ -28,8 +26,8 @@ func (s *MemoryStore) Persist(_ context.Context, view ExecutionContextView) (Exe
 	if view.OrganizationID == "" || view.ContextSnapshotID <= 0 {
 		return ExecutionContextView{}, fmt.Errorf("execution context view requires organization_id and context_snapshot_id")
 	}
-	if view.ProviderVisibleDigest != memSHA256Hex(view.ProviderVisibleBytes) {
-		return ExecutionContextView{}, fmt.Errorf("%w: digest does not match bytes at persist time", ErrExecutionContextViewIntegrity)
+	if err := ValidateIntegrity(view); err != nil {
+		return ExecutionContextView{}, err
 	}
 	if view.SegmentDiffs == nil {
 		view.SegmentDiffs = []SegmentDiff{}
@@ -76,10 +74,11 @@ func (s *MemoryStore) GetByContextSnapshot(_ context.Context, organizationID str
 	return verifyIntegrity(v)
 }
 
-// CorruptForTest overwrites a stored view's bytes or digest directly,
-// bypassing Persist's integrity check -- exists ONLY so tests can prove
-// Get/GetByContextSnapshot reject tampered records on read (section 9E).
-func (s *MemoryStore) CorruptForTest(id int64, bytes []byte, digest string) {
+// CorruptForTest overwrites a stored view's bytes, digest, or declared byte
+// count directly, bypassing Persist's integrity check -- exists ONLY so
+// tests can prove Get/GetByContextSnapshot reject tampered records on read
+// (section 9E). byteCount < 0 means "leave it unchanged".
+func (s *MemoryStore) CorruptForTest(id int64, bytes []byte, digest string, byteCount int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	v, ok := s.byID[id]
@@ -92,20 +91,23 @@ func (s *MemoryStore) CorruptForTest(id int64, bytes []byte, digest string) {
 	if digest != "" {
 		v.ProviderVisibleDigest = digest
 	}
+	if byteCount >= 0 {
+		v.ProviderVisibleByteCount = byteCount
+	}
 	s.byID[id] = v
 	s.bySnap[v.ContextSnapshotID] = v
 }
 
 func verifyIntegrity(v ExecutionContextView) (ExecutionContextView, error) {
-	if v.ProviderVisibleDigest != memSHA256Hex(v.ProviderVisibleBytes) {
-		return ExecutionContextView{}, fmt.Errorf("%w: view id=%d", ErrExecutionContextViewIntegrity, v.ID)
+	if err := ValidateIntegrity(v); err != nil {
+		return ExecutionContextView{}, fmt.Errorf("view id=%d: %w", v.ID, err)
 	}
 	return v, nil
 }
 
-func memSHA256Hex(b []byte) string {
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
-}
+// memSHA256Hex is kept as a thin alias so existing test call sites do not
+// need to change; ValidateIntegrity/sha256Hex (contextcompiler_view.go) are
+// the actual single implementation.
+func memSHA256Hex(b []byte) string { return sha256Hex(b) }
 
 var _ ExecutionContextViewStore = (*MemoryStore)(nil)

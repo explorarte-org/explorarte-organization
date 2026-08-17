@@ -106,55 +106,95 @@ func TestExecutionContextViewPostgreSQL17(t *testing.T) {
 	})
 
 	t.Run("metadata-only drift fails closed against real PostgreSQL", func(t *testing.T) {
-		snap := createSnapshot(t, ctx, contextStore, "empresa/ceo", "ecv-metadata-drift")
-		sameBytes := []byte("identical provider-visible bytes")
-		base := contextcompiler.ExecutionContextView{
-			OrganizationID: integrationOrganization, ContextSnapshotID: snap.ID,
-			ContextProfileID: "research.corpus_curate", ContextProfileVersion: "v1",
-			FellBackToCanonical: false, ProviderRenderVersion: "research-corpus-curate-render/v2",
-			StablePrefixHash: "s1", StablePrefixBytes: 10, DynamicSuffixHash: "d1", DynamicSuffixBytes: 20,
-			AuthorityOrderHash: sha256Hex(t, "order-metadata"), CompiledContentHash: sha256Hex(t, "content-metadata"),
-			SegmentDiffs:         []contextcompiler.SegmentDiff{{SourceReference: "docs/canonical/role-catalog.yaml", Projected: true, Reason: "projected_subset:role_catalog_self_entry"}},
-			ProviderVisibleBytes: sameBytes, ProviderVisibleDigest: sha256HexBytes(sameBytes), ProviderVisibleByteCount: len(sameBytes),
+		baseFor := func(snapshotID int64) contextcompiler.ExecutionContextView {
+			sameBytes := []byte("identical provider-visible bytes")
+			return contextcompiler.ExecutionContextView{
+				OrganizationID: integrationOrganization, ContextSnapshotID: snapshotID,
+				ContextProfileID: "research.corpus_curate", ContextProfileVersion: "v1",
+				FellBackToCanonical: false, ProviderRenderVersion: "research-corpus-curate-render/v2",
+				StablePrefixHash: "s1", StablePrefixBytes: 10, DynamicSuffixHash: "d1", DynamicSuffixBytes: 20,
+				AuthorityOrderHash: sha256Hex(t, "order-metadata"), CompiledContentHash: sha256Hex(t, "content-metadata"),
+				SegmentDiffs:         []contextcompiler.SegmentDiff{{SourceReference: "docs/canonical/role-catalog.yaml", Projected: true, Reason: "projected_subset:role_catalog_self_entry"}},
+				ProviderVisibleBytes: sameBytes, ProviderVisibleDigest: sha256HexBytes(sameBytes), ProviderVisibleByteCount: len(sameBytes),
+			}
 		}
-		if _, err := viewStore.Persist(ctx, base); err != nil {
-			t.Fatal(err)
-		}
-		// Bytes, digest, compiled_content_hash, and profile identity are
-		// UNCHANGED -- only authority_order_hash (and segment_diffs) differ.
-		// This is exactly the gap the independent review found: a
-		// bytes/digest-only comparison would silently accept this as
-		// idempotent.
-		metadataDrift := base
-		metadataDrift.AuthorityOrderHash = sha256Hex(t, "a-completely-different-order-hash")
-		metadataDrift.SegmentDiffs = []contextcompiler.SegmentDiff{{SourceReference: "different-reference", Projected: false}}
-		if _, err := viewStore.Persist(ctx, metadataDrift); err == nil {
-			t.Fatal("expected metadata-only drift to be rejected")
-		} else if !isDrift(err) {
-			t.Fatalf("expected ErrExecutionContextViewDrift, got %v", err)
-		}
-		existing, err := viewStore.GetByContextSnapshot(ctx, integrationOrganization, snap.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if existing.AuthorityOrderHash != base.AuthorityOrderHash {
-			t.Fatal("metadata-only drift attempt corrupted the existing row's authority_order_hash")
-		}
-		if len(existing.SegmentDiffs) != 1 || existing.SegmentDiffs[0].SourceReference != base.SegmentDiffs[0].SourceReference {
-			t.Fatal("metadata-only drift attempt corrupted the existing row's segment_diffs")
+		// Bytes/digest are held constant throughout every case below --
+		// this is exactly the gap the independent review found: a
+		// bytes/digest-only comparison would silently accept every one of
+		// these as idempotent.
+		mutations := map[string]func(v *contextcompiler.ExecutionContextView){
+			"context_profile_id":      func(v *contextcompiler.ExecutionContextView) { v.ContextProfileID = "some.other.profile" },
+			"context_profile_version": func(v *contextcompiler.ExecutionContextView) { v.ContextProfileVersion = "v2" },
+			"compiled_content_hash": func(v *contextcompiler.ExecutionContextView) {
+				v.CompiledContentHash = sha256Hex(t, "different-content-hash")
+			},
+			"authority_order_hash_and_segment_diffs": func(v *contextcompiler.ExecutionContextView) {
+				v.AuthorityOrderHash = sha256Hex(t, "a-completely-different-order-hash")
+				v.SegmentDiffs = []contextcompiler.SegmentDiff{{SourceReference: "different-reference", Projected: false}}
+			},
+			"fallback_reason":         func(v *contextcompiler.ExecutionContextView) { v.FallbackReason = "changed" },
+			"provider_render_version": func(v *contextcompiler.ExecutionContextView) { v.ProviderRenderVersion = "changed/v3" },
 		}
 
-		// A truly identical second Persist (fresh slice backing arrays, same
-		// content) must still be idempotent.
-		identicalCopy := base
-		identicalCopy.SegmentDiffs = append([]contextcompiler.SegmentDiff(nil), base.SegmentDiffs...)
-		identicalCopy.ProviderVisibleBytes = append([]byte(nil), base.ProviderVisibleBytes...)
-		reidempotent, err := viewStore.Persist(ctx, identicalCopy)
-		if err != nil {
-			t.Fatalf("truly identical persist must remain idempotent, got: %v", err)
+		for name, mutate := range mutations {
+			t.Run(name, func(t *testing.T) {
+				extraSnap := createSnapshot(t, ctx, contextStore, "empresa/ceo", "ecv-metadata-drift-"+name)
+				base := baseFor(extraSnap.ID)
+				if _, err := viewStore.Persist(ctx, base); err != nil {
+					t.Fatal(err)
+				}
+				drifted := base
+				mutate(&drifted)
+				if _, err := viewStore.Persist(ctx, drifted); err == nil {
+					t.Fatalf("expected metadata-only drift (%s) to be rejected", name)
+				} else if !isDrift(err) {
+					t.Fatalf("expected ErrExecutionContextViewDrift for %s, got %v", name, err)
+				}
+				existing, err := viewStore.GetByContextSnapshot(ctx, integrationOrganization, extraSnap.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !contextcompiler.SameLogicalView(existing, base) {
+					t.Fatalf("metadata-only drift attempt (%s) corrupted the existing row", name)
+				}
+
+				// A truly identical second Persist (fresh slice backing
+				// arrays, same content) must still be idempotent.
+				identicalCopy := base
+				identicalCopy.SegmentDiffs = append([]contextcompiler.SegmentDiff(nil), base.SegmentDiffs...)
+				identicalCopy.ProviderVisibleBytes = append([]byte(nil), base.ProviderVisibleBytes...)
+				reidempotent, err := viewStore.Persist(ctx, identicalCopy)
+				if err != nil {
+					t.Fatalf("truly identical persist must remain idempotent (%s), got: %v", name, err)
+				}
+				if reidempotent.ID != existing.ID {
+					t.Fatalf("truly identical persist returned a different ID for %s: %d != %d", name, reidempotent.ID, existing.ID)
+				}
+			})
 		}
-		if reidempotent.ID != existing.ID {
-			t.Fatalf("truly identical persist returned a different ID: %d != %d", reidempotent.ID, existing.ID)
+	})
+
+	t.Run("invalid byte count rejected by Go before touching PostgreSQL", func(t *testing.T) {
+		snap := createSnapshot(t, ctx, contextStore, "empresa/ceo", "ecv-invalid-byte-count")
+		invalid := contextcompiler.ExecutionContextView{
+			OrganizationID: integrationOrganization, ContextSnapshotID: snap.ID,
+			FellBackToCanonical: true, FallbackReason: "task_class_not_projected",
+			AuthorityOrderHash: sha256Hex(t, "order-bytecount"), CompiledContentHash: sha256Hex(t, "content-bytecount"),
+			ProviderVisibleBytes: []byte("hello"), ProviderVisibleDigest: sha256HexBytes([]byte("hello")),
+			ProviderVisibleByteCount: 999, // wrong on purpose: len("hello") == 5
+		}
+		_, err := viewStore.Persist(ctx, invalid)
+		if !isIntegrity(err) {
+			t.Fatalf("want ErrExecutionContextViewIntegrity rejected in Go, got %v", err)
+		}
+		if _, getErr := viewStore.GetByContextSnapshot(ctx, integrationOrganization, snap.ID); !errors.Is(getErr, contextcompiler.ErrExecutionContextViewNotFound) {
+			t.Fatalf("a Go-rejected persist must never have reached PostgreSQL, got %v", getErr)
+		}
+
+		valid := invalid
+		valid.ProviderVisibleByteCount = len(valid.ProviderVisibleBytes)
+		if _, err := viewStore.Persist(ctx, valid); err != nil {
+			t.Fatalf("a view with a correct byte count must persist normally: %v", err)
 		}
 	})
 
@@ -360,4 +400,8 @@ func sha256HexBytes(b []byte) string {
 
 func isDrift(err error) bool {
 	return errors.Is(err, contextcompiler.ErrExecutionContextViewDrift)
+}
+
+func isIntegrity(err error) bool {
+	return errors.Is(err, contextcompiler.ErrExecutionContextViewIntegrity)
 }

@@ -3,6 +3,8 @@ package contextcompiler
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"reflect"
@@ -68,9 +70,10 @@ type ExecutionContextView struct {
 // durable record always wins, and drift is always reported as an error.
 var ErrExecutionContextViewDrift = errors.New("execution context view drift: existing durable view does not match")
 
-// ErrExecutionContextViewIntegrity is returned when a loaded
-// ExecutionContextView's persisted digest does not match SHA-256 of its
-// persisted bytes -- on-read tamper/corruption detection.
+// ErrExecutionContextViewIntegrity is returned when a view's declared
+// ProviderVisibleByteCount or ProviderVisibleDigest does not match its own
+// ProviderVisibleBytes -- see ValidateIntegrity, called both before Persist
+// writes anything and on every read.
 var ErrExecutionContextViewIntegrity = errors.New("execution context view integrity check failed")
 
 // ErrExecutionContextViewNotFound is returned when no durable view exists
@@ -127,6 +130,31 @@ func sameSegmentDiffs(a, b []SegmentDiff) bool {
 	return reflect.DeepEqual(a, b)
 }
 
+// ValidateIntegrity is the single shared definition of "this view's
+// declared metadata actually matches its own bytes." Both
+// ExecutionContextViewStore implementations MUST call it on every Persist,
+// BEFORE attempting to write anything, so an invalid record is rejected by
+// Go with ErrExecutionContextViewIntegrity rather than relying solely on a
+// database CHECK constraint to catch it (a store backed by a database
+// without an equivalent constraint would otherwise silently accept
+// corrupt content) -- and again on every Get/GetByContextSnapshot, so a
+// record that became corrupt after being written (tampering, a storage
+// bug) is never returned as valid either.
+func ValidateIntegrity(view ExecutionContextView) error {
+	if view.ProviderVisibleByteCount != len(view.ProviderVisibleBytes) {
+		return fmt.Errorf("%w: declared byte count %d does not match %d actual bytes", ErrExecutionContextViewIntegrity, view.ProviderVisibleByteCount, len(view.ProviderVisibleBytes))
+	}
+	if view.ProviderVisibleDigest != sha256Hex(view.ProviderVisibleBytes) {
+		return fmt.Errorf("%w: digest does not match bytes", ErrExecutionContextViewIntegrity)
+	}
+	return nil
+}
+
+func sha256Hex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
 // ExecutionContextViewStore is the durable persistence boundary for
 // ExecutionContextView. Implementations MUST be idempotent per
 // ContextSnapshotID (Persist called twice for the same snapshot with the
@@ -139,11 +167,12 @@ type ExecutionContextViewStore interface {
 	// SameLogicalView(existing, view) is true, or ErrExecutionContextViewDrift
 	// when it is not -- implementations must not compare only a subset of
 	// fields (e.g. bytes/digest alone); see SameLogicalView's doc comment.
-	// Persist never updates or replaces an existing row.
+	// Persist never updates or replaces an existing row. Implementations
+	// must reject an invalid view (see ValidateIntegrity) before ever
+	// attempting to write it.
 	Persist(ctx context.Context, view ExecutionContextView) (ExecutionContextView, error)
-	// Get loads a durable view by its own ID, verifying
-	// SHA-256(ProviderVisibleBytes) == ProviderVisibleDigest on read and
-	// returning ErrExecutionContextViewIntegrity if it does not.
+	// Get loads a durable view by its own ID, running ValidateIntegrity on
+	// read and returning ErrExecutionContextViewIntegrity if it fails.
 	Get(ctx context.Context, id int64) (ExecutionContextView, error)
 	// GetByContextSnapshot loads the durable view for a canonical snapshot,
 	// if one exists, with the same integrity verification as Get.
