@@ -9,12 +9,17 @@ import (
 
 type queueFake struct {
 	claim                         tasks.ClaimRequest
+	instructions                  string
 	started, heartbeats, recorded int
 }
 
 func (q *queueFake) ClaimTasks(_ context.Context, t tasks.ClaimRequest) ([]tasks.ClaimedTask, error) {
 	q.claim = tasks.ClaimRequest{WorkerID: t.WorkerID, HolderPrincipalID: t.HolderPrincipalID, AssignedRoleID: t.AssignedRoleID}
-	return []tasks.ClaimedTask{{Task: tasks.Task{ID: 1, AssignedRoleID: RoleID, Instructions: `{"schema_version":"code-runner-execution/v1","operations":[{"type":"GIT_STATUS"}]}`}, Attempt: tasks.Attempt{ID: 2}, Lease: tasks.Lease{HolderID: t.HolderPrincipalID}, LeaseToken: "opaque"}}, nil
+	plan := q.instructions
+	if plan == "" {
+		plan = `{"schema_version":"code-runner-execution/v1","operations":[{"type":"GIT_STATUS"}]}`
+	}
+	return []tasks.ClaimedTask{{Task: tasks.Task{ID: 1, AssignedRoleID: RoleID, Instructions: plan}, Attempt: tasks.Attempt{ID: 2}, Lease: tasks.Lease{HolderID: t.HolderPrincipalID}, LeaseToken: "opaque"}}, nil
 }
 func (q *queueFake) StartAttempt(context.Context, tasks.LeaseCommand) (tasks.Task, error) {
 	q.started++
