@@ -87,7 +87,16 @@ func (e *Executor) headTail() (int, int) {
 // correctly. All Executor methods use pointer receivers for exactly this
 // reason -- a value receiver anywhere in this chain would silently make
 // budget-sharing operate on a throwaway copy instead of e itself.
-func (e *Executor) capture() *boundedOutput {
+//
+// cancel must be the CancelFunc for the context this specific operation is
+// about to run under. capture binds it onto e.budget so that if the
+// aggregate budget is crossed by a write belonging to *this* operation, the
+// operation is interrupted immediately -- not merely flagged for Execute to
+// notice once this operation happens to finish on its own.
+func (e *Executor) capture(cancel context.CancelFunc) *boundedOutput {
+	if e.budget != nil {
+		e.budget.bindCancel(cancel)
+	}
 	h, t := e.headTail()
 	return newBoundedOutput(h, t, e.budget)
 }
@@ -100,9 +109,9 @@ func (e *Executor) budgetExceeded() bool {
 }
 
 func (e *Executor) run(ctx context.Context, typ OperationType, name string, args ...string) (Result, error) {
-	capture := e.capture()
 	runCtx, cancel := context.WithTimeout(ctx, e.opTimeout())
 	defer cancel()
+	capture := e.capture(cancel)
 	code, runErr := runSupervised(runCtx, e.Workspace, "", capture, name, args...)
 	return toResult(typ, code, runErr, capture, nil)
 }
@@ -153,11 +162,15 @@ func (e *Executor) Execute(ctx context.Context, plan Plan) ([]Result, error) {
 			return results, err
 		}
 		results = append(results, r)
-		if !r.Success {
-			return results, fmt.Errorf("operation %s failed", op.Type)
-		}
+		// Checked before the generic failure branch: a budget-triggered
+		// mid-operation cancellation also leaves r.Success false, and the
+		// more specific "plan output budget exceeded" is what actually
+		// happened, not a generic operation failure.
 		if e.budgetExceeded() {
 			return results, fmt.Errorf("plan output budget exceeded")
+		}
+		if !r.Success {
+			return results, fmt.Errorf("operation %s failed", op.Type)
 		}
 	}
 	return results, nil
@@ -221,8 +234,8 @@ func (e *Executor) ExecuteOperation(ctx context.Context, op Operation) (Result, 
 		if err != nil {
 			return Result{}, err
 		}
-		capture := e.capture()
 		runCtx, cancel := context.WithTimeout(ctx, e.opTimeout())
+		capture := e.capture(cancel)
 		code, runErr := runSupervised(runCtx, e.Workspace, "", capture, "rg", "--fixed-strings", "--line-number", "--max-count", "100", "--glob", "!/.git", op.Pattern, p)
 		cancel()
 		// rg's exit code 1 means "ran fine, no matches" -- not a failure.
@@ -246,8 +259,8 @@ func (e *Executor) applyPatch(ctx context.Context, op Operation) (Result, error)
 	if err := validatePatchPaths(op.Patch); err != nil {
 		return Result{Type: op.Type, Success: false, Output: err.Error()}, nil
 	}
-	checkCapture := e.capture()
 	checkCtx, checkCancel := context.WithTimeout(ctx, e.opTimeout())
+	checkCapture := e.capture(checkCancel)
 	_, checkErr := runSupervised(checkCtx, e.Workspace, op.Patch, checkCapture, "git", "apply", "--check", "--whitespace=nowarn", "-")
 	checkCancel()
 	if errors.Is(checkErr, ErrIndeterminateExecution) {
@@ -257,9 +270,9 @@ func (e *Executor) applyPatch(ctx context.Context, op Operation) (Result, error)
 		br := checkCapture.Result()
 		return Result{Type: op.Type, Success: false, Output: "git apply --check failed: " + br.String()}, nil
 	}
-	capture := e.capture()
 	runCtx, cancel := context.WithTimeout(ctx, e.opTimeout())
 	defer cancel()
+	capture := e.capture(cancel)
 	code, runErr := runSupervised(runCtx, e.Workspace, op.Patch, capture, "git", "apply", "--whitespace=nowarn", "-")
 	return toResult(op.Type, code, runErr, capture, nil)
 }

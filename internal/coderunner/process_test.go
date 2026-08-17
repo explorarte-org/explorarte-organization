@@ -110,3 +110,36 @@ func TestRunSupervisedFeedsStdin(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+// TestOutputBudgetInterruptsMidOperation proves the plan output budget cuts
+// an operation off the moment its running total crosses the limit, rather
+// than only being noticed after that operation happens to finish on its
+// own: a process that would otherwise print forever is killed almost
+// immediately once a tiny budget trips, long before it could ever complete
+// naturally.
+func TestOutputBudgetInterruptsMidOperation(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh required")
+	}
+	budget := newOutputBudget(50)
+	runCtx, runCancel := context.WithCancel(context.Background())
+	defer runCancel()
+	budget.bindCancel(runCancel)
+	capture := newBoundedOutput(0, 0, budget)
+
+	// This loop never exits on its own within any test timeout; only the
+	// budget-triggered cancellation can stop it.
+	start := time.Now()
+	_, err := runSupervised(runCtx, t.TempDir(), "", capture, "sh", "-c", "while true; do echo 0123456789; done")
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("want context.Canceled from the budget-triggered cancellation, got %v", err)
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("budget did not interrupt the operation promptly: took %v", elapsed)
+	}
+	if capture.Result().TotalBytes <= int64(budget.max) {
+		t.Fatalf("expected the process to have written past the budget before being cut off, got %d bytes", capture.Result().TotalBytes)
+	}
+}
