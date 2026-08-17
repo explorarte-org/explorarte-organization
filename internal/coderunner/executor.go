@@ -1,6 +1,7 @@
 package coderunner
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -43,7 +44,12 @@ func (e Executor) path(rel string) (string, error) {
 func (e Executor) run(ctx context.Context, typ OperationType, args ...string) Result {
 	c := exec.CommandContext(ctx, "go", args...)
 	c.Dir = e.Workspace
-	out, err := c.CombinedOutput()
+	var capture boundedOutput
+	capture.max = e.limit()
+	c.Stdout = &capture
+	c.Stderr = &capture
+	err := c.Run()
+	out := capture.Bytes()
 	code := 0
 	if x, ok := err.(*exec.ExitError); ok {
 		code = x.ExitCode()
@@ -91,11 +97,23 @@ func (e Executor) ExecuteOperation(ctx context.Context, op Operation) (Result, e
 		}
 		return e.run(ctx, op.Type, "fmt", p), nil
 	case GoBuild:
-		return e.run(ctx, op.Type, append([]string{"build"}, packages(op.Packages)...)...), nil
+		pkgs, err := packages(op.Packages)
+		if err != nil {
+			return Result{}, err
+		}
+		return e.run(ctx, op.Type, append([]string{"build"}, pkgs...)...), nil
 	case GoVet:
-		return e.run(ctx, op.Type, append([]string{"vet"}, packages(op.Packages)...)...), nil
+		pkgs, err := packages(op.Packages)
+		if err != nil {
+			return Result{}, err
+		}
+		return e.run(ctx, op.Type, append([]string{"vet"}, pkgs...)...), nil
 	case GoTest:
-		args := append([]string{"test"}, packages(op.Packages)...)
+		pkgs, err := packages(op.Packages)
+		if err != nil {
+			return Result{}, err
+		}
+		args := append([]string{"test"}, pkgs...)
 		if op.Race {
 			args = append(args, "-race")
 		}
@@ -111,7 +129,12 @@ func (e Executor) ExecuteOperation(ctx context.Context, op Operation) (Result, e
 		}
 		c := exec.CommandContext(ctx, "rg", "--fixed-strings", "--line-number", "--max-count", "100", op.Pattern, p)
 		c.Dir = e.Workspace
-		b, err := c.CombinedOutput()
+		var capture boundedOutput
+		capture.max = e.limit()
+		c.Stdout = &capture
+		c.Stderr = &capture
+		err = c.Run()
+		b := capture.Bytes()
 		code := 0
 		if x, ok := err.(*exec.ExitError); ok {
 			code = x.ExitCode()
@@ -121,7 +144,12 @@ func (e Executor) ExecuteOperation(ctx context.Context, op Operation) (Result, e
 		c := exec.CommandContext(ctx, "git", "apply", "--whitespace=nowarn", "-")
 		c.Dir = e.Workspace
 		c.Stdin = strings.NewReader(op.Patch)
-		b, err := c.CombinedOutput()
+		var capture boundedOutput
+		capture.max = e.limit()
+		c.Stdout = &capture
+		c.Stderr = &capture
+		err := c.Run()
+		b := capture.Bytes()
 		code := 0
 		if x, ok := err.(*exec.ExitError); ok {
 			code = x.ExitCode()
@@ -134,7 +162,12 @@ func (e Executor) ExecuteOperation(ctx context.Context, op Operation) (Result, e
 func (e Executor) git(ctx context.Context, t OperationType, args ...string) Result {
 	c := exec.CommandContext(ctx, "git", args...)
 	c.Dir = e.Workspace
-	b, err := c.CombinedOutput()
+	var capture boundedOutput
+	capture.max = e.limit()
+	c.Stdout = &capture
+	c.Stderr = &capture
+	err := c.Run()
+	b := capture.Bytes()
 	code := 0
 	if x, ok := err.(*exec.ExitError); ok {
 		code = x.ExitCode()
@@ -147,16 +180,16 @@ func (e Executor) limit() int {
 	}
 	return e.MaxOutput
 }
-func packages(p []string) []string {
+func packages(p []string) ([]string, error) {
 	if len(p) == 0 {
-		return []string{"./..."}
+		return []string{"./..."}, nil
 	}
 	for _, v := range p {
 		if err := validatePackage(v); err != nil {
-			return []string{"__invalid_package__"}
+			return nil, err
 		}
 	}
-	return p
+	return p, nil
 }
 
 func validatePackage(v string) error {
@@ -170,6 +203,23 @@ func truncate(v string, max int) string {
 		return v
 	}
 	return v[:max]
+}
+
+type boundedOutput struct {
+	bytes.Buffer
+	max int
+}
+
+func (w *boundedOutput) Write(p []byte) (int, error) {
+	original := len(p)
+	remaining := w.max - w.Len()
+	if remaining > 0 {
+		if len(p) > remaining {
+			p = p[:remaining]
+		}
+		_, _ = w.Buffer.Write(p)
+	}
+	return original, nil
 }
 func opValidate(op Operation) error {
 	switch op.Type {

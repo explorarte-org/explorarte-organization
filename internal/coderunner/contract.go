@@ -53,8 +53,8 @@ func (p Plan) Validate() error {
 			}
 		}
 		for _, pkg := range op.Packages {
-			if strings.TrimSpace(pkg) == "" || strings.HasPrefix(pkg, "-") {
-				return fmt.Errorf("invalid package")
+			if err := validatePackage(pkg); err != nil {
+				return err
 			}
 		}
 		if op.Type == ApplyPatch && strings.TrimSpace(op.Patch) == "" {
