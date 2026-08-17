@@ -2,7 +2,6 @@ package executive
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 )
 
@@ -106,8 +105,44 @@ type EvidenceCommand struct {
 	Satisfies     bool
 }
 
+// ContextCoordinator builds the context snapshot one cognitive execution runs
+// against. It returns the whole snapshot reference, not just its ID, because
+// the Harness run identity binds the context bytes: Model Runtime requires the
+// invocation's stable prefix to be the byte-exact render of the referenced
+// snapshot, so the Executive has to carry the render, not a pointer to it.
 type ContextCoordinator interface {
-	Build(context.Context, ContextRequest) (int64, error)
+	Build(context.Context, ContextRequest) (ContextSnapshot, error)
+}
+
+// ContextSnapshot is a durable, already-rendered context snapshot.
+type ContextSnapshot struct {
+	ID      int64
+	Version string
+	// Digest is the SHA-256 of Content, in hex. The Harness re-derives and
+	// compares it, so a snapshot whose render drifted from its hash cannot
+	// enter a run.
+	Digest  string
+	Content string
+}
+
+// ModelBudgetGate is the Executive's own correlation-wide model-call budget.
+//
+// It is a gate rather than a decorator on invocation creation because the
+// Executive no longer creates invocations: the Harness does, inside Model
+// Runtime. Enforcing the limit at the old place would mean enforcing it on a
+// path the productive Executive can no longer reach, i.e. not enforcing it.
+type ModelBudgetGate interface {
+	// AuthorizeModelCall reports whether the correlation can afford the model
+	// call this attempt is about to make. It must count durable state, never
+	// an in-memory tally, and must not charge an attempt that already has an
+	// invocation -- a resumed run is the same logical call.
+	AuthorizeModelCall(context.Context, ModelCallBudgetRequest) error
+}
+
+type ModelCallBudgetRequest struct {
+	TaskID        int64
+	AttemptID     int64
+	CorrelationID string
 }
 
 type ContextRequest struct {
@@ -122,27 +157,6 @@ type ContextRequest struct {
 
 type DispatchProvisioner interface {
 	ResolveAssignment(context.Context, int64, int64, string) (AssignmentRef, error)
-}
-
-type ModelCoordinator interface {
-	EnsureInvocation(context.Context, InvocationCommand) (InvocationRecord, bool, error)
-	GetInvocation(context.Context, int64) (InvocationRecord, error)
-	FindTaskAttemptInvocations(context.Context, int64, int64) ([]InvocationRecord, error)
-	GetResult(context.Context, int64) (InvocationResult, error)
-}
-
-type InvocationCommand struct {
-	TaskID            int64
-	AttemptID         int64
-	SubjectRoleID     string
-	ContextSnapshotID int64
-	Purpose           string
-	OutputSchema      json.RawMessage
-	MaxOutputTokens   int
-	IdempotencyKey    string
-	CorrelationID     string
-	CausationID       string
-	Deadline          time.Time
 }
 
 type CompletionGate interface {

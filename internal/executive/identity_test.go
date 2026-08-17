@@ -15,7 +15,6 @@ import (
 func TestClaimIssuesLeaseToRoleBoundPrincipalNotWorkerID(t *testing.T) {
 	tasksPort := newMemoryTasks()
 	models := newFakeModels()
-	models.ensure = InvocationRecord{ID: 500, Status: "requested"}
 	orchestrator := testOrchestratorForPorts(t, tasksPort, models, &fakeCompletion{verdict: CompletionPass})
 	root, _, _ := tasksPort.CreateTask(context.Background(), CreateTaskCommand{
 		RequestedByRoleID: OwnerRoleID, AssignedRoleID: CEORoleID, IdempotencyKey: "root-identity",
@@ -26,7 +25,7 @@ func TestClaimIssuesLeaseToRoleBoundPrincipalNotWorkerID(t *testing.T) {
 		Title: "child", Instructions: "child", AcceptanceCriteria: []string{"x"}, CorrelationID: root.CorrelationID,
 		Requirements: []RequirementProposal{{Key: "typed_plan", Type: "result", Description: "x", Required: true}},
 	})
-	if _, err := orchestrator.driveTypedTask(context.Background(), root, task, departmentPlanOutputSchema, "department_plan", func(InvocationResult) error { return nil }); err != nil {
+	if _, err := orchestrator.driveTypedTask(context.Background(), root, task, departmentPlanOutputSchema, PurposeDepartmentPlan, func(InvocationResult) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if len(tasksPort.claims) != 1 {
@@ -43,8 +42,8 @@ func TestClaimIssuesLeaseToRoleBoundPrincipalNotWorkerID(t *testing.T) {
 		t.Fatalf("assigned role=%q", claim.AssignedRoleID)
 	}
 	current, _ := tasksPort.GetTask(context.Background(), task.ID)
-	if current.ActiveLease == nil || current.ActiveLease.HolderID != claim.HolderPrincipalID {
-		t.Fatalf("lease holder=%+v want %q", current.ActiveLease, claim.HolderPrincipalID)
+	if len(current.Attempts) != 1 {
+		t.Fatalf("attempts=%d want 1", len(current.Attempts))
 	}
 	if got := tasksPort.workerIDs[current.Attempts[0].ID]; got != orchestratorWorkerID {
 		t.Fatalf("attempt worker_id=%q want %q", got, orchestratorWorkerID)

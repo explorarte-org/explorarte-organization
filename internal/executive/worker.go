@@ -54,8 +54,16 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 		}
 		if errors.Is(runErr, ErrDispatchAssignmentRequired) ||
 			errors.Is(runErr, ErrModelOutcomeAmbiguous) ||
+			errors.Is(runErr, ErrIndeterminateToolExecution) ||
 			errors.Is(runErr, ErrCompletionInconclusive) ||
-			errors.Is(runErr, ErrRunBlocked) {
+			errors.Is(runErr, ErrRunBlocked) ||
+			// The lease will expire, the task engine will reconcile the
+			// attempt, and the next pass claims a fresh one. Nothing here has
+			// to act on it.
+			errors.Is(runErr, ErrLeaseLost) ||
+			errors.Is(runErr, ErrExecutionAuthorityUnavailable) ||
+			errors.Is(runErr, ErrExecutionPrincipalUnavailable) ||
+			errors.Is(runErr, ErrExecutionInterrupted) {
 			continue
 		}
 		// A single durable run failure must not terminate the process. The run

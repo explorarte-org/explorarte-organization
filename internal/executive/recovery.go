@@ -41,6 +41,9 @@ func (o *Orchestrator) ResumeDurable(ctx context.Context, rootTaskID int64) (Run
 		case "model_outcome_ambiguous":
 			run, _ := o.Status(ctx, rootTaskID)
 			return run, ErrModelOutcomeAmbiguous
+		case "indeterminate_tool_execution":
+			run, _ := o.Status(ctx, rootTaskID)
+			return run, ErrIndeterminateToolExecution
 		case "orphaned_model_result":
 			run, _ := o.Status(ctx, rootTaskID)
 			return run, ErrOrphanedModelResult

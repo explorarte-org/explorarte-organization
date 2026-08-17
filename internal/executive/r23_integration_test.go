@@ -27,7 +27,7 @@ func TestR23PostgreSQLProjectsWorkerEvidenceAndClosesDAGRace(t *testing.T) {
 	baseTasks := runtimeadapter.Tasks{Service: h.tasks, OrganizationID: "explorarte"}
 	evidenceTasks := runtimeadapter.EvidenceTasks{Tasks: baseTasks, Models: models, Completion: completionGate, Limits: limits}
 	dagTasks := runtimeadapter.DAGTasks{TaskCoordinator: evidenceTasks}
-	budgetModels := runtimeadapter.BudgetModels{Models: models, Tasks: dagTasks, Limits: limits}
+	modelBudget := runtimeadapter.ModelCallBudget{Models: models, Tasks: dagTasks, Limits: limits}
 
 	orchestrator, err := executive.NewOrchestrator(executive.Dependencies{
 		OrganizationID: "explorarte",
@@ -36,7 +36,9 @@ func TestR23PostgreSQLProjectsWorkerEvidenceAndClosesDAGRace(t *testing.T) {
 		Contexts:       &integrationContext{},
 		Assignments:    integrationAssignments{},
 		Principals:     h.principals,
-		Models:         budgetModels,
+		Models:         models,
+		Harness:        models,
+		Budget:         modelBudget,
 		Completion:     completionGate,
 		Decisions:      h.decisions,
 		Authorization:  h.authz,

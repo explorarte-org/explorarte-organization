@@ -6,7 +6,7 @@ import (
 )
 
 type orphanModelCoordinator struct {
-	ModelCoordinator
+	ModelInvocationReader
 	invocations map[[2]int64][]InvocationRecord
 	results     map[int64]InvocationResult
 }

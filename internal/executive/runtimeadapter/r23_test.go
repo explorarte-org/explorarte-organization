@@ -23,17 +23,12 @@ func (c *captureTasks) ListByCorrelation(context.Context, string) ([]executive.T
 }
 
 type fakeBudgetModels struct {
-	executive.ModelCoordinator
+	executive.ModelInvocationReader
 	byAttempt map[[2]int64][]executive.InvocationRecord
-	ensures   int
 }
 
 func (f *fakeBudgetModels) FindTaskAttemptInvocations(_ context.Context, taskID, attemptID int64) ([]executive.InvocationRecord, error) {
 	return append([]executive.InvocationRecord(nil), f.byAttempt[[2]int64{taskID, attemptID}]...), nil
-}
-func (f *fakeBudgetModels) EnsureInvocation(_ context.Context, command executive.InvocationCommand) (executive.InvocationRecord, bool, error) {
-	f.ensures++
-	return executive.InvocationRecord{ID: 100 + int64(f.ensures), TaskID: command.TaskID, AttemptID: command.AttemptID}, false, nil
 }
 
 type passCompletion struct{}
@@ -43,7 +38,7 @@ func (passCompletion) Verify(context.Context, int64, int64) (executive.Completio
 }
 
 type evidenceModels struct {
-	executive.ModelCoordinator
+	executive.ModelInvocationReader
 	invocation executive.InvocationRecord
 	result     executive.InvocationResult
 }
@@ -70,7 +65,10 @@ func TestDAGTasksAddsSourceDependencyAtCreate(t *testing.T) {
 	}
 }
 
-func TestBudgetModelsRejectsProspectiveThirdCEOCall(t *testing.T) {
+// TestModelCallBudgetRejectsProspectiveThirdCEOCall is the mutation guard for
+// MaxModelCalls after the Harness migration: the gate is consulted before the
+// run, from durable state, and refuses the call that would exceed the budget.
+func TestModelCallBudgetRejectsProspectiveThirdCEOCall(t *testing.T) {
 	tasks := &captureTasks{listed: []executive.TaskRecord{{
 		ID: 1, AssignedRoleID: executive.CEORoleID, IdempotencyKey: "executive:1:ceo-plan", CorrelationID: "executive:x",
 		Attempts: []executive.AttemptRecord{{ID: 11}, {ID: 12}, {ID: 13}},
@@ -79,13 +77,30 @@ func TestBudgetModelsRejectsProspectiveThirdCEOCall(t *testing.T) {
 		{1, 11}: []executive.InvocationRecord{{ID: 101}},
 		{1, 12}: []executive.InvocationRecord{{ID: 102}},
 	}}
-	guard := BudgetModels{Models: models, Tasks: tasks, Limits: executive.DefaultLimits()}
-	_, _, err := guard.EnsureInvocation(context.Background(), executive.InvocationCommand{TaskID: 1, AttemptID: 13, CorrelationID: "executive:x"})
+	guard := ModelCallBudget{Models: models, Tasks: tasks, Limits: executive.DefaultLimits()}
+	err := guard.AuthorizeModelCall(context.Background(), executive.ModelCallBudgetRequest{TaskID: 1, AttemptID: 13, CorrelationID: "executive:x"})
 	if !errors.Is(err, executive.ErrBudgetExceeded) {
 		t.Fatalf("err=%v", err)
 	}
-	if models.ensures != 0 {
-		t.Fatalf("new invocation was created despite exhausted CEO budget")
+}
+
+// TestModelCallBudgetDoesNotChargeAResumedAttempt: an attempt that already has
+// a durable invocation is the same logical model call, so resuming it is free.
+// Charging it again would make a restart look like new spend and could exhaust
+// a budget purely by retrying.
+func TestModelCallBudgetDoesNotChargeAResumedAttempt(t *testing.T) {
+	tasks := &captureTasks{listed: []executive.TaskRecord{{
+		ID: 1, AssignedRoleID: executive.CEORoleID, IdempotencyKey: "executive:1:ceo-plan", CorrelationID: "executive:x",
+		Attempts: []executive.AttemptRecord{{ID: 11}, {ID: 12}, {ID: 13}},
+	}}}
+	models := &fakeBudgetModels{byAttempt: map[[2]int64][]executive.InvocationRecord{
+		{1, 11}: {{ID: 101}},
+		{1, 12}: {{ID: 102}},
+		{1, 13}: {{ID: 103}},
+	}}
+	guard := ModelCallBudget{Models: models, Tasks: tasks, Limits: executive.DefaultLimits()}
+	if err := guard.AuthorizeModelCall(context.Background(), executive.ModelCallBudgetRequest{TaskID: 1, AttemptID: 13, CorrelationID: "executive:x"}); err != nil {
+		t.Fatalf("resuming an attempt that already has its invocation must not be charged again: %v", err)
 	}
 }
 

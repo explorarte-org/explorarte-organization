@@ -2,12 +2,115 @@ package executive
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 )
+
+// defaultHarnessBody is a valid, schema-shaped answer for the department-plan
+// purpose most unit tests drive. Tests that care about the content set their
+// own.
+var defaultHarnessBody = json.RawMessage(`{"schema_version":"department-plan/v1","department_id":"ingenieria_ia","tasks":[],"review_criteria":[],"unresolved":[]}`)
+
+// fakeHarness stands in for the Execution Harness. It records what it was
+// asked to run, persists the durable invocation a real run would leave behind,
+// and returns a scripted verdict.
+type fakeHarness struct {
+	mu          sync.Mutex
+	models      *fakeModels
+	body        json.RawMessage
+	toolIntents int
+	// invocationStatus is the durable Model Runtime status the run leaves
+	// behind. "" means no invocation row at all (the run never reached the
+	// provider).
+	invocationStatus string
+	failure          HarnessRunFailure
+	execErr          error
+	// duringRun runs while the "provider call" is in flight, which is where a
+	// lease can be lost underneath a run that is about to succeed.
+	duringRun func(command HarnessRunCommand)
+	calls     int
+	commands  []HarnessRunCommand
+}
+
+func newFakeHarness(models *fakeModels) *fakeHarness {
+	return &fakeHarness{models: models, body: defaultHarnessBody, invocationStatus: "succeeded"}
+}
+
+func (h *fakeHarness) Execute(_ context.Context, command HarnessRunCommand) (HarnessRunOutcome, error) {
+	h.mu.Lock()
+	h.calls++
+	h.commands = append(h.commands, command)
+	models, body, status, toolIntents := h.models, h.body, h.invocationStatus, h.toolIntents
+	failure, execErr, during := h.failure, h.execErr, h.duringRun
+	h.mu.Unlock()
+
+	var invocation InvocationRecord
+	if status != "" {
+		recordedBody := body
+		if status != "succeeded" {
+			recordedBody = nil
+		}
+		invocation = models.recordDurableInvocation(command, status, recordedBody, toolIntents)
+	}
+	if during != nil {
+		during(command)
+	}
+	if execErr != nil {
+		return HarnessRunOutcome{}, execErr
+	}
+	if failure != HarnessFailureNone {
+		return HarnessRunOutcome{
+			Status: HarnessRunFailed, Failure: failure, InvocationID: invocation.ID,
+			Retryable:         failure == HarnessFailureAuthorityUnavailable,
+			TerminationReason: string(failure),
+		}, nil
+	}
+	return HarnessRunOutcome{
+		Status: HarnessRunSucceeded, FinalOutput: string(body), InvocationID: invocation.ID,
+	}, nil
+}
+
+func (h *fakeHarness) callCount() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.calls
+}
+
+func (h *fakeHarness) lastCommand() HarnessRunCommand {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.commands) == 0 {
+		return HarnessRunCommand{}
+	}
+	return h.commands[len(h.commands)-1]
+}
+
+// countingBudget is the pre-Harness model-call gate. It delegates to whatever
+// the test wants and records that it was consulted BEFORE the harness ran.
+type countingBudget struct {
+	mu    sync.Mutex
+	calls int
+	err   error
+}
+
+func (b *countingBudget) AuthorizeModelCall(context.Context, ModelCallBudgetRequest) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.calls++
+	return b.err
+}
+
+func (b *countingBudget) count() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.calls
+}
 
 // memoryTasks is mutex-guarded because the lease keeper heartbeats from its
 // own goroutine while the main flow is still driving the same task: an
@@ -316,11 +419,18 @@ func (m *memoryTasks) UnblockTask(_ context.Context, id int64, _, _ string) (Tas
 
 func (m *memoryTasks) Reconcile(context.Context, int) error { return nil }
 
-type fakeContexts struct{ calls int }
+type fakeContexts struct {
+	mu    sync.Mutex
+	calls int
+}
 
-func (f *fakeContexts) Build(context.Context, ContextRequest) (int64, error) {
+func (f *fakeContexts) Build(context.Context, ContextRequest) (ContextSnapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls++
-	return int64(f.calls), nil
+	content := fmt.Sprintf("context snapshot %d", f.calls)
+	digest := sha256.Sum256([]byte(content))
+	return ContextSnapshot{ID: int64(f.calls), Version: "1", Digest: hex.EncodeToString(digest[:]), Content: content}, nil
 }
 
 type fakeAssignments struct{ err error }
@@ -336,35 +446,69 @@ func (f fakeAssignments) ResolveAssignment(_ context.Context, taskID, attemptID 
 	}, nil
 }
 
+// fakeModels is Model Runtime's READ side. It deliberately has no method that
+// creates an invocation: if the productive Executive ever grew a bypass, it
+// would have nothing here to call.
 type fakeModels struct {
+	mu          sync.Mutex
+	nextID      int64
 	invocations map[string][]InvocationRecord
 	results     map[int64]InvocationResult
-	ensure      InvocationRecord
-	ensureCalls int
 }
 
 func newFakeModels() *fakeModels {
-	return &fakeModels{invocations: map[string][]InvocationRecord{}, results: map[int64]InvocationResult{}}
+	return &fakeModels{nextID: 500, invocations: map[string][]InvocationRecord{}, results: map[int64]InvocationResult{}}
 }
 
 func invocationKey(taskID, attemptID int64) string { return fmt.Sprintf("%d/%d", taskID, attemptID) }
 
-func (f *fakeModels) EnsureInvocation(_ context.Context, command InvocationCommand) (InvocationRecord, bool, error) {
-	f.ensureCalls++
-	value := f.ensure
-	if value.ID == 0 {
-		value.ID = 500
+// recordDurableInvocation is what the real Model Runtime does underneath a
+// Harness turn: it persists an invocation row for the attempt and, when the
+// provider answered, its result.
+func (f *fakeModels) recordDurableInvocation(command HarnessRunCommand, status string, body json.RawMessage, toolIntents int) InvocationRecord {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := invocationKey(command.TaskID, command.AttemptID)
+	if existing := f.invocations[key]; len(existing) > 0 {
+		return existing[0]
 	}
-	value.TaskID = command.TaskID
-	value.AttemptID = command.AttemptID
-	value.SubjectRoleID = command.SubjectRoleID
-	value.CorrelationID = command.CorrelationID
-	value.CausationID = command.CausationID
-	f.invocations[invocationKey(command.TaskID, command.AttemptID)] = []InvocationRecord{value}
-	return value, false, nil
+	f.nextID++
+	invocation := InvocationRecord{
+		ID: f.nextID, TaskID: command.TaskID, AttemptID: command.AttemptID, SubjectRoleID: command.RoleID,
+		Status: status, CorrelationID: command.CorrelationID, CausationID: command.CausationID,
+	}
+	f.invocations[key] = []InvocationRecord{invocation}
+	if len(body) > 0 {
+		hash := sha256.Sum256(body)
+		f.results[invocation.ID] = InvocationResult{
+			InvocationID: invocation.ID, JSONOutput: append(json.RawMessage(nil), body...),
+			ToolIntents: toolIntents, ResponseHash: hex.EncodeToString(hash[:]), ResponseBytes: len(body),
+		}
+	}
+	return invocation
+}
+
+func (f *fakeModels) setInvocations(taskID, attemptID int64, values ...InvocationRecord) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.invocations[invocationKey(taskID, attemptID)] = values
+}
+
+func (f *fakeModels) setResult(id int64, result InvocationResult) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.results[id] = result
+}
+
+func (f *fakeModels) invocationCount(taskID, attemptID int64) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.invocations[invocationKey(taskID, attemptID)])
 }
 
 func (f *fakeModels) GetInvocation(_ context.Context, id int64) (InvocationRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	for _, values := range f.invocations {
 		for _, value := range values {
 			if value.ID == id {
@@ -376,10 +520,14 @@ func (f *fakeModels) GetInvocation(_ context.Context, id int64) (InvocationRecor
 }
 
 func (f *fakeModels) FindTaskAttemptInvocations(_ context.Context, taskID, attemptID int64) ([]InvocationRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return append([]InvocationRecord(nil), f.invocations[invocationKey(taskID, attemptID)]...), nil
 }
 
 func (f *fakeModels) GetResult(_ context.Context, id int64) (InvocationResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	value, ok := f.results[id]
 	if !ok {
 		return InvocationResult{}, errors.New("result not found")

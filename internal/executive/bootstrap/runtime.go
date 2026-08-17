@@ -14,6 +14,9 @@ import (
 	contextbootstrap "github.com/Mireuz13/explorarte-organization/internal/contextengine/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/decisiongraph"
 	decisiongraphpostgres "github.com/Mireuz13/explorarte-organization/internal/decisiongraph/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/executionharness"
+	"github.com/Mireuz13/explorarte-organization/internal/executionharness/modelruntimeadapter"
+	executionharnesspostgres "github.com/Mireuz13/explorarte-organization/internal/executionharness/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/executive"
 	"github.com/Mireuz13/explorarte-organization/internal/executive/runtimeadapter"
 	modelbootstrap "github.com/Mireuz13/explorarte-organization/internal/modelruntime/bootstrap"
@@ -28,7 +31,11 @@ import (
 type Runtime struct {
 	Orchestrator *executive.Orchestrator
 	Tasks        *tasks.Service
-	Models       *modelbootstrap.CoordinatorRuntime
+	// Models is the full Model Runtime, not the coordinator-only surface the
+	// Executive used to open. The Harness needs Dispatch and the durable task
+	// lease verifier, and both come from the same single provider stack --
+	// opening a second one would mean two routing/egress/pricing paths.
+	Models *modelbootstrap.Runtime
 }
 
 func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
@@ -74,9 +81,9 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open executive authorization runtime: %w", err)
 	}
-	modelRuntime, err := modelbootstrap.OpenCoordinator(cfg, store)
+	modelRuntime, err := modelbootstrap.Open(cfg, store)
 	if err != nil {
-		return nil, fmt.Errorf("open executive model coordinator runtime: %w", err)
+		return nil, fmt.Errorf("open executive model runtime: %w", err)
 	}
 	completionReader, err := completionpostgres.New(store, cfg.Tasks.OrganizationID)
 	if err != nil {
@@ -104,7 +111,7 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 	completionGate := runtimeadapter.Completion{Service: completionService}
 	evidenceTasks := runtimeadapter.EvidenceTasks{Tasks: baseTasks, Models: baseModels, Completion: completionGate, Limits: limits}
 	dagTasks := runtimeadapter.DAGTasks{TaskCoordinator: evidenceTasks}
-	budgetModels := runtimeadapter.BudgetModels{Models: baseModels, Tasks: dagTasks, Limits: limits}
+	modelBudget := runtimeadapter.ModelCallBudget{Models: baseModels, Tasks: dagTasks, Limits: limits}
 	decisionRecorder := runtimeadapter.DecisionGraph{
 		Service: decisionGraphService, Canonical: contextRuntime.Canonical,
 		Limits: limits, Clock: executive.ClockFunc(time.Now),
@@ -141,6 +148,28 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 		return nil, fmt.Errorf("create executive role-bound principal resolver: %w", err)
 	}
 
+	// The Harness is composed from the Model Runtime bootstrap seams: the same
+	// invocation/dispatch services production already uses, plus the canonical
+	// durable lease + execution-principal authority. Nothing here constructs a
+	// provider, a router, an egress policy or a wallet.
+	harnessHistory, err := executionharnesspostgres.New(store, cfg.Tasks.OrganizationID)
+	if err != nil {
+		return nil, fmt.Errorf("create executive harness history store: %w", err)
+	}
+	harnessAuthority, err := modelRuntime.NewHarnessAuthority()
+	if err != nil {
+		return nil, fmt.Errorf("create executive harness authority: %w", err)
+	}
+	harness := runtimeadapter.Harness{
+		OrganizationID: cfg.Tasks.OrganizationID,
+		Authority:      harnessAuthority,
+		History:        harnessHistory,
+		NewModelExecutor: func(config modelruntimeadapter.Config) (executionharness.ModelExecutor, error) {
+			return modelRuntime.NewHarnessModelExecutor(config)
+		},
+		Clock: executive.ClockFunc(time.Now),
+	}
+
 	orchestrator, err := executive.NewOrchestrator(
 		executive.Dependencies{
 			OrganizationID: cfg.Tasks.OrganizationID,
@@ -149,7 +178,9 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 			Contexts:       runtimeadapter.Context{Service: contextRuntime.Service, OrganizationID: cfg.Tasks.OrganizationID},
 			Assignments:    runtimeadapter.Assignment{Resolver: modelRuntime.Dispatcher.Store, OrganizationID: cfg.Tasks.OrganizationID},
 			Principals:     runtimeadapter.RoleBoundPrincipals{Resolver: roleBoundResolver},
-			Models:         budgetModels,
+			Models:         baseModels,
+			Harness:        harness,
+			Budget:         modelBudget,
 			Completion:     completionGate,
 			Decisions:      decisionRecorder,
 			Authorization:  runtimeadapter.Authorization{Service: authorizationRuntime.Service, OrganizationID: cfg.Tasks.OrganizationID},
