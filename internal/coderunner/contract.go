@@ -32,6 +32,37 @@ type Operation struct {
 	Race        bool          `json:"race,omitempty"`
 	Integration bool          `json:"integration,omitempty"`
 }
+
+// Mutates reports whether an operation of this type can change the staging
+// workspace. It is a closed switch over the fixed operation surface (no
+// dynamic tool registry): used to classify evidence, to decide which
+// checks a mutation invalidates, and as the basis for any future
+// read/write policy.
+func (t OperationType) Mutates() bool {
+	switch t {
+	case ApplyPatch, Gofmt:
+		return true
+	case ReadFile, Search, GitDiff, GitStatus, GoBuild, GoVet, GoTest:
+		return false
+	default:
+		// Fail closed: an operation type this switch does not recognize is
+		// treated as mutating so it can never silently skip verification
+		// invalidation.
+		return true
+	}
+}
+
+// isCheck reports whether an operation type can be used as proof of
+// correctness for verification-invalidation purposes.
+func (t OperationType) isCheck() bool {
+	switch t {
+	case GoBuild, GoVet, GoTest:
+		return true
+	default:
+		return false
+	}
+}
+
 type Plan struct {
 	SchemaVersion string      `json:"schema_version"`
 	Operations    []Operation `json:"operations"`
@@ -51,14 +82,22 @@ func (p Plan) Validate() error {
 			if err := SafePath(op.Path); err != nil {
 				return err
 			}
+			if structurallyDenied(op.Path, op.Type.Mutates()) {
+				return fmt.Errorf("path %q is structurally denied for %s", op.Path, op.Type)
+			}
 		}
 		for _, pkg := range op.Packages {
 			if err := validatePackage(pkg); err != nil {
 				return err
 			}
 		}
-		if op.Type == ApplyPatch && strings.TrimSpace(op.Patch) == "" {
-			return fmt.Errorf("patch required")
+		if op.Type == ApplyPatch {
+			if strings.TrimSpace(op.Patch) == "" {
+				return fmt.Errorf("patch required")
+			}
+			if err := validatePatchPaths(op.Patch); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
