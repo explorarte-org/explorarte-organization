@@ -15,3 +15,11 @@ func TestPlanAcceptsTypedOperations(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+func TestPlanRejectsUnsafePackageBeforeExecution(t *testing.T) {
+	for _, pkg := range []string{"../...", "/tmp/x", "./x;rm", "-run=Test"} {
+		p := Plan{SchemaVersion: SchemaVersion, Operations: []Operation{{Type: GoTest, Packages: []string{pkg}}}}
+		if err := p.Validate(); err == nil {
+			t.Fatalf("accepted %q", pkg)
+		}
+	}
+}
