@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/Mireuz13/explorarte-organization/internal/contextcompiler"
 	"github.com/Mireuz13/explorarte-organization/internal/contextengine"
 	"github.com/Mireuz13/explorarte-organization/internal/executive"
 )
@@ -14,10 +15,20 @@ type Context struct {
 	OrganizationID string
 }
 
-// Build returns the snapshot together with its render. The render is not a
-// convenience: Model Runtime requires an invocation's stable prefix to be the
-// byte-exact rendered context of the snapshot it references, so a caller that
-// only knew the ID could not construct a valid model input at all.
+// Build returns the snapshot together with its provider-visible render. The
+// render is not a convenience: Model Runtime requires an invocation's stable
+// prefix to be the byte-exact provider-visible render of the snapshot it
+// references, so a caller that only knew the ID could not construct a valid
+// model input at all.
+//
+// The render goes through the exact same contextcompiler.ResolveProviderContext
+// Model Runtime's own context adapter uses (internal/modelruntime/bootstrap),
+// instead of the plain canonical contextengine.Service.Render envelope: the
+// two previously diverged for any projected task class (e.g.
+// research.corpus_curate/v1), which made a stable prefix Executive sent
+// through the Harness fail Model Runtime's byte-exact binding check. This is
+// the single shared provider-visible resolution algorithm; do not
+// reimplement any part of it here.
 func (a Context) Build(ctx context.Context, request executive.ContextRequest) (executive.ContextSnapshot, error) {
 	result, err := a.Service.Build(ctx, contextengine.BuildRequest{
 		OrganizationID:         a.OrganizationID,
@@ -32,19 +43,38 @@ func (a Context) Build(ctx context.Context, request executive.ContextRequest) (e
 	if err != nil {
 		return executive.ContextSnapshot{}, err
 	}
-	rendered, err := a.Service.Render(ctx, result.Snapshot.ID)
+	// Fetch and validate the canonical snapshot the same way
+	// contextengine.Service.Render did internally, since this adapter now
+	// resolves the provider-visible render itself rather than delegating
+	// the whole fetch+validate+render sequence to Service.Render.
+	snapshot, err := a.Service.Get(ctx, result.Snapshot.ID, true)
 	if err != nil {
-		return executive.ContextSnapshot{}, fmt.Errorf("render context snapshot %d: %w", result.Snapshot.ID, err)
+		return executive.ContextSnapshot{}, fmt.Errorf("get context snapshot %d: %w", result.Snapshot.ID, err)
 	}
-	// RenderedHash is the snapshot's own durable digest of these bytes. It is
-	// passed through rather than recomputed so a render that ever drifted from
-	// its persisted hash fails the Harness identity check instead of being
-	// silently re-blessed here.
+	if snapshot.Status == contextengine.SnapshotInvalidated {
+		return executive.ContextSnapshot{}, contextengine.ErrSnapshotInvalidated
+	}
+	validation, err := a.Service.Validate(ctx, result.Snapshot.ID)
+	if err != nil {
+		return executive.ContextSnapshot{}, fmt.Errorf("validate context snapshot %d: %w", result.Snapshot.ID, err)
+	}
+	if !validation.Valid {
+		return executive.ContextSnapshot{}, contextengine.ErrSnapshotStale
+	}
+	resolved, err := contextcompiler.ResolveProviderContext(ctx, snapshot)
+	if err != nil {
+		return executive.ContextSnapshot{}, fmt.Errorf("resolve provider-visible context %d: %w", result.Snapshot.ID, err)
+	}
+	// Digest is recomputed from the exact bytes just resolved, not passed
+	// through from Snapshot.RenderedHash (the canonical render's own
+	// digest): the Harness independently re-derives sha256(Content) and
+	// compares it against Digest, so this stays self-consistent regardless
+	// of whether projection changed the bytes relative to canonical.
 	return executive.ContextSnapshot{
 		ID:      result.Snapshot.ID,
 		Version: strconv.FormatInt(result.Snapshot.Version, 10),
-		Digest:  result.Snapshot.RenderedHash,
-		Content: string(rendered),
+		Digest:  resolved.Digest,
+		Content: string(resolved.Bytes),
 	}, nil
 }
 

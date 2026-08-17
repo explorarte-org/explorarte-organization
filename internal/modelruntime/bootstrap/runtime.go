@@ -297,55 +297,19 @@ func (a taskAdapter) GetTaskAttempt(ctx context.Context, taskID, attemptID int64
 
 type contextAdapter struct{ service contextengine.Service }
 
-// resolvedRender is the SINGLE deterministic outcome of rendering one
-// context snapshot for dispatch. GetContextSnapshot (pre-dispatch integrity
-// hash), RenderContextSnapshot (the bytes actually sent to the provider),
-// and GetProviderRenderTelemetry (observability) all derive from the exact
-// same call to this type's constructor -- resolveRender below -- so the
-// three can never diverge. This is the same single-source-of-truth
-// invariant that fixed the R10 context_render_hash_mismatch bug, extended
-// to cover the new ProviderRender v1 layer (R10.4 section 12).
-type resolvedRender struct {
-	bytes          []byte
-	hash           string
-	fellBack       bool
-	fallbackReason string
-	providerRender contextengine.ProviderRender
-}
-
-// resolveRender projects the snapshot exactly as R10's Context Compiler
-// already does (contextcompiler.CompileForTaskClass -- unchanged, still
-// falls back to the canonical snapshot unmodified for every actor/task
-// class other than research.corpus_curate/v1) and then renders it. R10.4
-// activates ProviderRender v1 (StablePrefix/DynamicSuffix, no
-// AuditEnvelope fields in the provider-visible bytes) ONLY when the
-// compiler did not fall back -- i.e. only for research.corpus_curate/v1,
-// per the pedido's explicit "no generalizar por herencia" (section 15/52).
-// Every other task class, and any snapshot for which BuildProviderRender
-// itself errors, uses the exact unmodified legacy PortableRenderer --
-// always explicit and observable (fellBack=true), never silent.
-func resolveRender(ctx context.Context, snapshot contextengine.Snapshot) (resolvedRender, error) {
-	result, err := contextcompiler.CompileForTaskClass(snapshot)
-	if err != nil {
-		return resolvedRender{}, err
-	}
-	if !result.FellBackToCanonical {
-		if render, buildErr := contextengine.BuildProviderRender(result.Projected); buildErr == nil {
-			return resolvedRender{
-				bytes: render.Bytes(), hash: render.ProviderRenderHash,
-				providerRender: render,
-			}, nil
-		}
-	}
-	rendered, err := contextengine.NewRenderer().Render(ctx, result.Projected)
-	if err != nil {
-		return resolvedRender{}, err
-	}
-	reason := "task_class_not_projected"
-	if !result.FellBackToCanonical {
-		reason = "provider_render_build_failed"
-	}
-	return resolvedRender{bytes: rendered, hash: contextengine.DigestCanonicalBytes(rendered), fellBack: true, fallbackReason: reason}, nil
+// resolveRender is a trivial delegating adapter to
+// contextcompiler.ResolveProviderContext, the single shared deterministic
+// provider-visible render resolution algorithm (also used by Executive's
+// context adapter, internal/executive/runtimeadapter/context.go). It exists
+// only so GetContextSnapshot (pre-dispatch integrity hash),
+// RenderContextSnapshot (the bytes actually sent to the provider), and
+// GetProviderRenderTelemetry (observability) below keep a single, local call
+// site rather than three separate calls into contextcompiler. This is the
+// same single-source-of-truth invariant that fixed the R10
+// context_render_hash_mismatch bug, now extended across package boundaries
+// so Executive and Model Runtime can never independently diverge either.
+func resolveRender(ctx context.Context, snapshot contextengine.Snapshot) (contextcompiler.ResolvedProviderContext, error) {
+	return contextcompiler.ResolveProviderContext(ctx, snapshot)
 }
 
 func (a contextAdapter) GetContextSnapshot(ctx context.Context, id int64) (modelruntime.ContextSnapshotRef, error) {
@@ -373,7 +337,7 @@ func (a contextAdapter) GetContextSnapshot(ctx context.Context, id int64) (model
 	taskRef := strings.TrimPrefix(snapshot.TaskRef, "task:")
 	renderedHash := snapshot.RenderedHash
 	if render, renderErr := resolveRender(ctx, snapshot); renderErr == nil {
-		renderedHash = render.hash
+		renderedHash = render.Digest
 	}
 	return modelruntime.ContextSnapshotRef{
 		ID: snapshot.ID, OrganizationID: snapshot.OrganizationID, OrganizationRevisionID: snapshot.OrganizationRevisionID,
@@ -416,7 +380,7 @@ func (a contextAdapter) RenderContextSnapshot(ctx context.Context, id int64) ([]
 	if err != nil {
 		return nil, err
 	}
-	return render.bytes, nil
+	return render.Bytes, nil
 }
 
 // GetProviderRenderTelemetry implements modelruntime.ProviderRenderTelemetryReader
@@ -432,13 +396,13 @@ func (a contextAdapter) GetProviderRenderTelemetry(ctx context.Context, id int64
 	if err != nil {
 		return modelruntime.ProviderRenderTelemetry{}, err
 	}
-	if render.fellBack {
+	if render.FellBack {
 		return modelruntime.ProviderRenderTelemetry{
-			FallbackToLegacy: true, FallbackReason: render.fallbackReason,
-			ProviderRenderHash: render.hash, ProviderVisibleBytes: len(render.bytes),
+			FallbackToLegacy: true, FallbackReason: render.FallbackReason,
+			ProviderRenderHash: render.Digest, ProviderVisibleBytes: len(render.Bytes),
 		}, nil
 	}
-	pr := render.providerRender
+	pr := render.ProviderRender
 	return modelruntime.ProviderRenderTelemetry{
 		Version: pr.Version, FallbackToLegacy: false,
 		StablePrefixHash: pr.StablePrefixHash, StablePrefixBytes: pr.StablePrefixBytes,
