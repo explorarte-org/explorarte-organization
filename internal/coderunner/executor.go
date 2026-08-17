@@ -20,6 +20,8 @@ type Executor struct {
 	MaxOutput int
 }
 
+func (e *Executor) SetWorkspace(path string) { e.Workspace = path }
+
 func (e Executor) path(rel string) (string, error) {
 	if err := SafePath(rel); err != nil {
 		return "", err
