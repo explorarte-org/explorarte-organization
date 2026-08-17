@@ -274,10 +274,29 @@ func TestRunIDIsDeterministicPerAttemptAndPurpose(t *testing.T) {
 	if crossOrg := harnessRunID("otra", 12, 44, PurposeDepartmentPlan); crossOrg == first {
 		t.Fatal("run identities must be organization-scoped")
 	}
-	for _, purpose := range []ExecutionPurpose{PurposeCEOPlan, PurposeDepartmentPlan, PurposeDepartmentWorker, PurposeDepartmentReview, PurposeCEOClosure} {
+	// All five purposes, on one attempt: each must be a complete enum member
+	// and each must own a distinct, stable run identity. A collision here would
+	// merge two different cognitive executions into one durable history.
+	purposes := []ExecutionPurpose{PurposeCEOPlan, PurposeDepartmentPlan, PurposeDepartmentWorker, PurposeDepartmentReview, PurposeCEOClosure}
+	seen := map[string]ExecutionPurpose{}
+	for _, purpose := range purposes {
 		if !purpose.Valid() || purpose.LegacyPurpose() == "" {
 			t.Fatalf("purpose %q is not a complete enum member", purpose)
 		}
+		id := harnessRunID("explorarte", 12, 44, purpose)
+		if want := "executive:explorarte:task:12:attempt:44:" + string(purpose) + ":v1"; id != want {
+			t.Fatalf("run id=%q want %q", id, want)
+		}
+		if other, clash := seen[id]; clash {
+			t.Fatalf("purposes %q and %q share run identity %q", other, purpose, id)
+		}
+		if repeat := harnessRunID("explorarte", 12, 44, purpose); repeat != id {
+			t.Fatalf("purpose %q is not deterministic: %q then %q", purpose, id, repeat)
+		}
+		seen[id] = purpose
+	}
+	if len(seen) != len(purposes) {
+		t.Fatalf("expected %d distinct run identities, got %d", len(purposes), len(seen))
 	}
 	if (ExecutionPurpose("department_plan")).Valid() {
 		t.Fatal("the legacy free-text purpose must not be a valid run purpose")
