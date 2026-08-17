@@ -85,6 +85,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runRAG(args[1:], stdout, stderr)
 	case "model":
 		return runModel(args[1:], stdout, stderr)
+	case "code-runner":
+		return runCodeRunner(args[1:], stdout, stderr)
 	case "decision":
 		return runDecision(args[1:], stdout, stderr)
 	case "improvement":
