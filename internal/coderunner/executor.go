@@ -52,7 +52,21 @@ func (e Executor) run(ctx context.Context, typ OperationType, args ...string) Re
 	}
 	return Result{Type: typ, Success: err == nil, ExitCode: code, Output: string(out)}
 }
-func (e Executor) Execute(ctx context.Context, op Operation) (Result, error) {
+func (e Executor) Execute(ctx context.Context, plan Plan) ([]Result, error) {
+	results := make([]Result, 0, len(plan.Operations))
+	for _, op := range plan.Operations {
+		r, err := e.ExecuteOperation(ctx, op)
+		if err != nil {
+			return results, err
+		}
+		results = append(results, r)
+		if !r.Success {
+			return results, fmt.Errorf("operation %s failed", op.Type)
+		}
+	}
+	return results, nil
+}
+func (e Executor) ExecuteOperation(ctx context.Context, op Operation) (Result, error) {
 	if err := opValidate(op); err != nil {
 		return Result{}, err
 	}
