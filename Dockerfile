@@ -36,6 +36,30 @@ ENV ORG_CANONICAL_DIR=/opt/explorarte/docs/canonical
 USER pdfingest
 ENTRYPOINT ["/usr/local/bin/orgctl"]
 
+# Dedicated CODE_RUNNER_V1 execution runtime (non-default target, built via
+# `docker build --target coderunner`; not part of the default `docker build
+# .` output, which stays the orgd stage below). CodeRunner needs a real
+# go/git/rg toolchain to execute its typed GO_BUILD/GO_VET/GO_TEST/GOFMT/
+# APPLY_PATCH/SEARCH operations (internal/coderunner/executor.go) -- orgd's
+# distroless image above has none of that and this file must never grow
+# orgd's attack surface to serve CodeRunner instead. Pinned by digest (same
+# R29 discipline as the postgres service in compose.yaml), not the floating
+# golang:1.25-bookworm tag: that digest is go1.25.13 on Debian bookworm as
+# of this commit -- re-resolve and update the pin when bumping the Go
+# toolchain here, the build stage's tag above is untouched by this pin. The
+# image legitimately contains /bin/sh, apt, and a full OS because distroless
+# cannot run go/git/rg at all; what actually withholds authority to invoke
+# arbitrary commands is CodeRunner's own Go-level executable allowlist,
+# never the absence of a shell in the container -- CodeRunner never exposes
+# a generic shell operation for anything in this image to reach.
+FROM golang@sha256:908f8ff2ec296df2f349563072c7925775cd28b50361a52ed834a8a37399b9bf AS coderunner
+RUN apt-get update && apt-get install -y --no-install-recommends git ripgrep ca-certificates && rm -rf /var/lib/apt/lists/* && useradd --system --no-create-home --shell /usr/sbin/nologin coderunner
+COPY --from=build /out/orgctl /usr/local/bin/orgctl
+RUN mkdir -p /var/lib/explorarte/staging/workspaces && chown coderunner:coderunner /var/lib/explorarte/staging/workspaces
+ENV ORG_STAGING_WORKSPACE_ROOT=/var/lib/explorarte/staging/workspaces
+USER coderunner
+ENTRYPOINT ["/usr/local/bin/orgctl"]
+
 FROM gcr.io/distroless/static-debian12:nonroot AS orgd
 COPY --from=build /out/orgd /usr/local/bin/orgd
 COPY --from=build /out/orgctl /usr/local/bin/orgctl
