@@ -6,6 +6,8 @@ import (
 
 	"github.com/Mireuz13/explorarte-organization/internal/contextcompiler"
 	"github.com/Mireuz13/explorarte-organization/internal/contextengine"
+	"github.com/Mireuz13/explorarte-organization/internal/executive"
+	execruntimeadapter "github.com/Mireuz13/explorarte-organization/internal/executive/runtimeadapter"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
 )
 
@@ -13,8 +15,10 @@ type fakeCtxService struct {
 	snapshot contextengine.Snapshot
 }
 
-func (f *fakeCtxService) Build(context.Context, contextengine.BuildRequest) (contextengine.BuildResult, error) {
-	return contextengine.BuildResult{Snapshot: f.snapshot}, nil
+func (f *fakeCtxService) Build(_ context.Context, request contextengine.BuildRequest) (contextengine.BuildResult, error) {
+	snap := f.snapshot
+	snap.ActorRoleID = request.ActorRoleID
+	return contextengine.BuildResult{Snapshot: snap}, nil
 }
 func (f *fakeCtxService) Get(context.Context, int64, bool) (contextengine.Snapshot, error) {
 	return f.snapshot, nil
@@ -52,7 +56,7 @@ roles:
 		{Ordinal: 6, RenderOrdinal: 6, AuthorityPriority: 4, AuthorityTier: contextengine.TierRoleProfile, SourceReference: actorRoleID + "/PERFIL.md", Included: true, Content: []byte("perfil"), ByteCount: 6, ContentHash: "h6"},
 		{Ordinal: 7, RenderOrdinal: 7, AuthorityPriority: 5, AuthorityTier: contextengine.TierTask, SourceReference: "task:1", Included: true, Content: []byte("task payload"), ByteCount: 12, ContentHash: "h7"},
 	}
-	return contextengine.Snapshot{ID: 1, Version: 1, Status: contextengine.SnapshotReady, ActorRoleID: actorRoleID, Segments: segments}
+	return contextengine.Snapshot{ID: 1, Version: 1, Status: contextengine.SnapshotReady, OrganizationID: "explorarte", ActorRoleID: actorRoleID, Segments: segments}
 }
 
 // TestContextAdapter_GenericFallbackAndProjectedResearch proves Model
@@ -60,9 +64,8 @@ roles:
 // -- not a reimplementation -- produces exactly what the shared
 // contextcompiler.ResolveProviderContext resolver produces for the same
 // canonical snapshot, mirroring
-// internal/executive/runtimeadapter.TestContextBuild_GenericFallbackAndProjectedResearch.
-// Together the two prove Executive and Model Runtime can no longer diverge:
-// both equal the same shared-resolver ground truth for the same snapshot.
+// internal/executive/runtimeadapter.TestContextBuild_GenericFallbackAndProjectedResearch,
+// and that PrepareModelInput accepts the durably resolved render (section 9.H).
 func TestContextAdapter_GenericFallbackAndProjectedResearch(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -76,7 +79,7 @@ func TestContextAdapter_GenericFallbackAndProjectedResearch(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			snap := ctxFixtureSnapshot(tc.actorRoleID)
 			svc := &fakeCtxService{snapshot: snap}
-			adapter := contextAdapter{service: svc}
+			adapter := contextAdapter{service: svc, store: contextcompiler.NewMemoryStore()}
 
 			gotBytes, err := adapter.RenderContextSnapshot(context.Background(), snap.ID)
 			if err != nil {
@@ -113,39 +116,61 @@ func TestContextAdapter_GenericFallbackAndProjectedResearch(t *testing.T) {
 	}
 }
 
-// TestContextAdapter_ExecutiveAndModelRuntimeBytesMatch is the direct
-// cross-package identity proof: for the same snapshot, Executive's
-// Context.Build output and Model Runtime's contextAdapter output are
-// byte-for-byte and digest-for-digest identical. It re-derives Executive's
-// side the same way internal/executive/runtimeadapter.Context.Build does
-// (fetch, validate, resolve) rather than duplicating that adapter's logic,
-// so this stays a proof about the shared resolver, not a tautology.
-func TestContextAdapter_ExecutiveAndModelRuntimeBytesMatch(t *testing.T) {
+// TestExecutiveAndModelRuntimeShareTheSameDurableViewIdentity is section
+// 9.G: for the same canonical snapshot, Executive's real Context.Build
+// adapter (internal/executive/runtimeadapter) and Model Runtime's real
+// contextAdapter, sharing the SAME ExecutionContextViewStore, resolve to the
+// SAME durable ExecutionContextView ID and the SAME provider-visible
+// digest -- not merely two independently reconstructed equal byte slices.
+func TestExecutiveAndModelRuntimeShareTheSameDurableViewIdentity(t *testing.T) {
 	for _, actorRoleID := range []string{"empresa/ceo", "investigacion/research_worker_hourly"} {
 		t.Run(actorRoleID, func(t *testing.T) {
 			snap := ctxFixtureSnapshot(actorRoleID)
+			sharedStore := contextcompiler.NewMemoryStore()
 
-			executiveResolved, err := contextcompiler.ResolveProviderContext(context.Background(), snap)
+			execAdapter := execruntimeadapter.Context{
+				Service:        &fakeCtxService{snapshot: snap},
+				Assembly:       contextcompiler.ContextAssemblyService{Store: sharedStore},
+				OrganizationID: "explorarte",
+			}
+			execResult, err := execAdapter.Build(context.Background(), executive.ContextRequest{ActorRoleID: actorRoleID, Purpose: "department_worker"})
 			if err != nil {
 				t.Fatal(err)
 			}
 
-			svc := &fakeCtxService{snapshot: snap}
-			adapter := contextAdapter{service: svc}
-			modelRuntimeBytes, err := adapter.RenderContextSnapshot(context.Background(), snap.ID)
+			modelRuntimeAdapter := contextAdapter{service: &fakeCtxService{snapshot: snap}, store: sharedStore}
+			modelRuntimeBytes, err := modelRuntimeAdapter.RenderContextSnapshot(context.Background(), snap.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
-			modelRuntimeRef, err := adapter.GetContextSnapshot(context.Background(), snap.ID)
+			modelRuntimeRef, err := modelRuntimeAdapter.GetContextSnapshot(context.Background(), snap.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
 
-			if string(modelRuntimeBytes) != string(executiveResolved.Bytes) {
-				t.Fatalf("bytes diverged: executive=%s model_runtime=%s", executiveResolved.Bytes, modelRuntimeBytes)
+			if string(modelRuntimeBytes) != execResult.Content {
+				t.Fatalf("bytes diverged: executive=%s model_runtime=%s", execResult.Content, modelRuntimeBytes)
 			}
-			if modelRuntimeRef.RenderedHash != executiveResolved.Digest {
-				t.Fatalf("digest diverged: executive=%s model_runtime=%s", executiveResolved.Digest, modelRuntimeRef.RenderedHash)
+			if modelRuntimeRef.RenderedHash != execResult.Digest {
+				t.Fatalf("digest diverged: executive=%s model_runtime=%s", execResult.Digest, modelRuntimeRef.RenderedHash)
+			}
+
+			// The actual regression this mission closes: not just equal
+			// bytes, but the SAME durable view row.
+			modelRuntimeView, err := sharedStore.GetByContextSnapshot(context.Background(), "explorarte", snap.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if modelRuntimeView.ID != execResult.ExecutionContextViewID {
+				t.Fatalf("Executive and Model Runtime durable view identities diverged: executive=%d shared_store=%d", execResult.ExecutionContextViewID, modelRuntimeView.ID)
+			}
+
+			prepared, err := modelruntime.PrepareModelInput(nil, modelRuntimeRef, modelRuntimeBytes)
+			if err != nil {
+				t.Fatalf("PrepareModelInput rejected the shared durable render: %v", err)
+			}
+			if prepared.Envelope.StablePrefix[0].Content != string(modelRuntimeBytes) {
+				t.Fatal("prepared stable prefix does not match the shared durable render")
 			}
 		})
 	}

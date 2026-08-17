@@ -67,7 +67,7 @@ roles:
 		{Ordinal: 6, RenderOrdinal: 6, AuthorityPriority: 4, AuthorityTier: contextengine.TierRoleProfile, SourceReference: actorRoleID + "/PERFIL.md", Included: true, Content: []byte("perfil"), ByteCount: 6, ContentHash: "h6"},
 		{Ordinal: 7, RenderOrdinal: 7, AuthorityPriority: 5, AuthorityTier: contextengine.TierTask, SourceReference: "task:1", Included: true, Content: []byte("task payload"), ByteCount: 12, ContentHash: "h7"},
 	}
-	return contextengine.Snapshot{ID: 1, Version: 1, Status: contextengine.SnapshotReady, ActorRoleID: actorRoleID, Segments: segments}
+	return contextengine.Snapshot{ID: 1, Version: 1, Status: contextengine.SnapshotReady, OrganizationID: "explorarte", ActorRoleID: actorRoleID, Segments: segments}
 }
 
 // TestContextBuild_GenericFallbackAndProjectedResearch proves Executive's
@@ -90,7 +90,8 @@ func TestContextBuild_GenericFallbackAndProjectedResearch(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			snap := fixtureSnapshot(tc.actorRoleID)
 			svc := &fakeContextService{snapshot: snap}
-			adapter := Context{Service: svc, OrganizationID: "explorarte"}
+			store := contextcompiler.NewMemoryStore()
+			adapter := Context{Service: svc, Assembly: contextcompiler.ContextAssemblyService{Store: store}, OrganizationID: "explorarte"}
 
 			got, err := adapter.Build(context.Background(), executive.ContextRequest{ActorRoleID: tc.actorRoleID, Purpose: "department_worker"})
 			if err != nil {
@@ -117,6 +118,20 @@ func TestContextBuild_GenericFallbackAndProjectedResearch(t *testing.T) {
 			}
 			if got.ID != snap.ID || got.Version != strconv.FormatInt(snap.Version, 10) {
 				t.Fatalf("unexpected snapshot identity: %+v", got)
+			}
+			if got.ExecutionContextViewID == 0 {
+				t.Fatal("Build did not surface a durable ExecutionContextView identity")
+			}
+			// Calling Build again for the same snapshot ID (fakeContextService
+			// always returns the same underlying snapshot) must reuse the same
+			// durable view identity -- the idempotency guarantee, exercised
+			// through the real adapter.
+			again, err := adapter.Build(context.Background(), executive.ContextRequest{ActorRoleID: tc.actorRoleID, Purpose: "department_worker"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if again.ExecutionContextViewID != got.ExecutionContextViewID {
+				t.Fatalf("repeated Build did not reuse the durable view identity: %d != %d", again.ExecutionContextViewID, got.ExecutionContextViewID)
 			}
 		})
 	}
