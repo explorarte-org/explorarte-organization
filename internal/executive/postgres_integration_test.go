@@ -48,6 +48,8 @@ type integrationHarness struct {
 	completion executive.CompletionGate
 	decisions  executive.DecisionRecorder
 	authorizer agentmessaging.CapabilityAuthorizer
+	principals executive.RoleBoundPrincipalResolver
+	dispatch   *dispatchpostgres.Store
 }
 
 func newIntegrationHarness(t *testing.T) *integrationHarness {
@@ -196,8 +198,25 @@ TRUNCATE outbox_events,task_dead_letters,task_events,task_leases,task_attempts,t
 		cancel()
 		t.Fatal(err)
 	}
+	dispatchStore, err := dispatchpostgres.New(store)
+	if err != nil {
+		store.Close()
+		cancel()
+		t.Fatal(err)
+	}
+	// The role-bound principal resolver is the real one, against the real
+	// dispatch principal store: lease holder identity is exactly what this
+	// migration moved, so faking it here would hide the thing under test.
+	roleBoundResolver, err := runtimeadapter.NewRoleBoundPrincipalResolver(dispatchStore, "explorarte")
+	if err != nil {
+		store.Close()
+		cancel()
+		t.Fatal(err)
+	}
 	return &integrationHarness{
 		ctx: ctx, cancel: cancel, store: store, registry: registryRepo, tasks: taskService,
+		principals: runtimeadapter.RoleBoundPrincipals{Resolver: roleBoundResolver},
+		dispatch:   dispatchStore,
 		authz:      runtimeadapter.Authorization{Service: authRuntime.Service, OrganizationID: "explorarte"},
 		authorizer: authRuntime.Authorizer,
 		completion: runtimeadapter.Completion{Service: completionService},
@@ -338,14 +357,20 @@ func (c *countingCompletion) Verify(ctx context.Context, taskID, attemptID int64
 
 func newOrchestrator(t *testing.T, h *integrationHarness, models *integrationModelRuntime, assignments integrationAssignments, completionGate executive.CompletionGate, opts ...executive.OrchestratorOption) *executive.Orchestrator {
 	t.Helper()
-	value, err := executive.NewOrchestrator(
-		"explorarte",
-		runtimeadapter.Registry{Reader: h.registry, OrganizationID: "explorarte"},
-		runtimeadapter.Tasks{Service: h.tasks, OrganizationID: "explorarte"},
-		&integrationContext{}, assignments, models, completionGate, h.decisions, h.authz,
-		executive.DefaultLimits(), executive.ClockFunc(time.Now),
-		opts...,
-	)
+	value, err := executive.NewOrchestrator(executive.Dependencies{
+		OrganizationID: "explorarte",
+		Registry:       runtimeadapter.Registry{Reader: h.registry, OrganizationID: "explorarte"},
+		Tasks:          runtimeadapter.Tasks{Service: h.tasks, OrganizationID: "explorarte"},
+		Contexts:       &integrationContext{},
+		Assignments:    assignments,
+		Principals:     h.principals,
+		Models:         models,
+		Completion:     completionGate,
+		Decisions:      h.decisions,
+		Authorization:  h.authz,
+		Limits:         executive.DefaultLimits(),
+		Clock:          executive.ClockFunc(time.Now),
+	}, opts...)
 	if err != nil {
 		t.Fatal(err)
 	}

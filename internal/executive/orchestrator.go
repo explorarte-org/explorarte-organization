@@ -14,7 +14,15 @@ import (
 	"time"
 )
 
+// orchestratorWorkerID is operational provenance only: it names the process
+// doing the work, it is recorded on task_attempts.worker_id, and it is NOT an
+// execution principal. The security identity of an attempt is the role-bound
+// principal resolved from the task's AssignedRoleID (see Dependencies.Principals).
 const orchestratorWorkerID = "executive-orchestrator"
+
+// executiveLeaseTTL is how long a claimed executive attempt's lease is issued
+// for, and how far each heartbeat extends it.
+const executiveLeaseTTL = 5 * time.Minute
 
 type Orchestrator struct {
 	organizationID string
@@ -22,6 +30,7 @@ type Orchestrator struct {
 	tasks          TaskCoordinator
 	contexts       ContextCoordinator
 	assignments    DispatchProvisioner
+	principals     RoleBoundPrincipalResolver
 	models         ModelCoordinator
 	completion     CompletionGate
 	decisions      DecisionRecorder
@@ -33,6 +42,27 @@ type Orchestrator struct {
 
 	mu     sync.Mutex
 	leases map[int64]LeaseRecord
+}
+
+// Dependencies is the Orchestrator's whole inbound surface. It is a struct
+// rather than a positional parameter list because several of these are
+// same-shaped interfaces whose order nobody can verify by reading a call
+// site, and swapping two of them would compile.
+type Dependencies struct {
+	OrganizationID string
+	Registry       RegistryResolver
+	Tasks          TaskCoordinator
+	Contexts       ContextCoordinator
+	Assignments    DispatchProvisioner
+	// Principals resolves the canonical role-bound execution principal that
+	// holds an attempt's lease and executes under it.
+	Principals    RoleBoundPrincipalResolver
+	Models        ModelCoordinator
+	Completion    CompletionGate
+	Decisions     DecisionRecorder
+	Authorization AuthorizationGate
+	Limits        Limits
+	Clock         Clock
 }
 
 // OrchestratorOption configures optional Orchestrator behavior that most
@@ -53,21 +83,30 @@ func WithAgentMessaging(messages AgentMessagingProvider) OrchestratorOption {
 	return func(o *Orchestrator) { o.messages = messages }
 }
 
-func NewOrchestrator(organizationID string, registry RegistryResolver, tasks TaskCoordinator, contexts ContextCoordinator, assignments DispatchProvisioner, models ModelCoordinator, completion CompletionGate, decisions DecisionRecorder, authz AuthorizationGate, limits Limits, clock Clock, opts ...OrchestratorOption) (*Orchestrator, error) {
-	if strings.TrimSpace(organizationID) == "" || registry == nil || tasks == nil || contexts == nil || assignments == nil || models == nil || completion == nil || decisions == nil || authz == nil {
+func NewOrchestrator(deps Dependencies, opts ...OrchestratorOption) (*Orchestrator, error) {
+	if strings.TrimSpace(deps.OrganizationID) == "" || deps.Registry == nil || deps.Tasks == nil || deps.Contexts == nil ||
+		deps.Assignments == nil || deps.Principals == nil || deps.Models == nil || deps.Completion == nil ||
+		deps.Decisions == nil || deps.Authorization == nil {
 		return nil, errors.New("executive orchestrator dependencies are incomplete")
 	}
+	limits := deps.Limits
 	if limits.MaxDepartments <= 0 {
 		limits = DefaultLimits()
 	}
+	clock := deps.Clock
 	if clock == nil {
 		clock = ClockFunc(time.Now)
 	}
-	validator, err := NewValidator(registry, authz, limits)
+	validator, err := NewValidator(deps.Registry, deps.Authorization, limits)
 	if err != nil {
 		return nil, err
 	}
-	orchestrator := &Orchestrator{organizationID: strings.TrimSpace(organizationID), registry: registry, tasks: tasks, contexts: contexts, assignments: assignments, models: models, completion: completion, decisions: decisions, validator: validator, limits: limits, clock: clock, leases: map[int64]LeaseRecord{}}
+	orchestrator := &Orchestrator{
+		organizationID: strings.TrimSpace(deps.OrganizationID), registry: deps.Registry, tasks: deps.Tasks,
+		contexts: deps.Contexts, assignments: deps.Assignments, principals: deps.Principals, models: deps.Models,
+		completion: deps.Completion, decisions: deps.Decisions, validator: validator, limits: limits,
+		clock: clock, leases: map[int64]LeaseRecord{},
+	}
 	for _, opt := range opts {
 		opt(orchestrator)
 	}
@@ -613,7 +652,23 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 	}
 	lease, haveLease := o.localLease(task.ID)
 	if task.Status == "ready" {
-		claimed, attempt, l, err := o.tasks.ClaimTask(ctx, task.ID, orchestratorWorkerID, task.AssignedRoleID, 5*time.Minute)
+		// The principal is resolved exactly once per attempt, here, before the
+		// claim, and then propagated: as the lease holder, as the ActorID of
+		// every lease-authorized mutation below, and as the run's execution
+		// principal. Resolving it a second time later would mean an attempt
+		// could silently execute under a different identity than the one its
+		// lease was issued to.
+		principal, resolveErr := o.principals.ResolveRoleBoundPrincipal(ctx, task.AssignedRoleID)
+		if resolveErr != nil {
+			return task, resolveErr
+		}
+		if principal.ID == "" || (principal.RoleID != "" && principal.RoleID != task.AssignedRoleID) {
+			return task, fmt.Errorf("%w: resolved principal is not bound to %s", ErrExecutionPrincipalUnusable, task.AssignedRoleID)
+		}
+		claimed, attempt, l, err := o.tasks.ClaimTask(ctx, ClaimTaskCommand{
+			TaskID: task.ID, WorkerID: orchestratorWorkerID, HolderPrincipalID: principal.ID,
+			AssignedRoleID: task.AssignedRoleID, LeaseDuration: executiveLeaseTTL,
+		})
 		if err != nil {
 			return task, err
 		}
@@ -630,6 +685,15 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 			return task, fmt.Errorf("%w: dispatch assignment scope mismatch", ErrRegistryMismatch)
 		}
 	}
+	// From here on every lease-authorized mutation is performed as the lease
+	// holder, not as the worker name. The task engine matches ActorID against
+	// task_leases.holder_id, so using orchestratorWorkerID here would be
+	// rejected outright -- and, worse, would mean the attempt's authority was
+	// never the principal the lease was issued to.
+	actorID := lease.HolderID
+	if haveLease && strings.TrimSpace(actorID) == "" {
+		return task, fmt.Errorf("%w: active lease has no holder principal", ErrExecutionPrincipalUnusable)
+	}
 	if task.Status == "leased" {
 		if !haveLease {
 			return task, fmt.Errorf("%w: active task lease token unavailable after process restart", ErrRunBlocked)
@@ -641,7 +705,7 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		if assignment.OrganizationRevisionID != task.OrganizationRevisionID {
 			return task, fmt.Errorf("%w: assignment revision drift", ErrRegistryMismatch)
 		}
-		if _, err = o.tasks.StartAttempt(ctx, lease, orchestratorWorkerID); err != nil {
+		if _, err = o.tasks.StartAttempt(ctx, lease, actorID); err != nil {
 			return task, err
 		}
 		task, err = o.tasks.GetTask(ctx, task.ID)
@@ -677,7 +741,7 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 	}
 	switch invocation.Status {
 	case "requested", "claimed", "send_started", "response_received":
-		if updated, hbErr := o.tasks.Heartbeat(ctx, lease, orchestratorWorkerID, 5*time.Minute); hbErr == nil {
+		if updated, hbErr := o.tasks.Heartbeat(ctx, lease, actorID, executiveLeaseTTL); hbErr == nil {
 			o.rememberLease(task.ID, updated)
 		}
 		return task, nil
@@ -685,7 +749,7 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		_, _ = o.tasks.BlockTask(ctx, root.ID, "model_outcome_ambiguous", fmt.Sprintf("task=%d attempt=%d invocation=%d requires explicit inspection", task.ID, lease.AttemptID, invocation.ID), "service", orchestratorWorkerID)
 		return task, ErrModelOutcomeAmbiguous
 	case "failed", "cancelled":
-		failed, recErr := o.tasks.RecordAttemptFailed(ctx, lease, orchestratorWorkerID, "model_invocation_failed", invocation.ErrorCode, false)
+		failed, recErr := o.tasks.RecordAttemptFailed(ctx, lease, actorID, "model_invocation_failed", invocation.ErrorCode, false)
 		o.forgetLease(task.ID)
 		if recErr != nil {
 			return task, recErr
@@ -715,7 +779,7 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		if err = o.tasks.RecordEvidence(ctx, EvidenceCommand{TaskID: task.ID, RequirementID: reqID, Type: "result", Reference: fmt.Sprintf("model-invocation:%d", invocation.ID), Digest: result.ResponseHash, RecordedBy: orchestratorWorkerID, Metadata: map[string]any{"invocation_id": invocation.ID, "response_bytes": result.ResponseBytes}, Satisfies: true}); err != nil {
 			return task, err
 		}
-		finished, recErr := o.tasks.RecordAttemptSucceeded(ctx, lease, orchestratorWorkerID, "validated model result")
+		finished, recErr := o.tasks.RecordAttemptSucceeded(ctx, lease, actorID, "validated model result")
 		o.forgetLease(task.ID)
 		if recErr != nil {
 			return task, recErr
@@ -816,15 +880,25 @@ func (o *Orchestrator) completeRoot(ctx context.Context, root, closureTask TaskR
 	if err := o.tasks.RecordEvidence(ctx, EvidenceCommand{TaskID: root.ID, RequirementID: reqID, Type: "result", Reference: fmt.Sprintf("task:%d:model-invocation:%d", closureTask.ID, result.InvocationID), Digest: result.ResponseHash, RecordedBy: orchestratorWorkerID, Metadata: map[string]any{"closure_task_id": closureTask.ID, "answer_hash": actionDigest(closure.AnswerToOwner)}, Satisfies: true}); err != nil {
 		return err
 	}
-	_, _, lease, err := o.tasks.ClaimTask(ctx, root.ID, orchestratorWorkerID, CEORoleID, 2*time.Minute)
+	principal, err := o.principals.ResolveRoleBoundPrincipal(ctx, CEORoleID)
+	if err != nil {
+		return err
+	}
+	if principal.ID == "" {
+		return fmt.Errorf("%w: no role-bound principal for %s", ErrExecutionPrincipalUnusable, CEORoleID)
+	}
+	_, _, lease, err := o.tasks.ClaimTask(ctx, ClaimTaskCommand{
+		TaskID: root.ID, WorkerID: orchestratorWorkerID, HolderPrincipalID: principal.ID,
+		AssignedRoleID: CEORoleID, LeaseDuration: 2 * time.Minute,
+	})
 	if err != nil {
 		return err
 	}
 	o.rememberLease(root.ID, lease)
-	if _, err = o.tasks.StartAttempt(ctx, lease, orchestratorWorkerID); err != nil {
+	if _, err = o.tasks.StartAttempt(ctx, lease, principal.ID); err != nil {
 		return err
 	}
-	finished, err := o.tasks.RecordAttemptSucceeded(ctx, lease, orchestratorWorkerID, "executive closure verified")
+	finished, err := o.tasks.RecordAttemptSucceeded(ctx, lease, principal.ID, "executive closure verified")
 	o.forgetLease(root.ID)
 	if err != nil {
 		return err

@@ -87,12 +87,29 @@ func (r Runner) Run(ctx context.Context, f fixtures.Fixture, subjectID string) (
 		return fixtures.RunOutcome{}, err
 	}
 	models := newFakeModelRuntime(evidence)
+	// The role-bound principal resolver is real, against the same dispatch
+	// store production uses: the fixture claims its leases with the same
+	// canonical execution principals a real run would, so lease identity is
+	// exercised rather than stubbed.
+	roleBoundResolver, err := runtimeadapter.NewRoleBoundPrincipalResolver(dispatchStore, fixtureOrganization)
+	if err != nil {
+		return fixtures.RunOutcome{}, err
+	}
 	orchestrator, err := executive.NewOrchestrator(
-		fixtureOrganization,
-		runtimeadapter.Registry{Reader: h.registry, OrganizationID: fixtureOrganization},
-		runtimeadapter.Tasks{Service: h.tasks, OrganizationID: fixtureOrganization},
-		&fakeContext{}, fakeAssignments{}, models, h.completion, h.decisions, h.authz,
-		executive.DefaultLimits(), executive.ClockFunc(time.Now),
+		executive.Dependencies{
+			OrganizationID: fixtureOrganization,
+			Registry:       runtimeadapter.Registry{Reader: h.registry, OrganizationID: fixtureOrganization},
+			Tasks:          runtimeadapter.Tasks{Service: h.tasks, OrganizationID: fixtureOrganization},
+			Contexts:       &fakeContext{},
+			Assignments:    fakeAssignments{},
+			Principals:     runtimeadapter.RoleBoundPrincipals{Resolver: roleBoundResolver},
+			Models:         models,
+			Completion:     h.completion,
+			Decisions:      h.decisions,
+			Authorization:  h.authz,
+			Limits:         executive.DefaultLimits(),
+			Clock:          executive.ClockFunc(time.Now),
+		},
 		executive.WithAgentBudgets(runtimeadapter.AgentBudgets{Ledger: budgetLedger, Limits: agentbudget.DefaultLimits()}),
 		executive.WithAgentMessaging(runtimeadapter.AgentMessages{
 			Ledger: messageLedger, MaxAttempts: 10,

@@ -132,18 +132,30 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 	// EXEC-PRINCIPAL-001 handoff for the distinction).
 	principalStore := modelRuntime.Dispatcher.Store
 
+	// One resolver, one derivation: the same role-bound identity that
+	// authenticates agent messaging also holds the task lease and executes the
+	// Harness run, so no two subsystems can disagree about which principal a
+	// role has.
+	roleBoundResolver, err := runtimeadapter.NewRoleBoundPrincipalResolver(principalStore, cfg.Tasks.OrganizationID)
+	if err != nil {
+		return nil, fmt.Errorf("create executive role-bound principal resolver: %w", err)
+	}
+
 	orchestrator, err := executive.NewOrchestrator(
-		cfg.Tasks.OrganizationID,
-		runtimeadapter.Registry{Reader: registryRepository, OrganizationID: cfg.Tasks.OrganizationID},
-		dagTasks,
-		runtimeadapter.Context{Service: contextRuntime.Service, OrganizationID: cfg.Tasks.OrganizationID},
-		runtimeadapter.Assignment{Resolver: modelRuntime.Dispatcher.Store, OrganizationID: cfg.Tasks.OrganizationID},
-		budgetModels,
-		completionGate,
-		decisionRecorder,
-		runtimeadapter.Authorization{Service: authorizationRuntime.Service, OrganizationID: cfg.Tasks.OrganizationID},
-		limits,
-		executive.ClockFunc(time.Now),
+		executive.Dependencies{
+			OrganizationID: cfg.Tasks.OrganizationID,
+			Registry:       runtimeadapter.Registry{Reader: registryRepository, OrganizationID: cfg.Tasks.OrganizationID},
+			Tasks:          dagTasks,
+			Contexts:       runtimeadapter.Context{Service: contextRuntime.Service, OrganizationID: cfg.Tasks.OrganizationID},
+			Assignments:    runtimeadapter.Assignment{Resolver: modelRuntime.Dispatcher.Store, OrganizationID: cfg.Tasks.OrganizationID},
+			Principals:     runtimeadapter.RoleBoundPrincipals{Resolver: roleBoundResolver},
+			Models:         budgetModels,
+			Completion:     completionGate,
+			Decisions:      decisionRecorder,
+			Authorization:  runtimeadapter.Authorization{Service: authorizationRuntime.Service, OrganizationID: cfg.Tasks.OrganizationID},
+			Limits:         limits,
+			Clock:          executive.ClockFunc(time.Now),
+		},
 		executive.WithAgentBudgets(runtimeadapter.AgentBudgets{Ledger: agentBudgetLedger, Limits: agentbudget.DefaultLimits()}),
 		executive.WithAgentMessaging(runtimeadapter.AgentMessages{
 			Ledger:         agentMessageLedger,

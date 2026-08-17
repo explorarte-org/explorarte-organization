@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -13,13 +14,46 @@ type memoryTasks struct {
 	tasks       map[int64]TaskRecord
 	keys        map[string]int64
 	createCalls []CreateTaskCommand
+	claims      []ClaimTaskCommand
+	workerIDs   map[int64]string
 	finalized   []int64
 	blocked     []int64
+	failed      []string
+	heartbeats  int
 	evidence    []EvidenceCommand
 }
 
 func newMemoryTasks() *memoryTasks {
-	return &memoryTasks{nextID: 1, nextAttempt: 100, tasks: map[int64]TaskRecord{}, keys: map[string]int64{}}
+	return &memoryTasks{nextID: 1, nextAttempt: 100, tasks: map[int64]TaskRecord{}, keys: map[string]int64{}, workerIDs: map[int64]string{}}
+}
+
+// ErrLeaseMismatch stands in for tasks.ErrLeaseMismatch, which the executive
+// package deliberately cannot import.
+var ErrLeaseMismatch = errors.New("fake task engine: lease actor mismatch")
+
+// fakePrincipals is the canonical role-bound identity source for unit tests:
+// one stable numeric principal per role, exactly like the real resolver.
+type fakePrincipals struct {
+	ids      map[string]string
+	err      error
+	resolves int
+}
+
+func newFakePrincipals() *fakePrincipals {
+	return &fakePrincipals{ids: map[string]string{}}
+}
+
+func (f *fakePrincipals) ResolveRoleBoundPrincipal(_ context.Context, roleID string) (ExecutionPrincipalRef, error) {
+	f.resolves++
+	if f.err != nil {
+		return ExecutionPrincipalRef{}, f.err
+	}
+	id, ok := f.ids[roleID]
+	if !ok {
+		id = fmt.Sprintf("%d", 7000+len(f.ids)+1)
+		f.ids[roleID] = id
+	}
+	return ExecutionPrincipalRef{ID: id, RoleID: roleID}, nil
 }
 
 func (m *memoryTasks) CreateTask(_ context.Context, command CreateTaskCommand) (TaskRecord, bool, error) {
@@ -87,23 +121,49 @@ func (m *memoryTasks) ListAwaitingGating(_ context.Context, limit int) ([]TaskRe
 	return out, nil
 }
 
-func (m *memoryTasks) ClaimTask(_ context.Context, taskID int64, workerID, _ string, duration time.Duration) (TaskRecord, AttemptRecord, LeaseRecord, error) {
-	task := m.tasks[taskID]
+// ClaimTask mirrors the durable contract: task_attempts.worker_id records the
+// operational worker, task_leases.holder_id records the security principal,
+// and they are stored separately because they are separate identities.
+func (m *memoryTasks) ClaimTask(_ context.Context, command ClaimTaskCommand) (TaskRecord, AttemptRecord, LeaseRecord, error) {
+	if strings.TrimSpace(command.HolderPrincipalID) == "" {
+		return TaskRecord{}, AttemptRecord{}, LeaseRecord{}, errors.New("claim without a holder principal")
+	}
+	task := m.tasks[command.TaskID]
 	m.nextAttempt++
 	attempt := AttemptRecord{ID: m.nextAttempt, Ordinal: task.AttemptCount + 1, State: "leased"}
 	task.AttemptCount++
 	task.Status = "leased"
 	task.Attempts = append(task.Attempts, attempt)
 	lease := LeaseRecord{
-		TaskID: taskID, AttemptID: attempt.ID, HolderID: workerID,
-		LeaseToken: fmt.Sprintf("lease-%d", attempt.ID), ExpiresAt: time.Now().Add(duration),
+		TaskID: command.TaskID, AttemptID: attempt.ID, HolderID: command.HolderPrincipalID,
+		LeaseToken: fmt.Sprintf("lease-%d", attempt.ID), ExpiresAt: time.Now().Add(command.LeaseDuration),
 	}
 	task.ActiveLease = &lease
-	m.tasks[taskID] = task
+	m.claims = append(m.claims, command)
+	m.workerIDs[attempt.ID] = command.WorkerID
+	m.tasks[command.TaskID] = task
 	return task, attempt, lease, nil
 }
 
-func (m *memoryTasks) StartAttempt(_ context.Context, lease LeaseRecord, _ string) (TaskRecord, error) {
+// verifyLeaseActor is the in-memory equivalent of the task engine's
+// `lease.holder_id != command.ActorID -> ErrLeaseMismatch`. Without it a fake
+// would happily accept the worker name as an actor and the unit tests would
+// stop being able to see the defect this migration exists to prevent.
+func (m *memoryTasks) verifyLeaseActor(lease LeaseRecord, actor string) error {
+	task, ok := m.tasks[lease.TaskID]
+	if !ok || task.ActiveLease == nil {
+		return ErrLeaseMismatch
+	}
+	if task.ActiveLease.HolderID != actor || task.ActiveLease.AttemptID != lease.AttemptID {
+		return ErrLeaseMismatch
+	}
+	return nil
+}
+
+func (m *memoryTasks) StartAttempt(_ context.Context, lease LeaseRecord, actor string) (TaskRecord, error) {
+	if err := m.verifyLeaseActor(lease, actor); err != nil {
+		return TaskRecord{}, err
+	}
 	task := m.tasks[lease.TaskID]
 	task.Status = "running"
 	for i := range task.Attempts {
@@ -115,12 +175,19 @@ func (m *memoryTasks) StartAttempt(_ context.Context, lease LeaseRecord, _ strin
 	return task, nil
 }
 
-func (m *memoryTasks) Heartbeat(_ context.Context, lease LeaseRecord, _ string, duration time.Duration) (LeaseRecord, error) {
+func (m *memoryTasks) Heartbeat(_ context.Context, lease LeaseRecord, actor string, duration time.Duration) (LeaseRecord, error) {
+	if err := m.verifyLeaseActor(lease, actor); err != nil {
+		return LeaseRecord{}, err
+	}
+	m.heartbeats++
 	lease.ExpiresAt = time.Now().Add(duration)
 	return lease, nil
 }
 
-func (m *memoryTasks) RecordAttemptSucceeded(_ context.Context, lease LeaseRecord, _ string, _ string) (TaskRecord, error) {
+func (m *memoryTasks) RecordAttemptSucceeded(_ context.Context, lease LeaseRecord, actor string, _ string) (TaskRecord, error) {
+	if err := m.verifyLeaseActor(lease, actor); err != nil {
+		return TaskRecord{}, err
+	}
 	task := m.tasks[lease.TaskID]
 	task.Status = "awaiting_verification"
 	task.ActiveLease = nil
@@ -133,7 +200,11 @@ func (m *memoryTasks) RecordAttemptSucceeded(_ context.Context, lease LeaseRecor
 	return task, nil
 }
 
-func (m *memoryTasks) RecordAttemptFailed(_ context.Context, lease LeaseRecord, _ string, code, reason string, _ bool) (TaskRecord, error) {
+func (m *memoryTasks) RecordAttemptFailed(_ context.Context, lease LeaseRecord, actor string, code, reason string, _ bool) (TaskRecord, error) {
+	if err := m.verifyLeaseActor(lease, actor); err != nil {
+		return TaskRecord{}, err
+	}
+	m.failed = append(m.failed, code)
 	task := m.tasks[lease.TaskID]
 	task.Status = "failed"
 	task.ReasonCode = code

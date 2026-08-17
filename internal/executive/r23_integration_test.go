@@ -29,13 +29,20 @@ func TestR23PostgreSQLProjectsWorkerEvidenceAndClosesDAGRace(t *testing.T) {
 	dagTasks := runtimeadapter.DAGTasks{TaskCoordinator: evidenceTasks}
 	budgetModels := runtimeadapter.BudgetModels{Models: models, Tasks: dagTasks, Limits: limits}
 
-	orchestrator, err := executive.NewOrchestrator(
-		"explorarte",
-		runtimeadapter.Registry{Reader: h.registry, OrganizationID: "explorarte"},
-		dagTasks,
-		&integrationContext{}, integrationAssignments{}, budgetModels, completionGate, h.decisions, h.authz,
-		limits, executive.ClockFunc(time.Now),
-	)
+	orchestrator, err := executive.NewOrchestrator(executive.Dependencies{
+		OrganizationID: "explorarte",
+		Registry:       runtimeadapter.Registry{Reader: h.registry, OrganizationID: "explorarte"},
+		Tasks:          dagTasks,
+		Contexts:       &integrationContext{},
+		Assignments:    integrationAssignments{},
+		Principals:     h.principals,
+		Models:         budgetModels,
+		Completion:     completionGate,
+		Decisions:      h.decisions,
+		Authorization:  h.authz,
+		Limits:         limits,
+		Clock:          executive.ClockFunc(time.Now),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

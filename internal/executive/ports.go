@@ -24,7 +24,7 @@ type TaskCoordinator interface {
 	// status from the moment its attempt finishes until gatedComplete
 	// successfully finalizes/blocks it; nothing else produces this status.
 	ListAwaitingGating(context.Context, int) ([]TaskRecord, error)
-	ClaimTask(context.Context, int64, string, string, time.Duration) (TaskRecord, AttemptRecord, LeaseRecord, error)
+	ClaimTask(context.Context, ClaimTaskCommand) (TaskRecord, AttemptRecord, LeaseRecord, error)
 	StartAttempt(context.Context, LeaseRecord, string) (TaskRecord, error)
 	Heartbeat(context.Context, LeaseRecord, string, time.Duration) (LeaseRecord, error)
 	RecordAttemptSucceeded(context.Context, LeaseRecord, string, string) (TaskRecord, error)
@@ -35,6 +35,49 @@ type TaskCoordinator interface {
 	BlockTask(context.Context, int64, string, string, string, string) (TaskRecord, error)
 	UnblockTask(context.Context, int64, string, string) (TaskRecord, error)
 	Reconcile(context.Context, int) error
+}
+
+// ClaimTaskCommand carries the two identities a claim needs, as separate
+// fields, because they are separate things.
+//
+// WorkerID is operational provenance: which process is doing the work. It is
+// recorded on the attempt and reads as a name ("executive-orchestrator").
+//
+// HolderPrincipalID is the security identity the lease is issued to, and
+// therefore the ActorID every later lease-authorized mutation on that lease
+// must present. It is the canonical role-bound execution principal for
+// AssignedRoleID. Passing a worker name here would issue a lease to something
+// that is not an execution principal, and the Harness would then correctly
+// deny every run under it -- which is why these are two fields and not one.
+type ClaimTaskCommand struct {
+	TaskID            int64
+	WorkerID          string
+	HolderPrincipalID string
+	AssignedRoleID    string
+	LeaseDuration     time.Duration
+}
+
+// ExecutionPrincipalRef is the whole of what the Executive needs to know about
+// an execution principal: an identifier it can put in a lease, an ActorID and
+// a run identity, plus the role it is bound to so a caller can prove the
+// binding it asked for is the binding it got. Nothing about keys, kinds,
+// status transitions or provisioning crosses this boundary.
+type ExecutionPrincipalRef struct {
+	// ID is the canonical identifier of model_execution_principals.id, in the
+	// exact string form that task_leases.holder_id stores.
+	ID string
+	// RoleID is the role the principal is bound to (dispatch_actor_role_id).
+	RoleID string
+}
+
+// RoleBoundPrincipalResolver resolves the single active execution principal
+// bound to an already-persisted, already-registry-validated AssignedRoleID.
+//
+// It exists so the Executive depends on one narrow verb instead of the whole
+// dispatch principal store: the Executive must be able to ask "who executes
+// for this role", and must not be able to disable, list, or re-key principals.
+type RoleBoundPrincipalResolver interface {
+	ResolveRoleBoundPrincipal(context.Context, string) (ExecutionPrincipalRef, error)
 }
 
 type CreateTaskCommand struct {
