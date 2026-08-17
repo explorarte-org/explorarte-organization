@@ -20,7 +20,7 @@ const executiveEvidenceSchema = "executive-evidence.v1"
 // snapshot used by the immediately following model invocation.
 type EvidenceTasks struct {
 	Tasks
-	Models     executive.ModelCoordinator
+	Models     executive.ModelInvocationReader
 	Completion executive.CompletionGate
 	Limits     executive.Limits
 }

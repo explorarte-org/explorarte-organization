@@ -2,7 +2,6 @@ package executive
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 )
 
@@ -24,7 +23,7 @@ type TaskCoordinator interface {
 	// status from the moment its attempt finishes until gatedComplete
 	// successfully finalizes/blocks it; nothing else produces this status.
 	ListAwaitingGating(context.Context, int) ([]TaskRecord, error)
-	ClaimTask(context.Context, int64, string, string, time.Duration) (TaskRecord, AttemptRecord, LeaseRecord, error)
+	ClaimTask(context.Context, ClaimTaskCommand) (TaskRecord, AttemptRecord, LeaseRecord, error)
 	StartAttempt(context.Context, LeaseRecord, string) (TaskRecord, error)
 	Heartbeat(context.Context, LeaseRecord, string, time.Duration) (LeaseRecord, error)
 	RecordAttemptSucceeded(context.Context, LeaseRecord, string, string) (TaskRecord, error)
@@ -35,6 +34,49 @@ type TaskCoordinator interface {
 	BlockTask(context.Context, int64, string, string, string, string) (TaskRecord, error)
 	UnblockTask(context.Context, int64, string, string) (TaskRecord, error)
 	Reconcile(context.Context, int) error
+}
+
+// ClaimTaskCommand carries the two identities a claim needs, as separate
+// fields, because they are separate things.
+//
+// WorkerID is operational provenance: which process is doing the work. It is
+// recorded on the attempt and reads as a name ("executive-orchestrator").
+//
+// HolderPrincipalID is the security identity the lease is issued to, and
+// therefore the ActorID every later lease-authorized mutation on that lease
+// must present. It is the canonical role-bound execution principal for
+// AssignedRoleID. Passing a worker name here would issue a lease to something
+// that is not an execution principal, and the Harness would then correctly
+// deny every run under it -- which is why these are two fields and not one.
+type ClaimTaskCommand struct {
+	TaskID            int64
+	WorkerID          string
+	HolderPrincipalID string
+	AssignedRoleID    string
+	LeaseDuration     time.Duration
+}
+
+// ExecutionPrincipalRef is the whole of what the Executive needs to know about
+// an execution principal: an identifier it can put in a lease, an ActorID and
+// a run identity, plus the role it is bound to so a caller can prove the
+// binding it asked for is the binding it got. Nothing about keys, kinds,
+// status transitions or provisioning crosses this boundary.
+type ExecutionPrincipalRef struct {
+	// ID is the canonical identifier of model_execution_principals.id, in the
+	// exact string form that task_leases.holder_id stores.
+	ID string
+	// RoleID is the role the principal is bound to (dispatch_actor_role_id).
+	RoleID string
+}
+
+// RoleBoundPrincipalResolver resolves the single active execution principal
+// bound to an already-persisted, already-registry-validated AssignedRoleID.
+//
+// It exists so the Executive depends on one narrow verb instead of the whole
+// dispatch principal store: the Executive must be able to ask "who executes
+// for this role", and must not be able to disable, list, or re-key principals.
+type RoleBoundPrincipalResolver interface {
+	ResolveRoleBoundPrincipal(context.Context, string) (ExecutionPrincipalRef, error)
 }
 
 type CreateTaskCommand struct {
@@ -63,8 +105,44 @@ type EvidenceCommand struct {
 	Satisfies     bool
 }
 
+// ContextCoordinator builds the context snapshot one cognitive execution runs
+// against. It returns the whole snapshot reference, not just its ID, because
+// the Harness run identity binds the context bytes: Model Runtime requires the
+// invocation's stable prefix to be the byte-exact render of the referenced
+// snapshot, so the Executive has to carry the render, not a pointer to it.
 type ContextCoordinator interface {
-	Build(context.Context, ContextRequest) (int64, error)
+	Build(context.Context, ContextRequest) (ContextSnapshot, error)
+}
+
+// ContextSnapshot is a durable, already-rendered context snapshot.
+type ContextSnapshot struct {
+	ID      int64
+	Version string
+	// Digest is the SHA-256 of Content, in hex. The Harness re-derives and
+	// compares it, so a snapshot whose render drifted from its hash cannot
+	// enter a run.
+	Digest  string
+	Content string
+}
+
+// ModelBudgetGate is the Executive's own correlation-wide model-call budget.
+//
+// It is a gate rather than a decorator on invocation creation because the
+// Executive no longer creates invocations: the Harness does, inside Model
+// Runtime. Enforcing the limit at the old place would mean enforcing it on a
+// path the productive Executive can no longer reach, i.e. not enforcing it.
+type ModelBudgetGate interface {
+	// AuthorizeModelCall reports whether the correlation can afford the model
+	// call this attempt is about to make. It must count durable state, never
+	// an in-memory tally, and must not charge an attempt that already has an
+	// invocation -- a resumed run is the same logical call.
+	AuthorizeModelCall(context.Context, ModelCallBudgetRequest) error
+}
+
+type ModelCallBudgetRequest struct {
+	TaskID        int64
+	AttemptID     int64
+	CorrelationID string
 }
 
 type ContextRequest struct {
@@ -79,27 +157,6 @@ type ContextRequest struct {
 
 type DispatchProvisioner interface {
 	ResolveAssignment(context.Context, int64, int64, string) (AssignmentRef, error)
-}
-
-type ModelCoordinator interface {
-	EnsureInvocation(context.Context, InvocationCommand) (InvocationRecord, bool, error)
-	GetInvocation(context.Context, int64) (InvocationRecord, error)
-	FindTaskAttemptInvocations(context.Context, int64, int64) ([]InvocationRecord, error)
-	GetResult(context.Context, int64) (InvocationResult, error)
-}
-
-type InvocationCommand struct {
-	TaskID            int64
-	AttemptID         int64
-	SubjectRoleID     string
-	ContextSnapshotID int64
-	Purpose           string
-	OutputSchema      json.RawMessage
-	MaxOutputTokens   int
-	IdempotencyKey    string
-	CorrelationID     string
-	CausationID       string
-	Deadline          time.Time
 }
 
 type CompletionGate interface {

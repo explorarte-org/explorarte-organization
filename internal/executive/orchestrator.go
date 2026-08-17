@@ -14,7 +14,15 @@ import (
 	"time"
 )
 
+// orchestratorWorkerID is operational provenance only: it names the process
+// doing the work, it is recorded on task_attempts.worker_id, and it is NOT an
+// execution principal. The security identity of an attempt is the role-bound
+// principal resolved from the task's AssignedRoleID (see Dependencies.Principals).
 const orchestratorWorkerID = "executive-orchestrator"
+
+// executiveLeaseTTL is how long a claimed executive attempt's lease is issued
+// for, and how far each heartbeat extends it.
+const executiveLeaseTTL = 5 * time.Minute
 
 type Orchestrator struct {
 	organizationID string
@@ -22,7 +30,10 @@ type Orchestrator struct {
 	tasks          TaskCoordinator
 	contexts       ContextCoordinator
 	assignments    DispatchProvisioner
-	models         ModelCoordinator
+	principals     RoleBoundPrincipalResolver
+	models         ModelInvocationReader
+	harness        HarnessExecutor
+	budget         ModelBudgetGate
 	completion     CompletionGate
 	decisions      DecisionRecorder
 	validator      *Validator
@@ -30,9 +41,38 @@ type Orchestrator struct {
 	clock          Clock
 	budgets        AgentBudgetProvider
 	messages       AgentMessagingProvider
+	leaseKeeper    LeaseKeeperConfig
 
 	mu     sync.Mutex
 	leases map[int64]LeaseRecord
+}
+
+// Dependencies is the Orchestrator's whole inbound surface. It is a struct
+// rather than a positional parameter list because several of these are
+// same-shaped interfaces whose order nobody can verify by reading a call
+// site, and swapping two of them would compile.
+type Dependencies struct {
+	OrganizationID string
+	Registry       RegistryResolver
+	Tasks          TaskCoordinator
+	Contexts       ContextCoordinator
+	Assignments    DispatchProvisioner
+	// Principals resolves the canonical role-bound execution principal that
+	// holds an attempt's lease and executes under it.
+	Principals RoleBoundPrincipalResolver
+	// Models is Model Runtime's READ side. It carries no operation capable of
+	// producing a provider call; execution goes through Harness or nowhere.
+	Models ModelInvocationReader
+	// Harness is the only execute side the productive Executive can reach.
+	Harness HarnessExecutor
+	// Budget is the Executive's correlation-wide model-call limit, enforced
+	// before the Harness is entered.
+	Budget        ModelBudgetGate
+	Completion    CompletionGate
+	Decisions     DecisionRecorder
+	Authorization AuthorizationGate
+	Limits        Limits
+	Clock         Clock
 }
 
 // OrchestratorOption configures optional Orchestrator behavior that most
@@ -53,21 +93,30 @@ func WithAgentMessaging(messages AgentMessagingProvider) OrchestratorOption {
 	return func(o *Orchestrator) { o.messages = messages }
 }
 
-func NewOrchestrator(organizationID string, registry RegistryResolver, tasks TaskCoordinator, contexts ContextCoordinator, assignments DispatchProvisioner, models ModelCoordinator, completion CompletionGate, decisions DecisionRecorder, authz AuthorizationGate, limits Limits, clock Clock, opts ...OrchestratorOption) (*Orchestrator, error) {
-	if strings.TrimSpace(organizationID) == "" || registry == nil || tasks == nil || contexts == nil || assignments == nil || models == nil || completion == nil || decisions == nil || authz == nil {
+func NewOrchestrator(deps Dependencies, opts ...OrchestratorOption) (*Orchestrator, error) {
+	if strings.TrimSpace(deps.OrganizationID) == "" || deps.Registry == nil || deps.Tasks == nil || deps.Contexts == nil ||
+		deps.Assignments == nil || deps.Principals == nil || deps.Models == nil || deps.Harness == nil ||
+		deps.Budget == nil || deps.Completion == nil || deps.Decisions == nil || deps.Authorization == nil {
 		return nil, errors.New("executive orchestrator dependencies are incomplete")
 	}
+	limits := deps.Limits
 	if limits.MaxDepartments <= 0 {
 		limits = DefaultLimits()
 	}
+	clock := deps.Clock
 	if clock == nil {
 		clock = ClockFunc(time.Now)
 	}
-	validator, err := NewValidator(registry, authz, limits)
+	validator, err := NewValidator(deps.Registry, deps.Authorization, limits)
 	if err != nil {
 		return nil, err
 	}
-	orchestrator := &Orchestrator{organizationID: strings.TrimSpace(organizationID), registry: registry, tasks: tasks, contexts: contexts, assignments: assignments, models: models, completion: completion, decisions: decisions, validator: validator, limits: limits, clock: clock, leases: map[int64]LeaseRecord{}}
+	orchestrator := &Orchestrator{
+		organizationID: strings.TrimSpace(deps.OrganizationID), registry: deps.Registry, tasks: deps.Tasks,
+		contexts: deps.Contexts, assignments: deps.Assignments, principals: deps.Principals, models: deps.Models,
+		harness: deps.Harness, budget: deps.Budget, completion: deps.Completion, decisions: deps.Decisions, validator: validator, limits: limits,
+		clock: clock, leases: map[int64]LeaseRecord{}, leaseKeeper: DefaultLeaseKeeperConfig(),
+	}
 	for _, opt := range opts {
 		opt(orchestrator)
 	}
@@ -177,6 +226,11 @@ func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error
 		switch root.ReasonCode {
 		case "model_outcome_ambiguous":
 			return ProjectRun(root, nil), ErrModelOutcomeAmbiguous
+		case "indeterminate_tool_execution":
+			// A tool may already have produced an external side effect.
+			// Reopening this automatically is the one thing that could
+			// duplicate it, so it stays blocked until a human reconciles.
+			return ProjectRun(root, nil), ErrIndeterminateToolExecution
 		case "dispatch_assignment_required":
 			if !o.anyProvisionedLeasedTask(ctx, root.CorrelationID) {
 				return o.Status(ctx, rootTaskID)
@@ -215,7 +269,7 @@ func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error
 		}
 	}
 	if planTask.Status != "completed" {
-		if _, err = o.driveTypedTask(ctx, root, planTask, executivePlanOutputSchema, "executive_ceo_plan", func(result InvocationResult) error {
+		if _, err = o.driveTypedTask(ctx, root, planTask, executivePlanOutputSchema, PurposeCEOPlan, func(result InvocationResult) error {
 			plan, parseErr := ParseExecutivePlan(result.JSONOutput, o.limits)
 			if parseErr != nil {
 				return parseErr
@@ -272,7 +326,7 @@ func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error
 		}
 	}
 	if closureTask.Status != "completed" {
-		if _, err = o.driveTypedTask(ctx, root, closureTask, executiveClosureOutputSchema, "executive_ceo_closure", func(result InvocationResult) error {
+		if _, err = o.driveTypedTask(ctx, root, closureTask, executiveClosureOutputSchema, PurposeCEOClosure, func(result InvocationResult) error {
 			closure, parseErr := ParseExecutiveClosure(result.JSONOutput, o.limits)
 			if parseErr != nil {
 				return parseErr
@@ -405,7 +459,7 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 			return Run{}, false, fmt.Errorf("%w: department planning task missing", ErrRegistryMismatch)
 		}
 		if planTask.Status != "completed" {
-			_, err = o.driveTypedTask(ctx, root, planTask, departmentPlanOutputSchema, "department_plan", func(result InvocationResult) error {
+			_, err = o.driveTypedTask(ctx, root, planTask, departmentPlanOutputSchema, PurposeDepartmentPlan, func(result InvocationResult) error {
 				parsed, e := ParseDepartmentPlan(result.JSONOutput, o.limits)
 				if e != nil {
 					return e
@@ -445,7 +499,7 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 			if wt.Status == "completed" || wt.Status == "no_action" {
 				continue
 			}
-			_, e = o.driveTypedTask(ctx, root, wt, workerResultOutputSchema, "department_worker", func(result InvocationResult) error {
+			_, e = o.driveTypedTask(ctx, root, wt, workerResultOutputSchema, PurposeDepartmentWorker, func(result InvocationResult) error {
 				_, pErr := ParseWorkerResult(result.JSONOutput, o.limits)
 				return pErr
 			})
@@ -470,7 +524,7 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 			}
 		}
 		if reviewTask.Status != "completed" {
-			_, e = o.driveTypedTask(ctx, root, reviewTask, departmentReviewOutputSchema, "department_review", func(result InvocationResult) error {
+			_, e = o.driveTypedTask(ctx, root, reviewTask, departmentReviewOutputSchema, PurposeDepartmentReview, func(result InvocationResult) error {
 				review, pErr := ParseDepartmentReview(result.JSONOutput, o.limits)
 				if pErr != nil {
 					return pErr
@@ -604,16 +658,54 @@ func (o *Orchestrator) createClosureTask(ctx context.Context, root TaskRecord, p
 	return task, reused, nil
 }
 
-func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task TaskRecord, schema json.RawMessage, purpose string, validate func(InvocationResult) error) (TaskRecord, error) {
+// driveTypedTask runs one cognitive execution for one task, synchronously,
+// through the Execution Harness.
+//
+// The Executive no longer creates model invocations. It resolves identity,
+// claims the attempt, builds context, checks its own budget, and then hands a
+// deterministic run command to the Harness, which enters Model Runtime and
+// leaves a durable execution history behind. What comes back is a verdict, not
+// a provider result: the answer itself is read back from the durable Model
+// Runtime row, so evidence keeps pointing at exactly the bytes that were
+// persisted and hashed.
+func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task TaskRecord, schema json.RawMessage, purpose ExecutionPurpose, validate func(InvocationResult) error) (TaskRecord, error) {
+	if !purpose.Valid() {
+		return task, fmt.Errorf("%w: unknown execution purpose %q", ErrContractRejected, purpose)
+	}
 	if task.Status == "completed" {
 		return task, nil
 	}
 	if task.Status == "awaiting_verification" {
 		return o.gatedComplete(ctx, task)
 	}
+	// Before anything else -- before a claim, before a budget charge, before
+	// the Harness -- ask whether an earlier execution of this task is still
+	// unresolved at the provider boundary. This runs ahead of the claim on
+	// purpose: a fresh attempt beside an in-flight provider call is already the
+	// duplicate this guard exists to prevent, so the attempt must not be
+	// created either.
+	if handled, blocked, barrierErr := o.priorExecutionBarrier(ctx, root, task); handled {
+		return blocked, barrierErr
+	}
 	lease, haveLease := o.localLease(task.ID)
 	if task.Status == "ready" {
-		claimed, attempt, l, err := o.tasks.ClaimTask(ctx, task.ID, orchestratorWorkerID, task.AssignedRoleID, 5*time.Minute)
+		// The principal is resolved exactly once per attempt, here, before the
+		// claim, and then propagated: as the lease holder, as the ActorID of
+		// every lease-authorized mutation below, and as the run's execution
+		// principal. Resolving it a second time later would mean an attempt
+		// could silently execute under a different identity than the one its
+		// lease was issued to.
+		principal, resolveErr := o.principals.ResolveRoleBoundPrincipal(ctx, task.AssignedRoleID)
+		if resolveErr != nil {
+			return task, resolveErr
+		}
+		if principal.ID == "" || (principal.RoleID != "" && principal.RoleID != task.AssignedRoleID) {
+			return task, fmt.Errorf("%w: resolved principal is not bound to %s", ErrExecutionPrincipalUnusable, task.AssignedRoleID)
+		}
+		claimed, attempt, l, err := o.tasks.ClaimTask(ctx, ClaimTaskCommand{
+			TaskID: task.ID, WorkerID: orchestratorWorkerID, HolderPrincipalID: principal.ID,
+			AssignedRoleID: task.AssignedRoleID, LeaseDuration: executiveLeaseTTL,
+		})
 		if err != nil {
 			return task, err
 		}
@@ -630,6 +722,15 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 			return task, fmt.Errorf("%w: dispatch assignment scope mismatch", ErrRegistryMismatch)
 		}
 	}
+	// From here on every lease-authorized mutation is performed as the lease
+	// holder, not as the worker name. The task engine matches ActorID against
+	// task_leases.holder_id, so using orchestratorWorkerID here would be
+	// rejected outright -- and, worse, would mean the attempt's authority was
+	// never the principal the lease was issued to.
+	actorID := lease.HolderID
+	if haveLease && strings.TrimSpace(actorID) == "" {
+		return task, fmt.Errorf("%w: active lease has no holder principal", ErrExecutionPrincipalUnusable)
+	}
 	if task.Status == "leased" {
 		if !haveLease {
 			return task, fmt.Errorf("%w: active task lease token unavailable after process restart", ErrRunBlocked)
@@ -641,7 +742,7 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		if assignment.OrganizationRevisionID != task.OrganizationRevisionID {
 			return task, fmt.Errorf("%w: assignment revision drift", ErrRegistryMismatch)
 		}
-		if _, err = o.tasks.StartAttempt(ctx, lease, orchestratorWorkerID); err != nil {
+		if _, err = o.tasks.StartAttempt(ctx, lease, actorID); err != nil {
 			return task, err
 		}
 		task, err = o.tasks.GetTask(ctx, task.ID)
@@ -655,6 +756,9 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 	if !haveLease {
 		return task, fmt.Errorf("%w: running task lease token unavailable after process restart", ErrRunBlocked)
 	}
+	// One task attempt still means at most one model invocation. The Harness
+	// enforces one turn per run through MaxTurns; this is the durable check
+	// that a second invocation never appeared behind its back.
 	invocations, err := o.models.FindTaskAttemptInvocations(ctx, task.ID, lease.AttemptID)
 	if err != nil {
 		return task, err
@@ -662,67 +766,281 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 	if len(invocations) > 1 {
 		return task, fmt.Errorf("%w: multiple invocations for one task attempt", ErrContractRejected)
 	}
-	var invocation InvocationRecord
-	if len(invocations) == 0 {
-		snapshotID, buildErr := o.contexts.Build(ctx, ContextRequest{OrganizationRevisionID: task.OrganizationRevisionID, ActorRoleID: task.AssignedRoleID, Purpose: purpose, TaskRef: "task:" + strconv.FormatInt(task.ID, 10), IdempotencyKey: childKey(root.ID, fmt.Sprintf("context:%d:%d", task.ID, lease.AttemptID)), CorrelationID: root.CorrelationID, CausationID: attemptCausation(task.ID, lease.AttemptID)})
-		if buildErr != nil {
-			return task, buildErr
-		}
-		invocation, _, err = o.models.EnsureInvocation(ctx, InvocationCommand{TaskID: task.ID, AttemptID: lease.AttemptID, SubjectRoleID: task.AssignedRoleID, ContextSnapshotID: snapshotID, Purpose: purpose, OutputSchema: schema, MaxOutputTokens: o.limits.MaxOutputTokens, IdempotencyKey: childKey(root.ID, fmt.Sprintf("invocation:%d:%d", task.ID, lease.AttemptID)), CorrelationID: root.CorrelationID, CausationID: attemptCausation(task.ID, lease.AttemptID), Deadline: o.clock.Now().Add(o.limits.InvocationDeadline)})
-		if err != nil {
-			return task, err
-		}
-	} else {
-		invocation = invocations[0]
+	snapshot, err := o.contexts.Build(ctx, ContextRequest{
+		OrganizationRevisionID: task.OrganizationRevisionID, ActorRoleID: task.AssignedRoleID,
+		Purpose: purpose.LegacyPurpose(), TaskRef: "task:" + strconv.FormatInt(task.ID, 10),
+		IdempotencyKey: childKey(root.ID, fmt.Sprintf("context:%d:%d", task.ID, lease.AttemptID)),
+		CorrelationID:  root.CorrelationID, CausationID: attemptCausation(task.ID, lease.AttemptID),
+	})
+	if err != nil {
+		return task, err
 	}
-	switch invocation.Status {
-	case "requested", "claimed", "send_started", "response_received":
-		if updated, hbErr := o.tasks.Heartbeat(ctx, lease, orchestratorWorkerID, 5*time.Minute); hbErr == nil {
-			o.rememberLease(task.ID, updated)
-		}
-		return task, nil
-	case "ambiguous":
-		_, _ = o.tasks.BlockTask(ctx, root.ID, "model_outcome_ambiguous", fmt.Sprintf("task=%d attempt=%d invocation=%d requires explicit inspection", task.ID, lease.AttemptID, invocation.ID), "service", orchestratorWorkerID)
-		return task, ErrModelOutcomeAmbiguous
-	case "failed", "cancelled":
-		failed, recErr := o.tasks.RecordAttemptFailed(ctx, lease, orchestratorWorkerID, "model_invocation_failed", invocation.ErrorCode, false)
-		o.forgetLease(task.ID)
-		if recErr != nil {
-			return task, recErr
-		}
-		return failed, fmt.Errorf("%w: model invocation %s", ErrCompletionFailed, invocation.Status)
-	case "succeeded":
-		result, rErr := o.models.GetResult(ctx, invocation.ID)
-		if rErr != nil {
-			return task, rErr
-		}
-		if result.ToolIntents > 0 {
-			return task, ErrToolIntentRejected
-		}
-		if len(result.JSONOutput) == 0 {
-			return task, fmt.Errorf("%w: JSON output required", ErrContractRejected)
-		}
-		if result.ResponseBytes > o.limits.MaxInputBytes {
-			return task, ErrPlanTooLarge
-		}
-		if err = validate(result); err != nil {
+	// The correlation-wide model-call budget is checked HERE, before the run,
+	// because this is the last point the Executive still controls. Once the
+	// Harness is entered, invocation creation happens inside Model Runtime and
+	// the Executive has no say left. len(invocations) > 0 means this attempt
+	// already has its invocation and is being resumed, which is the same
+	// logical model call and must not be charged twice.
+	if len(invocations) == 0 {
+		if err = o.budget.AuthorizeModelCall(ctx, ModelCallBudgetRequest{
+			TaskID: task.ID, AttemptID: lease.AttemptID, CorrelationID: root.CorrelationID,
+		}); err != nil {
 			return task, err
 		}
-		reqID := resultRequirementID(task.Requirements)
-		if reqID == 0 {
-			return task, fmt.Errorf("%w: result requirement missing", ErrContractRejected)
+	}
+
+	command := HarnessRunCommand{
+		RunID:                harnessRunID(o.organizationID, task.ID, lease.AttemptID, purpose),
+		TaskID:               task.ID,
+		AttemptID:            lease.AttemptID,
+		RoleID:               task.AssignedRoleID,
+		ExecutionPrincipalID: actorID,
+		LeaseToken:           lease.LeaseToken,
+		Context:              snapshot,
+		Purpose:              purpose,
+		OutputSchema:         schema,
+		MaxOutputTokens:      o.limits.MaxOutputTokens,
+		CorrelationID:        root.CorrelationID,
+		CausationID:          attemptCausation(task.ID, lease.AttemptID),
+		Deadline:             o.clock.Now().Add(o.limits.InvocationDeadline),
+	}
+
+	execCtx, keeper := o.startLeaseKeeper(ctx, task.ID, lease, actorID)
+	outcome, execErr := o.harness.Execute(execCtx, command)
+	keeperErr := keeper.stop()
+	if refreshed := keeper.currentLease(); refreshed.LeaseToken != "" {
+		lease = refreshed
+		if keeperErr == nil {
+			o.rememberLease(task.ID, lease)
 		}
-		if err = o.tasks.RecordEvidence(ctx, EvidenceCommand{TaskID: task.ID, RequirementID: reqID, Type: "result", Reference: fmt.Sprintf("model-invocation:%d", invocation.ID), Digest: result.ResponseHash, RecordedBy: orchestratorWorkerID, Metadata: map[string]any{"invocation_id": invocation.ID, "response_bytes": result.ResponseBytes}, Satisfies: true}); err != nil {
-			return task, err
+	}
+
+	// Keeper first, unconditionally. A run that "succeeded" while its lease
+	// was being lost produced a result nobody is authorized to record, and the
+	// task engine would refuse the write anyway. Deciding this before looking
+	// at the Harness verdict is what keeps that from becoming a spurious
+	// completion.
+	if keeperErr != nil {
+		if handled, blocked, ambiguityErr := o.ambiguityGuard(ctx, root, task, lease.AttemptID); handled {
+			return blocked, ambiguityErr
 		}
-		finished, recErr := o.tasks.RecordAttemptSucceeded(ctx, lease, orchestratorWorkerID, "validated model result")
 		o.forgetLease(task.ID)
-		if recErr != nil {
-			return task, recErr
+		return task, fmt.Errorf("%w: task=%d attempt=%d: %v", ErrLeaseLost, task.ID, lease.AttemptID, keeperErr)
+	}
+	if execErr != nil {
+		if handled, blocked, ambiguityErr := o.ambiguityGuard(ctx, root, task, lease.AttemptID); handled {
+			return blocked, ambiguityErr
 		}
-		return o.gatedComplete(ctx, finished)
+		return o.failAttempt(ctx, task, lease, actorID, "harness_execution_failed", execErr.Error(), ErrCompletionFailed)
+	}
+	if err = outcome.Validate(); err != nil {
+		return task, err
+	}
+	if outcome.Status == HarnessRunSucceeded {
+		return o.recordHarnessSuccess(ctx, task, lease, actorID, outcome, validate)
+	}
+	return o.handleHarnessFailure(ctx, root, task, lease, actorID, outcome)
+}
+
+// harnessRunID is the durable identity of one cognitive execution. It is a
+// pure function of organization, attempt and purpose: the same process
+// re-entering the same attempt resumes the same run, and a fresh attempt
+// (which is what a lease expiry produces) is necessarily a different run. A
+// random per-tick identifier would have made every resume a new trajectory and
+// every duplicate a new provider call.
+func harnessRunID(organizationID string, taskID, attemptID int64, purpose ExecutionPurpose) string {
+	return fmt.Sprintf("executive:%s:task:%d:attempt:%d:%s:v1", organizationID, taskID, attemptID, purpose)
+}
+
+// priorExecutionBarrier refuses to start new work for a task while any of its
+// executions may already have reached the provider without a resolved outcome.
+//
+// It deliberately restates none of Model Runtime's state machine. Model Runtime
+// answers "may this have reached the provider" itself
+// (InvocationStatus.ProviderExecutionMayHaveStarted), and its reconciler is
+// what later turns an expired send into the durable ambiguous verdict. This
+// only enforces the consequence: while that answer is yes and no verdict
+// exists, the Executive waits.
+//
+// The window this closes is an ordering race between two independent
+// reconcilers. The Task Engine expires a lease and makes the task ready again
+// on its own schedule; Model Runtime classifies an expired dispatch on its own.
+// If the task became retryable first, the Executive would previously claim a
+// fresh attempt and issue a second provider call for work whose first call may
+// already be in flight. Task reconciliation running before model
+// reconciliation is now safe, because readiness alone no longer authorizes
+// execution.
+//
+// Every attempt of the task is inspected, not only the current one: the unsafe
+// invocation belongs to the attempt that died, and the whole point is that a
+// NEW attempt must not execute beside it.
+func (o *Orchestrator) priorExecutionBarrier(ctx context.Context, root, task TaskRecord) (bool, TaskRecord, error) {
+	var ambiguous, unresolved InvocationRecord
+	for _, attempt := range task.Attempts {
+		invocations, err := o.models.FindTaskAttemptInvocations(ctx, task.ID, attempt.ID)
+		if err != nil {
+			return true, task, err
+		}
+		for _, invocation := range invocations {
+			if invocation.Status == "ambiguous" && ambiguous.ID == 0 {
+				ambiguous = invocation
+			}
+			if invocation.ProviderExecutionMayHaveStarted && unresolved.ID == 0 {
+				unresolved = invocation
+			}
+		}
+	}
+	// A resolved ambiguous verdict wins: it is durable, terminal, and requires
+	// explicit reconciliation rather than waiting.
+	if ambiguous.ID != 0 {
+		_, _ = o.tasks.BlockTask(ctx, root.ID, "model_outcome_ambiguous",
+			fmt.Sprintf("task=%d attempt=%d invocation=%d requires explicit inspection", task.ID, ambiguous.AttemptID, ambiguous.ID),
+			"service", orchestratorWorkerID)
+		return true, task, ErrModelOutcomeAmbiguous
+	}
+	if unresolved.ID != 0 {
+		// Fail closed and stay retryable: nothing durable changes, no attempt is
+		// created, no budget is charged, and the next pass re-asks once Model
+		// Runtime has had the chance to reconcile.
+		return true, task, fmt.Errorf("%w: task=%d attempt=%d invocation=%d is %q",
+			ErrPriorExecutionUnresolved, task.ID, unresolved.AttemptID, unresolved.ID, unresolved.Status)
+	}
+	return false, task, nil
+}
+
+// ambiguityGuard is the safety property that survived the migration intact:
+// Model Runtime, not the Harness, owns provider send/outcome ambiguity, so
+// after any execution whose outcome is uncertain the durable invocation rows
+// are inspected before anything is retried. An ambiguous invocation blocks the
+// run for explicit reconciliation and never produces a second provider call.
+func (o *Orchestrator) ambiguityGuard(ctx context.Context, root, task TaskRecord, attemptID int64) (bool, TaskRecord, error) {
+	if ctx.Err() != nil {
+		// Nothing can be read or written under a dead context; the next resume
+		// performs the same inspection before it would execute anything.
+		return false, task, nil
+	}
+	invocations, err := o.models.FindTaskAttemptInvocations(ctx, task.ID, attemptID)
+	if err != nil {
+		return true, task, err
+	}
+	for _, invocation := range invocations {
+		if invocation.Status != "ambiguous" {
+			continue
+		}
+		_, _ = o.tasks.BlockTask(ctx, root.ID, "model_outcome_ambiguous",
+			fmt.Sprintf("task=%d attempt=%d invocation=%d requires explicit inspection", task.ID, attemptID, invocation.ID),
+			"service", orchestratorWorkerID)
+		return true, task, ErrModelOutcomeAmbiguous
+	}
+	return false, task, nil
+}
+
+func (o *Orchestrator) failAttempt(ctx context.Context, task TaskRecord, lease LeaseRecord, actorID, code, detail string, sentinel error) (TaskRecord, error) {
+	failed, recErr := o.tasks.RecordAttemptFailed(ctx, lease, actorID, code, truncate(detail, 2000), false)
+	o.forgetLease(task.ID)
+	if recErr != nil {
+		return task, recErr
+	}
+	return failed, fmt.Errorf("%w: %s", sentinel, code)
+}
+
+// recordHarnessSuccess validates the durable result the run produced. Every
+// check the pre-Harness path performed still runs, against the same durable
+// row: the Harness reports which invocation answered, and the answer itself is
+// read back from Model Runtime rather than trusted from the verdict.
+func (o *Orchestrator) recordHarnessSuccess(ctx context.Context, task TaskRecord, lease LeaseRecord, actorID string, outcome HarnessRunOutcome, validate func(InvocationResult) error) (TaskRecord, error) {
+	result, err := o.models.GetResult(ctx, outcome.InvocationID)
+	if err != nil {
+		return task, err
+	}
+	if result.ToolIntents > 0 {
+		return task, ErrToolIntentRejected
+	}
+	if len(result.JSONOutput) == 0 {
+		return task, fmt.Errorf("%w: JSON output required", ErrContractRejected)
+	}
+	if result.ResponseBytes > o.limits.MaxInputBytes {
+		return task, ErrPlanTooLarge
+	}
+	// The Harness carries Model Runtime's canonical JSON through unchanged. If
+	// the two ever disagree, something rewrote the answer between the durable
+	// row and the verdict, and neither copy can be trusted.
+	if outcome.FinalOutput != string(result.JSONOutput) {
+		return task, fmt.Errorf("%w: harness final output does not match the durable model result", ErrContractRejected)
+	}
+	if err = validate(result); err != nil {
+		return task, err
+	}
+	reqID := resultRequirementID(task.Requirements)
+	if reqID == 0 {
+		return task, fmt.Errorf("%w: result requirement missing", ErrContractRejected)
+	}
+	if err = o.tasks.RecordEvidence(ctx, EvidenceCommand{
+		TaskID: task.ID, RequirementID: reqID, Type: "result",
+		Reference: fmt.Sprintf("model-invocation:%d", outcome.InvocationID), Digest: result.ResponseHash,
+		RecordedBy: orchestratorWorkerID,
+		Metadata:   map[string]any{"invocation_id": outcome.InvocationID, "response_bytes": result.ResponseBytes},
+		Satisfies:  true,
+	}); err != nil {
+		return task, err
+	}
+	finished, recErr := o.tasks.RecordAttemptSucceeded(ctx, lease, actorID, "validated model result")
+	o.forgetLease(task.ID)
+	if recErr != nil {
+		return task, recErr
+	}
+	return o.gatedComplete(ctx, finished)
+}
+
+// handleHarnessFailure maps one Harness verdict onto existing Executive task
+// semantics. There is deliberately no new state machine here: every branch
+// lands on a status the Executive already had.
+func (o *Orchestrator) handleHarnessFailure(ctx context.Context, root, task TaskRecord, lease LeaseRecord, actorID string, outcome HarnessRunOutcome) (TaskRecord, error) {
+	switch outcome.Failure {
+	case HarnessFailureAuthorityUnavailable:
+		// Not a denial and not terminal: the Harness wrote nothing, the
+		// attempt keeps its lease, and the same run identity resumes on the
+		// next tick. Failing the attempt here would turn an outage into a
+		// durable statement about the principal.
+		return task, fmt.Errorf("%w: %s", ErrExecutionAuthorityUnavailable, outcome.TerminationReason)
+	case HarnessFailureAuthorizationDenied:
+		return o.failAttempt(ctx, task, lease, actorID, "execution_authority_denied", outcome.TerminationReason, ErrExecutionAuthorityDenied)
+	case HarnessFailureIndeterminateTool:
+		// A tool may already have reached outside the system. This is the one
+		// outcome that must never be retried automatically, so the attempt
+		// fails non-retryably AND the root is blocked for reconciliation.
+		_, _ = o.tasks.RecordAttemptFailed(ctx, lease, actorID, "indeterminate_tool_execution", truncate(outcome.TerminationReason, 2000), false)
+		o.forgetLease(task.ID)
+		_, _ = o.tasks.BlockTask(ctx, root.ID, "indeterminate_tool_execution",
+			fmt.Sprintf("task=%d attempt=%d: %s", task.ID, lease.AttemptID, truncate(outcome.TerminationReason, 1000)),
+			"service", orchestratorWorkerID)
+		return task, ErrIndeterminateToolExecution
+	case HarnessFailureToolRejected:
+		// Executive typed tasks expose no tools at all. A model that asks for
+		// one gets the same treatment it always got: rejected, never executed,
+		// and never a completion.
+		return task, ErrToolIntentRejected
+	case HarnessFailureLimitReached:
+		return o.failAttempt(ctx, task, lease, actorID, "harness_limit_reached", outcome.TerminationReason, ErrBudgetExceeded)
+	case HarnessFailureIdentityDrift:
+		return o.failAttempt(ctx, task, lease, actorID, "harness_identity_drift", outcome.TerminationReason, ErrRunIdentityDrift)
+	case HarnessFailureCancelled:
+		if handled, blocked, err := o.ambiguityGuard(ctx, root, task, lease.AttemptID); handled {
+			return blocked, err
+		}
+		return task, fmt.Errorf("%w: %s", ErrExecutionInterrupted, outcome.TerminationReason)
+	case HarnessFailureHistoryError:
+		if handled, blocked, err := o.ambiguityGuard(ctx, root, task, lease.AttemptID); handled {
+			return blocked, err
+		}
+		return o.failAttempt(ctx, task, lease, actorID, "harness_history_error", outcome.TerminationReason, ErrHarnessHistoryFailed)
+	case HarnessFailureModelError:
+		if handled, blocked, err := o.ambiguityGuard(ctx, root, task, lease.AttemptID); handled {
+			return blocked, err
+		}
+		return o.failAttempt(ctx, task, lease, actorID, "model_invocation_failed", outcome.TerminationReason, ErrCompletionFailed)
 	default:
-		return task, fmt.Errorf("%w: unknown invocation status %s", ErrContractRejected, invocation.Status)
+		return task, fmt.Errorf("%w: unknown harness failure %q", ErrContractRejected, outcome.Failure)
 	}
 }
 
@@ -816,15 +1134,25 @@ func (o *Orchestrator) completeRoot(ctx context.Context, root, closureTask TaskR
 	if err := o.tasks.RecordEvidence(ctx, EvidenceCommand{TaskID: root.ID, RequirementID: reqID, Type: "result", Reference: fmt.Sprintf("task:%d:model-invocation:%d", closureTask.ID, result.InvocationID), Digest: result.ResponseHash, RecordedBy: orchestratorWorkerID, Metadata: map[string]any{"closure_task_id": closureTask.ID, "answer_hash": actionDigest(closure.AnswerToOwner)}, Satisfies: true}); err != nil {
 		return err
 	}
-	_, _, lease, err := o.tasks.ClaimTask(ctx, root.ID, orchestratorWorkerID, CEORoleID, 2*time.Minute)
+	principal, err := o.principals.ResolveRoleBoundPrincipal(ctx, CEORoleID)
+	if err != nil {
+		return err
+	}
+	if principal.ID == "" {
+		return fmt.Errorf("%w: no role-bound principal for %s", ErrExecutionPrincipalUnusable, CEORoleID)
+	}
+	_, _, lease, err := o.tasks.ClaimTask(ctx, ClaimTaskCommand{
+		TaskID: root.ID, WorkerID: orchestratorWorkerID, HolderPrincipalID: principal.ID,
+		AssignedRoleID: CEORoleID, LeaseDuration: 2 * time.Minute,
+	})
 	if err != nil {
 		return err
 	}
 	o.rememberLease(root.ID, lease)
-	if _, err = o.tasks.StartAttempt(ctx, lease, orchestratorWorkerID); err != nil {
+	if _, err = o.tasks.StartAttempt(ctx, lease, principal.ID); err != nil {
 		return err
 	}
-	finished, err := o.tasks.RecordAttemptSucceeded(ctx, lease, orchestratorWorkerID, "executive closure verified")
+	finished, err := o.tasks.RecordAttemptSucceeded(ctx, lease, principal.ID, "executive closure verified")
 	o.forgetLease(root.ID)
 	if err != nil {
 		return err
@@ -874,8 +1202,17 @@ func (o *Orchestrator) resultForCompletedTask(ctx context.Context, task TaskReco
 	return result, true
 }
 
+// handlePhaseError decides whether a phase failure is a durable statement
+// about the run or a transient condition the next tick can retry.
+//
+// The non-blocking set matters more than it looks: blocking the root for a
+// lost lease or an unavailable authority would wedge the run permanently,
+// because ResumeDurable deliberately refuses to auto-reopen a blocked root.
+// Those conditions resolve themselves -- the task engine expires the lease,
+// reconciles the attempt and produces a fresh one -- so the correct response
+// is to report and step back, not to record a verdict.
 func (o *Orchestrator) handlePhaseError(ctx context.Context, root, task TaskRecord, err error) (Run, error) {
-	if errors.Is(err, ErrDispatchAssignmentRequired) || errors.Is(err, ErrModelOutcomeAmbiguous) {
+	if isNonBlockingPhaseError(err) {
 		run, _ := o.Status(ctx, root.ID)
 		return run, err
 	}
@@ -886,12 +1223,36 @@ func (o *Orchestrator) handlePhaseError(ctx context.Context, root, task TaskReco
 	if errors.Is(err, ErrToolIntentRejected) {
 		code = "model_result_tool_intent_rejected"
 	}
+	if errors.Is(err, ErrExecutionAuthorityDenied) {
+		code = "execution_authority_denied"
+	}
+	if errors.Is(err, ErrExecutionPrincipalUnusable) {
+		code = "execution_principal_unusable"
+	}
 	run, blockErr := o.blockRoot(ctx, root, code, err.Error())
 	if blockErr != nil {
 		return Run{}, blockErr
 	}
 	return run, err
 }
+
+// isNonBlockingPhaseError lists the conditions whose root is already blocked
+// with a more precise reason, or that must stay retryable.
+func isNonBlockingPhaseError(err error) bool {
+	switch {
+	case errors.Is(err, ErrDispatchAssignmentRequired),
+		errors.Is(err, ErrModelOutcomeAmbiguous),
+		errors.Is(err, ErrIndeterminateToolExecution),
+		errors.Is(err, ErrLeaseLost),
+		errors.Is(err, ErrExecutionAuthorityUnavailable),
+		errors.Is(err, ErrExecutionPrincipalUnavailable),
+		errors.Is(err, ErrPriorExecutionUnresolved),
+		errors.Is(err, ErrExecutionInterrupted):
+		return true
+	}
+	return false
+}
+
 func (o *Orchestrator) blockRoot(ctx context.Context, root TaskRecord, code, reason string) (Run, error) {
 	_, err := o.tasks.BlockTask(ctx, root.ID, code, truncate(reason, 2000), "service", orchestratorWorkerID)
 	if err != nil {

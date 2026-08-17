@@ -9,7 +9,12 @@ import (
 	"time"
 )
 
-func testOrchestratorForPorts(t *testing.T, tasksPort *memoryTasks, models *fakeModels, completion *fakeCompletion) *Orchestrator {
+func testOrchestratorForPorts(t *testing.T, tasksPort *memoryTasks, models *fakeModels, completion *fakeCompletion, opts ...OrchestratorOption) *Orchestrator {
+	t.Helper()
+	return testOrchestratorWithHarness(t, tasksPort, models, newFakeHarness(models), &countingBudget{}, completion, opts...)
+}
+
+func testOrchestratorWithHarness(t *testing.T, tasksPort *memoryTasks, models *fakeModels, harness HarnessExecutor, budget ModelBudgetGate, completion *fakeCompletion, opts ...OrchestratorOption) *Orchestrator {
 	t.Helper()
 	leader := RoleRef{ID: "ingenieria_ia/orquestador", UnitID: "ingenieria_ia", Enabled: true, Executable: true, CanonicalLeader: true}
 	registry := fakeRegistry{
@@ -20,10 +25,13 @@ func testOrchestratorForPorts(t *testing.T, tasksPort *memoryTasks, models *fake
 		roles:   map[string]RoleRef{leader.ID: leader},
 		leaders: map[string]RoleRef{"ingenieria_ia": leader},
 	}
-	value, err := NewOrchestrator(
-		"explorarte", registry, tasksPort, &fakeContexts{}, fakeAssignments{}, models, completion, &fakeDecisionRecorder{},
-		allowAuthz{}, DefaultLimits(), ClockFunc(func() time.Time { return time.Unix(1000, 0) }),
-	)
+	value, err := NewOrchestrator(Dependencies{
+		OrganizationID: "explorarte", Registry: registry, Tasks: tasksPort, Contexts: &fakeContexts{},
+		Assignments: fakeAssignments{}, Principals: newFakePrincipals(), Models: models, Harness: harness,
+		Budget: budget, Completion: completion,
+		Decisions: &fakeDecisionRecorder{}, Authorization: allowAuthz{}, Limits: DefaultLimits(),
+		Clock: ClockFunc(func() time.Time { return time.Unix(1000, 0) }),
+	}, opts...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,11 +65,14 @@ func TestSubmitIdempotencyAndCorrelation(t *testing.T) {
 	}
 }
 
-func TestOneInvocationPerTaskAttempt(t *testing.T) {
+// TestOneHarnessRunPerTaskAttempt: one attempt produces one Harness run and
+// one durable invocation, and re-driving the same task does not produce a
+// second of either.
+func TestOneHarnessRunPerTaskAttempt(t *testing.T) {
 	tasksPort := newMemoryTasks()
 	models := newFakeModels()
-	models.ensure = InvocationRecord{ID: 500, Status: "requested"}
-	orchestrator := testOrchestratorForPorts(t, tasksPort, models, &fakeCompletion{verdict: CompletionPass})
+	harness := newFakeHarness(models)
+	orchestrator := testOrchestratorWithHarness(t, tasksPort, models, harness, &countingBudget{}, &fakeCompletion{verdict: CompletionPass})
 	root, _, _ := tasksPort.CreateTask(context.Background(), CreateTaskCommand{
 		RequestedByRoleID: OwnerRoleID, AssignedRoleID: CEORoleID, IdempotencyKey: "root",
 		Title: "root", Instructions: "root", AcceptanceCriteria: []string{"x"}, CorrelationID: "executive:x",
@@ -72,28 +83,34 @@ func TestOneInvocationPerTaskAttempt(t *testing.T) {
 		CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID),
 		Requirements: []RequirementProposal{{Key: "typed_plan", Type: "result", Description: "x", Required: true}},
 	})
-	if _, err := orchestrator.driveTypedTask(context.Background(), root, task, departmentPlanOutputSchema, "department_plan", func(InvocationResult) error { return nil }); err != nil {
+	if _, err := orchestrator.driveTypedTask(context.Background(), root, task, departmentPlanOutputSchema, PurposeDepartmentPlan, func(InvocationResult) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 	current, _ := tasksPort.GetTask(context.Background(), task.ID)
-	if _, err := orchestrator.driveTypedTask(context.Background(), root, current, departmentPlanOutputSchema, "department_plan", func(InvocationResult) error { return nil }); err != nil {
+	if _, err := orchestrator.driveTypedTask(context.Background(), root, current, departmentPlanOutputSchema, PurposeDepartmentPlan, func(InvocationResult) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if models.ensureCalls != 1 {
-		t.Fatalf("EnsureInvocation calls=%d", models.ensureCalls)
+	if harness.callCount() != 1 {
+		t.Fatalf("harness runs=%d want 1", harness.callCount())
 	}
 	current, _ = tasksPort.GetTask(context.Background(), task.ID)
 	attemptID := current.Attempts[0].ID
-	if got := len(models.invocations[invocationKey(task.ID, attemptID)]); got != 1 {
+	if got := models.invocationCount(task.ID, attemptID); got != 1 {
 		t.Fatalf("invocations=%d", got)
 	}
 }
 
+// TestAmbiguousBlocksWithoutRetry: the Harness reports a model failure, but
+// the durable Model Runtime invocation says the provider outcome is ambiguous.
+// Model Runtime is the owner of that fact, so the run blocks for explicit
+// reconciliation and no second provider call is made.
 func TestAmbiguousBlocksWithoutRetry(t *testing.T) {
 	tasksPort := newMemoryTasks()
 	models := newFakeModels()
-	models.ensure = InvocationRecord{ID: 501, Status: "ambiguous"}
-	orchestrator := testOrchestratorForPorts(t, tasksPort, models, &fakeCompletion{verdict: CompletionPass})
+	harness := newFakeHarness(models)
+	harness.invocationStatus = "ambiguous"
+	harness.failure = HarnessFailureModelError
+	orchestrator := testOrchestratorWithHarness(t, tasksPort, models, harness, &countingBudget{}, &fakeCompletion{verdict: CompletionPass})
 	root, _, _ := tasksPort.CreateTask(context.Background(), CreateTaskCommand{
 		RequestedByRoleID: OwnerRoleID, AssignedRoleID: CEORoleID, IdempotencyKey: "root-a",
 		Title: "root", Instructions: "root", AcceptanceCriteria: []string{"x"}, CorrelationID: "executive:a",
@@ -103,35 +120,38 @@ func TestAmbiguousBlocksWithoutRetry(t *testing.T) {
 		Title: "child", Instructions: "child", AcceptanceCriteria: []string{"x"}, CorrelationID: root.CorrelationID,
 		Requirements: []RequirementProposal{{Key: "typed_plan", Type: "result", Description: "x", Required: true}},
 	})
-	_, err := orchestrator.driveTypedTask(context.Background(), root, task, departmentPlanOutputSchema, "department_plan", func(InvocationResult) error { return nil })
+	_, err := orchestrator.driveTypedTask(context.Background(), root, task, departmentPlanOutputSchema, PurposeDepartmentPlan, func(InvocationResult) error { return nil })
 	if !errors.Is(err, ErrModelOutcomeAmbiguous) {
 		t.Fatalf("err=%v", err)
 	}
-	if models.ensureCalls != 1 {
-		t.Fatalf("EnsureInvocation calls=%d", models.ensureCalls)
+	if harness.callCount() != 1 {
+		t.Fatalf("harness runs=%d want 1", harness.callCount())
 	}
-	blocked := tasksPort.tasks[root.ID]
+	blocked, _ := tasksPort.GetTask(context.Background(), root.ID)
 	if blocked.Status != "blocked" || blocked.ReasonCode != "model_outcome_ambiguous" {
 		t.Fatalf("root=%+v", blocked)
 	}
 	current, _ := tasksPort.GetTask(context.Background(), task.ID)
 	attemptID := current.Attempts[0].ID
-	if got := len(models.invocations[invocationKey(task.ID, attemptID)]); got != 1 {
+	if got := models.invocationCount(task.ID, attemptID); got != 1 {
 		t.Fatalf("invocations=%d", got)
+	}
+	// Driving again must not reach the provider a second time.
+	if _, secondErr := orchestrator.driveTypedTask(context.Background(), root, current, departmentPlanOutputSchema, PurposeDepartmentPlan, func(InvocationResult) error { return nil }); !errors.Is(secondErr, ErrModelOutcomeAmbiguous) {
+		t.Fatalf("second drive err=%v", secondErr)
+	}
+	if harness.callCount() != 1 {
+		t.Fatalf("harness runs after re-drive=%d want 1", harness.callCount())
 	}
 }
 
 func TestToolIntentsRejectedForPlanning(t *testing.T) {
 	tasksPort := newMemoryTasks()
 	models := newFakeModels()
-	models.ensure = InvocationRecord{ID: 502, Status: "succeeded"}
-	models.results[502] = InvocationResult{
-		InvocationID: 502,
-		JSONOutput:   json.RawMessage(`{"schema_version":"department-plan/v1","department_id":"ingenieria_ia","tasks":[],"review_criteria":[],"unresolved":[]}`),
-		ToolIntents:  1, ResponseHash: actionDigest("result"), ResponseBytes: 128,
-	}
+	harness := newFakeHarness(models)
+	harness.toolIntents = 1
 	completion := &fakeCompletion{verdict: CompletionPass}
-	orchestrator := testOrchestratorForPorts(t, tasksPort, models, completion)
+	orchestrator := testOrchestratorWithHarness(t, tasksPort, models, harness, &countingBudget{}, completion)
 	root, _, _ := tasksPort.CreateTask(context.Background(), CreateTaskCommand{
 		RequestedByRoleID: OwnerRoleID, AssignedRoleID: CEORoleID, IdempotencyKey: "root-tool",
 		Title: "root", Instructions: "root", AcceptanceCriteria: []string{"x"}, CorrelationID: "executive:tool",
@@ -141,7 +161,7 @@ func TestToolIntentsRejectedForPlanning(t *testing.T) {
 		Title: "child", Instructions: "child", AcceptanceCriteria: []string{"x"}, CorrelationID: root.CorrelationID,
 		Requirements: []RequirementProposal{{Key: "typed_plan", Type: "result", Description: "x", Required: true}},
 	})
-	_, err := orchestrator.driveTypedTask(context.Background(), root, task, departmentPlanOutputSchema, "department_plan", func(InvocationResult) error { return nil })
+	_, err := orchestrator.driveTypedTask(context.Background(), root, task, departmentPlanOutputSchema, PurposeDepartmentPlan, func(InvocationResult) error { return nil })
 	if !errors.Is(err, ErrToolIntentRejected) {
 		t.Fatalf("err=%v", err)
 	}
@@ -221,8 +241,8 @@ func TestCEOCompletedClaimCannotOverrideReviewEvidence(t *testing.T) {
 func TestInvocationCorrelationAndCausationPropagate(t *testing.T) {
 	tasksPort := newMemoryTasks()
 	models := newFakeModels()
-	models.ensure = InvocationRecord{ID: 700, Status: "requested"}
-	orchestrator := testOrchestratorForPorts(t, tasksPort, models, &fakeCompletion{verdict: CompletionPass})
+	harness := newFakeHarness(models)
+	orchestrator := testOrchestratorWithHarness(t, tasksPort, models, harness, &countingBudget{}, &fakeCompletion{verdict: CompletionPass})
 	root, _, _ := tasksPort.CreateTask(context.Background(), CreateTaskCommand{
 		RequestedByRoleID: OwnerRoleID, AssignedRoleID: CEORoleID, IdempotencyKey: "root-cause",
 		Title: "root", Instructions: "root", AcceptanceCriteria: []string{"x"}, CorrelationID: "executive:cause",
@@ -232,17 +252,21 @@ func TestInvocationCorrelationAndCausationPropagate(t *testing.T) {
 		Title: "child", Instructions: "child", AcceptanceCriteria: []string{"x"}, CorrelationID: root.CorrelationID,
 		CausationID: taskCausation(root.ID), Requirements: []RequirementProposal{{Key: "typed_plan", Type: "result", Description: "x", Required: true}},
 	})
-	if _, err := orchestrator.driveTypedTask(context.Background(), root, task, departmentPlanOutputSchema, "department_plan", func(InvocationResult) error { return nil }); err != nil {
+	if _, err := orchestrator.driveTypedTask(context.Background(), root, task, departmentPlanOutputSchema, PurposeDepartmentPlan, func(InvocationResult) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 	current, _ := tasksPort.GetTask(context.Background(), task.ID)
 	attemptID := current.Attempts[0].ID
-	values := models.invocations[invocationKey(task.ID, attemptID)]
+	values, _ := models.FindTaskAttemptInvocations(context.Background(), task.ID, attemptID)
 	if len(values) != 1 {
 		t.Fatalf("invocations=%d", len(values))
 	}
 	if values[0].CorrelationID != root.CorrelationID || values[0].CausationID != attemptCausation(task.ID, attemptID) {
 		t.Fatalf("invocation=%+v", values[0])
+	}
+	command := harness.lastCommand()
+	if command.CorrelationID != root.CorrelationID || command.CausationID != attemptCausation(task.ID, attemptID) {
+		t.Fatalf("harness command=%+v", command)
 	}
 }
 

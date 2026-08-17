@@ -46,13 +46,13 @@ const (
 // against a fresh disposable database must do the same instead of
 // assuming another test suite already did it.
 type harness struct {
-	store          *platformpostgres.Store
-	registry       *registry.PostgresRepository
-	tasks          *tasks.Service
-	authz          executive.AuthorizationGate
-	completion     executive.CompletionGate
-	decisions      executive.DecisionRecorder
-	authorizer     agentmessaging.CapabilityAuthorizer
+	store      *platformpostgres.Store
+	registry   *registry.PostgresRepository
+	tasks      *tasks.Service
+	authz      executive.AuthorizationGate
+	completion executive.CompletionGate
+	decisions  executive.DecisionRecorder
+	authorizer agentmessaging.CapabilityAuthorizer
 }
 
 func newHarness(ctx context.Context, store *platformpostgres.Store) (*harness, error) {
@@ -135,9 +135,13 @@ func newHarness(ctx context.Context, store *platformpostgres.Store) (*harness, e
 // has its own coverage.
 type fakeContext struct{ next int64 }
 
-func (f *fakeContext) Build(context.Context, executive.ContextRequest) (int64, error) {
+func (f *fakeContext) Build(context.Context, executive.ContextRequest) (executive.ContextSnapshot, error) {
 	f.next++
-	return f.next, nil
+	content := fmt.Sprintf("fixture context snapshot %d", f.next)
+	digest := sha256.Sum256([]byte(content))
+	return executive.ContextSnapshot{
+		ID: f.next, Version: "1", Digest: hex.EncodeToString(digest[:]), Content: content,
+	}, nil
 }
 
 // fakeAssignments stubs DispatchProvisioner — real provider dispatch is
@@ -173,23 +177,33 @@ func newFakeModelRuntime(evidence researchEvidence) *fakeModelRuntime {
 
 func modelAttemptKey(taskID, attemptID int64) string { return fmt.Sprintf("%d/%d", taskID, attemptID) }
 
-func (f *fakeModelRuntime) EnsureInvocation(_ context.Context, command executive.InvocationCommand) (executive.InvocationRecord, bool, error) {
+// Execute stands in for the Execution Harness. It performs the one thing a
+// real run performs that this fixture must never do -- call a billed provider
+// -- and leaves behind exactly what a real run leaves behind: a durable
+// invocation row for the attempt, its result, and a verdict referencing it.
+func (f *fakeModelRuntime) Execute(_ context.Context, command executive.HarnessRunCommand) (executive.HarnessRunOutcome, error) {
 	key := modelAttemptKey(command.TaskID, command.AttemptID)
 	if existing := f.byAttempt[key]; len(existing) > 0 {
-		return existing[0], true, nil
+		result := f.results[existing[0].ID]
+		return executive.HarnessRunOutcome{
+			Status: executive.HarnessRunSucceeded, FinalOutput: string(result.JSONOutput),
+			InvocationID: existing[0].ID,
+		}, nil
 	}
 	f.nextID++
 	invocation := executive.InvocationRecord{
-		ID: f.nextID, TaskID: command.TaskID, AttemptID: command.AttemptID, SubjectRoleID: command.SubjectRoleID,
+		ID: f.nextID, TaskID: command.TaskID, AttemptID: command.AttemptID, SubjectRoleID: command.RoleID,
 		Status: "succeeded", CorrelationID: command.CorrelationID, CausationID: command.CausationID,
 	}
 	f.byAttempt[key] = []executive.InvocationRecord{invocation}
-	body := f.output(command.Purpose)
+	body := f.output(command.Purpose.LegacyPurpose())
 	hash := sha256.Sum256(body)
 	f.results[invocation.ID] = executive.InvocationResult{
 		InvocationID: invocation.ID, JSONOutput: body, ResponseHash: hex.EncodeToString(hash[:]), ResponseBytes: len(body),
 	}
-	return invocation, false, nil
+	return executive.HarnessRunOutcome{
+		Status: executive.HarnessRunSucceeded, FinalOutput: string(body), InvocationID: invocation.ID,
+	}, nil
 }
 
 func (f *fakeModelRuntime) GetInvocation(_ context.Context, id int64) (executive.InvocationRecord, error) {

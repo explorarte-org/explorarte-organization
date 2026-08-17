@@ -41,6 +41,9 @@ func (o *Orchestrator) ResumeDurable(ctx context.Context, rootTaskID int64) (Run
 		case "model_outcome_ambiguous":
 			run, _ := o.Status(ctx, rootTaskID)
 			return run, ErrModelOutcomeAmbiguous
+		case "indeterminate_tool_execution":
+			run, _ := o.Status(ctx, rootTaskID)
+			return run, ErrIndeterminateToolExecution
 		case "orphaned_model_result":
 			run, _ := o.Status(ctx, rootTaskID)
 			return run, ErrOrphanedModelResult
@@ -61,22 +64,40 @@ func (o *Orchestrator) ResumeDurable(ctx context.Context, rootTaskID int64) (Run
 		return Run{}, err
 	}
 
-	// An active lease owned by a previous process cannot be adopted because its
-	// opaque token is intentionally not durable. Wait for Task Engine
-	// reconciliation; never reuse its attempt-specific assignment.
+	// Adoption is decided by one thing: does THIS process hold the opaque lease
+	// token for that attempt. Nothing else is evidence of ownership.
+	//
+	// This used to be gated on ActiveLease.HolderID == orchestratorWorkerID,
+	// which read "is this lease mine" off a worker name. That was always an
+	// inference rather than proof, and after the identity split it is a wrong
+	// one: the holder is now a canonical execution principal, so the condition
+	// stops matching and every prior-process lease would look adoptable. The
+	// token is what distinguishes this process from a previous one, precisely
+	// because it is deliberately never persisted, so it is now the whole rule.
+	//
+	// An active lease this process cannot prove it holds is a barrier, not
+	// authority: the attempt keeps running somewhere or is waiting to expire,
+	// and either way this process must not heartbeat it, record a result under
+	// it, or start a second provider call beside it.
 	for _, child := range children {
 		if child.ID == root.ID || child.ActiveLease == nil {
 			continue
 		}
-		if child.ActiveLease.HolderID == orchestratorWorkerID {
-			if _, haveToken := o.localLease(child.ID); !haveToken {
-				run, _ := o.Status(ctx, rootTaskID)
-				if root.Status == "blocked" && root.ReasonCode == "dispatch_assignment_required" {
-					return run, ErrDispatchAssignmentRequired
-				}
-				return run, ErrRunBlocked
-			}
+		if _, haveToken := o.localLease(child.ID); haveToken {
+			continue
 		}
+		// Before reporting the barrier, look at what Model Runtime durably
+		// knows about this attempt. A result that already exists must not be
+		// lost just because the local token is gone, and an ambiguous outcome
+		// must never be resolved by trying again.
+		if run, handled, inspectErr := o.inspectUnadoptableAttempt(ctx, root, child); handled {
+			return run, inspectErr
+		}
+		run, _ := o.Status(ctx, rootTaskID)
+		if root.Status == "blocked" && root.ReasonCode == "dispatch_assignment_required" {
+			return run, ErrDispatchAssignmentRequired
+		}
+		return run, ErrRunBlocked
 	}
 
 	if orphan, ok, detectErr := o.findOrphanedSucceededInvocation(ctx, root, children); detectErr != nil {
@@ -101,6 +122,46 @@ func (o *Orchestrator) ResumeDurable(ctx context.Context, rootTaskID int64) (Run
 		}
 	}
 	return o.Resume(ctx, rootTaskID)
+}
+
+// inspectUnadoptableAttempt reads what Model Runtime durably knows about an
+// attempt whose lease this process cannot adopt.
+//
+// Only ambiguity is acted on here, and that is deliberate. An ambiguous
+// invocation means nobody can say whether the provider ran, which is true
+// regardless of who holds the lease and is never resolved by trying again, so
+// it becomes a durable block immediately.
+//
+// A SUCCEEDED invocation is deliberately NOT turned into orphaned_model_result
+// while the lease is still active: the process that owns that lease may be
+// alive and about to record the result legitimately, and declaring the result
+// orphaned now would be a verdict about another process's work. The barrier
+// response (no adoption, no second provider call) is already safe. Once the
+// lease expires and Reconcile moves the attempt out of leased/running,
+// findOrphanedSucceededInvocation sees it and blocks with
+// orphaned_model_result, which is the existing R23 behavior this preserves.
+func (o *Orchestrator) inspectUnadoptableAttempt(ctx context.Context, root, child TaskRecord) (Run, bool, error) {
+	if child.ActiveLease == nil {
+		return Run{}, false, nil
+	}
+	invocations, err := o.models.FindTaskAttemptInvocations(ctx, child.ID, child.ActiveLease.AttemptID)
+	if err != nil {
+		return Run{}, true, err
+	}
+	for _, invocation := range invocations {
+		if invocation.Status != "ambiguous" {
+			continue
+		}
+		if root.Status != "blocked" || root.ReasonCode != "model_outcome_ambiguous" {
+			reason := fmt.Sprintf("task=%d attempt=%d invocation=%d requires explicit inspection", child.ID, child.ActiveLease.AttemptID, invocation.ID)
+			if _, blockErr := o.tasks.BlockTask(ctx, root.ID, "model_outcome_ambiguous", reason, "service", orchestratorWorkerID); blockErr != nil {
+				return Run{}, true, blockErr
+			}
+		}
+		run, _ := o.Status(ctx, root.ID)
+		return run, true, ErrModelOutcomeAmbiguous
+	}
+	return Run{}, false, nil
 }
 
 type orphanedInvocation struct {

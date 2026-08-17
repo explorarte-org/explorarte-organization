@@ -40,6 +40,9 @@ func (f *fakeCreator) Create(_ context.Context, command modelruntime.CreateInvoc
 		SubjectRoleID: command.SubjectRoleID, ContextSnapshotID: command.ContextSnapshotID,
 		CorrelationID: command.CorrelationID, CausationID: command.CausationID,
 		DispatcherAssignmentID: &assignmentID, ExecutionPrincipalID: &principalID,
+		OutputMode: command.OutputMode, OutputSchema: command.OutputSchema,
+		MaxOutputTokens: command.MaxOutputTokens, Temperature: command.Temperature,
+		ThinkingMode: command.ThinkingMode, RequiredCapabilities: command.RequiredCapabilities,
 	}
 	if f.drift {
 		invocation.TaskID++
@@ -372,7 +375,7 @@ func successfulDispatch(id int64, text string, intents []modelruntime.ToolIntent
 
 func successfulDispatchWithUsage(id int64, text string, intents []modelruntime.ToolIntent, usage modelruntime.Usage) modelruntime.DispatchResult {
 	assignmentID, principalID := int64(100+id), int64(200+id)
-	invocation := modelruntime.Invocation{ID: id, OrganizationID: "explorarte", TaskID: 11, AttemptID: 22, SubjectRoleID: "research/worker", ContextSnapshotID: 41, CorrelationID: "corr-1", CausationID: "cause-1", DispatcherAssignmentID: &assignmentID, ExecutionPrincipalID: &principalID, Status: modelruntime.InvocationSucceeded}
+	invocation := modelruntime.Invocation{ID: id, OrganizationID: "explorarte", TaskID: 11, AttemptID: 22, SubjectRoleID: "research/worker", ContextSnapshotID: 41, CorrelationID: "corr-1", CausationID: "cause-1", DispatcherAssignmentID: &assignmentID, ExecutionPrincipalID: &principalID, Status: modelruntime.InvocationSucceeded, OutputMode: modelruntime.OutputText, MaxOutputTokens: 256, ThinkingMode: modelruntime.ThinkingDisabled}
 	return modelruntime.DispatchResult{Invocation: invocation, Result: &modelruntime.InvocationResult{InvocationID: id, OutputMode: modelruntime.OutputText, TextOutput: text, ToolIntents: intents}, Usage: &usage}
 }
 

@@ -7,45 +7,44 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/executive"
 )
 
-// BudgetModels enforces the executive call budget from durable task attempts
-// and model invocations. It never trusts an in-memory counter. Existing
-// invocations for the same task attempt remain readable/idempotently reusable
-// even after the budget is exhausted; only creation of a new invocation is
-// rejected.
-type BudgetModels struct {
-	Models executive.ModelCoordinator
+// ModelCallBudget enforces the executive call budget from durable task
+// attempts and model invocations. It never trusts an in-memory counter.
+//
+// It used to be a decorator on invocation creation: the Executive asked for an
+// invocation, this counted first, and only then created one. That placement
+// stopped working the moment execution moved behind the Harness, because
+// invocations are now created inside Model Runtime, one layer below anything
+// the Executive can wrap. Wrapping a method the productive path no longer
+// calls would have removed MaxModelCalls while looking like it still enforced
+// it.
+//
+// So the count is separated from the creation and runs as a gate immediately
+// before the Harness is entered. The counting rule is unchanged, including the
+// part that matters most for correctness: an attempt that already has a
+// durable invocation is being resumed, is the same logical model call, and is
+// not charged again.
+type ModelCallBudget struct {
+	Models executive.ModelInvocationReader
 	Tasks  executive.TaskCoordinator
 	Limits executive.Limits
 }
 
-func (b BudgetModels) EnsureInvocation(ctx context.Context, command executive.InvocationCommand) (executive.InvocationRecord, bool, error) {
-	existing, err := b.Models.FindTaskAttemptInvocations(ctx, command.TaskID, command.AttemptID)
+func (b ModelCallBudget) AuthorizeModelCall(ctx context.Context, request executive.ModelCallBudgetRequest) error {
+	existing, err := b.Models.FindTaskAttemptInvocations(ctx, request.TaskID, request.AttemptID)
 	if err != nil {
-		return executive.InvocationRecord{}, false, err
+		return err
 	}
 	if len(existing) > 0 {
-		return b.Models.EnsureInvocation(ctx, command)
+		// Already-existing invocations for this attempt remain readable and
+		// idempotently resumable even after the budget is exhausted; only a
+		// NEW provider call is rejected.
+		return nil
 	}
-	if err = b.validateCorrelationBudget(ctx, command); err != nil {
-		return executive.InvocationRecord{}, false, err
-	}
-	return b.Models.EnsureInvocation(ctx, command)
+	return b.validateCorrelationBudget(ctx, request)
 }
 
-func (b BudgetModels) GetInvocation(ctx context.Context, id int64) (executive.InvocationRecord, error) {
-	return b.Models.GetInvocation(ctx, id)
-}
-
-func (b BudgetModels) FindTaskAttemptInvocations(ctx context.Context, taskID, attemptID int64) ([]executive.InvocationRecord, error) {
-	return b.Models.FindTaskAttemptInvocations(ctx, taskID, attemptID)
-}
-
-func (b BudgetModels) GetResult(ctx context.Context, id int64) (executive.InvocationResult, error) {
-	return b.Models.GetResult(ctx, id)
-}
-
-func (b BudgetModels) validateCorrelationBudget(ctx context.Context, command executive.InvocationCommand) error {
-	tasks, err := b.Tasks.ListByCorrelation(ctx, command.CorrelationID)
+func (b ModelCallBudget) validateCorrelationBudget(ctx context.Context, request executive.ModelCallBudgetRequest) error {
+	tasks, err := b.Tasks.ListByCorrelation(ctx, request.CorrelationID)
 	if err != nil {
 		return err
 	}
@@ -58,7 +57,7 @@ func (b BudgetModels) validateCorrelationBudget(ctx context.Context, command exe
 	var target *executive.TaskRecord
 	for i := range tasks {
 		task := tasks[i]
-		if task.ID == command.TaskID {
+		if task.ID == request.TaskID {
 			target = &tasks[i]
 		}
 		if strings.Contains(task.IdempotencyKey, ":leader-plan:") {
@@ -112,4 +111,4 @@ func suffixAfter(value, marker string) string {
 	return value[idx+len(marker):]
 }
 
-var _ executive.ModelCoordinator = BudgetModels{}
+var _ executive.ModelBudgetGate = ModelCallBudget{}

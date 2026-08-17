@@ -2,6 +2,8 @@ package runtimeadapter
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/executive"
@@ -118,12 +120,22 @@ func (a Tasks) ListAwaitingGating(ctx context.Context, limit int) ([]executive.T
 	return out, nil
 }
 
-func (a Tasks) ClaimTask(ctx context.Context, taskID int64, workerID, assignedRole string, duration time.Duration) (executive.TaskRecord, executive.AttemptRecord, executive.LeaseRecord, error) {
-	claimed, err := a.Service.ClaimTaskByID(ctx, taskID, tasks.ClaimRequest{
-		OrganizationID: a.OrganizationID,
-		WorkerID:       workerID,
-		AssignedRoleID: assignedRole,
-		LeaseDuration:  duration,
+// ClaimTask issues the lease to the canonical role-bound execution principal
+// while recording the operational worker name on the attempt. tasks.ClaimRequest
+// keeps a legacy fallback that issues the lease to WorkerID when
+// HolderPrincipalID is empty; the Executive never relies on it, because a lease
+// held by an operational name is not held by an execution principal and every
+// Harness run under it would be denied.
+func (a Tasks) ClaimTask(ctx context.Context, command executive.ClaimTaskCommand) (executive.TaskRecord, executive.AttemptRecord, executive.LeaseRecord, error) {
+	if strings.TrimSpace(command.HolderPrincipalID) == "" {
+		return executive.TaskRecord{}, executive.AttemptRecord{}, executive.LeaseRecord{}, fmt.Errorf("%w: claim requires a holder principal", executive.ErrExecutionPrincipalUnusable)
+	}
+	claimed, err := a.Service.ClaimTaskByID(ctx, command.TaskID, tasks.ClaimRequest{
+		OrganizationID:    a.OrganizationID,
+		WorkerID:          command.WorkerID,
+		HolderPrincipalID: command.HolderPrincipalID,
+		AssignedRoleID:    command.AssignedRoleID,
+		LeaseDuration:     command.LeaseDuration,
 	})
 	if err != nil {
 		return executive.TaskRecord{}, executive.AttemptRecord{}, executive.LeaseRecord{}, err

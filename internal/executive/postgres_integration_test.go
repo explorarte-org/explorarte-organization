@@ -48,6 +48,8 @@ type integrationHarness struct {
 	completion executive.CompletionGate
 	decisions  executive.DecisionRecorder
 	authorizer agentmessaging.CapabilityAuthorizer
+	principals executive.RoleBoundPrincipalResolver
+	dispatch   *dispatchpostgres.Store
 }
 
 func newIntegrationHarness(t *testing.T) *integrationHarness {
@@ -196,8 +198,25 @@ TRUNCATE outbox_events,task_dead_letters,task_events,task_leases,task_attempts,t
 		cancel()
 		t.Fatal(err)
 	}
+	dispatchStore, err := dispatchpostgres.New(store)
+	if err != nil {
+		store.Close()
+		cancel()
+		t.Fatal(err)
+	}
+	// The role-bound principal resolver is the real one, against the real
+	// dispatch principal store: lease holder identity is exactly what this
+	// migration moved, so faking it here would hide the thing under test.
+	roleBoundResolver, err := runtimeadapter.NewRoleBoundPrincipalResolver(dispatchStore, "explorarte")
+	if err != nil {
+		store.Close()
+		cancel()
+		t.Fatal(err)
+	}
 	return &integrationHarness{
 		ctx: ctx, cancel: cancel, store: store, registry: registryRepo, tasks: taskService,
+		principals: runtimeadapter.RoleBoundPrincipals{Resolver: roleBoundResolver},
+		dispatch:   dispatchStore,
 		authz:      runtimeadapter.Authorization{Service: authRuntime.Service, OrganizationID: "explorarte"},
 		authorizer: authRuntime.Authorizer,
 		completion: runtimeadapter.Completion{Service: completionService},
@@ -215,9 +234,13 @@ func (h *integrationHarness) close() {
 
 type integrationContext struct{ next int64 }
 
-func (f *integrationContext) Build(context.Context, executive.ContextRequest) (int64, error) {
+func (f *integrationContext) Build(context.Context, executive.ContextRequest) (executive.ContextSnapshot, error) {
 	f.next++
-	return f.next, nil
+	content := fmt.Sprintf("integration context snapshot %d", f.next)
+	digest := sha256.Sum256([]byte(content))
+	return executive.ContextSnapshot{
+		ID: f.next, Version: "1", Digest: hex.EncodeToString(digest[:]), Content: content,
+	}, nil
 }
 
 type integrationAssignments struct{ fail bool }
@@ -241,6 +264,50 @@ type integrationModelRuntime struct {
 	ambiguousPurpose   string
 	invalidCEOOverride bool
 	crossDepartment    bool
+	runs               []executive.HarnessRunCommand
+	// stopWithoutVerdict makes a run end the way a process crash does: no
+	// verdict, no durable invocation, and the attempt left running with its
+	// lease still held.
+	stopWithoutVerdict bool
+}
+
+// seedUnresolvedSend plants the state Model Runtime holds while a request may
+// already have crossed the provider boundary and nothing has classified it yet:
+// the dispatch was sent, no outcome came back, and Model Runtime's own
+// reconciler has not run. The flag is the answer Model Runtime itself gives for
+// that status (see modelruntime.InvocationStatus.ProviderExecutionMayHaveStarted),
+// carried through the same field the real adapter populates.
+func (f *integrationModelRuntime) seedUnresolvedSend(taskID, attemptID int64) int64 {
+	f.nextID++
+	f.byAttempt[modelAttemptKey(taskID, attemptID)] = []executive.InvocationRecord{{
+		ID: f.nextID, TaskID: taskID, AttemptID: attemptID, Status: "send_started",
+		ProviderExecutionMayHaveStarted: true,
+	}}
+	return f.nextID
+}
+
+// reconcileToAmbiguous is what Model Runtime's reconciler does to an expired
+// send: ambiguous, not retryable, external outcome unknown. The Executive
+// neither performs nor models this transition; it only reads the result.
+func (f *integrationModelRuntime) reconcileToAmbiguous(taskID, attemptID, invocationID int64) {
+	f.byAttempt[modelAttemptKey(taskID, attemptID)] = []executive.InvocationRecord{{
+		ID: invocationID, TaskID: taskID, AttemptID: attemptID, Status: "ambiguous",
+	}}
+}
+
+// seedDurableResult plants the durable Model Runtime state a crashed run would
+// have left behind for an attempt that never got recorded at the task level.
+func (f *integrationModelRuntime) seedDurableResult(taskID, attemptID int64, status string) {
+	f.nextID++
+	invocation := executive.InvocationRecord{ID: f.nextID, TaskID: taskID, AttemptID: attemptID, Status: status}
+	f.byAttempt[modelAttemptKey(taskID, attemptID)] = []executive.InvocationRecord{invocation}
+	if status == "succeeded" {
+		body := f.output("executive_ceo_plan")
+		hash := sha256.Sum256(body)
+		f.results[invocation.ID] = executive.InvocationResult{
+			InvocationID: invocation.ID, JSONOutput: body, ResponseHash: hex.EncodeToString(hash[:]), ResponseBytes: len(body),
+		}
+	}
 }
 
 func newIntegrationModelRuntime() *integrationModelRuntime {
@@ -249,30 +316,62 @@ func newIntegrationModelRuntime() *integrationModelRuntime {
 
 func modelAttemptKey(taskID, attemptID int64) string { return fmt.Sprintf("%d/%d", taskID, attemptID) }
 
-func (f *integrationModelRuntime) EnsureInvocation(_ context.Context, command executive.InvocationCommand) (executive.InvocationRecord, bool, error) {
+// Execute is the Execution Harness stand-in. Everything around it in these
+// tests is real -- real PostgreSQL tasks, leases, attempts, evidence,
+// completion verification and decision graph -- and the one thing faked here
+// is the billed provider call, exactly as before the migration. It leaves the
+// same durable trace a real run leaves: one invocation row per attempt, its
+// result, and a verdict that references it.
+func (f *integrationModelRuntime) Execute(_ context.Context, command executive.HarnessRunCommand) (executive.HarnessRunOutcome, error) {
+	f.runs = append(f.runs, command)
+	if f.stopWithoutVerdict {
+		// Authority that could not be consulted: nothing durable is written and
+		// the attempt keeps its lease, which is the state a crash leaves.
+		return executive.HarnessRunOutcome{
+			Status: executive.HarnessRunFailed, Failure: executive.HarnessFailureAuthorityUnavailable,
+			Retryable: true, TerminationReason: "execution authority unavailable",
+		}, nil
+	}
+	purpose := command.Purpose.LegacyPurpose()
 	key := modelAttemptKey(command.TaskID, command.AttemptID)
 	if existing := f.byAttempt[key]; len(existing) > 0 {
-		return existing[0], true, nil
+		return f.outcomeFor(existing[0]), nil
 	}
 	f.ensureCalls++
 	f.nextID++
 	status := "succeeded"
-	if command.Purpose == f.ambiguousPurpose {
+	if purpose == f.ambiguousPurpose {
 		status = "ambiguous"
 	}
 	invocation := executive.InvocationRecord{
-		ID: f.nextID, TaskID: command.TaskID, AttemptID: command.AttemptID, SubjectRoleID: command.SubjectRoleID,
+		ID: f.nextID, TaskID: command.TaskID, AttemptID: command.AttemptID, SubjectRoleID: command.RoleID,
 		Status: status, CorrelationID: command.CorrelationID, CausationID: command.CausationID,
 	}
 	f.byAttempt[key] = []executive.InvocationRecord{invocation}
 	if status == "succeeded" {
-		body := f.output(command.Purpose)
+		body := f.output(purpose)
 		hash := sha256.Sum256(body)
 		f.results[invocation.ID] = executive.InvocationResult{
 			InvocationID: invocation.ID, JSONOutput: body, ResponseHash: hex.EncodeToString(hash[:]), ResponseBytes: len(body),
 		}
 	}
-	return invocation, false, nil
+	return f.outcomeFor(invocation), nil
+}
+
+// outcomeFor mirrors what the real adapter reports: an ambiguous provider
+// outcome is a model failure as far as the Harness can tell, and the durable
+// invocation row is what actually knows it was ambiguous.
+func (f *integrationModelRuntime) outcomeFor(invocation executive.InvocationRecord) executive.HarnessRunOutcome {
+	if invocation.Status != "succeeded" {
+		return executive.HarnessRunOutcome{
+			Status: executive.HarnessRunFailed, Failure: executive.HarnessFailureModelError,
+			InvocationID: invocation.ID, TerminationReason: "model execution failed",
+		}
+	}
+	return executive.HarnessRunOutcome{
+		Status: executive.HarnessRunSucceeded, InvocationID: invocation.ID,
+		FinalOutput: string(f.results[invocation.ID].JSONOutput),
+	}
 }
 
 func (f *integrationModelRuntime) GetInvocation(_ context.Context, id int64) (executive.InvocationRecord, error) {
@@ -338,14 +437,26 @@ func (c *countingCompletion) Verify(ctx context.Context, taskID, attemptID int64
 
 func newOrchestrator(t *testing.T, h *integrationHarness, models *integrationModelRuntime, assignments integrationAssignments, completionGate executive.CompletionGate, opts ...executive.OrchestratorOption) *executive.Orchestrator {
 	t.Helper()
-	value, err := executive.NewOrchestrator(
-		"explorarte",
-		runtimeadapter.Registry{Reader: h.registry, OrganizationID: "explorarte"},
-		runtimeadapter.Tasks{Service: h.tasks, OrganizationID: "explorarte"},
-		&integrationContext{}, assignments, models, completionGate, h.decisions, h.authz,
-		executive.DefaultLimits(), executive.ClockFunc(time.Now),
-		opts...,
-	)
+	value, err := executive.NewOrchestrator(executive.Dependencies{
+		OrganizationID: "explorarte",
+		Registry:       runtimeadapter.Registry{Reader: h.registry, OrganizationID: "explorarte"},
+		Tasks:          runtimeadapter.Tasks{Service: h.tasks, OrganizationID: "explorarte"},
+		Contexts:       &integrationContext{},
+		Assignments:    assignments,
+		Principals:     h.principals,
+		Models:         models,
+		Harness:        models,
+		Budget: runtimeadapter.ModelCallBudget{
+			Models: models,
+			Tasks:  runtimeadapter.Tasks{Service: h.tasks, OrganizationID: "explorarte"},
+			Limits: executive.DefaultLimits(),
+		},
+		Completion:    completionGate,
+		Decisions:     h.decisions,
+		Authorization: h.authz,
+		Limits:        executive.DefaultLimits(),
+		Clock:         executive.ClockFunc(time.Now),
+	}, opts...)
 	if err != nil {
 		t.Fatal(err)
 	}
