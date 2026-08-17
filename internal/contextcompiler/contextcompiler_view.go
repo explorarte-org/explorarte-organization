@@ -1,9 +1,11 @@
 package contextcompiler
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/contextengine"
@@ -75,6 +77,56 @@ var ErrExecutionContextViewIntegrity = errors.New("execution context view integr
 // for the requested ID or (organization, context snapshot) pair.
 var ErrExecutionContextViewNotFound = errors.New("execution context view not found")
 
+// SameLogicalView is the single shared definition of "these two attempts
+// to persist a view for the same ContextSnapshotID describe the same
+// logical execution view." Both ExecutionContextViewStore implementations
+// (internal/contextcompiler/postgres and MemoryStore) MUST call this --
+// never their own partial field comparison -- to decide between "return the
+// existing idempotent view" and "reject as ErrExecutionContextViewDrift".
+// It compares every durably meaningful field a caller supplies (everything
+// except the store-assigned ID and CreatedAt): a mismatch in ANY of them,
+// including metadata that never touches the provider-visible bytes
+// themselves (FallbackReason, AuthorityOrderHash, SegmentDiffs, the
+// StablePrefix/DynamicSuffix partition), is drift, not merely a mismatch in
+// bytes/digest -- ExecutionContextView is an audited historical record, and
+// a metadata-only divergence that went undetected here would let a later
+// reader believe it reconstructed the original resolution when it did not.
+func SameLogicalView(a, b ExecutionContextView) bool {
+	if a.OrganizationID != b.OrganizationID ||
+		a.ContextSnapshotID != b.ContextSnapshotID ||
+		a.ContextProfileID != b.ContextProfileID ||
+		a.ContextProfileVersion != b.ContextProfileVersion ||
+		a.FellBackToCanonical != b.FellBackToCanonical ||
+		a.FallbackReason != b.FallbackReason ||
+		a.ProviderRenderVersion != b.ProviderRenderVersion ||
+		a.StablePrefixHash != b.StablePrefixHash ||
+		a.StablePrefixBytes != b.StablePrefixBytes ||
+		a.DynamicSuffixHash != b.DynamicSuffixHash ||
+		a.DynamicSuffixBytes != b.DynamicSuffixBytes ||
+		a.AuthorityOrderHash != b.AuthorityOrderHash ||
+		a.CompiledContentHash != b.CompiledContentHash ||
+		a.ProviderVisibleDigest != b.ProviderVisibleDigest ||
+		a.ProviderVisibleByteCount != b.ProviderVisibleByteCount {
+		return false
+	}
+	if !bytes.Equal(a.ProviderVisibleBytes, b.ProviderVisibleBytes) {
+		return false
+	}
+	return sameSegmentDiffs(a.SegmentDiffs, b.SegmentDiffs)
+}
+
+// sameSegmentDiffs treats a nil slice and an empty slice as equal (the
+// PostgreSQL store normalizes nil to [] before persisting, since JSON null
+// would otherwise fail the segment_diffs CHECK constraint) but is otherwise
+// a strict, order-sensitive comparison -- SegmentDiffs is a positional audit
+// record.
+func sameSegmentDiffs(a, b []SegmentDiff) bool {
+	if len(a) == 0 && len(b) == 0 {
+		return true
+	}
+	return reflect.DeepEqual(a, b)
+}
+
 // ExecutionContextViewStore is the durable persistence boundary for
 // ExecutionContextView. Implementations MUST be idempotent per
 // ContextSnapshotID (Persist called twice for the same snapshot with the
@@ -83,8 +135,10 @@ var ErrExecutionContextViewNotFound = errors.New("execution context view not fou
 // content for a snapshot that already has a durable view.
 type ExecutionContextViewStore interface {
 	// Persist durably records view. If a view already exists for
-	// view.ContextSnapshotID, Persist returns the EXISTING view when its
-	// content matches, or ErrExecutionContextViewDrift when it does not.
+	// view.ContextSnapshotID, Persist returns the EXISTING view when
+	// SameLogicalView(existing, view) is true, or ErrExecutionContextViewDrift
+	// when it is not -- implementations must not compare only a subset of
+	// fields (e.g. bytes/digest alone); see SameLogicalView's doc comment.
 	// Persist never updates or replaces an existing row.
 	Persist(ctx context.Context, view ExecutionContextView) (ExecutionContextView, error)
 	// Get loads a durable view by its own ID, verifying

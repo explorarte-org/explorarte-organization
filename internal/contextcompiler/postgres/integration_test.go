@@ -105,6 +105,59 @@ func TestExecutionContextViewPostgreSQL17(t *testing.T) {
 		}
 	})
 
+	t.Run("metadata-only drift fails closed against real PostgreSQL", func(t *testing.T) {
+		snap := createSnapshot(t, ctx, contextStore, "empresa/ceo", "ecv-metadata-drift")
+		sameBytes := []byte("identical provider-visible bytes")
+		base := contextcompiler.ExecutionContextView{
+			OrganizationID: integrationOrganization, ContextSnapshotID: snap.ID,
+			ContextProfileID: "research.corpus_curate", ContextProfileVersion: "v1",
+			FellBackToCanonical: false, ProviderRenderVersion: "research-corpus-curate-render/v2",
+			StablePrefixHash: "s1", StablePrefixBytes: 10, DynamicSuffixHash: "d1", DynamicSuffixBytes: 20,
+			AuthorityOrderHash: sha256Hex(t, "order-metadata"), CompiledContentHash: sha256Hex(t, "content-metadata"),
+			SegmentDiffs:         []contextcompiler.SegmentDiff{{SourceReference: "docs/canonical/role-catalog.yaml", Projected: true, Reason: "projected_subset:role_catalog_self_entry"}},
+			ProviderVisibleBytes: sameBytes, ProviderVisibleDigest: sha256HexBytes(sameBytes), ProviderVisibleByteCount: len(sameBytes),
+		}
+		if _, err := viewStore.Persist(ctx, base); err != nil {
+			t.Fatal(err)
+		}
+		// Bytes, digest, compiled_content_hash, and profile identity are
+		// UNCHANGED -- only authority_order_hash (and segment_diffs) differ.
+		// This is exactly the gap the independent review found: a
+		// bytes/digest-only comparison would silently accept this as
+		// idempotent.
+		metadataDrift := base
+		metadataDrift.AuthorityOrderHash = sha256Hex(t, "a-completely-different-order-hash")
+		metadataDrift.SegmentDiffs = []contextcompiler.SegmentDiff{{SourceReference: "different-reference", Projected: false}}
+		if _, err := viewStore.Persist(ctx, metadataDrift); err == nil {
+			t.Fatal("expected metadata-only drift to be rejected")
+		} else if !isDrift(err) {
+			t.Fatalf("expected ErrExecutionContextViewDrift, got %v", err)
+		}
+		existing, err := viewStore.GetByContextSnapshot(ctx, integrationOrganization, snap.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if existing.AuthorityOrderHash != base.AuthorityOrderHash {
+			t.Fatal("metadata-only drift attempt corrupted the existing row's authority_order_hash")
+		}
+		if len(existing.SegmentDiffs) != 1 || existing.SegmentDiffs[0].SourceReference != base.SegmentDiffs[0].SourceReference {
+			t.Fatal("metadata-only drift attempt corrupted the existing row's segment_diffs")
+		}
+
+		// A truly identical second Persist (fresh slice backing arrays, same
+		// content) must still be idempotent.
+		identicalCopy := base
+		identicalCopy.SegmentDiffs = append([]contextcompiler.SegmentDiff(nil), base.SegmentDiffs...)
+		identicalCopy.ProviderVisibleBytes = append([]byte(nil), base.ProviderVisibleBytes...)
+		reidempotent, err := viewStore.Persist(ctx, identicalCopy)
+		if err != nil {
+			t.Fatalf("truly identical persist must remain idempotent, got: %v", err)
+		}
+		if reidempotent.ID != existing.ID {
+			t.Fatalf("truly identical persist returned a different ID: %d != %d", reidempotent.ID, existing.ID)
+		}
+	})
+
 	t.Run("restart/reload reproduces identity, bytes, digest, and metadata", func(t *testing.T) {
 		researchSnapshot := createSnapshot(t, ctx, contextStore, "investigacion/research_worker_hourly", "ecv-research")
 		persisted, err := assembly.ResolveAndPersist(ctx, researchSnapshot)

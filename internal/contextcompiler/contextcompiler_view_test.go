@@ -157,6 +157,110 @@ func TestResolveAndPersist_DriftFailsClosed(t *testing.T) {
 	}
 }
 
+// TestResolveAndPersist_MetadataOnlyDriftFailsClosed closes the gap the
+// independent review found: bytes/digest/compiled_content_hash/profile
+// identity can all agree while other durably meaningful metadata --
+// AuthorityOrderHash, SegmentDiffs, the StablePrefix/DynamicSuffix
+// partition, FallbackReason, ProviderRenderVersion -- silently differs.
+// SameLogicalView must catch this: a mismatch in ANY of these fields alone
+// (bytes held equal throughout) must still be ErrExecutionContextViewDrift,
+// never a silently-accepted "idempotent" return.
+func TestResolveAndPersist_MetadataOnlyDriftFailsClosed(t *testing.T) {
+	baseFor := func(snapshotID int64) ExecutionContextView {
+		return ExecutionContextView{
+			OrganizationID: "explorarte", ContextSnapshotID: snapshotID,
+			ContextProfileID: "research.corpus_curate", ContextProfileVersion: "v1",
+			FellBackToCanonical: false, ProviderRenderVersion: "research-corpus-curate-render/v2",
+			StablePrefixHash: "s1", StablePrefixBytes: 10, DynamicSuffixHash: "d1", DynamicSuffixBytes: 20,
+			AuthorityOrderHash: "order-1", CompiledContentHash: "content-1",
+			SegmentDiffs:         []SegmentDiff{{SourceReference: "docs/canonical/role-catalog.yaml", Projected: true, Reason: "projected_subset:role_catalog_self_entry"}},
+			ProviderVisibleBytes: []byte("same bytes throughout"), ProviderVisibleDigest: memSHA256Hex([]byte("same bytes throughout")), ProviderVisibleByteCount: len("same bytes throughout"),
+		}
+	}
+
+	mutations := map[string]func(v *ExecutionContextView){
+		"fallback_reason":         func(v *ExecutionContextView) { v.FallbackReason = "changed" },
+		"provider_render_version": func(v *ExecutionContextView) { v.ProviderRenderVersion = "changed/v3" },
+		"stable_prefix_hash":      func(v *ExecutionContextView) { v.StablePrefixHash = "changed" },
+		"stable_prefix_bytes":     func(v *ExecutionContextView) { v.StablePrefixBytes = 999 },
+		"dynamic_suffix_hash":     func(v *ExecutionContextView) { v.DynamicSuffixHash = "changed" },
+		"dynamic_suffix_bytes":    func(v *ExecutionContextView) { v.DynamicSuffixBytes = 999 },
+		"authority_order_hash":    func(v *ExecutionContextView) { v.AuthorityOrderHash = "changed" },
+		"segment_diffs": func(v *ExecutionContextView) {
+			v.SegmentDiffs = []SegmentDiff{{SourceReference: "different", Projected: false}}
+		},
+		"fell_back_to_canonical": func(v *ExecutionContextView) { v.FellBackToCanonical = true },
+	}
+
+	var snapshotID int64 = 100
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			snapshotID++
+			store := NewMemoryStore()
+			base := baseFor(snapshotID)
+			if _, err := store.Persist(context.Background(), base); err != nil {
+				t.Fatal(err)
+			}
+			mutated := baseFor(snapshotID)
+			mutate(&mutated)
+			// Bytes/digest/compiled_content_hash/profile identity are
+			// unchanged -- only the field under test differs.
+			_, err := store.Persist(context.Background(), mutated)
+			if !errors.Is(err, ErrExecutionContextViewDrift) {
+				t.Fatalf("metadata-only drift in %s was not rejected: err=%v", name, err)
+			}
+			existing, err := store.GetByContextSnapshot(context.Background(), "explorarte", snapshotID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !SameLogicalView(existing, base) {
+				t.Fatalf("drift attempt corrupted the existing durable view for %s", name)
+			}
+			reReloaded, err := store.Get(context.Background(), existing.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reReloaded.ID != existing.ID || string(reReloaded.ProviderVisibleBytes) != string(base.ProviderVisibleBytes) {
+				t.Fatalf("existing durable view no longer reloads correctly for %s", name)
+			}
+		})
+	}
+}
+
+// TestResolveAndPersist_TrulyIdenticalPersistStillIdempotent proves the
+// stricter SameLogicalView comparison did not turn true idempotency into
+// accidental drift: persisting the exact same content twice still returns
+// the same durable ID.
+func TestResolveAndPersist_TrulyIdenticalPersistStillIdempotent(t *testing.T) {
+	store := NewMemoryStore()
+	view := ExecutionContextView{
+		OrganizationID: "explorarte", ContextSnapshotID: 200,
+		ContextProfileID: "research.corpus_curate", ContextProfileVersion: "v1",
+		FellBackToCanonical: false, ProviderRenderVersion: "research-corpus-curate-render/v2",
+		StablePrefixHash: "s1", StablePrefixBytes: 10, DynamicSuffixHash: "d1", DynamicSuffixBytes: 20,
+		AuthorityOrderHash: "order-1", CompiledContentHash: "content-1",
+		SegmentDiffs:         []SegmentDiff{{SourceReference: "docs/canonical/role-catalog.yaml", Projected: true, Reason: "projected_subset:role_catalog_self_entry"}},
+		ProviderVisibleBytes: []byte("identical bytes"), ProviderVisibleDigest: memSHA256Hex([]byte("identical bytes")), ProviderVisibleByteCount: len("identical bytes"),
+	}
+	first, err := store.Persist(context.Background(), view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Pass a structurally distinct but logically identical copy (fresh
+	// slice backing arrays) to prove the comparison is by value, not by
+	// pointer/slice identity.
+	identicalCopy := view
+	identicalCopy.SegmentDiffs = append([]SegmentDiff(nil), view.SegmentDiffs...)
+	identicalCopy.ProviderVisibleBytes = append([]byte(nil), view.ProviderVisibleBytes...)
+	second, err := store.Persist(context.Background(), identicalCopy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID != second.ID {
+		t.Fatalf("truly identical persist attempts diverged: %d != %d", first.ID, second.ID)
+	}
+}
+
 // TestGet_RejectsTamperedIntegrity is section 9.E.
 func TestGet_RejectsTamperedIntegrity(t *testing.T) {
 	store := NewMemoryStore()

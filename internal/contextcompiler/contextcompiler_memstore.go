@@ -31,14 +31,13 @@ func (s *MemoryStore) Persist(_ context.Context, view ExecutionContextView) (Exe
 	if view.ProviderVisibleDigest != memSHA256Hex(view.ProviderVisibleBytes) {
 		return ExecutionContextView{}, fmt.Errorf("%w: digest does not match bytes at persist time", ErrExecutionContextViewIntegrity)
 	}
+	if view.SegmentDiffs == nil {
+		view.SegmentDiffs = []SegmentDiff{}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if existing, ok := s.bySnap[view.ContextSnapshotID]; ok {
-		if existing.ProviderVisibleDigest != view.ProviderVisibleDigest ||
-			existing.CompiledContentHash != view.CompiledContentHash ||
-			existing.FellBackToCanonical != view.FellBackToCanonical ||
-			existing.ContextProfileID != view.ContextProfileID ||
-			existing.ContextProfileVersion != view.ContextProfileVersion {
+		if !SameLogicalView(existing, view) {
 			return ExecutionContextView{}, fmt.Errorf("%w: snapshot=%d", ErrExecutionContextViewDrift, view.ContextSnapshotID)
 		}
 		return existing, nil

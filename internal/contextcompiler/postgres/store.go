@@ -82,17 +82,15 @@ func (s *Store) Persist(ctx context.Context, view contextcompiler.ExecutionConte
 	}
 
 	// No row was inserted: a durable view for this snapshot already
-	// exists. Load it and prove the caller's attempt agrees with it
-	// before ever returning it as "the" persisted view.
+	// exists. Load it and prove the caller's attempt agrees with it --
+	// via SameLogicalView, which compares every durably meaningful field,
+	// not only bytes/digest -- before ever returning it as "the" persisted
+	// view.
 	existing, getErr := s.GetByContextSnapshot(ctx, view.OrganizationID, view.ContextSnapshotID)
 	if getErr != nil {
 		return contextcompiler.ExecutionContextView{}, getErr
 	}
-	if existing.ProviderVisibleDigest != view.ProviderVisibleDigest ||
-		existing.CompiledContentHash != view.CompiledContentHash ||
-		existing.FellBackToCanonical != view.FellBackToCanonical ||
-		existing.ContextProfileID != view.ContextProfileID ||
-		existing.ContextProfileVersion != view.ContextProfileVersion {
+	if !contextcompiler.SameLogicalView(existing, view) {
 		return contextcompiler.ExecutionContextView{}, fmt.Errorf("%w: snapshot=%d", contextcompiler.ErrExecutionContextViewDrift, view.ContextSnapshotID)
 	}
 	return existing, nil
