@@ -42,15 +42,17 @@ ENTRYPOINT ["/usr/local/bin/orgctl"]
 # go/git/rg toolchain to execute its typed GO_BUILD/GO_VET/GO_TEST/GOFMT/
 # APPLY_PATCH/SEARCH operations (internal/coderunner/executor.go) -- orgd's
 # distroless image above has none of that and this file must never grow
-# orgd's attack surface to serve CodeRunner instead. Pinned to the exact
-# same golang:1.25-bookworm tag as the build stage (same pin discipline: the
-# base image tag IS the Go-toolchain pin here). The image legitimately
-# contains /bin/sh, apt, and a full OS because distroless cannot run
-# go/git/rg at all; what actually withholds authority to invoke arbitrary
-# commands is CodeRunner's own Go-level executable allowlist, never the
-# absence of a shell in the container -- CodeRunner never exposes a generic
-# shell operation for anything in this image to reach.
-FROM golang:1.25-bookworm AS coderunner
+# orgd's attack surface to serve CodeRunner instead. Pinned by digest (same
+# R29 discipline as the postgres service in compose.yaml), not the floating
+# golang:1.25-bookworm tag: that digest is go1.25.13 on Debian bookworm as
+# of this commit -- re-resolve and update the pin when bumping the Go
+# toolchain here, the build stage's tag above is untouched by this pin. The
+# image legitimately contains /bin/sh, apt, and a full OS because distroless
+# cannot run go/git/rg at all; what actually withholds authority to invoke
+# arbitrary commands is CodeRunner's own Go-level executable allowlist,
+# never the absence of a shell in the container -- CodeRunner never exposes
+# a generic shell operation for anything in this image to reach.
+FROM golang@sha256:908f8ff2ec296df2f349563072c7925775cd28b50361a52ed834a8a37399b9bf AS coderunner
 RUN apt-get update && apt-get install -y --no-install-recommends git ripgrep ca-certificates && rm -rf /var/lib/apt/lists/* && useradd --system --no-create-home --shell /usr/sbin/nologin coderunner
 COPY --from=build /out/orgctl /usr/local/bin/orgctl
 RUN mkdir -p /var/lib/explorarte/staging/workspaces && chown coderunner:coderunner /var/lib/explorarte/staging/workspaces
