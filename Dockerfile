@@ -36,6 +36,28 @@ ENV ORG_CANONICAL_DIR=/opt/explorarte/docs/canonical
 USER pdfingest
 ENTRYPOINT ["/usr/local/bin/orgctl"]
 
+# Dedicated CODE_RUNNER_V1 execution runtime (non-default target, built via
+# `docker build --target coderunner`; not part of the default `docker build
+# .` output, which stays the orgd stage below). CodeRunner needs a real
+# go/git/rg toolchain to execute its typed GO_BUILD/GO_VET/GO_TEST/GOFMT/
+# APPLY_PATCH/SEARCH operations (internal/coderunner/executor.go) -- orgd's
+# distroless image above has none of that and this file must never grow
+# orgd's attack surface to serve CodeRunner instead. Pinned to the exact
+# same golang:1.25-bookworm tag as the build stage (same pin discipline: the
+# base image tag IS the Go-toolchain pin here). The image legitimately
+# contains /bin/sh, apt, and a full OS because distroless cannot run
+# go/git/rg at all; what actually withholds authority to invoke arbitrary
+# commands is CodeRunner's own Go-level executable allowlist, never the
+# absence of a shell in the container -- CodeRunner never exposes a generic
+# shell operation for anything in this image to reach.
+FROM golang:1.25-bookworm AS coderunner
+RUN apt-get update && apt-get install -y --no-install-recommends git ripgrep ca-certificates && rm -rf /var/lib/apt/lists/* && useradd --system --no-create-home --shell /usr/sbin/nologin coderunner
+COPY --from=build /out/orgctl /usr/local/bin/orgctl
+RUN mkdir -p /var/lib/explorarte/staging/workspaces && chown coderunner:coderunner /var/lib/explorarte/staging/workspaces
+ENV ORG_STAGING_WORKSPACE_ROOT=/var/lib/explorarte/staging/workspaces
+USER coderunner
+ENTRYPOINT ["/usr/local/bin/orgctl"]
+
 FROM gcr.io/distroless/static-debian12:nonroot AS orgd
 COPY --from=build /out/orgd /usr/local/bin/orgd
 COPY --from=build /out/orgctl /usr/local/bin/orgctl
