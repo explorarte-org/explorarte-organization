@@ -34,9 +34,18 @@ type execFake struct{}
 func (execFake) Execute(context.Context, Plan) ([]Result, error) {
 	return []Result{{Type: GitStatus, Success: true}}, nil
 }
+
+type workspaceFake struct{}
+
+func (workspaceFake) Open(context.Context, tasks.ClaimedTask, string) (string, int64, error) {
+	return "/tmp/runner", 1, nil
+}
+func (workspaceFake) Seal(context.Context, int64, tasks.ClaimedTask, string) (any, error) {
+	return nil, nil
+}
 func TestWorkerFiltersRoleAndUsesPrincipal(t *testing.T) {
 	q := &queueFake{}
-	w := Worker{Queue: q, Executor: execFake{}, WorkerID: "runner-1", HolderPrincipalID: "42", LeaseDuration: time.Second}
+	w := Worker{Queue: q, Executor: execFake{}, Workspace: workspaceFake{}, WorkerID: "runner-1", HolderPrincipalID: "42", LeaseDuration: time.Second}
 	n, e := w.RunOnce(context.Background())
 	if e != nil || n != 1 || q.claim.AssignedRoleID != RoleID || q.claim.WorkerID != "runner-1" || q.claim.HolderPrincipalID != "42" || q.started != 1 || q.recorded != 1 {
 		t.Fatalf("n=%d err=%v q=%+v", n, e, q)
