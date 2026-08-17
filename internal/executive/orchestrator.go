@@ -39,6 +39,7 @@ type Orchestrator struct {
 	clock          Clock
 	budgets        AgentBudgetProvider
 	messages       AgentMessagingProvider
+	leaseKeeper    LeaseKeeperConfig
 
 	mu     sync.Mutex
 	leases map[int64]LeaseRecord
@@ -105,7 +106,7 @@ func NewOrchestrator(deps Dependencies, opts ...OrchestratorOption) (*Orchestrat
 		organizationID: strings.TrimSpace(deps.OrganizationID), registry: deps.Registry, tasks: deps.Tasks,
 		contexts: deps.Contexts, assignments: deps.Assignments, principals: deps.Principals, models: deps.Models,
 		completion: deps.Completion, decisions: deps.Decisions, validator: validator, limits: limits,
-		clock: clock, leases: map[int64]LeaseRecord{},
+		clock: clock, leases: map[int64]LeaseRecord{}, leaseKeeper: DefaultLeaseKeeperConfig(),
 	}
 	for _, opt := range opts {
 		opt(orchestrator)

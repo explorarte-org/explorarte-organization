@@ -5,22 +5,30 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
+// memoryTasks is mutex-guarded because the lease keeper heartbeats from its
+// own goroutine while the main flow is still driving the same task: an
+// unguarded fake would report data races that the real, transactional task
+// service does not have.
 type memoryTasks struct {
-	nextID      int64
-	nextAttempt int64
-	tasks       map[int64]TaskRecord
-	keys        map[string]int64
-	createCalls []CreateTaskCommand
-	claims      []ClaimTaskCommand
-	workerIDs   map[int64]string
-	finalized   []int64
-	blocked     []int64
-	failed      []string
-	heartbeats  int
-	evidence    []EvidenceCommand
+	mu              sync.Mutex
+	heartbeatErr    error
+	heartbeatActors []string
+	nextID          int64
+	nextAttempt     int64
+	tasks           map[int64]TaskRecord
+	keys            map[string]int64
+	createCalls     []CreateTaskCommand
+	claims          []ClaimTaskCommand
+	workerIDs       map[int64]string
+	finalized       []int64
+	blocked         []int64
+	failed          []string
+	heartbeats      int
+	evidence        []EvidenceCommand
 }
 
 func newMemoryTasks() *memoryTasks {
@@ -57,6 +65,8 @@ func (f *fakePrincipals) ResolveRoleBoundPrincipal(_ context.Context, roleID str
 }
 
 func (m *memoryTasks) CreateTask(_ context.Context, command CreateTaskCommand) (TaskRecord, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	hash := actionDigest(command.Title, command.Instructions, fmt.Sprint(command.AcceptanceCriteria), command.AssignedRoleID)
 	if id, ok := m.keys[command.IdempotencyKey]; ok {
 		existing := m.tasks[id]
@@ -91,6 +101,8 @@ func (m *memoryTasks) CreateTask(_ context.Context, command CreateTaskCommand) (
 func (m *memoryTasks) AddDependency(context.Context, int64, int64) error { return nil }
 
 func (m *memoryTasks) GetTask(_ context.Context, id int64) (TaskRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	value, ok := m.tasks[id]
 	if !ok {
 		return TaskRecord{}, errors.New("not found")
@@ -99,6 +111,8 @@ func (m *memoryTasks) GetTask(_ context.Context, id int64) (TaskRecord, error) {
 }
 
 func (m *memoryTasks) ListByCorrelation(_ context.Context, correlation string) ([]TaskRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	out := []TaskRecord{}
 	for _, task := range m.tasks {
 		if task.CorrelationID == correlation {
@@ -109,6 +123,8 @@ func (m *memoryTasks) ListByCorrelation(_ context.Context, correlation string) (
 }
 
 func (m *memoryTasks) ListAwaitingGating(_ context.Context, limit int) ([]TaskRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	out := []TaskRecord{}
 	for _, task := range m.tasks {
 		if task.Status == "awaiting_verification" {
@@ -125,6 +141,8 @@ func (m *memoryTasks) ListAwaitingGating(_ context.Context, limit int) ([]TaskRe
 // operational worker, task_leases.holder_id records the security principal,
 // and they are stored separately because they are separate identities.
 func (m *memoryTasks) ClaimTask(_ context.Context, command ClaimTaskCommand) (TaskRecord, AttemptRecord, LeaseRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if strings.TrimSpace(command.HolderPrincipalID) == "" {
 		return TaskRecord{}, AttemptRecord{}, LeaseRecord{}, errors.New("claim without a holder principal")
 	}
@@ -161,6 +179,8 @@ func (m *memoryTasks) verifyLeaseActor(lease LeaseRecord, actor string) error {
 }
 
 func (m *memoryTasks) StartAttempt(_ context.Context, lease LeaseRecord, actor string) (TaskRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if err := m.verifyLeaseActor(lease, actor); err != nil {
 		return TaskRecord{}, err
 	}
@@ -176,6 +196,12 @@ func (m *memoryTasks) StartAttempt(_ context.Context, lease LeaseRecord, actor s
 }
 
 func (m *memoryTasks) Heartbeat(_ context.Context, lease LeaseRecord, actor string, duration time.Duration) (LeaseRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.heartbeatActors = append(m.heartbeatActors, actor)
+	if m.heartbeatErr != nil {
+		return LeaseRecord{}, m.heartbeatErr
+	}
 	if err := m.verifyLeaseActor(lease, actor); err != nil {
 		return LeaseRecord{}, err
 	}
@@ -184,7 +210,21 @@ func (m *memoryTasks) Heartbeat(_ context.Context, lease LeaseRecord, actor stri
 	return lease, nil
 }
 
+func (m *memoryTasks) failHeartbeats(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.heartbeatErr = err
+}
+
+func (m *memoryTasks) heartbeatActorLog() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.heartbeatActors...)
+}
+
 func (m *memoryTasks) RecordAttemptSucceeded(_ context.Context, lease LeaseRecord, actor string, _ string) (TaskRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if err := m.verifyLeaseActor(lease, actor); err != nil {
 		return TaskRecord{}, err
 	}
@@ -201,6 +241,8 @@ func (m *memoryTasks) RecordAttemptSucceeded(_ context.Context, lease LeaseRecor
 }
 
 func (m *memoryTasks) RecordAttemptFailed(_ context.Context, lease LeaseRecord, actor string, code, reason string, _ bool) (TaskRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if err := m.verifyLeaseActor(lease, actor); err != nil {
 		return TaskRecord{}, err
 	}
@@ -215,6 +257,8 @@ func (m *memoryTasks) RecordAttemptFailed(_ context.Context, lease LeaseRecord, 
 }
 
 func (m *memoryTasks) RecordEvidence(_ context.Context, command EvidenceCommand) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	task := m.tasks[command.TaskID]
 	for i := range task.Requirements {
 		if task.Requirements[i].ID == command.RequirementID && command.Satisfies {
@@ -227,6 +271,8 @@ func (m *memoryTasks) RecordEvidence(_ context.Context, command EvidenceCommand)
 }
 
 func (m *memoryTasks) FinalizeCompleted(_ context.Context, id int64, _, _ string) (TaskRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	task := m.tasks[id]
 	task.Status = "completed"
 	m.tasks[id] = task
@@ -235,6 +281,8 @@ func (m *memoryTasks) FinalizeCompleted(_ context.Context, id int64, _, _ string
 }
 
 func (m *memoryTasks) FinalizeFailed(_ context.Context, id int64, code, reason, _, _ string) (TaskRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	task := m.tasks[id]
 	task.Status = "failed"
 	task.ReasonCode = code
@@ -244,6 +292,8 @@ func (m *memoryTasks) FinalizeFailed(_ context.Context, id int64, code, reason, 
 }
 
 func (m *memoryTasks) BlockTask(_ context.Context, id int64, code, reason, _, _ string) (TaskRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	task := m.tasks[id]
 	task.Status = "blocked"
 	task.ReasonCode = code
@@ -254,6 +304,8 @@ func (m *memoryTasks) BlockTask(_ context.Context, id int64, code, reason, _, _ 
 }
 
 func (m *memoryTasks) UnblockTask(_ context.Context, id int64, _, _ string) (TaskRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	task := m.tasks[id]
 	task.Status = "ready"
 	task.ReasonCode = ""
