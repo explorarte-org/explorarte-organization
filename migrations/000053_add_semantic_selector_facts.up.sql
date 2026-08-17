@@ -12,9 +12,11 @@
 ALTER TABLE tasks
     ADD COLUMN task_class TEXT NOT NULL DEFAULT 'legacy.unspecified';
 
+-- Length bound matches internal/tasks.maxTaskClassBytes (100) exactly --
+-- the Go syntax validator and this CHECK must never silently diverge.
 ALTER TABLE tasks
     ADD CONSTRAINT tasks_task_class_syntax
-        CHECK (task_class ~ '^[a-z0-9]+(_[a-z0-9]+)*(\.[a-z0-9]+(_[a-z0-9]+)*)+$');
+        CHECK (length(task_class) <= 100 AND task_class ~ '^[a-z0-9]+(_[a-z0-9]+)*(\.[a-z0-9]+(_[a-z0-9]+)*)+$');
 
 -- One-time historical compatibility backfill (M1.3 section 3): the exact
 -- two known research roles already had their tasks measurably behaving
@@ -28,6 +30,18 @@ WHERE task_class = 'legacy.unspecified'
       'investigacion/research_worker_hourly',
       'investigacion/research_worker_hourly_mimo_canary'
   );
+
+-- The DEFAULT above exists ONLY to give every row NOT NULL to backfill
+-- against during this migration; independent review correctly flagged
+-- that leaving it in place afterward would mean a FUTURE insert that
+-- somehow omits task_class (bypassing tasks.Service.CreateTask's own
+-- defaulting -- it always supplies an explicit value, but this is
+-- defense in depth) gets silently mislabeled as historical. Every
+-- historical row above already has its permanent value now; the
+-- standing default going forward is the same safe generic class new
+-- rows already default to at the Go layer, never the historical marker.
+ALTER TABLE tasks
+    ALTER COLUMN task_class SET DEFAULT 'general.work';
 
 -- context_snapshots selector facts: durable enough to reproduce selection
 -- after restart without contextcompiler ever querying the Task Engine.

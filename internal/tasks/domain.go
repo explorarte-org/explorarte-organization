@@ -90,35 +90,35 @@ const (
 )
 
 type Task struct {
-	ID                     int64   `json:"id"`
-	OrganizationID         string  `json:"organization_id"`
-	OrganizationRevisionID int64   `json:"organization_revision_id"`
-	RequestedByRoleID      *string `json:"requested_by_role_id,omitempty"`
-	AssignedRoleID         string  `json:"assigned_role_id"`
-	AssignedUnitID         string  `json:"assigned_unit_id"`
+	ID                     int64      `json:"id"`
+	OrganizationID         string     `json:"organization_id"`
+	OrganizationRevisionID int64      `json:"organization_revision_id"`
+	RequestedByRoleID      *string    `json:"requested_by_role_id,omitempty"`
+	AssignedRoleID         string     `json:"assigned_role_id"`
+	AssignedUnitID         string     `json:"assigned_unit_id"`
 	// TaskClass describes WHAT KIND OF WORK this durable task represents
 	// (M1.3) -- classification metadata only, never authority. Immutable
 	// once created, alongside the rest of the task's creation identity.
 	// Historical (pre-M1.3) rows read TaskClassLegacyUnspecified.
-	TaskClass          string     `json:"task_class"`
-	IdempotencyKey     string     `json:"idempotency_key"`
-	RequestHash        string     `json:"request_hash"`
-	Title              string     `json:"title"`
-	Instructions       string     `json:"instructions"`
-	AcceptanceCriteria []string   `json:"acceptance_criteria"`
-	Status             Status     `json:"status"`
-	Priority           int        `json:"priority"`
-	AvailableAt        time.Time  `json:"available_at"`
-	MaxAttempts        int        `json:"max_attempts"`
-	AttemptCount       int        `json:"attempt_count"`
-	Version            int64      `json:"version"`
-	CorrelationID      *string    `json:"correlation_id,omitempty"`
-	CausationID        *string    `json:"causation_id,omitempty"`
-	StatusReasonCode   *string    `json:"status_reason_code,omitempty"`
-	StatusReason       *string    `json:"status_reason,omitempty"`
-	CreatedAt          time.Time  `json:"created_at"`
-	UpdatedAt          time.Time  `json:"updated_at"`
-	TerminalAt         *time.Time `json:"terminal_at,omitempty"`
+	TaskClass              string     `json:"task_class"`
+	IdempotencyKey         string     `json:"idempotency_key"`
+	RequestHash            string     `json:"request_hash"`
+	Title                  string     `json:"title"`
+	Instructions           string     `json:"instructions"`
+	AcceptanceCriteria     []string   `json:"acceptance_criteria"`
+	Status                 Status     `json:"status"`
+	Priority               int        `json:"priority"`
+	AvailableAt            time.Time  `json:"available_at"`
+	MaxAttempts            int        `json:"max_attempts"`
+	AttemptCount           int        `json:"attempt_count"`
+	Version                int64      `json:"version"`
+	CorrelationID          *string    `json:"correlation_id,omitempty"`
+	CausationID            *string    `json:"causation_id,omitempty"`
+	StatusReasonCode       *string    `json:"status_reason_code,omitempty"`
+	StatusReason           *string    `json:"status_reason,omitempty"`
+	CreatedAt              time.Time  `json:"created_at"`
+	UpdatedAt              time.Time  `json:"updated_at"`
+	TerminalAt             *time.Time `json:"terminal_at,omitempty"`
 }
 
 type Requirement struct {
@@ -247,9 +247,9 @@ type RequirementSpec struct {
 }
 
 type CreateRequest struct {
-	OrganizationID    string `json:"organization_id,omitempty"`
-	RequestedByRoleID string `json:"requested_by_role_id,omitempty"`
-	AssignedRoleID    string `json:"assigned_role_id"`
+	OrganizationID     string            `json:"organization_id,omitempty"`
+	RequestedByRoleID  string            `json:"requested_by_role_id,omitempty"`
+	AssignedRoleID     string            `json:"assigned_role_id"`
 	// TaskClass is OPTIONAL on the wire: an empty value is defaulted to
 	// TaskClassGeneralWork by Service.CreateTask before persistence, never
 	// left empty on a newly created row (see ValidTaskClass's doc comment
@@ -280,13 +280,13 @@ type PreparedCreate struct {
 	// TaskClass is the resolved, defaulted, validated value that will
 	// actually be persisted -- Request.TaskClass may be empty (caller
 	// omitted it); this field never is, for a newly prepared create.
-	TaskClass          string
-	RequestHash        string
-	InitialStatus      Status
-	DefaultMaxAttempts int
-	OutboxMaxAttempts  int
-	ActorType          string
-	ActorID            string
+	TaskClass               string
+	RequestHash            string
+	InitialStatus          Status
+	DefaultMaxAttempts     int
+	OutboxMaxAttempts      int
+	ActorType              string
+	ActorID                string
 }
 
 type TaskFilter struct {

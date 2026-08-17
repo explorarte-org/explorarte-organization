@@ -94,7 +94,7 @@ func (s *contextService) Build(ctx context.Context, request BuildRequest) (Build
 	}
 	requestHash := DigestBuildRequest(canonicalRequest)
 	if existing, getErr := s.store.GetByIdempotency(ctx, request.OrganizationID, request.IdempotencyKey, true); getErr == nil {
-		if !requestHashCompatible(existing.RequestHash, requestHash, canonicalRequest) {
+		if !requestHashCompatible(existing, requestHash, canonicalRequest) {
 			return BuildResult{}, ErrIdempotencyConflict
 		}
 		if err = s.verifySnapshotIntegrity(ctx, existing); err != nil {
@@ -117,7 +117,7 @@ func (s *contextService) Build(ctx context.Context, request BuildRequest) (Build
 		Purpose: request.Purpose, ProjectRef: request.ProjectRef, TaskRef: request.TaskRef,
 		TaskClass: request.TaskClass, ExecutionPurpose: request.ExecutionPurpose, ActorUnitID: request.ActorUnitID,
 		IdempotencyKey: request.IdempotencyKey,
-		Status:         SnapshotReady, Version: 1, RequestHash: requestHash, PrecedenceHash: bundle.PrecedenceHash,
+		Status: SnapshotReady, Version: 1, RequestHash: requestHash, PrecedenceHash: bundle.PrecedenceHash,
 		CanonicalBundleHash: bundle.BundleHash, SegmentCount: assembly.SegmentCount,
 		IncludedSegmentCount: assembly.IncludedSegmentCount, OmittedSegmentCount: assembly.OmittedSegmentCount,
 		TotalBytes: assembly.TotalBytes, CorrelationID: request.CorrelationID, CausationID: request.CausationID,
@@ -133,7 +133,7 @@ func (s *contextService) Build(ctx context.Context, request BuildRequest) (Build
 		return BuildResult{}, err
 	}
 	if result.Reused {
-		if !requestHashCompatible(result.Snapshot.RequestHash, requestHash, canonicalRequest) {
+		if !requestHashCompatible(result.Snapshot, requestHash, canonicalRequest) {
 			return BuildResult{}, ErrIdempotencyConflict
 		}
 		if err = s.verifySnapshotIntegrity(ctx, result.Snapshot); err != nil {
@@ -153,11 +153,40 @@ func (s *contextService) Build(ctx context.Context, request BuildRequest) (Build
 // idempotent resume working after the upgrade, while a snapshot whose
 // stored hash matches NEITHER computation is a genuine contradictory
 // identity under a reused idempotency key and must still fail closed.
-func requestHashCompatible(existingHash, freshHash string, canonical CanonicalBuildRequest) bool {
-	if existingHash == freshHash {
+// requestHashCompatible decides whether an already-durable snapshot
+// represents the SAME logical request as canonical (M1.3 section 9).
+// existing.RequestHash may have been computed before
+// TaskClass/ExecutionPurpose/ActorUnitID existed at all (a pre-M1.3 row):
+// accepting that legacy-shaped hash alone is not sufficient, because
+// digestBuildRequestLegacy strips those three fields from the buffer
+// entirely -- it proves the OLD fields agree, but says nothing about
+// whether the NEW ones do. A caller resuming a snapshot that already
+// durably records a specific (non-empty) selector fact must not be
+// allowed to silently supply a different one: existing's own value is
+// compared directly against canonical.Request's proposed value for each
+// of the three fields once the legacy-shape match is confirmed. An EMPTY
+// existing value records no assertion at all (true for every context
+// snapshot that predates M1.3, since these columns are never backfilled
+// -- see migration 000053) and is compatible with anything; a non-empty
+// existing value must match exactly, or this is a genuine contradictory
+// identity under a reused idempotency key and must fail closed.
+func requestHashCompatible(existing Snapshot, freshHash string, canonical CanonicalBuildRequest) bool {
+	if existing.RequestHash == freshHash {
 		return true
 	}
-	return existingHash == digestBuildRequestLegacy(canonical)
+	if existing.RequestHash != digestBuildRequestLegacy(canonical) {
+		return false
+	}
+	if existing.TaskClass != "" && existing.TaskClass != canonical.Request.TaskClass {
+		return false
+	}
+	if existing.ExecutionPurpose != "" && existing.ExecutionPurpose != canonical.Request.ExecutionPurpose {
+		return false
+	}
+	if existing.ActorUnitID != "" && existing.ActorUnitID != canonical.Request.ActorUnitID {
+		return false
+	}
+	return true
 }
 
 func (s *contextService) rejectBuild(ctx context.Context, request BuildRequest, cause error) (BuildResult, error) {

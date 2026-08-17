@@ -66,6 +66,26 @@ func (s *Store) Create(ctx context.Context, input tasks.PreparedCreate) (tasks.T
 				if existing.RequestHash != legacyHash {
 					return createResult{}, tasks.ErrIdempotencyConflict
 				}
+				// The pre-M1.3 fields all agree, but HashCreateRequestLegacy
+				// zeros TaskClass BEFORE hashing -- it proves nothing about
+				// whether the resumed caller's TaskClass actually agrees
+				// with what this row already durably records. existing.
+				// TaskClass == TaskClassLegacyUnspecified means the row
+				// itself never asserted a real classification (true for
+				// every historical row this migration did not specifically
+				// backfill), so any resumed value is compatible; likewise
+				// an unasserted/default resumed TaskClass is always
+				// compatible. But a resumed caller positively proposing a
+				// SPECIFIC classification that contradicts a row's own
+				// already-known, specific value (e.g. the research
+				// backfill) is a genuine contradiction and must fail
+				// closed, never be silently accepted.
+				if input.Request.TaskClass != "" &&
+					input.Request.TaskClass != tasks.TaskClassGeneralWork &&
+					existing.TaskClass != tasks.TaskClassLegacyUnspecified &&
+					input.Request.TaskClass != existing.TaskClass {
+					return createResult{}, tasks.ErrIdempotencyConflict
+				}
 			}
 			return createResult{Task: existing, Created: false}, nil
 		}

@@ -51,6 +51,13 @@ func TestDigestBuildRequest_LegacyCompatibility(t *testing.T) {
 		t.Fatal("DigestBuildRequest must diverge from the legacy computation by construction, even with the new fields empty -- otherwise the two hash spaces are not actually distinct")
 	}
 
+	// existingHistorical simulates the actual durable row: its stored hash
+	// is the legacy-shaped one, and -- since context_snapshots' selector
+	// columns are never backfilled (migration 000053) -- its own
+	// TaskClass/ExecutionPurpose/ActorUnitID are genuinely empty, exactly
+	// like every real pre-M1.3 snapshot.
+	existingHistorical := Snapshot{RequestHash: preM13Hash}
+
 	resumed := base
 	resumed.Request.TaskClass = "research.corpus_curate"
 	resumed.Request.ExecutionPurpose = "department-worker"
@@ -59,15 +66,89 @@ func TestDigestBuildRequest_LegacyCompatibility(t *testing.T) {
 	if freshHash == preM13Hash {
 		t.Fatal("DigestBuildRequest must diverge from the pre-M1.3 hash once the new fields are non-empty")
 	}
-	if !requestHashCompatible(preM13Hash, freshHash, resumed) {
+	if !requestHashCompatible(existingHistorical, freshHash, resumed) {
 		t.Fatal("a resumed pre-M1.3 snapshot must remain compatible once the caller starts supplying the new selector facts")
 	}
 
 	contradictory := resumed
 	contradictory.Request.ActorRoleID = "empresa/ceo"
 	contradictoryHash := DigestBuildRequest(contradictory)
-	if requestHashCompatible(preM13Hash, contradictoryHash, contradictory) {
+	if requestHashCompatible(existingHistorical, contradictoryHash, contradictory) {
 		t.Fatal("a genuinely different request must not be accepted as compatible with the stored pre-M1.3 hash")
+	}
+}
+
+// TestRequestHashCompatible_SelectorOnlyContradictionFailsClosed is the
+// independent review's required proof that changing ONLY a new M1.3
+// selector field -- with every pre-M1.3 field held identical -- is
+// detected as a contradiction, never silently accepted merely because
+// digestBuildRequestLegacy strips those fields from ITS comparison.
+//
+// A genuinely v2-created existing row (DigestBuildRequest, not the legacy
+// function) already rejects any field-level mismatch through the direct
+// top-level hash comparison alone -- ANY field, selector or not, is part
+// of that hash. The gap the independent review found only exists on the
+// legacy-shaped fallback path (existing.RequestHash ==
+// digestBuildRequestLegacy(canonical)), because that computation omits
+// TaskClass/ExecutionPurpose/ActorUnitID entirely: this test constructs
+// exactly that path -- an existing record whose stored hash is
+// legacy-shaped yet which already durably knows a specific, non-empty
+// selector fact -- and proves a resumed request proposing a different one
+// is rejected, not silently waved through.
+func TestRequestHashCompatible_SelectorOnlyContradictionFailsClosed(t *testing.T) {
+	base := CanonicalBuildRequest{
+		Request: BuildRequest{
+			OrganizationID: "explorarte", OrganizationRevisionID: 2, ActorRoleID: "investigacion/research_worker_hourly", Purpose: "department_worker",
+			TaskClass: "research.corpus_curate", ExecutionPurpose: "department-worker", ActorUnitID: "investigacion",
+		},
+		PrecedenceHash: DigestMarkdown([]byte("p")), CanonicalBundleHash: DigestMarkdown([]byte("c")),
+		MaxTotalBytes: 100, MaxSegmentBytes: 50, MaxSegments: 10, MaxSkills: 2,
+	}
+	existing := Snapshot{
+		RequestHash:      digestBuildRequestLegacy(base),
+		TaskClass:        base.Request.TaskClass,
+		ExecutionPurpose: base.Request.ExecutionPurpose,
+		ActorUnitID:      base.Request.ActorUnitID,
+	}
+
+	identical := base
+	if !requestHashCompatible(existing, DigestBuildRequest(identical), identical) {
+		t.Fatal("an identical resumed request must remain compatible")
+	}
+
+	cases := map[string]func(*CanonicalBuildRequest){
+		"task_class":        func(c *CanonicalBuildRequest) { c.Request.TaskClass = "general.work" },
+		"execution_purpose": func(c *CanonicalBuildRequest) { c.Request.ExecutionPurpose = "ceo-plan" },
+		"actor_unit_id":     func(c *CanonicalBuildRequest) { c.Request.ActorUnitID = "marketing" },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			mutated := base
+			mutate(&mutated)
+			if requestHashCompatible(existing, DigestBuildRequest(mutated), mutated) {
+				t.Fatalf("changing only %s against an existing snapshot with a known, different value must fail closed", name)
+			}
+		})
+	}
+}
+
+// TestRequestHashCompatible_EmptyExistingSelectorAcceptsResume proves the
+// companion property: a TRUE pre-M1.3 row (legacy-shaped hash, empty
+// selector columns -- exactly what migration 000053 leaves every
+// historical context_snapshots row as) still accepts a resumed request
+// that now supplies real selector facts, since an empty existing value
+// records no assertion to contradict.
+func TestRequestHashCompatible_EmptyExistingSelectorAcceptsResume(t *testing.T) {
+	base := CanonicalBuildRequest{
+		Request:        BuildRequest{OrganizationID: "explorarte", OrganizationRevisionID: 2, ActorRoleID: "investigacion/research_worker_hourly", Purpose: "department_worker"},
+		PrecedenceHash: DigestMarkdown([]byte("p")), CanonicalBundleHash: DigestMarkdown([]byte("c")),
+		MaxTotalBytes: 100, MaxSegmentBytes: 50, MaxSegments: 10, MaxSkills: 2,
+	}
+	existing := Snapshot{RequestHash: digestBuildRequestLegacy(base)} // no TaskClass/ExecutionPurpose/ActorUnitID: genuine historical row.
+	resumed := base
+	resumed.Request.TaskClass, resumed.Request.ExecutionPurpose, resumed.Request.ActorUnitID = "research.corpus_curate", "department-worker", "investigacion"
+	if !requestHashCompatible(existing, DigestBuildRequest(resumed), resumed) {
+		t.Fatal("a true historical (empty-selector) row must remain resumable once the caller starts supplying real selector facts")
 	}
 }
 

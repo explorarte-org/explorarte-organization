@@ -106,6 +106,32 @@ func TestSelectorRegistry_DuplicateRegistrationRejected(t *testing.T) {
 	}
 }
 
+// TestSelectorRegistry_PartialExactSelectorRejected is the independent
+// review's required proof: EXACT means the complete four-axis tuple, not
+// merely "not entirely empty" -- a registration missing any single axis
+// must fail construction.
+func TestSelectorRegistry_PartialExactSelectorRejected(t *testing.T) {
+	complete := SemanticSelector{TaskClass: "x", ExecutionPurpose: "y", ActorRoleID: "z", ActorUnitID: "w"}
+	for name, mutate := range map[string]func(*SemanticSelector){
+		"missing_task_class":        func(s *SemanticSelector) { s.TaskClass = "" },
+		"missing_execution_purpose": func(s *SemanticSelector) { s.ExecutionPurpose = "" },
+		"missing_actor_role_id":     func(s *SemanticSelector) { s.ActorRoleID = "" },
+		"missing_actor_unit_id":     func(s *SemanticSelector) { s.ActorUnitID = "" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			partial := complete
+			mutate(&partial)
+			if _, err := BuildSelectorRegistry(nil, nil, []ExactRegistration{{Selector: partial, Entry: ProfileEntry{Profile: testProfile("p")}}}); err == nil {
+				t.Fatalf("expected a partial exact selector (%s) to be rejected", name)
+			}
+		})
+	}
+	// The fully complete tuple must still be accepted.
+	if _, err := BuildSelectorRegistry(nil, nil, []ExactRegistration{{Selector: complete, Entry: ProfileEntry{Profile: testProfile("p")}}}); err != nil {
+		t.Fatalf("a complete four-axis selector must be accepted: %v", err)
+	}
+}
+
 // TestSelectorRegistry_DeterministicIndependentOfRegistrationOrder proves
 // Select's outcome never depends on the order profiles were registered in
 // (a stand-in proof that it does not depend on Go map iteration order

@@ -208,9 +208,30 @@ type ContextAssemblyService struct {
 // returns the same view (same ID, same bytes, same digest); calling it for
 // a snapshot whose durable view was already recorded with different
 // content fails closed with ErrExecutionContextViewDrift.
+//
+// A durable view already on record for canonical.ID is returned AS-IS,
+// without ever re-running ResolveProviderContext -- this is the entire
+// point of ExecutionContextView being a durable, immutable, DERIVED
+// record (see its own doc comment): once sealed, it must remain
+// reloadable even after the compiler/selector algorithm that produced it
+// changes. M1.3 made this correctness-critical rather than merely an
+// optimization: a durable view's SelectorAlgorithmVersion is itself part
+// of SameLogicalView's comparison, so a historical row sealed under an
+// older algorithm version would otherwise be reported as drift the
+// instant the algorithm version changes, even though its content never
+// actually contradicts anything -- recompiling it was never the right
+// question to ask in the first place. Store.Persist's own drift/race
+// handling still applies to any genuinely concurrent or contradictory
+// write attempt; this short-circuit only avoids asking the question for
+// an artifact that already has a sealed, authoritative answer.
 func (s ContextAssemblyService) ResolveAndPersist(ctx context.Context, canonical contextengine.Snapshot) (ExecutionContextView, error) {
 	if s.Store == nil {
 		return ExecutionContextView{}, errors.New("contextcompiler: ContextAssemblyService requires a Store")
+	}
+	if existing, getErr := s.Store.GetByContextSnapshot(ctx, canonical.OrganizationID, canonical.ID); getErr == nil {
+		return existing, nil
+	} else if !errors.Is(getErr, ErrExecutionContextViewNotFound) {
+		return ExecutionContextView{}, fmt.Errorf("check for an existing execution context view for snapshot %d: %w", canonical.ID, getErr)
 	}
 	resolved, err := ResolveProviderContext(ctx, canonical)
 	if err != nil {

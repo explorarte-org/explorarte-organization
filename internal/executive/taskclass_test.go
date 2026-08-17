@@ -82,7 +82,7 @@ func TestValidTaskClass(t *testing.T) {
 			t.Errorf("ValidTaskClass(%q) = false, want true", s)
 		}
 	}
-	for _, s := range []string{"", "NotDotted", "has space.here", "notdotted"} {
+	for _, s := range []string{"", "NotDotted", "has space.here", "notdotted", TaskClassLegacyUnspecified} {
 		if ValidTaskClass(s) {
 			t.Errorf("ValidTaskClass(%q) = true, want false", s)
 		}

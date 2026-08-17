@@ -124,6 +124,68 @@ func TestResolveAndPersist_Idempotent(t *testing.T) {
 	}
 }
 
+// TestResolveAndPersist_HistoricalViewNeverRecompiled is the independent
+// review's required P1 fix proof (HISTORICAL_ECV_RESUME_PROOF): a durable
+// view already on record for a canonical.ID must be returned exactly
+// as-is, WITHOUT ResolveAndPersist ever calling ResolveProviderContext
+// again -- not merely "producing an equal result", but never attempting
+// the recompute at all. Before this fix, ResolveAndPersist unconditionally
+// rebuilt a fresh candidate (always stamped with the CURRENT
+// SelectorAlgorithmVersion) and asked Store.Persist to reconcile it
+// against the existing row; SameLogicalView compares SelectorAlgorithmVersion
+// itself, so a historical row sealed under an older algorithm version
+// would be reported as drift purely because the algorithm version
+// changed -- even when nothing about the row's own content was ever
+// actually contradicted.
+//
+// This test seeds a durable view whose OWN content (FellBackToCanonical
+// = true, a stale SelectorAlgorithmVersion, and provider-visible bytes
+// that do NOT match what the current compiler would produce for this
+// exact canonical snapshot) proves the point decisively: the current
+// selector WOULD select the research profile and project different bytes
+// for this exact ActorRoleID/TaskClass/ActorUnitID combination if
+// ResolveAndPersist ever recompiled it. It must not.
+func TestResolveAndPersist_HistoricalViewNeverRecompiled(t *testing.T) {
+	store := NewMemoryStore()
+	snap := orgSnapshot(9, "investigacion/research_worker_hourly", roleCatalogYAML())
+
+	historicalBytes := []byte("historical canonical fallback bytes, sealed before M1.3")
+	historical := ExecutionContextView{
+		OrganizationID: snap.OrganizationID, ContextSnapshotID: snap.ID,
+		FellBackToCanonical: true, FallbackReason: "task_class_not_projected",
+		SelectionKind: SelectionCanonical, SelectorAlgorithmVersion: "legacy_task_class_of/v0",
+		AuthorityOrderHash: "a", CompiledContentHash: "b",
+		ProviderVisibleBytes: historicalBytes, ProviderVisibleDigest: sha256Hex(historicalBytes), ProviderVisibleByteCount: len(historicalBytes),
+	}
+	seeded, err := store.Persist(context.Background(), historical)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	svc := ContextAssemblyService{Store: store}
+	resolved, err := svc.ResolveAndPersist(context.Background(), snap)
+	if err != nil {
+		t.Fatalf("ResolveAndPersist on a historical view must not fail: %v", err)
+	}
+	if resolved.ID != seeded.ID {
+		t.Fatalf("ResolveAndPersist returned a different view identity: %d != %d", resolved.ID, seeded.ID)
+	}
+	if !resolved.FellBackToCanonical || resolved.SelectorAlgorithmVersion != "legacy_task_class_of/v0" {
+		t.Fatalf("ResolveAndPersist recompiled the view instead of returning the sealed historical record: %+v", resolved)
+	}
+	if string(resolved.ProviderVisibleBytes) != string(historicalBytes) {
+		t.Fatal("ResolveAndPersist returned different provider-visible bytes than the sealed historical record")
+	}
+
+	// The current selector really would choose differently for this exact
+	// (ActorRoleID, TaskClass, ActorUnitID) if asked fresh -- proving this
+	// test is not vacuously true.
+	freshSelection := defaultSelectorRegistry.Select(BuildSelector(snap))
+	if !freshSelection.Matched {
+		t.Fatal("test setup bug: the current selector must match this snapshot for the historical-view guarantee to be meaningful")
+	}
+}
+
 // TestResolveAndPersist_DriftFailsClosed is section 9.D: persisting
 // different content for a context_snapshot_id that already has a durable
 // view must fail closed, never silently overwrite or silently accept.

@@ -157,7 +157,13 @@ func ValidateCreateRequest(request CreateRequest) error {
 	// TaskClass is optional on the wire (Service.CreateTask defaults an
 	// empty value to TaskClassGeneralWork before persistence) but, if the
 	// caller supplied one, it must already be syntactically valid -- never
-	// silently accepted and reinterpreted later.
+	// silently accepted and reinterpreted later. TaskClassLegacyUnspecified
+	// is EXCLUSIVELY the one-time historical migration marker (M1.3
+	// section 3) -- a caller explicitly requesting it for a NEW task is
+	// rejected outright, never silently accepted as if it meant something.
+	if request.TaskClass == TaskClassLegacyUnspecified {
+		return fmt.Errorf("%w: task_class %q is reserved for historical migration rows and cannot be assigned to a new task", ErrInvalidInput, TaskClassLegacyUnspecified)
+	}
 	if request.TaskClass != "" && !ValidTaskClass(request.TaskClass) {
 		return fmt.Errorf("%w: task_class is invalid", ErrInvalidInput)
 	}

@@ -119,8 +119,13 @@ func BuildSelectorRegistry(byTaskClass []ProfileEntry, byExecutionPurpose []Prof
 		registry.byExecutionPurpose[entry.Profile.ExecutionPurpose] = entry
 	}
 	for _, registration := range exact {
-		if registration.Selector == (SemanticSelector{}) {
-			return nil, fmt.Errorf("contextcompiler: exact selector registration %q has an empty selector identity", registration.Entry.Profile.ID)
+		// EXACT means the full four-axis tuple (M1.3 section 10): a
+		// registration missing any single axis is not a narrower match,
+		// it is an ambiguous one -- reject it at construction rather than
+		// letting it silently behave as a partial-match wildcard.
+		if registration.Selector.TaskClass == "" || registration.Selector.ExecutionPurpose == "" ||
+			registration.Selector.ActorRoleID == "" || registration.Selector.ActorUnitID == "" {
+			return nil, fmt.Errorf("contextcompiler: exact selector registration %q is not a complete four-axis selector: %+v", registration.Entry.Profile.ID, registration.Selector)
 		}
 		if _, duplicate := registry.exact[registration.Selector]; duplicate {
 			return nil, fmt.Errorf("contextcompiler: duplicate exact selector registration for %+v", registration.Selector)

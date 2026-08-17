@@ -20,6 +20,13 @@ const (
 	// pattern already used for ProviderRenderTelemetry-style plain DTOs
 	// elsewhere in this codebase.
 	TaskClassGeneralWork = "general.work"
+	// TaskClassLegacyUnspecified mirrors internal/tasks.
+	// TaskClassLegacyUnspecified: EXCLUSIVELY the one-time historical
+	// migration marker (M1.3 section 3). Never a value a Leader may
+	// propose for a new task -- ValidTaskClass rejects it explicitly
+	// below, the same way tasks.ValidateCreateRequest does at the host
+	// boundary.
+	TaskClassLegacyUnspecified = "legacy.unspecified"
 )
 
 // taskClassPattern is the identical syntax contract internal/tasks.
@@ -35,5 +42,8 @@ const maxTaskClassBytes = 100
 // WorkerTaskProposal.TaskClass must pass before it is ever forwarded into
 // a CreateTaskCommand -- a model naming a class does not make it so.
 func ValidTaskClass(s string) bool {
+	if s == TaskClassLegacyUnspecified {
+		return false
+	}
 	return len(s) > 0 && len(s) <= maxTaskClassBytes && taskClassPattern.MatchString(s)
 }

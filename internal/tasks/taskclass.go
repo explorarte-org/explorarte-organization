@@ -27,7 +27,14 @@ const maxTaskClassBytes = 100
 // ValidTaskClass reports whether s is syntactically a valid TaskClass:
 // non-empty, bounded, lowercase dotted identifier form. It does not, and
 // must never, consult any registry, role, catalog, or model output --
-// syntax only.
+// syntax only, with exactly one reserved-value exception:
+// TaskClassLegacyUnspecified is syntactically well-formed but is
+// EXCLUSIVELY the one-time historical migration marker (M1.3 section 3)
+// -- never a value any caller may assign to a new task, so it is rejected
+// here too, not merely at ValidateCreateRequest's semantic layer.
 func ValidTaskClass(s string) bool {
+	if s == TaskClassLegacyUnspecified {
+		return false
+	}
 	return len(s) > 0 && len(s) <= maxTaskClassBytes && taskClassPattern.MatchString(s)
 }

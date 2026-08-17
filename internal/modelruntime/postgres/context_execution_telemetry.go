@@ -47,7 +47,7 @@ func (s *Store) GetContextExecutionTelemetry(ctx context.Context, organizationID
 SELECT
     mi.id, mi.task_id, mi.attempt_id, mi.context_snapshot_id,
     t.execution_context_view_id, ecv.context_profile_id, ecv.context_profile_version,
-    cs.task_class, cs.execution_purpose, cs.actor_unit_id, ecv.selection_kind,
+    cs.actor_role_id, cs.task_class, cs.execution_purpose, cs.actor_unit_id, ecv.selection_kind,
     t.token_estimator_id, t.token_estimator_version,
     t.estimated_provider_visible_tokens, t.estimated_stable_prefix_tokens, t.estimated_dynamic_suffix_tokens,
     t.segment_token_estimates,
@@ -75,7 +75,7 @@ WHERE mi.organization_id = $1 AND mi.id = $2 AND t.execution_context_view_id IS 
 	err := row.Scan(
 		&result.InvocationID, &result.TaskID, &result.AttemptID, &result.ContextSnapshotID,
 		&result.ExecutionContextViewID, &result.ContextProfileID, &result.ContextProfileVersion,
-		&result.TaskClass, &result.ExecutionPurpose, &result.ActorUnitID, &result.SelectionKind,
+		&result.ActorRoleID, &result.TaskClass, &result.ExecutionPurpose, &result.ActorUnitID, &result.SelectionKind,
 		&result.EstimatorID, &result.EstimatorVersion,
 		&result.EstimatedProviderVisibleTokens, &result.EstimatedStablePrefixTokens, &result.EstimatedDynamicSuffixTokens,
 		&segmentsJSON,

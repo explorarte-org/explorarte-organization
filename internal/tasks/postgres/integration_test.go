@@ -452,9 +452,9 @@ func TestDurableTaskEnginePostgreSQL17(t *testing.T) {
 		var historicalID int64
 		if err := h.store.Pool().QueryRow(h.ctx, `
 			INSERT INTO tasks(
-				organization_id,organization_revision_id,assigned_role_id,assigned_unit_id,
+				organization_id,organization_revision_id,assigned_role_id,assigned_unit_id,task_class,
 				idempotency_key,request_hash,title,instructions,acceptance_criteria,status,priority,available_at,max_attempts
-			) VALUES('explorarte',1,$1,'ingenieria_ia',$2,$3,$4,$5,'["criterion"]'::jsonb,'ready',0,clock_timestamp(),5)
+			) VALUES('explorarte',1,$1,'ingenieria_ia','legacy.unspecified',$2,$3,$4,$5,'["criterion"]'::jsonb,'ready',0,clock_timestamp(),5)
 			RETURNING id`,
 			testRole, key, legacyHash, historical.Title, historical.Instructions,
 		).Scan(&historicalID); err != nil {
@@ -477,6 +477,81 @@ func TestDurableTaskEnginePostgreSQL17(t *testing.T) {
 		contradictory.Instructions = "This is not the same task."
 		if _, _, err := h.tasks.CreateTask(h.ctx, contradictory, "human", "eduardo"); !errors.Is(err, tasks.ErrIdempotencyConflict) {
 			t.Fatalf("want ErrIdempotencyConflict for a genuinely different request under the same key, got %v", err)
+		}
+	})
+
+	// SELECTOR_ONLY_IDEMPOTENCY_CONTRADICTION_PROOF (independent review):
+	// HashCreateRequestLegacy zeros TaskClass before hashing, so the
+	// legacy-shape comparison alone proves nothing about whether a
+	// resumed caller's TaskClass agrees with what a row already durably
+	// knows. This proves the additional, explicit field-level guard: a
+	// row whose own TaskClass is a SPECIFIC, backfilled, non-generic
+	// value (exactly what the one-time research.corpus_curate backfill
+	// produces) must reject a resumed request proposing a different
+	// specific value, changing NOTHING else.
+	t.Run("selector-only contradiction against a specifically-backfilled row fails closed", func(t *testing.T) {
+		h.resetTasks(t)
+		const key = "selector-only-contradiction"
+		historical := tasks.CreateRequest{
+			OrganizationID: "explorarte", AssignedRoleID: testRole, IdempotencyKey: key,
+			Title: "Backfilled research task", Instructions: "Pre-M1.3 research instructions.",
+			AcceptanceCriteria: []string{"criterion"}, MaxAttempts: 5,
+		}
+		legacyHash, err := tasks.HashCreateRequestLegacy(historical)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.store.Pool().Exec(h.ctx, `
+			INSERT INTO tasks(
+				organization_id,organization_revision_id,assigned_role_id,assigned_unit_id,task_class,
+				idempotency_key,request_hash,title,instructions,acceptance_criteria,status,priority,available_at,max_attempts
+			) VALUES('explorarte',1,$1,'investigacion','research.corpus_curate',$2,$3,$4,$5,'["criterion"]'::jsonb,'ready',0,clock_timestamp(),5)`,
+			testRole, key, legacyHash, historical.Title, historical.Instructions,
+		); err != nil {
+			t.Fatalf("simulate specifically-backfilled historical row: %v", err)
+		}
+
+		// A resumed request identical in every OTHER field, but proposing
+		// a different, SPECIFIC (non-general.work -- general.work is
+		// deliberately treated as "no real assertion" and is always
+		// compatible with anything) TaskClass than what this row already
+		// durably records, must fail closed -- even though the
+		// legacy-shaped hash comparison alone would accept it.
+		// RequestHash must be the FRESH v2 hash (computed WITH TaskClass
+		// set) so the direct top-level comparison against the stored
+		// legacy hash fails first and falls through to the legacy-shape
+		// fallback -- exactly the path the new field-level guard lives
+		// on; using legacyHash here would short-circuit past it entirely.
+		wrongClass := historical
+		wrongClass.TaskClass = "coordination.ceo_plan"
+		wrongClassHash, err := tasks.HashCreateRequest(wrongClass)
+		if err != nil {
+			t.Fatal(err)
+		}
+		contradictory := tasks.PreparedCreate{
+			Request:                wrongClass,
+			OrganizationRevisionID: 1, AssignedUnitID: "investigacion",
+			TaskClass: "coordination.ceo_plan", RequestHash: wrongClassHash,
+			InitialStatus: "ready", DefaultMaxAttempts: 5, OutboxMaxAttempts: 5,
+			ActorType: "human", ActorID: "eduardo",
+		}
+		if _, _, err := h.taskDB.Create(h.ctx, contradictory); !errors.Is(err, tasks.ErrIdempotencyConflict) {
+			t.Fatalf("want ErrIdempotencyConflict for a TaskClass-only contradiction against a specifically-backfilled row, got %v", err)
+		}
+
+		// The exact matching value remains accepted (idempotent reuse).
+		matchingClass := historical
+		matchingClass.TaskClass = "research.corpus_curate"
+		matchingClassHash, err := tasks.HashCreateRequest(matchingClass)
+		if err != nil {
+			t.Fatal(err)
+		}
+		matching := contradictory
+		matching.Request = matchingClass
+		matching.TaskClass = "research.corpus_curate"
+		matching.RequestHash = matchingClassHash
+		if _, inserted, err := h.taskDB.Create(h.ctx, matching); err != nil || inserted {
+			t.Fatalf("matching TaskClass resume: inserted=%v err=%v", inserted, err)
 		}
 	})
 }
