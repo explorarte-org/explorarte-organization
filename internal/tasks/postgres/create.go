@@ -28,15 +28,15 @@ func (s *Store) Create(ctx context.Context, input tasks.PreparedCreate) (tasks.T
 		}
 		inserted, scanErr := scanTask(tx.QueryRow(ctx, `
 			INSERT INTO tasks(
-				organization_id,organization_revision_id,requested_by_role_id,assigned_role_id,assigned_unit_id,
+				organization_id,organization_revision_id,requested_by_role_id,assigned_role_id,assigned_unit_id,task_class,
 				idempotency_key,request_hash,title,instructions,acceptance_criteria,status,priority,available_at,
 				max_attempts,correlation_id,causation_id
 			)
-			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,COALESCE($13::timestamptz,clock_timestamp()),$14,$15,$16)
+			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,COALESCE($14::timestamptz,clock_timestamp()),$15,$16,$17)
 			ON CONFLICT (organization_id,idempotency_key) DO NOTHING
 			RETURNING `+taskColumns,
 			input.Request.OrganizationID, input.OrganizationRevisionID, requester, input.Request.AssignedRoleID,
-			input.AssignedUnitID, input.Request.IdempotencyKey, input.RequestHash, input.Request.Title,
+			input.AssignedUnitID, input.TaskClass, input.Request.IdempotencyKey, input.RequestHash, input.Request.Title,
 			input.Request.Instructions, criteria, input.InitialStatus, input.Request.Priority, availableAt,
 			input.Request.MaxAttempts, nullableString(input.Request.CorrelationID), nullableString(input.Request.CausationID),
 		))
@@ -50,8 +50,22 @@ func (s *Store) Create(ctx context.Context, input tasks.PreparedCreate) (tasks.T
 			if existingErr != nil {
 				return createResult{}, existingErr
 			}
+			// M1.3 section 9: existing.RequestHash may have been computed
+			// before TaskClass (or any other newly-hashed field) existed
+			// at all. A direct mismatch against the fresh v2 hash is not
+			// automatically a conflict -- it might be a legitimate resumed
+			// pre-M1.3 request whose stored hash only matches the exact
+			// pre-M1.3 (TaskClass-omitted) computation. Only when NEITHER
+			// computation matches is this a genuine contradictory identity
+			// under a reused idempotency key.
 			if existing.RequestHash != input.RequestHash {
-				return createResult{}, tasks.ErrIdempotencyConflict
+				legacyHash, legacyErr := tasks.HashCreateRequestLegacy(input.Request)
+				if legacyErr != nil {
+					return createResult{}, legacyErr
+				}
+				if existing.RequestHash != legacyHash {
+					return createResult{}, tasks.ErrIdempotencyConflict
+				}
 			}
 			return createResult{Task: existing, Created: false}, nil
 		}

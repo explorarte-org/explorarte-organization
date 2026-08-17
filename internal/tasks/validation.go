@@ -154,6 +154,13 @@ func ValidateCreateRequest(request CreateRequest) error {
 	if !rolePattern.MatchString(request.AssignedRoleID) {
 		return fmt.Errorf("%w: assigned_role_id is invalid", ErrInvalidInput)
 	}
+	// TaskClass is optional on the wire (Service.CreateTask defaults an
+	// empty value to TaskClassGeneralWork before persistence) but, if the
+	// caller supplied one, it must already be syntactically valid -- never
+	// silently accepted and reinterpreted later.
+	if request.TaskClass != "" && !ValidTaskClass(request.TaskClass) {
+		return fmt.Errorf("%w: task_class is invalid", ErrInvalidInput)
+	}
 	if length := len(request.IdempotencyKey); length < 1 || length > 200 {
 		return fmt.Errorf("%w: idempotency_key must contain 1 to 200 bytes", ErrInvalidInput)
 	}
@@ -261,6 +268,27 @@ func HashCreateRequest(request CreateRequest) (string, error) {
 	}
 	digest := sha256.Sum256(body)
 	return hex.EncodeToString(digest[:]), nil
+}
+
+// HashCreateRequestLegacy is the exact pre-M1.3 idempotency hash: what
+// HashCreateRequest would have produced before TaskClass existed on
+// CreateRequest. Because CreateRequest.TaskClass carries `omitempty`,
+// zeroing it here reproduces the identical JSON byte shape every
+// already-durable pre-M1.3 row was actually hashed with -- this is not an
+// approximation, it is the same computation on the same wire shape.
+//
+// Used ONLY as a fallback compatibility check (M1.3 section 9): a resumed
+// request whose freshly computed HashCreateRequest no longer matches an
+// already-durable row's stored RequestHash (because the resumed caller
+// now legitimately supplies a non-empty TaskClass the pre-M1.3 row never
+// had) is still accepted as the same logical request when this legacy
+// recomputation matches instead -- so an upgrade never breaks a
+// legitimate pre-M1.3 idempotent retry. A row whose stored hash matches
+// NEITHER computation is a genuine conflict and must still fail closed;
+// see Store.Create's conflict-handling branch.
+func HashCreateRequestLegacy(request CreateRequest) (string, error) {
+	request.TaskClass = ""
+	return HashCreateRequest(request)
 }
 
 func NormalizeAvailableAt(value *time.Time) *time.Time {

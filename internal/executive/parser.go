@@ -71,7 +71,7 @@ func ParseDepartmentReview(body []byte, limits Limits) (DepartmentReview, error)
 		return DepartmentReview{}, err
 	}
 	for i := range out.ProposedFollowupTasks {
-		if err := validateWorkerTaskShape(out.ProposedFollowupTasks[i], limits); err != nil {
+		if err := validateWorkerTaskShape(&out.ProposedFollowupTasks[i], limits); err != nil {
 			return DepartmentReview{}, fmt.Errorf("followup[%d]: %w", i, err)
 		}
 	}
@@ -214,18 +214,31 @@ func validateDepartmentPlanShape(p DepartmentPlan, limits Limits) error {
 		return err
 	}
 	for i := range p.Tasks {
-		if err := validateWorkerTaskShape(p.Tasks[i], limits); err != nil {
+		if err := validateWorkerTaskShape(&p.Tasks[i], limits); err != nil {
 			return fmt.Errorf("task[%d]: %w", i, err)
 		}
 	}
 	return nil
 }
 
-func validateWorkerTaskShape(t WorkerTaskProposal, limits Limits) error {
+// validateWorkerTaskShape takes t by pointer so it can normalize
+// TaskClass in place: a nil/empty proposal (including one recovered from
+// pre-M1.3 durable output, which never had this field at all) defaults to
+// TaskClassGeneralWork here, never TaskClassOf(role) -- that ActorRoleID
+// proxy is not reintroduced to "fix" old outputs (M1.3 section 5). A
+// non-empty, syntactically invalid proposal is rejected outright: the
+// Leader may PROPOSE a class, but the host validates it before it can
+// ever reach CreateTaskCommand.
+func validateWorkerTaskShape(t *WorkerTaskProposal, limits Limits) error {
 	for name, value := range map[string]string{"client_key": t.ClientKey, "assigned_role_id": t.AssignedRoleID, "title": t.Title} {
 		if err := validateRequiredString(value, 240, name); err != nil {
 			return err
 		}
+	}
+	if t.TaskClass == "" {
+		t.TaskClass = TaskClassGeneralWork
+	} else if !ValidTaskClass(t.TaskClass) {
+		return fmt.Errorf("%w: task_class is invalid", ErrContractRejected)
 	}
 	if err := validateRequiredString(t.Instructions, limits.MaxInstructionsBytes, "instructions"); err != nil {
 		return err

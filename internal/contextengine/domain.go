@@ -94,16 +94,27 @@ const (
 )
 
 type BuildRequest struct {
-	OrganizationID         string   `json:"organization_id"`
-	OrganizationRevisionID int64    `json:"organization_revision_id"`
-	ActorRoleID            string   `json:"actor_role_id"`
-	Purpose                string   `json:"purpose"`
-	ProjectRef             string   `json:"project_ref,omitempty"`
-	TaskRef                string   `json:"task_ref,omitempty"`
-	RequestedSkillIDs      []string `json:"requested_skill_ids,omitempty"`
-	IdempotencyKey         string   `json:"idempotency_key"`
-	CorrelationID          string   `json:"correlation_id,omitempty"`
-	CausationID            string   `json:"causation_id,omitempty"`
+	OrganizationID         string `json:"organization_id"`
+	OrganizationRevisionID int64  `json:"organization_revision_id"`
+	ActorRoleID            string `json:"actor_role_id"`
+	Purpose                string `json:"purpose"`
+	ProjectRef             string `json:"project_ref,omitempty"`
+	TaskRef                string `json:"task_ref,omitempty"`
+	// TaskClass/ExecutionPurpose/ActorUnitID are M1.3's durable semantic
+	// selector facts. All three are OPTIONAL here: contextengine never
+	// requires or infers them (that is Executive's/the Tasks Engine's
+	// responsibility), it only carries them through so contextcompiler can
+	// resolve a ContextProfile from durable Snapshot facts alone, never by
+	// querying the Task Engine or inferring from ActorRoleID/Instructions.
+	// Purpose above remains the separate, byte-identical legacy string
+	// Context Engine/Model Runtime compatibility already depends on.
+	TaskClass         string   `json:"task_class,omitempty"`
+	ExecutionPurpose  string   `json:"execution_purpose,omitempty"`
+	ActorUnitID       string   `json:"actor_unit_id,omitempty"`
+	RequestedSkillIDs []string `json:"requested_skill_ids,omitempty"`
+	IdempotencyKey    string   `json:"idempotency_key"`
+	CorrelationID     string   `json:"correlation_id,omitempty"`
+	CausationID       string   `json:"causation_id,omitempty"`
 }
 
 type SourceRecord struct {
@@ -151,6 +162,9 @@ type Snapshot struct {
 	Purpose                string         `json:"purpose"`
 	ProjectRef             string         `json:"project_ref,omitempty"`
 	TaskRef                string         `json:"task_ref,omitempty"`
+	TaskClass              string         `json:"task_class,omitempty"`
+	ExecutionPurpose       string         `json:"execution_purpose,omitempty"`
+	ActorUnitID            string         `json:"actor_unit_id,omitempty"`
 	IdempotencyKey         string         `json:"idempotency_key,omitempty"`
 	Status                 SnapshotStatus `json:"status"`
 	Version                int64          `json:"version"`

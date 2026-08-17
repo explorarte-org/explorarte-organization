@@ -18,7 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const taskColumns = `id,organization_id,organization_revision_id,requested_by_role_id,assigned_role_id,assigned_unit_id,idempotency_key,request_hash,title,instructions,acceptance_criteria,status,priority,available_at,max_attempts,attempt_count,version,correlation_id,causation_id,status_reason_code,status_reason,created_at,updated_at,terminal_at`
+const taskColumns = `id,organization_id,organization_revision_id,requested_by_role_id,assigned_role_id,assigned_unit_id,task_class,idempotency_key,request_hash,title,instructions,acceptance_criteria,status,priority,available_at,max_attempts,attempt_count,version,correlation_id,causation_id,status_reason_code,status_reason,created_at,updated_at,terminal_at`
 
 var taskColumnsT = qualifyColumns("t", taskColumns)
 
@@ -35,7 +35,7 @@ func scanTask(row scanner) (tasks.Task, error) {
 	var criteria []byte
 	err := row.Scan(
 		&value.ID, &value.OrganizationID, &value.OrganizationRevisionID, &value.RequestedByRoleID,
-		&value.AssignedRoleID, &value.AssignedUnitID, &value.IdempotencyKey, &value.RequestHash,
+		&value.AssignedRoleID, &value.AssignedUnitID, &value.TaskClass, &value.IdempotencyKey, &value.RequestHash,
 		&value.Title, &value.Instructions, &criteria, &value.Status, &value.Priority, &value.AvailableAt,
 		&value.MaxAttempts, &value.AttemptCount, &value.Version, &value.CorrelationID, &value.CausationID,
 		&value.StatusReasonCode, &value.StatusReason, &value.CreatedAt, &value.UpdatedAt, &value.TerminalAt,

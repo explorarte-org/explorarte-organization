@@ -36,6 +36,15 @@ type ExecutionContextView struct {
 	FellBackToCanonical bool
 	FallbackReason      string
 
+	// SelectionKind/SelectorAlgorithmVersion are M1.3's durable selection
+	// provenance (section 14): "why did this view use this profile,"
+	// answerable after restart. Neither duplicates the selector facts
+	// themselves (TaskClass/ExecutionPurpose/ActorUnitID already live
+	// durably on the canonical context_snapshots row -- see M1.3 section
+	// 14's "do not duplicate large selector payloads" instruction).
+	SelectionKind            SelectionKind
+	SelectorAlgorithmVersion string
+
 	// ProviderRenderVersion/StablePrefixHash/DynamicSuffixHash are only
 	// populated when FellBackToCanonical is false (a compiled
 	// ProviderRender was produced).
@@ -101,6 +110,8 @@ func SameLogicalView(a, b ExecutionContextView) bool {
 		a.ContextProfileVersion != b.ContextProfileVersion ||
 		a.FellBackToCanonical != b.FellBackToCanonical ||
 		a.FallbackReason != b.FallbackReason ||
+		a.SelectionKind != b.SelectionKind ||
+		a.SelectorAlgorithmVersion != b.SelectorAlgorithmVersion ||
 		a.ProviderRenderVersion != b.ProviderRenderVersion ||
 		a.StablePrefixHash != b.StablePrefixHash ||
 		a.StablePrefixBytes != b.StablePrefixBytes ||
@@ -213,6 +224,8 @@ func (s ContextAssemblyService) ResolveAndPersist(ctx context.Context, canonical
 		ContextProfileVersion:    compilation.ContextProfileVersion,
 		FellBackToCanonical:      resolved.FellBack,
 		FallbackReason:           resolved.FallbackReason,
+		SelectionKind:            compilation.SelectionKind,
+		SelectorAlgorithmVersion: SelectorAlgorithmVersion,
 		AuthorityOrderHash:       compilation.AuthorityOrderHash,
 		CompiledContentHash:      compilation.CompiledContentHash,
 		SegmentDiffs:             compilation.SegmentDiffs,

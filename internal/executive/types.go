@@ -68,8 +68,15 @@ type DepartmentPlan struct {
 }
 
 type WorkerTaskProposal struct {
-	ClientKey          string                `json:"client_key"`
-	AssignedRoleID     string                `json:"assigned_role_id"`
+	ClientKey      string `json:"client_key"`
+	AssignedRoleID string `json:"assigned_role_id"`
+	// TaskClass is proposed by the Leader but HOST-VALIDATED before it
+	// ever reaches CreateTaskCommand (M1.3 section 5, see
+	// validateWorkerTaskShape). Missing on pre-M1.3 durable output
+	// (recovered/replayed): defaults to TaskClassGeneralWork, never
+	// TaskClassOf(role) -- that proxy is not reintroduced to "fix" old
+	// outputs.
+	TaskClass          string                `json:"task_class,omitempty"`
 	Title              string                `json:"title"`
 	Instructions       string                `json:"instructions"`
 	AcceptanceCriteria []string              `json:"acceptance_criteria"`
@@ -177,6 +184,7 @@ type TaskRecord struct {
 	RequestedByRoleID      string
 	AssignedRoleID         string
 	AssignedUnitID         string
+	TaskClass              string
 	IdempotencyKey         string
 	RequestHash            string
 	Title                  string

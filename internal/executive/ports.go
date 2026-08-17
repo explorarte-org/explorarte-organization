@@ -80,8 +80,13 @@ type RoleBoundPrincipalResolver interface {
 }
 
 type CreateTaskCommand struct {
-	RequestedByRoleID  string
-	AssignedRoleID     string
+	RequestedByRoleID string
+	AssignedRoleID    string
+	// TaskClass is OPTIONAL: empty is defaulted by the Tasks Engine to
+	// its own safe generic class. When non-empty it is validated by the
+	// HOST (see ValidTaskClass) before it ever reaches persistence --
+	// never trusted merely because a Leader proposed it (M1.3 section 5).
+	TaskClass          string
 	IdempotencyKey     string
 	Title              string
 	Instructions       string
@@ -158,9 +163,18 @@ type ContextRequest struct {
 	ActorRoleID            string
 	Purpose                string
 	TaskRef                string
-	IdempotencyKey         string
-	CorrelationID          string
-	CausationID            string
+	// TaskClass/ExecutionPurpose/ActorUnitID are M1.3's durable semantic
+	// selector facts. ExecutionPurpose here is the semantic enum string
+	// (string(purpose)), deliberately distinct from the legacy Purpose
+	// field above (purpose.LegacyPurpose()) -- Context Engine/Model
+	// Runtime compatibility still depends on Purpose staying byte-
+	// identical to what it always was.
+	TaskClass        string
+	ExecutionPurpose string
+	ActorUnitID      string
+	IdempotencyKey   string
+	CorrelationID    string
+	CausationID      string
 }
 
 type DispatchProvisioner interface {

@@ -39,6 +39,16 @@ func ValidateBuildRequest(request BuildRequest) error {
 			return Reject(ReasonInvalidRequest, name, name+" is invalid")
 		}
 	}
+	// TaskClass/ExecutionPurpose/ActorUnitID are OPTIONAL, bounded metadata
+	// only -- contextengine never requires or infers them, and a bad
+	// value here can only cause a compiler-level canonical fallback later,
+	// never an authority change. Bounded the same way every other
+	// free-form durable field on BuildRequest already is.
+	for name, value := range map[string]string{"task_class": request.TaskClass, "execution_purpose": request.ExecutionPurpose, "actor_unit_id": request.ActorUnitID} {
+		if len(value) > 200 || strings.ContainsRune(value, 0) {
+			return Reject(ReasonInvalidRequest, name, name+" is invalid")
+		}
+	}
 	seen := map[string]struct{}{}
 	for _, id := range request.RequestedSkillIDs {
 		if !skillID.MatchString(id) {

@@ -163,6 +163,7 @@ func (o *Orchestrator) Submit(ctx context.Context, request SubmitRequest) (Run, 
 	root, reused, err := o.tasks.CreateTask(ctx, CreateTaskCommand{
 		RequestedByRoleID:  OwnerRoleID,
 		AssignedRoleID:     CEORoleID,
+		TaskClass:          TaskClassOwnerGoal,
 		IdempotencyKey:     request.IdempotencyKey,
 		Title:              "Executive owner goal",
 		Instructions:       request.Goal.Goal,
@@ -365,6 +366,7 @@ func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error
 func (o *Orchestrator) createCEOPlanTask(ctx context.Context, root TaskRecord) (TaskRecord, bool, error) {
 	task, reused, err := o.tasks.CreateTask(ctx, CreateTaskCommand{
 		RequestedByRoleID: OwnerRoleID, AssignedRoleID: CEORoleID,
+		TaskClass:      TaskClassCoordinationCEOPlan,
 		IdempotencyKey: childKey(root.ID, "ceo-plan"),
 		Title:          "CEO executive planning", Instructions: "Produce only the ExecutivePlan JSON contract for the owner goal. Propose operational departments; do not select providers, models, capabilities, tools, authority, credentials, or egress.",
 		AcceptanceCriteria: []string{"Return one strict ExecutivePlan JSON value", "Use only operational registry unit IDs", "Do not grant authority or capabilities"},
@@ -384,6 +386,7 @@ func (o *Orchestrator) createLeaderPlanTask(ctx context.Context, root TaskRecord
 	instructions := boundedJSON(map[string]any{"department_id": req.UnitID, "objective": req.Objective, "deliverable": req.Deliverable, "constraints": req.Constraints, "priority": req.Priority}, o.limits.MaxInstructionsBytes)
 	task, reused, err := o.tasks.CreateTask(ctx, CreateTaskCommand{
 		RequestedByRoleID: CEORoleID, AssignedRoleID: leader.ID,
+		TaskClass:      TaskClassCoordinationDeptPlan,
 		IdempotencyKey: childKey(root.ID, "leader-plan:"+req.UnitID), Title: "Department planning: " + req.UnitID,
 		Instructions:       "Produce only DepartmentPlan JSON for this bounded request: " + instructions,
 		AcceptanceCriteria: []string{"Return one strict DepartmentPlan JSON value", "Delegate only to active assignable roles in this department", "Use only existing requirement types"},
@@ -601,7 +604,7 @@ func (o *Orchestrator) materializeWorkerTasks(ctx context.Context, root, source 
 		if replan > 0 {
 			suffix += "-replan:" + strconv.Itoa(replan)
 		}
-		t, _, err := o.tasks.CreateTask(ctx, CreateTaskCommand{RequestedByRoleID: source.AssignedRoleID, AssignedRoleID: p.AssignedRoleID, IdempotencyKey: childKey(root.ID, suffix), Title: p.Title, Instructions: p.Instructions, AcceptanceCriteria: p.AcceptanceCriteria, Priority: p.Priority, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(source.ID), Requirements: appendResultRequirement(p.Requirements)})
+		t, _, err := o.tasks.CreateTask(ctx, CreateTaskCommand{RequestedByRoleID: source.AssignedRoleID, AssignedRoleID: p.AssignedRoleID, TaskClass: p.TaskClass, IdempotencyKey: childKey(root.ID, suffix), Title: p.Title, Instructions: p.Instructions, AcceptanceCriteria: p.AcceptanceCriteria, Priority: p.Priority, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(source.ID), Requirements: appendResultRequirement(p.Requirements)})
 		if err != nil {
 			return err
 		}
@@ -636,7 +639,7 @@ func (o *Orchestrator) createReviewTask(ctx context.Context, root TaskRecord, re
 	if replan > 0 {
 		suffix += ":replan:" + strconv.Itoa(replan)
 	}
-	task, reused, err := o.tasks.CreateTask(ctx, CreateTaskCommand{RequestedByRoleID: CEORoleID, AssignedRoleID: leader.ID, IdempotencyKey: childKey(root.ID, suffix), Title: "Department review: " + req.UnitID, Instructions: "Review only this bounded durable task/evidence summary and return DepartmentReview JSON: " + summary, AcceptanceCriteria: []string{"Use only durable task states and evidence refs", "Return strict DepartmentReview JSON", "Do not execute tool intents"}, Priority: req.Priority, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID), Requirements: []RequirementProposal{{Key: "typed_review", Type: "result", Description: "Validated DepartmentReview invocation result", Required: true}}})
+	task, reused, err := o.tasks.CreateTask(ctx, CreateTaskCommand{RequestedByRoleID: CEORoleID, AssignedRoleID: leader.ID, TaskClass: TaskClassCoordinationDeptReview, IdempotencyKey: childKey(root.ID, suffix), Title: "Department review: " + req.UnitID, Instructions: "Review only this bounded durable task/evidence summary and return DepartmentReview JSON: " + summary, AcceptanceCriteria: []string{"Use only durable task states and evidence refs", "Return strict DepartmentReview JSON", "Do not execute tool intents"}, Priority: req.Priority, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID), Requirements: []RequirementProposal{{Key: "typed_review", Type: "result", Description: "Validated DepartmentReview invocation result", Required: true}}})
 	if err != nil {
 		return TaskRecord{}, false, err
 	}
@@ -648,7 +651,7 @@ func (o *Orchestrator) createReviewTask(ctx context.Context, root TaskRecord, re
 
 func (o *Orchestrator) createClosureTask(ctx context.Context, root TaskRecord, plan ExecutivePlan, all []TaskRecord) (TaskRecord, bool, error) {
 	summary := boundedClosureSummary(plan, all, root.ID, o.limits.MaxInstructionsBytes)
-	task, reused, err := o.tasks.CreateTask(ctx, CreateTaskCommand{RequestedByRoleID: OwnerRoleID, AssignedRoleID: CEORoleID, IdempotencyKey: childKey(root.ID, "ceo-closure"), Title: "CEO executive closure", Instructions: "Synthesize only from this bounded durable summary and return ExecutiveClosure JSON. A completed claim cannot override backend verification: " + summary, AcceptanceCriteria: []string{"Return strict ExecutiveClosure JSON", "Cite only supplied evidence refs", "Report blockers and unresolved owner decisions explicitly"}, Priority: 100, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID), Requirements: []RequirementProposal{{Key: "typed_closure", Type: "result", Description: "Validated ExecutiveClosure invocation result", Required: true}}})
+	task, reused, err := o.tasks.CreateTask(ctx, CreateTaskCommand{RequestedByRoleID: OwnerRoleID, AssignedRoleID: CEORoleID, TaskClass: TaskClassCoordinationCEOClosure, IdempotencyKey: childKey(root.ID, "ceo-closure"), Title: "CEO executive closure", Instructions: "Synthesize only from this bounded durable summary and return ExecutiveClosure JSON. A completed claim cannot override backend verification: " + summary, AcceptanceCriteria: []string{"Return strict ExecutiveClosure JSON", "Cite only supplied evidence refs", "Report blockers and unresolved owner decisions explicitly"}, Priority: 100, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID), Requirements: []RequirementProposal{{Key: "typed_closure", Type: "result", Description: "Validated ExecutiveClosure invocation result", Required: true}}})
 	if err != nil {
 		return TaskRecord{}, false, err
 	}
@@ -769,6 +772,14 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 	snapshot, err := o.contexts.Build(ctx, ContextRequest{
 		OrganizationRevisionID: task.OrganizationRevisionID, ActorRoleID: task.AssignedRoleID,
 		Purpose: purpose.LegacyPurpose(), TaskRef: "task:" + strconv.FormatInt(task.ID, 10),
+		// M1.3: durable semantic selector facts, propagated alongside
+		// (never instead of) the legacy Purpose string above. TaskClass/
+		// ActorUnitID come from the durable Task record itself -- host-
+		// assigned or host-validated at task-creation time, never
+		// invented here. ExecutionPurpose is the validated host enum
+		// value (purpose.Valid() was already checked above), never
+		// model/instruction text.
+		TaskClass: task.TaskClass, ExecutionPurpose: string(purpose), ActorUnitID: task.AssignedUnitID,
 		IdempotencyKey: childKey(root.ID, fmt.Sprintf("context:%d:%d", task.ID, lease.AttemptID)),
 		CorrelationID:  root.CorrelationID, CausationID: attemptCausation(task.ID, lease.AttemptID),
 	})

@@ -87,13 +87,14 @@ func (s *contextService) Build(ctx context.Context, request BuildRequest) (Build
 	if err != nil {
 		return s.rejectBuild(ctx, request, err)
 	}
-	requestHash := DigestBuildRequest(CanonicalBuildRequest{
+	canonicalRequest := CanonicalBuildRequest{
 		Request: request, PrecedenceHash: bundle.PrecedenceHash, CanonicalBundleHash: bundle.BundleHash, Sources: sources,
 		MaxTotalBytes: s.config.MaxTotalBytes, MaxSegmentBytes: s.config.MaxSegmentBytes, MaxSegments: s.config.MaxSegments,
 		MaxSkills: s.config.MaxSkills, MaxMemorySegments: s.config.MaxMemorySegments, MaxRAGSegments: s.config.MaxRAGSegments,
-	})
+	}
+	requestHash := DigestBuildRequest(canonicalRequest)
 	if existing, getErr := s.store.GetByIdempotency(ctx, request.OrganizationID, request.IdempotencyKey, true); getErr == nil {
-		if existing.RequestHash != requestHash {
+		if !requestHashCompatible(existing.RequestHash, requestHash, canonicalRequest) {
 			return BuildResult{}, ErrIdempotencyConflict
 		}
 		if err = s.verifySnapshotIntegrity(ctx, existing); err != nil {
@@ -113,8 +114,10 @@ func (s *contextService) Build(ctx context.Context, request BuildRequest) (Build
 	now := s.clock.Now().UTC()
 	snapshot := Snapshot{
 		ID: id, OrganizationID: request.OrganizationID, OrganizationRevisionID: revision.ID, ActorRoleID: request.ActorRoleID,
-		Purpose: request.Purpose, ProjectRef: request.ProjectRef, TaskRef: request.TaskRef, IdempotencyKey: request.IdempotencyKey,
-		Status: SnapshotReady, Version: 1, RequestHash: requestHash, PrecedenceHash: bundle.PrecedenceHash,
+		Purpose: request.Purpose, ProjectRef: request.ProjectRef, TaskRef: request.TaskRef,
+		TaskClass: request.TaskClass, ExecutionPurpose: request.ExecutionPurpose, ActorUnitID: request.ActorUnitID,
+		IdempotencyKey: request.IdempotencyKey,
+		Status:         SnapshotReady, Version: 1, RequestHash: requestHash, PrecedenceHash: bundle.PrecedenceHash,
 		CanonicalBundleHash: bundle.BundleHash, SegmentCount: assembly.SegmentCount,
 		IncludedSegmentCount: assembly.IncludedSegmentCount, OmittedSegmentCount: assembly.OmittedSegmentCount,
 		TotalBytes: assembly.TotalBytes, CorrelationID: request.CorrelationID, CausationID: request.CausationID,
@@ -130,7 +133,7 @@ func (s *contextService) Build(ctx context.Context, request BuildRequest) (Build
 		return BuildResult{}, err
 	}
 	if result.Reused {
-		if result.Snapshot.RequestHash != requestHash {
+		if !requestHashCompatible(result.Snapshot.RequestHash, requestHash, canonicalRequest) {
 			return BuildResult{}, ErrIdempotencyConflict
 		}
 		if err = s.verifySnapshotIntegrity(ctx, result.Snapshot); err != nil {
@@ -138,6 +141,23 @@ func (s *contextService) Build(ctx context.Context, request BuildRequest) (Build
 		}
 	}
 	return result, nil
+}
+
+// requestHashCompatible decides whether an already-durable snapshot's
+// stored hash represents the SAME logical request as freshHash (M1.3
+// section 9). existingHash may have been computed before
+// TaskClass/ExecutionPurpose/ActorUnitID existed at all (a pre-M1.3 row):
+// in that case existingHash matches digestBuildRequestLegacy(canonical),
+// never freshHash, even though the two requests are logically identical.
+// Accepting either computation is what keeps a legitimate pre-M1.3
+// idempotent resume working after the upgrade, while a snapshot whose
+// stored hash matches NEITHER computation is a genuine contradictory
+// identity under a reused idempotency key and must still fail closed.
+func requestHashCompatible(existingHash, freshHash string, canonical CanonicalBuildRequest) bool {
+	if existingHash == freshHash {
+		return true
+	}
+	return existingHash == digestBuildRequestLegacy(canonical)
 }
 
 func (s *contextService) rejectBuild(ctx context.Context, request BuildRequest, cause error) (BuildResult, error) {

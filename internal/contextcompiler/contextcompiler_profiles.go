@@ -2,14 +2,25 @@ package contextcompiler
 
 import "github.com/Mireuz13/explorarte-organization/internal/contextengine"
 
-// ResearchCorpusCurateV1TaskClass is the exact purpose/task-class string
-// this profile matches -- see R9/R9.1's driver, CONTEXT_POLICY_PURPOSE =
-// "department_worker". R10 V1 is scoped narrowly per
-// R10_DESIGN_AUDIT.md section 54: only this one task class, nothing else
-// (executive.ceo, department.leader, code-runner, QA, visual agents are
-// all explicitly untouched -- Compile falls back to the canonical
-// snapshot unchanged for any TaskClass that isn't this one).
+// ResearchCorpusCurateV1TaskClass is the exact TaskClass this profile
+// registers at the TASK-CLASS selector tier (M1.3). R10 V1 is scoped
+// narrowly per R10_DESIGN_AUDIT.md section 54: only this one task class,
+// nothing else (executive.ceo, department.leader, code-runner, QA, visual
+// agents are all explicitly untouched -- Compile falls back to the
+// canonical snapshot unchanged for any selector this doesn't match).
 const ResearchCorpusCurateV1TaskClass = "research.corpus_curate"
+
+// researchWorkerHourlyRoleID / researchWorkerHourlyMimoCanaryRoleID are
+// the exact two roles this profile remains applicable to (M1.3 section
+// 11/12): TaskClass=research.corpus_curate alone is never sufficient --
+// an unrelated role/unit proposing this TaskClass must still
+// canonical-fallback, exactly as it did before M1.3 (when the ActorRoleID
+// proxy was the only thing gating this profile at all).
+const (
+	researchWorkerHourlyRoleID           = "investigacion/research_worker_hourly"
+	researchWorkerHourlyMimoCanaryRoleID = "investigacion/research_worker_hourly_mimo_canary"
+	researchUnitID                       = "investigacion"
+)
 
 // ResearchCorpusCurateV1 is the ONE profile R10 V1 implements, built
 // from the real segment composition measured across r9/r9.1 (see
@@ -38,11 +49,24 @@ func ResearchCorpusCurateV1() ContextProfile {
 	}
 }
 
-// Registry is the only place ContextProfiles are looked up by TaskClass.
-// A task class with no entry here always falls back to the canonical
-// snapshot unmodified (Compile), never to an arbitrarily minimal view --
-// see R10_DESIGN_AUDIT.md section M/41.
-func Registry() map[string]ContextProfile {
-	profile := ResearchCorpusCurateV1()
-	return map[string]ContextProfile{profile.TaskClass: profile}
-}
+// defaultSelectorRegistry is the ONE place ContextProfiles are looked up
+// by semantic selector (M1.3 replaces the old Registry()[TaskClassOf(...)]
+// with this). A selector with no matching, applicable entry always falls
+// back to the canonical snapshot unmodified (Compile), never to an
+// arbitrarily minimal view -- see R10_DESIGN_AUDIT.md section M/41 and
+// SelectorRegistry.Select.
+var defaultSelectorRegistry = MustBuildSelectorRegistry(
+	[]ProfileEntry{
+		{
+			Profile: ResearchCorpusCurateV1(),
+			// Both axes restricted (AND-ed): TaskClass=research.corpus_curate
+			// proposed for an unrelated role or a role outside the
+			// investigacion unit must still canonical-fallback (M1.3
+			// section 11/12/13).
+			ApplicableActorRoleIDs: []string{researchWorkerHourlyRoleID, researchWorkerHourlyMimoCanaryRoleID},
+			ApplicableActorUnitIDs: []string{researchUnitID},
+		},
+	},
+	nil, // no EXECUTION-PURPOSE-tier profile registered yet (M1.3 V1)
+	nil, // no EXACT-tier profile registered yet (M1.3 V1)
+)

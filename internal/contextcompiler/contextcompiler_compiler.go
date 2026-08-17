@@ -8,32 +8,21 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/contextengine"
 )
 
-// TaskClassOf is a KNOWN, DOCUMENTED PROXY, not a real task-class field
-// (there is no "task_class" concept anywhere in internal/contextengine
-// or internal/tasks today -- audited directly: Snapshot.Purpose is
-// "department_worker" for every r9/r9.1 invocation, an egress-scope
-// value, unrelated to what kind of work the task is). For R10 V1, the
-// requesting role IS the practical, conservative proxy: today
-// investigacion/research_worker_hourly's entire real workload is corpus
-// curation, so matching on ActorRoleID is safe and narrow exactly as
-// R10_DESIGN_AUDIT.md section 54 requires ("sólo research.corpus_curate,
-// no generalizar"). This must be revisited with a real task-class field
-// before this profile could ever apply to more than one workflow for
-// the same role -- flagged explicitly, not silently assumed solid.
-func TaskClassOf(actorRoleID string) string {
-	switch actorRoleID {
-	case "investigacion/research_worker_hourly":
-		return ResearchCorpusCurateV1TaskClass
-	case "investigacion/research_worker_hourly_mimo_canary":
-		// R10.2: additive, temporary canary role (docs/canonical/
-		// role-catalog.yaml) that exists ONLY to route to the MiMo
-		// challenger without touching the production role's default
-		// model_policy. It must receive the exact same
-		// ExecutionContextView semantics as the real role (section 11
-		// of the R10.2 spec: "NO volver al contexto completo").
-		return ResearchCorpusCurateV1TaskClass
-	default:
-		return ""
+// BuildSelector builds the durable, host-validated semantic selector
+// identity M1.3 resolves ContextProfiles from, from ALREADY-DURABLE
+// contextengine.Snapshot facts only (M1.3 section 8): it never queries
+// the Task Engine, never parses TaskRef, never infers TaskClass from
+// ActorRoleID or Instructions. Snapshot.ExecutionPurpose is the semantic
+// enum value (M1.3), deliberately distinct from Snapshot.Purpose (the
+// separate, byte-identical legacy egress-scope string Context
+// Engine/Model Runtime compatibility still depends on) -- selection must
+// never key off the legacy string.
+func BuildSelector(canonical contextengine.Snapshot) SemanticSelector {
+	return SemanticSelector{
+		TaskClass:        canonical.TaskClass,
+		ExecutionPurpose: canonical.ExecutionPurpose,
+		ActorRoleID:      canonical.ActorRoleID,
+		ActorUnitID:      canonical.ActorUnitID,
 	}
 }
 
@@ -121,17 +110,40 @@ func Compile(profile ContextProfile, canonical contextengine.Snapshot) (Compilat
 // FellBackToCanonical=true (R10_DESIGN_AUDIT.md section M/41: only
 // research.corpus_curate is affected by R10 V1, every other task class
 // behaves exactly as it did before this package existed).
+// CompileForTaskClass resolves canonical's ContextProfile through the
+// deterministic M1.3 selector precedence (EXACT, TASK-CLASS,
+// EXECUTION-PURPOSE, CANONICAL fallback -- see SelectorRegistry.Select),
+// built ONLY from durable Snapshot facts (BuildSelector). ActorRoleID
+// alone can never activate a profile: with M1.3, the removed
+// ActorRoleID-only proxy (formerly TaskClassOf) no longer exists in this
+// resolution path at all.
 func CompileForTaskClass(canonical contextengine.Snapshot) (CompilationResult, error) {
-	profile, ok := Registry()[TaskClassOf(canonical.ActorRoleID)]
-	if !ok {
+	selector := BuildSelector(canonical)
+	selection := defaultSelectorRegistry.Select(selector)
+	if !selection.Matched {
 		result := CompilationResult{
 			ContextSnapshotID:   canonical.ID,
 			Projected:           canonical,
 			FellBackToCanonical: true,
+			SelectionKind:       selection.Kind,
 		}
 		return finalize(result, canonical)
 	}
-	return Compile(profile, canonical)
+	result, err := Compile(selection.Profile, canonical)
+	if err != nil {
+		return CompilationResult{}, err
+	}
+	// A required-tier failure inside Compile fails closed to canonical
+	// (FellBackToCanonical=true) without Compile itself knowing which
+	// selection tier chose the profile it fell back from -- so the
+	// provenance recorded here always reflects what ACTUALLY happened,
+	// not merely what was attempted.
+	if result.FellBackToCanonical {
+		result.SelectionKind = SelectionCanonical
+	} else {
+		result.SelectionKind = selection.Kind
+	}
+	return result, nil
 }
 
 func finalize(result CompilationResult, canonical contextengine.Snapshot) (CompilationResult, error) {

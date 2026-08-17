@@ -20,9 +20,16 @@ import "github.com/Mireuz13/explorarte-organization/internal/contextengine"
 // task class currently receives is required or has no safe metadata to
 // exclude it by, per the fail-closed-toward-authority rule).
 type ContextProfile struct {
-	ID        string
-	Version   string
-	TaskClass string
+	ID      string
+	Version string
+	// TaskClass registers this profile at the TASK-CLASS selector tier
+	// (M1.3). ExecutionPurpose, if set, additionally/instead registers it
+	// at the EXECUTION-PURPOSE tier -- see SelectorRegistry/ProfileEntry
+	// in contextcompiler_selector.go, which own the applicability
+	// restriction and the actual precedence resolution. A profile is
+	// never selected by ActorRoleID/ActorUnitID alone.
+	TaskClass        string
+	ExecutionPurpose string
 
 	// RequiredTiers must all be present and Included in the compiled
 	// output; Compile returns an error if the canonical snapshot is
@@ -49,12 +56,12 @@ type ProjectionFunc func(segment contextengine.Segment, actorRoleID string) (pro
 // snapshot, whether or not a projection applied, so "why did/didn't
 // this content reach the model" is always answerable deterministically.
 type SegmentDiff struct {
-	SourceReference   string
-	AuthorityTier     contextengine.AuthorityTier
-	OriginalBytes     int
-	ProjectedBytes    int
-	Projected         bool
-	Reason            string
+	SourceReference      string
+	AuthorityTier        contextengine.AuthorityTier
+	OriginalBytes        int
+	ProjectedBytes       int
+	Projected            bool
+	Reason               string
 	OriginalContentHash  string
 	ProjectedContentHash string
 }
@@ -82,4 +89,11 @@ type CompilationResult struct {
 	// canonical snapshot's segments (see R10_DESIGN_AUDIT.md section M,
 	// "fallback seguro"), never an arbitrarily minimal view.
 	FellBackToCanonical bool
+
+	// SelectionKind is the durable M1.3 provenance of how this
+	// CompilationResult's profile (or canonical fallback) was chosen --
+	// see SelectorRegistry.Select. Always set, never left blank, so a
+	// persisted ExecutionContextView can always answer "why this profile"
+	// after restart.
+	SelectionKind SelectionKind
 }

@@ -183,6 +183,16 @@ func (s *Service) CreateTask(ctx context.Context, request CreateRequest, actorTy
 	if err := ValidateCreateRequest(request); err != nil {
 		return Task{}, false, err
 	}
+	// A newly persisted task always gets an explicit, non-empty TaskClass
+	// -- an empty request.TaskClass just means the caller didn't propose
+	// one, defaulted here to the safe generic class, never left empty.
+	// This is what keeps "all three durable selector facts empty" an
+	// unambiguous signal reserved for rows that predate M1.3 entirely
+	// (see contextengine's equivalent default-free handling for context
+	// snapshots, which intentionally does NOT default TaskClass itself).
+	if request.TaskClass == "" {
+		request.TaskClass = TaskClassGeneralWork
+	}
 	actorType, actorID = normalizeActor(actorType, actorID)
 	if err := validateActor(actorType, actorID); err != nil {
 		return Task{}, false, err
@@ -217,6 +227,7 @@ func (s *Service) CreateTask(ctx context.Context, request CreateRequest, actorTy
 	}
 	return s.persistence.Create(ctx, PreparedCreate{
 		Request: request, OrganizationRevisionID: revision.ID, AssignedUnitID: assigned.UnitID,
+		TaskClass:   request.TaskClass,
 		RequestHash: hash, InitialStatus: initial, DefaultMaxAttempts: s.cfg.DefaultMaxAttempts,
 		OutboxMaxAttempts: s.cfg.OutboxMaxAttempts, ActorType: actorType, ActorID: actorID,
 	})

@@ -65,15 +65,17 @@ func (s *Store) Persist(ctx context.Context, view contextcompiler.ExecutionConte
 	err = s.pool.QueryRow(ctx, `
 		INSERT INTO execution_context_views (
 			organization_id, context_snapshot_id, context_profile_id, context_profile_version,
-			fell_back_to_canonical, fallback_reason, provider_render_version,
+			fell_back_to_canonical, fallback_reason, selection_kind, selector_algorithm_version,
+			provider_render_version,
 			stable_prefix_hash, stable_prefix_bytes, dynamic_suffix_hash, dynamic_suffix_bytes,
 			authority_order_hash, compiled_content_hash, segment_diffs,
 			provider_visible_bytes, provider_visible_digest, provider_visible_byte_count
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
 		ON CONFLICT (context_snapshot_id) DO NOTHING
 		RETURNING id
 	`, view.OrganizationID, view.ContextSnapshotID, view.ContextProfileID, view.ContextProfileVersion,
-		view.FellBackToCanonical, view.FallbackReason, view.ProviderRenderVersion,
+		view.FellBackToCanonical, view.FallbackReason, string(view.SelectionKind), view.SelectorAlgorithmVersion,
+		view.ProviderRenderVersion,
 		view.StablePrefixHash, view.StablePrefixBytes, view.DynamicSuffixHash, view.DynamicSuffixBytes,
 		view.AuthorityOrderHash, view.CompiledContentHash, diffsJSON,
 		view.ProviderVisibleBytes, view.ProviderVisibleDigest, view.ProviderVisibleByteCount,
@@ -113,7 +115,8 @@ func (s *Store) GetByContextSnapshot(ctx context.Context, organizationID string,
 
 const selectColumns = `
 	SELECT id, organization_id, context_snapshot_id, context_profile_id, context_profile_version,
-	       fell_back_to_canonical, fallback_reason, provider_render_version,
+	       fell_back_to_canonical, fallback_reason, selection_kind, selector_algorithm_version,
+	       provider_render_version,
 	       stable_prefix_hash, stable_prefix_bytes, dynamic_suffix_hash, dynamic_suffix_bytes,
 	       authority_order_hash, compiled_content_hash, segment_diffs,
 	       provider_visible_bytes, provider_visible_digest, provider_visible_byte_count, created_at
@@ -122,11 +125,14 @@ const selectColumns = `
 func scanView(row pgx.Row) (contextcompiler.ExecutionContextView, error) {
 	var v contextcompiler.ExecutionContextView
 	var diffsJSON []byte
+	var selectionKind string
 	err := row.Scan(&v.ID, &v.OrganizationID, &v.ContextSnapshotID, &v.ContextProfileID, &v.ContextProfileVersion,
-		&v.FellBackToCanonical, &v.FallbackReason, &v.ProviderRenderVersion,
+		&v.FellBackToCanonical, &v.FallbackReason, &selectionKind, &v.SelectorAlgorithmVersion,
+		&v.ProviderRenderVersion,
 		&v.StablePrefixHash, &v.StablePrefixBytes, &v.DynamicSuffixHash, &v.DynamicSuffixBytes,
 		&v.AuthorityOrderHash, &v.CompiledContentHash, &diffsJSON,
 		&v.ProviderVisibleBytes, &v.ProviderVisibleDigest, &v.ProviderVisibleByteCount, &v.CreatedAt)
+	v.SelectionKind = contextcompiler.SelectionKind(selectionKind)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return contextcompiler.ExecutionContextView{}, contextcompiler.ErrExecutionContextViewNotFound

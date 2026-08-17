@@ -91,6 +91,20 @@ type ContextExecutionTelemetry struct {
 	ContextProfileID       string
 	ContextProfileVersion  string
 
+	// TaskClass/ExecutionPurpose/ActorUnitID/SelectionKind are M1.3's
+	// durable selector/provenance facts, read here by JOINing the
+	// authoritative rows that already own them (context_snapshots,
+	// execution_context_views) -- never duplicated into a new column on
+	// this telemetry row. TaskClass/ExecutionPurpose/ActorUnitID are nil
+	// exactly when the underlying context_snapshots row predates M1.3
+	// (see contextengine's own NULL-means-pre-M1.3 convention);
+	// SelectionKind is never nil -- every execution_context_views row,
+	// historical or new, has one (see migration 000053's backfill).
+	TaskClass        *string
+	ExecutionPurpose *string
+	ActorUnitID      *string
+	SelectionKind    string
+
 	EstimatorID                    string
 	EstimatorVersion               string
 	EstimatedProviderVisibleTokens int64

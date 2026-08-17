@@ -298,7 +298,7 @@ func policyDriftReason(validation contextengine.SnapshotValidation) contextengin
 	return ""
 }
 
-const snapshotColumns = `id,organization_id,organization_revision_id,actor_role_id,purpose,project_ref,task_ref,idempotency_key,request_hash,precedence_hash,canonical_bundle_hash,rendered_hash,status,version,segment_count,included_segment_count,omitted_segment_count,total_bytes,correlation_id,causation_id,created_at,invalidated_at,invalidation_reason`
+const snapshotColumns = `id,organization_id,organization_revision_id,actor_role_id,purpose,project_ref,task_ref,idempotency_key,request_hash,precedence_hash,canonical_bundle_hash,rendered_hash,status,version,segment_count,included_segment_count,omitted_segment_count,total_bytes,correlation_id,causation_id,created_at,invalidated_at,invalidation_reason,task_class,execution_purpose,actor_unit_id`
 
 type scanner interface{ Scan(...any) error }
 type queryer interface {
@@ -308,8 +308,8 @@ type queryer interface {
 
 func scanSnapshot(row scanner) (contextengine.Snapshot, error) {
 	var value contextengine.Snapshot
-	var project, task, correlation, causation, invalidation *string
-	err := row.Scan(&value.ID, &value.OrganizationID, &value.OrganizationRevisionID, &value.ActorRoleID, &value.Purpose, &project, &task, &value.IdempotencyKey, &value.RequestHash, &value.PrecedenceHash, &value.CanonicalBundleHash, &value.RenderedHash, &value.Status, &value.Version, &value.SegmentCount, &value.IncludedSegmentCount, &value.OmittedSegmentCount, &value.TotalBytes, &correlation, &causation, &value.CreatedAt, &value.InvalidatedAt, &invalidation)
+	var project, task, correlation, causation, invalidation, taskClass, executionPurpose, actorUnitID *string
+	err := row.Scan(&value.ID, &value.OrganizationID, &value.OrganizationRevisionID, &value.ActorRoleID, &value.Purpose, &project, &task, &value.IdempotencyKey, &value.RequestHash, &value.PrecedenceHash, &value.CanonicalBundleHash, &value.RenderedHash, &value.Status, &value.Version, &value.SegmentCount, &value.IncludedSegmentCount, &value.OmittedSegmentCount, &value.TotalBytes, &correlation, &causation, &value.CreatedAt, &value.InvalidatedAt, &invalidation, &taskClass, &executionPurpose, &actorUnitID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return value, contextengine.ErrSnapshotNotFound
 	}
@@ -321,6 +321,15 @@ func scanSnapshot(row scanner) (contextengine.Snapshot, error) {
 	value.CorrelationID = deref(correlation)
 	value.CausationID = deref(causation)
 	value.InvalidationReason = deref(invalidation)
+	// NULL means "this snapshot predates M1.3's selector facts" -- deref
+	// to "" is the correct, honest representation of that, never a
+	// fabricated value (see requestHashCompatible's doc comment for why
+	// this distinction matters for idempotency, and contextcompiler's
+	// canonical-fallback semantics for why "" here safely never activates
+	// a profile).
+	value.TaskClass = deref(taskClass)
+	value.ExecutionPurpose = deref(executionPurpose)
+	value.ActorUnitID = deref(actorUnitID)
 	return value, nil
 }
 
@@ -330,13 +339,15 @@ func insertSnapshot(ctx context.Context, tx pgx.Tx, value contextengine.Snapshot
 INSERT INTO context_snapshots(
  id,organization_id,organization_revision_id,actor_role_id,purpose,project_ref,task_ref,idempotency_key,
  request_hash,precedence_hash,canonical_bundle_hash,rendered_hash,status,version,segment_count,
- included_segment_count,omitted_segment_count,total_bytes,correlation_id,causation_id,created_at
+ included_segment_count,omitted_segment_count,total_bytes,correlation_id,causation_id,created_at,
+ task_class,execution_purpose,actor_unit_id
 ) OVERRIDING SYSTEM VALUE
-VALUES($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,NULLIF($19,''),NULLIF($20,''),$21)
+VALUES($1,$2,$3,$4,$5,NULLIF($6,''),NULLIF($7,''),$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,NULLIF($19,''),NULLIF($20,''),$21,NULLIF($22,''),NULLIF($23,''),NULLIF($24,''))
 ON CONFLICT(organization_id,idempotency_key) DO NOTHING RETURNING id`,
 		value.ID, value.OrganizationID, value.OrganizationRevisionID, value.ActorRoleID, value.Purpose, value.ProjectRef, value.TaskRef, value.IdempotencyKey,
 		value.RequestHash, value.PrecedenceHash, value.CanonicalBundleHash, value.RenderedHash, value.Status, value.Version, value.SegmentCount,
-		value.IncludedSegmentCount, value.OmittedSegmentCount, value.TotalBytes, value.CorrelationID, value.CausationID, value.CreatedAt).Scan(&id)
+		value.IncludedSegmentCount, value.OmittedSegmentCount, value.TotalBytes, value.CorrelationID, value.CausationID, value.CreatedAt,
+		value.TaskClass, value.ExecutionPurpose, value.ActorUnitID).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
