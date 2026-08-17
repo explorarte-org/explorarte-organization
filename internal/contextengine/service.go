@@ -94,13 +94,14 @@ func (s *contextService) Build(ctx context.Context, request BuildRequest) (Build
 	}
 	requestHash := DigestBuildRequest(canonicalRequest)
 	if existing, getErr := s.store.GetByIdempotency(ctx, request.OrganizationID, request.IdempotencyKey, true); getErr == nil {
-		if !requestHashCompatible(existing, requestHash, canonicalRequest) {
-			return BuildResult{}, ErrIdempotencyConflict
+		bound, reuseErr := s.reconcileSelectorFacts(ctx, existing, requestHash, canonicalRequest)
+		if reuseErr != nil {
+			return BuildResult{}, reuseErr
 		}
-		if err = s.verifySnapshotIntegrity(ctx, existing); err != nil {
+		if err = s.verifySnapshotIntegrity(ctx, bound); err != nil {
 			return BuildResult{}, err
 		}
-		return BuildResult{Snapshot: existing, Reused: true}, nil
+		return BuildResult{Snapshot: bound, Reused: true}, nil
 	} else if !errors.Is(getErr, ErrSnapshotNotFound) {
 		return BuildResult{}, getErr
 	}
@@ -133,14 +134,53 @@ func (s *contextService) Build(ctx context.Context, request BuildRequest) (Build
 		return BuildResult{}, err
 	}
 	if result.Reused {
-		if !requestHashCompatible(result.Snapshot, requestHash, canonicalRequest) {
-			return BuildResult{}, ErrIdempotencyConflict
+		bound, reuseErr := s.reconcileSelectorFacts(ctx, result.Snapshot, requestHash, canonicalRequest)
+		if reuseErr != nil {
+			return BuildResult{}, reuseErr
 		}
-		if err = s.verifySnapshotIntegrity(ctx, result.Snapshot); err != nil {
+		if err = s.verifySnapshotIntegrity(ctx, bound); err != nil {
 			return BuildResult{}, err
 		}
+		result.Snapshot = bound
 	}
 	return result, nil
+}
+
+// reconcileSelectorFacts is the idempotency-reuse decision point for M1.3's
+// selector facts (section 9, independent review round 2). It first decides
+// whether existing represents the SAME logical request as canonical
+// (requestHashCompatible); a genuine contradiction fails closed with
+// ErrIdempotencyConflict, never silently accepted or silently ignored.
+//
+// When existing is only compatible via the legacy-shaped hash fallback
+// (a pre-M1.3 snapshot that never had these fields hashed at all) AND it
+// does not yet durably know one or more of TaskClass/ExecutionPurpose/
+// ActorUnitID, this resumed request's proposed values are durably BOUND
+// onto it via Store.BindSelectorFacts -- a one-time, race-free,
+// never-overwrites-an-existing-value fill-in. Without this, a truly
+// historical snapshot's selector identity would remain permanently
+// unbound: every future resumed request, no matter how different from
+// each other, would keep comparing against the same empty existing
+// value and keep being accepted as "compatible", forever. Binding turns
+// the FIRST legitimate resume into the snapshot's durable selector
+// identity, so a LATER, DIFFERENT resumed proposal under the same
+// idempotency key is compared against a now-concrete value and correctly
+// rejected.
+func (s *contextService) reconcileSelectorFacts(ctx context.Context, existing Snapshot, freshHash string, canonical CanonicalBuildRequest) (Snapshot, error) {
+	if !requestHashCompatible(existing, freshHash, canonical) {
+		return Snapshot{}, ErrIdempotencyConflict
+	}
+	if existing.RequestHash == freshHash {
+		return existing, nil
+	}
+	if existing.TaskClass == "" || existing.ExecutionPurpose == "" || existing.ActorUnitID == "" {
+		bound, err := s.store.BindSelectorFacts(ctx, existing.ID, canonical.Request.TaskClass, canonical.Request.ExecutionPurpose, canonical.Request.ActorUnitID)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		return bound, nil
+	}
+	return existing, nil
 }
 
 // requestHashCompatible decides whether an already-durable snapshot's

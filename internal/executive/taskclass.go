@@ -7,11 +7,11 @@ import "regexp"
 // time -- never derived from a task's title later, and never something a
 // model chooses for these specific coordination steps.
 const (
-	TaskClassOwnerGoal              = "owner.goal"
-	TaskClassCoordinationCEOPlan    = "coordination.ceo_plan"
-	TaskClassCoordinationDeptPlan   = "coordination.department_plan"
-	TaskClassCoordinationDeptReview = "coordination.department_review"
-	TaskClassCoordinationCEOClosure = "coordination.ceo_closure"
+	TaskClassOwnerGoal               = "owner.goal"
+	TaskClassCoordinationCEOPlan     = "coordination.ceo_plan"
+	TaskClassCoordinationDeptPlan    = "coordination.department_plan"
+	TaskClassCoordinationDeptReview  = "coordination.department_review"
+	TaskClassCoordinationCEOClosure  = "coordination.ceo_closure"
 	// TaskClassGeneralWork is the safe default a worker task proposal
 	// receives when its Leader did not propose a TaskClass (M1.3 section
 	// 4). Mirrors internal/tasks.TaskClassGeneralWork by value -- these

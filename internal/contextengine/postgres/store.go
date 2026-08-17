@@ -202,6 +202,35 @@ RETURNING `+snapshotColumns, command.SnapshotID, now, strings.TrimSpace(command.
 	return updated, false, nil
 }
 
+// BindSelectorFacts durably fills in whichever of
+// TaskClass/ExecutionPurpose/ActorUnitID this snapshot does not yet have,
+// atomically and race-free: COALESCE reads the row's CURRENT value at
+// UPDATE time inside Postgres's own row lock for the statement, so two
+// concurrent binders can never both "win" a still-unspecified field --
+// unlike a separate read-then-conditionally-write, this needs no
+// exclusive row lock held across the caller's own decision logic. A
+// field already bound is never overwritten; passing "" for a field is a
+// no-op for it (NULLIF turns it back into NULL, and COALESCE(x, NULL) is
+// x).
+func (s *Store) BindSelectorFacts(ctx context.Context, snapshotID int64, taskClass, executionPurpose, actorUnitID string) (contextengine.Snapshot, error) {
+	row := s.pool.QueryRow(ctx, `
+UPDATE context_snapshots
+SET task_class = COALESCE(task_class, NULLIF($2,'')),
+    execution_purpose = COALESCE(execution_purpose, NULLIF($3,'')),
+    actor_unit_id = COALESCE(actor_unit_id, NULLIF($4,''))
+WHERE id = $1
+RETURNING `+snapshotColumns, snapshotID, taskClass, executionPurpose, actorUnitID)
+	updated, err := scanSnapshot(row)
+	if err != nil {
+		return contextengine.Snapshot{}, err
+	}
+	updated.Segments, err = listSegments(ctx, s.pool, updated.ID)
+	if err != nil {
+		return contextengine.Snapshot{}, err
+	}
+	return updated, nil
+}
+
 func (s *Store) RecordForbiddenSourceRejection(ctx context.Context, request contextengine.BuildRequest, reason contextengine.ReasonCode, now time.Time) (err error) {
 	keyPayload, err := json.Marshal(struct {
 		OrganizationID string                   `json:"organization_id"`

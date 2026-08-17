@@ -280,8 +280,19 @@ type PreparedCreate struct {
 	// TaskClass is the resolved, defaulted, validated value that will
 	// actually be persisted -- Request.TaskClass may be empty (caller
 	// omitted it); this field never is, for a newly prepared create.
-	TaskClass               string
-	RequestHash            string
+	TaskClass string
+	// TaskClassExplicit is true when the ORIGINAL caller request itself
+	// supplied a non-empty TaskClass, before Service.CreateTask defaulted
+	// an empty one to TaskClassGeneralWork. This distinction matters ONLY
+	// for the idempotency-reuse path (Store.Create): "the caller omitted
+	// TaskClass" and "the caller explicitly asked for general.work" must
+	// never collapse into the same fact once TaskClass is compared
+	// against an already-durable row's own known value -- an omission
+	// asserts nothing and is compatible with anything; an explicit
+	// general.work is a real, specific classification claim like any
+	// other and must be compared like one (independent review round 2).
+	TaskClassExplicit bool
+	RequestHash       string
 	InitialStatus          Status
 	DefaultMaxAttempts     int
 	OutboxMaxAttempts      int

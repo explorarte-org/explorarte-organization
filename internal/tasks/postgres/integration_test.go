@@ -531,7 +531,7 @@ func TestDurableTaskEnginePostgreSQL17(t *testing.T) {
 		contradictory := tasks.PreparedCreate{
 			Request:                wrongClass,
 			OrganizationRevisionID: 1, AssignedUnitID: "investigacion",
-			TaskClass: "coordination.ceo_plan", RequestHash: wrongClassHash,
+			TaskClass: "coordination.ceo_plan", TaskClassExplicit: true, RequestHash: wrongClassHash,
 			InitialStatus: "ready", DefaultMaxAttempts: 5, OutboxMaxAttempts: 5,
 			ActorType: "human", ActorID: "eduardo",
 		}
@@ -552,6 +552,63 @@ func TestDurableTaskEnginePostgreSQL17(t *testing.T) {
 		matching.RequestHash = matchingClassHash
 		if _, inserted, err := h.taskDB.Create(h.ctx, matching); err != nil || inserted {
 			t.Fatalf("matching TaskClass resume: inserted=%v err=%v", inserted, err)
+		}
+	})
+
+	// Independent review round 2's three required proofs, exercised
+	// through the real Service.CreateTask entry point (not a hand-built
+	// PreparedCreate) against the SAME already-specifically-classified
+	// historical row: an omitted TaskClass asserts nothing and remains
+	// compatible; an EXPLICIT general.work is a real, specific claim that
+	// contradicts the row's own known research.corpus_curate and must
+	// fail closed (this is exactly the "general.work always compatible"
+	// gap round 2 found); the exact matching explicit value is accepted.
+	t.Run("omitted vs explicit general.work vs exact match against a known classification", func(t *testing.T) {
+		h.resetTasks(t)
+		const key = "explicit-vs-omitted"
+		historical := tasks.CreateRequest{
+			OrganizationID: "explorarte", AssignedRoleID: testRole, IdempotencyKey: key,
+			Title: "Backfilled research task 2", Instructions: "Pre-M1.3 research instructions 2.",
+			AcceptanceCriteria: []string{"criterion"}, MaxAttempts: 5,
+		}
+		legacyHash, err := tasks.HashCreateRequestLegacy(historical)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var historicalID int64
+		if err := h.store.Pool().QueryRow(h.ctx, `
+			INSERT INTO tasks(
+				organization_id,organization_revision_id,assigned_role_id,assigned_unit_id,task_class,
+				idempotency_key,request_hash,title,instructions,acceptance_criteria,status,priority,available_at,max_attempts
+			) VALUES('explorarte',1,$1,'investigacion','research.corpus_curate',$2,$3,$4,$5,'["criterion"]'::jsonb,'ready',0,clock_timestamp(),5)
+			RETURNING id`,
+			testRole, key, legacyHash, historical.Title, historical.Instructions,
+		).Scan(&historicalID); err != nil {
+			t.Fatalf("simulate specifically-backfilled historical row: %v", err)
+		}
+
+		// TASK_OMITTED_CLASS_COMPATIBILITY_PROOF: caller omits TaskClass
+		// entirely -- no assertion made, compatible with the known value.
+		omitted := historical
+		if reused, inserted, err := h.tasks.CreateTask(h.ctx, omitted, "human", "eduardo"); err != nil || inserted || reused.ID != historicalID || reused.TaskClass != "research.corpus_curate" {
+			t.Fatalf("omitted TaskClass resume: task=%+v inserted=%v err=%v", reused, inserted, err)
+		}
+
+		// TASK_EXPLICIT_GENERAL_WORK_CONFLICT_PROOF: caller explicitly
+		// asks for general.work -- a real, specific (if generic) claim --
+		// against a row already durably known to be research.corpus_curate.
+		explicitGeneral := historical
+		explicitGeneral.TaskClass = tasks.TaskClassGeneralWork
+		if _, _, err := h.tasks.CreateTask(h.ctx, explicitGeneral, "human", "eduardo"); !errors.Is(err, tasks.ErrIdempotencyConflict) {
+			t.Fatalf("want ErrIdempotencyConflict for explicit general.work against a known research.corpus_curate row, got %v", err)
+		}
+
+		// TASK_EXACT_RESEARCH_REUSE_PROOF: caller explicitly asks for the
+		// exact already-known value -- accepted as ordinary idempotent reuse.
+		explicitMatch := historical
+		explicitMatch.TaskClass = "research.corpus_curate"
+		if reused, inserted, err := h.tasks.CreateTask(h.ctx, explicitMatch, "human", "eduardo"); err != nil || inserted || reused.ID != historicalID {
+			t.Fatalf("explicit matching TaskClass resume: task=%+v inserted=%v err=%v", reused, inserted, err)
 		}
 	})
 }

@@ -82,6 +82,58 @@ func TestContextEnginePostgreSQL17(t *testing.T) {
 		}
 	})
 
+	// REAL_HISTORICAL_CONTEXT_BINDING_PROOF / POST_RESTART_SELECTOR_CONTRADICTION_PROOF
+	// (independent review round 2): a snapshot durably created with empty
+	// selector facts (the real shape of every pre-M1.3 context_snapshots
+	// row) does not remain permanently unbound against real PostgreSQL --
+	// BindSelectorFacts fills the still-empty columns exactly once, never
+	// overwrites an already-bound value, and the binding survives a fresh
+	// Store instance (a genuine process-restart simulation, not merely an
+	// in-memory return value).
+	t.Run("BindSelectorFacts binds once, never overwrites, and survives restart", func(t *testing.T) {
+		snapshot := validSnapshot(t, ctx, store, "selector-binding")
+		result, createErr := store.Create(ctx, contextengine.CreateSnapshotCommand{Snapshot: snapshot, Now: snapshot.CreatedAt})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		if result.Snapshot.TaskClass != "" || result.Snapshot.ExecutionPurpose != "" || result.Snapshot.ActorUnitID != "" {
+			t.Fatalf("test setup bug: expected an empty-selector snapshot, got %+v", result.Snapshot)
+		}
+
+		bound, bindErr := store.BindSelectorFacts(ctx, snapshot.ID, "research.corpus_curate", "department-worker", "investigacion")
+		if bindErr != nil {
+			t.Fatal(bindErr)
+		}
+		if bound.TaskClass != "research.corpus_curate" || bound.ExecutionPurpose != "department-worker" || bound.ActorUnitID != "investigacion" {
+			t.Fatalf("BindSelectorFacts did not fill the empty selector columns: %+v", bound)
+		}
+
+		// A second bind attempt with DIFFERENT values must never overwrite
+		// the already-bound value -- COALESCE only ever fills a still-NULL
+		// column.
+		notOverwritten, secondBindErr := store.BindSelectorFacts(ctx, snapshot.ID, "coordination.ceo_plan", "ceo-plan", "empresa")
+		if secondBindErr != nil {
+			t.Fatal(secondBindErr)
+		}
+		if notOverwritten.TaskClass != "research.corpus_curate" || notOverwritten.ExecutionPurpose != "department-worker" || notOverwritten.ActorUnitID != "investigacion" {
+			t.Fatalf("BindSelectorFacts overwrote an already-bound value: %+v", notOverwritten)
+		}
+
+		// Simulate a process restart: a brand-new Store bound to the same
+		// PostgreSQL connection, no shared in-memory state whatsoever.
+		freshStore, err := contextpostgres.New(platform)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reloaded, err := freshStore.Get(ctx, snapshot.ID, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reloaded.TaskClass != "research.corpus_curate" || reloaded.ExecutionPurpose != "department-worker" || reloaded.ActorUnitID != "investigacion" {
+			t.Fatalf("bound selector facts did not survive restart/reload: %+v", reloaded)
+		}
+	})
+
 	t.Run("idempotency conflict and concurrent creation exactly once", func(t *testing.T) {
 		base := validSnapshot(t, ctx, store, "concurrent")
 		const workers = 12

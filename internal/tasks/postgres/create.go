@@ -69,22 +69,50 @@ func (s *Store) Create(ctx context.Context, input tasks.PreparedCreate) (tasks.T
 				// The pre-M1.3 fields all agree, but HashCreateRequestLegacy
 				// zeros TaskClass BEFORE hashing -- it proves nothing about
 				// whether the resumed caller's TaskClass actually agrees
-				// with what this row already durably records. existing.
-				// TaskClass == TaskClassLegacyUnspecified means the row
-				// itself never asserted a real classification (true for
-				// every historical row this migration did not specifically
-				// backfill), so any resumed value is compatible; likewise
-				// an unasserted/default resumed TaskClass is always
-				// compatible. But a resumed caller positively proposing a
-				// SPECIFIC classification that contradicts a row's own
-				// already-known, specific value (e.g. the research
-				// backfill) is a genuine contradiction and must fail
-				// closed, never be silently accepted.
-				if input.Request.TaskClass != "" &&
-					input.Request.TaskClass != tasks.TaskClassGeneralWork &&
-					existing.TaskClass != tasks.TaskClassLegacyUnspecified &&
-					input.Request.TaskClass != existing.TaskClass {
-					return createResult{}, tasks.ErrIdempotencyConflict
+				// with what this row already durably records.
+				//
+				// input.TaskClassExplicit distinguishes "the caller omitted
+				// TaskClass" (no assertion made, always compatible) from
+				// "the caller explicitly asked for general.work" (a real,
+				// specific classification claim like any other -- treating
+				// it as automatically compatible was the exact gap
+				// independent review round 2 found: a resumed caller could
+				// silently contradict an already-known, specific
+				// classification such as the research backfill by asking
+				// for general.work).
+				//
+				// When the caller DID assert something and this row itself
+				// never asserted a classification yet (TaskClassLegacyUnspecified,
+				// the only value a historical row this migration did not
+				// specifically backfill can have), that first legitimate
+				// assertion is durably BOUND here -- via a CAS-style UPDATE
+				// that only ever fills a still-unspecified value, never
+				// overwrites an already-bound one -- so a LATER, DIFFERENT
+				// resumed assertion under the same idempotency key is
+				// compared against a now-concrete value instead of
+				// remaining permanently unbound and permanently
+				// "compatible with anything" forever (the other half of
+				// round 2's finding).
+				if input.TaskClassExplicit {
+					if existing.TaskClass == tasks.TaskClassLegacyUnspecified {
+						// The SELECT ... FOR UPDATE above already holds this
+						// row's lock for the rest of this transaction, so
+						// this CAS-style UPDATE (still-unspecified -> the
+						// caller's asserted value) cannot lose a race: no
+						// other transaction can have changed task_class
+						// since we locked the row.
+						bound, bindErr := scanTask(tx.QueryRow(ctx, `
+							UPDATE tasks SET task_class=$1 WHERE id=$2 AND task_class=$3
+							RETURNING `+taskColumns,
+							input.Request.TaskClass, existing.ID, tasks.TaskClassLegacyUnspecified,
+						))
+						if bindErr != nil {
+							return createResult{}, bindErr
+						}
+						existing = bound
+					} else if input.Request.TaskClass != existing.TaskClass {
+						return createResult{}, tasks.ErrIdempotencyConflict
+					}
 				}
 			}
 			return createResult{Task: existing, Created: false}, nil

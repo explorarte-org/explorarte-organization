@@ -37,6 +37,104 @@ func TestServiceBuildIsIdempotentAndSnapshotIsImmutable(t *testing.T) {
 	}
 }
 
+// TestServiceBuild_HistoricalSelectorBindingThenContradiction is
+// independent review round 2's required proof
+// (REAL_HISTORICAL_CONTEXT_BINDING_PROOF /
+// POST_RESTART_SELECTOR_CONTRADICTION_PROOF): a snapshot whose durable
+// selector facts are all empty (exactly what every real pre-M1.3
+// context_snapshots row is, since migration 000053 never backfills
+// them) does NOT remain permanently unbound. The first resumed request
+// that supplies real selector values is accepted AND durably binds them
+// (Store.BindSelectorFacts); a LATER, DIFFERENT resumed request under the
+// SAME idempotency key is then compared against that now-concrete value
+// and correctly fails closed, instead of also being silently accepted
+// the way an unconditionally-empty comparison would allow forever.
+func TestServiceBuild_HistoricalSelectorBindingThenContradiction(t *testing.T) {
+	fixture := newServiceFixture(t)
+	ctx := t.Context()
+	// reconcileSelectorFacts only reads s.store -- exercised directly
+	// here (not through the full Build() pipeline) so this test is not
+	// coupled to reproducing resolve()/assemble()'s exact resolved
+	// Sources just to make a hash match; that machinery is already
+	// covered by TestServiceBuildIsIdempotentAndSnapshotIsImmutable and
+	// the rest of this file. What is under test here is the
+	// idempotency-reuse decision and binding behavior itself.
+	svc := &contextService{store: fixture.store}
+
+	historical := BuildRequest{OrganizationID: "explorarte", OrganizationRevisionID: 1, ActorRoleID: "ingenieria_ia/qa", Purpose: "unit test", IdempotencyKey: "historical-binding"}
+	base := CanonicalBuildRequest{Request: historical, PrecedenceHash: DigestMarkdown([]byte("p")), CanonicalBundleHash: DigestMarkdown([]byte("c"))}
+	// A genuine pre-M1.3 row's stored hash is legacy-shaped -- computed
+	// before TaskClass/ExecutionPurpose/ActorUnitID were ever written to
+	// the buffer at all, never DigestBuildRequest with those three fields
+	// merely left empty (that is a structurally different, always-
+	// divergent shape -- see digestBuildRequestLegacy's own doc comment).
+	legacyHash := digestBuildRequestLegacy(base)
+	seedID, err := fixture.store.AllocateID(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := Snapshot{
+		ID: seedID, OrganizationID: historical.OrganizationID, OrganizationRevisionID: historical.OrganizationRevisionID,
+		ActorRoleID: historical.ActorRoleID, Purpose: historical.Purpose, IdempotencyKey: historical.IdempotencyKey,
+		Status: SnapshotReady, Version: 1, RequestHash: legacyHash, RenderedHash: DigestMarkdown([]byte("historical render")),
+		CreatedAt: time.Now().UTC(),
+	}
+	createResult, err := fixture.store.Create(ctx, CreateSnapshotCommand{Snapshot: seed, Now: seed.CreatedAt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := createResult.Snapshot
+	if first.TaskClass != "" || first.ExecutionPurpose != "" || first.ActorUnitID != "" {
+		t.Fatalf("test setup bug: expected an empty-selector snapshot to simulate a pre-M1.3 row, got %+v", first)
+	}
+
+	// The first resumed request to supply real selector facts is accepted
+	// (existing values are empty -- no assertion to contradict) and binds
+	// them durably.
+	resumed := base
+	resumed.Request.TaskClass, resumed.Request.ExecutionPurpose, resumed.Request.ActorUnitID = "research.corpus_curate", "department-worker", "investigacion"
+	bound, err := svc.reconcileSelectorFacts(ctx, first, DigestBuildRequest(resumed), resumed)
+	if err != nil {
+		t.Fatalf("first resumed request with real selector facts must be accepted: %v", err)
+	}
+	if bound.ID != first.ID {
+		t.Fatalf("expected the same snapshot to be reused, got %+v", bound)
+	}
+	if bound.TaskClass != "research.corpus_curate" || bound.ExecutionPurpose != "department-worker" || bound.ActorUnitID != "investigacion" {
+		t.Fatalf("resumed request did not durably bind the selector facts onto the historical snapshot: %+v", bound)
+	}
+
+	// Reloading the snapshot independently (simulating a fresh
+	// read/process restart) proves the binding is durable, not merely
+	// reflected in this one call's in-memory return value.
+	reloaded, err := fixture.store.Get(ctx, first.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.TaskClass != "research.corpus_curate" || reloaded.ExecutionPurpose != "department-worker" || reloaded.ActorUnitID != "investigacion" {
+		t.Fatalf("bound selector facts did not survive an independent reload: %+v", reloaded)
+	}
+
+	// A LATER, DIFFERENT resumed request under the same idempotency key
+	// must now fail closed against the durably bound value -- this is the
+	// exact gap round 2 found: before binding, this would have been
+	// silently accepted too, forever, since the comparison always saw an
+	// empty existing value.
+	contradictory := base
+	contradictory.Request.TaskClass, contradictory.Request.ExecutionPurpose, contradictory.Request.ActorUnitID = "coordination.ceo_plan", "ceo-plan", "empresa"
+	if _, err := svc.reconcileSelectorFacts(ctx, reloaded, DigestBuildRequest(contradictory), contradictory); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("want ErrIdempotencyConflict for a selector tuple contradicting the now-bound value, got %v", err)
+	}
+
+	// The exact bound value remains accepted as ordinary idempotent reuse.
+	matching := base
+	matching.Request.TaskClass, matching.Request.ExecutionPurpose, matching.Request.ActorUnitID = "research.corpus_curate", "department-worker", "investigacion"
+	again, err := svc.reconcileSelectorFacts(ctx, reloaded, DigestBuildRequest(matching), matching)
+	if err != nil || again.ID != first.ID {
+		t.Fatalf("exact matching resumed request must remain accepted: result=%+v err=%v", again, err)
+	}
+}
+
 func TestServiceBuildRejectsRoleStatesAndAllowsHumanOwner(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -347,6 +445,26 @@ func (s *memoryStore) Invalidate(_ context.Context, c InvalidateCommand, now tim
 	s.byID[v.ID] = v
 	return cloneSnapshot(v), false, nil
 }
+func (s *memoryStore) BindSelectorFacts(_ context.Context, snapshotID int64, taskClass, executionPurpose, actorUnitID string) (Snapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.byID[snapshotID]
+	if !ok {
+		return Snapshot{}, ErrSnapshotNotFound
+	}
+	if v.TaskClass == "" && taskClass != "" {
+		v.TaskClass = taskClass
+	}
+	if v.ExecutionPurpose == "" && executionPurpose != "" {
+		v.ExecutionPurpose = executionPurpose
+	}
+	if v.ActorUnitID == "" && actorUnitID != "" {
+		v.ActorUnitID = actorUnitID
+	}
+	s.byID[v.ID] = v
+	return cloneSnapshot(v), nil
+}
+
 func cloneSnapshot(v Snapshot) Snapshot {
 	v.Segments = append([]Segment(nil), v.Segments...)
 	for i := range v.Segments {

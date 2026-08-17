@@ -131,6 +131,20 @@ type SnapshotStore interface {
 	GetByIdempotency(context.Context, string, string, bool) (Snapshot, error)
 	List(context.Context, ListFilter) ([]Snapshot, error)
 	Invalidate(context.Context, InvalidateCommand, time.Time) (Snapshot, bool, error)
+	// BindSelectorFacts durably fills in whichever of
+	// TaskClass/ExecutionPurpose/ActorUnitID this snapshot does not yet
+	// have (NULL/empty), from the resumed caller's proposed values --
+	// and NEVER overwrites a field that already has one (implementations
+	// must make this atomic and race-free, e.g. via SQL COALESCE against
+	// the row's current value at UPDATE time, not a separate read-then-
+	// write). This is what turns "a pre-M1.3 snapshot with no selector
+	// identity accepts any resumed proposal" into a ONE-TIME binding: the
+	// first legitimate resume durably records what the snapshot's
+	// selector identity actually is, so a LATER, DIFFERENT resumed
+	// proposal under the same idempotency key is compared against a
+	// now-concrete value instead of remaining permanently unbound.
+	// Passing an empty string for any field is a no-op for that field.
+	BindSelectorFacts(ctx context.Context, snapshotID int64, taskClass, executionPurpose, actorUnitID string) (Snapshot, error)
 }
 
 type ValidationEventRecorder interface {

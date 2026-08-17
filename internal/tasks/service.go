@@ -190,6 +190,15 @@ func (s *Service) CreateTask(ctx context.Context, request CreateRequest, actorTy
 	// unambiguous signal reserved for rows that predate M1.3 entirely
 	// (see contextengine's equivalent default-free handling for context
 	// snapshots, which intentionally does NOT default TaskClass itself).
+	//
+	// taskClassExplicit is captured BEFORE defaulting and threaded
+	// through PreparedCreate separately: Store.Create's idempotency-reuse
+	// path needs to know whether the caller actually asserted something,
+	// not just what the resolved value ended up being -- an omitted
+	// TaskClass and an explicit "general.work" must never be
+	// indistinguishable once compared against an already-durable row's
+	// own known classification (independent review round 2).
+	taskClassExplicit := request.TaskClass != ""
 	if request.TaskClass == "" {
 		request.TaskClass = TaskClassGeneralWork
 	}
@@ -227,7 +236,7 @@ func (s *Service) CreateTask(ctx context.Context, request CreateRequest, actorTy
 	}
 	return s.persistence.Create(ctx, PreparedCreate{
 		Request: request, OrganizationRevisionID: revision.ID, AssignedUnitID: assigned.UnitID,
-		TaskClass:   request.TaskClass,
+		TaskClass: request.TaskClass, TaskClassExplicit: taskClassExplicit,
 		RequestHash: hash, InitialStatus: initial, DefaultMaxAttempts: s.cfg.DefaultMaxAttempts,
 		OutboxMaxAttempts: s.cfg.OutboxMaxAttempts, ActorType: actorType, ActorID: actorID,
 	})

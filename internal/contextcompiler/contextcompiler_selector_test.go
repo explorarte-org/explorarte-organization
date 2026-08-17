@@ -8,11 +8,7 @@ func testProfile(id string) ContextProfile { return ContextProfile{ID: id, Versi
 // EXACT > TASK-CLASS > EXECUTION-PURPOSE > CANONICAL fallback.
 func TestSelectorRegistry_Precedence(t *testing.T) {
 	taskClassProfile := ProfileEntry{Profile: func() ContextProfile { p := testProfile("task-class-profile"); p.TaskClass = "some.class"; return p }()}
-	purposeProfile := ProfileEntry{Profile: func() ContextProfile {
-		p := testProfile("purpose-profile")
-		p.ExecutionPurpose = "department-worker"
-		return p
-	}()}
+	purposeProfile := ProfileEntry{Profile: func() ContextProfile { p := testProfile("purpose-profile"); p.ExecutionPurpose = "department-worker"; return p }()}
 	exactSelector := SemanticSelector{TaskClass: "some.class", ExecutionPurpose: "department-worker", ActorRoleID: "unit/role", ActorUnitID: "unit"}
 	exactProfile := ProfileEntry{Profile: testProfile("exact-profile")}
 
@@ -89,11 +85,7 @@ func TestSelectorRegistry_DuplicateRegistrationRejected(t *testing.T) {
 	if _, err := BuildSelectorRegistry([]ProfileEntry{{Profile: dup}, {Profile: dup}}, nil, nil); err == nil {
 		t.Fatal("expected duplicate task-class registration to be rejected")
 	}
-	dupPurpose := func() ContextProfile {
-		p := testProfile("dup-purpose")
-		p.ExecutionPurpose = "department-worker"
-		return p
-	}()
+	dupPurpose := func() ContextProfile { p := testProfile("dup-purpose"); p.ExecutionPurpose = "department-worker"; return p }()
 	if _, err := BuildSelectorRegistry(nil, []ProfileEntry{{Profile: dupPurpose}, {Profile: dupPurpose}}, nil); err == nil {
 		t.Fatal("expected duplicate execution-purpose registration to be rejected")
 	}
