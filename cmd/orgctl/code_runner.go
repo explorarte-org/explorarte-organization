@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"github.com/Mireuz13/explorarte-organization/internal/coderunner"
+	modeldispatchpostgres "github.com/Mireuz13/explorarte-organization/internal/modeldispatch/postgres"
 	"io"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 )
@@ -34,6 +36,30 @@ func runCodeRunner(args []string, stdout, stderr io.Writer) int {
 	if principal == "" || workerID == "" || repo == "" || base == "" || target == "" {
 		fmt.Fprintln(stderr, "code-runner trusted configuration is incomplete")
 		return exitUsage
+	}
+	pid, err := strconv.ParseInt(principal, 10, 64)
+	if err != nil || pid <= 0 {
+		return exitUsage
+	}
+	checkCtx, cancel := context.WithTimeout(context.Background(), cfg.Tasks.CommandTimeout)
+	defer cancel()
+	pstore, runner, code := openDatabase(checkCtx, cfg, stderr, "code-runner-principal")
+	if code != exitOK {
+		return code
+	}
+	defer pstore.Close()
+	status, err := runner.Status(checkCtx)
+	if err != nil || !status.Ready {
+		return exitDrift
+	}
+	principalStore, err := modeldispatchpostgres.New(pstore)
+	if err != nil {
+		return exitInternal
+	}
+	canonical, err := principalStore.GetPrincipal(checkCtx, pid)
+	if err != nil || string(canonical.Status) != "active" || canonical.OrganizationID != cfg.Tasks.OrganizationID || canonical.DispatchActorRoleID != coderunner.RoleID {
+		fmt.Fprintln(stderr, "code-runner principal is not active/canonical")
+		return exitDenied
 	}
 	executor := &coderunner.Executor{Workspace: "", MaxOutput: 1 << 20}
 	worker := coderunner.Worker{Queue: taskService, Executor: executor, Workspace: coderunner.StagingAdapter{Service: stagingRuntime.Service, WorkspaceRoot: cfg.Staging.WorkspaceRoot, RepositoryID: repo, BaseCommit: base, TargetRef: target}, WorkerID: workerID, HolderPrincipalID: principal, LeaseDuration: cfg.Tasks.DefaultLeaseDuration}
