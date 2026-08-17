@@ -24,7 +24,7 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const wantCount = 50
+	const wantCount = 51
 	if len(loaded) != wantCount {
 		t.Fatalf("migration count=%d want %d", len(loaded), wantCount)
 	}
@@ -49,6 +49,8 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		49: "create_model_invocation_inputs",
 		// HARNESS-RELIABILITY-CLOSEOUT-001:
 		50: "create_execution_run_events",
+		// CONTEXT-ASSEMBLY-M1.1:
+		51: "create_execution_context_views",
 	}
 	byVersion := make(map[int64]string, len(loaded))
 	for _, migration := range loaded {
@@ -60,8 +62,8 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		}
 	}
 
-	if tip := loaded[len(loaded)-1]; tip.Version != 50 {
-		t.Fatalf("migration tip=%06d want 000050", tip.Version)
+	if tip := loaded[len(loaded)-1]; tip.Version != 51 {
+		t.Fatalf("migration tip=%06d want 000051", tip.Version)
 	}
 }
 

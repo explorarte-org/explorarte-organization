@@ -123,6 +123,14 @@ type ContextSnapshot struct {
 	// enter a run.
 	Digest  string
 	Content string
+	// ExecutionContextViewID is the durable identity of the persisted,
+	// immutable derived view Content/Digest came from (M1.1,
+	// internal/contextcompiler.ExecutionContextView). Zero when the
+	// coordinator does not persist a durable view. Model Runtime resolves
+	// and persists the identical view for the same canonical snapshot
+	// through the same store, so this ID is shared, not independently
+	// reconstructed.
+	ExecutionContextViewID int64
 }
 
 // ModelBudgetGate is the Executive's own correlation-wide model-call budget.

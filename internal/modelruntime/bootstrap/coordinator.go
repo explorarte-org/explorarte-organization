@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/config"
+	contextcompilerpostgres "github.com/Mireuz13/explorarte-organization/internal/contextcompiler/postgres"
 	contextbootstrap "github.com/Mireuz13/explorarte-organization/internal/contextengine/bootstrap"
 	dispatchbootstrap "github.com/Mireuz13/explorarte-organization/internal/modeldispatch/bootstrap"
 	egressbootstrap "github.com/Mireuz13/explorarte-organization/internal/modelegress/bootstrap"
@@ -71,9 +72,13 @@ func OpenCoordinator(cfg config.Config, platformStore *platformpostgres.Store) (
 	if err != nil {
 		return nil, fmt.Errorf("open model execution identity metadata runtime for coordinator: %w", err)
 	}
+	executionContextViewStore, err := contextcompilerpostgres.New(platformStore)
+	if err != nil {
+		return nil, fmt.Errorf("open execution context view store for coordinator: %w", err)
+	}
 	catalog := catalogAdapter{reader: registryRepo}
 	tasksAdapter := taskAdapter{reader: taskStore}
-	contexts := contextAdapter{service: contextRuntime.Service}
+	contexts := contextAdapter{service: contextRuntime.Service, store: executionContextViewStore}
 	registryService, err := modelruntime.NewRegistryService(cfg.Registry.CanonicalDir, cfg.Tasks.OrganizationID, catalog, modelStore)
 	if err != nil {
 		return nil, err

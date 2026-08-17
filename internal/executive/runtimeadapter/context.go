@@ -12,6 +12,7 @@ import (
 
 type Context struct {
 	Service        contextengine.Service
+	Assembly       contextcompiler.ContextAssemblyService
 	OrganizationID string
 }
 
@@ -61,7 +62,12 @@ func (a Context) Build(ctx context.Context, request executive.ContextRequest) (e
 	if !validation.Valid {
 		return executive.ContextSnapshot{}, contextengine.ErrSnapshotStale
 	}
-	resolved, err := contextcompiler.ResolveProviderContext(ctx, snapshot)
+	// ResolveAndPersist resolves through the same
+	// contextcompiler.ResolveProviderContext Model Runtime uses, and
+	// durably records the result (M1.1): the same canonical snapshot
+	// resolved by Model Runtime's own context adapter returns the
+	// identical persisted ExecutionContextView, not merely equal bytes.
+	view, err := a.Assembly.ResolveAndPersist(ctx, snapshot)
 	if err != nil {
 		return executive.ContextSnapshot{}, fmt.Errorf("resolve provider-visible context %d: %w", result.Snapshot.ID, err)
 	}
@@ -71,10 +77,11 @@ func (a Context) Build(ctx context.Context, request executive.ContextRequest) (e
 	// compares it against Digest, so this stays self-consistent regardless
 	// of whether projection changed the bytes relative to canonical.
 	return executive.ContextSnapshot{
-		ID:      result.Snapshot.ID,
-		Version: strconv.FormatInt(result.Snapshot.Version, 10),
-		Digest:  resolved.Digest,
-		Content: string(resolved.Bytes),
+		ID:                     result.Snapshot.ID,
+		Version:                strconv.FormatInt(result.Snapshot.Version, 10),
+		Digest:                 view.ProviderVisibleDigest,
+		Content:                string(view.ProviderVisibleBytes),
+		ExecutionContextViewID: view.ID,
 	}, nil
 }
 

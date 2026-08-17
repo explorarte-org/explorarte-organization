@@ -31,6 +31,13 @@ type ResolvedProviderContext struct {
 	// ProviderRender is the compiled StablePrefix/DynamicSuffix render
 	// this resolution produced. Only populated when FellBack is false.
 	ProviderRender contextengine.ProviderRender
+	// Compilation is the CompilationResult this resolution was built from
+	// (R10's ExecutionContextView shape -- profile identity, segment diffs,
+	// stable/dynamic byte partition, authority order hash). Exposed so a
+	// durable persistence layer (M1.1) can record it without calling
+	// CompileForTaskClass a second time -- ResolveProviderContext remains
+	// the single call site.
+	Compilation CompilationResult
 }
 
 // ResolveProviderContext is the ONLY provider-visible context render
@@ -61,6 +68,7 @@ func ResolveProviderContext(ctx context.Context, canonical contextengine.Snapsho
 				Bytes:          render.Bytes(),
 				Digest:         render.ProviderRenderHash,
 				ProviderRender: render,
+				Compilation:    result,
 			}, nil
 		}
 	}
@@ -77,5 +85,6 @@ func ResolveProviderContext(ctx context.Context, canonical contextengine.Snapsho
 		Digest:         contextengine.DigestCanonicalBytes(rendered),
 		FellBack:       true,
 		FallbackReason: reason,
+		Compilation:    result,
 	}, nil
 }
