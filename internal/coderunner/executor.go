@@ -50,7 +50,7 @@ func (e Executor) run(ctx context.Context, typ OperationType, args ...string) Re
 	} else if err != nil {
 		code = -1
 	}
-	return Result{Type: typ, Success: err == nil, ExitCode: code, Output: string(out)}
+	return Result{Type: typ, Success: err == nil, ExitCode: code, Output: truncate(string(out), e.limit())}
 }
 func (e Executor) Execute(ctx context.Context, plan Plan) ([]Result, error) {
 	results := make([]Result, 0, len(plan.Operations))
@@ -116,7 +116,7 @@ func (e Executor) ExecuteOperation(ctx context.Context, op Operation) (Result, e
 		if x, ok := err.(*exec.ExitError); ok {
 			code = x.ExitCode()
 		}
-		return Result{Type: op.Type, Success: err == nil || code == 1, ExitCode: code, Output: string(b)}, nil
+		return Result{Type: op.Type, Success: err == nil || code == 1, ExitCode: code, Output: truncate(string(b), e.limit())}, nil
 	case ApplyPatch:
 		c := exec.CommandContext(ctx, "git", "apply", "--whitespace=nowarn", "-")
 		c.Dir = e.Workspace
@@ -126,7 +126,7 @@ func (e Executor) ExecuteOperation(ctx context.Context, op Operation) (Result, e
 		if x, ok := err.(*exec.ExitError); ok {
 			code = x.ExitCode()
 		}
-		return Result{Type: op.Type, Success: err == nil, ExitCode: code, Output: string(b)}, nil
+		return Result{Type: op.Type, Success: err == nil, ExitCode: code, Output: truncate(string(b), e.limit())}, nil
 	default:
 		return Result{}, fmt.Errorf("unsupported operation")
 	}
@@ -139,7 +139,7 @@ func (e Executor) git(ctx context.Context, t OperationType, args ...string) Resu
 	if x, ok := err.(*exec.ExitError); ok {
 		code = x.ExitCode()
 	}
-	return Result{Type: t, Success: err == nil, ExitCode: code, Output: string(b)}
+	return Result{Type: t, Success: err == nil, ExitCode: code, Output: truncate(string(b), e.limit())}
 }
 func (e Executor) limit() int {
 	if e.MaxOutput <= 0 {
@@ -151,7 +151,25 @@ func packages(p []string) []string {
 	if len(p) == 0 {
 		return []string{"./..."}
 	}
+	for _, v := range p {
+		if err := validatePackage(v); err != nil {
+			return []string{"__invalid_package__"}
+		}
+	}
 	return p
+}
+
+func validatePackage(v string) error {
+	if v == "" || !strings.HasPrefix(v, "./") || strings.Contains(v, "..") || strings.ContainsAny(v, " \t\n;") {
+		return fmt.Errorf("unsafe package path")
+	}
+	return nil
+}
+func truncate(v string, max int) string {
+	if len(v) <= max {
+		return v
+	}
+	return v[:max]
 }
 func opValidate(op Operation) error {
 	switch op.Type {
@@ -164,7 +182,9 @@ func opValidate(op Operation) error {
 			return fmt.Errorf("search path/pattern required")
 		}
 	case ApplyPatch:
-		return fmt.Errorf("patch adapter unavailable")
+		if strings.TrimSpace(op.Patch) == "" {
+			return fmt.Errorf("patch required")
+		}
 	}
 	return nil
 }

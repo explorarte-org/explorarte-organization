@@ -77,8 +77,10 @@ func (w Worker) run(ctx context.Context, item tasks.ClaimedTask) error {
 		results []Result
 		err     error
 	}, 1)
+	execCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	go func() {
-		r, e := w.Executor.Execute(ctx, plan)
+		r, e := w.Executor.Execute(execCtx, plan)
 		resultCh <- struct {
 			results []Result
 			err     error
@@ -92,12 +94,15 @@ func (w Worker) run(ctx context.Context, item tasks.ClaimedTask) error {
 			if out.err != nil {
 				return w.record(ctx, lease, tasks.OutcomeRetryableFailure, "execution_failed", out.err)
 			}
-			if _, e := w.Workspace.Seal(ctx, workspaceID, item, w.HolderPrincipalID); e != nil {
+			sealed, e := w.Workspace.Seal(ctx, workspaceID, item, w.HolderPrincipalID)
+			if e != nil {
 				return w.record(ctx, lease, tasks.OutcomeNonRetryableFailure, "seal_failed", e)
 			}
-			return w.record(ctx, lease, tasks.OutcomeSucceeded, "", jsonSummary(out.results))
+			return w.record(ctx, lease, tasks.OutcomeSucceeded, "", map[string]any{"operations": out.results, "sealed": sealed})
 		case <-ticker.C:
 			if _, e := w.Queue.Heartbeat(ctx, lease); e != nil {
+				cancel()
+				<-resultCh
 				return fmt.Errorf("lease lost: %w", e)
 			}
 		case <-ctx.Done():
