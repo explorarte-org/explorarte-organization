@@ -490,6 +490,18 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64) (Dis
 				}
 			}
 		}
+		// M1.2: versioned host-side token telemetry for the exact durable
+		// ExecutionContextView, bound to this invocation's own
+		// context_snapshot_id. Same best-effort contract as the block
+		// above -- a failure or absence of either optional capability
+		// never fails or retries this dispatch (section 12).
+		if tokenReader, ok := s.contexts.(ContextTokenTelemetryReader); ok {
+			if tokenTelemetry, telemetryErr := tokenReader.GetContextTokenTelemetry(ctx, invocation.ContextSnapshotID); telemetryErr == nil {
+				if tokenRecorder, ok := s.store.(ContextTokenTelemetryRecorder); ok {
+					_ = tokenRecorder.RecordContextTokenTelemetry(persistCtx, invocation.ID, tokenTelemetry)
+				}
+			}
+		}
 	}
 
 	var costReservation CostReservation
