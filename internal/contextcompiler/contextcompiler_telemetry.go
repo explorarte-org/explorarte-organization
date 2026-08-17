@@ -123,6 +123,16 @@ func BuildContextTokenTelemetry(view ExecutionContextView, canonical contextengi
 	if view.ContextSnapshotID != canonical.ID {
 		return ContextTokenTelemetry{}, fmt.Errorf("%w: view snapshot=%d canonical snapshot=%d", ErrContextTokenTelemetryBinding, view.ContextSnapshotID, canonical.ID)
 	}
+	// A view from another organization must never be measurable against
+	// this canonical snapshot, even when a hand-built or in-memory fixture
+	// happens to reuse the same numeric ContextSnapshotID -- the
+	// PostgreSQL store's own composite FK (context_snapshot_id,
+	// organization_id) makes this impossible for durably persisted views,
+	// but BuildContextTokenTelemetry accepts any ExecutionContextView
+	// value and must not rely on that constraint alone.
+	if view.OrganizationID != canonical.OrganizationID {
+		return ContextTokenTelemetry{}, fmt.Errorf("%w: view organization=%q canonical organization=%q", ErrContextTokenTelemetryBinding, view.OrganizationID, canonical.OrganizationID)
+	}
 	if err := ValidateIntegrity(view); err != nil {
 		return ContextTokenTelemetry{}, fmt.Errorf("context token telemetry: durable view failed integrity: %w", err)
 	}
@@ -152,11 +162,19 @@ func BuildContextTokenTelemetry(view ExecutionContextView, canonical contextengi
 // delivered provider-visible view -- an excluded segment delivered
 // nothing and has no delivered-token cost to attribute).
 //
-// Fallback (view.FellBackToCanonical, or the historically-possible empty
-// SegmentDiffs -- M1.2 section 8 explicitly warns not to assume a
-// non-empty SegmentDiffs array here): every included segment behaves as
-// unprojected, DeliveredBytes == OriginalBytes, exactly mirroring what
-// CompileForTaskClass's own fallback branch guarantees.
+// Fallback (view.FellBackToCanonical == true ONLY): empty SegmentDiffs is
+// the historically valid shape for a canonical fallback (M1.2 section 8),
+// so every included segment behaves as unprojected, DeliveredBytes ==
+// OriginalBytes, exactly mirroring what CompileForTaskClass's own
+// fallback branch guarantees.
+//
+// An empty SegmentDiffs array is NEVER, by itself, proof that a
+// NON-fallback (FellBackToCanonical == false) view is safe to treat as
+// canonical -- a projected view with missing diffs falls straight into
+// the length-mismatch check below (0 != len(canonical.Segments) whenever
+// canonical carries any segment at all) and fails closed with
+// ErrContextTokenTelemetryAttribution, never silently reinterpreted as
+// an unprojected fallback.
 //
 // Projected: view.SegmentDiffs is positionally aligned with
 // canonical.Segments 1:1 by construction (contextcompiler_compiler.go's
@@ -166,7 +184,7 @@ func BuildContextTokenTelemetry(view ExecutionContextView, canonical contextengi
 // assuming it silently. Any proven misalignment fails closed with
 // ErrContextTokenTelemetryAttribution.
 func attributeSegmentTokenEstimates(view ExecutionContextView, canonical contextengine.Snapshot) ([]SegmentTokenEstimate, error) {
-	if view.FellBackToCanonical || len(view.SegmentDiffs) == 0 {
+	if view.FellBackToCanonical {
 		estimates := make([]SegmentTokenEstimate, 0, len(canonical.Segments))
 		for _, seg := range canonical.Segments {
 			if !seg.Included {

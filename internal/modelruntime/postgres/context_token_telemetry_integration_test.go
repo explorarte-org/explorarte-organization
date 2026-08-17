@@ -173,7 +173,12 @@ INSERT INTO model_invocations(
 			StablePrefixHash: modelruntime.SHA256Bytes([]byte("stable")), StablePrefixBytes: 30,
 			DynamicSuffixHash: modelruntime.SHA256Bytes([]byte("dynamic")), DynamicSuffixBytes: 15,
 			AuthorityOrderHash: modelruntime.SHA256Bytes([]byte("order")), CompiledContentHash: modelruntime.SHA256Bytes([]byte("content")),
-			SegmentDiffs:         []contextcompiler.SegmentDiff{},
+			// A non-fallback (FellBackToCanonical=false) view must carry
+			// internally coherent SegmentDiffs, never an empty array
+			// merely for fixture convenience -- an empty SegmentDiffs
+			// array is only ever valid for a true canonical fallback (see
+			// contextcompiler.attributeSegmentTokenEstimates).
+			SegmentDiffs:         []contextcompiler.SegmentDiff{{SourceReference: "docs/canonical/role-catalog.yaml", AuthorityTier: "approved_skill", OriginalBytes: 300, ProjectedBytes: 120, Projected: true, Reason: "projected_subset:role_catalog_self_entry"}},
 			ProviderVisibleBytes: bytes, ProviderVisibleDigest: modelruntime.SHA256Bytes(bytes), ProviderVisibleByteCount: len(bytes),
 		}
 		persisted, err := ecvStore.Persist(ctx, view)
@@ -300,6 +305,35 @@ INSERT INTO model_invocations(
 		}
 	})
 
+	t.Run("R10.4-only row never fabricates M1.2 telemetry", func(t *testing.T) {
+		invocationID, _ := newInvocation(t, "r10-4-only")
+		// Only the R10.4 base row is written -- M1.2's own columns
+		// (execution_context_view_id, token_estimator_id, ...) are left
+		// NULL, exactly as a historical pre-000052 row or a best-effort
+		// M1.2 write failure would leave them. This must never read back
+		// as a fake zero-estimate/empty-estimator record.
+		recordBaseR10_4(t, invocationID)
+		_, err := modelStore.GetContextExecutionTelemetry(ctx, modelIntegrationOrganization, invocationID)
+		if !errors.Is(err, modelruntime.ErrNotFound) {
+			t.Fatalf("want ErrNotFound for an R10.4-only row with no M1.2 telemetry, got %v", err)
+		}
+	})
+
+	t.Run("R10.4-only row plus actual usage still does not fabricate M1.2 telemetry", func(t *testing.T) {
+		invocationID, _ := newInvocation(t, "r10-4-only-with-usage")
+		recordBaseR10_4(t, invocationID)
+		insertDispatchAttemptAndUsage(t, ctx, platform, invocationID, usageFixture{
+			inputTokens: 60, outputTokens: 12, providerReported: true,
+		})
+		// Provider usage existing independently must never be treated as
+		// proof that Context Assembly telemetry exists too -- the two are
+		// recorded by different, independent best-effort writers.
+		_, err := modelStore.GetContextExecutionTelemetry(ctx, modelIntegrationOrganization, invocationID)
+		if !errors.Is(err, modelruntime.ErrNotFound) {
+			t.Fatalf("want ErrNotFound even though provider usage exists, got %v", err)
+		}
+	})
+
 	t.Run("combined read model binds estimate and actual provider usage under distinct field names", func(t *testing.T) {
 		invocationID, snapshotID := newInvocation(t, "usage-success")
 		view := persistView(t, snapshotID, "usage success telemetry payload")
@@ -319,6 +353,12 @@ INSERT INTO model_invocations(
 		}
 		if result.ExecutionContextViewID != view.ID || result.EstimatorID != contextcompiler.EstimatorID {
 			t.Fatalf("estimate half of the read model is wrong: %+v", result)
+		}
+		if result.ContextProfileID != "research.corpus_curate" || result.ContextProfileVersion != "v1" {
+			t.Fatalf("profile identity not read from the durable ECV: %+v", result)
+		}
+		if result.StablePrefixHash != "s" || result.StablePrefixBytes != 30 {
+			t.Fatalf("stable prefix hash/bytes not read from the R10.4 columns: hash=%q bytes=%d", result.StablePrefixHash, result.StablePrefixBytes)
 		}
 		if result.ActualProviderInputTokens == nil || *result.ActualProviderInputTokens != 500 {
 			t.Fatalf("actual provider input tokens = %v, want 500", result.ActualProviderInputTokens)
@@ -448,8 +488,14 @@ INSERT INTO model_invocations(
 		if reloaded.ExecutionContextViewID != view.ID {
 			t.Fatalf("reloaded view identity diverged: %d != %d", reloaded.ExecutionContextViewID, view.ID)
 		}
+		if reloaded.ContextProfileID != view.ContextProfileID || reloaded.ContextProfileVersion != view.ContextProfileVersion {
+			t.Fatalf("reloaded profile identity diverged: %+v", reloaded)
+		}
 		if reloaded.EstimatorID != telemetry.EstimatorID || reloaded.EstimatorVersion != telemetry.EstimatorVersion {
 			t.Fatalf("reloaded estimator identity diverged: %+v", reloaded)
+		}
+		if reloaded.StablePrefixHash != "s" || reloaded.StablePrefixBytes != 30 {
+			t.Fatalf("reloaded stable prefix hash/bytes diverged: hash=%q bytes=%d", reloaded.StablePrefixHash, reloaded.StablePrefixBytes)
 		}
 		if reloaded.EstimatedProviderVisibleTokens != telemetry.EstimatedProviderVisibleTokens {
 			t.Fatalf("reloaded estimate diverged: %d != %d", reloaded.EstimatedProviderVisibleTokens, telemetry.EstimatedProviderVisibleTokens)

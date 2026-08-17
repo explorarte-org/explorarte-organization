@@ -98,6 +98,20 @@ type ContextExecutionTelemetry struct {
 	EstimatedDynamicSuffixTokens   int64
 	SegmentTokenEstimates          []SegmentTokenEstimate
 
+	// StablePrefixHash/StablePrefixBytes are read from the SAME R10.4
+	// columns model_invocation_render_telemetry has always owned -- never
+	// duplicated into new M1.2 columns (M1.2 section 17). Present
+	// together with FallbackToLegacy/FallbackReason exactly as R10.4
+	// itself already defines them, so a caller comparing stable-prefix
+	// identity across invocations can distinguish "empty hash because
+	// this invocation fell back to the legacy render" from any other
+	// state, rather than this read model inventing a new meaning for an
+	// empty hash/zero bytes.
+	StablePrefixHash  string
+	StablePrefixBytes int
+	FallbackToLegacy  bool
+	FallbackReason    *string
+
 	ProviderID            string
 	ProviderModelID       string
 	ModelProfileVersionID int64

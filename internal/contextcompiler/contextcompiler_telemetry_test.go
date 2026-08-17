@@ -245,6 +245,54 @@ func TestBuildContextTokenTelemetry_WrongSnapshot(t *testing.T) {
 	}
 }
 
+// TestBuildContextTokenTelemetry_OrganizationMismatch is the review-fix
+// P2: a view from another organization must never be measurable against a
+// canonical snapshot, even when a hand-built value happens to reuse the
+// same numeric ContextSnapshotID.
+func TestBuildContextTokenTelemetry_OrganizationMismatch(t *testing.T) {
+	snap := orgSnapshot(309, "empresa/ceo", roleCatalogYAML())
+	bytes := []byte("payload")
+	view := ExecutionContextView{
+		ContextSnapshotID: snap.ID, OrganizationID: "a-different-organization",
+		FellBackToCanonical: true, FallbackReason: "task_class_not_projected",
+		AuthorityOrderHash: "a", CompiledContentHash: "b",
+		ProviderVisibleBytes: bytes, ProviderVisibleDigest: sha256Hex(bytes), ProviderVisibleByteCount: len(bytes),
+	}
+	if _, err := BuildContextTokenTelemetry(view, snap); !errors.Is(err, ErrContextTokenTelemetryBinding) {
+		t.Fatalf("want ErrContextTokenTelemetryBinding, got %v", err)
+	}
+}
+
+// TestBuildContextTokenTelemetry_ProjectedWithEmptyDiffsFailsClosed is the
+// review-fix P2: empty SegmentDiffs is only ever valid for
+// FellBackToCanonical == true. A non-fallback (projected) view with empty
+// SegmentDiffs must never be silently reinterpreted as canonical -- it
+// must fail closed.
+func TestBuildContextTokenTelemetry_ProjectedWithEmptyDiffsFailsClosed(t *testing.T) {
+	snap := orgSnapshot(310, "investigacion/research_worker_hourly", roleCatalogYAML())
+	var includedCanonical int
+	for _, seg := range snap.Segments {
+		if seg.Included {
+			includedCanonical++
+		}
+	}
+	if includedCanonical == 0 {
+		t.Fatal("fixture needs at least one included canonical segment to prove this closes the gap")
+	}
+	bytes := []byte("provider visible bytes")
+	view := ExecutionContextView{
+		ContextSnapshotID: snap.ID, OrganizationID: "explorarte",
+		ContextProfileID: ResearchCorpusCurateV1TaskClass, ContextProfileVersion: "v1",
+		FellBackToCanonical: false, ProviderRenderVersion: "v1",
+		AuthorityOrderHash: "a", CompiledContentHash: "b",
+		SegmentDiffs:         []SegmentDiff{}, // empty, but this is NOT a fallback view
+		ProviderVisibleBytes: bytes, ProviderVisibleDigest: sha256Hex(bytes), ProviderVisibleByteCount: len(bytes),
+	}
+	if _, err := BuildContextTokenTelemetry(view, snap); !errors.Is(err, ErrContextTokenTelemetryAttribution) {
+		t.Fatalf("want ErrContextTokenTelemetryAttribution for a projected view with empty SegmentDiffs, got %v", err)
+	}
+}
+
 // TestBuildContextTokenTelemetry_RejectsCorruptView is section 21.I: a view
 // that fails M1.1's own ValidateIntegrity must never produce trusted token
 // telemetry.
