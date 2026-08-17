@@ -265,6 +265,25 @@ type integrationModelRuntime struct {
 	invalidCEOOverride bool
 	crossDepartment    bool
 	runs               []executive.HarnessRunCommand
+	// stopWithoutVerdict makes a run end the way a process crash does: no
+	// verdict, no durable invocation, and the attempt left running with its
+	// lease still held.
+	stopWithoutVerdict bool
+}
+
+// seedDurableResult plants the durable Model Runtime state a crashed run would
+// have left behind for an attempt that never got recorded at the task level.
+func (f *integrationModelRuntime) seedDurableResult(taskID, attemptID int64, status string) {
+	f.nextID++
+	invocation := executive.InvocationRecord{ID: f.nextID, TaskID: taskID, AttemptID: attemptID, Status: status}
+	f.byAttempt[modelAttemptKey(taskID, attemptID)] = []executive.InvocationRecord{invocation}
+	if status == "succeeded" {
+		body := f.output("executive_ceo_plan")
+		hash := sha256.Sum256(body)
+		f.results[invocation.ID] = executive.InvocationResult{
+			InvocationID: invocation.ID, JSONOutput: body, ResponseHash: hex.EncodeToString(hash[:]), ResponseBytes: len(body),
+		}
+	}
 }
 
 func newIntegrationModelRuntime() *integrationModelRuntime {
@@ -281,6 +300,14 @@ func modelAttemptKey(taskID, attemptID int64) string { return fmt.Sprintf("%d/%d
 // result, and a verdict that references it.
 func (f *integrationModelRuntime) Execute(_ context.Context, command executive.HarnessRunCommand) (executive.HarnessRunOutcome, error) {
 	f.runs = append(f.runs, command)
+	if f.stopWithoutVerdict {
+		// Authority that could not be consulted: nothing durable is written and
+		// the attempt keeps its lease, which is the state a crash leaves.
+		return executive.HarnessRunOutcome{
+			Status: executive.HarnessRunFailed, Failure: executive.HarnessFailureAuthorityUnavailable,
+			Retryable: true, TerminationReason: "execution authority unavailable",
+		}, nil
+	}
 	purpose := command.Purpose.LegacyPurpose()
 	key := modelAttemptKey(command.TaskID, command.AttemptID)
 	if existing := f.byAttempt[key]; len(existing) > 0 {
