@@ -1,0 +1,139 @@
+package coderunner
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+)
+
+type Result struct {
+	Type     OperationType
+	Success  bool
+	ExitCode int
+	Output   string
+}
+type Executor struct {
+	Workspace string
+	MaxOutput int
+}
+
+func (e Executor) path(rel string) (string, error) {
+	if err := SafePath(rel); err != nil {
+		return "", err
+	}
+	root, err := filepath.EvalSymlinks(e.Workspace)
+	if err != nil {
+		return "", err
+	}
+	p := filepath.Join(root, rel)
+	real, err := filepath.EvalSymlinks(filepath.Dir(p))
+	if err != nil {
+		return "", err
+	}
+	if real != root && !strings.HasPrefix(real, root+string(os.PathSeparator)) {
+		return "", fmt.Errorf("workspace escape")
+	}
+	return p, nil
+}
+func (e Executor) run(ctx context.Context, typ OperationType, args ...string) Result {
+	c := exec.CommandContext(ctx, "go", args...)
+	c.Dir = e.Workspace
+	out, err := c.CombinedOutput()
+	code := 0
+	if x, ok := err.(*exec.ExitError); ok {
+		code = x.ExitCode()
+	} else if err != nil {
+		code = -1
+	}
+	return Result{Type: typ, Success: err == nil, ExitCode: code, Output: string(out)}
+}
+func (e Executor) Execute(ctx context.Context, op Operation) (Result, error) {
+	if err := opValidate(op); err != nil {
+		return Result{}, err
+	}
+	switch op.Type {
+	case ReadFile:
+		p, err := e.path(op.Path)
+		if err != nil {
+			return Result{}, err
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return Result{}, err
+		}
+		if len(b) > e.limit() {
+			return Result{}, fmt.Errorf("output limit")
+		}
+		return Result{Type: op.Type, Success: true, Output: string(b)}, nil
+	case Gofmt:
+		p, err := e.path(op.Path)
+		if err != nil {
+			return Result{}, err
+		}
+		return e.run(ctx, op.Type, "fmt", p), nil
+	case GoBuild:
+		return e.run(ctx, op.Type, append([]string{"build"}, packages(op.Packages)...)...), nil
+	case GoVet:
+		return e.run(ctx, op.Type, append([]string{"vet"}, packages(op.Packages)...)...), nil
+	case GoTest:
+		args := append([]string{"test"}, packages(op.Packages)...)
+		if op.Race {
+			args = append(args, "-race")
+		}
+		return e.run(ctx, op.Type, args...), nil
+	case GitStatus:
+		return e.git(ctx, op.Type, "status", "--short"), nil
+	case GitDiff:
+		return e.git(ctx, op.Type, "diff", "--no-ext-diff", "--"), nil
+	case Search:
+		p, err := e.path(op.Path)
+		if err != nil {
+			return Result{}, err
+		}
+		return e.run(ctx, op.Type, "test", p), nil
+	case ApplyPatch:
+		return Result{}, fmt.Errorf("APPLY_PATCH requires a reviewed patch adapter")
+	default:
+		return Result{}, fmt.Errorf("unsupported operation")
+	}
+}
+func (e Executor) git(ctx context.Context, t OperationType, args ...string) Result {
+	c := exec.CommandContext(ctx, "git", args...)
+	c.Dir = e.Workspace
+	b, err := c.CombinedOutput()
+	code := 0
+	if x, ok := err.(*exec.ExitError); ok {
+		code = x.ExitCode()
+	}
+	return Result{Type: t, Success: err == nil, ExitCode: code, Output: string(b)}
+}
+func (e Executor) limit() int {
+	if e.MaxOutput <= 0 {
+		return 1 << 20
+	}
+	return e.MaxOutput
+}
+func packages(p []string) []string {
+	if len(p) == 0 {
+		return []string{"./..."}
+	}
+	return p
+}
+func opValidate(op Operation) error {
+	switch op.Type {
+	case ReadFile, Gofmt:
+		if op.Path == "" {
+			return fmt.Errorf("path required")
+		}
+	case Search:
+		if op.Path == "" || op.Pattern == "" {
+			return fmt.Errorf("search path/pattern required")
+		}
+	case ApplyPatch:
+		return fmt.Errorf("patch adapter unavailable")
+	}
+	return nil
+}
