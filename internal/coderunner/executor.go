@@ -109,9 +109,24 @@ func (e Executor) ExecuteOperation(ctx context.Context, op Operation) (Result, e
 		if err != nil {
 			return Result{}, err
 		}
-		return e.run(ctx, op.Type, "test", p), nil
+		c := exec.CommandContext(ctx, "rg", "--fixed-strings", "--line-number", "--max-count", "100", op.Pattern, p)
+		c.Dir = e.Workspace
+		b, err := c.CombinedOutput()
+		code := 0
+		if x, ok := err.(*exec.ExitError); ok {
+			code = x.ExitCode()
+		}
+		return Result{Type: op.Type, Success: err == nil || code == 1, ExitCode: code, Output: string(b)}, nil
 	case ApplyPatch:
-		return Result{}, fmt.Errorf("APPLY_PATCH requires a reviewed patch adapter")
+		c := exec.CommandContext(ctx, "git", "apply", "--whitespace=nowarn", "-")
+		c.Dir = e.Workspace
+		c.Stdin = strings.NewReader(op.Patch)
+		b, err := c.CombinedOutput()
+		code := 0
+		if x, ok := err.(*exec.ExitError); ok {
+			code = x.ExitCode()
+		}
+		return Result{Type: op.Type, Success: err == nil, ExitCode: code, Output: string(b)}, nil
 	default:
 		return Result{}, fmt.Errorf("unsupported operation")
 	}

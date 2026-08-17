@@ -57,6 +57,9 @@ func (p Plan) Validate() error {
 				return fmt.Errorf("invalid package")
 			}
 		}
+		if op.Type == ApplyPatch && strings.TrimSpace(op.Patch) == "" {
+			return fmt.Errorf("patch required")
+		}
 	}
 	return nil
 }
