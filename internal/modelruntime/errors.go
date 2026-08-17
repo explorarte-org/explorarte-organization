@@ -34,4 +34,15 @@ var (
 	ErrDispatcherAssignmentUnpinned = errors.New("model invocation has no pinned dispatcher assignment")
 	ErrExecutionIdentityUnpinned    = errors.New("execution identity policy is not pinned")
 	ErrExecutionIdentityDenied      = errors.New("execution identity assertion denied")
+
+	// ErrContextTokenTelemetryBindingMismatch is returned when the supplied
+	// ExecutionContextView does not belong to the invocation's own
+	// context_snapshot_id (M1.2 section 11). A mismatched binding is never
+	// persisted.
+	ErrContextTokenTelemetryBindingMismatch = errors.New("context token telemetry: execution context view does not belong to the invocation's context snapshot")
+	// ErrContextTokenTelemetryContradiction is returned when a second
+	// RecordContextTokenTelemetry call for an invocation that already has
+	// durable M1.2 telemetry supplies different facts. The original record
+	// is never silently overwritten.
+	ErrContextTokenTelemetryContradiction = errors.New("context token telemetry: contradictory telemetry was already recorded for this invocation")
 )

@@ -426,6 +426,51 @@ func (a contextAdapter) GetProviderRenderTelemetry(ctx context.Context, id int64
 	}, nil
 }
 
+// GetContextTokenTelemetry implements modelruntime.ContextTokenTelemetryReader
+// (M1.2, optional capability, mirrors GetProviderRenderTelemetry above).
+// Derives from the exact same resolveRender call -- never a second,
+// independently computed render or estimate -- and measures only the
+// durable facts contextcompiler.BuildContextTokenTelemetry already proved
+// belong to this canonical snapshot.
+func (a contextAdapter) GetContextTokenTelemetry(ctx context.Context, id int64) (modelruntime.ContextTokenTelemetry, error) {
+	snapshot, err := a.service.Get(ctx, id, true)
+	if err != nil {
+		return modelruntime.ContextTokenTelemetry{}, err
+	}
+	view, err := resolveRender(ctx, a.store, snapshot)
+	if err != nil {
+		return modelruntime.ContextTokenTelemetry{}, err
+	}
+	telemetry, err := contextcompiler.BuildContextTokenTelemetry(view, snapshot)
+	if err != nil {
+		return modelruntime.ContextTokenTelemetry{}, err
+	}
+	return convertContextTokenTelemetry(telemetry), nil
+}
+
+func convertContextTokenTelemetry(t contextcompiler.ContextTokenTelemetry) modelruntime.ContextTokenTelemetry {
+	segments := make([]modelruntime.SegmentTokenEstimate, len(t.SegmentTokenEstimates))
+	for i, s := range t.SegmentTokenEstimates {
+		segments[i] = modelruntime.SegmentTokenEstimate{
+			SourceReference: s.SourceReference, AuthorityTier: string(s.AuthorityTier),
+			SourceKind: string(s.SourceKind), SourceVersion: s.SourceVersion,
+			InstructionClass: string(s.InstructionClass), TrustClass: string(s.TrustClass), DataClass: string(s.DataClass),
+			RenderOrdinal: s.RenderOrdinal, OriginalBytes: s.OriginalBytes, DeliveredBytes: s.DeliveredBytes,
+			OriginalEstimatedTokens: s.OriginalEstimatedTokens, DeliveredEstimatedTokens: s.DeliveredEstimatedTokens,
+			Projected: s.Projected, ProjectionReason: s.ProjectionReason,
+		}
+	}
+	return modelruntime.ContextTokenTelemetry{
+		ExecutionContextViewID: t.ExecutionContextViewID, ContextSnapshotID: t.ContextSnapshotID,
+		ContextProfileID: t.ContextProfileID, ContextProfileVersion: t.ContextProfileVersion,
+		EstimatorID: t.EstimatorID, EstimatorVersion: t.EstimatorVersion,
+		ProviderVisibleBytes: t.ProviderVisibleBytes, EstimatedProviderVisibleTokens: t.EstimatedProviderVisibleTokens,
+		StablePrefixBytes: t.StablePrefixBytes, EstimatedStablePrefixTokens: t.EstimatedStablePrefixTokens,
+		DynamicSuffixBytes: t.DynamicSuffixBytes, EstimatedDynamicSuffixTokens: t.EstimatedDynamicSuffixTokens,
+		SegmentTokenEstimates: segments,
+	}
+}
+
 type authorizationAdapter struct{ evaluator authorization.Evaluator }
 
 func (a authorizationAdapter) EvaluateDispatch(ctx context.Context, org string, revision int64, actor, resourceID, digest string) (modelruntime.AuthorizationDecision, error) {

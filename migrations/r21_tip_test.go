@@ -24,7 +24,7 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const wantCount = 51
+	const wantCount = 52
 	if len(loaded) != wantCount {
 		t.Fatalf("migration count=%d want %d", len(loaded), wantCount)
 	}
@@ -51,6 +51,8 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		50: "create_execution_run_events",
 		// CONTEXT-ASSEMBLY-M1.1:
 		51: "create_execution_context_views",
+		// CONTEXT-ASSEMBLY-M1.2:
+		52: "add_context_token_telemetry",
 	}
 	byVersion := make(map[int64]string, len(loaded))
 	for _, migration := range loaded {
@@ -62,8 +64,8 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		}
 	}
 
-	if tip := loaded[len(loaded)-1]; tip.Version != 51 {
-		t.Fatalf("migration tip=%06d want 000051", tip.Version)
+	if tip := loaded[len(loaded)-1]; tip.Version != 52 {
+		t.Fatalf("migration tip=%06d want 000052", tip.Version)
 	}
 }
 
