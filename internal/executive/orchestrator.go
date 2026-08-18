@@ -705,25 +705,17 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		if principal.ID == "" || (principal.RoleID != "" && principal.RoleID != task.AssignedRoleID) {
 			return task, fmt.Errorf("%w: resolved principal is not bound to %s", ErrExecutionPrincipalUnusable, task.AssignedRoleID)
 		}
-		claimed, attempt, l, err := o.tasks.ClaimTask(ctx, ClaimTaskCommand{
+		claimed, _, l, claimErr := o.tasks.ClaimTask(ctx, ClaimTaskCommand{
 			TaskID: task.ID, WorkerID: orchestratorWorkerID, HolderPrincipalID: principal.ID,
 			AssignedRoleID: task.AssignedRoleID, LeaseDuration: executiveLeaseTTL,
 		})
-		if err != nil {
-			return task, err
+		if claimErr != nil {
+			return task, claimErr
 		}
 		task = claimed
 		lease = l
 		o.rememberLease(task.ID, lease)
 		haveLease = true
-		assignment, err := o.assignments.ResolveAssignment(ctx, task.ID, attempt.ID, task.AssignedRoleID)
-		if err != nil {
-			_, _ = o.tasks.BlockTask(ctx, root.ID, "dispatch_assignment_required", fmt.Sprintf("task=%d attempt=%d subject_role=%s lease_expires_at=%s", task.ID, attempt.ID, task.AssignedRoleID, lease.ExpiresAt.UTC().Format(time.RFC3339)), "service", orchestratorWorkerID)
-			return task, ErrDispatchAssignmentRequired
-		}
-		if assignment.OrganizationRevisionID != task.OrganizationRevisionID || assignment.SubjectRoleID != task.AssignedRoleID {
-			return task, fmt.Errorf("%w: dispatch assignment scope mismatch", ErrRegistryMismatch)
-		}
 	}
 	// From here on every lease-authorized mutation is performed as the lease
 	// holder, not as the worker name. The task engine matches ActorID against
@@ -738,19 +730,57 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		if !haveLease {
 			return task, fmt.Errorf("%w: active task lease token unavailable after process restart", ErrRunBlocked)
 		}
-		assignment, err := o.assignments.ResolveAssignment(ctx, task.ID, lease.AttemptID, task.AssignedRoleID)
-		if err != nil {
+
+		// ModelDispatch intentionally allows creation of an assignment only
+		// for a running task/attempt. Starting the attempt is therefore the
+		// durable boundary that must precede assignment resolution. This
+		// transition performs no model dispatch and remains lease-authorized
+		// by the same role-bound principal that claimed the attempt.
+		if _, startErr := o.tasks.StartAttempt(ctx, lease, actorID); startErr != nil {
+			return task, startErr
+		}
+		refreshed, getErr := o.tasks.GetTask(ctx, task.ID)
+		if getErr != nil {
+			return task, getErr
+		}
+		task = refreshed
+	}
+
+	if task.Status == "running" {
+		if !haveLease {
+			return task, fmt.Errorf("%w: running task lease token unavailable after process restart", ErrRunBlocked)
+		}
+
+		// Assignment authorization is checked only after the attempt is
+		// running, matching ModelDispatch's task-attempt invariant. Missing
+		// authorization blocks the root before context construction, budget
+		// authorization, or Harness/model execution.
+		assignment, assignmentErr := o.assignments.ResolveAssignment(
+			ctx,
+			task.ID,
+			lease.AttemptID,
+			task.AssignedRoleID,
+		)
+		if assignmentErr != nil {
+			_, _ = o.tasks.BlockTask(
+				ctx,
+				root.ID,
+				"dispatch_assignment_required",
+				fmt.Sprintf(
+					"task=%d attempt=%d subject_role=%s lease_expires_at=%s",
+					task.ID,
+					lease.AttemptID,
+					task.AssignedRoleID,
+					lease.ExpiresAt.UTC().Format(time.RFC3339),
+				),
+				"service",
+				orchestratorWorkerID,
+			)
 			return task, ErrDispatchAssignmentRequired
 		}
-		if assignment.OrganizationRevisionID != task.OrganizationRevisionID {
-			return task, fmt.Errorf("%w: assignment revision drift", ErrRegistryMismatch)
-		}
-		if _, err = o.tasks.StartAttempt(ctx, lease, actorID); err != nil {
-			return task, err
-		}
-		task, err = o.tasks.GetTask(ctx, task.ID)
-		if err != nil {
-			return task, err
+		if assignment.OrganizationRevisionID != task.OrganizationRevisionID ||
+			assignment.SubjectRoleID != task.AssignedRoleID {
+			return task, fmt.Errorf("%w: dispatch assignment scope mismatch", ErrRegistryMismatch)
 		}
 	}
 	if task.Status != "running" {
