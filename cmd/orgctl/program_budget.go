@@ -9,7 +9,10 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/tasks"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 )
 
 const programTargetRef = "refs/heads/v2/program-context-memory-001"
@@ -24,6 +27,9 @@ func runProgram(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 	if args[0] == "promotion" {
+		if len(args) >= 2 && args[1] == "worker" {
+			return runProgramPromotionWorker(args[2:], stdout, stderr)
+		}
 		return runProgramPromotion(args[1:], stdout, stderr)
 	}
 	if args[0] != "budget" {
@@ -135,4 +141,63 @@ func runProgramPromotion(args []string, stdout, stderr io.Writer) int {
 	}
 	writeValue(stdout, true, result)
 	return exitOK
+}
+
+func runProgramPromotionWorker(args []string, stdout, stderr io.Writer) int {
+	if len(args) != 2 || args[0] != "run" {
+		return exitUsage
+	}
+	actor := strings.TrimSpace(os.Getenv("ORG_PROGRAM_PROMOTION_ACTOR_ROLE"))
+	if actor == "" {
+		fmt.Fprintln(stderr, "ORG_PROGRAM_PROMOTION_ACTOR_ROLE is required")
+		return exitUsage
+	}
+	cfg, runtime, cleanup, code := openStagingRuntime(stderr)
+	if code != exitOK {
+		return code
+	}
+	defer cleanup()
+	interval := 5 * time.Second
+	if raw := os.Getenv("ORG_PROGRAM_PROMOTION_POLL_INTERVAL"); raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+			interval = d
+		}
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	for {
+		promotions, err := runtime.Service.ListPromotions(ctx, staging.PromotionFilter{Status: staging.PromotionApproved, Limit: 100})
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return exitInternal
+		}
+		eligible := make([]staging.Promotion, 0, len(promotions))
+		for _, p := range promotions {
+			if validProgramTargetRef(p.TargetRef) {
+				eligible = append(eligible, p)
+			}
+		}
+		for _, p := range eligible {
+			workspace, err := runtime.Service.GetWorkspace(ctx, p.WorkspaceID)
+			if err != nil {
+				fmt.Fprintln(stderr, err)
+				return exitInternal
+			}
+			if workspace.Status != staging.WorkspaceSealed || p.CandidateCommit == "" || p.ExpectedBaseCommit != workspace.BaseCommit || p.ApprovedByRoleID == nil || *p.ApprovedByRoleID == workspace.ActorRoleID || actor == workspace.ActorRoleID {
+				continue
+			}
+			result, err := runtime.Service.ApplyPromotion(ctx, staging.ApplyPromotionCommand{PromotionID: p.ID, ActorRoleID: actor})
+			if err != nil {
+				fmt.Fprintln(stderr, err)
+				continue
+			}
+			writeValue(stdout, true, result)
+		}
+		select {
+		case <-ctx.Done():
+			return exitOK
+		case <-time.After(interval):
+		}
+		_ = cfg
+	}
 }
