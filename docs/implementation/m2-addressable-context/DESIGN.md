@@ -99,7 +99,7 @@ These MUST hold for any M2 implementation:
   fails closed. No "the document changed under you" silent drift.
 - **I-4 (no instruction escalation, scoped to evidence-only content).**
   M2's addressable universe in this milestone is restricted to
-  evidence/data-kind sources only (§4B) — the same three kinds
+  evidence/data-kind sources only (§4B) — two of the three kinds
   `contextengine.Assemble` already forces to
   `InstructionClass==InstructionData`/`TrustClass==TrustUntrusted`/
   `MayGrantCapabilities==false` when inlined. For exactly that restricted
@@ -177,8 +177,9 @@ data" — those two statements cannot both hold for instruction-bearing
 content, only for evidence-shaped content.
 
 DECISION: M2's addressable universe, in this milestone, is restricted to
-exactly the three kinds `contextengine.Assemble` itself already treats as
-evidence-only:
+two of the three kinds `contextengine.Assemble` itself already treats as
+evidence-only (`SourceWebEvidence` excluded — see the table's own row
+below and §6.1's source-kind decision, round 4):
 
 | Content kind | Classification | Why |
 |---|---|---|
@@ -272,21 +273,78 @@ version" capability, if ever needed, requires its own resource-identity
 contract and is explicit future work, not something M2a's schema already
 half-supports.
 
+**Round 5 correction (P1 finding: "M2a incorrectly assumes an omitted
+`SourceRecord` has no `context_segment`").** Round 4's `segment_id`
+comment claimed an omitted record "has no `context_segments` row" — this
+was factually wrong and contradicted this very document's own earlier
+rounds. OBSERVED, precisely: `context_snapshots.segment_count =
+included_segment_count + omitted_segment_count`
+(`migrations/000006_create_context_engine.up.sql` CHECK), and
+`insertSegment` (`internal/contextengine/postgres/store.go`)
+unconditionally inserts a `context_segments` row for every segment in
+`command.Snapshot.Segments` — included AND omitted alike; only `content`
+is forced `NULL` for an omitted row (`content_hash`, by contrast, is
+`NOT NULL` regardless of `included`). An omitted `SourceRecord` DOES have
+a durable `context_segments` row — it simply has no *content* stored on
+it. DECISION: `segment_id` is `NOT NULL`, a real FK to the existing
+omitted `context_segments` row.
+
+**Round 5 correction (P1 finding: "current RAG/Memory APIs do not provide
+the historical pinned-read semantics promised").** Rounds 2-4 assumed a
+`context_addressable_resources` row for an `inline=false` resource could
+be re-read from `rag`/`memory` at fetch time, pinned to its recorded
+version. OBSERVED: `internal/rag.Repository` (`internal/rag/interfaces.go`)
+has no method to fetch a single chunk by `(VersionID, ChunkID)` at all —
+`Get(ctx, orgID, versionID)` returns a whole `KnowledgeVersion` (a
+`Body string` field, not indexable chunks); the only chunk-returning reads
+are `NearestChunks`/`NearestBGEM3Chunks` (live vector similarity search —
+exactly what §12/§22 already forbid `context.search` from doing, and not
+an exact-identity lookup regardless) and `PendingChunkEmbeddings`
+(an internal backfill queue, not a public read API). There is no existing
+"give me back this exact historical chunk's bytes" capability to build
+`inline=false`'s read path on. Combined with the `segment_id` correction
+above — since `context_segments.content` is `NULL` for every omitted row,
+by CHECK, unconditionally — `inline=true` was never actually reachable
+for any M2a resource in the first place: **every M2a resource was
+`inline=false` by construction**, meaning the entire non-inline read path
+depended, for 100% of M2a's real workload, on a RAG/Memory capability
+that does not exist today.
+
+DECISION: **drop `inline` and the external-re-read path entirely.**
+`context_addressable_resources` gets its own `content BYTEA` column,
+populated **once, durably, at `Assemble`/`Store.Create` time**, directly
+from the `SourceRecord`'s full content — the exact same pattern
+`context_segments.content` already uses for *included* segments, applied
+to the *omitted* ones instead, never re-read from a live source at
+disclosure time. RATIONALE: `Assemble` already has the full candidate
+content in hand at the moment it decides to omit a source (that is what
+"omit" means — it evaluated the content and chose not to inline it); §12A
+already established this same fact to justify computing `search_text`
+without a second read, and the identical reasoning applies to the full
+content. This is strictly simpler and stronger than the abandoned
+external-read design: it removes a fictional dependency on a RAG/Memory
+API that doesn't exist, it makes I-3's pinning guarantee unconditional
+(a fetch never depends on whether the underlying store still retains
+history — the bytes are already durably captured, exactly like
+`context_segments`), and it eliminates an entire failure mode (STALE_DRIFT
+via "the underlying store purged this version") that was never
+achievable to test honestly given the API gap. `byte_count` is sourced
+from the same `SourceRecord`, before any omission-time truncation;
+`content_digest` equals the corresponding `context_segments` row's own
+`content_hash` (`NOT NULL` regardless of `included`, so this FK-adjacent
+consistency is always checkable). §13 (fetch/slice semantics), §9 step 6
+(the lifecycle), and the M2 CONTRACT are updated below to remove every
+reference to a live/external read path.
+
 ```
 id                  BIGINT PK
 organization_id     TEXT NOT NULL
 context_snapshot_id BIGINT NOT NULL  -- FK (id, organization_id) -> context_snapshots
-segment_id          BIGINT NULL      -- FK -> context_segments(id). Round 4:
-                                     -- given the M2a resource definition
-                                     -- above (1:1 with an OMITTED SourceRecord),
-                                     -- this is expected to be NULL for
-                                     -- every M2a row in practice (an omitted
-                                     -- record has no context_segments row --
-                                     -- CHECK (NOT included AND content IS NULL),
-                                     -- migration 000006) -- retained as a
-                                     -- nullable column for forward
-                                     -- compatibility only, not exercised by
-                                     -- M2a.
+segment_id          BIGINT NOT NULL -- FK -> context_segments(id), the SAME
+                                     -- omitted row Assemble produced for
+                                     -- this SourceRecord (round 5 — was
+                                     -- incorrectly NULL-able through round
+                                     -- 4; see the correction above).
 resource_kind       TEXT NOT NULL CHECK (resource_kind IN
                                      ('approved_memory','rag_evidence'))
                                      -- ROUND 4, P1-2: restricted to exactly
@@ -308,11 +366,25 @@ source_version      TEXT NOT NULL CHECK (length(trim(source_version))
                                      -- context_segments.source_version
 authority_tier      TEXT NOT NULL CHECK (authority_tier IN
                                      ('approved_memory','rag_evidence'))
+                                     AND CHECK (authority_tier = resource_kind)
                                      -- ROUND 4: matches resource_kind's
                                      -- restricted set 1:1 for M2a (tier and
                                      -- kind happen to share the same two
                                      -- string values in contextengine's own
-                                     -- enums, mirroring context_segments)
+                                     -- enums, mirroring context_segments).
+                                     -- ROUND 5 (P2 finding): the two CHECKs
+                                     -- were previously independent -- a row
+                                     -- with resource_kind='approved_memory'
+                                     -- AND authority_tier='rag_evidence'
+                                     -- passed both individually while being
+                                     -- internally inconsistent. The added
+                                     -- CHECK (authority_tier = resource_kind)
+                                     -- closes that gap directly (illustrative
+                                     -- syntax -- the real migration may
+                                     -- express this as one combined table
+                                     -- CHECK rather than two column CHECKs,
+                                     -- but the constraint itself is what
+                                     -- matters).
 authority_priority  INTEGER NOT NULL CHECK (authority_priority = 6)
                                      -- ROUND 4: 6 is the ONLY priority
                                      -- context_segments' own tier->priority
@@ -351,15 +423,40 @@ may_grant_capabilities BOOLEAN NOT NULL DEFAULT FALSE
                                      -- database level, independent of any
                                      -- Go-level validation (I-4/§4B).
 content_digest      TEXT NOT NULL CHECK (content_digest ~ '^[0-9a-f]{64}$')
-                                     -- sha256 of the full underlying content
-                                     -- (was undconstrained TEXT; now matches
-                                     -- context_segments.content_hash's own
-                                     -- format CHECK)
+                                     -- sha256 of the full underlying content --
+                                     -- MUST equal the owning segment_id row's
+                                     -- own content_hash (context_segments.
+                                     -- content_hash is NOT NULL regardless of
+                                     -- included, migration 000006, so this is
+                                     -- always checkable -- a cross-table CHECK
+                                     -- isn't expressible in plain SQL, but
+                                     -- Store.Create MUST populate it by
+                                     -- copying that value, never recomputing
+                                     -- independently)
 byte_count          BIGINT NOT NULL CHECK (byte_count >= 0)
-inline              BOOLEAN NOT NULL -- true if already present verbatim in a
-                                     -- context_segments row (fetch = local read);
-                                     -- false if it must be retrieved from its
-                                     -- owning subsystem (rag/memory) at read time
+                                     -- ROUND 5: sourced from the SourceRecord
+                                     -- directly at Assemble time, NOT copied
+                                     -- from the owning segment row's own
+                                     -- byte_count column (which the CHECK on
+                                     -- context_segments forces to 0 for any
+                                     -- omitted row -- migration 000006 --
+                                     -- since it never stored real content).
+content             BYTEA NOT NULL CHECK (octet_length(content) <= 1048576)
+                                     -- ROUND 5 (P1 finding: "current RAG/
+                                     -- Memory APIs do not provide the
+                                     -- historical pinned-read semantics
+                                     -- promised" -- see the correction above
+                                     -- this table). Replaces the abandoned
+                                     -- inline BOOLEAN + external-read design
+                                     -- entirely. Captured once, durably, at
+                                     -- Assemble/Store.Create time, exactly
+                                     -- mirroring context_segments.content's
+                                     -- own bound (1 MiB, migration 000006) --
+                                     -- never re-read from rag/memory at fetch
+                                     -- time. CHECK (octet_length(content) =
+                                     -- byte_count) is also implied and should
+                                     -- be added as an explicit CHECK in the
+                                     -- real migration.
 search_text         TEXT NULL CHECK (search_text IS NULL OR
                                      octet_length(search_text) <= 4096)
                                      -- added in independent review round 3
@@ -523,40 +620,93 @@ be allowed through, and nothing re-runs the check after `T1` commits — so
 a naive `BEFORE INSERT ... IF NOT EXISTS (seal row)` is insufficient by
 itself; it must also force a genuine wait.
 
-DECISION: the `BEFORE INSERT ON context_addressable_resources` trigger's
-protocol is, in this exact order:
+**Round 5 correction: the `SELECT ... FOR UPDATE`-based protocol above is
+itself broken for the exact interleaving it was designed to close.** A
+row inserted by a still-open, uncommitted transaction is not merely
+lock-protected against a concurrent `SELECT ... FOR UPDATE` — under
+PostgreSQL's MVCC visibility rules, it is **not visible at all** to a
+plain `SELECT` (with or without `FOR UPDATE`) issued from a different,
+concurrently-running transaction under the default READ COMMITTED
+isolation level. `FOR UPDATE` only causes blocking for a row that is
+*already visible* to the querying transaction's snapshot and is locked by
+someone else (the ordinary case: an existing, committed row being
+concurrently updated) — it has no special "wait for this row to come into
+existence" behavior for a row that a concurrent transaction is in the
+middle of inserting. Concretely, in the exact interleaving above: at the
+moment `T2`'s trigger runs `SELECT 1 FROM context_snapshots WHERE id = S
+FOR UPDATE`, `T1` has inserted `S` but not committed — `T2`'s query simply
+returns **zero rows** (the row does not exist yet, from `T2`'s point of
+view) and does **not block at all**. `T2`'s trigger would then have
+nothing to lock, and the round-4 protocol as written gives no correct
+instruction for that case — the entire "lock forces `T2` to wait for `T1`"
+premise silently fails exactly when it matters most (the tightest part of
+the race window), which is a more serious defect than round 3's original
+gap: it looks like a fix while not actually being one.
 
-1. **Lock the owning `context_snapshots` row first** — the trigger
-   function issues the equivalent of `SELECT 1 FROM context_snapshots
-   WHERE id = NEW.context_snapshot_id FOR UPDATE` before doing anything
-   else. Standard Postgres row-lock semantics mean this blocks until
-   whatever transaction is currently holding that row's lock (i.e. `T1`,
-   which inserted the snapshot row and hasn't committed yet) either
-   commits or rolls back — `T2` cannot proceed past this line while `T1`
-   is still building/sealing `S`.
-2. **Only after acquiring that lock**, check whether a
-   `context_addressable_resource_sets` row exists for `S`.
-3. If it exists (meaning `T1` committed and sealed `S` before `T2`
-   acquired the lock): **reject** the insert.
-4. If it does not exist (meaning either `T1` hasn't reached that point
-   yet in a still-running transaction that `T2` is NOT blocked behind for
-   some other reason, or `T1` rolled back entirely, or `S` genuinely has
-   no seal because it predates M2): allow the insert, subject to every
-   other constraint on the table (§6.1's CHECKs, the `UNIQUE` constraint).
+DECISION: use a **PostgreSQL advisory lock**, not a row lock, as the
+synchronization primitive — advisory locks are visibility-independent
+(they are not tied to MVCC snapshot visibility of any row at all, so
+whether the underlying `context_snapshots` row is visible yet is
+irrelevant), and correctly block a second session attempting to acquire
+the same lock ID while the first session holds it, for exactly as long as
+the first session's transaction is open, regardless of commit or
+rollback. `pg_advisory_xact_lock(bigint)` takes a single `bigint`
+argument — the snapshot's own `id` fits directly, no hashing needed — and
+is automatically released at the end of the transaction that acquired it
+(commit or rollback), requiring no explicit unlock call and no risk of a
+held lock outliving its transaction.
 
-This is deliberately **lock the owning snapshot row, then check the
-seal — never check the seal, then lock**: checking first and locking
-second is exactly the naive, race-prone order the interleaving above
-defeats. Locking first means `T2` cannot observe "unsealed" and then have
-`T1`'s seal commit invisibly out from under it — by the time `T2`'s check
-runs, it has already waited for `T1` to fully finish (commit or
-rollback), so the check sees the true, final state. `internal/tasks/
-postgres/create.go`'s `SELECT ... FOR UPDATE` conflict-handling pattern
-(established for M1.3's binding fix) is the existing repo precedent for
-"lock the row a decision depends on before making the decision" —
-applying the same idiom inside a trigger function (Postgres `plpgsql`
-supports `SELECT ... FOR UPDATE` in a trigger body) is a standard
-technique, not a new mechanism invented for this design.
+Protocol, in this exact order:
+
+1. `Store.Create` calls `pg_advisory_xact_lock(snapshot.ID)` as the very
+   first statement inside its transaction, immediately after allocating
+   the snapshot's `id` (`AllocateID`, already an existing step — this adds
+   one call, not a new allocation step) and before inserting the
+   `context_snapshots` row itself. It holds this lock for the entire
+   remainder of the transaction (segments, addressable resources, seal,
+   audit/outbox, `COMMIT`).
+2. The `BEFORE INSERT ON context_addressable_resources` trigger's first
+   action is `SELECT pg_advisory_xact_lock(NEW.context_snapshot_id)` —
+   this blocks unconditionally until whichever transaction currently
+   holds that advisory lock ID (i.e. `T1`, if it is mid-build) commits or
+   rolls back, **regardless of whether `context_snapshots`' row for that
+   ID is visible yet** — closing exactly the gap the row-lock-based
+   protocol had.
+3. **Only after acquiring that lock**, check whether a
+   `context_addressable_resource_sets` row exists for the snapshot.
+4. If it exists (meaning `T1` committed and sealed the snapshot before
+   `T2` acquired the advisory lock): **reject** the insert.
+5. If it does not exist (meaning either `T1` rolled back entirely, or the
+   snapshot genuinely has no seal because it predates M2 or predates this
+   binary's M2-aware `Store.Create`, §6.1B's honest-scoping note below):
+   allow the insert, subject to every other constraint on the table
+   (§6.1's CHECKs, the `UNIQUE` constraint) — note this path can now also
+   be reached for a snapshot ID that doesn't exist in `context_snapshots`
+   AT ALL yet (e.g. a caller racing ahead of any real `Store.Create`
+   call), in which case the table's own FK constraint
+   (`context_addressable_resources` → `context_snapshots`) rejects the
+   insert afterward for the ordinary reason (no such parent row) — the
+   advisory-lock check does not need to duplicate that FK's job.
+
+This is deliberately **acquire the advisory lock keyed on the snapshot ID
+first, then check the seal — never check the seal, then lock, and never
+rely on a row-visibility-dependent lock**: checking first and locking
+second (round 3's gap) and locking a possibly-invisible row (round 4's
+gap) are both closed by the same primitive. `internal/tasks/postgres/
+create.go`'s `SELECT ... FOR UPDATE` conflict-handling pattern (M1.3's
+binding fix) remains the right precedent for "lock the row a decision
+depends on before making the decision" in the ordinary case where the row
+is already committed and visible — but it is the wrong tool for
+synchronizing against a row that may not exist yet from the waiter's
+point of view, which is exactly this design's situation. Advisory locks
+are a standard PostgreSQL mechanism for precisely this class of problem
+(synchronizing on an identifier before the row it names is necessarily
+visible) — not a new mechanism invented for this design, though not one
+this repo's existing migrations happen to use yet (verified: no
+`pg_advisory` usage in any existing `migrations/*.up.sql`) — this is the
+first use of the primitive in this codebase, and should be called out as
+such to the M2.1 implementer, not presented as if it mirrors an existing
+pattern verbatim.
 
 **Round 4 — honest scoping of the "M2-era" marker.** Round 3 stated
 seal-row presence is *the* structural signal that a snapshot is M2-era.
@@ -910,10 +1060,10 @@ name (a poisoned-after-the-fact document).
    snapshot (§6.1B — a snapshot with no seal row has no addressable
    universe to read from, full stop), looks up
    `context_addressable_resources`, checks snapshot/org/version/digest
-   membership, applies limits (§16), retrieves content (from
-   `context_segments.content` if `inline=true`, or from the owning
-   subsystem — `rag`/`memory` — via their existing read paths if
-   `inline=false`), wraps it using `contextengine.RenderUntrustedContextResource`
+   membership, applies limits (§16), retrieves content directly from
+   `context_addressable_resources.content` (round 5 — a durable local
+   read, never a live re-read against `rag`/`memory`; see §6.1's
+   correction), wraps it using `contextengine.RenderUntrustedContextResource`
    (§9B — the exported form of the same marker logic `BuildProviderRenderV2`
    already uses for non-stable content, I-4/§24), records a
    `context_disclosure_events` row, and returns a bounded `ContextResource`
@@ -1168,11 +1318,35 @@ already-known handle) is a real, distinct privilege boundary. DECISION:
 
 | Tool | Capability ID | Resource type | Resource ID / scope | Action digest input |
 |---|---|---|---|---|
-| `context.inspect` | `context.disclose` | `context_snapshot` | `ResolvedBinding.ContextSnapshotID` (§9A) | digest of `(organization_id, context_snapshot_id)` |
-| `context.fetch` | `context.disclose` | `context_snapshot` | `ResolvedBinding.ContextSnapshotID` | same |
-| `context.slice` | `context.disclose` | `context_snapshot` | `ResolvedBinding.ContextSnapshotID` | same |
-| `context.aggregate` | `context.disclose` | `context_snapshot` | `ResolvedBinding.ContextSnapshotID` | same |
-| `context.search` | `context.search` | `context_snapshot` | `ResolvedBinding.ContextSnapshotID` | same |
+| `context.inspect` | `context.disclose` | `context_snapshot` | `ResolvedBinding.ContextSnapshotID` (§9A) | sha256 of `(organization_id, context_snapshot_id, "inspect", normalized_handle_filter_or_empty)` |
+| `context.fetch` | `context.disclose` | `context_snapshot` | `ResolvedBinding.ContextSnapshotID` | sha256 of `(organization_id, context_snapshot_id, "fetch", handle)` |
+| `context.slice` | `context.disclose` | `context_snapshot` | `ResolvedBinding.ContextSnapshotID` | sha256 of `(organization_id, context_snapshot_id, "slice", handle, offset, length)` |
+| `context.aggregate` | `context.disclose` | `context_snapshot` | `ResolvedBinding.ContextSnapshotID` | sha256 of `(organization_id, context_snapshot_id, "aggregate", sorted_handle_list)` |
+| `context.search` | `context.search` | `context_snapshot` | `ResolvedBinding.ContextSnapshotID` | sha256 of `(organization_id, context_snapshot_id, "search", query_digest)` (§12B's own `query_digest`, reused rather than a second hash of the same bytes) |
+
+**Round 5 correction (P2 finding: "`ActionDigest` does not bind
+operation/arguments").** Round 4's table used the identical digest —
+`(organization_id, context_snapshot_id)` only — for every operation under
+`context.disclose`, regardless of which operation or which concrete
+handle/arguments. OBSERVED: `internal/authorization.Service`
+(`service.go`) uses `ActionDigest` as an exact-match field when consuming
+an approval request — `ReasonApprovalScopeMismatch` fires when
+`command.ActionDigest != request.ActionDigest` — meaning `ActionDigest` is
+specifically the mechanism that ties one granted approval to one specific
+action instance, not to a whole capability/snapshot pair. A digest
+constant across every `context.disclose` call against a given snapshot
+would let an approval obtained for one concrete action (e.g. "fetch handle
+A") also satisfy consumption for a completely different one (e.g. "fetch
+handle B", or "aggregate handles C+D+E") sharing the same snapshot, for
+any `context.disclose` capability ever configured with an approval mode —
+a real privilege-widening bug, not merely an imprecision. DECISION: each
+operation's `ActionDigest` now incorporates the operation name and its own
+normalized arguments (the handle, the handle set, the offset/length pair,
+or `query_digest`, as appropriate — reusing `query_digest` for search
+rather than hashing the query bytes a second time under a different
+digest), so two different concrete actions against the same snapshot are
+never digest-equal, and an approval scoped to one cannot be replayed
+against another.
 
 Each row's `internal/authorization.EvaluationRequest` is scoped by
 `context_snapshot`, not by the individual resource being disclosed —
@@ -1445,9 +1619,11 @@ during `Assemble`, from whatever content the assembler actually has in
 hand at that moment — for an omitted segment, the assembler necessarily
 saw the full candidate content before deciding to omit it (that decision
 is what it's making), so deriving a bounded excerpt costs nothing extra;
-for an `inline=false` RAG/memory resource, `search_text` is typically a
-title/summary/excerpt already available on the underlying `SourceRecord`
-without a second read. `search_text` may be `NULL` for a resource with no
+every M2a resource's full content is likewise already captured durably at
+this same moment, in `context_addressable_resources.content` (§6.1, round
+5) — `search_text` and `content` are computed from the exact same
+in-hand `SourceRecord`, at the exact same time, never a second read.
+`search_text` may be `NULL` for a resource with no
 reasonable textual excerpt (rare) — a `NULL` `search_text` means that
 resource simply cannot be *found via `context.search`*, but remains fully
 visible via `context.inspect` (list-all) and fetchable via `context.fetch`
@@ -1495,18 +1671,26 @@ current state of `rag`/`memory` storage, or any unspecified database
 row-ordering (e.g. relying on physical `SELECT` order without an explicit
 `ORDER BY` over deterministic columns).
 
-**Tie-break, frozen as a total ordering:** `score DESC, source_reference
-ASC, resource_id ASC` — chosen because `source_reference` is already a
+**Tie-break, frozen — no implementer discretion (round 5 correction: P2
+finding "exact search tie-break still not actually frozen" — round 4's
+"a different total ordering MAY be chosen by the M2.4 implementer"
+language left exactly the kind of open discretion this contract exists to
+remove).** The tie-break is exactly, unconditionally, `score DESC,
+source_reference ASC, resource_id ASC` — no alternative is permitted at
+implementation time. Chosen because `source_reference` is already a
 stable, human-meaningful identity field on every row (§6.1), and
 `resource_id` (the table's own primary key, monotonically assigned) is a
 final, guaranteed-unique tiebreaker for the residual case of two rows with
 identical `score` AND identical `source_reference` (impossible today given
 `UNIQUE (context_snapshot_id, source_reference, source_version)`, but kept
-as an explicit last resort rather than leaving any residual ambiguity). A
-different total ordering MAY be chosen by the M2.4 implementer if it
-better preserves some other real ranking property, but it MUST be total
-(no two distinct rows may ever compare as exactly equal) and MUST be
-computed only from snapshot-local frozen fields.
+as an explicit last resort rather than leaving any residual ambiguity).
+This ordering MUST be computed only from snapshot-local frozen fields
+(already required above) and MUST be exactly this one — not "a" total
+ordering satisfying some property, but this specific one. A different
+tie-break is only ever reachable by incrementing `search_algorithm_version`
+(§12A's versioning discipline) and documenting the new ordering as part of
+that new version's own frozen contract — never as a per-implementer choice
+within the current version.
 
 **Algorithm versioning:** if the ranking algorithm's behavior ever changes,
 `search_algorithm_version` MUST increment — the design MUST NOT mutate an
@@ -1628,32 +1812,74 @@ decision to adopt B — not a default this design should reach for now.
 alongside `query_digest`; both are additive columns replacing round 3's
 `query_text TEXT NULL` (§6.2, §11's `context.search` spec updated above).
 
+**Round 5 correction — this decision does NOT achieve "the raw query text
+is nowhere in the system," and the round-4 text above must not be read
+that way.** OBSERVED: `internal/executionharness.Runtime.Execute`
+(`runtime.go`) already durably appends the model's raw tool-call
+arguments — for `context.search`, this is the query, still JSON-encoded,
+inside `ToolRequest.Arguments` — to `ExecutionHistoryStore` via
+`Event{Type: EventToolCallRequested, ToolRequest: &toolRequest}`, and it
+does this **before** `contextdisclosure.ToolExecutor.Execute` is ever
+called, for **every** tool call, unconditionally (this is the Harness's
+pre-existing crash-safety "durable-append-before-execute" pattern, a
+general mechanism that applies to any tool's arguments, not something
+specific to `context.search` or introduced by M2). INFERENCE: `context_
+disclosure_events`'s digest-only decision therefore prevents a *second*,
+M2-specific durable copy of the raw query text — it was never capable of
+achieving "the raw query text is durably stored nowhere," because the
+Harness's own execution-history mechanism already durably stores it,
+independent of anything M2 does or doesn't do. DECISION unchanged (A —
+digest-only in `context_disclosure_events` — is still correct and still
+worth doing, since it avoids a redundant second copy and keeps M2's own
+audit table smaller and secret-free), but the RATIONALE is corrected:
+this decision is a narrower, M2-table-specific protection, not a
+system-wide guarantee. Whether `ExecutionHistoryStore`'s own retention/
+redaction policy for tool-call arguments is adequate is a pre-existing
+Harness-level question this design did not create and is not scoped to
+answer — it applies identically to any other tool `executionharness` ever
+hosts, not uniquely to `context.search`. This is a seam worth flagging
+explicitly to a future mission (per the standing "document the seam,
+don't absorb the subsystem" instruction), not something M2 should expand
+its own scope to fix.
+
 ### 12B.3 Consequence for the `content.disclose`/`context.search`
 capability boundary and downstream tooling
 
 No `orgctl`/audit-inspection tool built on top of `context_disclosure_events`
-can ever display "the query the model searched for" as literal text —
-only its digest and byte count. This is a deliberate loss of
-human-readable audit convenience in exchange for never persisting
-model-composed plaintext that could contain a pasted secret. An operator
-who needs to correlate a specific historical search to a specific model
-turn already can, via `requesting_model_invocation_id` and the
-invocation's own recorded request (wherever `modelruntime` already
-persists it, subject to its own existing content policy) — this design
-does not need to duplicate that.
+specifically can ever display "the query the model searched for" as
+literal text via that table — only its digest and byte count. This is a
+deliberate reduction of what M2's own audit table stores, in exchange for
+never adding a second, M2-specific durable copy of model-composed
+plaintext that could contain a pasted secret. It is explicitly **not** a
+claim that the raw query is unavailable anywhere in the system — round 5
+corrected that: it already exists in `ExecutionHistoryStore`'s tool-call
+event log, via the pre-existing Harness mechanism, subject to whatever
+retention/redaction policy already governs that store. An operator who
+needs to correlate a specific historical search to a specific model turn
+already can, via `requesting_model_invocation_id` and the invocation's
+own recorded request (wherever `modelruntime`/`executionharness` already
+persist it) — this design does not need to duplicate that, and does not
+claim to have removed it.
 
 ## 13. Fetch/slice semantics
 
 Covered in §11's per-operation spec. Key rule: `fetch`/`slice` never
-re-run admission logic — they are pure reads against
-`context_addressable_resources` + the underlying content (inline segment
-content, or a version-pinned read from `rag`/`memory` when `inline=false`).
-If `inline=false` and the underlying source has since been modified/
-retired, the version-pinned read must still return the pinned version's
-bytes if the underlying store retains history (as `rag`/`memory` do — both
-are lifecycle/versioned stores per AUDIT.md §5), or must fail STALE_DRIFT
-if the pinned version is no longer retrievable. It must never silently
-fall back to "whatever the current version is" (I-3).
+re-run admission logic — they are pure, local reads against
+`context_addressable_resources.content` (§6.1, round 5) only. **Corrected
+in round 5** (P1 finding: rounds 2-4 assumed a live, version-pinned
+re-read against `rag`/`memory` for `inline=false` resources — but
+`internal/rag.Repository` has no API to fetch a single historical chunk
+by identity at all, only live semantic search or a whole-`KnowledgeVersion`
+read, so that path was never actually implementable). Because content is
+captured once, durably, at `Assemble`/`Store.Create` time (§6.1), a fetch
+never depends on whether the underlying `rag`/`memory` store still
+retains the source's history — there is no "the underlying source was
+modified/retired" case for `fetch`/`slice` to handle at all; the pinned
+bytes are already local to `context_addressable_resources` and are
+returned unconditionally once membership/digest checks (§10) pass. The
+only remaining STALE_DRIFT case (§17) is genuine storage-level corruption
+of the durably-stored `content`/`content_digest` pair itself, never
+"the live source moved on."
 
 ## 14. Provenance semantics
 
@@ -1786,11 +2012,15 @@ specific resource's existence.
 > down).
 
 OBSERVED: `context_disclosure_events` and the underlying content a
-disclosure reads (inline `context_segments.content`, or a live `rag`/
-`memory` read for `inline=false` resources) can fail independently, but
-`context_disclosure_events` lives in the same Postgres the rest of
-`contextengine` uses — so "the audit log is down" and "the content store
-is down" are not always distinguishable failures, and are sometimes the
+disclosure reads (`context_addressable_resources.content`, always a local
+read as of round 5 — see §6.1/§13's correction) live in the same
+PostgreSQL instance, and can still fail as distinguishable query-level
+failures (e.g. a lock/timeout hitting one table but not the other) even
+though — unlike rounds 2-4's design, which additionally depended on a
+live external `rag`/`memory` read — there is no longer a genuinely
+separate external system in the failure picture. So "the audit log is
+down" and "the content read is down" are not always distinguishable
+failures, and are sometimes the
 literal same failure.
 
 DECISION: three cases, not one:
@@ -1837,11 +2067,15 @@ row exists or OPERATIONAL_FAILURE."
   mission brief — safe idempotency and correct audit attribution are).
 - **Search + resource invalidation**: "invalidation" of a resource has no
   meaning at the `context_addressable_resources` layer (rows are
-  append-only, pinned to a version) — the underlying source's own
-  lifecycle (e.g. a memory entry retiring) does not retroactively remove a
-  row; a subsequent `fetch` against that pinned version either succeeds
-  (source retains history) or fails STALE_DRIFT (source purged it) — never
-  silently returns different content.
+  append-only, pinned to a version, and — round 5 — hold their own durable
+  `content`, never re-read live) — the underlying source's own lifecycle
+  (e.g. a memory entry retiring) has NO EFFECT on a subsequent `fetch`
+  against that row at all: the bytes are already local, so retirement of
+  the live source is invisible to `context.fetch`/`slice`. (This
+  simplifies round 3/4's framing, which described a possible STALE_DRIFT
+  outcome for this case — that outcome no longer applies here; it is
+  reserved purely for genuine storage-level corruption of the durably
+  stored `content`/`content_digest` pair itself, §17.)
 - **Snapshot creation while the underlying source changes**: irrelevant to
   M2 — `ContextEngine.Build` already handles this today (it reads a
   point-in-time view of `rag`/`memory` when assembling); M2 only pins
@@ -1940,11 +2174,13 @@ Additive only, following the exact pattern of migrations 000051/000053:
   mirroring `context_segments`' own CHECK discipline (migration 000006),
   not a new pattern. Append-only via the same `reject_*_mutation` trigger
   pattern (blocks `UPDATE`/`DELETE`) **plus a second, new `BEFORE INSERT`
-  trigger (§6.1B) using a lock-then-check protocol (round 4, §6.1B Problem
-  B: `SELECT ... FOR UPDATE` on the owning `context_snapshots` row first,
-  then check for a sealed `context_addressable_resource_sets` row, then
-  allow or reject)** — this is the piece that actually closes the set
-  under concurrency, since the append-only pattern alone only ever
+  trigger (§6.1B) using an advisory-lock-then-check protocol (round 5,
+  correcting round 4's row-lock-based version, which didn't actually
+  block on a row a concurrent, uncommitted transaction hadn't made
+  visible yet: `pg_advisory_xact_lock(context_snapshot_id)` first, then
+  check for a sealed `context_addressable_resource_sets` row, then allow
+  or reject)** — this is the piece that actually closes the set under
+  concurrency, since the append-only pattern alone only ever
   protected existing rows, never bounded new ones, and a naive
   check-then-lock trigger has a race window (§6.1B). `UNIQUE
   (context_snapshot_id, source_reference, source_version)`.
@@ -2065,9 +2301,17 @@ is non-empty.
 - `internal/modelruntime` — read-only: `contextdisclosure`'s telemetry
   aggregation joins `execution_context_views`/`model_invocation_render_telemetry`/
   invocation identity by FK; nothing in `modelruntime` is modified.
-- `internal/rag`, `internal/memory` — read-only, version-pinned reads for
-  `inline=false` resources, reusing their existing read APIs (not new
-  bespoke queries bypassing their own scoping/authz).
+- `internal/rag`, `internal/memory` — **round 5 correction: no longer an
+  integration point at read time at all.** Rounds 2-4 planned a
+  disclosure-time read against these packages for `inline=false`
+  resources; round 5 found no such read API exists
+  (`internal/rag.Repository` has no single-chunk-by-identity fetch, only
+  live search or a whole-`KnowledgeVersion` read — §6.1's correction).
+  `rag`/`memory` are now touched only once, at `Assemble` time (already
+  the case — `Assemble` already reads `SourceRecord`s from wherever they
+  come from as part of ordinary Context Assembly, unchanged by M2), never
+  again at disclosure time — `context.fetch`/`slice` are pure local reads
+  against `context_addressable_resources.content` (§6.1/§13).
 - `internal/authorization` — two new capability checks, frozen in §10A
   (round 4): `context.disclose` (gates inspect/fetch/slice/aggregate) and
   `context.search` (gates search, separately), each evaluated exactly like
@@ -2177,21 +2421,25 @@ widening scope:
   `ContextResource`, operation input/output structs, no persistence, no
   wiring. Pure Go package, unit-testable in isolation.
 - **M2.1** — durable `context_addressable_resources` **and
-  `context_addressable_resource_sets` (round 3, §6.1B; hardened round 4)**:
-  migrations (the CHECK-constrained evidence-only schema, §6.1's
+  `context_addressable_resource_sets` (round 3, §6.1B; hardened round 4;
+  locking protocol corrected round 5)**: migrations (the CHECK-constrained
+  evidence-only schema including the `content BYTEA` column and
+  `resource_kind = authority_tier` cross-check, round 5, §6.1;
   `resource_kind`/`authority_tier`/`instruction_class`/`trust_class`/
   `may_grant_capabilities` CHECKs; the seal table's own `BEFORE UPDATE OR
   DELETE` immutability trigger; the `BEFORE INSERT` seal-enforcement
-  trigger on `context_addressable_resources` using the lock-then-check
-  protocol, §6.1B Problem B), Go domain types, the additive write step
-  inside `contextengine.Assembler.Assemble` (including `search_text`
-  computation, §12A) and `Store.Create` (§9 step 2). No read path yet.
-  Includes dedicated tests proving: the seal trigger rejects a late
-  `INSERT` (round 3's headline P1); the seal row itself rejects
-  `UPDATE`/`DELETE` (round 4); and the lock-then-check protocol actually
-  serializes a concurrent insert against an in-flight `Store.Create`
-  transaction via an explicit, barrier-coordinated integration test
-  against real PostgreSQL (TEST_PLAN.md C8, round 4 — not a
+  trigger on `context_addressable_resources` using the
+  `pg_advisory_xact_lock`-then-check protocol, round 5), Go domain types,
+  the additive write step inside `contextengine.Assembler.Assemble`
+  (including `search_text` AND full `content` capture, §12A/§6.1) and
+  `Store.Create` (§9 step 2, including the advisory-lock acquisition as
+  its first transaction statement). No read path yet. Includes dedicated
+  tests proving: the seal trigger rejects a late `INSERT` (round 3's
+  headline P1); the seal row itself rejects `UPDATE`/`DELETE` (round 4);
+  and the advisory-lock-then-check protocol actually serializes a
+  concurrent insert against an in-flight `Store.Create` transaction via an
+  explicit, barrier-coordinated integration test against real PostgreSQL
+  (TEST_PLAN.md C8, corrected round 5 — not a
   launch-two-goroutines-and-hope test).
 - **M2.2** — `context_disclosure_events` (including its `query_digest`/
   `query_byte_count` columns, round 4 §12B) + the authorization/validation
@@ -2260,6 +2508,42 @@ additive).
   `content_digest` at snapshot-build time; a fetch MUST return exactly
   that pinned content or fail STALE_DRIFT/NOT_FOUND — MUST NOT silently
   return a different (newer/older) version.
+- MUST capture an addressable resource's full `content` durably, once, at
+  `Assemble`/`Store.Create` time, into `context_addressable_resources.content`
+  itself — MUST NOT re-read `rag`/`memory` at disclosure/fetch time for any
+  reason (round 5, P1 finding: no such single-chunk-by-identity read API
+  exists in `internal/rag`/`internal/memory` today; the abandoned
+  `inline`-boolean design assumed one). Every `segment_id` MUST be `NOT
+  NULL`, referencing the real, already-existing `context_segments` row
+  Assemble produced for that omitted `SourceRecord` (round 5 — an omitted
+  record always has a `context_segments` row, only its `content` column is
+  NULL; MUST NOT assume otherwise).
+- MUST use `pg_advisory_xact_lock(context_snapshot_id)` — not a row lock
+  on `context_snapshots` — as the synchronization primitive between
+  `Store.Create` and the `context_addressable_resources` seal-enforcement
+  trigger (round 5, correcting round 4: a row lock does not block on a
+  row a concurrent, still-uncommitted transaction hasn't made visible
+  yet, which defeats the protocol at exactly the interleaving it exists
+  to close).
+- MUST bind `internal/authorization`'s `ActionDigest` to the specific
+  operation and its normalized arguments (handle, handle set,
+  offset/length, or `query_digest`, as applicable) for every
+  `context.disclose`/`context.search` evaluation — MUST NOT use a digest
+  that is constant across different concrete actions against the same
+  snapshot, which would let one approved action's approval be replayed
+  against a different one under any approval-mode capability
+  configuration (round 5, P2 finding).
+- MUST make `resource_kind` and `authority_tier` mutually consistent at
+  the database level (`CHECK (authority_tier = resource_kind)`, round 5,
+  P2 finding) — MUST NOT rely on two independently-satisfied CHECKs that
+  could individually pass while jointly describing an internally
+  inconsistent row.
+- MUST use exactly `score DESC, source_reference ASC, resource_id ASC` as
+  `context.search`'s tie-break, with no per-implementer discretion to
+  choose a different total ordering within a given
+  `search_algorithm_version` (round 5, P2 finding — round 4 left this
+  open with a "MAY choose different" clause, which is not actually
+  frozen).
 - MUST restrict M2's addressable universe, in this milestone, to the
   evidence/data source kinds `contextengine.Assemble` already forces to
   `InstructionData`/`TrustUntrusted`/no-capabilities (§4B) — MUST NOT make
@@ -2326,12 +2610,16 @@ additive).
 - MUST NOT allow any `INSERT` into `context_addressable_resources` for a
   `context_snapshot_id` that already has a sealed
   `context_addressable_resource_sets` row (§6.1B, round 3) — enforced by a
-  Postgres trigger that **locks the owning `context_snapshots` row before
-  checking for a seal, never the reverse order** (round 4, P1 finding: a
-  check-then-lock trigger has a race window a concurrent inserter could
-  exploit before a snapshot's `Store.Create` transaction commits its
-  seal — §6.1B's Problem B). A snapshot's addressable universe MUST be
-  exactly what was sealed at build time, never larger.
+  Postgres trigger that **acquires `pg_advisory_xact_lock(context_snapshot_id)`
+  before checking for a seal, never the reverse order, and never a plain
+  row lock** (round 4 P1 finding: a check-then-lock trigger has a race
+  window; round 5 P1 finding: a row lock — `SELECT ... FOR UPDATE` on
+  `context_snapshots` — does not actually block on a row a concurrent,
+  still-uncommitted `Store.Create` transaction hasn't made visible yet,
+  so round 4's fix didn't close the window it claimed to; an advisory
+  lock is visibility-independent and closes it correctly — §6.1B). A
+  snapshot's addressable universe MUST be exactly what was sealed at
+  build time, never larger.
 - MUST NOT allow `context_addressable_resource_sets` itself to be
   `UPDATE`d or `DELETE`d, ever (round 4, P1 finding: §6.1B's Problem A —
   round 3 froze new addressable-resource inserts once sealed but never
@@ -2348,11 +2636,17 @@ additive).
   a real contract behind it is exactly the ambiguity round 4 removes. An
   excerpt→full-version capability is explicit future work, not part of
   M2a.
-- MUST NOT persist a `context.search` query's raw text anywhere, redacted
-  or not (§12B, round 4) — only `query_digest`/`query_byte_count`.
-  `internal/contentpolicy`'s `RedactCredentials` MUST NOT be treated as a
-  license to store a "sanitized" version instead; the decision is not to
-  store query text at all.
+- MUST NOT persist a `context.search` query's raw text in
+  `context_disclosure_events`, redacted or not (§12B, round 4) — only
+  `query_digest`/`query_byte_count`. `internal/contentpolicy`'s
+  `RedactCredentials` MUST NOT be treated as a license to store a
+  "sanitized" version instead in that table; the decision is not to store
+  query text there at all. **This MUST NOT be read as a claim that the
+  raw query is absent from the system entirely** (round 5 correction, P1
+  finding) — `executionharness`'s pre-existing `ExecutionHistoryStore`
+  tool-call-argument log already durably persists it, independent of
+  M2's own choice here; this bullet scopes only `context_disclosure_events`
+  itself.
 - MUST NOT gate `context.inspect`/`context.fetch`/`context.slice`/
   `context.aggregate` and `context.search` behind the same capability
   matrix cell interchangeably, and MUST NOT treat "action denied" and

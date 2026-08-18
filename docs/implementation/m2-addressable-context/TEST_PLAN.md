@@ -46,6 +46,21 @@ whole suite to exist first.
   `source_reference`/`source_version` (e.g. two different memory entries
   that happen to have identical text) get distinct identities/handles —
   identity is never collapsed by content equality alone. (M2.1)
+- **A7.** Added round 5 (P1 finding: "M2a incorrectly assumes an omitted
+  `SourceRecord` has no `context_segment`," and the dependent finding that
+  RAG/Memory APIs can't provide a pinned re-read anyway — DESIGN.md §6.1's
+  correction). For every `context_addressable_resources` row Assemble
+  produces: (a) `segment_id` is `NOT NULL` and resolves to a real
+  `context_segments` row with `included=false` for the same
+  `context_snapshot_id` (assert the FK actually holds against a genuine
+  fixture, not just that the column type allows it); (b)
+  `content_digest` equals that `context_segments` row's own
+  `content_hash` exactly; (c) `context.fetch` against the resulting handle
+  returns content read from `context_addressable_resources.content`
+  directly — assert via a fault-injection test that disables/errors any
+  `rag`/`memory` read path during the fetch call and confirms the fetch
+  still succeeds unaffected (proving no live re-read ever occurs, not
+  merely that the design doc says so). (M2.1/M2.2)
 
 ## B. Org isolation
 
@@ -96,10 +111,18 @@ whole suite to exist first.
   source was later modified/re-versioned) continues to serve its
   originally-pinned version when re-fetched, even after the live source
   has moved on to a newer version that a *newer* snapshot would now
-  reference instead. Construct: build snapshot S1 addressing RAG chunk v1;
-  update the RAG document to v2; build snapshot S2 (now addressing v2);
-  confirm a fetch against S1's handle still returns v1 content, and S2's
-  handle returns v2. (M2.2, requires read-path integration with `rag`)
+  reference instead. **Corrected round 5**: this no longer "requires
+  read-path integration with `rag`" (round 2-4's premise, since dropped —
+  DESIGN.md §6.1/§13's correction: content is captured durably at build
+  time, never re-read). Construct: build snapshot S1 addressing RAG chunk
+  v1 (durably copying v1's content into S1's own
+  `context_addressable_resources.content`); update the RAG document to v2;
+  build snapshot S2 (now addressing v2, with its own independently-copied
+  content); confirm a fetch against S1's handle still returns v1 content
+  and S2's handle returns v2 — and additionally assert this holds even
+  with `rag`'s live store made completely unavailable at fetch time for
+  both S1 and S2 (proving neither depends on a live read, only on what
+  was captured at each snapshot's own build time). (M2.1/M2.2)
 - **C4.** `context.inspect` against a snapshot never surfaces a resource
   added to `context_addressable_resources` for a *different* snapshot
   built later against the same underlying source. (M2.2)
@@ -131,17 +154,29 @@ whole suite to exist first.
   seal-row presence a reliable "this snapshot is M2-era" signal
   independent of whether it happens to have any addressable resources
   (DESIGN.md §19). (M2.1)
-- **C8.** Added round 4 (P1 finding: the naive `BEFORE INSERT` seal check
-  has a race window — DESIGN.md §6.1B Problem B). This is a real
-  integration test against real PostgreSQL with **explicit coordination,
-  not two unsynchronized goroutines**:
-  1. `T1` begins a transaction, inserts a `context_snapshot` row and its
-     `context_addressable_resources` rows (the normal first part of
-     `Store.Create`), but does **not** yet insert the seal row or commit —
-     the test holds `T1` open at exactly this point via a channel/barrier
-     the test controls directly (e.g. the test's fake/instrumented store
-     signals "resources inserted, about to seal" and then blocks on a
-     channel read before proceeding).
+- **C8.** Added round 4, **corrected round 5** (P1 finding: round 4's own
+  naive `BEFORE INSERT` seal check had a race window; the row-lock-based
+  fix round 4 proposed for it was itself broken, since `SELECT ... FOR
+  UPDATE` does not block on a row a concurrent, still-uncommitted
+  transaction hasn't made visible yet — DESIGN.md §6.1B's `pg_advisory_
+  xact_lock`-based correction). This is a real integration test against
+  real PostgreSQL with **explicit coordination, not two unsynchronized
+  goroutines**, and it specifically exercises the timing round 4's own
+  fix would have gotten wrong:
+  1. `T1` begins a transaction and, as its very first statement,
+     acquires `pg_advisory_xact_lock(id)` for the snapshot ID it just
+     allocated — **before** inserting the `context_snapshot` row itself.
+     `T1` then inserts the `context_snapshot` row and its
+     `context_addressable_resources` rows, but does **not** yet insert the
+     seal row or commit — the test holds `T1` open at exactly this point
+     via a channel/barrier the test controls directly (e.g. the test's
+     fake/instrumented store signals "resources inserted, about to seal"
+     and then blocks on a channel read before proceeding). Critically,
+     assert this barrier fires **before** `T1`'s `context_snapshot` row
+     has committed — i.e. the row is genuinely not yet visible to any
+     other transaction — this is the exact timing round 4's row-lock fix
+     would have failed at silently (a `SELECT ... FOR UPDATE` on an
+     invisible row simply returns zero rows and does not block).
   2. Once `T1` signals it has reached that point, the test starts `T2` in
      a second connection/goroutine, attempting to `INSERT` one additional
      `context_addressable_resources` row for the same
@@ -149,23 +184,29 @@ whole suite to exist first.
   3. Assert `T2` **blocks** (does not return, does not error yet) — proven
      by asserting `T2`'s goroutine has not signaled completion after a
      short deterministic wait, not by a race-prone sleep-and-hope; a
-     cleaner assertion is checking `pg_locks`/`pg_stat_activity` for `T2`
-     waiting on the `context_snapshots` row lock `T1` holds, if the test
+     cleaner assertion is checking `pg_locks` (`locktype='advisory'`) for
+     `T2` waiting on the same advisory lock ID `T1` holds, if the test
      harness can query it, or at minimum asserting `T2`'s completion
-     channel has not fired.
+     channel has not fired. This assertion is what actually distinguishes
+     the corrected protocol from round 4's broken one — a test that only
+     checked "does `T2` eventually fail" without first confirming it
+     genuinely blocked during `T1`'s uncommitted window would not have
+     caught round 4's bug either.
   4. The test then lets `T1` proceed: insert the seal row, `COMMIT`.
   5. Assert `T2` **resumes** only after `T1`'s commit, and its `INSERT`
      now **fails** (the seal row `T1` just committed is visible to `T2`'s
-     lock-then-check trigger).
+     advisory-lock-then-check trigger).
   6. Assert the snapshot's final addressable-resource set (read back via
      `context.inspect` or a direct query) contains exactly what `T1`
      inserted — `T2`'s attempted row is absent.
   A companion, simpler assertion: run the same scenario but have `T1`
   **roll back** instead of committing (simulating a failed snapshot
   build) — assert `T2`'s blocked `INSERT` then proceeds successfully once
-  `T1`'s rollback releases the lock, since a rolled-back build correctly
-  leaves no seal and no snapshot for `T2` to conflict with (this is not a
-  security-relevant case, but proves the lock-then-check protocol doesn't
+  `T1`'s rollback releases the advisory lock (advisory locks are
+  transaction-scoped and release automatically on rollback, same as
+  commit), since a rolled-back build correctly leaves no seal and no
+  snapshot for `T2` to conflict with (this is not a security-relevant
+  case, but proves the advisory-lock-then-check protocol doesn't
   deadlock or wrongly reject legitimate concurrent activity against an
   unrelated/failed build). (M2.1)
 
@@ -231,6 +272,13 @@ whole suite to exist first.
     `authority_tier='rag_evidence'` with `authority_priority` set to
     anything other than `6`) → FAIL — proves the CHECK enforces the tier
     → priority mapping, not just each column independently.
+  - **D4j.** Added round 5 (P2 finding: "`resource_kind` ↔ `authority_tier`
+    pairing not DB-enforced"). `resource_kind='approved_memory'` paired
+    with `authority_tier='rag_evidence'` (each individually valid per its
+    own IN-list CHECK, but mutually inconsistent as a pair) → FAIL, via
+    the `CHECK (authority_tier = resource_kind)` constraint (DESIGN.md
+    §6.1, round 5) — proves the two columns are cross-validated, not
+    merely each independently constrained to the same value set.
   - **Positive controls (must PASS, same pre-seal window):**
     `resource_kind='approved_memory'`, `authority_tier='approved_memory'`,
     `authority_priority=6`, `instruction_class='data'`,
@@ -308,6 +356,19 @@ whole suite to exist first.
   member resource or to a nonexistent one — an action-capability denial
   must reveal nothing about content, by construction, since it is
   evaluated first and never reaches the membership lookup (D9). (M2.2)
+- **D12.** Added round 5 (P2 finding: "`ActionDigest` does not bind
+  operation/arguments"). Two `context.fetch` calls against the same
+  snapshot but for two DIFFERENT handles produce two DIFFERENT
+  `ActionDigest` values (DESIGN.md §10A) — assert they are not
+  digest-equal. Companion approval-mode test (if/when a `context.disclose`
+  capability is ever configured with an approval mode in a test fixture):
+  an approval consumed for one concrete action's `ActionDigest` (e.g.
+  fetch handle A) MUST NOT successfully authorize a different concrete
+  action (fetch handle B, or an aggregate including different handles)
+  even against the same snapshot and the same capability — assert
+  `ReasonApprovalScopeMismatch` (or the equivalent denial) for the
+  mismatched case, mirroring `internal/authorization.Service`'s existing
+  exact-match `ActionDigest` comparison. (M2.2)
 
 ## E. Limits
 
@@ -589,10 +650,11 @@ whole suite to exist first.
   proves the ranking function doesn't accidentally depend on physical
   insertion/storage order. (M2.4)
 - **K3.** A deliberately constructed tie (two resources with identical
-  `score` for a given query) resolves via the frozen tie-break
-  (`source_reference ASC, resource_id ASC` or whatever total ordering the
-  implementation adopts, DESIGN.md §12A) — assert the tie-break is
-  exercised and produces a stable, repeatable order, not an arbitrary one.
+  `score` for a given query) resolves via exactly the frozen tie-break —
+  `source_reference ASC, resource_id ASC` — no other ordering is a valid
+  implementation (DESIGN.md §12A, round 5: no per-implementer discretion)
+  — assert the tie-break is exercised and produces exactly this order,
+  not merely "a stable one."
   (M2.4)
 - **K4.** Process/connection restart between two `context.search` calls
   against the same sealed snapshot with the same query produces the same
@@ -634,10 +696,17 @@ A-J list)
 
 - **L1.** A `context.search` query containing a credential-like string
   (e.g. a fixture string matching `internal/contentpolicy.Analyze`'s own
-  detection patterns) never appears anywhere in `context_disclosure_events`
-  as recoverable plaintext — assert the row contains only `query_digest`/
-  `query_byte_count`, and that no other M2 table, log, or event contains
-  the raw query text either. (M2.2/M2.4)
+  detection patterns) never appears in `context_disclosure_events` as
+  recoverable plaintext — assert the row contains only `query_digest`/
+  `query_byte_count`, never the raw bytes. **Corrected round 5** (P1
+  finding: the raw query is already durably persisted by
+  `executionharness`'s pre-existing `ExecutionHistoryStore` tool-call
+  event log, independent of M2 — DESIGN.md §12B.2's correction) — this
+  test's scope is `context_disclosure_events` specifically, not "nowhere
+  in the system"; it MUST NOT assert or imply that the raw query is
+  absent from `ExecutionHistoryStore`'s own tool-call-requested events,
+  which is out of scope for M2 to change and would be a false assertion
+  if made. (M2.2/M2.4)
 - **L2.** `query_digest` is stable: the same query bytes always produce
   the same digest (sha256), and two different queries (even differing by
   one byte) produce different digests — a basic correctness check on the
