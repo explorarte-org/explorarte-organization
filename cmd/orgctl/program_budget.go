@@ -144,7 +144,7 @@ func runProgramPromotion(args []string, stdout, stderr io.Writer) int {
 }
 
 func runProgramPromotionWorker(args []string, stdout, stderr io.Writer) int {
-	if len(args) != 2 || args[0] != "run" {
+	if len(args) != 1 || args[0] != "run" {
 		return exitUsage
 	}
 	actor := strings.TrimSpace(os.Getenv("ORG_PROGRAM_PROMOTION_ACTOR_ROLE"))
