@@ -49,11 +49,17 @@ whole suite to exist first.
 - **A7.** Added round 5 (P1 finding: "M2a incorrectly assumes an omitted
   `SourceRecord` has no `context_segment`," and the dependent finding that
   RAG/Memory APIs can't provide a pinned re-read anyway — DESIGN.md §6.1's
-  correction). For every `context_addressable_resources` row Assemble
-  produces: (a) `segment_id` is `NOT NULL` and resolves to a real
-  `context_segments` row with `included=false` for the same
-  `context_snapshot_id` (assert the FK actually holds against a genuine
-  fixture, not just that the column type allows it); (b)
+  correction), FK shape corrected round 6 (P2 finding: a bare `segment_id`
+  only proves *some* segment with that id exists, not that it belongs to
+  the *same snapshot* — DESIGN.md §6.1's `(context_snapshot_id,
+  segment_ordinal)` composite-FK correction). For every
+  `context_addressable_resources` row Assemble produces: (a)
+  `segment_ordinal` is `NOT NULL` and, combined with `context_snapshot_id`,
+  resolves via the composite FK to a real `context_segments` row with
+  `included=false` for that same snapshot (assert the FK actually holds
+  against a genuine fixture, not just that the column type allows it —
+  and add a negative case: a `segment_ordinal` value that exists for a
+  *different* snapshot must NOT satisfy this resource's FK); (b)
   `content_digest` equals that `context_segments` row's own
   `content_hash` exactly; (c) `context.fetch` against the resulting handle
   returns content read from `context_addressable_resources.content`
@@ -199,16 +205,29 @@ whole suite to exist first.
   6. Assert the snapshot's final addressable-resource set (read back via
      `context.inspect` or a direct query) contains exactly what `T1`
      inserted — `T2`'s attempted row is absent.
-  A companion, simpler assertion: run the same scenario but have `T1`
+  A companion assertion, **corrected in round 6** (P1 finding: the
+  original wording asserted `T2`'s `INSERT` "proceeds successfully" after
+  `T1` rolls back — that is wrong given the actual schema; a rolled-back
+  `T1` also removes the `context_snapshot` row `T2`'s
+  `context_addressable_resources` row would need to reference as its
+  parent, so `T2` cannot succeed): run the same scenario but have `T1`
   **roll back** instead of committing (simulating a failed snapshot
-  build) — assert `T2`'s blocked `INSERT` then proceeds successfully once
-  `T1`'s rollback releases the advisory lock (advisory locks are
+  build). Assert the full correct chain: `T2`'s advisory lock acquisition
+  unblocks once `T1`'s rollback releases it (advisory locks are
   transaction-scoped and release automatically on rollback, same as
-  commit), since a rolled-back build correctly leaves no seal and no
-  snapshot for `T2` to conflict with (this is not a security-relevant
-  case, but proves the advisory-lock-then-check protocol doesn't
-  deadlock or wrongly reject legitimate concurrent activity against an
-  unrelated/failed build). (M2.1)
+  commit) → `T2`'s seal check correctly finds no seal (none was ever
+  written) → `T2` proceeds to attempt its `INSERT` → the table's own
+  `FOREIGN KEY (context_snapshot_id, organization_id) REFERENCES
+  context_snapshots(id, organization_id)` **rejects** it, because `T1`'s
+  rollback means no `context_snapshots` row for that ID exists at all.
+  Assert specifically that this failure is an ordinary FK-violation error
+  (`context_snapshot_id` not found in the parent table), NOT a
+  seal-trigger rejection — the two are different failure reasons and this
+  test exists to prove the advisory-lock protocol correctly reaches the
+  FK check rather than deadlocking or hanging, not to prove `T2` can ever
+  succeed against a build that never completed. This distinction matters
+  operationally: an implementer must not "fix" this test by weakening the
+  FK or by having the trigger swallow the FK's own rejection. (M2.1)
 
 ## D. Authority
 
@@ -408,6 +427,26 @@ whole suite to exist first.
   "not addressable." Also assert `search_text` itself is never returned
   as part of a `context.fetch`/`context.slice` `ContextResource.content` —
   it is a search-only excerpt, not the resource's actual content. (M2.4)
+- **E8.** Added round 6 (P1 finding: "the new 1 MiB `content` CHECK can
+  make `Store.Create` fail on a snapshot that builds successfully today").
+  Build a snapshot containing an optional `approved_memory`/`rag_evidence`
+  source whose content exceeds `max_addressable_resource_bytes` (DESIGN.md
+  §6.1/§16) but is otherwise a completely ordinary oversized-and-omitted
+  source (exactly today's existing `ReasonSourceTooLarge` path in
+  `Assembler.Assemble`) — assert the build **succeeds** exactly as it does
+  today: the source is omitted, `context_segments`/`context_snapshots`
+  behave unchanged, and critically **no** `context_addressable_resources`
+  row is created for it (never a `Store.Create` failure, never a
+  truncated/partial row). A companion test: build a snapshot where several
+  individually-eligible omitted sources would collectively exceed
+  `max_addressable_total_bytes_per_snapshot` — assert the ones that fit
+  (in a defined, documented order — e.g. assembly order) become
+  addressable and the remainder fall back to ordinary non-addressable
+  omission, again without failing the build. A third assertion:
+  `context_snapshots.omitted_segment_count` counts BOTH kinds of omission
+  (size-ineligible and otherwise) identically — it is not a proxy for "how
+  many resources are addressable," and `context.inspect`'s count is
+  expected to be less than or equal to it, never asserted equal. (M2.1)
 
 ## F. Idempotency
 
@@ -609,9 +648,10 @@ whole suite to exist first.
   retries beyond the bound without the caller's knowledge. (M2.2/M2.4)
 - **J6.** Added round 3 (P2 finding: "record every attempt" is impossible
   when the audit store itself is down — DESIGN.md §17A's three-way split).
-  Case 1: the underlying content store (`rag`/`memory`) is unavailable but
-  the audit DB is healthy — assert a `context_disclosure_events` row IS
-  written with `outcome=operational_failure`, exactly as J1 already
+  Case 1: a `context_addressable_resources.content` read fails (round 6 —
+  never `rag`/`memory`, which no longer participates at fetch time at all,
+  §13) but the audit DB is healthy — assert a `context_disclosure_events`
+  row IS written with `outcome=operational_failure`, exactly as J1 already
   covers. Case 2: the audit DB itself (the same Postgres
   `context_disclosure_events` lives in) is unavailable — assert
   `contextdisclosure` fails closed (no content returned to the model,
@@ -737,6 +777,40 @@ A-J list)
   the `ContextResource`/`SearchResult` shape carries `data_class` alongside
   the snippet, never dropping it. (M2.4)
 
+## M. Harness tool-result framing (round 6 addition — beyond the original
+A-J list)
+
+> DESIGN.md §9C's headline P1 finding: a literal `return err` from
+> `contextdisclosure.ToolExecutor.Execute` for a well-defined M2 outcome
+> (FORBIDDEN, NOT_FOUND, etc.) would silently kill the entire Harness run
+> instead of letting the model see and react to it. This category proves
+> the corrected framing on both sides of the `error == nil` boundary.
+
+- **M1.** Every outcome DESIGN.md §17 enumerates (`ok`, `invalid_request`,
+  `not_found`, `forbidden`, `stale_drift`, `operational_failure`) is
+  returned from `contextdisclosure.ToolExecutor.Execute` as
+  `ToolExecutionResult{Content: <JSON ContextToolResult>}` with a **nil**
+  `error`, for each of `context.inspect`/`fetch`/`slice`/`search`/
+  `aggregate` — a table-driven test asserting `err == nil` and
+  `ContextToolResult.Code` matches the expected string, for every
+  (operation, outcome) pair that's reachable. (M2.2/M2.3)
+- **M2.** Given a `nil`-error `ContextToolResult` with `Code=="forbidden"`
+  (or any other non-`"ok"` code), assert `executionharness.Runtime.Execute`
+  behaves exactly as it does for a successful tool call: the result is
+  recorded via `EventToolResultRecorded` (never `EventRunFailed`), the run
+  does NOT terminate, and the model's next turn sees the structured
+  `ContextToolResult` in `VisibleHistory` and can issue a further
+  `context.*` call in the same run. This is the test that would have
+  caught round 5's gap: assert specifically that the run's final status
+  is NOT `StatusToolError` for any of these cases. (M2.3)
+- **M3.** A genuinely terminal executor failure (e.g. `ToolExecutionResult.Content`
+  fails to marshal, or an injected programming-invariant violation) DOES
+  return a non-`nil` `error` from `Execute`, and DOES correctly terminate
+  the run via `EventRunFailed`/`StatusToolError` — proving the narrow
+  remaining `error != nil` case still exists and still behaves as
+  `executionharness` already expects, so the fix doesn't overcorrect into
+  "no context.* error path ever fails the run at all." (M2.3)
+
 ## Implementation-slice test ordering (cross-reference to DESIGN.md §27)
 
 - **M2.0** (contract + domain types): no persistence-dependent tests yet;
@@ -745,28 +819,41 @@ A-J list)
   (round 3) also belongs here, or as early in M2.3 as possible — it is a
   `contextcompiler`-side invariant check, not dependent on any M2
   persistence existing yet.
-- **M2.1** (durable addressable resources): A1, A2, A6, C5, C6, C7, C8
-  (round 4 — the seal-immutability/lock-then-check concurrency test), D2
-  (rescoped, round 2/4), D4, D4a-i (round 4 — DB CHECK sweep), G2, G3, G4,
-  L4 (round 4 — upstream-content-policy reliance).
+- **M2.1** (durable addressable resources): A1, A2, A6, A7 (round 5/6 —
+  segment-ordinal FK / no-live-read), C5, C6, C7, C8 (round 4, corrected
+  round 6 — the seal-immutability/advisory-lock-then-check concurrency
+  test, including the corrected rollback-produces-FK-failure assertion),
+  D2 (rescoped, round 2/4), D4, D4a-j (round 4/6 — DB CHECK sweep, D4j
+  added round 6), E8 (round 6 — oversized-omitted-source eligibility
+  fallback), G2, G3, G4, L4 (round 4 — upstream-content-policy reliance).
 - **M2.2** (fetch/inspect/slice + auth chain): A3, A4, A5, B1, B3, B4, C1,
-  C2, C3, C4, D1 (partial, wrapping deferred to M2.3), D3, D7, D8, D9, D10,
-  D11 (round 4 — capability matrix), E1, E2, E6, F1, F2, G1, G6 (round 3 —
-  `BindingResolver`), I1 (partial), J1, J2, J3, J5 (partial), J6, J7 (round
-  3 — audit-store-unavailable split), L1, L2, L3 (round 4 — query digest
-  persistence, partial: L3's oversized-query rejection).
+  C2, C3 (revised round 6 — no rag read-path dependency), C4, D1 (partial,
+  wrapping deferred to M2.3), D3, D7, D8, D9, D10, D11, D12 (round 6 —
+  `ActionDigest` distinctness) (capability matrix, round 4/6), E1, E2, E6,
+  F1, F2, G1, G6 (round 3 — `BindingResolver`), I1 (partial), J1, J2, J3,
+  J5 (partial), J6, J7 (round 3, revised round 6 — audit-store-unavailable
+  split, no longer referencing a live rag/memory read), L1 (revised round
+  6 — scoped correctly, no system-wide-absence claim), L2, L3 (round 4 —
+  query digest persistence, partial: L3's oversized-query rejection).
 - **M2.3** (Harness tool wiring): D1 (full), D5, D6 (if not already run in
-  M2.0), F3, G5. This slice is also where `ToolExecutionContext` (DESIGN.md
-  §9A, revised round 3 — opaque refs, not typed IDs) is introduced — G6
-  (M2.2, above) already covers the construction/resolution contract; this
-  slice's own tests focus on end-to-end wiring through a real
-  `contextdisclosure.ToolExecutor` and the mechanical
-  `executiveToolExecutor{}` signature update (round 3 factual correction —
-  compiles, never reached, no behavior change).
+  M2.0), F3, G5, **M1, M2, M3 (round 6 — `ContextToolResult` framing; M2
+  in particular is the direct regression test for round 6's headline P1
+  and MUST be green before this slice is considered done)**. This slice
+  is also where `ToolExecutionContext` (DESIGN.md §9A, revised round 3 —
+  opaque refs, not typed IDs) is introduced — G6 (M2.2, above) already
+  covers the construction/resolution contract; this slice's own tests
+  focus on end-to-end wiring through a real `contextdisclosure.ToolExecutor`
+  and the mechanical `executiveToolExecutor{}` signature update (round 3
+  factual correction — compiles, never reached, no behavior change).
 - **M2.4** (search/aggregate): B2, B5, E3, E4, E5, E7 (round 3 —
-  `search_text`), J4, J5 (search-specific), K1-K9 (round 4 — determinism
-  suite), L3 (query-size rejection, search-specific), L6 (round 4 —
-  `search_text` data-class inheritance through search output).
+  `search_text`), J4, J5 (search-specific), K1-K9 (round 4/5 —
+  determinism suite, fully frozen tie-break per K3's round-5 revision),
+  L3 (query-size rejection, search-specific), L6 (round 4 —
+  `search_text` data-class inheritance through search output). Also
+  includes the `context.aggregate` canonical-order test implied by D12's
+  `ActionDigest` distinctness (round 6, DESIGN.md §11's aggregate
+  correction) — same-set-different-request-order producing byte-identical
+  concatenated output.
 - **M2.5** (telemetry): H1-H5, K5 (search-algorithm-version auditability,
   partial), L5 (round 4 — no raw query text in any inspection surface).
 - **M2.6** (integration/historical): I1-I5.
@@ -774,4 +861,7 @@ A-J list)
 No slice widens scope until its own listed tests pass; M2.3 in particular
 must not begin until M2.2's authorization-chain tests (A3-A5, B1, B3-B4,
 C1-C4, G6) are green, since M2.3 is the first point at which a real model
-can reach this code path at all.
+can reach this code path at all — and M2.3 itself must not be considered
+done until M2 (round 6) passes, since that is what proves the model
+actually receives M2's documented outcomes instead of the run silently
+dying.
