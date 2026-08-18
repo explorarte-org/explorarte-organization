@@ -3,10 +3,12 @@ package engineeringmission
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
+
 	"github.com/Mireuz13/explorarte-organization/internal/coderunner"
 	"github.com/Mireuz13/explorarte-organization/internal/staging"
 	"github.com/Mireuz13/explorarte-organization/internal/tasks"
-	"strings"
 )
 
 type TaskPort interface {
@@ -92,9 +94,6 @@ func (s Service) RequestPromotion(ctx context.Context, taskID, workspaceID int64
 	if err != nil {
 		return staging.Promotion{}, err
 	}
-	if err := s.VerifyRequiredGates(ctx, taskID, p); err != nil {
-		return staging.Promotion{}, err
-	}
 	w, err := s.Promotion.GetWorkspace(ctx, workspaceID)
 	if err != nil {
 		return staging.Promotion{}, err
@@ -104,6 +103,22 @@ func (s Service) RequestPromotion(ctx context.Context, taskID, workspaceID int64
 	}
 	detail, err := s.Tasks.GetTask(ctx, taskID)
 	if err != nil {
+		return staging.Promotion{}, err
+	}
+	// Round-2 review fix (P1-2): resolve the ONE attempt-evidence entry
+	// whose own candidate_revision.workspace_id matches the workspace being
+	// promoted, and verify every required gate against THAT evidence's own
+	// checks_run -- never scanning across every attempt evidence the task
+	// has ever accumulated (which would let a build check from one attempt
+	// and a test check from a different, unrelated attempt satisfy the same
+	// promotion) and never trusting whichever evidence happened to be
+	// iterated last (which previously supplied RecordCheck's Reference/
+	// Digest without ever proving it belonged to this workspace at all).
+	evidence, err := resolveWorkspaceAttemptEvidence(detail, workspaceID)
+	if err != nil {
+		return staging.Promotion{}, err
+	}
+	if err := verifyRequiredGatesAgainstEvidence(evidence, p); err != nil {
 		return staging.Promotion{}, err
 	}
 	var reqID int64
@@ -118,20 +133,10 @@ func (s Service) RequestPromotion(ctx context.Context, taskID, workspaceID int64
 	if reqID == 0 {
 		return staging.Promotion{}, fmt.Errorf("gate requirement missing")
 	}
-	// The check reference is the exact durable attempt-evidence reference.
-	var ref, digest string
-	for _, e := range detail.Evidence {
-		if strings.HasPrefix(e.Reference, "code-runner-attempt-evidence://") {
-			ref = e.Reference
-			if e.Digest != nil {
-				digest = *e.Digest
-			}
-		}
+	if evidence.Digest == nil || *evidence.Digest == "" {
+		return staging.Promotion{}, fmt.Errorf("attempt evidence missing digest")
 	}
-	if ref == "" || digest == "" {
-		return staging.Promotion{}, fmt.Errorf("attempt evidence missing")
-	}
-	if _, err := s.Promotion.RecordCheck(ctx, staging.RecordCheckCommand{WorkspaceID: workspaceID, RequirementID: reqID, Name: "engineering-required-gates", Status: staging.CheckPassed, Reference: ref, Digest: digest, ActorRoleID: actorRole}); err != nil {
+	if _, err := s.Promotion.RecordCheck(ctx, staging.RecordCheckCommand{WorkspaceID: workspaceID, RequirementID: reqID, Name: "engineering-required-gates", Status: staging.CheckPassed, Reference: evidence.Reference, Digest: *evidence.Digest, ActorRoleID: actorRole}); err != nil {
 		return staging.Promotion{}, err
 	}
 	return s.Promotion.RequestPromotion(ctx, staging.RequestPromotionCommand{WorkspaceID: workspaceID, ActorRoleID: actorRole})
@@ -195,9 +200,22 @@ func (s Service) Create(ctx context.Context, policy MissionPolicy, plan string, 
 		return tasks.Task{}, err
 	}
 	reqs := []tasks.RequirementSpec{{Key: "candidate-artifact", Type: tasks.RequirementArtifact, Description: "sealed engineering candidate", Required: boolPtr(true)}, {Key: "engineering-required-gates", Type: tasks.RequirementCheck, Description: "all declared engineering gates pass", Required: boolPtr(true)}, {Key: "review", Type: tasks.RequirementApproval, Description: "independent engineering review", Required: boolPtr(true)}}
-	task, _, err := s.Tasks.CreateTask(ctx, tasks.CreateRequest{OrganizationID: organization, RequestedByRoleID: requestedBy, AssignedRoleID: CodeRunnerRole, Title: policy.Objective, Instructions: plan, AcceptanceCriteria: policy.AcceptanceCriteria, IdempotencyKey: "engineering-mission/" + digest, Requirements: reqs}, actorType, actorID)
+	task, inserted, err := s.Tasks.CreateTask(ctx, tasks.CreateRequest{OrganizationID: organization, RequestedByRoleID: requestedBy, AssignedRoleID: CodeRunnerRole, Title: policy.Objective, Instructions: plan, AcceptanceCriteria: policy.AcceptanceCriteria, IdempotencyKey: "engineering-mission/" + digest, Requirements: reqs}, actorType, actorID)
 	if err != nil {
 		return tasks.Task{}, err
+	}
+	// Round-2 review fix (P1-3): IdempotencyKey is derived from the
+	// normalized policy's own content digest, so CreateTask reusing an
+	// existing task (inserted == false) means that task's original Create
+	// call already recorded this EXACT policy as its engineering-mission://
+	// evidence. Recording it again here would insert a second, identical
+	// evidence row under the same reference -- exactly the ambiguity
+	// Resolve()'s "duplicate engineering policies" fail-closed check exists
+	// to catch, which previously turned a legitimate retry of the same
+	// Create call into a broken mission. A retry is therefore a no-op past
+	// this point: return the (reused) task as-is.
+	if !inserted {
+		return task, nil
 	}
 	policy.TaskID = task.ID
 	meta, digest, err = policy.MarshalEvidence()
@@ -241,37 +259,116 @@ func (s Service) Resolve(ctx context.Context, taskID int64) (MissionPolicy, erro
 
 // VerifyRequiredGates reads the existing CodeRunner attempt evidence from the
 // task ledger. It never creates a second gate ledger.
-func (s Service) VerifyRequiredGates(ctx context.Context, taskID int64, policy MissionPolicy) error {
+//
+// Round-2 review fix (P1-1 and P1-2): VerifyRequiredGates now takes
+// workspaceID and verifies every required gate against the SINGLE attempt
+// evidence entry whose own candidate_revision.workspace_id matches it
+// (resolveWorkspaceAttemptEvidence, below) -- not against whichever
+// checks_run entries happen to appear anywhere across every attempt
+// evidence the task has ever accumulated. Each candidate check is also now
+// compared field-for-field against the policy's own RequiredGate (Type,
+// Packages as a set, Race, Integration), not merely Type+success -- a gate
+// declared as "GO_TEST ./... race=true" is no longer satisfiable by
+// evidence recording "GO_TEST ./internal/foo race=false".
+func (s Service) VerifyRequiredGates(ctx context.Context, taskID, workspaceID int64, policy MissionPolicy) error {
 	detail, err := s.Tasks.GetTask(ctx, taskID)
 	if err != nil {
 		return err
 	}
+	evidence, err := resolveWorkspaceAttemptEvidence(detail, workspaceID)
+	if err != nil {
+		return err
+	}
+	return verifyRequiredGatesAgainstEvidence(evidence, policy)
+}
+
+// resolveWorkspaceAttemptEvidence finds the ONE code-runner-attempt-evidence
+// entry on detail whose candidate_revision.workspace_id equals workspaceID.
+// This is what ties gate verification and the RecordCheck Reference/Digest
+// RequestPromotion submits to the exact evidence that sealed THIS workspace
+// -- never to an unrelated attempt's evidence, and never to "whichever
+// attempt evidence was iterated last."
+func resolveWorkspaceAttemptEvidence(detail tasks.TaskDetail, workspaceID int64) (tasks.Evidence, error) {
+	var found *tasks.Evidence
+	for i := range detail.Evidence {
+		e := detail.Evidence[i]
+		if !strings.HasPrefix(e.Reference, "code-runner-attempt-evidence://") {
+			continue
+		}
+		candidate, ok := e.Metadata["candidate_revision"].(map[string]any)
+		if !ok {
+			continue
+		}
+		id, ok := candidate["workspace_id"].(float64)
+		if !ok || int64(id) != workspaceID {
+			continue
+		}
+		if found != nil {
+			return tasks.Evidence{}, fmt.Errorf("multiple attempt evidence entries claim workspace %d", workspaceID)
+		}
+		found = &e
+	}
+	if found == nil {
+		return tasks.Evidence{}, fmt.Errorf("no attempt evidence found for workspace %d", workspaceID)
+	}
+	return *found, nil
+}
+
+// verifyRequiredGatesAgainstEvidence checks every policy.RequiredGates entry
+// against evidence.Metadata["checks_run"] field-for-field (Type, Packages,
+// Race, Integration, success) -- see VerifyRequiredGates' own doc comment
+// for why Type+success alone is not enough.
+func verifyRequiredGatesAgainstEvidence(evidence tasks.Evidence, policy MissionPolicy) error {
+	checks, _ := evidence.Metadata["checks_run"].([]any)
 	for _, wanted := range policy.RequiredGates {
 		matched := false
-		for _, ev := range detail.Evidence {
-			if !strings.HasPrefix(ev.Reference, "code-runner-attempt-evidence://") {
-				continue
-			}
-			checks, ok := ev.Metadata["checks_run"].([]any)
+		for _, raw := range checks {
+			m, ok := raw.(map[string]any)
 			if !ok {
 				continue
 			}
-			for _, raw := range checks {
-				m, ok := raw.(map[string]any)
-				if !ok {
-					continue
+			typ, _ := m["type"].(string)
+			success, _ := m["success"].(bool)
+			race, _ := m["race"].(bool)
+			integration, _ := m["integration"].(bool)
+			var packages []string
+			if rawPackages, ok := m["packages"].([]any); ok {
+				for _, rawPackage := range rawPackages {
+					if s, ok := rawPackage.(string); ok {
+						packages = append(packages, s)
+					}
 				}
-				typ, _ := m["type"].(string)
-				success, _ := m["success"].(bool)
-				if typ == string(wanted.Type) && success {
-					matched = true
-				}
+			}
+			if typ == string(wanted.Type) && success && race == wanted.Race && integration == wanted.Integration && samePackageSet(packages, wanted.Packages) {
+				matched = true
+				break
 			}
 		}
 		if !matched {
-			return fmt.Errorf("required gate %s is not durably satisfied", wanted.Type)
+			return fmt.Errorf("required gate %s (packages=%v race=%v integration=%v) is not durably satisfied by this workspace's attempt evidence", wanted.Type, wanted.Packages, wanted.Race, wanted.Integration)
 		}
 	}
 	return nil
 }
+
+// samePackageSet reports whether a and b contain the same package
+// specifiers, ignoring order -- MissionPolicy.RequiredGates and
+// coderunner's own checkEvidence both carry Packages as an unordered set
+// of specifiers, never a meaningful sequence.
+func samePackageSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	sortedA := append([]string(nil), a...)
+	sortedB := append([]string(nil), b...)
+	sort.Strings(sortedA)
+	sort.Strings(sortedB)
+	for i := range sortedA {
+		if sortedA[i] != sortedB[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func boolPtr(v bool) *bool { return &v }

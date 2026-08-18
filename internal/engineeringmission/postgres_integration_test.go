@@ -442,14 +442,15 @@ func TestEngineeringMissionDeniesMissingRequiredGate(t *testing.T) {
 		t.Fatalf("expected the CodeRunner attempt itself to succeed (the gap is a missing gate, not an execution failure): %+v", detail.Attempts)
 	}
 
-	if err := mission.VerifyRequiredGates(ctx, task.ID, resolvedPolicy); err == nil {
-		t.Fatal("VerifyRequiredGates succeeded despite a required GO_VET gate that never ran")
-	}
-
 	list, err := stagingRuntime.Service.ListWorkspaces(ctx, staging.WorkspaceFilter{Status: staging.WorkspaceSealed, Limit: 10})
 	if err != nil || len(list) != 1 {
 		t.Fatalf("resolve sealed workspace: list=%v err=%v", list, err)
 	}
+
+	if err := mission.VerifyRequiredGates(ctx, task.ID, list[0].ID, resolvedPolicy); err == nil {
+		t.Fatal("VerifyRequiredGates succeeded despite a required GO_VET gate that never ran")
+	}
+
 	if _, err := mission.RequestPromotion(ctx, task.ID, list[0].ID, coderunner.RoleID); err == nil {
 		t.Fatal("RequestPromotion succeeded despite a required gate that never ran -- no promotion should ever be requested")
 	}
@@ -463,6 +464,69 @@ func TestEngineeringMissionDeniesMissingRequiredGate(t *testing.T) {
 	}
 	if len(promotions) != 0 {
 		t.Fatalf("expected zero promotions for a task that never satisfied its required gates, got %d", len(promotions))
+	}
+}
+
+// TestEngineeringMissionCreateRetryIsIdempotent is the round-2 review's P1-3
+// regression test: retrying the exact same Create call (same normalized
+// policy, hence the same content-digest-derived IdempotencyKey) must reuse
+// the original task and resolve to the SAME policy -- not insert a second
+// engineering-mission:// evidence row that turns a legitimate retry into a
+// broken mission via Resolve()'s fail-closed "duplicate engineering
+// policies" error.
+func TestEngineeringMissionCreateRetryIsIdempotent(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	store := openIntegrationStore(t, ctx)
+	defer store.Close()
+	resetIntegrationSchema(t, ctx, store)
+	syncCanonical(t, ctx, store)
+
+	repositoryRoot := filepath.Join(t.TempDir(), "repository")
+	baseSHA := initializeMissionRepository(t, repositoryRoot)
+	stagingRuntime, taskService, _ := openMissionRuntime(t, ctx, store, repositoryRoot)
+	mission := engineeringmission.Service{Tasks: taskService, Promotion: stagingRuntime.Service}
+
+	policy := engineeringmission.MissionPolicy{
+		BaseSHA:            baseSHA,
+		Objective:          "retry-safe mission",
+		AllowedPaths:       []string{"fixture"},
+		AcceptanceCriteria: []string{"n/a"},
+		RequiredGates:      []engineeringmission.RequiredGate{{Type: engineeringmission.GateTest, Packages: []string{"./..."}}},
+	}
+	plan := missionPlan(`diff --git a/fixture/value.go b/fixture/value.go
+--- a/fixture/value.go
++++ b/fixture/value.go
+@@ -1,3 +1,3 @@
+ package fixture
+
+-func Value() int { return 1 }
++func Value() int { return 4 }
+`, "fixture/value.go")
+
+	first, err := mission.Create(ctx, policy, plan, "explorarte", reviewerRole, "human", "eduardo")
+	if err != nil {
+		t.Fatalf("first Create: %v", err)
+	}
+	second, err := mission.Create(ctx, policy, plan, "explorarte", reviewerRole, "human", "eduardo")
+	if err != nil {
+		t.Fatalf("retried Create: %v", err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("retry produced a different task: first=%d second=%d, want the same task reused via IdempotencyKey", first.ID, second.ID)
+	}
+	resolved, err := mission.Resolve(ctx, first.ID)
+	if err != nil {
+		t.Fatalf("Resolve after retry: %v -- a legitimate Create retry must never produce Resolve()'s \"duplicate engineering policies\" error", err)
+	}
+	resolvedPolicy, err := policy.Normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedPolicy.TaskID = first.ID
+	if resolved.BaseSHA != resolvedPolicy.BaseSHA || resolved.Objective != resolvedPolicy.Objective {
+		t.Fatalf("resolved policy after retry = %+v, want %+v", resolved, resolvedPolicy)
 	}
 }
 
