@@ -10,34 +10,44 @@ import (
 )
 
 func sampleResource() ContextResource {
+	const version = "v3"
+	digest := strings.Repeat("b", 64)
 	return ContextResource{
-		Handle:               validHandle().Encode(),
+		Handle:               handleForIdentity(ResourceKindRAGEvidence, version, digest).Encode(),
 		Kind:                 ResourceKindRAGEvidence,
 		SourceReference:      "rag/knowledge/doc-42",
-		SourceVersion:        "v3",
+		SourceVersion:        version,
 		AuthorityTier:        AuthorityTier(ResourceKindRAGEvidence),
 		InstructionClass:     InstructionClassM2a,
 		TrustClass:           TrustClassM2a,
 		DataClass:            contextengine.DataSanitized,
 		MayGrantCapabilities: false,
-		ContentDigest:        strings.Repeat("b", 64),
+		ContentDigest:        digest,
 		Content:              "hello world",
 		ByteCount:            int64(len("hello world")),
 	}
 }
 
+// sampleAggregateMember round-8 fix: the handle must be built with the SAME
+// kind/version/digest this member itself carries -- the round-7 fixture
+// bug the round-8 review demonstrated used validHandle().Encode() (always
+// k=rag_evidence, v=v3, d=aaa...) regardless of the kind parameter, so
+// AggregateMember.Validate() previously accepted a member whose Handle and
+// Kind/SourceVersion/ContentDigest fields silently contradicted each other.
 func sampleAggregateMember(kind ResourceKind) AggregateMember {
+	const version = "v1"
+	digest := strings.Repeat("c", 64)
 	return AggregateMember{
-		Handle:               validHandle().Encode(),
+		Handle:               handleForIdentity(kind, version, digest).Encode(),
 		Kind:                 kind,
 		SourceReference:      "ref",
-		SourceVersion:        "v1",
+		SourceVersion:        version,
 		AuthorityTier:        AuthorityTier(kind),
 		InstructionClass:     InstructionClassM2a,
 		TrustClass:           TrustClassM2a,
 		DataClass:            contextengine.DataPublic,
 		MayGrantCapabilities: false,
-		ContentDigest:        strings.Repeat("c", 64),
+		ContentDigest:        digest,
 		ByteCount:            5,
 	}
 }
@@ -144,7 +154,24 @@ func TestContextResource_Validate(t *testing.T) {
 		"short content digest":        mutate(func(r *ContextResource) { r.ContentDigest = "abc" }),
 		"empty source reference":      mutate(func(r *ContextResource) { r.SourceReference = "" }),
 		"empty source version":        mutate(func(r *ContextResource) { r.SourceVersion = "" }),
-		"byte count mismatch":         mutate(func(r *ContextResource) { r.ByteCount = 999 }),
+		"negative byte count":         mutate(func(r *ContextResource) { r.ByteCount = -1 }),
+		// Round-8 addition (P2 finding): validators must reproduce the
+		// schema's real 1..500/1..240 character bounds, not merely
+		// non-empty checks.
+		"oversized source reference": mutate(func(r *ContextResource) { r.SourceReference = strings.Repeat("x", sourceReferenceMaxLen+1) }),
+		"oversized source version":   mutate(func(r *ContextResource) { r.SourceVersion = strings.Repeat("x", sourceVersionMaxLen+1) }),
+		// Round-8 additions (P1 finding): the handle's own encoded identity
+		// must agree with the resource's Kind/SourceVersion/ContentDigest --
+		// a wire object must never assert two identities at once.
+		"handle kind contradicts resource kind": mutate(func(r *ContextResource) {
+			r.Handle = handleForIdentity(ResourceKindApprovedMemory, r.SourceVersion, r.ContentDigest).Encode()
+		}),
+		"handle version contradicts source version": mutate(func(r *ContextResource) {
+			r.Handle = handleForIdentity(r.Kind, "some-other-version", r.ContentDigest).Encode()
+		}),
+		"handle digest contradicts content digest": mutate(func(r *ContextResource) {
+			r.Handle = handleForIdentity(r.Kind, r.SourceVersion, strings.Repeat("d", 64)).Encode()
+		}),
 	}
 	for name, r := range invalid {
 		t.Run(name, func(t *testing.T) {
@@ -216,7 +243,7 @@ func TestContextToolResult_RoundTripsForEveryOutcome(t *testing.T) {
 	aggregate := AggregateResult{
 		Members:   []AggregateMember{sampleAggregateMember(ResourceKindApprovedMemory), sampleAggregateMember(ResourceKindRAGEvidence)},
 		Content:   "AABBB",
-		ByteCount: 5,
+		ByteCount: 10, // sum of both members' ByteCount (5+5) -- round-8 semantics
 	}
 	cases := []struct {
 		name string
@@ -291,17 +318,28 @@ func TestContextToolResult_MarshalRejectsIncoherentState(t *testing.T) {
 }
 
 // TestAggregateResult_Validate exercises the round-7 P1 fix (aggregate
-// representation): a multi-member aggregate with genuinely different
-// Kind/DataClass per member must be representable and valid, and an
-// aggregate whose byte count doesn't match its content must be rejected.
+// representation) and the round-8 correction to its ByteCount semantics: a
+// multi-member aggregate with genuinely different Kind/DataClass per member
+// must be representable and valid, and AggregateResult.ByteCount must equal
+// the SUM of each member's own raw ByteCount -- never a comparison against
+// len(Content), which is the wrapped, model-visible representation and has
+// no enforceable length relationship to the raw byte counts (round-8 P1
+// finding: the previous Validate() compared ByteCount to len(Content) and
+// never actually computed the member sum its own doc comment claimed to
+// check).
 func TestAggregateResult_Validate(t *testing.T) {
+	members := []AggregateMember{
+		sampleAggregateMember(ResourceKindApprovedMemory),
+		sampleAggregateMember(ResourceKindRAGEvidence),
+	}
+	var wantByteSum int64
+	for _, m := range members {
+		wantByteSum += m.ByteCount
+	}
 	valid := AggregateResult{
-		Members: []AggregateMember{
-			sampleAggregateMember(ResourceKindApprovedMemory),
-			sampleAggregateMember(ResourceKindRAGEvidence),
-		},
+		Members:   members,
 		Content:   "AABBB",
-		ByteCount: 5,
+		ByteCount: wantByteSum,
 	}
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("valid aggregate failed Validate(): %v", err)
@@ -320,7 +358,15 @@ func TestAggregateResult_Validate(t *testing.T) {
 	byteMismatch := valid
 	byteMismatch.ByteCount = 999
 	if err := byteMismatch.Validate(); err == nil {
-		t.Fatal("Validate() succeeded for a byte-count/content mismatch, want error")
+		t.Fatal("Validate() succeeded for a byte-count/member-sum mismatch, want error")
+	}
+
+	// Round-8 regression: len(Content) ("AABBB" == 5 bytes) deliberately
+	// does NOT equal wantByteSum (10) here -- proving Validate() no longer
+	// compares ByteCount against len(Content) at all, only against the
+	// member sum.
+	if int64(len(valid.Content)) == wantByteSum {
+		t.Fatal("test fixture bug: len(Content) must differ from the member byte sum to prove ByteCount is no longer compared to len(Content)")
 	}
 
 	badMember := valid
@@ -361,5 +407,149 @@ func TestNewDeniedResult_NeverSetsOK(t *testing.T) {
 		if result.Resource != nil || result.Resources != nil || result.Results != nil || result.Aggregate != nil {
 			t.Errorf("code %q: a denied result must carry no Resource/Resources/Results/Aggregate", code)
 		}
+	}
+}
+
+// TestNewOKInspectResult_EmptyListStaysOnWire is the round-8 P1 fix's direct
+// regression test: DESIGN.md §11 is explicit that an empty resource list is
+// "simply the true answer" for context.inspect, not itself a FORBIDDEN
+// outcome -- so the wire result must still carry "resources":[] (not omit
+// the field entirely). Before the fix, Resources was a plain
+// []ResourceDescriptor with `omitempty`, which omits the field for BOTH nil
+// AND a legitimately-empty slice, making a caller unable to tell "no
+// Resources concept applies" from "Resources applies and is empty."
+func TestNewOKInspectResult_EmptyListStaysOnWire(t *testing.T) {
+	result := NewOKInspectResult(nil)
+	if result.Resources == nil {
+		t.Fatal("Resources is nil, want a non-nil pointer to an empty slice")
+	}
+	if len(*result.Resources) != 0 {
+		t.Fatalf("Resources = %v, want empty", *result.Resources)
+	}
+	data, err := result.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"resources":[]`) {
+		t.Fatalf("marshaled JSON does not carry \"resources\":[]; got: %s", data)
+	}
+}
+
+// TestNewOKSearchResult_EmptyListStaysOnWire mirrors
+// TestNewOKInspectResult_EmptyListStaysOnWire for context.search.
+func TestNewOKSearchResult_EmptyListStaysOnWire(t *testing.T) {
+	result := NewOKSearchResult(nil)
+	if result.Results == nil {
+		t.Fatal("Results is nil, want a non-nil pointer to an empty slice")
+	}
+	if len(*result.Results) != 0 {
+		t.Fatalf("Results = %v, want empty", *result.Results)
+	}
+	data, err := result.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"results":[]`) {
+		t.Fatalf("marshaled JSON does not carry \"results\":[]; got: %s", data)
+	}
+}
+
+// TestContextToolResult_Validate_ExactlyOneVariant is the round-8 P1 fix's
+// direct regression test: an OK result must carry EXACTLY one of
+// Resource/Resources/Results/Aggregate -- previously Validate accepted
+// zero, two, or all four simultaneously, as long as whichever happened to
+// be non-nil individually validated.
+func TestContextToolResult_Validate_ExactlyOneVariant(t *testing.T) {
+	resource := sampleResource()
+	descriptors := []ResourceDescriptor{}
+
+	zeroVariants := ContextToolResult{OK: true, Code: OutcomeOK}
+	if err := zeroVariants.Validate(); err == nil {
+		t.Fatal("Validate() succeeded for an ok result with zero variants, want error")
+	}
+
+	twoVariants := ContextToolResult{OK: true, Code: OutcomeOK, Resource: &resource, Resources: &descriptors}
+	if err := twoVariants.Validate(); err == nil {
+		t.Fatal("Validate() succeeded for an ok result with two variants, want error")
+	}
+}
+
+// TestUnmarshalContextToolResult_RejectsIncoherentState is the round-8 P2
+// fix's direct regression test: UnmarshalContextToolResult must reject any
+// payload Marshal itself would refuse to produce -- previously it returned
+// json.Unmarshal's result unconditionally, without ever calling Validate.
+func TestUnmarshalContextToolResult_RejectsIncoherentState(t *testing.T) {
+	cases := map[string][]byte{
+		"denied result claiming ok code": []byte(`{"ok":false,"code":"ok"}`),
+		"invalid outcome code":           []byte(`{"ok":false,"code":"banana"}`),
+		"ok result with zero variants":   []byte(`{"ok":true,"code":"ok"}`),
+	}
+	for name, data := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := UnmarshalContextToolResult(data); err == nil {
+				t.Fatalf("UnmarshalContextToolResult(%s) succeeded, want error", data)
+			}
+		})
+	}
+}
+
+// TestResourceDescriptor_Validate_HandleKindContradiction and
+// TestSearchResult_Validate_HandleKindContradiction are the round-8 P1
+// fix's direct regression tests for ResourceDescriptor/SearchResult's
+// narrower (Kind-only) identity cross-check.
+func TestResourceDescriptor_Validate_HandleKindContradiction(t *testing.T) {
+	d := ResourceDescriptor{
+		Handle:          handleForIdentity(ResourceKindRAGEvidence, "v1", strings.Repeat("a", 64)).Encode(),
+		Kind:            ResourceKindApprovedMemory, // contradicts the handle's own k=rag_evidence
+		SourceReference: "ref",
+		ByteCount:       10,
+		TrustClass:      TrustClassM2a,
+		DataClass:       contextengine.DataPublic,
+	}
+	if err := d.Validate(); err == nil {
+		t.Fatal("Validate() succeeded for a descriptor whose handle kind contradicts its own Kind, want error")
+	}
+}
+
+func TestSearchResult_Validate_HandleKindContradiction(t *testing.T) {
+	s := SearchResult{
+		Handle:    handleForIdentity(ResourceKindRAGEvidence, "v1", strings.Repeat("a", 64)).Encode(),
+		Kind:      ResourceKindApprovedMemory, // contradicts the handle's own k=rag_evidence
+		Snippet:   "excerpt",
+		Score:     0.1,
+		DataClass: contextengine.DataPublic,
+	}
+	if err := s.Validate(); err == nil {
+		t.Fatal("Validate() succeeded for a search result whose handle kind contradicts its own Kind, want error")
+	}
+}
+
+// TestAggregateMember_Validate_HandleIdentityContradiction is the round-8
+// P1 fix's direct regression test, reproducing the exact bug the
+// independent review demonstrated in this file's own (now-fixed)
+// sampleAggregateMember: a member whose Handle encodes a different
+// Kind/SourceVersion/ContentDigest than its own fields must be rejected.
+func TestAggregateMember_Validate_HandleIdentityContradiction(t *testing.T) {
+	base := sampleAggregateMember(ResourceKindApprovedMemory)
+	if err := base.Validate(); err != nil {
+		t.Fatalf("valid aggregate member failed Validate(): %v", err)
+	}
+
+	kindContradiction := base
+	kindContradiction.Handle = handleForIdentity(ResourceKindRAGEvidence, base.SourceVersion, base.ContentDigest).Encode()
+	if err := kindContradiction.Validate(); err == nil {
+		t.Fatal("Validate() succeeded for a member whose handle kind contradicts its own Kind, want error")
+	}
+
+	versionContradiction := base
+	versionContradiction.Handle = handleForIdentity(base.Kind, "some-other-version", base.ContentDigest).Encode()
+	if err := versionContradiction.Validate(); err == nil {
+		t.Fatal("Validate() succeeded for a member whose handle version contradicts its own SourceVersion, want error")
+	}
+
+	digestContradiction := base
+	digestContradiction.Handle = handleForIdentity(base.Kind, base.SourceVersion, strings.Repeat("e", 64)).Encode()
+	if err := digestContradiction.Validate(); err == nil {
+		t.Fatal("Validate() succeeded for a member whose handle digest contradicts its own ContentDigest, want error")
 	}
 }

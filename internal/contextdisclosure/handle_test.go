@@ -17,6 +17,23 @@ func validHandle() ContextHandle {
 	}
 }
 
+// handleForIdentity is validHandle's parameterized form, added round 8 so
+// callers that need a handle whose own encoded Kind/ResourceVersion/
+// ContentDigest agree with some other identity under test (e.g. a
+// ContextResource/AggregateMember's own Kind/SourceVersion/ContentDigest
+// fields) don't have to hardcode validHandle()'s fixed field values and
+// silently disagree with them -- the exact shape of the round-7 test
+// fixture bug the round-8 review caught in sampleAggregateMember
+// (result_test.go): Handle: validHandle().Encode() always encoded
+// k=rag_evidence regardless of the Kind actually being tested.
+func handleForIdentity(kind ResourceKind, version, digest string) ContextHandle {
+	h := validHandle()
+	h.Kind = kind
+	h.ResourceVersion = version
+	h.ContentDigest = digest
+	return h
+}
+
 // TestContextHandle_EncodeDecodeRoundTrip is TEST_PLAN.md's M2.0-slice
 // "handle encode/decode round-tripping" requirement: Encode then Decode
 // MUST reproduce every field exactly, for a range of valid field values.

@@ -2,6 +2,7 @@ package contextdisclosure
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/Mireuz13/explorarte-organization/internal/contextengine"
@@ -41,7 +42,7 @@ func TestSliceInput_Validate(t *testing.T) {
 // addition visible in review.
 func TestResourceDescriptor_CarriesNoContent(t *testing.T) {
 	d := ResourceDescriptor{
-		Handle:          validHandle().Encode(),
+		Handle:          handleForIdentity(ResourceKindApprovedMemory, "v1", strings.Repeat("a", 64)).Encode(),
 		Kind:            ResourceKindApprovedMemory,
 		SourceReference: "memory/entry-7",
 		ByteCount:       1024,
@@ -67,7 +68,7 @@ func TestResourceDescriptor_CarriesNoContent(t *testing.T) {
 // TestResourceDescriptor_Validate exercises the round-7 P2 addition.
 func TestResourceDescriptor_Validate(t *testing.T) {
 	base := ResourceDescriptor{
-		Handle:          validHandle().Encode(),
+		Handle:          handleForIdentity(ResourceKindApprovedMemory, "v1", strings.Repeat("a", 64)).Encode(),
 		Kind:            ResourceKindApprovedMemory,
 		SourceReference: "memory/entry-7",
 		ByteCount:       1024,
@@ -86,6 +87,12 @@ func TestResourceDescriptor_Validate(t *testing.T) {
 	invalid.DataClass = "secret"
 	if err := invalid.Validate(); err == nil {
 		t.Fatal("Validate() succeeded for a descriptor with an inadmissible data class, want error")
+	}
+	// Round-8 addition (P1 finding): handle kind must agree with Kind.
+	invalid = base
+	invalid.Handle = handleForIdentity(ResourceKindRAGEvidence, "v1", strings.Repeat("a", 64)).Encode()
+	if err := invalid.Validate(); err == nil {
+		t.Fatal("Validate() succeeded for a descriptor whose handle kind contradicts its own Kind, want error")
 	}
 }
 
@@ -125,5 +132,29 @@ func TestSearchResult_CarriesDataClass(t *testing.T) {
 	invalid.DataClass = "secret"
 	if err := invalid.Validate(); err == nil {
 		t.Fatal("Validate() succeeded for a search result with an inadmissible data class, want error")
+	}
+}
+
+// TestAggregateMember_Validate_Bounds is the round-8 P2 fix's direct
+// regression test: AggregateMember.Validate previously only checked
+// SourceReference/SourceVersion != "", not the schema's real 1..500/1..240
+// character bounds context_addressable_resources' own CHECK constraints
+// impose (DESIGN.md §6.1).
+func TestAggregateMember_Validate_Bounds(t *testing.T) {
+	base := sampleAggregateMember(ResourceKindApprovedMemory)
+	if err := base.Validate(); err != nil {
+		t.Fatalf("valid member failed Validate(): %v", err)
+	}
+
+	oversizedRef := base
+	oversizedRef.SourceReference = strings.Repeat("x", sourceReferenceMaxLen+1)
+	if err := oversizedRef.Validate(); err == nil {
+		t.Fatal("Validate() succeeded for an oversized source reference, want error")
+	}
+
+	oversizedVersion := base
+	oversizedVersion.SourceVersion = strings.Repeat("x", sourceVersionMaxLen+1)
+	if err := oversizedVersion.Validate(); err == nil {
+		t.Fatal("Validate() succeeded for an oversized source version, want error")
 	}
 }

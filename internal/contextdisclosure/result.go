@@ -58,13 +58,24 @@ type ContextToolResult struct {
 
 	// Resources is present only when Code=="ok" for context.inspect
 	// (DESIGN.md §11: "OUTPUT: {handle, kind, source_reference, ...}[]" --
-	// metadata only, no content).
-	Resources []ResourceDescriptor `json:"resources,omitempty"`
+	// metadata only, no content). Round-8 correction (P1 finding): this is
+	// now *[]ResourceDescriptor, not a plain slice. A plain []T with
+	// `omitempty` omits the field for BOTH nil AND a legitimately-empty
+	// (len-0) slice -- meaning NewOKInspectResult(nil), which DESIGN.md §11
+	// says is "simply the true answer" for a snapshot with no addressable
+	// resources, would have serialized as if "resources" didn't apply to
+	// this outcome at all, indistinguishable from a result that never had a
+	// Resources concept. A non-nil pointer to an empty slice marshals as
+	// "resources":[], and only a nil pointer omits the field entirely --
+	// this is what actually lets the wire format distinguish "this outcome
+	// has no Resources concept" from "Resources applies and is empty."
+	Resources *[]ResourceDescriptor `json:"resources,omitempty"`
 
 	// Results is present only when Code=="ok" for context.search
 	// (DESIGN.md §11: "OUTPUT: deterministically ranked {handle, kind,
-	// snippet, score}[]").
-	Results []SearchResult `json:"results,omitempty"`
+	// snippet, score}[]"). Round-8 correction: same *[]T rationale as
+	// Resources, above.
+	Results *[]SearchResult `json:"results,omitempty"`
 
 	// Aggregate is present only when Code=="ok" for context.aggregate
 	// (round 7 correction -- see AggregateResult's own doc comment in
@@ -91,19 +102,44 @@ func (r ContextToolResult) Validate() error {
 		}
 		return nil
 	}
+	// Round-8 fix (P1 finding): exactly one result variant must be present
+	// for an OK result -- previously Validate accepted zero, one, two, or
+	// even all four variants simultaneously (as long as whichever happened
+	// to be non-nil individually validated), which is not a coherent
+	// "successful context.<verb> result" for any single operation.
+	present := 0
+	if r.Resource != nil {
+		present++
+	}
+	if r.Resources != nil {
+		present++
+	}
+	if r.Results != nil {
+		present++
+	}
+	if r.Aggregate != nil {
+		present++
+	}
+	if present != 1 {
+		return fmt.Errorf("contextdisclosure: an ok result must carry exactly one of resource/resources/results/aggregate, got %d", present)
+	}
 	if r.Resource != nil {
 		if err := r.Resource.Validate(); err != nil {
 			return fmt.Errorf("contextdisclosure: resource: %w", err)
 		}
 	}
-	for i, d := range r.Resources {
-		if err := d.Validate(); err != nil {
-			return fmt.Errorf("contextdisclosure: resources[%d]: %w", i, err)
+	if r.Resources != nil {
+		for i, d := range *r.Resources {
+			if err := d.Validate(); err != nil {
+				return fmt.Errorf("contextdisclosure: resources[%d]: %w", i, err)
+			}
 		}
 	}
-	for i, s := range r.Results {
-		if err := s.Validate(); err != nil {
-			return fmt.Errorf("contextdisclosure: results[%d]: %w", i, err)
+	if r.Results != nil {
+		for i, s := range *r.Results {
+			if err := s.Validate(); err != nil {
+				return fmt.Errorf("contextdisclosure: results[%d]: %w", i, err)
+			}
 		}
 	}
 	if r.Aggregate != nil {
@@ -128,11 +164,20 @@ func (r ContextToolResult) Marshal() ([]byte, error) {
 
 // UnmarshalContextToolResult is the inverse of Marshal -- exposed as a
 // package function (mirroring Decode's shape for ContextHandle) so a caller
-// need not construct a zero-value ContextToolResult first.
+// need not construct a zero-value ContextToolResult first. Round-8 fix (P2
+// finding): previously returned any JSON-well-formed result unconditionally,
+// so a caller could Unmarshal a payload Marshal itself would have refused to
+// produce (e.g. an ok=false/code=ok contradiction, or an ok=true result
+// carrying zero or more than one variant) and receive no error at all.
+// UnmarshalContextToolResult now calls Validate before returning, so decode
+// and encode enforce the identical coherence contract.
 func UnmarshalContextToolResult(data []byte) (ContextToolResult, error) {
 	var result ContextToolResult
 	if err := json.Unmarshal(data, &result); err != nil {
 		return ContextToolResult{}, err
+	}
+	if err := result.Validate(); err != nil {
+		return ContextToolResult{}, fmt.Errorf("contextdisclosure: refusing to unmarshal incoherent ContextToolResult: %w", err)
 	}
 	return result, nil
 }
@@ -148,16 +193,27 @@ func NewOKResourceResult(resource ContextResource) ContextToolResult {
 // context.inspect's []ResourceDescriptor (DESIGN.md §11). descriptors may
 // legitimately be empty -- DESIGN.md §11 is explicit that an empty list is
 // "simply the true answer for a snapshot with no addressable resources,"
-// never itself a FORBIDDEN outcome.
+// never itself a FORBIDDEN outcome. Round-8 fix: descriptors is always
+// wrapped in a non-nil pointer, even when nil/empty itself, so the wire
+// result always carries "resources":[...] (never omitted) for this
+// outcome -- see Resources' own doc comment for why a nil pointer and a
+// pointer-to-empty-slice must be distinguished.
 func NewOKInspectResult(descriptors []ResourceDescriptor) ContextToolResult {
-	return ContextToolResult{OK: true, Code: OutcomeOK, Resources: descriptors}
+	if descriptors == nil {
+		descriptors = []ResourceDescriptor{}
+	}
+	return ContextToolResult{OK: true, Code: OutcomeOK, Resources: &descriptors}
 }
 
 // NewOKSearchResult builds a successful ContextToolResult carrying
 // context.search's []SearchResult (DESIGN.md §11/§12A). results may
 // legitimately be empty for the same reason NewOKInspectResult's can be.
+// Round-8 fix: same non-nil-pointer rationale as NewOKInspectResult's.
 func NewOKSearchResult(results []SearchResult) ContextToolResult {
-	return ContextToolResult{OK: true, Code: OutcomeOK, Results: results}
+	if results == nil {
+		results = []SearchResult{}
+	}
+	return ContextToolResult{OK: true, Code: OutcomeOK, Results: &results}
 }
 
 // NewOKAggregateResult builds a successful ContextToolResult carrying

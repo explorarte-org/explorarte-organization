@@ -822,7 +822,11 @@ A-J list)
   `search_text`, when surfaced through `context.search`'s snippet output,
   is still treated as `sanitized`-tier by anything consuming it — assert
   the `ContextResource`/`SearchResult` shape carries `data_class` alongside
-  the snippet, never dropping it. (M2.4)
+  the snippet, never dropping it. (M2.4) **IMPLEMENTATION ERRATA (M2.0
+  round 8):** already closed at the M2.0 layer —
+  `internal/contextdisclosure.SearchResult` carries `data_class` per
+  DESIGN.md's own errata note on `context.search`'s OUTPUT line; M2.4
+  inherits an already-compliant shape, not a gap.
 
 ## M. Harness tool-result framing (round 6 addition — beyond the original
 A-J list)

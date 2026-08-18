@@ -1763,6 +1763,17 @@ per mission brief.
 - FAILURE MODE: same set as fetch, plus INVALID_REQUEST for an
   out-of-bounds range.
 
+> **IMPLEMENTATION ERRATA (added post-freeze, M2.0 round 8).** The
+> `SearchResult` OUTPUT shape below, `{handle, kind, snippet, score}`, is
+> missing `data_class` — TEST_PLAN.md L6 (already frozen, round 4)
+> requires "the `ContextResource`/`SearchResult` shape carries
+> `data_class` alongside the snippet, never dropping it," a requirement
+> this section's own OUTPUT line never carried forward. The APPROVED,
+> IMPLEMENTED shape (`internal/contextdisclosure.SearchResult`) is
+> `{handle, kind, snippet, score, data_class}` — closing the gap between
+> this section and L6 rather than leaving M2.4 to inherit an
+> already-broken requirement.
+
 ### `context.search(query) -> SearchResult[]`
 - Full semantics in §12/§12A. Determinism contract frozen in §12A (round
   4) — see there for the full statement; summarized here for the
@@ -1800,6 +1811,35 @@ per mission brief.
   results — mirrors `context.inspect` — but an action-capability denial of
   `context.search` itself still returns FORBIDDEN, before any ranking is
   computed (§10A, round 4 correction).
+
+> **IMPLEMENTATION ERRATA (added post-freeze, M2.0 round 8).** M2.0's
+> independent implementation review (round 7) found that a single
+> `ContextResource` cannot honestly represent `context.aggregate`'s
+> output when member resources genuinely differ in `kind`/`data_class`
+> (permitted immediately below: "each still wrapped with its own
+> trust/provenance markers") — there is no single valid answer for a
+> shared `Kind`/`AuthorityTier`/`DataClass`/`ContentDigest` in that case.
+> The APPROVED, IMPLEMENTED replacement (`internal/contextdisclosure`,
+> package-level, not a schema change): `context.aggregate(handles[]) ->
+> AggregateResult`, where `AggregateResult` is `{members:
+> AggregateMember[], content, byte_count}` and each `AggregateMember`
+> carries its own `{handle, kind, source_reference, source_version,
+> authority_tier, instruction_class, trust_class, data_class,
+> may_grant_capabilities, content_digest, byte_count}` — i.e. everything
+> this section's `ContextResource` would have carried for a single
+> resource, except `content` itself, which lives once, concatenated, on
+> `AggregateResult`. `AggregateResult.byte_count` is the SUM of each
+> member's own (raw, unwrapped) `byte_count` — never a comparison against
+> `len(content)`, since `content` is the wrapped, model-visible
+> concatenation and has no enforceable length relationship to the raw
+> byte counts (wrapping adds `RenderUntrustedContextResource`'s
+> structural marker bytes). This note exists so the normative source
+> matches the already-approved types below rather than this section
+> alone appearing to promise `ContextResource` to M2.4's implementer, who
+> would otherwise inherit a contradiction between this document and
+> `internal/contextdisclosure`. Everything else in this section
+> (concatenation order, authorization, audit event, idempotency, failure
+> mode) is unchanged.
 
 ### `context.aggregate(handles[]) -> ContextResource`
 - INPUT: bounded list of handles (§16 count limit).

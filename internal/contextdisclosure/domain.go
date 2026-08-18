@@ -13,6 +13,8 @@ package contextdisclosure
 import (
 	"fmt"
 	"regexp"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/Mireuz13/explorarte-organization/internal/contextengine"
 )
@@ -110,6 +112,75 @@ const (
 // -- one pattern, not two independently-maintained copies.
 var contentDigestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
+// sourceReferenceMaxLen/sourceVersionMaxLen (the latter defined in
+// handle.go, reused here) mirror context_addressable_resources'
+// source_reference/source_version CHECK constraints exactly (DESIGN.md
+// §6.1: length(trim(source_reference)) BETWEEN 1 AND 500;
+// length(trim(source_version)) BETWEEN 1 AND 240 -- the same bounds
+// context_segments already uses, migration 000006).
+const sourceReferenceMaxLen = 500
+
+// validBoundedText reports whether s, once trimmed, has a character count
+// (not byte count -- PostgreSQL's length(TEXT) counts characters, round-6.1
+// P3 correction) between 1 and maxLen inclusive. Shared by
+// ContextResource/AggregateMember.Validate (this file/operations.go) and
+// ContextHandle.Validate (handle.go) -- one bound-checking implementation,
+// not several independently-maintained copies of the same off-by-encoding
+// mistake.
+func validBoundedText(s string, maxLen int) bool {
+	n := utf8.RuneCountInString(strings.TrimSpace(s))
+	return n >= 1 && n <= maxLen
+}
+
+// validateHandleIdentity is the round-8 fix for the independent review's
+// P1 finding: "the handle can still contradict the identity that
+// accompanies it." A ContextResource/AggregateMember previously only
+// checked Handle != "" -- nothing compared the handle's OWN encoded
+// Kind/ResourceVersion/ContentDigest against the resource's own
+// Kind/SourceVersion/ContentDigest fields, so a wire object could
+// (and, in this package's own round-7 test fixtures, accidentally did)
+// claim two different identities simultaneously: a handle encoding
+// k=rag_evidence attached to a resource whose own Kind field says
+// approved_memory. Decoding the handle and cross-checking these three
+// fields closes that gap. This is NOT a substitute for I-2's server-side
+// re-derivation against context_addressable_resources (a later slice's
+// BindingResolver, which proves the handle corresponds to a REAL,
+// AUTHORIZED row) -- it only prevents this package's own wire object from
+// asserting an internally self-contradictory identity, regardless of
+// whether either half of the contradiction is ever real.
+func validateHandleIdentity(encodedHandle string, kind ResourceKind, sourceVersion, contentDigest string) error {
+	h, err := Decode(encodedHandle)
+	if err != nil {
+		return fmt.Errorf("handle: %w", err)
+	}
+	if h.Kind != kind {
+		return fmt.Errorf("handle kind %q does not match resource kind %q", h.Kind, kind)
+	}
+	if h.ResourceVersion != sourceVersion {
+		return fmt.Errorf("handle resource version %q does not match source version %q", h.ResourceVersion, sourceVersion)
+	}
+	if h.ContentDigest != contentDigest {
+		return fmt.Errorf("handle content digest %q does not match content digest %q", h.ContentDigest, contentDigest)
+	}
+	return nil
+}
+
+// validateHandleKind is validateHandleIdentity's narrower form for
+// ResourceDescriptor/SearchResult (operations.go), which carry only Kind
+// alongside Handle -- no SourceVersion/ContentDigest fields to
+// cross-check, since those types are metadata-only (DESIGN.md §11: "no
+// content").
+func validateHandleKind(encodedHandle string, kind ResourceKind) error {
+	h, err := Decode(encodedHandle)
+	if err != nil {
+		return fmt.Errorf("handle: %w", err)
+	}
+	if h.Kind != kind {
+		return fmt.Errorf("handle kind %q does not match kind %q", h.Kind, kind)
+	}
+	return nil
+}
+
 // ContextResource is the frozen result shape a resolved, readable
 // addressable resource carries -- returned by context.fetch/slice
 // (DESIGN.md §11) and carrying the same provenance vocabulary
@@ -170,26 +241,47 @@ type ContextResource struct {
 	DataClass            DataClass        `json:"data_class"`
 	MayGrantCapabilities bool             `json:"may_grant_capabilities"`
 
-	// ContentDigest is the sha256 of Content, matching
-	// context_addressable_resources.content_digest's own format CHECK
-	// (^[0-9a-f]{64}$, DESIGN.md §6.1).
+	// ContentDigest is the digest of the RAW, SEALED resource as durably
+	// captured in context_addressable_resources.content_digest at
+	// snapshot-build time (DESIGN.md §6.1) -- the SAME digest the handle
+	// itself carries (ContextHandle.ContentDigest). Round-8 correction (P1
+	// finding: "ContentDigest/ByteCount have semantics incompatible with
+	// slicing and authority wrapping"): this is NEVER the digest of
+	// Content below. For a context.slice result, ContentDigest still
+	// identifies the FULL underlying resource this slice was cut from --
+	// slicing does not create a new addressable identity, and a
+	// content-digest MISMATCH here (checked against storage in a later
+	// slice) is what STALE_DRIFT (DESIGN.md §17) actually detects: drift
+	// in the SEALED resource, not in whatever wrapping later happened to
+	// it.
 	ContentDigest string `json:"content_digest"`
 
-	// Content is the resource's bytes, as UTF-8 text -- the whole resource
-	// for context.fetch, a bounded range for context.slice (DESIGN.md
-	// §11). Content is captured durably at snapshot-build time and never
-	// re-read from a live source at disclosure time (DESIGN.md §6.1/§13,
-	// round 5/6 correction) -- a fact this type doesn't enforce (M2.0 has
-	// no read path at all yet) but that governs how a later slice must
-	// populate this field. A later slice's ToolExecutor is responsible for
-	// wrapping Content with contextengine.RenderUntrustedContextResource's
-	// structural markers (DESIGN.md §9B/§24) BEFORE assigning it here --
-	// this field is not a raw, unwrapped read.
+	// Content is the MODEL-VISIBLE representation -- for context.fetch/
+	// slice, this is the raw disclosed bytes AFTER a later slice's
+	// ToolExecutor has wrapped them with
+	// contextengine.RenderUntrustedContextResource's structural markers
+	// (DESIGN.md §9B/§24). Round-8 correction: Content's length is NOT
+	// required to equal ByteCount (below) -- wrapping adds structural
+	// marker bytes, so the wrapped, model-visible string is necessarily
+	// longer than the raw bytes it wraps. This field intentionally has no
+	// enforceable relationship to ContentDigest/ByteCount at the M2.0
+	// layer; M2.0 only freezes the CONCEPTS (raw digest/raw byte count vs.
+	// wrapped model-visible text), not a byte-for-byte cross-check that a
+	// later slice's wrapping step would immediately, correctly, violate.
 	Content string `json:"content"`
 
-	// ByteCount reflects the actual byte length of Content -- the slice's
-	// byte_count, not the whole resource's, when this ContextResource
-	// represents a context.slice result (DESIGN.md §11).
+	// ByteCount is the number of RAW, UNWRAPPED bytes disclosed -- the
+	// full raw resource's byte count for context.fetch, the raw slice's
+	// byte count (not the wrapped Content's length) for context.slice
+	// (DESIGN.md §11). Round-8 correction: previously required to equal
+	// len(Content); that check was wrong once Content became the wrapped,
+	// model-visible representation -- ByteCount describes what was
+	// disclosed from the durable, sealed resource, independent of how
+	// large the wrapped text the model actually receives turns out to be.
+	// Telemetry of the ACTUALLY-DELIVERED representation (wrapped or not)
+	// is a distinct, later concern --
+	// context_disclosure_events.disclosure_bytes_returned (DESIGN.md
+	// §6.2/§15), never this field.
 	ByteCount int64 `json:"byte_count"`
 }
 
@@ -227,14 +319,22 @@ func (r ContextResource) Validate() error {
 	if !contentDigestPattern.MatchString(r.ContentDigest) {
 		return fmt.Errorf("contextdisclosure: content digest must be a 64-character hex sha256 digest")
 	}
-	if r.SourceReference == "" {
-		return fmt.Errorf("contextdisclosure: source reference is required")
+	if !validBoundedText(r.SourceReference, sourceReferenceMaxLen) {
+		return fmt.Errorf("contextdisclosure: source reference must be 1..%d characters", sourceReferenceMaxLen)
 	}
-	if r.SourceVersion == "" {
-		return fmt.Errorf("contextdisclosure: source version is required")
+	if !validBoundedText(r.SourceVersion, sourceVersionMaxLen) {
+		return fmt.Errorf("contextdisclosure: source version must be 1..%d characters", sourceVersionMaxLen)
 	}
-	if r.ByteCount != int64(len(r.Content)) {
-		return fmt.Errorf("contextdisclosure: byte count %d does not match content length %d", r.ByteCount, len(r.Content))
+	if r.ByteCount < 0 {
+		return fmt.Errorf("contextdisclosure: byte count must be >= 0")
+	}
+	// Round-8 fix (P1 finding): the handle's own encoded identity
+	// (Kind/ResourceVersion/ContentDigest) must agree with this resource's
+	// own fields -- a wire object must never claim two identities
+	// simultaneously. See validateHandleIdentity's own doc comment for
+	// what this does and does not prove.
+	if err := validateHandleIdentity(r.Handle, r.Kind, r.SourceVersion, r.ContentDigest); err != nil {
+		return fmt.Errorf("contextdisclosure: %w", err)
 	}
 	return nil
 }

@@ -36,8 +36,8 @@ func (d ResourceDescriptor) Validate() error {
 	if !ValidResourceKind(d.Kind) {
 		return fmt.Errorf("contextdisclosure: descriptor kind %q is not one of M2a's admitted kinds", d.Kind)
 	}
-	if d.SourceReference == "" {
-		return fmt.Errorf("contextdisclosure: descriptor source reference is required")
+	if !validBoundedText(d.SourceReference, sourceReferenceMaxLen) {
+		return fmt.Errorf("contextdisclosure: descriptor source reference must be 1..%d characters", sourceReferenceMaxLen)
 	}
 	if d.ByteCount < 0 {
 		return fmt.Errorf("contextdisclosure: descriptor byte count must be >= 0")
@@ -47,6 +47,12 @@ func (d ResourceDescriptor) Validate() error {
 	}
 	if !ValidDataClassM2a(d.DataClass) {
 		return fmt.Errorf("contextdisclosure: descriptor data class %q is not one of M2a's admitted values", d.DataClass)
+	}
+	// Round-8 fix (P1 finding): the handle's own encoded Kind must agree
+	// with this descriptor's Kind -- see validateHandleKind's doc comment
+	// (domain.go).
+	if err := validateHandleKind(d.Handle, d.Kind); err != nil {
+		return fmt.Errorf("contextdisclosure: %w", err)
 	}
 	return nil
 }
@@ -79,6 +85,11 @@ func (s SearchResult) Validate() error {
 	}
 	if !ValidDataClassM2a(s.DataClass) {
 		return fmt.Errorf("contextdisclosure: search result data class %q is not one of M2a's admitted values", s.DataClass)
+	}
+	// Round-8 fix (P1 finding): see ResourceDescriptor.Validate's identical
+	// call.
+	if err := validateHandleKind(s.Handle, s.Kind); err != nil {
+		return fmt.Errorf("contextdisclosure: %w", err)
 	}
 	return nil
 }
@@ -144,11 +155,21 @@ func (m AggregateMember) Validate() error {
 	if !contentDigestPattern.MatchString(m.ContentDigest) {
 		return fmt.Errorf("contextdisclosure: aggregate member content digest must be a 64-character hex sha256 digest")
 	}
-	if m.SourceReference == "" || m.SourceVersion == "" {
-		return fmt.Errorf("contextdisclosure: aggregate member source reference/version are required")
+	if !validBoundedText(m.SourceReference, sourceReferenceMaxLen) {
+		return fmt.Errorf("contextdisclosure: aggregate member source reference must be 1..%d characters", sourceReferenceMaxLen)
+	}
+	if !validBoundedText(m.SourceVersion, sourceVersionMaxLen) {
+		return fmt.Errorf("contextdisclosure: aggregate member source version must be 1..%d characters", sourceVersionMaxLen)
 	}
 	if m.ByteCount < 0 {
 		return fmt.Errorf("contextdisclosure: aggregate member byte count must be >= 0")
+	}
+	// Round-8 fix (P1 finding, demonstrated by a real bug in this package's
+	// own sampleAggregateMember test helper): the handle must agree with
+	// this member's own Kind/SourceVersion/ContentDigest, or the wire
+	// object asserts two contradictory identities at once.
+	if err := validateHandleIdentity(m.Handle, m.Kind, m.SourceVersion, m.ContentDigest); err != nil {
+		return fmt.Errorf("contextdisclosure: %w", err)
 	}
 	return nil
 }
@@ -166,24 +187,35 @@ type AggregateResult struct {
 }
 
 // Validate checks internal coherence: at least one member, every member
-// individually valid, and ByteCount matching Content's actual length (the
-// same cross-check ContextResource.Validate applies to a single resource).
-// It does NOT check that Content is the correct wrapped concatenation of
-// each member's own bytes in resource_id order -- that requires the
-// members' actual content, which AggregateMember deliberately does not
-// carry (see its own doc comment); enforcing the concatenation itself is
-// a later slice's (M2.4's) responsibility.
+// individually valid, and ByteCount equal to the SUM of each member's own
+// raw ByteCount -- per the frozen digest/byte-count/content semantics
+// (round-8 P1 finding), ByteCount always describes RAW bytes disclosed,
+// never the wrapped, model-visible Content's length (Content is the
+// canonical concatenation of each member's WRAPPED representation, whose
+// length has no enforceable relationship to the sum of raw byte counts,
+// since wrapping adds authority-marker bytes). Round-7's check compared
+// ByteCount against len(Content) directly -- that was always the wrong
+// comparison; this method now actually performs the sum-of-members check
+// its doc comment claimed to perform.
+//
+// Validate does NOT check that Content is the correct wrapped
+// concatenation of each member's own bytes in resource_id order -- that
+// requires the members' actual content, which AggregateMember deliberately
+// does not carry (see its own doc comment); enforcing the concatenation
+// itself is a later slice's (M2.4's) responsibility.
 func (a AggregateResult) Validate() error {
 	if len(a.Members) == 0 {
 		return fmt.Errorf("contextdisclosure: aggregate result must have at least one member")
 	}
+	var memberByteSum int64
 	for i, m := range a.Members {
 		if err := m.Validate(); err != nil {
 			return fmt.Errorf("contextdisclosure: aggregate member[%d]: %w", i, err)
 		}
+		memberByteSum += m.ByteCount
 	}
-	if a.ByteCount != int64(len(a.Content)) {
-		return fmt.Errorf("contextdisclosure: aggregate byte count %d does not match content length %d", a.ByteCount, len(a.Content))
+	if a.ByteCount != memberByteSum {
+		return fmt.Errorf("contextdisclosure: aggregate byte count %d does not match sum of member byte counts %d", a.ByteCount, memberByteSum)
 	}
 	return nil
 }

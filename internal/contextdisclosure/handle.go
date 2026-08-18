@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 )
 
 // ContextHandle is the frozen, structured, opaque-to-the-model,
@@ -174,9 +173,7 @@ func (h ContextHandle) Validate() error {
 	if h.ResourceID <= 0 {
 		return errors.New("resource id must be positive")
 	}
-	version := strings.TrimSpace(h.ResourceVersion)
-	versionLen := utf8.RuneCountInString(version)
-	if versionLen < 1 || versionLen > sourceVersionMaxLen {
+	if !validBoundedText(h.ResourceVersion, sourceVersionMaxLen) {
 		return fmt.Errorf("resource version must be 1..%d characters", sourceVersionMaxLen)
 	}
 	if !contentDigestPattern.MatchString(h.ContentDigest) {
