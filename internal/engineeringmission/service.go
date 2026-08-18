@@ -14,6 +14,15 @@ type TaskPort interface {
 	tasks.TaskReader
 }
 
+// PromotionPort intentionally excludes ApplyPromotion and PromoteRef.
+type PromotionPort interface {
+	GetWorkspace(context.Context, int64) (staging.Workspace, error)
+	GetPromotion(context.Context, int64) (staging.Promotion, error)
+	RecordCheck(context.Context, staging.RecordCheckCommand) (staging.Check, error)
+	RequestPromotion(context.Context, staging.RequestPromotionCommand) (staging.Promotion, error)
+	SubmitReview(context.Context, staging.SubmitReviewCommand) (staging.Promotion, error)
+}
+
 // Guard binds a resolved policy to CodeRunner's generic mutation seam. It is
 // deliberately independent of task persistence and staging implementation.
 type Guard struct{ Policy MissionPolicy }
@@ -62,7 +71,101 @@ func (r WorkspaceResolver) ResolveWorkspaceIntent(ctx context.Context, item task
 	return coderunner.WorkspaceIntent{RepositoryID: r.RepositoryID, BaseCommit: p.BaseSHA, TargetRef: r.TargetRef}, nil
 }
 
-type Service struct{ Tasks TaskPort }
+type Service struct {
+	Tasks     TaskPort
+	Promotion PromotionPort
+}
+
+type Verdict string
+
+const (
+	Approve   Verdict = "APPROVE"
+	Remediate Verdict = "REMEDIATE"
+	Block     Verdict = "BLOCK"
+)
+
+func (s Service) RequestPromotion(ctx context.Context, taskID, workspaceID int64, actorRole string) (staging.Promotion, error) {
+	if s.Promotion == nil {
+		return staging.Promotion{}, fmt.Errorf("promotion port required")
+	}
+	p, err := s.Resolve(ctx, taskID)
+	if err != nil {
+		return staging.Promotion{}, err
+	}
+	if err := s.VerifyRequiredGates(ctx, taskID, p); err != nil {
+		return staging.Promotion{}, err
+	}
+	w, err := s.Promotion.GetWorkspace(ctx, workspaceID)
+	if err != nil {
+		return staging.Promotion{}, err
+	}
+	if w.TaskID != taskID || w.Status != staging.WorkspaceSealed {
+		return staging.Promotion{}, fmt.Errorf("workspace is not a sealed mission workspace")
+	}
+	detail, err := s.Tasks.GetTask(ctx, taskID)
+	if err != nil {
+		return staging.Promotion{}, err
+	}
+	var reqID int64
+	for _, r := range detail.Requirements {
+		if r.Key == "engineering.required_gates" {
+			if reqID != 0 {
+				return staging.Promotion{}, fmt.Errorf("duplicate gate requirement")
+			}
+			reqID = r.ID
+		}
+	}
+	if reqID == 0 {
+		return staging.Promotion{}, fmt.Errorf("gate requirement missing")
+	}
+	// The check reference is the exact durable attempt-evidence reference.
+	var ref, digest string
+	for _, e := range detail.Evidence {
+		if strings.HasPrefix(e.Reference, "code-runner-attempt-evidence://") {
+			ref = e.Reference
+			if e.Digest != nil {
+				digest = *e.Digest
+			}
+		}
+	}
+	if ref == "" || digest == "" {
+		return staging.Promotion{}, fmt.Errorf("attempt evidence missing")
+	}
+	if _, err := s.Promotion.RecordCheck(ctx, staging.RecordCheckCommand{WorkspaceID: workspaceID, RequirementID: reqID, Name: "engineering.required_gates", Status: staging.CheckPassed, Reference: ref, Digest: digest, ActorRoleID: actorRole}); err != nil {
+		return staging.Promotion{}, err
+	}
+	return s.Promotion.RequestPromotion(ctx, staging.RequestPromotionCommand{WorkspaceID: workspaceID, ActorRoleID: actorRole})
+}
+
+func (s Service) ReviewMission(ctx context.Context, promotionID, approvalRequirementID int64, reviewerRole string, verdict Verdict, reasonCode, reason string) (staging.Promotion, error) {
+	if s.Promotion == nil || strings.TrimSpace(reviewerRole) == "" || strings.TrimSpace(reasonCode) == "" || strings.TrimSpace(reason) == "" {
+		return staging.Promotion{}, fmt.Errorf("invalid review")
+	}
+	p, err := s.Promotion.GetPromotion(ctx, promotionID)
+	if err != nil {
+		return staging.Promotion{}, err
+	}
+	w, err := s.Promotion.GetWorkspace(ctx, p.WorkspaceID)
+	if err != nil {
+		return staging.Promotion{}, err
+	}
+	if reviewerRole == w.ActorRoleID {
+		return staging.Promotion{}, fmt.Errorf("engineering self-review denied")
+	}
+	decision := staging.ReviewReject
+	encoded := "reject"
+	switch verdict {
+	case Approve:
+		decision = staging.ReviewApprove
+		encoded = "approve"
+	case Remediate, Block:
+		encoded = strings.ToLower(string(verdict))
+	default:
+		return staging.Promotion{}, fmt.Errorf("unknown review verdict")
+	}
+	ref := fmt.Sprintf("engineering-review://task/%d/promotion/%d/%s/%s", p.TaskID, p.ID, encoded, reasonCode)
+	return s.Promotion.SubmitReview(ctx, staging.SubmitReviewCommand{PromotionID: p.ID, RequirementID: approvalRequirementID, Decision: decision, ActorRoleID: reviewerRole, Reason: reason, Reference: ref})
+}
 
 func (s Service) Create(ctx context.Context, policy MissionPolicy, organization, requestedBy, actorType, actorID string) (tasks.Task, error) {
 	if s.Tasks == nil {
