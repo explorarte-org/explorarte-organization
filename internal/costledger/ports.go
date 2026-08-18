@@ -49,6 +49,18 @@ type Ledger interface {
 	ReleaseEmbedding(ctx context.Context, providerID string, embeddingInvocationID int64, now time.Time) error
 }
 
+type ProgramReservation struct {
+	ProviderID      string
+	ProviderModelID string
+	InvocationID    int64
+	CorrelationID   string
+	MaxUSD          modelpricing.USDNanos
+	EstimatedUSD    modelpricing.USDNanos
+}
+type ProgramScopedReserver interface {
+	ReserveWithinProgramCeiling(context.Context, ProgramReservation, time.Time) error
+}
+
 // CallReader is the read-only attribution view used by operator tooling. It is
 // separate from Ledger so the dispatch path depends only on wallet mutations,
 // not on reporting queries.

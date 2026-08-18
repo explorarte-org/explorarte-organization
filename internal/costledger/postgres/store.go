@@ -38,6 +38,52 @@ func New(store *platformpostgres.Store) (*Store, error) {
 
 var _ costledger.Ledger = (*Store)(nil)
 var _ costledger.CallReader = (*Store)(nil)
+var _ costledger.ProgramScopedReserver = (*Store)(nil)
+
+func (s *Store) ReserveWithinProgramCeiling(ctx context.Context, req costledger.ProgramReservation, now time.Time) error {
+	if req.InvocationID <= 0 || req.CorrelationID == "" || req.EstimatedUSD < 0 || req.MaxUSD <= 0 {
+		return fmt.Errorf("%w: invalid program reservation", costledger.ErrInvalidRequest)
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var balance, reserved int64
+	if err := tx.QueryRow(ctx, `SELECT balance_usd_nanos,reserved_usd_nanos FROM provider_wallets WHERE provider_id=$1 FOR UPDATE`, req.ProviderID).Scan(&balance, &reserved); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return costledger.ErrWalletNotFound
+		}
+		return err
+	}
+	var existing int64
+	if err := tx.QueryRow(ctx, `SELECT amount_usd_nanos FROM provider_wallet_events WHERE provider_id=$1 AND invocation_id=$2 AND kind='reserved'`, req.ProviderID, req.InvocationID).Scan(&existing); err == nil {
+		if existing != int64(req.EstimatedUSD) {
+			return costledger.ErrAmountMismatch
+		}
+		return tx.Commit(ctx)
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	var used int64
+	err = tx.QueryRow(ctx, `WITH inv AS (SELECT mi.id FROM model_invocations mi JOIN tasks t ON t.id=mi.task_id WHERE t.correlation_id=$1 AND mi.provider_id=$2 AND mi.provider_model_id=$3), amounts AS (SELECT i.id, MAX(e.amount_usd_nanos) FILTER (WHERE e.kind='reserved') reserved, MAX(e.amount_usd_nanos) FILTER (WHERE e.kind='committed') committed, MAX(e.amount_usd_nanos) FILTER (WHERE e.kind='released') released FROM inv i JOIN provider_wallet_events e ON e.invocation_id=i.id GROUP BY i.id) SELECT COALESCE(SUM(CASE WHEN committed IS NOT NULL THEN committed WHEN released IS NOT NULL THEN 0 ELSE reserved END),0) FROM amounts`, req.CorrelationID, req.ProviderID, req.ProviderModelID).Scan(&used)
+	if err != nil {
+		return err
+	}
+	if used+int64(req.EstimatedUSD) > int64(req.MaxUSD) {
+		return costledger.ErrProgramBudgetExceeded
+	}
+	if balance-reserved < int64(req.EstimatedUSD) {
+		return costledger.ErrInsufficientBalance
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO provider_wallet_events (provider_id,invocation_id,kind,amount_usd_nanos,created_at) VALUES ($1,$2,'reserved',$3,$4)`, req.ProviderID, req.InvocationID, int64(req.EstimatedUSD), now.UTC()); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE provider_wallets SET reserved_usd_nanos=reserved_usd_nanos+$1,version=version+1,updated_at=$2 WHERE provider_id=$3`, int64(req.EstimatedUSD), now.UTC(), req.ProviderID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
 
 func (s *Store) ListCallBreakdowns(ctx context.Context, organizationID, providerID string, limit int) ([]costledger.CallBreakdown, error) {
 	organizationID = strings.TrimSpace(organizationID)
