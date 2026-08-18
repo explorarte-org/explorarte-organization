@@ -5,14 +5,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/Mireuz13/explorarte-organization/internal/programbudget"
+	"github.com/Mireuz13/explorarte-organization/internal/staging"
 	"github.com/Mireuz13/explorarte-organization/internal/tasks"
 	"io"
 	"os"
+	"strings"
 )
 
 func runProgram(args []string, stdout, stderr io.Writer) int {
-	if len(args) < 2 || args[0] != "budget" {
-		fmt.Fprintln(stderr, "usage: orgctl program budget <attach|show> ...")
+	if len(args) < 2 {
+		fmt.Fprintln(stderr, "usage: orgctl program <budget|promotion> ...")
+		return exitUsage
+	}
+	if args[0] == "promotion" {
+		return runProgramPromotion(args[1:], stdout, stderr)
+	}
+	if args[0] != "budget" {
 		return exitUsage
 	}
 	cfg, service, cleanup, code := openTaskService(stderr)
@@ -75,4 +83,54 @@ func runProgram(args []string, stdout, stderr io.Writer) int {
 	default:
 		return exitUsage
 	}
+}
+
+// runProgramPromotion is the only application surface allowed to apply an
+// approved candidate. It is deliberately separate from engineeringmission,
+// and its target is a single non-production program ref.
+func runProgramPromotion(args []string, stdout, stderr io.Writer) int {
+	if len(args) != 5 || args[0] != "apply" || args[2] != "--actor-role" || strings.TrimSpace(args[3]) == "" {
+		fmt.Fprintln(stderr, "usage: orgctl program promotion apply PROMOTION_ID --actor-role ROLE [--json]")
+		return exitUsage
+	}
+	id, err := positiveID(args[1], "promotion")
+	if err != nil || args[4] != "--json" {
+		return exitUsage
+	}
+	cfg, runtime, cleanup, code := openStagingRuntime(stderr)
+	if code != exitOK {
+		return code
+	}
+	defer cleanup()
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.Staging.CommandTimeout)
+	defer cancel()
+	promotion, err := runtime.Service.GetPromotion(ctx, id)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitInternal
+	}
+	workspace, err := runtime.Service.GetWorkspace(ctx, promotion.WorkspaceID)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitInternal
+	}
+	allowed := os.Getenv("ORG_PROGRAM_ALLOWED_TARGET_REF")
+	if allowed == "" {
+		allowed = "refs/heads/v2/program-context-memory-001"
+	}
+	if promotion.TargetRef != allowed || strings.HasPrefix(promotion.TargetRef, "refs/heads/main") || strings.HasPrefix(promotion.TargetRef, "refs/heads/release/") || strings.Contains(promotion.TargetRef, "production") {
+		fmt.Fprintln(stderr, "program promotion target denied")
+		return exitDenied
+	}
+	if promotion.Status != staging.PromotionApproved || workspace.Status != staging.WorkspaceSealed || promotion.CandidateCommit == "" || promotion.ExpectedBaseCommit != workspace.BaseCommit || workspace.ActorRoleID == args[3] || promotion.ApprovedByRoleID == nil || *promotion.ApprovedByRoleID == workspace.ActorRoleID {
+		fmt.Fprintln(stderr, "program promotion preconditions denied")
+		return exitDenied
+	}
+	result, err := runtime.Service.ApplyPromotion(ctx, staging.ApplyPromotionCommand{PromotionID: id, ActorRoleID: args[3]})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitInternal
+	}
+	writeValue(stdout, true, result)
+	return exitOK
 }
