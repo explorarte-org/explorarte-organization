@@ -54,3 +54,13 @@ func TestResolveRejectsUnauthorizedProvider(t *testing.T) {
 		t.Fatal("expected unauthorized route denial")
 	}
 }
+
+func TestResolveRejectsPolicyRootMismatch(t *testing.T) {
+	c := "p"
+	task := tasks.Task{ID: 1, OrganizationID: "org", CorrelationID: &c}
+	d := tasks.TaskDetail{Task: task, Evidence: []tasks.Evidence{{Reference: "program-model-budget://1", Metadata: map[string]any{"schema_version": SchemaVersion, "program_root_task_id": 2, "families": []any{map[string]any{"key": "deepseek", "provider_ids": []string{"deepseek"}, "model_ids": []string{"deepseek-v4-pro"}, "max_usd": 7}}}}}}
+	r := Resolver{Tasks: policyTasks{details: map[int64]tasks.TaskDetail{1: d}, list: []tasks.Task{task}}}
+	if _, err := r.Resolve(context.Background(), 1, "deepseek", "deepseek-v4-pro"); err == nil {
+		t.Fatal("expected policy root mismatch denial")
+	}
+}

@@ -41,7 +41,7 @@ var _ costledger.CallReader = (*Store)(nil)
 var _ costledger.ProgramScopedReserver = (*Store)(nil)
 
 func (s *Store) ReserveWithinProgramCeiling(ctx context.Context, req costledger.ProgramReservation, now time.Time) error {
-	if req.InvocationID <= 0 || req.CorrelationID == "" || req.EstimatedUSD < 0 || req.MaxUSD <= 0 {
+	if req.InvocationID <= 0 || req.CorrelationID == "" || len(req.FamilyModelIDs) == 0 || req.EstimatedUSD < 0 || req.MaxUSD <= 0 {
 		return fmt.Errorf("%w: invalid program reservation", costledger.ErrInvalidRequest)
 	}
 	tx, err := s.pool.Begin(ctx)
@@ -66,7 +66,7 @@ func (s *Store) ReserveWithinProgramCeiling(ctx context.Context, req costledger.
 		return err
 	}
 	var used int64
-	err = tx.QueryRow(ctx, `WITH inv AS (SELECT mi.id FROM model_invocations mi JOIN tasks t ON t.id=mi.task_id WHERE t.correlation_id=$1 AND mi.provider_id=$2 AND mi.provider_model_id=$3), amounts AS (SELECT i.id, MAX(e.amount_usd_nanos) FILTER (WHERE e.kind='reserved') reserved, MAX(e.amount_usd_nanos) FILTER (WHERE e.kind='committed') committed, MAX(e.amount_usd_nanos) FILTER (WHERE e.kind='released') released FROM inv i JOIN provider_wallet_events e ON e.invocation_id=i.id GROUP BY i.id) SELECT COALESCE(SUM(CASE WHEN committed IS NOT NULL THEN committed WHEN released IS NOT NULL THEN 0 ELSE reserved END),0) FROM amounts`, req.CorrelationID, req.ProviderID, req.ProviderModelID).Scan(&used)
+	err = tx.QueryRow(ctx, `WITH inv AS (SELECT mi.id FROM model_invocations mi JOIN tasks t ON t.id=mi.task_id WHERE t.correlation_id=$1 AND mi.provider_id=$2 AND mi.provider_model_id = ANY($3::text[])), amounts AS (SELECT i.id, MAX(e.amount_usd_nanos) FILTER (WHERE e.kind='reserved') reserved, MAX(e.amount_usd_nanos) FILTER (WHERE e.kind='committed') committed, MAX(e.amount_usd_nanos) FILTER (WHERE e.kind='released') released FROM inv i JOIN provider_wallet_events e ON e.invocation_id=i.id GROUP BY i.id) SELECT COALESCE(SUM(CASE WHEN committed IS NOT NULL THEN committed WHEN released IS NOT NULL THEN 0 ELSE reserved END),0) FROM amounts`, req.CorrelationID, req.ProviderID, req.FamilyModelIDs).Scan(&used)
 	if err != nil {
 		return err
 	}

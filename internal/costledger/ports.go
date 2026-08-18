@@ -50,12 +50,12 @@ type Ledger interface {
 }
 
 type ProgramReservation struct {
-	ProviderID      string
-	ProviderModelID string
-	InvocationID    int64
-	CorrelationID   string
-	MaxUSD          modelpricing.USDNanos
-	EstimatedUSD    modelpricing.USDNanos
+	ProviderID     string
+	FamilyModelIDs []string
+	InvocationID   int64
+	CorrelationID  string
+	MaxUSD         modelpricing.USDNanos
+	EstimatedUSD   modelpricing.USDNanos
 }
 type ProgramScopedReserver interface {
 	ReserveWithinProgramCeiling(context.Context, ProgramReservation, time.Time) error

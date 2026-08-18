@@ -76,6 +76,9 @@ func (p Policy) Validate() error {
 		if len(f.ProviderIDs) == 0 || len(f.ModelIDs) == 0 {
 			return fmt.Errorf("family %s has no route", f.Key)
 		}
+		if len(f.ProviderIDs) != 1 {
+			return fmt.Errorf("family %s must have exactly one provider", f.Key)
+		}
 	}
 	return nil
 }
@@ -158,6 +161,9 @@ func (r Resolver) Resolve(ctx context.Context, taskID int64, provider, model str
 	}
 	if found.SchemaVersion == "" {
 		return Scope{}, nil
+	}
+	if found.ProgramRootTaskID != root {
+		return Scope{}, fmt.Errorf("program budget policy root mismatch")
 	}
 	for _, f := range found.Families {
 		if f.Unavailable {

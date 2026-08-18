@@ -12,6 +12,12 @@ import (
 	"strings"
 )
 
+const programTargetRef = "refs/heads/v2/program-context-memory-001"
+
+func validProgramTargetRef(ref string) bool {
+	return ref == programTargetRef
+}
+
 func runProgram(args []string, stdout, stderr io.Writer) int {
 	if len(args) < 2 {
 		fmt.Fprintln(stderr, "usage: orgctl program <budget|promotion> ...")
@@ -114,11 +120,7 @@ func runProgramPromotion(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return exitInternal
 	}
-	allowed := os.Getenv("ORG_PROGRAM_ALLOWED_TARGET_REF")
-	if allowed == "" {
-		allowed = "refs/heads/v2/program-context-memory-001"
-	}
-	if promotion.TargetRef != allowed || strings.HasPrefix(promotion.TargetRef, "refs/heads/main") || strings.HasPrefix(promotion.TargetRef, "refs/heads/release/") || strings.Contains(promotion.TargetRef, "production") {
+	if !validProgramTargetRef(promotion.TargetRef) {
 		fmt.Fprintln(stderr, "program promotion target denied")
 		return exitDenied
 	}

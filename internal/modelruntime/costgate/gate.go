@@ -120,7 +120,7 @@ func (g *Gate) Reserve(ctx context.Context, request modelruntime.CostReservation
 			if !ok {
 				return modelruntime.CostReservation{}, fmt.Errorf("program scoped reservation unavailable")
 			}
-			if err := scoped.ReserveWithinProgramCeiling(ctx, costledger.ProgramReservation{ProviderID: request.ProviderID, ProviderModelID: request.ProviderModelID, InvocationID: request.InvocationID, CorrelationID: programScope.CorrelationID, MaxUSD: programScope.Family.MaxUSD, EstimatedUSD: estimatedUSD}, now); err != nil {
+			if err := scoped.ReserveWithinProgramCeiling(ctx, costledger.ProgramReservation{ProviderID: request.ProviderID, FamilyModelIDs: append([]string(nil), programScope.Family.ModelIDs...), InvocationID: request.InvocationID, CorrelationID: programScope.CorrelationID, MaxUSD: programScope.Family.MaxUSD, EstimatedUSD: estimatedUSD}, now); err != nil {
 				return modelruntime.CostReservation{}, err
 			}
 		} else if err := g.ledger.Reserve(ctx, request.ProviderID, request.InvocationID, estimatedUSD, now); err != nil {
