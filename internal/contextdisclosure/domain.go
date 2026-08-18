@@ -122,13 +122,21 @@ const sourceReferenceMaxLen = 500
 
 // validBoundedText reports whether s, once trimmed, has a character count
 // (not byte count -- PostgreSQL's length(TEXT) counts characters, round-6.1
-// P3 correction) between 1 and maxLen inclusive. Shared by
-// ContextResource/AggregateMember.Validate (this file/operations.go) and
+// P3 correction) between 1 and maxLen inclusive, and contains no NUL byte
+// (round-9/M2.0-closure correction: PostgreSQL TEXT columns reject embedded
+// NUL outright -- a wire object carrying one would fail at the DB layer in
+// a way this Go-level check should catch first, and a NUL is never a
+// legitimate character in a source_reference/source_version label). Shared
+// by ContextResource/AggregateMember.Validate (this file/operations.go) and
 // ContextHandle.Validate (handle.go) -- one bound-checking implementation,
 // not several independently-maintained copies of the same off-by-encoding
 // mistake.
 func validBoundedText(s string, maxLen int) bool {
-	n := utf8.RuneCountInString(strings.TrimSpace(s))
+	trimmed := strings.TrimSpace(s)
+	if strings.ContainsRune(trimmed, 0) {
+		return false
+	}
+	n := utf8.RuneCountInString(trimmed)
 	return n >= 1 && n <= maxLen
 }
 

@@ -1,8 +1,10 @@
 package contextdisclosure
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 )
 
 // Outcome is the frozen, closed set of context.* operation outcome codes --
@@ -123,6 +125,18 @@ func (r ContextToolResult) Validate() error {
 	if present != 1 {
 		return fmt.Errorf("contextdisclosure: an ok result must carry exactly one of resource/resources/results/aggregate, got %d", present)
 	}
+	// M2.0-closure fix: a non-nil *[]T pointing at a nil slice is still a
+	// legitimate Go value, but encoding/json marshals a nil slice as JSON
+	// null, not []  -- exactly the "resources":null wire shape DESIGN.md
+	// §11 forbids for the empty-list case (which must be "resources":[]).
+	// Reject the pointer-to-nil-slice state outright rather than letting it
+	// reach Marshal and silently emit null.
+	if r.Resources != nil && *r.Resources == nil {
+		return fmt.Errorf("contextdisclosure: resources is a non-nil pointer to a nil slice -- would marshal as null, not []")
+	}
+	if r.Results != nil && *r.Results == nil {
+		return fmt.Errorf("contextdisclosure: results is a non-nil pointer to a nil slice -- would marshal as null, not []")
+	}
 	if r.Resource != nil {
 		if err := r.Resource.Validate(); err != nil {
 			return fmt.Errorf("contextdisclosure: resource: %w", err)
@@ -164,16 +178,36 @@ func (r ContextToolResult) Marshal() ([]byte, error) {
 
 // UnmarshalContextToolResult is the inverse of Marshal -- exposed as a
 // package function (mirroring Decode's shape for ContextHandle) so a caller
-// need not construct a zero-value ContextToolResult first. Round-8 fix (P2
-// finding): previously returned any JSON-well-formed result unconditionally,
-// so a caller could Unmarshal a payload Marshal itself would have refused to
-// produce (e.g. an ok=false/code=ok contradiction, or an ok=true result
-// carrying zero or more than one variant) and receive no error at all.
-// UnmarshalContextToolResult now calls Validate before returning, so decode
-// and encode enforce the identical coherence contract.
+// need not construct a zero-value ContextToolResult first.
+//
+// Round-8 fix (P2 finding): previously returned any JSON-well-formed result
+// unconditionally, so a caller could Unmarshal a payload Marshal itself
+// would have refused to produce (e.g. an ok=false/code=ok contradiction, or
+// an ok=true result carrying zero or more than one variant) and receive no
+// error at all. Fixed by calling Validate before returning.
+//
+// M2.0-closure fix: json.Unmarshal alone is permissive in two ways Marshal
+// never produces: it silently ignores unknown object keys, and it silently
+// ignores any bytes after the first complete JSON value (so
+// `{"ok":true,...}garbage` or two concatenated JSON objects both "succeed").
+// A ToolExecutionResult.Content payload this package didn't itself produce
+// (a compromised or buggy upstream model-runtime adapter, a hand-crafted
+// attack payload) should not silently decode to a plausible-looking
+// ContextToolResult under either condition. Now uses json.Decoder with
+// DisallowUnknownFields, and explicitly requires io.EOF immediately after
+// the first decoded value -- rejecting both a stray unknown field and any
+// trailing/second JSON value in the same payload.
 func UnmarshalContextToolResult(data []byte) (ContextToolResult, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
 	var result ContextToolResult
-	if err := json.Unmarshal(data, &result); err != nil {
+	if err := decoder.Decode(&result); err != nil {
+		return ContextToolResult{}, err
+	}
+	if err := decoder.Decode(new(json.RawMessage)); err != io.EOF {
+		if err == nil {
+			return ContextToolResult{}, fmt.Errorf("contextdisclosure: unexpected trailing content after ContextToolResult JSON value")
+		}
 		return ContextToolResult{}, err
 	}
 	if err := result.Validate(); err != nil {

@@ -493,6 +493,65 @@ func TestUnmarshalContextToolResult_RejectsIncoherentState(t *testing.T) {
 	}
 }
 
+// TestUnmarshalContextToolResult_RejectsUnknownField is the M2.0-closure
+// regression test for the DisallowUnknownFields switch: an otherwise
+// well-formed payload carrying a stray key Marshal would never produce
+// must be rejected, not silently ignored.
+func TestUnmarshalContextToolResult_RejectsUnknownField(t *testing.T) {
+	data := []byte(`{"ok":false,"code":"not_found","unexpected_field":"x"}`)
+	if _, err := UnmarshalContextToolResult(data); err == nil {
+		t.Fatal("UnmarshalContextToolResult succeeded for a payload with an unknown field, want error")
+	}
+}
+
+// TestUnmarshalContextToolResult_RejectsTrailingContent is the M2.0-closure
+// regression test proving a second/trailing JSON value in the same payload
+// is rejected -- json.Unmarshal alone silently ignores bytes after the
+// first complete value.
+func TestUnmarshalContextToolResult_RejectsTrailingContent(t *testing.T) {
+	cases := map[string][]byte{
+		"trailing garbage":  []byte(`{"ok":false,"code":"not_found"}garbage`),
+		"second JSON value": []byte(`{"ok":false,"code":"not_found"}{"ok":false,"code":"forbidden"}`),
+	}
+	for name, data := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := UnmarshalContextToolResult(data); err == nil {
+				t.Fatalf("UnmarshalContextToolResult(%s) succeeded, want error", data)
+			}
+		})
+	}
+}
+
+// TestContextToolResult_Validate_PointerToNilSliceRejected is the
+// M2.0-closure regression test: a non-nil *[]T pointing at a nil slice is
+// a distinct Go state from a non-nil pointer to a len-0 slice, and
+// encoding/json marshals the former as JSON null -- exactly the
+// "resources":null shape DESIGN.md §11 forbids for the legitimately-empty
+// case (which must be "resources":[]). Validate must reject it outright.
+func TestContextToolResult_Validate_PointerToNilSliceRejected(t *testing.T) {
+	var nilDescriptors []ResourceDescriptor
+	result := ContextToolResult{OK: true, Code: OutcomeOK, Resources: &nilDescriptors}
+	if err := result.Validate(); err == nil {
+		t.Fatal("Validate() succeeded for a non-nil pointer to a nil Resources slice, want error")
+	}
+
+	var nilResults []SearchResult
+	searchResult := ContextToolResult{OK: true, Code: OutcomeOK, Results: &nilResults}
+	if err := searchResult.Validate(); err == nil {
+		t.Fatal("Validate() succeeded for a non-nil pointer to a nil Results slice, want error")
+	}
+}
+
+// TestContextResource_Validate_NULSourceReferenceRejected is the
+// M2.0-closure regression test for validBoundedText's NUL-byte rejection.
+func TestContextResource_Validate_NULSourceReferenceRejected(t *testing.T) {
+	r := sampleResource()
+	r.SourceReference = "ref\x00with-nul"
+	if err := r.Validate(); err == nil {
+		t.Fatal("Validate() succeeded for a source reference containing a NUL byte, want error")
+	}
+}
+
 // TestResourceDescriptor_Validate_HandleKindContradiction and
 // TestSearchResult_Validate_HandleKindContradiction are the round-8 P1
 // fix's direct regression tests for ResourceDescriptor/SearchResult's
