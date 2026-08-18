@@ -2,6 +2,7 @@ package executive
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 )
 
@@ -84,42 +85,97 @@ func TestParseDepartmentPlan_TaskClassHostValidatedAndDefaulted(t *testing.T) {
 // tasks already did -- not merely that the Go parser happens to default a
 // missing one after the fact.
 func TestDepartmentReviewOutputSchema_TaskClassRequiredForFreshOutput(t *testing.T) {
-	var schema map[string]any
-	if err := json.Unmarshal(departmentReviewOutputSchema, &schema); err != nil {
+	var reviewSchema map[string]any
+	if err := json.Unmarshal(departmentReviewOutputSchema, &reviewSchema); err != nil {
 		t.Fatal(err)
 	}
-	defs, ok := schema["$defs"].(map[string]any)
-	if !ok {
-		t.Fatal("departmentReviewOutputSchema has no $defs")
+
+	var planSchema map[string]any
+	if err := json.Unmarshal(departmentPlanOutputSchema, &planSchema); err != nil {
+		t.Fatal(err)
 	}
-	task, ok := defs["task"].(map[string]any)
-	if !ok {
-		t.Fatal("departmentReviewOutputSchema's $defs has no task definition")
+
+	taskItems := func(
+		t *testing.T,
+		schema map[string]any,
+		property string,
+	) map[string]any {
+		t.Helper()
+
+		properties, ok := schema["properties"].(map[string]any)
+		if !ok {
+			t.Fatal("output schema has no properties")
+		}
+
+		tasks, ok := properties[property].(map[string]any)
+		if !ok {
+			t.Fatalf(
+				"output schema has no %s property",
+				property,
+			)
+		}
+
+		items, ok := tasks["items"].(map[string]any)
+		if !ok {
+			t.Fatalf(
+				"%s has no inline task item schema",
+				property,
+			)
+		}
+
+		return items
 	}
-	required, ok := task["required"].([]any)
-	if !ok {
-		t.Fatal("departmentReviewOutputSchema's task definition has no required list")
+
+	reviewTask := taskItems(
+		t,
+		reviewSchema,
+		"proposed_followup_tasks",
+	)
+
+	planTask := taskItems(
+		t,
+		planSchema,
+		"tasks",
+	)
+
+	// Both provider-facing paths must constrain task proposals with
+	// exactly the same strict task contract. The representation may be
+	// inline rather than $ref/$defs because Model Runtime deliberately
+	// accepts only its governed JSON-Schema subset.
+	if !reflect.DeepEqual(reviewTask, planTask) {
+		t.Fatalf(
+			"department review and department plan task schemas differ:\nreview=%+v\nplan=%+v",
+			reviewTask,
+			planTask,
+		)
 	}
+
+	required, ok := reviewTask["required"].([]any)
+	if !ok {
+		t.Fatal(
+			"departmentReviewOutputSchema task item has no required list",
+		)
+	}
+
 	var hasTaskClass bool
 	for _, field := range required {
 		if field == "task_class" {
 			hasTaskClass = true
+			break
 		}
 	}
+
 	if !hasTaskClass {
-		t.Fatal("departmentReviewOutputSchema's task definition does not require task_class -- a fresh provider response could omit it")
+		t.Fatal(
+			"departmentReviewOutputSchema task item does not require task_class",
+		)
 	}
-	properties, ok := task["properties"].(map[string]any)
+
+	properties, ok := reviewTask["properties"].(map[string]any)
 	if !ok || properties["task_class"] == nil {
-		t.Fatal("departmentReviewOutputSchema's task definition does not declare a task_class property")
-	}
-	proposedFollowupTasks, ok := schema["properties"].(map[string]any)["proposed_followup_tasks"].(map[string]any)
-	if !ok {
-		t.Fatal("departmentReviewOutputSchema has no proposed_followup_tasks property")
-	}
-	items, ok := proposedFollowupTasks["items"].(map[string]any)
-	if !ok || items["$ref"] != "#/$defs/task" {
-		t.Fatalf("proposed_followup_tasks items must $ref the same strict task schema departmentPlanOutputSchema uses, got %+v", items)
+		t.Fatal(
+			"departmentReviewOutputSchema task item does not declare task_class",
+		)
 	}
 }
 
