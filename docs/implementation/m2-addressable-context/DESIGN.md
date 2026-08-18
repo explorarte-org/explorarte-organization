@@ -111,9 +111,13 @@ These MUST hold for any M2 implementation:
   constraints, canonical policy, project/task instructions) is not made
   addressable by M2 at all — see §4B — so I-4 makes no claim about it. A
   dynamically-fetched resource can never become `may_grant_capabilities=
-  true` or an `instruction_class` above `data`/`scoped` by virtue of being
-  fetched later, with no exception, because no source admitted into M2's
-  addressable set ever had a higher class to begin with.
+  true` or acquire an `instruction_class` other than exactly `data` by
+  virtue of being fetched later, with no exception (**corrected round
+  6.1**: previously said "above `data`/`scoped`," implying `scoped` was
+  an alternative acceptable value for M2a resources — it is not; §6.1's
+  CHECK constraint fixes `instruction_class = 'data'` exactly, with no
+  other value ever admitted for this table), because no source admitted
+  into M2's addressable set ever had a higher class to begin with.
 - **I-5 (single render authority).** M2 never introduces a second
   provider-visible-render algorithm; disclosure content is appended as
   Harness tool-result messages, never spliced into the stable prefix that
@@ -192,7 +196,7 @@ below and §6.1's source-kind decision, round 4):
 | Owner constraints | **MUST NEVER BE DYNAMICALLY FETCHABLE** (in this milestone) | Same reasoning. |
 | Canonical policy | **MUST NEVER BE DYNAMICALLY FETCHABLE** (in this milestone) | Same reasoning. |
 | Project/task instructional context | **MUST NEVER BE DYNAMICALLY FETCHABLE** (in this milestone) | Same reasoning — this is instruction-bearing context, not evidence, even though it is task-specific rather than organization-wide. |
-| Potentially-large artifacts (generic) | **MAY INLINE / ADDRESSABLE, case-by-case** | Only if the concrete artifact is itself evidence-shaped (e.g. a large RAG document); M2 does not create a new artifact category — see AUDIT.md §8/§13 and DESIGN.md §26 (rejected: new Context Artifact Store). |
+| Potentially-large artifacts (generic) | **NO SUCH CATEGORY EXISTS IN M2a** — removed round 6.1 | This row contradicted M2a's own frozen resource definition (§6.1: an addressable resource is exactly one omitted `approved_memory`/`rag_evidence` `SourceRecord`, nothing else). There is no "generic artifact" addressability path — if content that happens to be a large artifact is represented as a `rag_evidence` `SourceRecord`, it becomes addressable *because it is `rag_evidence`* (and passes §6.1's size-eligibility rule), never because it is "an artifact." M2 still does not create a new artifact category — see AUDIT.md §8/§13 and §26 (rejected: new Context Artifact Store) — that conclusion is unchanged; only this row's misleading "case-by-case" framing is removed. |
 | Canonical context segments already inlined today | **MUST INLINE** (unchanged) | Everything the assembler already includes verbatim stays included verbatim; M2a only adds a disclosure path for what is *omitted*, never removes existing inline content and never introduces an excerpt/full-document relationship (round 4 — see §6.1's M2a resource definition). |
 
 RATIONALE: this makes the mission brief's central principle
@@ -550,17 +554,71 @@ omitted approved_memory/rag_evidence SourceRecord
                     current behavior.
 ```
 
+**Round 6.1 correction — iteration order is normative, not illustrative
+(P1 finding).** This rule decides *authority-universe membership* (which
+resources exist to be disclosed at all) whenever the per-snapshot total
+budget is the binding constraint — round 6's own text left the iteration
+order that decides "which of several individually-eligible resources
+actually get in" as "a defined, documented order — e.g. assembly order,"
+which is exactly the kind of implementer discretion this document exists
+to remove for anything touching membership. DECISION, frozen, no
+alternative: **the addressability eligibility check runs in the same
+deterministic order `Assemble` already sorts sources into** —
+`internal/contextengine/assembler.go`'s existing `sort.SliceStable` by
+`(AuthorityTier rank, Reference, Version, ContentHash)` (§12A already
+cites this same sort as established, deterministic repo behavior) —
+concretely, ascending `Segment.Ordinal`, since `Ordinal` is assigned in
+that exact sorted order and is what `segment_ordinal` (§6.1) already
+references. For each omitted eligible-kind source, in that fixed order:
+
+```
+running_total := 0
+for source in sorted_sources (ascending Ordinal):
+    if source is omitted AND source.Kind in {approved_memory, rag_evidence}:
+        if source.byte_count <= max_addressable_resource_bytes
+           AND running_total + source.byte_count <= max_addressable_total_bytes_per_snapshot:
+            mark source ADDRESSABLE
+            running_total += source.byte_count
+        else:
+            mark source ordinary-omitted (not addressable)
+```
+
+This MUST NOT depend on map iteration, SQL result ordering, or a
+per-implementer choice made later — it is computed once, inside
+`Assemble` (still pure, still no I/O), over the same already-sorted slice
+`Assemble` produces its segments from, so no new sort is introduced, only
+a new pass over an order that already exists and is already deterministic.
+Two builds of the same snapshot (same sources, same budget) MUST always
+mark exactly the same subset addressable, in the same relative priority —
+whichever resources sort earliest under the existing tier/reference/
+version/hash ordering are preferentially included when the aggregate
+budget is the binding constraint, never an arbitrary or unspecified
+subset.
+
+**Round 6.1 correction — configured upper bound (P1 finding).**
 `max_addressable_resource_bytes` (new, §16) bounds any single resource's
 eligibility — DECISION: default it to the same 1 MiB `content` CHECK bound,
 so the CHECK itself is never the thing that fails; ineligibility is
 decided *before* attempting to write the row, as an ordinary Assemble-time
-branch, not as a database rejection. `max_addressable_total_bytes_per_
-snapshot` (new, §16) bounds the aggregate durable-storage cost this
-milestone adds per snapshot — RATIONALE: OBSERVED, `input.MaxSegments`
-defaults allow up to (and configurably well beyond) 128 sources per
-snapshot; copying up to 1 MiB per eligible omitted resource with no
-aggregate cap could multiply a single snapshot's durable storage
-footprint substantially, and the existing Context Assembly limits
+branch, not as a database rejection. **This bound MUST be configured `<=`
+the `context_addressable_resources.content` CHECK's own 1 MiB limit
+(§6.1) — never above it.** RATIONALE: if an operator configured
+`max_addressable_resource_bytes` to, say, 2 MiB, the eligibility check
+itself would happily mark a 1.5 MiB source addressable, and only then
+would `Store.Create`'s `INSERT` hit the database CHECK and fail — silently
+recreating the exact regression round 6 was written to eliminate (a
+snapshot that should build successfully failing at the database layer
+instead). The config validation for this limit (wherever M2a's other
+config is validated, mirroring how `AssemblyInput.MaxSegmentBytes <= 0` is
+already rejected as `ReasonInvalidRequest` at the top of `Assemble`) MUST
+reject any configured value exceeding 1 MiB, at startup/config-load time,
+never allowing this invariant to be violated in a running system.
+`max_addressable_total_bytes_per_snapshot` (new, §16) bounds the aggregate
+durable-storage cost this milestone adds per snapshot — RATIONALE:
+OBSERVED, `input.MaxSegments` defaults allow up to (and configurably well
+beyond) 128 sources per snapshot; copying up to 1 MiB per eligible omitted
+resource with no aggregate cap could multiply a single snapshot's durable
+storage footprint substantially, and the existing Context Assembly limits
 (`MaxTotalBytes`, `MaxSegmentBytes`) were sized for *inline* rendered
 content, never for this new *durable-copy* concern M2a introduces — they
 must not be silently reused as if they already covered it. A source that
@@ -2189,7 +2247,13 @@ before any read touches underlying storage:
   omitted evidence source is *eligible* to become an addressable resource
   at all; defaults to the same 1 MiB bound as `context_addressable_
   resources.content`'s own CHECK, so ineligibility is decided before an
-  insert is ever attempted, never as a database rejection)
+  insert is ever attempted, never as a database rejection). **MUST be
+  configured `<= 1 MiB` (round 6.1) — never above `content`'s own CHECK
+  bound, or eligibility could mark a resource addressable that the
+  database then rejects at `INSERT` time, recreating the exact regression
+  this limit exists to prevent. Rejected as invalid configuration at
+  startup/config-load time if violated, mirroring how `AssemblyInput`'s
+  own limits are already validated at the top of `Assemble`.**
 - `max_addressable_total_bytes_per_snapshot` (round 6, §6.1 — bounds the
   aggregate durable-storage cost M2a's `content` copies add to one
   snapshot; a source that would exceed this running total also falls back
@@ -2811,6 +2875,14 @@ additive).
   unchanged (§6.1/§16, round 6, P1 finding: M2a is additive and must
   never turn a source that omits and succeeds today into a hard build
   failure).
+- MUST decide addressability-eligibility membership (§6.1) by iterating
+  omitted eligible-kind sources in exactly the same deterministic order
+  `Assemble` already sorts them into (ascending `Segment.Ordinal`) — MUST
+  NOT depend on map iteration, SQL result ordering, or per-implementer
+  discretion (round 6.1, P1 finding). MUST configure
+  `max_addressable_resource_bytes <= 1 MiB` (never above `content`'s own
+  CHECK bound), rejected as invalid configuration at load time if
+  violated (round 6.1, P1 finding).
 - MUST write `context_addressable_resources` rows in the exact same
   PostgreSQL transaction as the `context_snapshots`/`context_segments`
   rows they accompany (`contextengine/postgres.Store.Create`) — MUST NOT
@@ -2884,9 +2956,11 @@ additive).
   `InstructionData`/`TrustUntrusted`/no-capabilities — `web_evidence` is
   excluded from this initial set entirely (§6.1's source-kind decision,
   round 4) pending its own independent version-retention story.
-- MUST set `may_grant_capabilities=false` and `trust_class='untrusted'`/
-  `instruction_class` no higher than `data`/`scoped` for every resource
-  reachable via any M2 operation, with no exception.
+- MUST set `may_grant_capabilities=false`, `trust_class='untrusted'`, and
+  `instruction_class='data'` exactly (**corrected round 6.1** — not "no
+  higher than `data`/`scoped`"; `scoped` is not an admissible value for
+  any M2a resource) for every resource reachable via any M2 operation,
+  with no exception.
 - MUST wrap all dynamically-disclosed content using
   `contextengine.RenderUntrustedContextResource` (§9B) — the single,
   exported implementation shared with `BuildProviderRenderV2` — before it

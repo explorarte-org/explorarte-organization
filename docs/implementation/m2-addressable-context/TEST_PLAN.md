@@ -169,8 +169,15 @@ whole suite to exist first.
   real PostgreSQL with **explicit coordination, not two unsynchronized
   goroutines**, and it specifically exercises the timing round 4's own
   fix would have gotten wrong:
-  1. `T1` begins a transaction and, as its very first statement,
-     acquires `pg_advisory_xact_lock(id)` for the snapshot ID it just
+  1. `T1` begins a transaction and, as its very first statement, acquires
+     the **namespaced** advisory lock production actually uses —
+     `pg_advisory_xact_lock(hashtextextended('context-addressable-seal:'
+     || id::text, 0))` (**corrected round 6.1**: this test previously
+     described a bare `pg_advisory_xact_lock(id)` on the raw numeric ID —
+     that is not what DESIGN.md §6.1B specifies as of round 6, and a test
+     exercising the wrong primitive doesn't actually prove P2-2's
+     namespacing fix; the test MUST use the same call production code
+     does, not a simplified stand-in) — for the snapshot ID it just
      allocated — **before** inserting the `context_snapshot` row itself.
      `T1` then inserts the `context_snapshot` row and its
      `context_addressable_resources` rows, but does **not** yet insert the
@@ -403,10 +410,18 @@ whole suite to exist first.
   entries even when far more candidates match within the snapshot's
   addressable set. (M2.4)
 - **E4.** `context.search` rejects a query exceeding
-  `max_search_query_bytes` as INVALID_REQUEST before any storage access
-  occurs (assert no `context_disclosure_events` audit row with an
-  `operational_failure`-flavored side effect from an oversized query —
-  it must be a clean, cheap, pre-storage rejection). (M2.4)
+  `max_search_query_bytes` as INVALID_REQUEST **before any resource/
+  content lookup occurs** — **corrected round 6.1** (P1 finding: this
+  previously said "before any storage access," which contradicted the M2
+  CONTRACT's own "record an audit event for every attempt" rule; DESIGN.md
+  §17A's audit-store-unavailable exception is the ONLY case where an
+  attempt goes unrecorded). Assert instead: (a) NO `rag`/`memory`/
+  `context_addressable_resources.content` read is ever attempted for an
+  oversized query — a clean, cheap, pre-content-lookup rejection; (b) a
+  `context_disclosure_events` row IS written, with `outcome=invalid_request`
+  (never `operational_failure`) — the validation failure is itself a
+  real, auditable attempt, exactly like any other `invalid_request`
+  outcome (§17). (M2.4)
 - **E5.** `context.aggregate` rejects a handle list exceeding
   `max_aggregate_handles`, and rejects (or bounds) a request whose summed
   content would exceed `max_aggregate_bytes`, before performing all
@@ -437,16 +452,32 @@ whole suite to exist first.
   today: the source is omitted, `context_segments`/`context_snapshots`
   behave unchanged, and critically **no** `context_addressable_resources`
   row is created for it (never a `Store.Create` failure, never a
-  truncated/partial row). A companion test: build a snapshot where several
-  individually-eligible omitted sources would collectively exceed
-  `max_addressable_total_bytes_per_snapshot` — assert the ones that fit
-  (in a defined, documented order — e.g. assembly order) become
-  addressable and the remainder fall back to ordinary non-addressable
+  truncated/partial row). **Companion test, corrected round 6.1** (P1
+  finding: "which resources win when the aggregate budget binds" was left
+  as "a defined, documented order — e.g. assembly order," not actually
+  normative): build a snapshot where several individually-eligible
+  omitted sources would collectively exceed
+  `max_addressable_total_bytes_per_snapshot` — assert the ones that
+  become addressable are **exactly** those that sort earliest under
+  `Assemble`'s own existing deterministic order (ascending `Segment.
+  Ordinal`, i.e. the same `sort.SliceStable` by
+  `(AuthorityTier rank, Reference, Version, ContentHash)` `Assemble`
+  already applies — DESIGN.md §6.1's round-6.1 correction), not merely "a
+  consistent order" or "an order the implementer chose" — construct a
+  fixture where the expected winners are unambiguous from that specific
+  ordering and assert the exact set, then rerun the same build twice and
+  assert byte-identical results both times (determinism, not just a
+  documented policy). The remainder fall back to ordinary non-addressable
   omission, again without failing the build. A third assertion:
   `context_snapshots.omitted_segment_count` counts BOTH kinds of omission
   (size-ineligible and otherwise) identically — it is not a proxy for "how
   many resources are addressable," and `context.inspect`'s count is
-  expected to be less than or equal to it, never asserted equal. (M2.1)
+  expected to be less than or equal to it, never asserted equal. A fourth
+  assertion (round 6.1, companion to the config-upper-bound fix):
+  `max_addressable_resource_bytes` configured above 1 MiB is rejected as
+  invalid configuration at load time — assert this is caught before any
+  snapshot build is even attempted, never surfacing as a later
+  `Store.Create` CHECK-constraint failure. (M2.1)
 
 ## F. Idempotency
 
@@ -502,11 +533,20 @@ whole suite to exist first.
   this test doubles as confirmation that no such race window exists by
   construction). (M2.1)
 - **G5.** Process restart between "durable tool-call-requested event
-  appended" and "disclosure read executed" (mirroring
-  `executionharness`'s existing crash-safety pattern) results in the run
-  failing closed / being retried per the Harness's own existing recovery
-  behavior, never in a `contextdisclosure` side effect being silently
-  lost or duplicated in a way that corrupts the audit trail. (M2.3)
+  appended" and "disclosure read executed." **Corrected round 6.1**
+  (DESIGN.md §18's round-6 correction: this previously said "failing
+  closed / being retried," which is not what `executionharness` actually
+  does). Assert the exact, specific behavior: on resume,
+  `Runtime.Execute` detects the unresolved `tool_call_requested` event and
+  terminates the run with `StatusIndeterminateToolExecution` — assert
+  this specific terminal status, and assert `contextdisclosure`'s own
+  tool executor is NOT re-invoked automatically (no automatic
+  re-execution) — never a generic "retried" claim. The test should also
+  assert no `contextdisclosure` side effect is silently lost or
+  duplicated by this terminal path (it has none to worry about, §18), and
+  that recovery/retry, if it happens at all, is visibly a decision made
+  by whatever higher layer manages runs, not something this test should
+  expect `executionharness` itself to do automatically. (M2.3)
 - **G6.** Added round 3 (P1 finding: "`ToolExecutionContext` coupled a
   generic Harness to Context/ModelRuntime IDs" — the corrected design
   moves interpretation into `contextdisclosure.BindingResolver`). Two
@@ -752,10 +792,17 @@ A-J list)
   one byte) produce different digests — a basic correctness check on the
   digest computation itself. (M2.2)
 - **L3.** A query exceeding `max_search_query_bytes` is rejected
-  INVALID_REQUEST **before** any digest is computed or any row is
-  persisted (ties to E4) — assert no `context_disclosure_events` row at
-  all is written for an oversized query, not a row with a digest of
-  truncated bytes. (M2.4)
+  INVALID_REQUEST. **Corrected round 6.1** (ties to E4's same correction —
+  this previously asserted "no `context_disclosure_events` row at all is
+  written," which contradicted the M2 CONTRACT's own audit-every-attempt
+  rule). Assert instead: a `context_disclosure_events` row IS written,
+  with `outcome=invalid_request` — computing `query_digest`/
+  `query_byte_count` from the oversized bytes before rejecting is cheap
+  hashing, not a "resource/content lookup" in the sense E4 forbids, so
+  this test does not require the row to omit them; what it DOES require
+  is that no `rag`/`memory`/`context_addressable_resources.content` read
+  is ever attempted, and the row's `outcome` is `invalid_request`, never
+  `operational_failure` or a bare absence of any row. (M2.4)
 - **L4.** `search_text` computed from a `SourceRecord` that itself would
   have been rejected by upstream content policy (i.e. the underlying
   `rag`/`memory` ingestion path already refuses to persist a record
