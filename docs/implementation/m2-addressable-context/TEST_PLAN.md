@@ -98,6 +98,34 @@ needing the whole suite to exist first.
 - **C4.** `context.inspect` against a snapshot never surfaces a resource
   added to `context_addressable_resources` for a *different* snapshot
   built later against the same underlying source. (M2.2)
+- **C5.** Added round 3 (this is the concrete regression test for the
+  headline P1: "the sealed universe isn't actually sealed"). After a
+  snapshot's `context_addressable_resource_sets` seal row (DESIGN.md
+  §6.1B) is committed, a direct attempt to `INSERT` an additional
+  `context_addressable_resources` row for that same `context_snapshot_id`
+  — bypassing the Go layer, straight at the database, simulating a bug or
+  a future careless code path — is rejected by the `BEFORE INSERT`
+  trigger. Assert the trigger fires (a DB-level error, not merely an
+  application-level check that could be skipped), and assert the
+  snapshot's addressable set (as read back via `context.inspect`) is
+  identical before and after the rejected attempt. (M2.1)
+- **C6.** A snapshot with `context_addressable_resources` rows but no
+  matching `context_addressable_resource_sets` seal row (an
+  inconsistent/corrupted state that should never occur if `Store.Create`'s
+  transaction is correct, but is worth testing defensively) is treated by
+  the read path as having **no** addressable universe — `context.inspect`/
+  `fetch`/`search` all fail or return empty, never trusting the orphaned
+  rows. Construct this state directly via a test fixture (not through
+  `Store.Create`, which cannot produce it) to prove the read path checks
+  for the seal row rather than assuming its existence. (M2.2)
+- **C7.** A snapshot built through the real `Store.Create` transaction
+  path always has exactly one seal row whose `resource_count` matches the
+  actual number of `context_addressable_resources` rows for that snapshot,
+  including the zero-resource case (a snapshot that omitted nothing still
+  gets a seal row with `resource_count=0`) — this is also what makes
+  seal-row presence a reliable "this snapshot is M2-era" signal
+  independent of whether it happens to have any addressable resources
+  (DESIGN.md §19). (M2.1)
 
 ## D. Authority
 
@@ -143,6 +171,19 @@ needing the whole suite to exist first.
   through the dynamic/history path, and that `ExecutionContextView`'s own
   `ProviderVisibleBytes`/digest for the snapshot is unchanged by any
   number of disclosure calls made during the run. (M2.3)
+- **D6.** Added round 3 (P1 finding: "the sealed universe still allowed
+  handles into the stable prefix"). `contextcompiler.ResolveProviderContext`
+  produces byte-identical `StablePrefixHash`/`StablePrefixBytes` for the
+  same snapshot regardless of how many addressable resources it has,
+  regardless of any handle values, and regardless of whether M2 code is
+  even wired up for the run — assert no code path exists by which a
+  handle string or resource-set summary can reach `StablePrefix`. If a
+  future milestone does send an initial handle summary, this test asserts
+  it is counted in `DynamicSuffixBytes`, never `StablePrefixBytes`
+  (DESIGN.md §9 step 3). (M2.0/M2.3 — this test should exist even before
+  M2.3's Harness wiring, since it is really a `contextcompiler`-side
+  invariant M2 must never violate, not something that requires a live
+  disclosure call to check.)
 
 ## E. Limits
 
@@ -170,6 +211,18 @@ needing the whole suite to exist first.
   `max_inspect_results` entries for a snapshot with a very large
   addressable set; assert pagination or truncation behavior is
   well-defined and documented, not an unbounded response. (M2.2)
+- **E7.** Added round 3 (P1 finding: "`context.search` has no frozen
+  searchable representation" — DESIGN.md §12A introduced
+  `context_addressable_resources.search_text`). A resource with a
+  non-NULL `search_text` is findable by `context.search` when the query
+  matches it; a resource with `search_text IS NULL` is never returned by
+  `context.search` under any query, but remains listed by
+  `context.inspect` and fetchable by handle via `context.fetch` — assert
+  both halves of this in one test (search misses it, inspect/fetch don't)
+  so a future implementation cannot silently treat "not searchable" as
+  "not addressable." Also assert `search_text` itself is never returned
+  as part of a `context.fetch`/`context.slice` `ContextResource.content` —
+  it is a search-only excerpt, not the resource's actual content. (M2.4)
 
 ## F. Idempotency
 
@@ -230,6 +283,23 @@ needing the whole suite to exist first.
   failing closed / being retried per the Harness's own existing recovery
   behavior, never in a `contextdisclosure` side effect being silently
   lost or duplicated in a way that corrupts the audit trail. (M2.3)
+- **G6.** Added round 3 (P1 finding: "`ToolExecutionContext` coupled a
+  generic Harness to Context/ModelRuntime IDs" — the corrected design
+  moves interpretation into `contextdisclosure.BindingResolver`). Two
+  assertions: (a) `Runtime.Execute` constructs
+  `ToolExecutionContext{InitialContextRef: spec.Context.ID,
+  RequestingInvocationRef: modelResult.InvocationRef}` exactly once per
+  turn (never per tool call, never parsed/interpreted by
+  `executionharness` itself — assert via a fake `ToolExecutor` that
+  records what it received and confirms the strings are passed through
+  unparsed); (b) `contextdisclosure.BindingResolver.Resolve` correctly
+  parses and DB-verifies a genuine ref pair into a `ResolvedBinding`, and
+  fails closed (not a panic, not a zero-value binding silently accepted)
+  on a malformed ref, a ref for a nonexistent snapshot/invocation, or a
+  ref pair where the invocation does not actually reference the claimed
+  snapshot (mirroring `modelruntimeadapter.Adapter`'s existing
+  `validateCreatedInvocation`/`validateExistingInvocation` cross-checks).
+  (M2.2/M2.3)
 
 ## H. Telemetry
 
@@ -251,12 +321,14 @@ needing the whole suite to exist first.
   itself is honored in the aggregation's own output/documentation (never
   presented as "tokens invocation N consumed," per DESIGN.md §6.2's
   naming note). (M2.5)
-- **H3.** `context_disclosure_events.estimated_tokens` is computed with
-  the same estimator identity (`EstimatorID`/`EstimatorVersion`) family as
-  `ContextTokenTelemetry`, and is never mislabeled or exported anywhere as
-  a provider-reported `Usage.InputTokens` figure — assert a test that
-  fails if the two ever get conflated in the aggregation query or its
-  output shape (naming/typing check, not just a value check). (M2.5)
+- **H3.** `context_disclosure_events.disclosure_estimated_tokens`
+  (corrected field name, round 3 — this test still named the pre-round-2
+  column) is computed with the same estimator identity
+  (`EstimatorID`/`EstimatorVersion`) family as `ContextTokenTelemetry`,
+  and is never mislabeled or exported anywhere as a provider-reported
+  `Usage.InputTokens` figure — assert a test that fails if the two ever
+  get conflated in the aggregation query or its output shape
+  (naming/typing check, not just a value check). (M2.5)
 - **H4.** No `context_disclosure_events` row is ever synthesized to
   reflect actual provider `Usage` — provider usage recording in
   `modelruntime`/`costgate` continues to run and record independently of
@@ -287,9 +359,13 @@ needing the whole suite to exist first.
   not indistinguishable from "we confirmed it made zero dynamic reads" —
   assert the aggregation's output shape actually carries this distinction
   (e.g. a boolean or enum field, not just a bare zero). (M2.6)
-- **I4.** Rollback behavior: dropping the two new M2 tables
-  (`context_addressable_resources`, `context_disclosure_events`) in a test
-  environment leaves all M1.x tables, triggers, and existing tests
+- **I4.** Rollback behavior: this is SCHEMA DOWN specifically (DESIGN.md
+  §21, round 3 — distinct from the preferred APPLICATION ROLLBACK, which
+  has no schema to test since it changes nothing durable). Dropping the
+  three new M2 tables (`context_addressable_resources`,
+  `context_addressable_resource_sets` — round 3, §6.1B —,
+  `context_disclosure_events`) in a test environment leaves all M1.x
+  tables, triggers, and existing tests
   (`go test ./internal/contextengine/...`, `./internal/contextcompiler/...`)
   fully passing and unaffected — assert via an actual down-migration dry
   run against a disposable test database (never against the shared/
@@ -346,30 +422,54 @@ needing the whole suite to exist first.
   produces OPERATIONAL_FAILURE within the operation's declared timeout
   bound (DESIGN.md §16), never hangs indefinitely and never silently
   retries beyond the bound without the caller's knowledge. (M2.2/M2.4)
+- **J6.** Added round 3 (P2 finding: "record every attempt" is impossible
+  when the audit store itself is down — DESIGN.md §17A's three-way split).
+  Case 1: the underlying content store (`rag`/`memory`) is unavailable but
+  the audit DB is healthy — assert a `context_disclosure_events` row IS
+  written with `outcome=operational_failure`, exactly as J1 already
+  covers. Case 2: the audit DB itself (the same Postgres
+  `context_disclosure_events` lives in) is unavailable — assert
+  `contextdisclosure` fails closed (no content returned to the model,
+  regardless of whether the underlying content read would have succeeded)
+  and does NOT attempt or claim to guarantee an audit row was written.
+  Case 3: both unavailable — same fail-closed assertion as case 2. (M2.2)
+- **J7.** Added round 3, companion to J6: no test in this suite (and no
+  code path in the design) may ever assert or rely on "a
+  `context_disclosure_events` row exists" as a precondition for "content
+  was NOT returned" — i.e. fail-closed behavior in J6 case 2/3 must not
+  itself depend on successfully writing the audit row first; assert the
+  fail-closed check happens even when the audit write is what's failing,
+  not only when a separate content read fails. (M2.2)
 
 ## Implementation-slice test ordering (cross-reference to DESIGN.md §27)
 
 - **M2.0** (contract + domain types): no persistence-dependent tests yet;
   pure unit tests for handle encode/decode round-tripping and
-  `ContextResource` shape validation belong here, ahead of A-J.
-- **M2.1** (durable addressable resources): A1, A2, A6, D2 (rescoped,
-  round 2), D4, G2, G3, G4.
+  `ContextResource` shape validation belong here, ahead of A-J. **D6**
+  (round 3) also belongs here, or as early in M2.3 as possible — it is a
+  `contextcompiler`-side invariant check, not dependent on any M2
+  persistence existing yet.
+- **M2.1** (durable addressable resources): A1, A2, A6, C5, C6, C7 (round
+  3 — the seal-trigger regression tests), D2 (rescoped, round 2), D4, G2,
+  G3, G4.
 - **M2.2** (fetch/inspect/slice + auth chain): A3, A4, A5, B1, B3, B4, C1,
   C2, C3, C4, D1 (partial, wrapping deferred to M2.3), D3, E1, E2, E6, F1,
-  F2, G1, I1 (partial), J1, J2, J3, J5 (partial).
-- **M2.3** (Harness tool wiring): D1 (full), D5, F3, G5. This slice is
-  also where `ToolExecutionContext` (DESIGN.md §9A, round 2) is
-  introduced — before any of these tests can exercise a real
-  `contextdisclosure.ToolExecutor`, add a dedicated unit test asserting
-  `Runtime.Execute` constructs `ToolExecutionContext.ContextSnapshotID`/
-  `RequestingModelInvocationID` from `RunSpec.Context.ID`/the current
-  turn's `ModelResult.InvocationRef` exactly once per turn, never per tool
-  call, and never from `ToolRequest.Arguments`.
-- **M2.4** (search/aggregate): B2, B5, E3, E4, E5, J4, J5 (search-specific).
+  F2, G1, G6 (round 3 — `BindingResolver`), I1 (partial), J1, J2, J3, J5
+  (partial), J6, J7 (round 3 — audit-store-unavailable split).
+- **M2.3** (Harness tool wiring): D1 (full), D5, D6 (if not already run in
+  M2.0), F3, G5. This slice is also where `ToolExecutionContext` (DESIGN.md
+  §9A, revised round 3 — opaque refs, not typed IDs) is introduced — G6
+  (M2.2, above) already covers the construction/resolution contract; this
+  slice's own tests focus on end-to-end wiring through a real
+  `contextdisclosure.ToolExecutor` and the mechanical
+  `executiveToolExecutor{}` signature update (round 3 factual correction —
+  compiles, never reached, no behavior change).
+- **M2.4** (search/aggregate): B2, B5, E3, E4, E5, E7 (round 3 —
+  `search_text`), J4, J5 (search-specific).
 - **M2.5** (telemetry): H1-H5.
 - **M2.6** (integration/historical): I1-I5.
 
 No slice widens scope until its own listed tests pass; M2.3 in particular
 must not begin until M2.2's authorization-chain tests (A3-A5, B1, B3-B4,
-C1-C4) are green, since M2.3 is the first point at which a real model can
-reach this code path at all.
+C1-C4, G6) are green, since M2.3 is the first point at which a real model
+can reach this code path at all.

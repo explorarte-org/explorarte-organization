@@ -6,6 +6,21 @@ current behavior are as audited in `AUDIT.md`; this document is DECISION +
 RATIONALE for what M2 should become, built strictly on top of the M1/M1.1/
 M1.2/M1.3 guarantees audited there.
 
+**Scope split, made explicit in round 3 (P2 finding).** Everything in this
+document is what independent review round 3 labeled **M2a**: recovering
+*addressability* for content the assembler already omits today
+(`context_segments.included=false`) — this milestone does not, by itself,
+change what any current invocation already receives inline, and therefore
+does not by itself shrink today's initial provider-visible byte count for
+any existing task shape. A distinct, later decision — **M2b**: changing
+`Assembler.Assemble`'s own admission policy so that some content currently
+included inline is deliberately moved to addressable-only — is what would
+actually produce the "compact initial context" reduction that motivates
+progressive disclosure in the first place. M2b requires its own admission-
+policy design (which currently-inline sources become addressable-only, and
+under what conditions) and is explicitly out of scope for this document;
+§2's goals below describe what M2a alone delivers.
+
 ## 1. Problem statement
 
 Today, everything the Context Engine decides to include in a
@@ -20,9 +35,13 @@ out entirely," not "make it optionally reachable."
 
 ## 2. Goals
 
-- Let an execution receive a compact initial context and discover/retrieve
-  additional, already-authorized content mid-execution via explicit,
-  bounded, audited host-mediated calls.
+- Let an execution discover/retrieve additional, already-authorized
+  content mid-execution via explicit, bounded, audited host-mediated
+  calls, for content that is currently omitted/dropped entirely (this is
+  M2a, this document's actual scope — see the scope-split note above; it
+  makes previously-unreachable content reachable, it does not by itself
+  shrink what is already sent inline today; that reduction is M2b, a
+  distinct future decision).
 - Preserve every M1/M1.1/M1.2/M1.3 guarantee: canonical/durable
   `ContextSnapshot`, derived/durable/immutable `ExecutionContextView`,
   deterministic selector-precedence resolution, selection provenance,
@@ -49,7 +68,10 @@ access for a model; MCP redesign; skill-registry redesign; deployment
 changes; reserving or writing an actual migration file; running any
 migration against any database (including disposable ones); mid-execution
 *semantic re-querying* of RAG (see §22 — deferred, not designed here beyond
-naming the seam).
+naming the seam); **M2b — any change to `Assembler.Assemble`'s admission
+policy that would move currently-inline content to addressable-only (round
+3 scope-split note, above) — a distinct future decision requiring its own
+design, not a small extension of this one.**
 
 ## 4. Invariants
 
@@ -179,8 +201,12 @@ follows the repo's existing lowercase-no-separator package convention like
 `contextengine`/`contextcompiler`/`executionharness`).
 
 It owns:
-- `ToolExecutionContext` (§9A) — the trusted binding a disclosure call is
-  evaluated against.
+- `BindingResolver`/`ResolvedBinding` (§9A) — the component that turns
+  `executionharness`'s opaque `ToolExecutionContext` refs into DB-proven
+  `ContextSnapshotID`/`ExecutionContextViewID`/
+  `RequestingModelInvocationID`. `ToolExecutionContext` itself is an
+  `executionharness` type (§9A, round 3) — `contextdisclosure` consumes it,
+  does not own it.
 - Addressable-resource identity and handle format (§7/§8).
 - The disclosure event log (audit + telemetry source of truth for dynamic
   reads).
@@ -240,9 +266,25 @@ inline              BOOLEAN NOT NULL -- true if already present verbatim in a
                                      -- context_segments row (fetch = local read);
                                      -- false if it must be retrieved from its
                                      -- owning subsystem (rag/memory) at read time
+search_text         TEXT NULL CHECK (search_text IS NULL OR
+                                     octet_length(search_text) <= 4096)
+                                     -- added in independent review round 3
+                                     -- (P1 finding: context.search had
+                                     -- nothing frozen to search against --
+                                     -- see §12A). A bounded, immutable
+                                     -- excerpt/descriptor computed once
+                                     -- during Assemble, from content that
+                                     -- is actually available at assembly
+                                     -- time (never re-fetched later). NULL
+                                     -- for a resource with no reasonable
+                                     -- textual excerpt (rare; §12A covers
+                                     -- what a NULL means for search).
 created_at          TIMESTAMPTZ NOT NULL
 UNIQUE (context_snapshot_id, source_reference, source_version)
--- append-only, same trigger pattern as context_segments
+-- append-only (blocks UPDATE/DELETE, per the existing
+-- reject_context_segment_mutation trigger pattern -- see §6.1B for why
+-- that alone is NOT sufficient to make this table's per-snapshot
+-- membership set actually closed, and what closes it)
 ```
 
 DECISION: this table is scoped **per snapshot**, not global. A resource
@@ -253,6 +295,71 @@ content). RATIONALE: reproducibility (§C/§M) requires that "what could this
 execution have read" be answerable purely from one snapshot's own rows,
 without joining across snapshots or trusting that a resource's
 authorization was stable over time.
+
+### 6.1B `context_addressable_resource_sets` — the real seal
+
+> Added in independent-review round 3 (P1 finding: "the sealed universe
+> isn't actually sealed").
+
+OBSERVED: the existing append-only pattern this design planned to reuse
+(`context_segments_no_update`, `migrations/000006_create_context_engine.up.sql`)
+is `BEFORE UPDATE OR DELETE ON context_segments` — it blocks mutating or
+removing an existing row, but says nothing about a **new** `INSERT`. Applied
+verbatim to `context_addressable_resources`, nothing in the schema as
+originally drafted would reject a later `INSERT ... WHERE
+context_snapshot_id = S` adding a row to an already-built, already-served
+snapshot `S`. That would silently grow `S`'s authorized universe after the
+fact — a direct violation of I-1 ("membership established at
+`ContextSnapshot` build time"), and the append-only trigger alone gives no
+protection against it, because append-only was never designed to bound a
+*set's membership count*, only to protect *existing rows'* content.
+
+DECISION: a second table makes "sealed" a verifiable, structural property
+instead of a claim in a doc comment:
+
+```
+context_snapshot_id BIGINT PK           -- FK (id, organization_id) ->
+                                         -- context_snapshots, 1:1
+organization_id     TEXT NOT NULL
+resource_count       INTEGER NOT NULL   -- exact count of
+                                         -- context_addressable_resources
+                                         -- rows for this snapshot at seal
+                                         -- time
+manifest_hash        TEXT NOT NULL      -- sha256 over the sorted list of
+                                         -- (resource_id, content_digest)
+                                         -- pairs sealed for this snapshot --
+                                         -- a second, independent integrity
+                                         -- check beyond the count alone
+sealed_at             TIMESTAMPTZ NOT NULL
+```
+
+`Store.Create` writes exactly one `context_addressable_resource_sets` row
+per M2-era snapshot build, **unconditionally** (even when
+`resource_count = 0`), inside the same transaction as the snapshot/
+segments/addressable-resource rows (§9 step 2). A new trigger — `BEFORE
+INSERT ON context_addressable_resources` — rejects any insert whose
+`context_snapshot_id` already has a matching, sealed
+`context_addressable_resource_sets` row: once a snapshot is sealed, no
+later process, migration backfill, or bug can add a row to its
+addressable set, full stop, enforced by Postgres, not by application
+discipline alone.
+
+The read path (`context.inspect`/`fetch`/`slice`/`search`/`aggregate`)
+MUST require a matching seal row to exist for the current snapshot before
+trusting any `context_addressable_resources` row for it, and SHOULD
+verify `resource_count`/`manifest_hash` against what it actually reads as
+a defense-in-depth integrity check (mirroring the spirit of
+`ExecutionContextView`'s own digest-based `ErrExecutionContextViewIntegrity`
+re-verification). A pre-M2 snapshot has neither addressable-resource rows
+nor a seal row — the **absence of a seal row is itself the honest,
+structural "this snapshot predates M2" signal**, which is a stronger and
+simpler mechanism than the separately-proposed `contextdisclosure_
+available_since` config timestamp (§19) — RATIONALE: a config timestamp
+can be misconfigured or forgotten; a seal row's presence is a fact
+recorded transactionally with the snapshot itself, at the exact moment
+that matters, and needs no operator-maintained value to stay correct.
+§19 is updated accordingly to drop the config-timestamp recommendation in
+favor of seal-row presence.
 
 ### 6.2 `context_disclosure_events`
 
@@ -281,8 +388,16 @@ operation                TEXT NOT NULL     -- inspect|fetch|slice|search|aggrega
 resource_id              BIGINT NULL       -- FK -> context_addressable_resources,
                                             -- NULL for a search call with no
                                             -- single-resource target
-requested_handle         TEXT NOT NULL     -- the raw handle string presented,
-                                            -- kept even on failure, for audit
+requested_handle         TEXT NULL         -- the raw handle string presented,
+                                            -- kept even on failure, for audit.
+                                            -- Nullable (round 3 correction --
+                                            -- see the note below the table):
+                                            -- fetch/slice/single-handle
+                                            -- inspect have exactly one;
+                                            -- search has none; aggregate has
+                                            -- several, recorded instead in
+                                            -- aggregate_member_resource_ids
+                                            -- below.
 outcome                  TEXT NOT NULL     -- ok|invalid_request|not_found|
                                             -- forbidden|stale_drift|operational_failure
                                             -- (forbidden further qualified
@@ -299,11 +414,39 @@ disclosure_estimated_tokens BIGINT NOT NULL DEFAULT 0 -- same estimator family
                                             -- a provider-reported figure;
                                             -- same "disclosure_" naming
                                             -- rationale as above.
-query_text               TEXT NULL         -- for search/aggregate, bounded length
+query_text               TEXT NULL         -- for search, bounded length (§16
+                                            -- max_search_query_bytes)
 result_count              INTEGER NULL     -- for search
+search_algorithm_id       TEXT NULL        -- for search only, added round 3
+                                            -- (§12A) -- mirrors EstimatorID's
+                                            -- pattern (§15) so a future
+                                            -- ranking-algorithm change is
+                                            -- itself auditable
+search_algorithm_version   TEXT NULL       -- for search only, added round 3
+returned_resource_ids       BIGINT[] NULL  -- for search only, added round 3
+                                            -- (§12A) -- the actual ordered
+                                            -- result set, bounded by
+                                            -- max_search_results (§16)
+aggregate_member_resource_ids BIGINT[] NULL -- for aggregate only -- every
+                                            -- constituent handle's resolved
+                                            -- resource_id, bounded by
+                                            -- max_aggregate_handles (§16)
+slice_offset               BIGINT NULL     -- for slice only
+slice_length                BIGINT NULL    -- for slice only
 created_at                TIMESTAMPTZ NOT NULL
 -- append-only, same trigger pattern as context_segments / execution_context_views
 ```
+
+**Round 3 correction**: round 2's draft declared `requested_handle TEXT NOT
+NULL`, which cannot cleanly represent `context.search` (no handle at all —
+a `query_text` instead) or `context.aggregate` (several handles, not one).
+`requested_handle` is now nullable and used only for the single-handle
+operations (`fetch`, `slice`, and a handle-scoped `inspect`); `search` uses
+`query_text`/`returned_resource_ids`; `aggregate` uses
+`aggregate_member_resource_ids`. This replaces the round-2 draft's vaguer
+"extend with a nullable column as needs dictate" notes under §11's
+per-operation specs (§11 is updated to point here instead of re-describing
+ad hoc additive columns per operation).
 
 Attribution fields chosen per mission brief §I: `organization_id,
 context_snapshot_id, execution_context_view_id,
@@ -442,8 +585,13 @@ name (a poisoned-after-the-fact document).
    (`s.pool.BeginTx` → `insertSnapshot` → `insertSegment` (looped) →
    `appendAuditAndOutbox`/`appendAudit` → `tx.Commit`). `Store.Create` is
    extended to also loop over `command.Snapshot.AddressableResources` and
-   `insertAddressableResource` for each, inside that same transaction,
-   before `Commit`. DECISION: `contextengine` remains the only writer of
+   `insertAddressableResource` for each, **then write exactly one
+   `context_addressable_resource_sets` seal row (§6.1B, added in round 3)
+   for this snapshot — unconditionally, even when the resource count is
+   zero** — inside that same transaction, before `Commit`. The seal write
+   is not optional or deferred: it is what makes the addressable universe
+   actually closed (§6.1B), not merely append-only. DECISION: `contextengine`
+   remains the only writer of
    anything derived from its own admission decisions (ownership boundary
    from AUDIT.md §14) — this is unchanged from the original draft; what
    changed is *which function inside contextengine* does the writing.
@@ -460,11 +608,28 @@ name (a poisoned-after-the-fact document).
    correctly flagged as valuable: `Assemble` stays pure/deterministic/
    unit-testable without a database in the loop.
 3. `contextcompiler.ResolveProviderContext` renders the initial
-   provider-visible view exactly as today (I-5) — optionally including a
-   compact, bounded manifest of available handles as part of the stable
-   prefix (see §M — this is the one place M2 legitimately touches
-   rendered bytes, and it must go through the existing single-render-
-   algorithm path, never a side channel).
+   provider-visible view exactly as today (I-5), completely unmodified by
+   M2 — **corrected in independent review round 3**: the original wording
+   here allowed an optional manifest of available handles "as part of the
+   stable prefix," which is wrong. OBSERVED (`internal/contextcompiler/
+   contextcompiler_compiler.go`, with a code comment documenting exactly
+   this class of bug from R31 hardening): `StablePrefix`/`DynamicSuffix`
+   is a real, load-bearing partition — `TierTask`, `TierProject`,
+   `TierRAGEvidence`, `TierApprovedMemory`, and `TierApprovedSkill` are all
+   *dynamic* tiers precisely because their content is not byte-identical
+   across snapshots/tasks, and `StablePrefix` exists specifically to hold
+   what genuinely is reusable/cacheable across invocations. A handle
+   necessarily encodes `(SnapshotID, ResourceID, ResourceVersion,
+   ContentDigest)` — snapshot-specific by construction (§7) — so any
+   manifest containing handles is exactly the kind of content
+   `StablePrefix` must never hold; putting it there would break the
+   cacheability R31/M1.2 exist to protect. DECISION: no manifest is sent
+   in this milestone at all — a model that wants to know what's
+   addressable calls `context.inspect()` (§11), which needs no prior
+   knowledge of any handle. If a future milestone wants to proactively
+   summarize available handles up front, that summary MUST be part of
+   `DynamicSuffix`, counted as dynamic-context telemetry like any other
+   disclosure, and MUST NOT enter `StablePrefix` under any circumstance.
 4. `executionharness.RunSpec.Tools` is populated (by whatever caller wires
    up the run — Executive today forbids all tools; a future M2 consumer
    opts in explicitly) with the `context.*` tool definitions.
@@ -473,9 +638,15 @@ name (a poisoned-after-the-fact document).
    guard, `MaxToolCalls` budget, re-authorize, durable-append-before-
    execute.
 6. `contextdisclosure.ToolExecutor.Execute` receives a `ToolExecutionContext`
-   (§9A) — never a bare `RunIdentity` — validates the handle server-side
-   (§7/§10) against the `ContextSnapshotID` and
-   `RequestingModelInvocationID` that context carries, looks up
+   (§9A) — never a bare `RunIdentity` — first calls its own
+   `BindingResolver.Resolve` (§9A, round 3) to turn its opaque
+   `InitialContextRef`/`RequestingInvocationRef` into a DB-proven
+   `ResolvedBinding{ContextSnapshotID, ExecutionContextViewID,
+   RequestingModelInvocationID}`, then validates the handle server-side
+   (§7/§10) against that resolved binding, confirms a matching
+   `context_addressable_resource_sets` seal row exists for the current
+   snapshot (§6.1B — a snapshot with no seal row has no addressable
+   universe to read from, full stop), looks up
    `context_addressable_resources`, checks snapshot/org/version/digest
    membership, applies limits (§16), retrieves content (from
    `context_segments.content` if `inline=true`, or from the owning
@@ -493,7 +664,12 @@ name (a poisoned-after-the-fact document).
 ## 9A. `ToolExecutionContext` — the trusted snapshot/invocation binding
 
 > Added in independent-review round 2 (P1 finding: "the ToolExecutor
-> lacks sufficient identity to satisfy its own contract").
+> lacks sufficient identity to satisfy its own contract"); **revised in
+> round 3** (P1 finding: round 2's fix made `executionharness` interpret
+> `InitialContext.ID`/`ModelResult.InvocationRef` as typed
+> Context-Engine/Model-Runtime IDs, which breaks the Harness's own
+> provider/subsystem-independence — the exact property AUDIT.md and §23
+> otherwise insist M2 must preserve).
 
 OBSERVED, precisely, from `internal/executionharness/`:
 
@@ -507,55 +683,70 @@ OBSERVED, precisely, from `internal/executionharness/`:
   `r.tools.Execute(...)`, at the single call site
   `toolResult, toolErr := r.tools.Execute(ctx, spec.Identity, toolRequest)`.
   At that exact call site, two more values are already in scope, already
-  durable, and never supplied by the model:
-  - `spec.Context.ID` — the `RunSpec.Context` (`InitialContext`) set by
-    whichever caller constructs the `RunSpec` (Executive/a future M2
-    consumer), not by the model. `internal/executionharness/
-    modelruntimeadapter/adapter.go:161` already parses this exact same
-    field the exact same way for a different purpose:
-    `contextSnapshotID, err := strconv.ParseInt(projection.Prefix.Context.ID, 10, 64)`.
-  - `modelResult.InvocationRef` — set on the `ModelResult` returned by
-    `r.models.Invoke(...)` for the *current* turn, before the tool-request
-    loop runs. `modelruntimeadapter/adapter.go:388` already produces this
-    exact value as `strconv.FormatInt(created.ID, 10)`, i.e. it is the
-    formatted `modelruntime.Invocation.ID` — a durable ID that existed
-    before the model ever saw a string form of it, not something the model
-    invents or supplies.
+  durable, and never supplied by the model: `spec.Context.ID` (the
+  `RunSpec.Context`/`InitialContext.ID` string, set by whichever caller
+  constructs the `RunSpec` — Executive/a future M2 consumer — never the
+  model) and `modelResult.InvocationRef` (set on the `ModelResult`
+  returned by `r.models.Invoke(...)` for the *current* turn, before the
+  tool-request loop runs).
+- **Round 3 correction**: `internal/executionharness/types.go`'s own
+  `InitialContext.ID` is documented and typed as an opaque `string` — the
+  Harness core does not know, and per AUDIT.md's own observation must not
+  know, that this string happens to be a `contextengine.Snapshot` ID for
+  today's one caller. `modelruntimeadapter/adapter.go:161`'s
+  `strconv.ParseInt(projection.Prefix.Context.ID, 10, 64)` and
+  `adapter.go:388`'s `strconv.FormatInt(created.ID, 10)` are exactly that
+  interpretation — but they live in `modelruntimeadapter`, a package that
+  already knows about `contextengine`/`modelruntime` concretely, not in
+  `executionharness` core. Round 2's draft moved that interpretation into
+  `Runtime.Execute` itself (`ToolExecutionContext.ContextSnapshotID
+  int64`), which would make generic `executionharness` implicitly depend
+  on Context-Engine/Model-Runtime ID shapes — a coupling AUDIT.md
+  correctly flagged as something M1.x deliberately avoided.
+- **Round 3 correction, factual**: round 2's draft also stated
+  `executionharness.ToolExecutor` "has zero production consumers" — this
+  is not quite right. `internal/executive/runtimeadapter/harness.go`
+  defines `executiveToolExecutor{}`, a real (if deny-all) implementer,
+  registered via `executionharness.New(..., executiveToolCatalog{},
+  executiveToolExecutor{}, ...)`, with a static interface assertion `var _
+  executionharness.ToolExecutor = executiveToolExecutor{}`. It is never
+  actually *reached* in production because Executive's `RunSpec.Tools` is
+  always empty and `MaxToolCalls` is `0` (AUDIT.md R-2's real point,
+  correctly made, just imprecisely worded) — but it does exist and does
+  compile against the port today. Any port signature change mechanically
+  requires updating this stub too (no behavior change: it still
+  immediately denies/errors) — DESIGN.md states this explicitly so the
+  M2.3 implementer isn't surprised by a compile failure in an unrelated
+  package.
 
-INFERENCE: `Runtime.Execute` already possesses everything
-`contextdisclosure` needs to prove a disclosure call's snapshot/invocation
-binding, at the exact moment it dispatches to the tool executor — it is
-simply not threaded through the current `ToolExecutor` port signature.
-Resolving this by having `contextdisclosure` independently "look up the
-current snapshot for this TaskID" would reintroduce an *implicit*
-association exactly like the one M1.3's `TaskClassOf(actorRoleID)` proxy
-was removed for — a derived guess standing in for a value the caller
-already had authoritatively.
+INFERENCE: `Runtime.Execute` already possesses everything needed to prove
+a disclosure call's binding at the exact moment it dispatches to the tool
+executor — the question round 3 corrects is *where the interpretation of
+that data into typed Context-Engine/Model-Runtime identity happens*, not
+*whether the data is threaded through at all*. Resolving this by having
+`contextdisclosure` independently "look up the current snapshot for this
+TaskID" would reintroduce an *implicit* association exactly like the one
+M1.3's `TaskClassOf(actorRoleID)` proxy was removed for; letting
+`executionharness` itself parse the ID would break its
+provider/subsystem-independence instead. Both are avoidable.
 
-DECISION: extend the `executionharness.ToolExecutor` port (a small,
-justified seam into `executionharness` — the mission brief explicitly
-allows documenting a seam a subsystem needs; this is that seam, and
-`executionharness` is not otherwise redesigned) to:
+DECISION: `executionharness.ToolExecutor`'s port carries only **opaque
+references**, never typed IDs:
 
 ```go
 // ToolExecutionContext is the trusted binding every ToolExecutor
-// implementation is evaluated against. Every field is derived by
-// Runtime.Execute from state it already holds -- RunSpec construction
-// (never the model) and the current turn's already-completed ModelResult
-// -- never from data the model supplies in a ToolRequest's arguments.
+// implementation is evaluated against. InitialContextRef and
+// RequestingInvocationRef are opaque strings from Runtime.Execute's own
+// already-durable state (RunSpec construction, never the model; the
+// current turn's already-completed ModelResult, never a later turn) --
+// executionharness itself never parses or interprets them as anything
+// more specific than opaque references, preserving the same
+// subsystem-independence RunIdentity/InitialContext already have today.
 type ToolExecutionContext struct {
-    Identity                    RunIdentity
-    ContextSnapshotID           int64 // parsed from RunSpec.Context.ID,
-                                       // the same parse
-                                       // modelruntimeadapter.Adapter.Invoke
-                                       // already performs for a different
-                                       // purpose -- not re-derived logic,
-                                       // the same durable value read twice.
-    RequestingModelInvocationID int64 // parsed from the current turn's
-                                       // ModelResult.InvocationRef, already
-                                       // in scope at Runtime.Execute's
-                                       // r.tools.Execute(...) call site,
-                                       // before any tool dispatches.
+    Identity                RunIdentity
+    InitialContextRef       string // == RunSpec.Context.ID, unparsed
+    RequestingInvocationRef string // == the current turn's
+                                    // ModelResult.InvocationRef, unparsed
 }
 
 type ToolExecutor interface {
@@ -564,20 +755,58 @@ type ToolExecutor interface {
 ```
 
 `Runtime.Execute` constructs `ToolExecutionContext{Identity: spec.Identity,
-ContextSnapshotID: <parsed from spec.Context.ID>,
-RequestingModelInvocationID: <parsed from modelResult.InvocationRef>}`
-once per turn (not per tool call — all tool calls within one turn share
-the same requesting invocation) and passes it to every `r.tools.Execute`
-call in that turn's tool-request loop.
+InitialContextRef: spec.Context.ID, RequestingInvocationRef:
+modelResult.InvocationRef}` once per turn (not per tool call — all tool
+calls within one turn share the same requesting invocation) and passes it
+to every `r.tools.Execute` call in that turn's tool-request loop —
+mechanically identical to round 2's draft except that both new fields stay
+`string`, unparsed, exactly mirroring how `InitialContext.ID` is already
+typed today.
 
-RATIONALE: this satisfies I-1/I-2 for the disclosure boundary specifically
-— a `contextdisclosure.ToolExecutor` can now prove
-`(organization_id, context_snapshot_id, requesting_model_invocation_id)`
-from a value the Harness itself derived from durable state, never from
-anything the model's `ToolRequest.Arguments` could claim. Because
-`executionharness.ToolExecutor` today has zero production consumers
-(AUDIT.md R-2), this signature change breaks no existing production
-behavior — M2 would be the port's first real implementation either way.
+The parsing/interpretation work moves into `contextdisclosure` itself, as
+a new, explicitly-owned component:
+
+```go
+// BindingResolver turns the opaque refs a ToolExecutionContext carries
+// into concrete, DB-proven identity. This is where "InitialContextRef
+// happens to be a contextengine.Snapshot ID" and "RequestingInvocationRef
+// happens to be a modelruntime.Invocation ID" is known -- knowledge that
+// belongs to contextdisclosure (which already legitimately depends on
+// contextengine/modelruntime), never to executionharness core.
+type BindingResolver interface {
+    Resolve(ctx context.Context, toolCtx ToolExecutionContext) (ResolvedBinding, error)
+}
+
+type ResolvedBinding struct {
+    ContextSnapshotID           int64
+    ExecutionContextViewID      int64
+    RequestingModelInvocationID int64
+}
+```
+
+`Resolve` parses `InitialContextRef`/`RequestingInvocationRef` (the same
+`strconv.ParseInt` pattern `modelruntimeadapter` already uses) and then
+*proves* the resulting IDs against durable storage — confirms the
+snapshot exists, confirms the invocation exists and really did reference
+that snapshot (mirroring `modelruntimeadapter.Adapter`'s own existing
+`validateCreatedInvocation`/`validateExistingInvocation` cross-checks) —
+never trusting the parsed values as authoritative until a DB row confirms
+them (I-2). `contextdisclosure.ToolExecutor.Execute` calls
+`BindingResolver.Resolve` first, before anything else, and treats a
+resolution failure as its own INVALID_REQUEST/NOT_FOUND per §17 — never a
+silent fallback.
+
+RATIONALE: this satisfies I-1/I-2 for the disclosure boundary while
+keeping `executionharness` exactly as subsystem-independent as it is
+today — `RunIdentity`/`InitialContext` remain opaque-to-the-Harness
+values a caller supplies and a different, caller-specific layer
+interprets, which is the same shape the codebase already uses for
+`InitialContext.ID` itself (`modelruntimeadapter`, not `Runtime.Execute`,
+is what currently knows it's a snapshot ID). `contextdisclosure` is
+exactly the kind of package that is *allowed* to know about
+`contextengine`/`modelruntime` concretely (§5), so moving the
+interpretation there costs nothing architecturally and avoids coupling
+`executionharness` to two other subsystems' ID shapes.
 
 ## 9B. Exported wrapping seam: `contextengine.RenderUntrustedContextResource`
 
@@ -650,19 +879,22 @@ snapshot match, execution/invocation match, resource membership, resource
 version, and — where the action itself is capability-gated — principal/
 role via the existing `internal/authorization` check. Concretely, the
 "execution/invocation match" check compares the handle's claimed
-`SnapshotID` against `ToolExecutionContext.ContextSnapshotID` (§9A) — the
-value `Runtime.Execute` itself derived from `RunSpec.Context.ID`, never
-from the handle's own claims or from a second, independently-trusted
-lookup by `TaskID`. All are re-derived server-side per I-2; none are read
-from client-claimed handle fields without a DB lookup confirming them.
+`SnapshotID` against `ResolvedBinding.ContextSnapshotID` (§9A, round 3) —
+the value `contextdisclosure.BindingResolver.Resolve` produced from
+`ToolExecutionContext.InitialContextRef` and DB-verified, never from the
+handle's own claims or from a second, independently-trusted lookup by
+`TaskID`. All are re-derived server-side per I-2; none are read from
+client-claimed handle fields without a DB lookup confirming them.
 
 ## 11. Proposed host capability API
 
 All operations execute inside `contextdisclosure.ToolExecutor`, registered
-as `executionharness` tools (never inside a `ProviderAdapter` — see §23),
-and every operation below receives a `ToolExecutionContext` (§9A) as its
-trusted binding — not a bare `RunIdentity`. Names illustrative per mission
-brief.
+as `executionharness` tools (never inside a `ProviderAdapter` — see §23).
+Every operation below receives a `ToolExecutionContext` (§9A) from
+`executionharness` and immediately resolves it to a `ResolvedBinding` via
+`BindingResolver` (§9A, round 3) before doing anything else — never a bare
+`RunIdentity`, and never the unresolved opaque refs. Names illustrative
+per mission brief.
 
 ### `context.inspect(snapshot_id implicit, handle?) -> ResourceDescriptor[]`
 - INPUT: optional handle filter; if omitted, lists all addressable
@@ -716,25 +948,32 @@ brief.
 - AUTHORIZATION/BOUNDARIES: identical to `fetch`, plus range validity.
 - SIZE LIMIT: `max_slice_bytes` (can be smaller than `max_fetch_bytes`).
 - TIMEOUT: same class as fetch.
-- AUDIT EVENT: `context_disclosure_events{operation:"slice"}`, with
-  offset/length recorded (extend the event row with nullable
-  `slice_offset`/`slice_length` — additive).
+- AUDIT EVENT: `context_disclosure_events{operation:"slice",
+  slice_offset, slice_length}` (§6.2 — columns frozen there, round 3).
 - IDEMPOTENCY: same handle+range -> same bytes, always.
 - FAILURE MODE: same set as fetch, plus INVALID_REQUEST for an
   out-of-bounds range.
 
 ### `context.search(query) -> SearchResult[]`
-- Full semantics in §12.
+- Full semantics in §12/§12A.
 - INPUT: bounded query string (§16 length limit), implicit snapshot scope.
-- OUTPUT: ranked `{handle, kind, snippet (bounded), score}[]`.
+- OUTPUT: ranked `{handle, kind, snippet (bounded), score}[]`, where
+  `snippet` is derived from `context_addressable_resources.search_text`
+  (§6.1/§12A) — a resource with `search_text IS NULL` is never returned by
+  `context.search` (still visible via `context.inspect`, still fetchable
+  by handle via `context.fetch` — §12A).
 - AUTHORIZATION: action-capability check for `context.search.invoke`;
-  results are filtered to the snapshot's own `context_addressable_resources`
-  (never a live corpus query — see §12 DECISION).
+  results are ranked only against `search_text` for rows already present
+  in `context_addressable_resources` for the current snapshot (never a
+  live corpus query, never a re-read of full content — see §12/§12A
+  DECISION).
 - BOUNDARIES: current snapshot's addressable set only.
 - SIZE LIMIT: `max_search_results` (§16).
 - TIMEOUT: bounded (in-snapshot index lookup, not a live vector query).
 - AUDIT EVENT: `context_disclosure_events{operation:"search", query_text,
-  result_count}`.
+  result_count, search_algorithm_id, search_algorithm_version,
+  returned_resource_ids}` (§6.2/§12A — columns frozen there, round 3;
+  `requested_handle` is NULL for this operation).
 - IDEMPOTENCY: NOT required to be byte-identical across calls if ranking
   has any live component (§12 discusses this trade-off) — but membership
   of the *result set* must always be a subset of the same frozen
@@ -754,9 +993,10 @@ brief.
   FORBIDDEN outcome invisible to the audit trail).
 - SIZE LIMIT: `max_aggregate_bytes`, plus the per-handle count limit.
 - TIMEOUT: bounded, scales with handle count.
-- AUDIT EVENT: one `context_disclosure_events{operation:"aggregate"}` row
-  referencing all constituent handles (extend with a nullable
-  `aggregate_member_resource_ids BIGINT[]` — additive).
+- AUDIT EVENT: one `context_disclosure_events{operation:"aggregate",
+  aggregate_member_resource_ids}` row referencing all constituent handles
+  (§6.2 — column frozen there, round 3; `requested_handle` is NULL for
+  this operation).
 - IDEMPOTENCY: same handle set -> same concatenated content.
 - FAILURE MODE: same set as fetch (§17's cross-org existence-oracle
   correction applies per-handle here too); the first failing handle's
@@ -815,12 +1055,59 @@ Evaluated against the mission brief's explicit risk list:
   a deterministic ranking function specifically to avoid ever needing the
   non-deterministic case).
 - **Historical-reproducibility risk**: a `context_disclosure_events` row
-  records `result_count` and (recommended addition, additive) the actual
-  returned handle list, so a historical search call's *result* is durably
-  recorded even if the ranking function itself is not literally re-run
-  during audit — the audit trail answers "what did it return," which is
-  what reproducibility actually requires, not "would a re-run today
-  produce the same order."
+  records `result_count` and `returned_resource_ids` (§6.2/§12A — a
+  frozen, typed column as of round 3, not merely a recommendation), so a
+  historical search call's *result* is durably recorded even if the
+  ranking function itself is not literally re-run during audit — the
+  audit trail answers "what did it return," which is what reproducibility
+  actually requires, not "would a re-run today produce the same order."
+
+## 12A. What `context.search` actually searches against
+
+> Added in independent-review round 3 (P1 finding: "`context.search` has
+> no frozen searchable representation to run against").
+
+OBSERVED: §12's original text asserted ranking uses "the already-frozen
+excerpt/snippet text stored in those rows" — but the `context_addressable_
+resources` schema as drafted through round 2 had no such field at all
+(`source_reference`, `source_version`, digest/byte-count/provenance
+columns only, no text). Compounding this, `context_segments.content` is
+`NULL` by CHECK constraint for any omitted segment
+(`migrations/000006_create_context_engine.up.sql`:
+`(NOT included AND content IS NULL AND omission_reason IS NOT NULL AND
+byte_count = 0)`) — exactly the segments M2 is most interested in making
+addressable. So even falling back to segment content wouldn't have
+worked for the omitted case, and re-reading the full underlying resource
+at every search call would reintroduce a live storage dependency §12
+explicitly rejects.
+
+DECISION: `context_addressable_resources.search_text` (§6.1, added round
+3) is a bounded (≤4096 bytes), immutable excerpt/descriptor computed once,
+during `Assemble`, from whatever content the assembler actually has in
+hand at that moment — for an omitted segment, the assembler necessarily
+saw the full candidate content before deciding to omit it (that decision
+is what it's making), so deriving a bounded excerpt costs nothing extra;
+for an `inline=false` RAG/memory resource, `search_text` is typically a
+title/summary/excerpt already available on the underlying `SourceRecord`
+without a second read. `search_text` may be `NULL` for a resource with no
+reasonable textual excerpt (rare) — a `NULL` `search_text` means that
+resource simply cannot be *found via `context.search`*, but remains fully
+visible via `context.inspect` (list-all) and fetchable via `context.fetch`
+by handle — an honest, visible gap, never a silent exclusion from the
+addressable universe itself (§4B/§8's sealing guarantees are about
+*membership*, which `search_text` nullability never affects).
+
+`context_disclosure_events` (§6.2) gains three additional columns,
+specific to `operation='search'` rows: `search_algorithm_id`,
+`search_algorithm_version` (mirroring the `EstimatorID`/`EstimatorVersion`
+pattern §15 already uses for token estimation — so a future ranking-
+algorithm change is itself auditable), and `returned_resource_ids BIGINT[]`
+(bounded by `max_search_results`, §16) — the actual ordered result set a
+historical search call produced, durably recorded independent of whether
+the ranking function itself could be re-run identically during a later
+audit. This directly strengthens the "historical-reproducibility risk"
+bullet below: it was previously described as a recommended addition;
+round 3 promotes it to a concrete, named, typed column.
 
 **Deferred, explicitly out of M2 scope**: a `context.search` that issues a
 *new* semantic query against live RAG (mission brief §O, model 2). See
@@ -845,7 +1132,7 @@ Every `ContextResource` returned by any operation carries the same
 provenance fields `context_segments` already carries for inline content:
 `authority_tier`, `instruction_class`, `trust_class`, `data_class`,
 `may_grant_capabilities` (always `false` for anything M2 makes
-dynamically fetchable — see §B below), plus `content_digest` and
+dynamically fetchable — see §4B), plus `content_digest` and
 `source_reference`/`source_version` for identity. This is not new
 provenance vocabulary — it is the same vocabulary
 `context_segments`/`SourceRecord` already use, projected onto a dynamic
@@ -963,6 +1250,56 @@ existence-revealing signal the same way a content-membership FORBIDDEN
 would be, since the action check happens identically regardless of any
 specific resource's existence.
 
+## 17A. Audit-store unavailability vs content-store unavailability
+
+> Added in independent-review round 3 (P2 finding: "every attempt MUST
+> be audited" is impossible if the audit store itself is the thing that's
+> down).
+
+OBSERVED: `context_disclosure_events` and the underlying content a
+disclosure reads (inline `context_segments.content`, or a live `rag`/
+`memory` read for `inline=false` resources) can fail independently, but
+`context_disclosure_events` lives in the same Postgres the rest of
+`contextengine` uses — so "the audit log is down" and "the content store
+is down" are not always distinguishable failures, and are sometimes the
+literal same failure.
+
+DECISION: three cases, not one:
+
+1. **Underlying content-store failure, audit DB healthy** (e.g. a
+   `rag`/`memory` read times out, but `context_disclosure_events` can
+   still be written). Record `outcome=operational_failure` and return
+   OPERATIONAL_FAILURE to the caller, exactly as originally designed. This
+   is the common case §17's table already covers correctly.
+2. **Audit DB itself unavailable** (the same Postgres instance
+   `context_disclosure_events` lives in is unreachable). `contextdisclosure`
+   MUST fail closed: no content is returned to the model, regardless of
+   whether the underlying content read would have succeeded. Persistence
+   of the audit event itself cannot be guaranteed in this case by
+   definition — there is nowhere durable to record the attempt. This is
+   the one narrow, explicitly-acknowledged exception to "every attempt is
+   recorded," and it is safe precisely because it is fail-closed: no
+   disclosure of content ever occurs without either a successful audit
+   row or an explicit, documented reason none could be written.
+3. **Both unavailable simultaneously**: same as case 2 — fail closed, no
+   content returned.
+
+RATIONALE for making the asymmetry (fail-closed favors "no disclosure
+without an audit trail" over "always disclose, log best-effort") explicit
+rather than papering over it: a disclosure mechanism that could ever
+return content with zero possibility of an audit record — even in a rare
+outage window — would be a real, if narrow, accountability gap for
+something whose entire design purpose is auditability (§9 step 6, §I).
+Refusing to disclose during exactly that narrow window costs availability,
+never correctness or auditability. This mirrors the general principle
+`internal/executionharness`'s own crash-safety pattern already uses
+elsewhere (durable-append-before-execute) — prefer "nothing happened" over
+"something happened with no record of it."
+
+The revised M2 CONTRACT MUST bullet (§ above) and TEST_PLAN.md category J
+are both updated to test this three-way split explicitly, not just "audit
+row exists or OPERATIONAL_FAILURE."
+
 ## 18. Concurrency model
 
 - **Two concurrent fetches of the same handle**: both succeed, both return
@@ -1044,10 +1381,19 @@ specific resource's existence.
   documentation must state this is an absence-of-record, not a positive
   proof of no dynamic reads, for any invocation whose
   `requesting_model_invocation_id` predates the `context_disclosure_events`
-  table's existence. Recommend a
-  small marker (a `contextdisclosure_available_since` config timestamp or
-  equivalent) an operator/auditor can compare against, rather than trusting
-  "zero rows = definitely read nothing" silently forever.
+  table's existence. **Revised in round 3**: rather than a separately
+  operator-maintained config timestamp, the honesty marker is the
+  **presence of a `context_addressable_resource_sets` seal row (§6.1B)**
+  for the invocation's `context_snapshot_id` — a snapshot with no seal row
+  predates M2 by construction (the seal is written unconditionally, inside
+  the same transaction, for every M2-era snapshot, even one with zero
+  addressable resources); a snapshot *with* a seal row and zero
+  `context_disclosure_events` rows for a given invocation is a genuine,
+  positive "this invocation made zero dynamic reads." This is strictly
+  more reliable than a config timestamp, which could be misconfigured or
+  never set, because the seal row is a transactional fact recorded at
+  exactly the moment it needs to be true, not an operator-maintained
+  value that could drift from reality.
 
 ## 20. Migration proposal (paper design only — no migration file reserved or written)
 
@@ -1058,9 +1404,23 @@ Additive only, following the exact pattern of migrations 000051/000053:
   organization_id)` (same composite-FK pattern as `context_segments` and
   `execution_context_views`, so org isolation is enforced by Postgres, not
   only application code). Append-only via the same
-  `reject_*_mutation` trigger pattern. `UNIQUE (context_snapshot_id,
+  `reject_*_mutation` trigger pattern (blocks `UPDATE`/`DELETE`) **plus a
+  second, new `BEFORE INSERT` trigger (round 3, §6.1B) that rejects any
+  insert for a `context_snapshot_id` already present in
+  `context_addressable_resource_sets`** — this is the piece that actually
+  closes the set, since the append-only pattern alone only ever protected
+  existing rows, never bounded new ones. `UNIQUE (context_snapshot_id,
   source_reference, source_version)`.
-- `context_disclosure_events` — new table, per §6.2. FK to
+- `context_addressable_resource_sets` — new table, per §6.1B (round 3).
+  `context_snapshot_id BIGINT PRIMARY KEY` FK to `(id, organization_id) ->
+  context_snapshots`, so at most one seal row can ever exist per snapshot.
+  Written unconditionally by `Store.Create` in the same transaction as the
+  snapshot/segments/addressable-resource rows (§9 step 2) — never a
+  separate, later write.
+- `context_disclosure_events` — new table, per §6.2 (round 3: includes
+  `search_algorithm_id`/`search_algorithm_version`/`returned_resource_ids`,
+  `aggregate_member_resource_ids`, `slice_offset`/`slice_length`,
+  `requested_handle` now nullable). FK to
   `execution_context_views(id)` and to whatever `modelruntime.Invocation`
   table already exists (join, not duplicate, principal/role — per mission
   brief §I). Append-only via the same trigger pattern. Indexes on
@@ -1107,8 +1467,10 @@ separately and states which is preferred when:
 - **SCHEMA DOWN (destructive; only safe pre-production or when the tables
   genuinely hold zero real rows).** A `down` migration, if one is ever
   written, performs `DROP TABLE context_disclosure_events` then `DROP
-  TABLE context_addressable_resources` — this destroys any M2 telemetry/
-  audit history that exists. Because the schema is purely additive and no
+  TABLE context_addressable_resources` then `DROP TABLE
+  context_addressable_resource_sets` (round 3 addition — §6.1B) — this
+  destroys any M2 telemetry/audit history that exists. Because the schema
+  is purely additive and no
   M1.x table or trigger is touched, this is always *mechanically* safe for
   M1.x — no M1.x table, trigger, or FK is affected — but it is NOT safe
   for M2's own audit trail once that trail contains real events, which is
@@ -1126,25 +1488,38 @@ is non-empty.
 ## 22. Integration points
 
 - `internal/contextengine.DeterministicAssembler.Assemble` — additive,
-  pure computation of an `AddressableResources` slice on the returned
-  `Assembly` for omitted/excerpted sources (§9 step 2, corrected). No I/O
-  added to this function.
+  pure computation of an `AddressableResources` slice (each entry
+  including its bounded `search_text` excerpt, §12A, round 3) on the
+  returned `Assembly` for omitted/excerpted sources (§9 step 2, corrected).
+  No I/O added to this function.
 - `internal/contextengine/postgres.Store.Create` — additive write of
-  `context_addressable_resources` rows inside its existing transaction
-  (§9 step 2, corrected). This, not `Assemble`, is the actual write seam.
+  `context_addressable_resources` rows **plus exactly one
+  `context_addressable_resource_sets` seal row (§6.1B, round 3)** inside
+  its existing transaction (§9 step 2, corrected). This, not `Assemble`,
+  is the actual write seam.
+- `internal/contextdisclosure` (new package) — owns `BindingResolver`
+  (§9A, round 3), the component that turns `executionharness`'s opaque
+  `ToolExecutionContext` refs into DB-proven `ResolvedBinding`. This is
+  the one place in the design where "an opaque ref happens to be a
+  contextengine/modelruntime ID" is known — deliberately not in
+  `executionharness`.
 - `internal/contextengine` (exported surface) — new
   `RenderUntrustedContextResource` function (§9B), extracted from the
   logic `wrapUntrustedData`/`BuildProviderRenderV2` already implement, so
   `contextdisclosure` has one canonical wrapping call instead of a copy or
   a fabricated `Segment`.
 - `internal/executionharness` — two seams: (1) the `ToolExecutor` port
-  signature changes to accept `ToolExecutionContext` instead of a bare
-  `RunIdentity` (§9A) — justified because it has zero production consumers
-  today (AUDIT.md R-2), so this is not a breaking change to any real
-  caller; (2) a new `ToolCatalog`/`ToolExecutor` implementation
-  (`contextdisclosure`) registered by whichever caller opts a run into M2
-  (not Executive's typed-task path, which explicitly forbids tools today
-  and is out of scope to change here).
+  signature changes to accept `ToolExecutionContext` (§9A, round 3 —
+  opaque `InitialContextRef`/`RequestingInvocationRef` strings, never
+  typed Context-Engine/Model-Runtime IDs) instead of a bare `RunIdentity`
+  — this is not fully consumer-free (round 3 correction: `executive/
+  runtimeadapter.executiveToolExecutor{}` is a real, if deny-all,
+  implementer and must be mechanically updated to the new signature, with
+  no behavior change, for the repo to compile); (2) a new
+  `ToolCatalog`/`ToolExecutor` implementation (`contextdisclosure`)
+  registered by whichever caller opts a run into M2 (not Executive's
+  typed-task path, which explicitly forbids tools today and is out of
+  scope to change here).
 - `internal/modelruntime` — read-only: `contextdisclosure`'s telemetry
   aggregation joins `execution_context_views`/`model_invocation_render_telemetry`/
   invocation identity by FK; nothing in `modelruntime` is modified.
@@ -1193,11 +1568,14 @@ is non-empty.
   same one M1 already built, with a single shared implementation, applied
   consistently to a new delivery path (I-8).
 - `ContextResource.trust_class` is always `untrusted` for any resource
-  reachable via M2 in this design (§B below) — a fetched RAG/memory/task
-  document's text can never be interpreted as an instruction by
-  construction, because the same `InstructionClass==InstructionData`
-  contract that already gates inline RAG/memory segments (AUDIT.md §2)
-  applies identically to dynamically-fetched ones.
+  reachable via M2 in this design (§4B — corrected round 3; the addressable
+  universe is evidence-only, task/project instructional context is
+  explicitly excluded, so "RAG/memory/task document" was already stale
+  wording) — a fetched RAG/memory-evidence document's text can never be
+  interpreted as an instruction by construction, because the same
+  `InstructionClass==InstructionData` contract that already gates inline
+  RAG/memory segments (AUDIT.md §2) applies identically to
+  dynamically-fetched ones.
 - `may_grant_capabilities` is hard-pinned `false` at the
   `context_addressable_resources` table level (§6.1 CHECK) — there is no
   code path by which a dynamic read can carry capability-granting
@@ -1254,29 +1632,40 @@ widening scope:
 - **M2.0** — contract + domain types only: `ContextHandle`,
   `ContextResource`, operation input/output structs, no persistence, no
   wiring. Pure Go package, unit-testable in isolation.
-- **M2.1** — durable `context_addressable_resources`: migration, Go
-  domain type, and the additive write step inside
-  `contextengine.Assembler.Assemble`. No read path yet.
+- **M2.1** — durable `context_addressable_resources` **and
+  `context_addressable_resource_sets` (round 3, §6.1B)**: migrations
+  (including the `BEFORE INSERT` seal-enforcement trigger), Go domain
+  types, the additive write step inside `contextengine.Assembler.Assemble`
+  (including `search_text` computation, §12A) and `Store.Create` (§9 step
+  2). No read path yet. Includes a dedicated test proving the seal trigger
+  actually rejects a late `INSERT` — this is the concrete regression test
+  for round 3's headline P1.
 - **M2.2** — `context_disclosure_events` + the authorization/validation
   chain (§10) as a standalone service, exercised only via direct unit/
   integration tests (no Harness wiring yet) — `fetch`/`slice`/`inspect`
   first (simplest, no ranking concerns), `search`/`aggregate` deferred to
-  M2.4.
+  M2.4. Includes `contextdisclosure.BindingResolver` (§9A, round 3) and its
+  own tests proving it correctly resolves and DB-verifies opaque refs, and
+  fails closed on an unresolvable/mismatched one.
   Note: this repo-observed pattern (AUDIT.md §2) is "prove the read/write
   contract in isolation before wiring a live consumer" — M1.1/M1.2/M1.3
   all shipped their core algorithm before any behavior-visible integration.
-- **M2.3** — `executionharness.ToolCatalog`/`ToolExecutor` implementation
-  wrapping M2.2, wired into a single, clearly-scoped, non-Executive test
-  consumer first (never Executive's typed-task path directly, given
-  AUDIT.md R-2's observation that this is the *first* real exercise of the
-  tool-call loop).
+- **M2.3** — the `executionharness.ToolExecutor` port signature change to
+  `ToolExecutionContext` (§9A, round 3 — including the mechanical,
+  behavior-preserving update to `executive/runtimeadapter.
+  executiveToolExecutor{}` this requires) and the
+  `contextdisclosure.ToolCatalog`/`ToolExecutor` implementation wrapping
+  M2.2, wired into a single, clearly-scoped, non-Executive test consumer
+  first (never Executive's typed-task path directly, given AUDIT.md R-2's
+  observation that this is the *first* real exercise of the tool-call
+  loop).
 - **M2.4** — `context.search`/`context.aggregate`, including the
   deterministic ranking function decision from §12.
 - **M2.5** — telemetry aggregation (§15) and any `orgctl` inspection
   tooling for `context_disclosure_events`.
 - **M2.6** — integration + historical-compatibility test suite (§19) run
   against real pre-M2 snapshots/views, plus documentation of the
-  `contextdisclosure_available_since` marker.
+  seal-row-presence honesty marker (§6.1B/§19, round 3).
 
 Each slice: independently reviewable, ships its own tests before the next
 slice widens scope, no slice requires a big-bang refactor of `contextengine`/
@@ -1292,13 +1681,17 @@ additive).
   `context_addressable_resources` rows scoped to the current
   `(organization_id, context_snapshot_id)`; MUST NOT trust any field
   claimed by the handle itself without a matching DB row.
-- MUST evaluate every disclosure call against a `ToolExecutionContext`
-  (§9A) whose `ContextSnapshotID`/`RequestingModelInvocationID` were
-  derived by `Runtime.Execute` from durable state (`RunSpec.Context.ID`,
-  the current turn's `ModelResult.InvocationRef`) — MUST NOT derive the
-  current snapshot/invocation by any other means (e.g. looking it up from
-  `TaskID`), and MUST NOT accept it from anything the model supplies.
-  *(round 2)*
+- MUST evaluate every disclosure call against a `ResolvedBinding` (§9A)
+  produced by `contextdisclosure.BindingResolver.Resolve` from
+  `executionharness`'s opaque `ToolExecutionContext.InitialContextRef`/
+  `RequestingInvocationRef` — themselves derived by `Runtime.Execute` from
+  durable state (`RunSpec.Context.ID`, the current turn's
+  `ModelResult.InvocationRef`) — and DB-verified before use. MUST NOT
+  derive the current snapshot/invocation by any other means (e.g. looking
+  it up from `TaskID`), MUST NOT accept it from anything the model
+  supplies, and `executionharness` core itself MUST NOT parse or interpret
+  these refs as typed Context-Engine/Model-Runtime IDs — only
+  `contextdisclosure`'s `BindingResolver` may. *(round 2; refined round 3)*
 - MUST write `context_addressable_resources` rows in the exact same
   PostgreSQL transaction as the `context_snapshots`/`context_segments`
   rows they accompany (`contextengine/postgres.Store.Create`) — MUST NOT
@@ -1327,12 +1720,18 @@ additive).
 - MUST register `context.*` operations as `executionharness` tools, MUST
   NOT implement them inside any `ProviderAdapter`.
 - MUST record a `context_disclosure_events` row for every operation
-  attempt, success or failure, with an honest **internal** outcome
-  category (`ok|invalid_request|not_found|forbidden|stale_drift|
-  operational_failure`, with `forbidden` further qualified internally for
-  cross-org/cross-snapshot attempts per §17) — MUST NOT let the
-  model/API-visible outcome for a cross-org or cross-snapshot handle
-  attempt be distinguishable from NOT_FOUND (existence-oracle prevention,
+  attempt whose failure or success does not itself stem from the audit
+  store being unavailable — **qualified in round 3** (P2 finding: "record
+  every attempt" is physically impossible when the same Postgres instance
+  that stores `context_disclosure_events` is itself down). See §17A for
+  the precise three-way split (content-store failure with audit DB
+  healthy / audit DB itself unavailable / both). Every recorded row uses
+  an honest **internal** outcome category (`ok|invalid_request|not_found|
+  forbidden|stale_drift|operational_failure`, with `forbidden` further
+  qualified internally for cross-org/cross-snapshot attempts per §17) —
+  MUST NOT let the model/API-visible outcome for a cross-org or
+  cross-snapshot handle attempt be distinguishable from NOT_FOUND
+  (existence-oracle prevention,
   §17, round 2).
 - MUST enforce explicit host-side limits (bytes, count, query length,
   timeout) on every operation before touching underlying storage.
@@ -1358,6 +1757,17 @@ additive).
   no post-hoc authorization expansion).
 - MUST NOT let a model-supplied/invented handle resolve without a
   matching, independently-validated DB row.
+- MUST NOT allow any `INSERT` into `context_addressable_resources` for a
+  `context_snapshot_id` that already has a sealed
+  `context_addressable_resource_sets` row (§6.1B, round 3) — enforced by a
+  Postgres trigger, not application discipline alone. A snapshot's
+  addressable universe MUST be exactly what was sealed at build time,
+  never larger.
+- MUST NOT allow a manifest of available handles, or any handle-bearing
+  content, to enter `StablePrefix` (§9 step 3, round 3) — handles are
+  snapshot-specific by construction (§7) and therefore never
+  cross-snapshot-stable; if ever sent proactively, such a summary MUST be
+  part of `DynamicSuffix` only.
 - MUST NOT modify `internal/modelruntime/adapter/*`,
   `internal/modelruntime/costgate`, `internal/modeldispatch`,
   `internal/authorization`'s decision engine, `internal/coderunner`,
@@ -1377,12 +1787,16 @@ additive).
   for any pre-M2 durable object.
 
 **MAY**
-- MAY include a compact, bounded manifest summary of available handles in
-  the initial provider-visible render, provided it is produced by the
-  existing single-render-algorithm path (`contextcompiler.ResolveProviderContext`)
-  and counted within existing M1.2 telemetry, not a side channel.
+- MAY, in a future milestone, proactively summarize available handles as
+  part of `DynamicSuffix` only (never `StablePrefix` — corrected in round
+  3, §9 step 3), counted as dynamic-context telemetry like any other
+  disclosure. This milestone sends no manifest at all — a model calls
+  `context.inspect()` to discover handles.
 - MAY apply a live-computed (but deterministic, per §12) ranking function
   within `context.search`'s frozen candidate set.
-- MAY extend `context_disclosure_events` with additional nullable,
-  additive columns for specific operations (e.g. slice offset/length,
-  aggregate member list) as implementation needs dictate.
+- MAY extend `context_disclosure_events` with further additional
+  nullable, additive columns beyond the operation-specific set §6.2
+  already freezes (`slice_offset`/`slice_length`, `search_algorithm_id`/
+  `search_algorithm_version`/`returned_resource_ids`,
+  `aggregate_member_resource_ids`, round 3), as future operations or
+  implementation needs dictate.
