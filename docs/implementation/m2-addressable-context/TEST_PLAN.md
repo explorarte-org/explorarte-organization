@@ -6,10 +6,15 @@ mission (see DESIGN.md §27 slices) must satisfy before widening scope.
 Every test below is written against the domain model and contract defined
 in `DESIGN.md`.
 
-Categories A-J are exactly the mission-specified list. Within each
-category, tests are grouped by which M2.x slice (DESIGN.md §27) they
-belong to, so a slice can be judged "done" against its own subset without
-needing the whole suite to exist first.
+Categories A-J are exactly the original mission-specified list. Round 4
+adds K (search determinism) and L (plaintext durability policy) as two
+further categories, explicitly flagged where they appear — both cover
+contract dimensions (§12A's determinism freeze, §12B's plaintext policy)
+that round 4 itself introduced and that don't fit cleanly inside any
+single A-J category without distorting it. Within each category, tests
+are grouped by which M2.x slice (DESIGN.md §27) they belong to, so a
+slice can be judged "done" against its own subset without needing the
+whole suite to exist first.
 
 ## A. Identity
 
@@ -126,6 +131,43 @@ needing the whole suite to exist first.
   seal-row presence a reliable "this snapshot is M2-era" signal
   independent of whether it happens to have any addressable resources
   (DESIGN.md §19). (M2.1)
+- **C8.** Added round 4 (P1 finding: the naive `BEFORE INSERT` seal check
+  has a race window — DESIGN.md §6.1B Problem B). This is a real
+  integration test against real PostgreSQL with **explicit coordination,
+  not two unsynchronized goroutines**:
+  1. `T1` begins a transaction, inserts a `context_snapshot` row and its
+     `context_addressable_resources` rows (the normal first part of
+     `Store.Create`), but does **not** yet insert the seal row or commit —
+     the test holds `T1` open at exactly this point via a channel/barrier
+     the test controls directly (e.g. the test's fake/instrumented store
+     signals "resources inserted, about to seal" and then blocks on a
+     channel read before proceeding).
+  2. Once `T1` signals it has reached that point, the test starts `T2` in
+     a second connection/goroutine, attempting to `INSERT` one additional
+     `context_addressable_resources` row for the same
+     `context_snapshot_id`.
+  3. Assert `T2` **blocks** (does not return, does not error yet) — proven
+     by asserting `T2`'s goroutine has not signaled completion after a
+     short deterministic wait, not by a race-prone sleep-and-hope; a
+     cleaner assertion is checking `pg_locks`/`pg_stat_activity` for `T2`
+     waiting on the `context_snapshots` row lock `T1` holds, if the test
+     harness can query it, or at minimum asserting `T2`'s completion
+     channel has not fired.
+  4. The test then lets `T1` proceed: insert the seal row, `COMMIT`.
+  5. Assert `T2` **resumes** only after `T1`'s commit, and its `INSERT`
+     now **fails** (the seal row `T1` just committed is visible to `T2`'s
+     lock-then-check trigger).
+  6. Assert the snapshot's final addressable-resource set (read back via
+     `context.inspect` or a direct query) contains exactly what `T1`
+     inserted — `T2`'s attempted row is absent.
+  A companion, simpler assertion: run the same scenario but have `T1`
+  **roll back** instead of committing (simulating a failed snapshot
+  build) — assert `T2`'s blocked `INSERT` then proceeds successfully once
+  `T1`'s rollback releases the lock, since a rolled-back build correctly
+  leaves no seal and no snapshot for `T2` to conflict with (this is not a
+  security-relevant case, but proves the lock-then-check protocol doesn't
+  deadlock or wrongly reject legitimate concurrent activity against an
+  unrelated/failed build). (M2.1)
 
 ## D. Authority
 
@@ -137,23 +179,25 @@ needing the whole suite to exist first.
   string is still delivered wrapped/escaped per the existing
   `BuildProviderRenderV2` marker scheme, never literally interpreted).
   (M2.3, requires the wrapping step)
-- **D2.** Rescoped in independent review round 2 (DESIGN.md §4B: M2's
-  addressable universe in this milestone is evidence/data-kind sources
-  only — `SourceApprovedMemory`/`SourceRAGEvidence`/`SourceWebEvidence` —
-  and explicitly excludes role profile, skill content, organization/
-  department AGENT, owner constraints, canonical policy, and project/task
-  instructional context). This test now asserts the *boundary itself*
+- **D2.** Rescoped in independent review round 2 (DESIGN.md §4B), narrowed
+  further in round 4 (DESIGN.md §6.1's source-kind decision: M2a's
+  addressable universe is `SourceApprovedMemory`/`SourceRAGEvidence`
+  **only** — `SourceWebEvidence` is excluded too, not merely deferred, and
+  role profile, skill content, organization/department AGENT, owner
+  constraints, canonical policy, and project/task instructional context
+  remain excluded as before). This test asserts the *boundary itself*
   rather than a fetch-time property of excluded content: no
   `context_addressable_resources` row is ever written for a source whose
-  `Kind` is not one of the three evidence kinds, even when the assembler
-  omits or excerpts such a source for other reasons — assert this at the
+  `Kind` is not `approved_memory`/`rag_evidence`, even when the assembler
+  omits such a source for other reasons — assert this at the
   `Assembler.Assemble`/`Store.Create` write path (§9 step 2), not at fetch
-  time, since under this design a skill/profile excerpt should never
-  reach a state where it *could* be fetched dynamically at all. (Testing
-  "does a dynamically-fetched skill excerpt preserve its authority_tier"
-  is deferred to whatever future "addressable instructions" milestone
-  might introduce a materially different authority model for
-  instruction-bearing content — out of scope here.) (M2.1)
+  time, since under this design a skill/profile/web-evidence source should
+  never reach a state where it *could* be fetched dynamically at all.
+  (Testing "does a dynamically-fetched skill excerpt preserve its
+  authority_tier" is deferred to whatever future "addressable
+  instructions" milestone might introduce a materially different
+  authority model for instruction-bearing content — out of scope here.)
+  (M2.1)
 - **D3.** `data_class` (`public`/`organizational`/`sanitized`) is
   preserved unchanged through a dynamic fetch — assert a `sanitized`
   resource's fetched `ContextResource.data_class` still reads
@@ -164,6 +208,48 @@ needing the whole suite to exist first.
   insert such a row directly must fail at the database, independent of
   any Go-level validation, mirroring the existing `context_segments` CHECK
   discipline. (M2.1)
+- **D4a-D4i.** Added round 4 (P1 finding: "the evidence-only contract was
+  Go-level only, not a DB backstop" — DESIGN.md §6.1's CHECK constraints).
+  All of the following are **direct-SQL** tests — `INSERT` statements
+  issued straight against a real test-PostgreSQL `context_addressable_resources`
+  table, bypassing any Go validation entirely, run **before** the target
+  snapshot is sealed (so the only thing under test is the CHECK
+  constraints themselves, not the seal trigger from C5/C8):
+  - **D4a.** `resource_kind='role_profile'` → CHECK violation (FAIL).
+  - **D4b.** `resource_kind='approved_skill'` → FAIL.
+  - **D4c.** `resource_kind='task_context'` → FAIL.
+  - **D4d.** `resource_kind='project_context'` → FAIL.
+  - **D4e.** `resource_kind='canonical_document'` → FAIL.
+  - **D4f.** `resource_kind='rag_evidence'` but `instruction_class` set to
+    anything other than `'data'` (e.g. `'role_instruction'`) → FAIL.
+  - **D4g.** `resource_kind='rag_evidence'` but `trust_class` set to
+    anything other than `'untrusted'` (e.g. `'authoritative'`) → FAIL.
+  - **D4h.** `may_grant_capabilities=true` regardless of `resource_kind`
+    (this is D4 restated as part of the same systematic sweep — kept as
+    its own row here for symmetry with D4a-g/i).
+  - **D4i.** An internally-inconsistent tier/priority pairing (e.g.
+    `authority_tier='rag_evidence'` with `authority_priority` set to
+    anything other than `6`) → FAIL — proves the CHECK enforces the tier
+    → priority mapping, not just each column independently.
+  - **Positive controls (must PASS, same pre-seal window):**
+    `resource_kind='approved_memory'`, `authority_tier='approved_memory'`,
+    `authority_priority=6`, `instruction_class='data'`,
+    `trust_class='untrusted'`, `may_grant_capabilities=false` → succeeds;
+    the same with `resource_kind='rag_evidence'`/`authority_tier=
+    'rag_evidence'` → succeeds. Both positive controls prove D4a-i are
+    failing because of the specific invalid field under test, not because
+    the row is malformed some other way.
+  - **Post-seal distinguishing test:** repeat one positive-control insert
+    (a valid `approved_memory` row, otherwise identical to the passing
+    control above) **after** the snapshot has been sealed (C5's scenario)
+    — assert this now fails too, but assert (via the specific Postgres
+    error/constraint name surfaced) that it fails because of the **seal
+    trigger** (C5), not because it suddenly became an invalid `resource_kind`/
+    tier/instruction/trust combination — i.e. confirm the test suite can
+    tell "rejected for being a non-evidence kind" (D4a-i) apart from
+    "rejected for arriving after the seal" (C5/C8), since both manifest as
+    an `INSERT` failure but for structurally different reasons an operator
+    or a future implementer needs to be able to distinguish. (M2.1)
 - **D5.** A fetched resource appended to `VisibleHistory` and sent to a
   provider is never placed in the `contextcompiler`-owned stable prefix —
   assert (at the `executionharness`/`modelruntimeadapter` integration
@@ -184,6 +270,44 @@ needing the whole suite to exist first.
   M2.3's Harness wiring, since it is really a `contextcompiler`-side
   invariant M2 must never violate, not something that requires a live
   disclosure call to check.)
+- **D7.** Added round 4 (P2 finding: "the capability/action matrix was
+  still illustrative" — DESIGN.md §10A's frozen matrix). Positive/negative
+  controls for the `context.disclose` capability, covering all four
+  operations it gates: a role granted `context.disclose` can successfully
+  `context.inspect`/`fetch`/`slice`/`aggregate` an authorized resource
+  (positive); a role NOT granted `context.disclose` is denied FORBIDDEN
+  for all four operations, even when the specific resource requested
+  genuinely exists and belongs to the current snapshot (negative — proves
+  the action check runs and blocks regardless of content membership).
+  (M2.2)
+- **D8.** Companion to D7 for the separate `context.search` capability: a
+  role granted `context.search` but NOT `context.disclose` can search but
+  cannot fetch/inspect/slice/aggregate (and vice versa) — proves the two
+  capabilities are genuinely independent, not aliases of each other.
+  (M2.2/M2.4)
+- **D9.** Denial occurs strictly before any content read (DESIGN.md §10A's
+  ordering guarantee): for a role denied `context.disclose`, assert that a
+  `context.fetch` call for a handle that does NOT exist in
+  `context_addressable_resources` at all still returns FORBIDDEN (not
+  NOT_FOUND) — if it returned NOT_FOUND, that would mean the membership
+  lookup ran before the action check, which DESIGN.md §10A's ordering
+  explicitly forbids (it would also reopen a content-existence oracle
+  through response-timing/shape differences). (M2.2)
+- **D10.** Authority-unavailable semantics (DESIGN.md §10A): when the
+  `internal/authorization` evaluation for `context.disclose`/
+  `context.search` cannot be reached at all (mirroring
+  `executionharness.ErrAuthorityUnavailable`'s existing distinct-from-denial
+  semantics), assert the operation returns neither content nor a definite
+  FORBIDDEN/NOT_FOUND — it fails as an operational/retryable condition,
+  and no content is ever returned in this state regardless of whether the
+  requested resource would otherwise have been authorized. (M2.2)
+- **D11.** No content-existence oracle through action denial (companion to
+  §17's cross-org existence-oracle fix, extended to the action boundary):
+  assert that a FORBIDDEN response's timing, error text, and shape are
+  identical whether the requested handle would have resolved to a real,
+  member resource or to a nonexistent one — an action-capability denial
+  must reveal nothing about content, by construction, since it is
+  evaluated first and never reaches the membership lookup (D9). (M2.2)
 
 ## E. Limits
 
@@ -401,8 +525,8 @@ needing the whole suite to exist first.
   the same model-visible **NOT_FOUND** — assert no observable difference
   in the response (timing, error text, shape) that would let a caller
   distinguish them; (b) an action-level denial (e.g. the invoking role's
-  `context.search.invoke` capability itself is not granted, per §10
-  boundary #1 — independent of any specific resource's existence) reports
+  `context.search` capability itself is not granted, per §10A — independent
+  of any specific resource's existence) reports
   **FORBIDDEN**, and is model-visibly distinguishable from NOT_FOUND, since
   an action-capability denial reveals nothing about content existence. A
   third assertion covers the audit trail only: the **internal**
@@ -441,6 +565,109 @@ needing the whole suite to exist first.
   fail-closed check happens even when the audit write is what's failing,
   not only when a separate content read fails. (M2.2)
 
+## K. Search determinism (round 4 addition — beyond the original A-J list)
+
+> The mission-specified categories were A-J; round 4's P2 finding
+> ("`context.search` retains two incompatible determinism contracts")
+> introduces a genuinely new test dimension — determinism of a pure
+> function's output — that doesn't fit cleanly inside any of A-J without
+> distorting one of them. Added explicitly as its own category rather than
+> silently folded into E (Limits) or G (Concurrency), so the determinism
+> contract (DESIGN.md §12A) has dedicated, visible test coverage.
+
+- **K1.** The same query issued 100 times against the same sealed
+  snapshot, same `search_algorithm_id`/`search_algorithm_version`,
+  produces byte-identical `returned_resource_ids` (order included), scores,
+  and snippets on every single call — a real repeated-call test, not a
+  single assertion. (M2.4)
+- **K2.** Two snapshots built with `context_addressable_resources` rows
+  inserted in deliberately different orders (e.g. reverse-insert one
+  relative to the other, achieved by constructing the `Assembly` with
+  sources in a different input order — DESIGN.md §12A explicitly forbids
+  relying on unspecified row ordering) but otherwise identical content
+  produce the same `context.search` result order for the same query —
+  proves the ranking function doesn't accidentally depend on physical
+  insertion/storage order. (M2.4)
+- **K3.** A deliberately constructed tie (two resources with identical
+  `score` for a given query) resolves via the frozen tie-break
+  (`source_reference ASC, resource_id ASC` or whatever total ordering the
+  implementation adopts, DESIGN.md §12A) — assert the tie-break is
+  exercised and produces a stable, repeatable order, not an arbitrary one.
+  (M2.4)
+- **K4.** Process/connection restart between two `context.search` calls
+  against the same sealed snapshot with the same query produces the same
+  result order — proves determinism doesn't depend on any in-memory cache
+  or connection-local state. (M2.4)
+- **K5.** `search_algorithm_id`/`search_algorithm_version` are recorded on
+  every `context_disclosure_events{operation:"search"}` row and are
+  queryable/comparable across historical rows — a test asserting the
+  columns are actually populated and not silently NULL/omitted. (M2.4/M2.5)
+- **K6.** Different query bytes are permitted to (and, for a
+  content-varying corpus, generally will) produce a different result order
+  than a different query — this is the expected, non-buggy case; the test
+  asserts determinism is about *repeatability for the same input*, not
+  about all queries converging to one order. (M2.4)
+- **K7.** A resource that is a genuine member of a DIFFERENT snapshot (not
+  the current sealed one) is never considered as a `context.search`
+  candidate, regardless of query — restates C1/B2's membership guarantee
+  specifically in the context of the ranking function's candidate set,
+  since K2's insertion-order test could otherwise be misread as implying
+  cross-snapshot rows are ever visible to the ranking function. (M2.4)
+- **K8.** A resource with `search_text IS NULL` is never present in
+  `returned_resource_ids` for any query, including an empty/wildcard-like
+  query — restates E7 specifically as a determinism-suite regression
+  guard (a future ranking-algorithm change must not accidentally start
+  scoring NULL `search_text` as an empty-string match). (M2.4)
+- **K9.** No `context.search` call, under any of K1-K8's scenarios, issues
+  a live query against `rag`/`memory` storage — assert via a test double
+  for those subsystems' read paths that records zero calls during any
+  `context.search` invocation (restates §12's live-corpus prohibition as
+  a concrete, mockable-dependency test). (M2.4)
+
+## L. Plaintext durability policy (round 4 addition — beyond the original
+A-J list)
+
+> Same rationale as category K — DESIGN.md §12B's plaintext policy
+> (search_text classification/retention, query digest-only persistence)
+> is a genuinely new dimension, given its own category rather than forced
+> into an existing one.
+
+- **L1.** A `context.search` query containing a credential-like string
+  (e.g. a fixture string matching `internal/contentpolicy.Analyze`'s own
+  detection patterns) never appears anywhere in `context_disclosure_events`
+  as recoverable plaintext — assert the row contains only `query_digest`/
+  `query_byte_count`, and that no other M2 table, log, or event contains
+  the raw query text either. (M2.2/M2.4)
+- **L2.** `query_digest` is stable: the same query bytes always produce
+  the same digest (sha256), and two different queries (even differing by
+  one byte) produce different digests — a basic correctness check on the
+  digest computation itself. (M2.2)
+- **L3.** A query exceeding `max_search_query_bytes` is rejected
+  INVALID_REQUEST **before** any digest is computed or any row is
+  persisted (ties to E4) — assert no `context_disclosure_events` row at
+  all is written for an oversized query, not a row with a digest of
+  truncated bytes. (M2.4)
+- **L4.** `search_text` computed from a `SourceRecord` that itself would
+  have been rejected by upstream content policy (i.e. the underlying
+  `rag`/`memory` ingestion path already refuses to persist a record
+  containing a raw credential, per `internal/contentpolicy`'s existing
+  integration in those packages) cannot exist in the first place — assert
+  by construction (no `SourceRecord` with policy-rejected content ever
+  reaches `Assemble`) rather than by adding a second redaction pass inside
+  M2a itself; this test documents and confirms that M2a correctly relies
+  on upstream policy rather than re-implementing it. (M2.1)
+- **L5.** No `orgctl`/audit-inspection surface built on
+  `context_disclosure_events` ever exposes a raw `query_text`-shaped field
+  — a schema/API-shape test asserting the read model never resurrects the
+  round-3 `query_text` column name or an equivalent, only
+  `query_digest`/`query_byte_count`. (M2.5)
+- **L6.** `search_text`'s `data_class` inheritance (DESIGN.md §12B.1): a
+  `sanitized`-classified `context_addressable_resources` row's
+  `search_text`, when surfaced through `context.search`'s snippet output,
+  is still treated as `sanitized`-tier by anything consuming it — assert
+  the `ContextResource`/`SearchResult` shape carries `data_class` alongside
+  the snippet, never dropping it. (M2.4)
+
 ## Implementation-slice test ordering (cross-reference to DESIGN.md §27)
 
 - **M2.0** (contract + domain types): no persistence-dependent tests yet;
@@ -449,13 +676,16 @@ needing the whole suite to exist first.
   (round 3) also belongs here, or as early in M2.3 as possible — it is a
   `contextcompiler`-side invariant check, not dependent on any M2
   persistence existing yet.
-- **M2.1** (durable addressable resources): A1, A2, A6, C5, C6, C7 (round
-  3 — the seal-trigger regression tests), D2 (rescoped, round 2), D4, G2,
-  G3, G4.
+- **M2.1** (durable addressable resources): A1, A2, A6, C5, C6, C7, C8
+  (round 4 — the seal-immutability/lock-then-check concurrency test), D2
+  (rescoped, round 2/4), D4, D4a-i (round 4 — DB CHECK sweep), G2, G3, G4,
+  L4 (round 4 — upstream-content-policy reliance).
 - **M2.2** (fetch/inspect/slice + auth chain): A3, A4, A5, B1, B3, B4, C1,
-  C2, C3, C4, D1 (partial, wrapping deferred to M2.3), D3, E1, E2, E6, F1,
-  F2, G1, G6 (round 3 — `BindingResolver`), I1 (partial), J1, J2, J3, J5
-  (partial), J6, J7 (round 3 — audit-store-unavailable split).
+  C2, C3, C4, D1 (partial, wrapping deferred to M2.3), D3, D7, D8, D9, D10,
+  D11 (round 4 — capability matrix), E1, E2, E6, F1, F2, G1, G6 (round 3 —
+  `BindingResolver`), I1 (partial), J1, J2, J3, J5 (partial), J6, J7 (round
+  3 — audit-store-unavailable split), L1, L2, L3 (round 4 — query digest
+  persistence, partial: L3's oversized-query rejection).
 - **M2.3** (Harness tool wiring): D1 (full), D5, D6 (if not already run in
   M2.0), F3, G5. This slice is also where `ToolExecutionContext` (DESIGN.md
   §9A, revised round 3 — opaque refs, not typed IDs) is introduced — G6
@@ -465,8 +695,11 @@ needing the whole suite to exist first.
   `executiveToolExecutor{}` signature update (round 3 factual correction —
   compiles, never reached, no behavior change).
 - **M2.4** (search/aggregate): B2, B5, E3, E4, E5, E7 (round 3 —
-  `search_text`), J4, J5 (search-specific).
-- **M2.5** (telemetry): H1-H5.
+  `search_text`), J4, J5 (search-specific), K1-K9 (round 4 — determinism
+  suite), L3 (query-size rejection, search-specific), L6 (round 4 —
+  `search_text` data-class inheritance through search output).
+- **M2.5** (telemetry): H1-H5, K5 (search-algorithm-version auditability,
+  partial), L5 (round 4 — no raw query text in any inspection surface).
 - **M2.6** (integration/historical): I1-I5.
 
 No slice widens scope until its own listed tests pass; M2.3 in particular
