@@ -141,6 +141,13 @@ func (r Resolver) Resolve(ctx context.Context, taskID int64, provider, model str
 	}
 	root := d.Task.ID
 	for _, t := range items {
+		// The executive root is the task in this correlation without a
+		// causation edge. Prefer that durable relationship over creation-order
+		// heuristics; retain the lowest-id fallback for historical rows.
+		if t.CausationID == nil || strings.TrimSpace(*t.CausationID) == "" {
+			root = t.ID
+			break
+		}
 		if t.ID < root {
 			root = t.ID
 		}
