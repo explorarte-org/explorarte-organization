@@ -55,6 +55,11 @@ func extractPatchPaths(patch string) ([]string, error) {
 	return paths, nil
 }
 
+// ExtractPatchPaths exposes the canonical unified-diff path parser to
+// higher-level policy layers. It deliberately returns the same normalized
+// paths validated by CodeRunner; callers must still apply their own policy.
+func ExtractPatchPaths(patch string) ([]string, error) { return extractPatchPaths(patch) }
+
 // splitGitDiffHeader splits `diff --git a/<path> b/<path>` into its two
 // halves. It is intentionally strict about the "a/"/"b/" prefix pair rather
 // than trying to guess a split point in the general case, since that is

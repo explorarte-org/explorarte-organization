@@ -18,6 +18,12 @@ type StagingAdapter struct {
 	Service                                            staging.WorkspaceService
 	Tasks                                              TaskReader
 	WorkspaceRoot, RepositoryID, BaseCommit, TargetRef string
+	IntentResolver                                     WorkspaceIntentResolver
+}
+
+type WorkspaceIntent struct{ RepositoryID, BaseCommit, TargetRef string }
+type WorkspaceIntentResolver interface {
+	ResolveWorkspaceIntent(context.Context, tasks.ClaimedTask) (WorkspaceIntent, error)
 }
 
 func (a StagingAdapter) Open(ctx context.Context, item tasks.ClaimedTask, actor string) (string, int64, error) {
@@ -25,11 +31,23 @@ func (a StagingAdapter) Open(ctx context.Context, item tasks.ClaimedTask, actor 
 	if err != nil {
 		return "", 0, err
 	}
-	w, err := a.Service.CreateWorkspace(ctx, staging.CreateWorkspaceCommand{TaskID: item.Task.ID, AttemptID: item.Attempt.ID, RepositoryID: a.RepositoryID, BaseCommit: a.BaseCommit, TargetRef: a.TargetRef, HolderID: actor, ActorRoleID: RoleID, ArtifactRequirementID: requirementID, LeaseToken: item.LeaseToken})
+	repo, base, target := a.RepositoryID, a.BaseCommit, a.TargetRef
+	if a.IntentResolver != nil {
+		intent, err := a.IntentResolver.ResolveWorkspaceIntent(ctx, item)
+		if err != nil {
+			return "", 0, err
+		}
+		repo, base, target = intent.RepositoryID, intent.BaseCommit, intent.TargetRef
+	}
+	w, err := a.Service.CreateWorkspace(ctx, staging.CreateWorkspaceCommand{TaskID: item.Task.ID, AttemptID: item.Attempt.ID, RepositoryID: repo, BaseCommit: base, TargetRef: target, HolderID: actor, ActorRoleID: RoleID, ArtifactRequirementID: requirementID, LeaseToken: item.LeaseToken})
 	if err != nil {
 		return "", 0, err
 	}
 	return filepath.Join(a.WorkspaceRoot, w.WorkspaceKey), w.ID, nil
+}
+
+func (a StagingAdapter) Inspect(ctx context.Context, id int64) (staging.WorkspaceInspection, error) {
+	return a.Service.InspectWorkspace(ctx, id)
 }
 
 // artifactRequirementID resolves this specific task's own RequirementArtifact

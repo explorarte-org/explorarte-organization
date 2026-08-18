@@ -32,6 +32,13 @@ type Queue interface {
 type PlanExecutor interface {
 	Execute(context.Context, Plan) ([]Result, error)
 }
+
+// PlanGuard is an optional trusted policy layer applied before execution and
+// before sealing. It contains no persistence or provider authority.
+type PlanGuard interface {
+	ValidatePlan(Plan) error
+	ValidateChangedFiles([]staging.ChangedFile) error
+}
 type WorkspacePort interface {
 	Open(context.Context, tasks.ClaimedTask, string) (string, int64, error)
 	Seal(context.Context, int64, tasks.ClaimedTask, string) (staging.Workspace, error)
@@ -50,6 +57,7 @@ type Worker struct {
 	// as durable evidence for every succeeded attempt. Trusted deploy
 	// metadata, never task input.
 	RuntimeVersion string
+	PlanGuard      PlanGuard
 }
 
 func (w Worker) shutdownGrace() time.Duration {
@@ -107,6 +115,11 @@ func (w Worker) run(ctx context.Context, item tasks.ClaimedTask) error {
 	plan, err := ParsePlan([]byte(item.Task.Instructions))
 	if err != nil {
 		return w.record(ctx, lease, tasks.OutcomeNonRetryableFailure, "invalid_execution_plan", err.Error())
+	}
+	if w.PlanGuard != nil {
+		if err := w.PlanGuard.ValidatePlan(plan); err != nil {
+			return w.record(ctx, lease, tasks.OutcomeNonRetryableFailure, "mission_policy_denied", err.Error())
+		}
 	}
 
 	execCtx, cancel := context.WithCancel(ctx)
@@ -178,6 +191,19 @@ func (w Worker) finish(ctx context.Context, lease tasks.LeaseCommand, workspaceI
 	}
 	if err := verifyOrdering(plan, results); err != nil {
 		return w.record(ctx, lease, tasks.OutcomeNonRetryableFailure, "stale_verification", err.Error())
+	}
+	if w.PlanGuard != nil {
+		if inspector, ok := w.Workspace.(interface {
+			Inspect(context.Context, int64) (staging.WorkspaceInspection, error)
+		}); ok {
+			inspection, err := inspector.Inspect(ctx, workspaceID)
+			if err != nil {
+				return w.record(ctx, lease, tasks.OutcomeNonRetryableFailure, "workspace_inspection_failed", err.Error())
+			}
+			if err := w.PlanGuard.ValidateChangedFiles(inspection.ChangedFiles); err != nil {
+				return w.record(ctx, lease, tasks.OutcomeNonRetryableFailure, "mission_changed_path_denied", err.Error())
+			}
+		}
 	}
 	sealed, err := w.Workspace.Seal(ctx, workspaceID, item, w.HolderPrincipalID)
 	if err != nil {
