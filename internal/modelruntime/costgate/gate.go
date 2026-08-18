@@ -69,6 +69,13 @@ func (g *Gate) Reserve(ctx context.Context, request modelruntime.CostReservation
 	} else if err != nil {
 		return modelruntime.CostReservation{}, fmt.Errorf("resolve budget for task: %w", err)
 	}
+	var programScope programbudget.Scope
+	if g.programResolver != nil {
+		programScope, err = g.programResolver.Resolve(ctx, request.TaskID, request.ProviderID, request.ProviderModelID)
+		if err != nil {
+			return modelruntime.CostReservation{}, err
+		}
+	}
 
 	if g.subscriptionProviders[request.ProviderID] {
 		// Subscription/token-plan billing (e.g. mimo): there is no
@@ -108,16 +115,12 @@ func (g *Gate) Reserve(ctx context.Context, request modelruntime.CostReservation
 	}
 
 	if g.programResolver != nil {
-		scope, err := g.programResolver.Resolve(ctx, request.TaskID, request.ProviderID, request.ProviderModelID)
-		if err != nil {
-			return modelruntime.CostReservation{}, err
-		}
-		if scope.Family.Key != "" {
+		if programScope.Family.Key != "" {
 			scoped, ok := g.ledger.(costledger.ProgramScopedReserver)
 			if !ok {
 				return modelruntime.CostReservation{}, fmt.Errorf("program scoped reservation unavailable")
 			}
-			if err := scoped.ReserveWithinProgramCeiling(ctx, costledger.ProgramReservation{ProviderID: request.ProviderID, ProviderModelID: request.ProviderModelID, InvocationID: request.InvocationID, CorrelationID: scope.CorrelationID, MaxUSD: scope.Family.MaxUSD, EstimatedUSD: estimatedUSD}, now); err != nil {
+			if err := scoped.ReserveWithinProgramCeiling(ctx, costledger.ProgramReservation{ProviderID: request.ProviderID, ProviderModelID: request.ProviderModelID, InvocationID: request.InvocationID, CorrelationID: programScope.CorrelationID, MaxUSD: programScope.Family.MaxUSD, EstimatedUSD: estimatedUSD}, now); err != nil {
 				return modelruntime.CostReservation{}, err
 			}
 		} else if err := g.ledger.Reserve(ctx, request.ProviderID, request.InvocationID, estimatedUSD, now); err != nil {
