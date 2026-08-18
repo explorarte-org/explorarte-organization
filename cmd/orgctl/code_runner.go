@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/Mireuz13/explorarte-organization/internal/coderunner"
+	"github.com/Mireuz13/explorarte-organization/internal/engineeringmission"
 	modeldispatchpostgres "github.com/Mireuz13/explorarte-organization/internal/modeldispatch/postgres"
 	"io"
 	"os"
@@ -91,7 +92,9 @@ func runCodeRunner(args []string, stdout, stderr io.Writer) int {
 	}
 	executor := &coderunner.Executor{Workspace: "", MaxOutput: 1 << 20, OperationTimeout: codeRunnerOperationTimeout(), PlanOutputBudget: codeRunnerPlanOutputBudget()}
 	runtimeVersion := os.Getenv("ORG_CODE_RUNNER_RUNTIME_VERSION")
-	worker := coderunner.Worker{Queue: taskService, Executor: executor, Workspace: coderunner.StagingAdapter{Service: stagingRuntime.Service, Tasks: taskService, WorkspaceRoot: cfg.Staging.WorkspaceRoot, RepositoryID: repo, BaseCommit: base, TargetRef: target}, WorkerID: workerID, HolderPrincipalID: principal, LeaseDuration: cfg.Tasks.DefaultLeaseDuration, RuntimeVersion: runtimeVersion}
+	mission := engineeringmission.Service{Tasks: taskService, Promotion: stagingRuntime.Service}
+	workspace := coderunner.StagingAdapter{Service: stagingRuntime.Service, Tasks: taskService, WorkspaceRoot: cfg.Staging.WorkspaceRoot, RepositoryID: repo, BaseCommit: base, TargetRef: target, IntentResolver: engineeringmission.WorkspaceResolver{Tasks: taskService, Mission: mission, RepositoryID: repo, TargetRef: target}}
+	worker := coderunner.Worker{Queue: taskService, Executor: executor, Workspace: workspace, PlanGuardResolver: engineeringmission.GuardResolver{Tasks: taskService, Mission: mission}, WorkerID: workerID, HolderPrincipalID: principal, LeaseDuration: cfg.Tasks.DefaultLeaseDuration, RuntimeVersion: runtimeVersion}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	fmt.Fprintf(stdout, "code-runner worker starting: role=%s worker=%s\n", coderunner.RoleID, workerID)

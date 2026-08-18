@@ -39,6 +39,19 @@ type PlanGuard interface {
 	ValidatePlan(Plan) error
 	ValidateChangedFiles([]staging.ChangedFile) error
 }
+
+// PlanGuardResolver resolves the PlanGuard for one specific claimed task.
+// A single long-running Worker instance claims tasks belonging to
+// different missions over its lifetime, each with its own policy (e.g.
+// different AllowedPaths) -- a single Worker-wide PlanGuard cannot express
+// that. When PlanGuardResolver is set, run resolves the guard for the
+// claimed item once, before plan validation, and the SAME resolved guard
+// is used for both the pre-plan and pre-seal checks for that one run --
+// never re-resolved mid-attempt, and never falling back to a different
+// task's guard.
+type PlanGuardResolver interface {
+	ResolveGuard(context.Context, tasks.ClaimedTask) (PlanGuard, error)
+}
 type WorkspacePort interface {
 	Open(context.Context, tasks.ClaimedTask, string) (string, int64, error)
 	Seal(context.Context, int64, tasks.ClaimedTask, string) (staging.Workspace, error)
@@ -57,7 +70,16 @@ type Worker struct {
 	// as durable evidence for every succeeded attempt. Trusted deploy
 	// metadata, never task input.
 	RuntimeVersion string
-	PlanGuard      PlanGuard
+	// PlanGuard is a single, static guard applied to every claimed task --
+	// correct only when one Worker instance ever serves one fixed policy
+	// (e.g. a single-mission integration test). Mutually exclusive in
+	// practice with PlanGuardResolver; if both are set, PlanGuardResolver
+	// wins (see run).
+	PlanGuard PlanGuard
+	// PlanGuardResolver resolves a per-claimed-task guard -- required for a
+	// persistent worker serving distinct missions with distinct policies.
+	// See PlanGuardResolver's own doc comment.
+	PlanGuardResolver PlanGuardResolver
 }
 
 func (w Worker) shutdownGrace() time.Duration {
@@ -112,12 +134,20 @@ func (w Worker) run(ctx context.Context, item tasks.ClaimedTask) error {
 	if setter, ok := w.Executor.(interface{ SetWorkspace(string) }); ok {
 		setter.SetWorkspace(path)
 	}
+	guard := w.PlanGuard
+	if w.PlanGuardResolver != nil {
+		resolved, err := w.PlanGuardResolver.ResolveGuard(ctx, item)
+		if err != nil {
+			return w.record(ctx, lease, tasks.OutcomeNonRetryableFailure, "mission_policy_resolution_failed", err.Error())
+		}
+		guard = resolved
+	}
 	plan, err := ParsePlan([]byte(item.Task.Instructions))
 	if err != nil {
 		return w.record(ctx, lease, tasks.OutcomeNonRetryableFailure, "invalid_execution_plan", err.Error())
 	}
-	if w.PlanGuard != nil {
-		if err := w.PlanGuard.ValidatePlan(plan); err != nil {
+	if guard != nil {
+		if err := guard.ValidatePlan(plan); err != nil {
 			return w.record(ctx, lease, tasks.OutcomeNonRetryableFailure, "mission_policy_denied", err.Error())
 		}
 	}
@@ -136,7 +166,7 @@ func (w Worker) run(ctx context.Context, item tasks.ClaimedTask) error {
 	for {
 		select {
 		case out := <-resultCh:
-			return w.finish(ctx, lease, workspaceID, item, plan, out.results, out.err)
+			return w.finish(ctx, lease, workspaceID, item, plan, out.results, out.err, guard)
 		case <-ticker.C:
 			if _, e := w.Queue.Heartbeat(ctx, lease); e != nil {
 				cancel()
@@ -182,7 +212,7 @@ func (w Worker) awaitShutdown(resultCh <-chan execOutcome, triggerErr error) err
 // the workspace, persists durable evidence, and only then reports success.
 // If evidence persistence fails, the attempt is reported failed, never
 // succeeded: Summary alone is not the evidence ledger.
-func (w Worker) finish(ctx context.Context, lease tasks.LeaseCommand, workspaceID int64, item tasks.ClaimedTask, plan Plan, results []Result, execErr error) error {
+func (w Worker) finish(ctx context.Context, lease tasks.LeaseCommand, workspaceID int64, item tasks.ClaimedTask, plan Plan, results []Result, execErr error, guard PlanGuard) error {
 	if execErr != nil {
 		if errors.Is(execErr, ErrIndeterminateExecution) {
 			return w.record(ctx, lease, tasks.OutcomeNonRetryableFailure, "indeterminate_code_execution", execErr.Error())
@@ -192,7 +222,13 @@ func (w Worker) finish(ctx context.Context, lease tasks.LeaseCommand, workspaceI
 	if err := verifyOrdering(plan, results); err != nil {
 		return w.record(ctx, lease, tasks.OutcomeNonRetryableFailure, "stale_verification", err.Error())
 	}
-	if w.PlanGuard != nil {
+	// The pre-seal check uses the SAME guard resolved once at the top of
+	// run (either the static w.PlanGuard, or -- for a persistent worker
+	// serving distinct missions -- whatever w.PlanGuardResolver resolved
+	// for THIS claimed item). It is never re-resolved here: re-resolving
+	// would let a mission's policy change between pre-plan and pre-seal
+	// checks within the same attempt.
+	if guard != nil {
 		if inspector, ok := w.Workspace.(interface {
 			Inspect(context.Context, int64) (staging.WorkspaceInspection, error)
 		}); ok {
@@ -200,7 +236,7 @@ func (w Worker) finish(ctx context.Context, lease tasks.LeaseCommand, workspaceI
 			if err != nil {
 				return w.record(ctx, lease, tasks.OutcomeNonRetryableFailure, "workspace_inspection_failed", err.Error())
 			}
-			if err := w.PlanGuard.ValidateChangedFiles(inspection.ChangedFiles); err != nil {
+			if err := guard.ValidateChangedFiles(inspection.ChangedFiles); err != nil {
 				return w.record(ctx, lease, tasks.OutcomeNonRetryableFailure, "mission_changed_path_denied", err.Error())
 			}
 		}

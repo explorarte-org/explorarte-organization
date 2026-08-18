@@ -51,6 +51,30 @@ func (g Guard) ValidateChangedFiles(files []staging.ChangedFile) error {
 	return nil
 }
 
+// GuardResolver implements coderunner.PlanGuardResolver: it resolves a
+// fresh Guard, bound to THAT claimed task's own MissionPolicy, on every
+// call. A persistent Worker claims tasks belonging to different missions
+// over its lifetime, each with its own AllowedPaths/RequiredGates -- a
+// single Worker-wide Guard (coderunner.Worker.PlanGuard, the static field)
+// cannot express that; GuardResolver is what makes runtime activation of
+// engineeringmission possible outside a test that hand-builds one Guard
+// for one hardcoded policy.
+type GuardResolver struct {
+	Tasks   tasks.TaskReader
+	Mission Service
+}
+
+func (r GuardResolver) ResolveGuard(ctx context.Context, item tasks.ClaimedTask) (coderunner.PlanGuard, error) {
+	if r.Tasks == nil {
+		return nil, fmt.Errorf("task reader required")
+	}
+	p, err := r.Mission.Resolve(ctx, item.Task.ID)
+	if err != nil {
+		return nil, err
+	}
+	return Guard{Policy: p}, nil
+}
+
 // WorkspaceResolver carries mission BaseSHA to the existing staging service;
 // repository and target remain trusted worker configuration.
 type WorkspaceResolver struct {
