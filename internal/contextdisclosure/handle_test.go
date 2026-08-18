@@ -92,6 +92,41 @@ func TestContextHandle_DecodeRejectsMalformedSyntax(t *testing.T) {
 	}
 }
 
+// TestContextHandle_DecodeRejectsNonCanonicalForm covers the round-7 fix
+// (P2 finding): a syntactically-parseable handle whose string is NOT the
+// canonical Encode() output for its own fields must be rejected, not
+// silently normalized -- otherwise two different strings could represent
+// the same identity while ActionDigest (a later slice) is defined over the
+// raw handle string.
+func TestContextHandle_DecodeRejectsNonCanonicalForm(t *testing.T) {
+	h := validHandle()
+	canonical := h.Encode()
+	// Sanity: the canonical form itself must still decode successfully.
+	if _, err := Decode(canonical); err != nil {
+		t.Fatalf("canonical form failed to decode: %v", err)
+	}
+
+	cases := map[string]string{
+		"extra unknown query parameter": canonical + "&extra=1",
+		"duplicate v parameter":         strings.Replace(canonical, "v=v3", "v=v3&v=v3", 1),
+		"trailing fragment":             canonical + "#fragment",
+	}
+	for name, malformed := range cases {
+		t.Run(name, func(t *testing.T) {
+			if malformed == canonical {
+				t.Fatalf("test fixture bug: mutated form equals canonical form")
+			}
+			_, err := Decode(malformed)
+			if err == nil {
+				t.Fatalf("Decode(%q) succeeded, want rejection for non-canonical form", malformed)
+			}
+			if !errors.Is(err, ErrMalformedHandle) {
+				t.Fatalf("Decode(%q) error = %v, want wrapping ErrMalformedHandle", malformed, err)
+			}
+		})
+	}
+}
+
 // TestContextHandle_Validate exercises Validate() directly against
 // hand-constructed handles (never round-tripped through Encode/Decode),
 // mirroring the same bounds context_addressable_resources' own CHECK
@@ -136,17 +171,45 @@ func TestContextHandle_Validate(t *testing.T) {
 	}
 }
 
-// TestResourceKind_Valid asserts M2a's exactly-two-kind closed set --
-// DESIGN.md §6.1's resource_kind CHECK, projected to Go.
-func TestResourceKind_Valid(t *testing.T) {
+// TestContextHandle_Validate_CharacterCountNotByteCount is the round-7 P3
+// fix's regression test: sourceVersionMaxLen is a CHARACTER bound
+// (PostgreSQL length(TEXT)), not a byte bound. A multi-byte-UTF-8 version
+// string at exactly 240 characters (each character 2+ bytes) must still
+// pass -- it would incorrectly fail if Validate used len(string) (bytes)
+// instead of utf8.RuneCountInString.
+func TestContextHandle_Validate_CharacterCountNotByteCount(t *testing.T) {
+	// "é" is 2 bytes in UTF-8 but 1 character/rune.
+	version := strings.Repeat("é", sourceVersionMaxLen)
+	if len(version) <= sourceVersionMaxLen {
+		t.Fatalf("test fixture bug: byte length %d is not greater than character length %d, this test proves nothing", len(version), sourceVersionMaxLen)
+	}
+	h := validHandle()
+	h.ResourceVersion = version
+	if err := h.Validate(); err != nil {
+		t.Fatalf("240-character (480-byte) version incorrectly rejected: %v", err)
+	}
+
+	// One character over the bound must still fail, even though it's well
+	// under 240 bytes.
+	h.ResourceVersion = strings.Repeat("é", sourceVersionMaxLen+1)
+	if err := h.Validate(); err == nil {
+		t.Fatalf("241-character version incorrectly accepted")
+	}
+}
+
+// TestResourceKind_ValidResourceKind asserts M2a's exactly-two-kind closed
+// set -- DESIGN.md §6.1's resource_kind CHECK, projected to Go, and that
+// contextdisclosure now consumes contextengine.SourceKind directly rather
+// than a parallel type (round-7 correction, P1 finding).
+func TestResourceKind_ValidResourceKind(t *testing.T) {
 	for _, k := range []ResourceKind{ResourceKindApprovedMemory, ResourceKindRAGEvidence} {
-		if !k.Valid() {
-			t.Errorf("ResourceKind(%q).Valid() = false, want true", k)
+		if !ValidResourceKind(k) {
+			t.Errorf("ValidResourceKind(%q) = false, want true", k)
 		}
 	}
 	for _, k := range []ResourceKind{"", "web_evidence", "role_profile", "approved_skill", "task_context", "project_context", "canonical_document", "organization_agent", "department_agent", "owner_constraint"} {
-		if k.Valid() {
-			t.Errorf("ResourceKind(%q).Valid() = true, want false", k)
+		if ValidResourceKind(k) {
+			t.Errorf("ValidResourceKind(%q) = true, want false", k)
 		}
 	}
 }

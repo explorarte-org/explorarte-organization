@@ -4,9 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // ContextHandle is the frozen, structured, opaque-to-the-model,
@@ -48,13 +48,14 @@ var (
 // debuggable in orgctl tooling.
 const handleScheme = "ctx"
 
-// contentDigestPattern mirrors context_addressable_resources.content_digest
-// 's own format CHECK (DESIGN.md §6.1: content_digest ~ '^[0-9a-f]{64}$').
-var contentDigestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
-
 // sourceVersionMaxLen mirrors context_addressable_resources.source_version's
 // own bound (DESIGN.md §6.1: same bound as context_segments.source_version,
-// migration 000006: length(trim(...)) BETWEEN 1 AND 240).
+// migration 000006: length(trim(...)) BETWEEN 1 AND 240). PostgreSQL's
+// length(TEXT) counts characters, not bytes -- Validate (below) uses
+// utf8.RuneCountInString, never len(string), to match that semantics
+// honestly (round-7 correction, P3 finding: the original check used
+// len(h.ResourceVersion), a byte count, which only happened to agree with
+// PostgreSQL's character count for ASCII-only version strings).
 const sourceVersionMaxLen = 240
 
 // Encode produces the canonical opaque string form of h. Encode and Decode
@@ -62,7 +63,12 @@ const sourceVersionMaxLen = 240
 // Validate -- Encode does not itself re-validate h, so an invalid
 // ContextHandle can still be encoded (the resulting string will simply fail
 // Decode's own validation, or a later slice's server-side re-derivation,
-// exactly as an adversarially-forged handle would).
+// exactly as an adversarially-forged handle would). Encode's output is, by
+// construction, the ONE canonical string for a given ContextHandle -- query
+// parameters are always emitted in the same order (url.Values.Encode sorts
+// keys), never duplicated, never carrying an unrecognized key, and never
+// carrying a fragment. Decode (below) relies on this to detect and reject
+// any non-canonical encoding of an otherwise-valid handle.
 func (h ContextHandle) Encode() string {
 	values := url.Values{}
 	values.Set("v", h.ResourceVersion)
@@ -85,6 +91,21 @@ func (h ContextHandle) Encode() string {
 // and never proves the decoded fields correspond to a real, authorized
 // row (I-2; that is BindingResolver's job in a later slice, never this
 // one's).
+//
+// Round-7 correction (P2 finding: "the handle parser is permissive of
+// non-canonical forms"). A syntactically-parseable but non-canonical
+// string -- unknown/duplicate query parameters, a fragment, alternate
+// escaping of the same organization id, etc. -- previously decoded
+// successfully to the same ContextHandle a canonical string would, which
+// means two DIFFERENT strings could represent the SAME identity while
+// ActionDigest (a later slice, DESIGN.md §10A) is defined over the raw
+// handle string itself. Decode now re-encodes the parsed result and
+// rejects the input outright unless it is byte-for-byte identical to
+// ContextHandle.Encode()'s own canonical output for those exact fields --
+// this closes the whole class of non-canonical-alias problems generically
+// (extra params, duplicate params, reordered params, and fragments all
+// produce a different re-encoded string, and are all rejected the same
+// way) rather than special-casing each one.
 func Decode(encoded string) (ContextHandle, error) {
 	u, err := url.Parse(encoded)
 	if err != nil {
@@ -125,19 +146,24 @@ func Decode(encoded string) (ContextHandle, error) {
 	if err := handle.Validate(); err != nil {
 		return ContextHandle{}, fmt.Errorf("%w: %v", ErrMalformedHandle, err)
 	}
+	if canonical := handle.Encode(); canonical != encoded {
+		return ContextHandle{}, fmt.Errorf("%w: not in canonical form", ErrMalformedHandle)
+	}
 	return handle, nil
 }
 
 // Validate checks h's fields for well-formedness only -- the same syntax
 // bounds the underlying schema/domain already enforce (organization id
 // non-empty, snapshot/resource ids positive, source_version bounded per
-// context_addressable_resources' own CHECK, content_digest matching its
-// own sha256-hex format CHECK, kind one of M2a's exactly-two admitted
-// ResourceKinds). Validate never touches storage and never proves
-// authority (I-2) -- it is the same "malformed handle syntax" gate Decode
-// applies to a freshly-parsed handle, exposed separately so a
-// caller-constructed ContextHandle (never round-tripped through Encode/
-// Decode) can be checked the same way before Encode is even called.
+// context_addressable_resources' own CHECK -- counted in characters, not
+// bytes, matching PostgreSQL's length(TEXT) semantics, round-7 correction
+// -- content_digest matching its own sha256-hex format CHECK, kind one of
+// M2a's exactly-two admitted ResourceKinds). Validate never touches
+// storage and never proves authority (I-2) -- it is the same "malformed
+// handle syntax" gate Decode applies to a freshly-parsed handle, exposed
+// separately so a caller-constructed ContextHandle (never round-tripped
+// through Encode/Decode) can be checked the same way before Encode is even
+// called.
 func (h ContextHandle) Validate() error {
 	if strings.TrimSpace(h.OrganizationID) == "" {
 		return errors.New("organization id is required")
@@ -149,13 +175,14 @@ func (h ContextHandle) Validate() error {
 		return errors.New("resource id must be positive")
 	}
 	version := strings.TrimSpace(h.ResourceVersion)
-	if version == "" || len(h.ResourceVersion) > sourceVersionMaxLen {
+	versionLen := utf8.RuneCountInString(version)
+	if versionLen < 1 || versionLen > sourceVersionMaxLen {
 		return fmt.Errorf("resource version must be 1..%d characters", sourceVersionMaxLen)
 	}
 	if !contentDigestPattern.MatchString(h.ContentDigest) {
 		return errors.New("content digest must be a 64-character hex sha256 digest")
 	}
-	if !h.Kind.Valid() {
+	if !ValidResourceKind(h.Kind) {
 		return fmt.Errorf("kind %q is not one of M2a's admitted resource kinds", h.Kind)
 	}
 	return nil

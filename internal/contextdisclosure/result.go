@@ -1,6 +1,9 @@
 package contextdisclosure
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // Outcome is the frozen, closed set of context.* operation outcome codes --
 // exactly the vocabulary DESIGN.md §17's failure model and
@@ -38,18 +41,19 @@ func (o Outcome) Valid() bool {
 //
 // §9C's own struct only wrote out the Resource field explicitly and noted
 // "analogous fields for inspect/search/aggregate results" without spelling
-// them out. M2.0 adds Resources (context.inspect's []ResourceDescriptor)
-// and Results (context.search's []SearchResult) as exactly those analogous
-// fields -- context.aggregate's output remains a single ContextResource
-// per DESIGN.md §11 ("one concatenated/bounded ContextResource"), so it
-// reuses Resource, not a fourth field.
+// them out. M2.0 adds Resources (context.inspect's []ResourceDescriptor),
+// Results (context.search's []SearchResult), and -- round 7 correction,
+// P1 finding -- Aggregate (context.aggregate's *AggregateResult, no longer
+// reusing Resource: a single ContextResource cannot honestly represent
+// several members with independent identity, see operations.go's
+// AggregateResult doc comment) as exactly those analogous fields.
 type ContextToolResult struct {
 	OK      bool    `json:"ok"`
 	Code    Outcome `json:"code"`
 	Message string  `json:"message,omitempty"`
 
-	// Resource is present only when Code=="ok" for context.fetch,
-	// context.slice, or context.aggregate (DESIGN.md §9C/§11).
+	// Resource is present only when Code=="ok" for context.fetch or
+	// context.slice (DESIGN.md §9C/§11).
 	Resource *ContextResource `json:"resource,omitempty"`
 
 	// Resources is present only when Code=="ok" for context.inspect
@@ -61,11 +65,64 @@ type ContextToolResult struct {
 	// (DESIGN.md §11: "OUTPUT: deterministically ranked {handle, kind,
 	// snippet, score}[]").
 	Results []SearchResult `json:"results,omitempty"`
+
+	// Aggregate is present only when Code=="ok" for context.aggregate
+	// (round 7 correction -- see AggregateResult's own doc comment in
+	// operations.go for why this is not just another *ContextResource).
+	Aggregate *AggregateResult `json:"aggregate,omitempty"`
+}
+
+// Validate checks r for internal coherence -- added round 7 (P2 finding:
+// "the result type still permits building impossible states," e.g.
+// NewDeniedResult(OutcomeOK, "...") producing {"ok":false,"code":"ok"}). It
+// is not a substitute for anything a later slice's ToolExecutor does; it
+// only rejects a ContextToolResult whose own fields contradict each other,
+// regardless of how it was constructed.
+func (r ContextToolResult) Validate() error {
+	if !r.Code.Valid() {
+		return fmt.Errorf("contextdisclosure: outcome code %q is not one of the six frozen values", r.Code)
+	}
+	if r.OK != (r.Code == OutcomeOK) {
+		return fmt.Errorf("contextdisclosure: ok=%v is inconsistent with code=%q", r.OK, r.Code)
+	}
+	if !r.OK {
+		if r.Resource != nil || r.Resources != nil || r.Results != nil || r.Aggregate != nil {
+			return fmt.Errorf("contextdisclosure: a denied result (code=%q) must not carry resource/resources/results/aggregate", r.Code)
+		}
+		return nil
+	}
+	if r.Resource != nil {
+		if err := r.Resource.Validate(); err != nil {
+			return fmt.Errorf("contextdisclosure: resource: %w", err)
+		}
+	}
+	for i, d := range r.Resources {
+		if err := d.Validate(); err != nil {
+			return fmt.Errorf("contextdisclosure: resources[%d]: %w", i, err)
+		}
+	}
+	for i, s := range r.Results {
+		if err := s.Validate(); err != nil {
+			return fmt.Errorf("contextdisclosure: results[%d]: %w", i, err)
+		}
+	}
+	if r.Aggregate != nil {
+		if err := r.Aggregate.Validate(); err != nil {
+			return fmt.Errorf("contextdisclosure: aggregate: %w", err)
+		}
+	}
+	return nil
 }
 
 // Marshal encodes r as the JSON payload a later slice's ToolExecutor places
-// into ToolExecutionResult.Content.
+// into ToolExecutionResult.Content. Marshal refuses to encode an
+// internally-incoherent ContextToolResult (round 7, P2 finding) -- it calls
+// Validate first and returns its error instead of ever producing bytes for
+// a result that could never legitimately occur.
 func (r ContextToolResult) Marshal() ([]byte, error) {
+	if err := r.Validate(); err != nil {
+		return nil, fmt.Errorf("contextdisclosure: refusing to marshal incoherent ContextToolResult: %w", err)
+	}
 	return json.Marshal(r)
 }
 
@@ -81,8 +138,8 @@ func UnmarshalContextToolResult(data []byte) (ContextToolResult, error) {
 }
 
 // NewOKResourceResult builds a successful ContextToolResult carrying a
-// single ContextResource -- the shape context.fetch/slice/aggregate all
-// return on success (DESIGN.md §11).
+// single ContextResource -- the shape context.fetch/slice return on
+// success (DESIGN.md §11).
 func NewOKResourceResult(resource ContextResource) ContextToolResult {
 	return ContextToolResult{OK: true, Code: OutcomeOK, Resource: &resource}
 }
@@ -103,10 +160,19 @@ func NewOKSearchResult(results []SearchResult) ContextToolResult {
 	return ContextToolResult{OK: true, Code: OutcomeOK, Results: results}
 }
 
+// NewOKAggregateResult builds a successful ContextToolResult carrying
+// context.aggregate's *AggregateResult (round 7 correction -- DESIGN.md
+// §11).
+func NewOKAggregateResult(aggregate AggregateResult) ContextToolResult {
+	return ContextToolResult{OK: true, Code: OutcomeOK, Aggregate: &aggregate}
+}
+
 // NewDeniedResult builds a non-OK ContextToolResult for any of the five
-// non-"ok" outcomes (DESIGN.md §17). message MUST be bounded and
-// non-sensitive -- DESIGN.md §9C: "never echoes raw content or a
-// credential-adjacent value (§12B)" -- this constructor does not itself
+// non-"ok" outcomes (DESIGN.md §17). code MUST NOT be OutcomeOK --
+// Validate/Marshal (above) reject that combination, but callers should not
+// rely on catching the mistake only at marshal time. message MUST be
+// bounded and non-sensitive -- DESIGN.md §9C: "never echoes raw content or
+// a credential-adjacent value (§12B)" -- this constructor does not itself
 // enforce that bound; callers in a later slice are responsible for it.
 func NewDeniedResult(code Outcome, message string) ContextToolResult {
 	return ContextToolResult{OK: false, Code: code, Message: message}
