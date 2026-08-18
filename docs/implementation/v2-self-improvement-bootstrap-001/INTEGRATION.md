@@ -31,7 +31,40 @@ Rejected alternatives:
   contract and trusted runtime configuration remain authoritative.
 
 Verification history: policy boundary tests and existing CodeRunner tests were
-run after the seam was added. A full PostgreSQL end-to-end bootstrap smoke is
-pending wiring to the repository's integration composition root; it must not
-be represented as passed until run against disposable PostgreSQL guarded by
-testdbguard.
+run after the seam was added. The full PostgreSQL end-to-end bootstrap smoke
+(`internal/engineeringmission/postgres_integration_test.go`,
+`-tags=integration`) now runs against disposable PostgreSQL guarded by
+testdbguard, via `compose.integration.yaml`'s isolated `postgres`+
+`integration-test` services -- never the shared development/production
+instance. It proves the full path this document describes end to end:
+durable `MissionPolicy` -> BaseSHA-bound isolated workspace ->
+bounded/gated CodeRunner mutation -> sealed candidate commit ->
+`RequestPromotion`/`RecordCheck` -> an independent reviewer role (never the
+workspace author's own role) -> `SubmitReview(APPROVE)` ->
+`PromotionApproved` -> target ref byte-identical to before the mission ran,
+with `ApplyPromotion` never called (and never reachable from this
+package's `PromotionPort`). Three additional PostgreSQL-backed negatives
+in the same file prove fail-closed behavior for a mutation outside
+`AllowedPaths` (denied before the patch ever reaches the repository), a
+`BaseSHA` that has drifted from the real target-ref HEAD (denied at
+workspace-creation time), and a `RequiredGates` entry the plan never
+actually ran (denied before `RecordCheck`/`RequestPromotion`, zero
+promotions created). Same-actor self-review, including the case where
+author and reviewer share the same role ID, is covered by the package's
+existing unit test and is enforced in `ReviewMission` itself -- before
+ever delegating to `staging.SubmitReview` -- so it applies unconditionally,
+independent of `staging`'s own `authority_class == "owner"` self-approval
+allowance.
+
+Fixed during this verification pass (real bugs, not scope creep):
+`Service.Create` previously stored the literal string
+`"code-runner-execution/v1"` as the task's `Instructions`, instead of an
+actual `code-runner-execution/v1` JSON plan -- `coderunner`'s worker parses
+`Instructions` directly as the plan (`ParsePlan([]byte(item.Task.
+Instructions))`), so no mission created via the original `Create` could
+ever have been executed. `Create` now takes the real plan JSON as an
+explicit parameter, validated via `coderunner.ParsePlan` before the task is
+even created. Separately, the `"engineering.required_gates"` requirement
+key violated `tasks`' own identifier pattern (letters/digits/hyphen/
+underscore only, no dots) and was renamed to
+`"engineering-required-gates"` everywhere it appears.
