@@ -47,9 +47,12 @@ needing the whole suite to exist first.
 - **B1.** A `context.fetch` call presenting a handle whose
   `context_snapshot_id` belongs to organization X, issued during an
   invocation whose own `execution_context_view`/snapshot belongs to
-  organization Y, is rejected FORBIDDEN — even if X and Y share the same
-  `resource_id` numeric value by coincidence (assert no numeric-ID
-  collision can cross the boundary). (M2.2/M2.3)
+  organization Y, is rejected **NOT_FOUND** (corrected in round 2 — see
+  B4) — even if X and Y share the same `resource_id` numeric value by
+  coincidence (assert no numeric-ID collision can cross the boundary, and
+  assert no content from org X is ever present in the response). The
+  internal `context_disclosure_events.outcome` for this call still records
+  the true cross-org reason. (M2.2/M2.3)
 - **B2.** `context.search` never returns a result, snippet, or handle
   belonging to a different organization's snapshot, even when the search
   query text happens to closely match content that exists in another
@@ -60,8 +63,16 @@ needing the whole suite to exist first.
 - **B4.** Guessing a plausible-looking `resource_id`/`snapshot_id` pair
   across an org boundary (sequential integer IDs are enumerable) fails
   closed — assert iterating a range of neighboring IDs against a
-  foreign-org invocation returns FORBIDDEN or NOT_FOUND for all of them,
-  never a partial success. (M2.2)
+  foreign-org invocation returns **NOT_FOUND for every one of them, never
+  FORBIDDEN and never a partial success** (corrected in independent review
+  round 2: DESIGN.md §17's cross-org existence-oracle fix means a
+  model/API-visible FORBIDDEN would itself leak that a given ID exists in
+  some other org; only NOT_FOUND is acceptable at this boundary). A
+  companion assertion checks the **internal**
+  `context_disclosure_events.outcome` for the same calls: it MUST still
+  record the true `forbidden_cross_org` reason (or `not_found` for a
+  genuinely nonexistent ID) — the collapse to NOT_FOUND is model/API-facing
+  only, never applied to the audit trail. (M2.2)
 - **B5.** `context.aggregate` with a handle list mixing same-org and
   cross-org handles fails the entire call closed (no partial aggregate
   silently dropping the cross-org member) — per DESIGN.md §11's explicit
@@ -98,11 +109,23 @@ needing the whole suite to exist first.
   string is still delivered wrapped/escaped per the existing
   `BuildProviderRenderV2` marker scheme, never literally interpreted).
   (M2.3, requires the wrapping step)
-- **D2.** Skill/profile-tier content, if ever made addressable under M2,
-  preserves its original `authority_tier`/`trust_class` exactly as
-  recorded at snapshot build time — a dynamically-fetched skill excerpt is
-  never "upgraded" to instruction-bearing merely because a model asked for
-  it directly rather than receiving it inline. (M2.3)
+- **D2.** Rescoped in independent review round 2 (DESIGN.md §4B: M2's
+  addressable universe in this milestone is evidence/data-kind sources
+  only — `SourceApprovedMemory`/`SourceRAGEvidence`/`SourceWebEvidence` —
+  and explicitly excludes role profile, skill content, organization/
+  department AGENT, owner constraints, canonical policy, and project/task
+  instructional context). This test now asserts the *boundary itself*
+  rather than a fetch-time property of excluded content: no
+  `context_addressable_resources` row is ever written for a source whose
+  `Kind` is not one of the three evidence kinds, even when the assembler
+  omits or excerpts such a source for other reasons — assert this at the
+  `Assembler.Assemble`/`Store.Create` write path (§9 step 2), not at fetch
+  time, since under this design a skill/profile excerpt should never
+  reach a state where it *could* be fetched dynamically at all. (Testing
+  "does a dynamically-fetched skill excerpt preserve its authority_tier"
+  is deferred to whatever future "addressable instructions" milestone
+  might introduce a materially different authority model for
+  instruction-bearing content — out of scope here.) (M2.1)
 - **D3.** `data_class` (`public`/`organizational`/`sanitized`) is
   preserved unchanged through a dynamic fetch — assert a `sanitized`
   resource's fetched `ContextResource.data_class` still reads
@@ -179,12 +202,14 @@ needing the whole suite to exist first.
   append-only insert path. (M2.2)
 - **G2.** A `context.search` call racing against nothing (search never
   invalidates or mutates `context_addressable_resources`, per DESIGN.md
-  §18) never observes a partially-written row — assert the write
-  transaction in `contextengine.Assembler.Assemble` that adds
+  §18) never observes a partially-written row — corrected in independent
+  review round 2: assert the write transaction in
+  `contextengine/postgres.Store.Create` (not `Assembler.Assemble`, which
+  DESIGN.md §9 step 2 confirms is a pure, I/O-free function) that adds
   `context_addressable_resources` rows commits atomically with the
-  `context_segments` write it accompanies, so a search can never see a
-  snapshot with segments but no addressable-resource rows (or vice versa)
-  mid-build. (M2.1)
+  `context_segments`/`context_snapshots` write it accompanies, so a search
+  can never see a snapshot with segments but no addressable-resource rows
+  (or vice versa) mid-build. (M2.1)
 - **G3.** A deliberately tampered/contradictory binding attempt — e.g. two
   concurrent requests trying to insert conflicting
   `context_addressable_resources` rows for the same
@@ -192,12 +217,13 @@ needing the whole suite to exist first.
   by the `UNIQUE` constraint (DESIGN.md §6.1), and the losing writer's
   transaction fails cleanly rather than corrupting the winning row. (M2.1)
 - **G4.** If a manifest-like read (`context.inspect` list-all) races with
-  the tail end of `Assemble`'s write of addressable-resource rows for the
-  same snapshot build, the read either sees the fully-committed set or
-  none of it — never a partial set — assert this via the same transaction
-  boundary as G2 (there is no separate "manifest creation" step in this
-  design per DESIGN.md §18, so this test doubles as confirmation that no
-  such race window exists by construction). (M2.1)
+  the tail end of `Store.Create`'s write of addressable-resource rows for
+  the same snapshot build (corrected in round 2 — see G2), the read either
+  sees the fully-committed set or none of it — never a partial set —
+  assert this via the same transaction boundary as G2 (there is no
+  separate "manifest creation" step in this design per DESIGN.md §18, so
+  this test doubles as confirmation that no such race window exists by
+  construction). (M2.1)
 - **G5.** Process restart between "durable tool-call-requested event
   appended" and "disclosure read executed" (mirroring
   `executionharness`'s existing crash-safety pattern) results in the run
@@ -217,10 +243,14 @@ needing the whole suite to exist first.
 - **H2.** The dynamic-context aggregation (`dynamic_context_bytes`,
   `dynamic_context_estimated_tokens`, `dynamic_context_fetch_count`,
   `resources_inspected`, `resources_fetched`, `search_calls`) computed
-  from `context_disclosure_events` for a given `model_invocation_id`
+  from `context_disclosure_events` for a given
+  `requesting_model_invocation_id` (DESIGN.md §6.2 naming, round 2)
   correctly attributes each event to that invocation and no other, even
   when multiple invocations share the same underlying snapshot (e.g. a
-  retried invocation against the same context). (M2.5)
+  retried invocation against the same context) — and assert the naming
+  itself is honored in the aggregation's own output/documentation (never
+  presented as "tokens invocation N consumed," per DESIGN.md §6.2's
+  naming note). (M2.5)
 - **H3.** `context_disclosure_events.estimated_tokens` is computed with
   the same estimator identity (`EstimatorID`/`EstimatorVersion`) family as
   `ContextTokenTelemetry`, and is never mislabeled or exported anywhere as
@@ -251,7 +281,7 @@ needing the whole suite to exist first.
   or otherwise mutated by anything M2 introduces — assert its
   `ProviderVisibleBytes`/digest are bit-identical before and after M2 code
   is deployed and exercised against unrelated invocations. (M2.6)
-- **I3.** A historical `model_invocation_id` that predates the
+- **I3.** A historical `requesting_model_invocation_id` that predates the
   `context_disclosure_events` table produces an aggregation result that is
   explicitly `unavailable`/zero-with-an-honesty-marker (DESIGN.md §19),
   not indistinguishable from "we confirmed it made zero dynamic reads" —
@@ -286,11 +316,23 @@ needing the whole suite to exist first.
   OPERATIONAL_FAILURE (per DESIGN.md §17's classification — corrupt bytes
   that fail digest verification are STALE_DRIFT; bytes that cannot be read
   at all are OPERATIONAL_FAILURE), and is distinguishable in the audit
-  trail from a legitimate FORBIDDEN. (M2.2)
-- **J3.** A missing resource (valid handle shape, no matching row) is
-  correctly reported NOT_FOUND and is distinguishable from a resource that
-  exists but is denied (FORBIDDEN) — construct both cases side by side in
-  one test and assert the outcome codes differ. (M2.2)
+  trail from a legitimate action-level FORBIDDEN (see J3). (M2.2)
+- **J3.** Corrected in independent review round 2 (DESIGN.md §17's
+  cross-org/cross-snapshot existence-oracle fix removed content-membership
+  FORBIDDEN as a model-visible outcome). Two distinct assertions:
+  (a) a missing resource (valid handle shape, no matching row) and a
+  resource that exists but belongs to a different org/snapshot both report
+  the same model-visible **NOT_FOUND** — assert no observable difference
+  in the response (timing, error text, shape) that would let a caller
+  distinguish them; (b) an action-level denial (e.g. the invoking role's
+  `context.search.invoke` capability itself is not granted, per §10
+  boundary #1 — independent of any specific resource's existence) reports
+  **FORBIDDEN**, and is model-visibly distinguishable from NOT_FOUND, since
+  an action-capability denial reveals nothing about content existence. A
+  third assertion covers the audit trail only: the **internal**
+  `context_disclosure_events.outcome` for case (a)'s two sub-cases still
+  differs (`not_found` vs the cross-org/cross-snapshot qualified
+  `forbidden_*` reason), even though the model/API response did not. (M2.2)
 - **J4.** `context.search` against a temporarily-unavailable index/storage
   layer reports OPERATIONAL_FAILURE, not an empty result set — this is
   the sharpest test of the "silence is not success" principle: an empty
@@ -310,11 +352,19 @@ needing the whole suite to exist first.
 - **M2.0** (contract + domain types): no persistence-dependent tests yet;
   pure unit tests for handle encode/decode round-tripping and
   `ContextResource` shape validation belong here, ahead of A-J.
-- **M2.1** (durable addressable resources): A1, A2, A6, D4, G2, G3, G4.
+- **M2.1** (durable addressable resources): A1, A2, A6, D2 (rescoped,
+  round 2), D4, G2, G3, G4.
 - **M2.2** (fetch/inspect/slice + auth chain): A3, A4, A5, B1, B3, B4, C1,
   C2, C3, C4, D1 (partial, wrapping deferred to M2.3), D3, E1, E2, E6, F1,
   F2, G1, I1 (partial), J1, J2, J3, J5 (partial).
-- **M2.3** (Harness tool wiring): D1 (full), D2, D5, F3, G5.
+- **M2.3** (Harness tool wiring): D1 (full), D5, F3, G5. This slice is
+  also where `ToolExecutionContext` (DESIGN.md §9A, round 2) is
+  introduced — before any of these tests can exercise a real
+  `contextdisclosure.ToolExecutor`, add a dedicated unit test asserting
+  `Runtime.Execute` constructs `ToolExecutionContext.ContextSnapshotID`/
+  `RequestingModelInvocationID` from `RunSpec.Context.ID`/the current
+  turn's `ModelResult.InvocationRef` exactly once per turn, never per tool
+  call, and never from `ToolRequest.Arguments`.
 - **M2.4** (search/aggregate): B2, B5, E3, E4, E5, J4, J5 (search-specific).
 - **M2.5** (telemetry): H1-H5.
 - **M2.6** (integration/historical): I1-I5.
