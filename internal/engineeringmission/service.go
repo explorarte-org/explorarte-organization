@@ -6,6 +6,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/coderunner"
 	"github.com/Mireuz13/explorarte-organization/internal/staging"
 	"github.com/Mireuz13/explorarte-organization/internal/tasks"
+	"strings"
 )
 
 type TaskPort interface {
@@ -118,5 +119,41 @@ func (s Service) Resolve(ctx context.Context, taskID int64) (MissionPolicy, erro
 		return MissionPolicy{}, fmt.Errorf("engineering policy missing")
 	}
 	return *found, nil
+}
+
+// VerifyRequiredGates reads the existing CodeRunner attempt evidence from the
+// task ledger. It never creates a second gate ledger.
+func (s Service) VerifyRequiredGates(ctx context.Context, taskID int64, policy MissionPolicy) error {
+	detail, err := s.Tasks.GetTask(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	for _, wanted := range policy.RequiredGates {
+		matched := false
+		for _, ev := range detail.Evidence {
+			if !strings.HasPrefix(ev.Reference, "code-runner-attempt-evidence://") {
+				continue
+			}
+			checks, ok := ev.Metadata["checks_run"].([]any)
+			if !ok {
+				continue
+			}
+			for _, raw := range checks {
+				m, ok := raw.(map[string]any)
+				if !ok {
+					continue
+				}
+				typ, _ := m["type"].(string)
+				success, _ := m["success"].(bool)
+				if typ == string(wanted.Type) && success {
+					matched = true
+				}
+			}
+		}
+		if !matched {
+			return fmt.Errorf("required gate %s is not durably satisfied", wanted.Type)
+		}
+	}
+	return nil
 }
 func boolPtr(v bool) *bool { return &v }

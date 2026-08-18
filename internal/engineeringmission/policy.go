@@ -58,6 +58,11 @@ func (p MissionPolicy) Normalize() (MissionPolicy, error) {
 		if x == "." || x == "" || strings.HasPrefix(x, "/") || x == ".." || strings.HasPrefix(x, "../") || strings.Contains(x, "\\") || x == ".git" || strings.HasPrefix(x, ".git/") || x == "go.mod" || x == "go.sum" {
 			return MissionPolicy{}, fmt.Errorf("invalid allowed path %q", raw)
 		}
+		for _, part := range strings.Split(x, "/") {
+			if part == ".git" || part == "go.mod" || part == "go.sum" {
+				return MissionPolicy{}, fmt.Errorf("structurally denied allowed path %q", raw)
+			}
+		}
 		if !seen[x] {
 			seen[x] = true
 			paths = append(paths, x)
