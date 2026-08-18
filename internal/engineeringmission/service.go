@@ -108,7 +108,7 @@ func (s Service) RequestPromotion(ctx context.Context, taskID, workspaceID int64
 	}
 	var reqID int64
 	for _, r := range detail.Requirements {
-		if r.Key == "engineering.required_gates" {
+		if r.Key == "engineering-required-gates" {
 			if reqID != 0 {
 				return staging.Promotion{}, fmt.Errorf("duplicate gate requirement")
 			}
@@ -131,7 +131,7 @@ func (s Service) RequestPromotion(ctx context.Context, taskID, workspaceID int64
 	if ref == "" || digest == "" {
 		return staging.Promotion{}, fmt.Errorf("attempt evidence missing")
 	}
-	if _, err := s.Promotion.RecordCheck(ctx, staging.RecordCheckCommand{WorkspaceID: workspaceID, RequirementID: reqID, Name: "engineering.required_gates", Status: staging.CheckPassed, Reference: ref, Digest: digest, ActorRoleID: actorRole}); err != nil {
+	if _, err := s.Promotion.RecordCheck(ctx, staging.RecordCheckCommand{WorkspaceID: workspaceID, RequirementID: reqID, Name: "engineering-required-gates", Status: staging.CheckPassed, Reference: ref, Digest: digest, ActorRoleID: actorRole}); err != nil {
 		return staging.Promotion{}, err
 	}
 	return s.Promotion.RequestPromotion(ctx, staging.RequestPromotionCommand{WorkspaceID: workspaceID, ActorRoleID: actorRole})
@@ -167,7 +167,18 @@ func (s Service) ReviewMission(ctx context.Context, promotionID, approvalRequire
 	return s.Promotion.SubmitReview(ctx, staging.SubmitReviewCommand{PromotionID: p.ID, RequirementID: approvalRequirementID, Decision: decision, ActorRoleID: reviewerRole, Reason: reason, Reference: ref})
 }
 
-func (s Service) Create(ctx context.Context, policy MissionPolicy, organization, requestedBy, actorType, actorID string) (tasks.Task, error) {
+// Create records a durable engineering-mission/v1 policy and dispatches a
+// real CodeRunner attempt against it. plan is the actual
+// code-runner-execution/v1 JSON CodeRunner's worker will parse via
+// coderunner.ParsePlan and execute (worker.go: `ParsePlan([]byte(item.Task.
+// Instructions))`) -- it is validated here (well-formed, non-empty
+// operations) so a malformed plan fails at mission-creation time, not
+// silently at claim time. plan is NOT part of MissionPolicy: the policy is
+// the governance envelope (BaseSHA/AllowedPaths/AcceptanceCriteria/
+// RequiredGates) Guard/WorkspaceResolver/VerifyRequiredGates enforce against
+// whatever plan is submitted; the plan itself is the ordinary CodeRunner
+// task payload every other CodeRunner caller already uses.
+func (s Service) Create(ctx context.Context, policy MissionPolicy, plan string, organization, requestedBy, actorType, actorID string) (tasks.Task, error) {
 	if s.Tasks == nil {
 		return tasks.Task{}, fmt.Errorf("task service required")
 	}
@@ -175,12 +186,16 @@ func (s Service) Create(ctx context.Context, policy MissionPolicy, organization,
 	if err != nil {
 		return tasks.Task{}, err
 	}
+	parsedPlan, err := coderunner.ParsePlan([]byte(plan))
+	if err != nil || len(parsedPlan.Operations) == 0 {
+		return tasks.Task{}, fmt.Errorf("invalid engineering mission execution plan: %w", err)
+	}
 	meta, digest, err := policy.MarshalEvidence()
 	if err != nil {
 		return tasks.Task{}, err
 	}
-	reqs := []tasks.RequirementSpec{{Key: "candidate-artifact", Type: tasks.RequirementArtifact, Description: "sealed engineering candidate", Required: boolPtr(true)}, {Key: "engineering.required_gates", Type: tasks.RequirementCheck, Description: "all declared engineering gates pass", Required: boolPtr(true)}, {Key: "review", Type: tasks.RequirementApproval, Description: "independent engineering review", Required: boolPtr(true)}}
-	task, _, err := s.Tasks.CreateTask(ctx, tasks.CreateRequest{OrganizationID: organization, RequestedByRoleID: requestedBy, AssignedRoleID: CodeRunnerRole, Title: policy.Objective, Instructions: "code-runner-execution/v1", AcceptanceCriteria: policy.AcceptanceCriteria, IdempotencyKey: "engineering-mission/" + digest, Requirements: reqs}, actorType, actorID)
+	reqs := []tasks.RequirementSpec{{Key: "candidate-artifact", Type: tasks.RequirementArtifact, Description: "sealed engineering candidate", Required: boolPtr(true)}, {Key: "engineering-required-gates", Type: tasks.RequirementCheck, Description: "all declared engineering gates pass", Required: boolPtr(true)}, {Key: "review", Type: tasks.RequirementApproval, Description: "independent engineering review", Required: boolPtr(true)}}
+	task, _, err := s.Tasks.CreateTask(ctx, tasks.CreateRequest{OrganizationID: organization, RequestedByRoleID: requestedBy, AssignedRoleID: CodeRunnerRole, Title: policy.Objective, Instructions: plan, AcceptanceCriteria: policy.AcceptanceCriteria, IdempotencyKey: "engineering-mission/" + digest, Requirements: reqs}, actorType, actorID)
 	if err != nil {
 		return tasks.Task{}, err
 	}
