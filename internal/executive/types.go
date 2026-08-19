@@ -6,10 +6,13 @@ import (
 )
 
 const (
-	ExecutivePlanSchemaVersion    = "executive-plan/v1"
-	DepartmentPlanSchemaVersion   = "department-plan/v1"
-	DepartmentReviewSchemaVersion = "department-review/v1"
-	ExecutiveClosureSchemaVersion = "executive-closure/v1"
+	ExecutivePlanSchemaVersion      = "executive-plan/v1"
+	DepartmentPlanSchemaVersion     = "department-plan/v1"
+	DepartmentReviewSchemaVersion   = "department-review/v1"
+	ExecutiveClosureSchemaVersion   = "executive-closure/v1"
+	AdversarialReviewSchemaVersion  = "adversarial-review/v1"
+	DesignAdjudicationSchemaVersion = "design-adjudication/v1"
+	ImplementationPlanSchemaVersion = "implementation-plan/v1"
 
 	OwnerRoleID    = "empresa/human"
 	CEORoleID      = "empresa/ceo"

@@ -1,7 +1,7 @@
 schema_version: 0.1.0
 document_status: api_only_candidate
 policy_id: model-egress
-policy_version: 6
+policy_version: 7
 default_action: deny
 hard_denies:
 - data_classification: clinical
@@ -45,6 +45,14 @@ rules:
   data_classification: sanitized
   effect: allow
   reason_code: sanitized_egress_approved_for_openai_compatible_v4
+- provider_id: xai
+  data_classification: public
+  effect: allow
+  reason_code: public_egress_approved_for_xai_v1
+- provider_id: xai
+  data_classification: sanitized
+  effect: allow
+  reason_code: sanitized_egress_approved_for_xai_v1
 - provider_id: openai_responses
   data_classification: organizational
   effect: allow

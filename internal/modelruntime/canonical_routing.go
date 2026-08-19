@@ -501,6 +501,13 @@ func compiledAdapterAvailability(policy routingPolicy) (AdapterStatus, bool) {
 		return AdapterAvailable, true
 	case policy.Transport == TransportHTTP && policy.Provider == "openai_responses":
 		return AdapterAvailable, true
+	case policy.Transport == TransportHTTP && policy.Provider == "xai":
+		// Adversarial reviewer provider -- internal/modelruntime/adapter/xai.
+		// Compiled and dispatchable does not mean reachable: the reviewer role
+		// is still disabled in the canonical catalog, the adapter is disabled
+		// unless its environment is configured, and the egress gate requires
+		// ScopeAdversarialReview.
+		return AdapterAvailable, true
 	default:
 		return AdapterUnavailable, false
 	}
