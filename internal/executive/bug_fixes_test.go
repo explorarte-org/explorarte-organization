@@ -441,9 +441,12 @@ func TestBugB_ProviderSucceeds_ContractRejected_AttemptClosed(t *testing.T) {
 		t.Fatalf("task status=%q must not be running/leased after contract rejection", current.Status)
 	}
 
-	// Attempt must be marked as failed
-	if current.Status != "failed" {
-		t.Fatalf("task status=%q, want 'failed'", current.Status)
+	// The attempt is closed retryably, not terminally: a contract rejection
+	// after provider success is documented as retryable because a fresh
+	// attempt may produce a valid result. This asserted "failed" only while
+	// the in-memory task store ignored the retryable flag.
+	if current.Status != "retry_wait" {
+		t.Fatalf("task status=%q, want 'retry_wait'", current.Status)
 	}
 
 	// Failure code must be model_result_contract_rejected
@@ -690,9 +693,11 @@ func TestSentinelA_ProviderSucceeded_ValidateRejected(t *testing.T) {
 		t.Fatalf("invocation must be succeeded, got %v", invocations)
 	}
 
-	// A. Attempt = failed/terminal
-	if current.Status != "failed" {
-		t.Fatalf("task status=%q, want 'failed'", current.Status)
+	// A. Attempt closed retryably. The provider succeeded and the host
+	// rejected the result, which is exactly the case a further attempt can
+	// legitimately fix, so the engine parks it rather than ending the task.
+	if current.Status != "retry_wait" {
+		t.Fatalf("task status=%q, want 'retry_wait'", current.Status)
 	}
 
 	// A. failure_code = model_result_contract_rejected

@@ -111,32 +111,109 @@ func TestBudgetIsNotChargedTwiceForOneAttempt(t *testing.T) {
 // TestAuthorityUnavailableLeavesTheAttemptAlone: authority that could not be
 // consulted is not a denial. Nothing about the attempt changes and the same
 // run identity is entered again.
-func TestAuthorityUnavailableLeavesTheAttemptAlone(t *testing.T) {
+// An outage now schedules its own re-entry instead of leaving the attempt to
+// die of lease expiry. The attempt IS recorded as failed -- but retryably,
+// which is a different durable statement from the terminal one every other
+// failure branch makes, and it is what puts the task back in the engine's
+// hands with the engine's own backoff and attempt ceiling.
+func TestAuthorityUnavailableSchedulesABoundedRetry(t *testing.T) {
 	fixture := newHarnessFixture(t)
 	fixture.harness.failure = HarnessFailureAuthorityUnavailable
 	fixture.harness.invocationStatus = ""
 	if _, err := fixture.drive(t); !errors.Is(err, ErrExecutionAuthorityUnavailable) {
 		t.Fatalf("err=%v", err)
 	}
-	if len(fixture.tasks.failed) != 0 {
-		t.Fatalf("an unavailable authority must not fail the attempt: %v", fixture.tasks.failed)
+	if len(fixture.tasks.failed) != 1 || fixture.tasks.failed[0] != "execution_authority_unavailable" {
+		t.Fatalf("failure codes=%v", fixture.tasks.failed)
 	}
 	current, _ := fixture.tasks.GetTask(context.Background(), fixture.task.ID)
-	if current.Status != "running" {
-		t.Fatalf("task status=%q want running", current.Status)
+	if current.Status != "retry_wait" {
+		t.Fatalf("task status=%q want retry_wait -- the engine owns re-entry", current.Status)
 	}
+	// Still not a root-blocking condition: an outage is infrastructure, not a
+	// statement about the principal.
 	if !isNonBlockingPhaseError(ErrExecutionAuthorityUnavailable) {
 		t.Fatal("an unavailable authority must not block the root")
+	}
+
+	// Re-entry opens a NEW attempt, and the run identity is a pure function
+	// of the attempt, so the retry is a fresh trajectory rather than a resume
+	// of the old one. That is correct here and only here: an authority outage
+	// leaves no invocation and no history behind, so there is nothing to
+	// resume and nothing a fresh run can duplicate.
+	if err := fixture.tasks.Reconcile(context.Background(), 10); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := fixture.drive(t); !errors.Is(err, ErrExecutionAuthorityUnavailable) {
 		t.Fatalf("resume err=%v", err)
 	}
 	if fixture.harness.callCount() != 2 {
-		t.Fatalf("harness runs=%d want the same run entered again", fixture.harness.callCount())
+		t.Fatalf("harness runs=%d want the work entered again", fixture.harness.callCount())
 	}
 	first, second := fixture.harness.commands[0], fixture.harness.commands[1]
-	if first.RunID != second.RunID {
-		t.Fatalf("resume changed the run identity: %q -> %q", first.RunID, second.RunID)
+	if first.RunID == second.RunID {
+		t.Fatal("a new attempt reused the previous run identity")
+	}
+	if first.TaskID != second.TaskID {
+		t.Fatalf("the retry moved to another task: %d -> %d", first.TaskID, second.TaskID)
+	}
+}
+
+// The retry is bounded by the task's own max_attempts. An outage that never
+// clears ends terminal instead of spinning forever.
+func TestAuthorityOutageRetryIsBoundedByMaxAttempts(t *testing.T) {
+	fixture := newHarnessFixture(t)
+	fixture.harness.failure = HarnessFailureAuthorityUnavailable
+	fixture.harness.invocationStatus = ""
+	task, _ := fixture.tasks.GetTask(context.Background(), fixture.task.ID)
+	ceiling := task.MaxAttempts
+	if ceiling < 1 {
+		t.Fatalf("fixture has no attempt ceiling: %d", ceiling)
+	}
+	for i := 0; i < ceiling+3; i++ {
+		if _, err := fixture.drive(t); err == nil {
+			break
+		}
+		if err := fixture.tasks.Reconcile(context.Background(), 10); err != nil {
+			t.Fatal(err)
+		}
+		current, _ := fixture.tasks.GetTask(context.Background(), fixture.task.ID)
+		if current.Status == "failed" {
+			break
+		}
+	}
+	current, _ := fixture.tasks.GetTask(context.Background(), fixture.task.ID)
+	if current.Status != "failed" {
+		t.Fatalf("status=%q -- an outage that never clears must stop retrying", current.Status)
+	}
+	if fixture.harness.callCount() > ceiling+1 {
+		t.Fatalf("harness entered %d times for a ceiling of %d", fixture.harness.callCount(), ceiling)
+	}
+}
+
+// The guard that matters: if the attempt somehow already carries a durable
+// invocation, the outage report and the invocation record disagree, and
+// retrying would risk a second provider call. That case fails closed and
+// non-retryably instead.
+func TestAuthorityOutageWithADurableInvocationDoesNotRetry(t *testing.T) {
+	fixture := newHarnessFixture(t)
+	fixture.harness.failure = HarnessFailureAuthorityUnavailable
+	fixture.harness.invocationStatus = "succeeded"
+	if _, err := fixture.drive(t); !errors.Is(err, ErrExecutionAuthorityUnavailable) {
+		t.Fatalf("err=%v", err)
+	}
+	current, _ := fixture.tasks.GetTask(context.Background(), fixture.task.ID)
+	if current.Status == "retry_wait" {
+		t.Fatal("an attempt with a durable invocation was scheduled for retry")
+	}
+	found := false
+	for _, code := range fixture.tasks.failed {
+		if code == "authority_unavailable_with_durable_invocation" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("failure codes=%v -- the disagreement must be recorded explicitly", fixture.tasks.failed)
 	}
 }
 
