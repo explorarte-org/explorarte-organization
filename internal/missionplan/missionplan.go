@@ -111,8 +111,12 @@ const (
 // Derive turns a frozen implementation plan into a mission policy and a
 // validated CodeRunner plan. It fails closed on anything it cannot justify.
 func Derive(request Request) (Derived, error) {
-	if request.TaskID <= 0 {
-		return Derived{}, fmt.Errorf("%w: task id is required", ErrPlanInvalid)
+	// TaskID may legitimately be zero here. The mission task does not exist
+	// until engineeringmission.Service.Create inserts it, and Create sets
+	// policy.TaskID from the row it just created -- so at derivation time
+	// there is no id to carry yet. A negative id is still a bug.
+	if request.TaskID < 0 {
+		return Derived{}, fmt.Errorf("%w: task id cannot be negative", ErrPlanInvalid)
 	}
 	// A 40-char SHA and nothing else. HEAD, a branch name or "latest" would
 	// make the mission's base whatever the repository happened to be when it

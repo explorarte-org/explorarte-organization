@@ -230,12 +230,12 @@ func TestDeriveIsDeterministic(t *testing.T) {
 
 func TestMalformedPlansAreRefused(t *testing.T) {
 	cases := map[string]func(*Request){
-		"no changes":     func(r *Request) { r.Changes = nil },
-		"empty patch":    func(r *Request) { r.Changes[0].Patch = "  " },
-		"no objective":   func(r *Request) { r.Objective = "" },
-		"no criteria":    func(r *Request) { r.AcceptanceCriteria = nil },
-		"no task":        func(r *Request) { r.TaskID = 0 },
-		"duplicate path": func(r *Request) { r.Changes = append(r.Changes, r.Changes[0]) },
+		"no changes":       func(r *Request) { r.Changes = nil },
+		"empty patch":      func(r *Request) { r.Changes[0].Patch = "  " },
+		"no objective":     func(r *Request) { r.Objective = "" },
+		"no criteria":      func(r *Request) { r.AcceptanceCriteria = nil },
+		"negative task id": func(r *Request) { r.TaskID = -1 },
+		"duplicate path":   func(r *Request) { r.Changes = append(r.Changes, r.Changes[0]) },
 		"too many changes": func(r *Request) {
 			for i := 0; i < maxChangesPerMission+1; i++ {
 				r.Changes = append(r.Changes, Change{Path: "docs/implementation/x" + strings.Repeat("y", i) + ".md", Intent: "i", Patch: unifiedDiff("docs/implementation/x.md")})

@@ -43,6 +43,9 @@ type Orchestrator struct {
 	messages       AgentMessagingProvider
 	leaseKeeper    LeaseKeeperConfig
 
+	programTarget ProgramTargetResolver
+	missions      MissionProvisioner
+
 	mu     sync.Mutex
 	leases map[int64]LeaseRecord
 }
@@ -341,6 +344,23 @@ func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error
 	if run, done, freezeErr := o.driveDesignFreeze(ctx, root, all); done || freezeErr != nil {
 		if freezeErr != nil {
 			return Run{}, freezeErr
+		}
+		return run, nil
+	}
+	all, err = o.tasks.ListByCorrelation(ctx, root.CorrelationID)
+	if err != nil {
+		return Run{}, err
+	}
+	// Engineering owns the work from here. This is the last thing the
+	// Executive does before the boundary, and it ends when a governed
+	// mission exists -- never by executing one.
+	root, err = o.tasks.GetTask(ctx, root.ID)
+	if err != nil {
+		return Run{}, err
+	}
+	if run, done, missionErr := o.driveImplementationMission(ctx, root, all); done || missionErr != nil {
+		if missionErr != nil {
+			return Run{}, missionErr
 		}
 		return run, nil
 	}
@@ -1522,7 +1542,7 @@ func latestFinishedAttemptID(attempts []AttemptRecord) int64 {
 }
 func resultRequirementID(reqs []RequirementRecord) int64 {
 	for _, r := range reqs {
-		if r.Required && r.Type == "result" && (r.Key == "typed_plan" || r.Key == "typed_review" || r.Key == "typed_closure" || r.Key == "model_result" || r.Key == "executive_closure_verified" || r.Key == "typed_adversarial_review" || r.Key == "typed_design_adjudication") {
+		if r.Required && r.Type == "result" && (r.Key == "typed_plan" || r.Key == "typed_review" || r.Key == "typed_closure" || r.Key == "model_result" || r.Key == "executive_closure_verified" || r.Key == "typed_adversarial_review" || r.Key == "typed_design_adjudication" || r.Key == "typed_implementation_plan") {
 			return r.ID
 		}
 	}

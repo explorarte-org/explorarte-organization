@@ -69,13 +69,13 @@ func ProductiveLoadOptions(knownProviders []string) LoadOptions {
 			// R10.2: MiMo-V2.5 challenger canary (internal/modelruntime/
 			// adapter/mimo), same classification surface as the other
 			// compiled HTTP API adapters.
-			"mimo":              {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
+			"mimo": {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
 			// xAI is the adversarial reviewer's provider and is deliberately
 			// narrower than every other compiled adapter: no organizational
 			// classification, so a raw organizational dump can never become a
 			// policy allow for it. Keep in sync with registry.
 			// productiveEgressAllowRules.
-			"xai":               {ClassificationPublic, ClassificationSanitized},
+			"xai": {ClassificationPublic, ClassificationSanitized},
 		},
 	}
 }

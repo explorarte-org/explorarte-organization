@@ -31,6 +31,12 @@ const (
 	// should be done", adjudication answers "which findings stand, and may
 	// this design be frozen". Same role, same profile, different question.
 	PurposeDesignAdjudication ExecutionPurpose = "design-adjudication"
+	// PurposeImplementationPlan is produced by a department leader AFTER a
+	// design freeze. It is not PurposeDepartmentPlan: that one decomposes a
+	// department objective into worker tasks, while this one states what to
+	// change in the repository and supplies the patch. Only this purpose can
+	// feed the mission translator.
+	PurposeImplementationPlan ExecutionPurpose = "implementation-plan"
 )
 
 // LegacyPurpose is the free-text purpose the Context Engine and Model Runtime
@@ -56,6 +62,10 @@ func (p ExecutionPurpose) LegacyPurpose() string {
 		return "adversarial_review"
 	case PurposeDesignAdjudication:
 		return "design_adjudication"
+	case PurposeImplementationPlan:
+		// Matches modelegress.ExecutiveScopeMarker's "implementation_plan"
+		// case, which grants it the department-leader scope.
+		return "implementation_plan"
 	}
 	return ""
 }
@@ -63,7 +73,7 @@ func (p ExecutionPurpose) LegacyPurpose() string {
 func (p ExecutionPurpose) Valid() bool {
 	switch p {
 	case PurposeCEOPlan, PurposeDepartmentPlan, PurposeDepartmentWorker, PurposeDepartmentReview, PurposeCEOClosure,
-		PurposeAdversarialReview, PurposeDesignAdjudication:
+		PurposeAdversarialReview, PurposeDesignAdjudication, PurposeImplementationPlan:
 		return true
 	}
 	return false
