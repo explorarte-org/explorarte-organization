@@ -103,6 +103,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runSleep(args[1:], stdout, stderr)
 	case "budget":
 		return runBudget(args[1:], stdout, stderr)
+	case "program":
+		return runProgram(args[1:], stdout, stderr)
 	case "cost":
 		return runCost(args[1:], stdout, stderr)
 	case "agents":

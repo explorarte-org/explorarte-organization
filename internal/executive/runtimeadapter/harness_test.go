@@ -278,3 +278,30 @@ func TestInvocationMappingCarriesModelRuntimesOwnSafetyAnswer(t *testing.T) {
 		t.Fatal("no invocation status is classified as possibly having reached the provider")
 	}
 }
+
+// TestExecutiveRunPassesExecutionContractToModelExecutor proves the run
+// command's ExecutionContract is threaded into the model executor config, so
+// execution-time contract guidance reaches the model boundary even for tasks
+// whose durable instructions predate the contract.
+func TestExecutiveRunPassesExecutionContractToModelExecutor(t *testing.T) {
+	var captured modelruntimeadapter.Config
+	h := Harness{
+		OrganizationID: "explorarte",
+		Authority:      &allowAuthority{},
+		History:        newMemoryHistory(),
+		NewModelExecutor: func(config modelruntimeadapter.Config) (executionharness.ModelExecutor, error) {
+			captured = config
+			return nil, errors.New("captured config")
+		},
+		Clock: executive.ClockFunc(func() time.Time { return time.Unix(1000, 0) }),
+	}
+	command := testCommand()
+	command.ExecutionContract = "task_class MUST use lowercase dotted syntax"
+	if _, err := h.Execute(context.Background(), command); err == nil {
+		t.Fatal("expected the stub executor error to surface")
+	}
+	if captured.ExecutionContractInstructions != command.ExecutionContract {
+		t.Fatalf("ExecutionContract not threaded into model executor config: got %q want %q",
+			captured.ExecutionContractInstructions, command.ExecutionContract)
+	}
+}

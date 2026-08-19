@@ -84,13 +84,23 @@ type HarnessRunCommand struct {
 	// Runtime requires an invocation's stable prefix to be the byte-exact
 	// render of the snapshot it references, and the run identity digest binds
 	// the context bytes, so a snapshot ID alone cannot describe a run.
-	Context         ContextSnapshot
-	Purpose         ExecutionPurpose
-	OutputSchema    json.RawMessage
-	MaxOutputTokens int
-	CorrelationID   string
-	CausationID     string
-	Deadline        time.Time
+	Context      ContextSnapshot
+	Purpose      ExecutionPurpose
+	OutputSchema json.RawMessage
+	// ExecutionContract carries execution-time output-contract instructions
+	// that must reach the model even when the durable task instructions
+	// predate them (a task created by an older Executive build is re-driven
+	// through the same TaskRecord, never re-created). It is delivered to the
+	// model boundary as its own stable-prefix instruction, separate from the
+	// durable context snapshot render, so the snapshot's content/digest and
+	// provenance are never rewritten. It is an execution instruction, not
+	// evidence and not authority: host-side validation remains the final
+	// acceptance boundary for whatever the model returns.
+	ExecutionContract string
+	MaxOutputTokens   int
+	CorrelationID     string
+	CausationID       string
+	Deadline          time.Time
 }
 
 // HarnessRunFailure is the minimum the Executive must be able to tell apart to

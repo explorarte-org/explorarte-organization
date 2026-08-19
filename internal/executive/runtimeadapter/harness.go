@@ -76,12 +76,13 @@ func (h Harness) Execute(ctx context.Context, command executive.HarnessRunComman
 	// invocation's idempotency, so a re-entry under a different schema cannot
 	// adopt the previous invocation.
 	models, err := h.NewModelExecutor(modelruntimeadapter.Config{
-		RequiredCapabilities: append([]modelruntime.ModelCapability(nil), h.RequiredCapabilities...),
-		MaxOutputTokens:      command.MaxOutputTokens,
-		ThinkingMode:         modelruntime.ThinkingOpaque,
-		InvocationTTL:        ttl,
-		OutputMode:           modelruntime.OutputJSON,
-		OutputSchema:         append([]byte(nil), command.OutputSchema...),
+		RequiredCapabilities:          append([]modelruntime.ModelCapability(nil), h.RequiredCapabilities...),
+		MaxOutputTokens:               command.MaxOutputTokens,
+		ThinkingMode:                  modelruntime.ThinkingOpaque,
+		InvocationTTL:                 ttl,
+		OutputMode:                    modelruntime.OutputJSON,
+		OutputSchema:                  append([]byte(nil), command.OutputSchema...),
+		ExecutionContractInstructions: command.ExecutionContract,
 	})
 	if err != nil {
 		return executive.HarnessRunOutcome{}, fmt.Errorf("build harness model executor: %w", err)

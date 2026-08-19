@@ -16,5 +16,6 @@ var (
 	// ErrAmountMismatch means a retried Reserve call for an invocation
 	// that was already reserved asked for a different amount than what is
 	// actually on the ledger.
-	ErrAmountMismatch = errors.New("cost reservation retried with a different amount")
+	ErrAmountMismatch        = errors.New("cost reservation retried with a different amount")
+	ErrProgramBudgetExceeded = errors.New("program model budget exceeded")
 )

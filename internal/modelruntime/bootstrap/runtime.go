@@ -34,6 +34,7 @@ import (
 	modelpostgres "github.com/Mireuz13/explorarte-organization/internal/modelruntime/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/programbudget"
 	"github.com/Mireuz13/explorarte-organization/internal/tasks"
 	taskcontextprovider "github.com/Mireuz13/explorarte-organization/internal/tasks/contextprovider"
 	taskpostgres "github.com/Mireuz13/explorarte-organization/internal/tasks/postgres"
@@ -225,6 +226,7 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	if err != nil {
 		return nil, fmt.Errorf("create cost/budget gate: %w", err)
 	}
+	gate.WithProgramBudgetResolver(programbudget.Resolver{Tasks: taskStore})
 	dispatchService, err := modelruntime.NewDispatchService(cfg.Tasks.OrganizationID, runtimeCfg, catalog, tasksAdapter, contexts, evaluator, egressRuntime.Store, egressRuntime.Evaluator, modelStore, dispatchRuntime.Store, dispatchRuntime.Store, identityRuntime.Challenges, modelStore, adapters, modelruntime.ClockFunc(time.Now), modelruntime.WithCostBudgetGate(gate))
 	if err != nil {
 		return nil, err

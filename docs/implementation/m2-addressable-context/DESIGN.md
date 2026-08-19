@@ -1769,7 +1769,9 @@ per mission brief.
   operation spec.
 - INPUT: bounded query string (§16 length limit), implicit snapshot scope.
 - OUTPUT: **deterministically** ranked `{handle, kind, snippet (bounded),
-  score}[]` (round 4: no longer "ranking MAY vary" — see §12A), where
+  score, data_class}[]` (round 4: no longer "ranking MAY vary" — see §12A;
+  `data_class` added at the M2.0 implementation layer, TEST_PLAN.md L6),
+  where
   `snippet` is derived from `context_addressable_resources.search_text`
   (§6.1/§12A) — a resource with `search_text IS NULL` is never returned by
   `context.search` (still visible via `context.inspect`, still fetchable
@@ -1801,9 +1803,28 @@ per mission brief.
   `context.search` itself still returns FORBIDDEN, before any ranking is
   computed (§10A, round 4 correction).
 
-### `context.aggregate(handles[]) -> ContextResource`
+### `context.aggregate(handles[]) -> AggregateResult`
+- **Implementation note (M2.0 round 7/8):** the output type is
+  `AggregateResult` (`internal/contextdisclosure`), not a bare
+  `ContextResource` — a single `ContextResource` cannot honestly
+  represent this operation once member resources genuinely differ in
+  `kind`/`data_class` (permitted by the very next bullet: "each still
+  wrapped with its own trust/provenance markers"); there is no single
+  valid answer for a shared `Kind`/`AuthorityTier`/`DataClass`/
+  `ContentDigest` in that case. `AggregateResult` is `{members:
+  AggregateMember[], content, byte_count}`, where each `AggregateMember`
+  carries its own `{handle, kind, source_reference, source_version,
+  authority_tier, instruction_class, trust_class, data_class,
+  may_grant_capabilities, content_digest, byte_count}` — everything a
+  single-resource `ContextResource` would carry, except `content` itself,
+  which lives once, concatenated, on `AggregateResult`.
+  `AggregateResult.byte_count` is the SUM of each member's own (raw,
+  unwrapped) `byte_count` — never a comparison against `len(content)`,
+  since `content` is the wrapped, model-visible concatenation and has no
+  enforceable length relationship to the raw byte counts (wrapping adds
+  `RenderUntrustedContextResource`'s structural marker bytes).
 - INPUT: bounded list of handles (§16 count limit).
-- OUTPUT: one concatenated/bounded `ContextResource` combining several
+- OUTPUT: one concatenated/bounded `AggregateResult` combining several
   resources' content, each still wrapped with its own trust/provenance
   markers (never merged into one undifferentiated blob — I-4).
   **Round 6 correction (P2 finding: "`context.aggregate` mixed two

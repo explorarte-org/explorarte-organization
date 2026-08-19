@@ -7,11 +7,11 @@ import "regexp"
 // time -- never derived from a task's title later, and never something a
 // model chooses for these specific coordination steps.
 const (
-	TaskClassOwnerGoal               = "owner.goal"
-	TaskClassCoordinationCEOPlan     = "coordination.ceo_plan"
-	TaskClassCoordinationDeptPlan    = "coordination.department_plan"
-	TaskClassCoordinationDeptReview  = "coordination.department_review"
-	TaskClassCoordinationCEOClosure  = "coordination.ceo_closure"
+	TaskClassOwnerGoal              = "owner.goal"
+	TaskClassCoordinationCEOPlan    = "coordination.ceo_plan"
+	TaskClassCoordinationDeptPlan   = "coordination.department_plan"
+	TaskClassCoordinationDeptReview = "coordination.department_review"
+	TaskClassCoordinationCEOClosure = "coordination.ceo_closure"
 	// TaskClassGeneralWork is the safe default a worker task proposal
 	// receives when its Leader did not propose a TaskClass (M1.3 section
 	// 4). Mirrors internal/tasks.TaskClassGeneralWork by value -- these
@@ -29,11 +29,14 @@ const (
 	TaskClassLegacyUnspecified = "legacy.unspecified"
 )
 
-// taskClassPattern is the identical syntax contract internal/tasks.
-// ValidTaskClass enforces -- see that function's doc comment. Kept as an
-// independent definition, not an import, for the same reason
-// TaskClassGeneralWork above is duplicated rather than imported.
-var taskClassPattern = regexp.MustCompile(`^[a-z0-9]+(?:_[a-z0-9]+)*(?:\.[a-z0-9]+(?:_[a-z0-9]+)*)+$`)
+// taskClassPatternString is the identical syntax contract internal/tasks.
+// ValidTaskClass enforces. Kept as an independent definition, not an import,
+// for the same reason TaskClassGeneralWork above is duplicated rather than
+// imported.
+const taskClassPatternString = `^[a-z0-9]+(?:_[a-z0-9]+)*(?:\.[a-z0-9]+(?:_[a-z0-9]+)*)+$`
+
+// taskClassPattern is compiled once at init time for fast matching.
+var taskClassPattern = regexp.MustCompile(taskClassPatternString)
 
 const maxTaskClassBytes = 100
 
@@ -47,3 +50,18 @@ func ValidTaskClass(s string) bool {
 	}
 	return len(s) > 0 && len(s) <= maxTaskClassBytes && taskClassPattern.MatchString(s)
 }
+
+// taskClassGuidance is the deterministic contract text injected into the
+// instructions delivered to the model for DepartmentPlan and
+// DepartmentReview.proposed_followup_tasks. It expresses the host-side
+// task_class syntax requirement so the model has explicit guidance before
+// producing output. This is prompt/schema guidance only -- the FINAL
+// security boundary remains ValidTaskClass in the host-side parser.
+const taskClassGuidance = `task_class MUST:
+  - use lowercase dotted syntax
+  - match: ^[a-z0-9]+(?:_[a-z0-9]+)*(?:\.[a-z0-9]+(?:_[a-z0-9]+)*)+$
+  - be <= 100 bytes
+  - never equal legacy.unspecified
+
+valid examples: memory.discovery, memory.design, engineering.review, general.work
+invalid examples: discovery, design, Review, foo/bar, legacy.unspecified`

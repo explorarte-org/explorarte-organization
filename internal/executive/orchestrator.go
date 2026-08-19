@@ -363,15 +363,78 @@ func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error
 	return o.Status(ctx, root.ID)
 }
 
+const ceoPlanInstructionPrefix = `Produce only the ExecutivePlan JSON contract for the authoritative owner goal below. Propose operational departments; do not select providers, models, capabilities, tools, authority, credentials, or egress.
+
+OWNER_DECISION_POLICY:
+- owner_decisions_required is reserved ONLY for a human decision that is strictly required to continue THIS owner goal safely.
+- Every requested owner decision must be directly grounded in the authoritative owner goal below or in a concrete blocker discovered while executing that goal.
+- Do NOT copy, inherit, summarize, or reactivate historical pending decisions from memory, RAG, prior tasks, canonical documents, previous executive runs, or unrelated organizational work merely because they appear in context.
+- A historical decision may be requested only when the current owner goal explicitly depends on it and cannot safely continue without the owner's choice.
+- Optional unavailable integrations that the current owner goal explicitly declares non-blocking must NOT become owner decisions.
+- Existing unresolved decisions concerning unrelated models, schedules, cells, repositories, profiles, skills, products, or previous milestones are not blockers for this goal.
+- If this owner goal can proceed under existing authority, budget, safety constraints, and registered capabilities, owner_decisions_required MUST be [].
+- Never suppress a genuine current-goal security, data-corruption, budget-escape, irreversible-data-loss, or real-execution blocker merely to keep owner_decisions_required empty.
+
+AUTHORITATIVE_OWNER_GOAL_JSON=`
+
+// buildCEOPlanInstructions preserves the owner's actual durable request across
+// the root -> CEO-planning boundary. The planning task is the TaskRef used by
+// Context Assembly, so referring vaguely to "the owner goal" is insufficient:
+// the authoritative root content must travel with the child task.
+//
+// This fails closed rather than truncating the owner request. A plan generated
+// from a silently shortened goal is not an acceptable substitute for the goal.
+func buildCEOPlanInstructions(root TaskRecord, maxBytes int) (string, error) {
+	payload, err := json.Marshal(struct {
+		Goal               string   `json:"goal"`
+		AcceptanceCriteria []string `json:"acceptance_criteria"`
+	}{
+		Goal:               root.Instructions,
+		AcceptanceCriteria: append([]string(nil), root.AcceptanceCriteria...),
+	})
+	if err != nil {
+		return "", fmt.Errorf("encode authoritative owner goal: %w", err)
+	}
+
+	if maxBytes <= 0 ||
+		len(ceoPlanInstructionPrefix)+len(payload) > maxBytes {
+		return "", fmt.Errorf(
+			"%w: authoritative owner goal cannot fit CEO planning instructions without truncation",
+			ErrPlanTooLarge,
+		)
+	}
+
+	return ceoPlanInstructionPrefix + string(payload), nil
+}
+
 func (o *Orchestrator) createCEOPlanTask(ctx context.Context, root TaskRecord) (TaskRecord, bool, error) {
+	instructions, err := buildCEOPlanInstructions(root, o.limits.MaxInstructionsBytes)
+	if err != nil {
+		return TaskRecord{}, false, err
+	}
+
 	task, reused, err := o.tasks.CreateTask(ctx, CreateTaskCommand{
 		RequestedByRoleID: OwnerRoleID, AssignedRoleID: CEORoleID,
 		TaskClass:      TaskClassCoordinationCEOPlan,
 		IdempotencyKey: childKey(root.ID, "ceo-plan"),
-		Title:          "CEO executive planning", Instructions: "Produce only the ExecutivePlan JSON contract for the owner goal. Propose operational departments; do not select providers, models, capabilities, tools, authority, credentials, or egress.",
-		AcceptanceCriteria: []string{"Return one strict ExecutivePlan JSON value", "Use only operational registry unit IDs", "Do not grant authority or capabilities"},
-		Priority:           100, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID),
-		Requirements: []RequirementProposal{{Key: "typed_plan", Type: "result", Description: "Validated ExecutivePlan invocation result", Required: true}},
+		Title:          "CEO executive planning",
+		Instructions:   instructions,
+		AcceptanceCriteria: []string{
+			"Return one strict ExecutivePlan JSON value",
+			"Use only operational registry unit IDs",
+			"Do not grant authority or capabilities",
+			"OwnerDecisionsRequired may contain only unresolved decisions that are actually required to execute the current owner goal",
+			"Do not copy historical, bootstrap, prior-run, memory, RAG, evidence, or canonical-context decisions into OwnerDecisionsRequired",
+			"If the current owner goal already decides an issue, treat it as decided and do not ask the owner again",
+		},
+		Priority: 100, MaxAttempts: 3,
+		CorrelationID: root.CorrelationID,
+		CausationID:   taskCausation(root.ID),
+		Requirements: []RequirementProposal{{
+			Key: "typed_plan", Type: "result",
+			Description: "Validated ExecutivePlan invocation result",
+			Required:    true,
+		}},
 	})
 	if err != nil {
 		return TaskRecord{}, false, err
@@ -388,7 +451,7 @@ func (o *Orchestrator) createLeaderPlanTask(ctx context.Context, root TaskRecord
 		RequestedByRoleID: CEORoleID, AssignedRoleID: leader.ID,
 		TaskClass:      TaskClassCoordinationDeptPlan,
 		IdempotencyKey: childKey(root.ID, "leader-plan:"+req.UnitID), Title: "Department planning: " + req.UnitID,
-		Instructions:       "Produce only DepartmentPlan JSON for this bounded request: " + instructions,
+		Instructions:       "Produce only DepartmentPlan JSON for this bounded request: " + instructions + "\n\n" + taskClassGuidance,
 		AcceptanceCriteria: []string{"Return one strict DepartmentPlan JSON value", "Delegate only to active assignable roles in this department", "Use only existing requirement types"},
 		Priority:           req.Priority, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID),
 		Requirements: []RequirementProposal{{Key: "typed_plan", Type: "result", Description: "Validated DepartmentPlan invocation result", Required: true}},
@@ -639,7 +702,7 @@ func (o *Orchestrator) createReviewTask(ctx context.Context, root TaskRecord, re
 	if replan > 0 {
 		suffix += ":replan:" + strconv.Itoa(replan)
 	}
-	task, reused, err := o.tasks.CreateTask(ctx, CreateTaskCommand{RequestedByRoleID: CEORoleID, AssignedRoleID: leader.ID, TaskClass: TaskClassCoordinationDeptReview, IdempotencyKey: childKey(root.ID, suffix), Title: "Department review: " + req.UnitID, Instructions: "Review only this bounded durable task/evidence summary and return DepartmentReview JSON: " + summary, AcceptanceCriteria: []string{"Use only durable task states and evidence refs", "Return strict DepartmentReview JSON", "Do not execute tool intents"}, Priority: req.Priority, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID), Requirements: []RequirementProposal{{Key: "typed_review", Type: "result", Description: "Validated DepartmentReview invocation result", Required: true}}})
+	task, reused, err := o.tasks.CreateTask(ctx, CreateTaskCommand{RequestedByRoleID: CEORoleID, AssignedRoleID: leader.ID, TaskClass: TaskClassCoordinationDeptReview, IdempotencyKey: childKey(root.ID, suffix), Title: "Department review: " + req.UnitID, Instructions: "Review only this bounded durable task/evidence summary and return DepartmentReview JSON: " + summary + "\n\n" + taskClassGuidance, AcceptanceCriteria: []string{"Use only durable task states and evidence refs", "Return strict DepartmentReview JSON", "Do not execute tool intents"}, Priority: req.Priority, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID), Requirements: []RequirementProposal{{Key: "typed_review", Type: "result", Description: "Validated DepartmentReview invocation result", Required: true}}})
 	if err != nil {
 		return TaskRecord{}, false, err
 	}
@@ -705,25 +768,17 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		if principal.ID == "" || (principal.RoleID != "" && principal.RoleID != task.AssignedRoleID) {
 			return task, fmt.Errorf("%w: resolved principal is not bound to %s", ErrExecutionPrincipalUnusable, task.AssignedRoleID)
 		}
-		claimed, attempt, l, err := o.tasks.ClaimTask(ctx, ClaimTaskCommand{
+		claimed, _, l, claimErr := o.tasks.ClaimTask(ctx, ClaimTaskCommand{
 			TaskID: task.ID, WorkerID: orchestratorWorkerID, HolderPrincipalID: principal.ID,
 			AssignedRoleID: task.AssignedRoleID, LeaseDuration: executiveLeaseTTL,
 		})
-		if err != nil {
-			return task, err
+		if claimErr != nil {
+			return task, claimErr
 		}
 		task = claimed
 		lease = l
 		o.rememberLease(task.ID, lease)
 		haveLease = true
-		assignment, err := o.assignments.ResolveAssignment(ctx, task.ID, attempt.ID, task.AssignedRoleID)
-		if err != nil {
-			_, _ = o.tasks.BlockTask(ctx, root.ID, "dispatch_assignment_required", fmt.Sprintf("task=%d attempt=%d subject_role=%s lease_expires_at=%s", task.ID, attempt.ID, task.AssignedRoleID, lease.ExpiresAt.UTC().Format(time.RFC3339)), "service", orchestratorWorkerID)
-			return task, ErrDispatchAssignmentRequired
-		}
-		if assignment.OrganizationRevisionID != task.OrganizationRevisionID || assignment.SubjectRoleID != task.AssignedRoleID {
-			return task, fmt.Errorf("%w: dispatch assignment scope mismatch", ErrRegistryMismatch)
-		}
 	}
 	// From here on every lease-authorized mutation is performed as the lease
 	// holder, not as the worker name. The task engine matches ActorID against
@@ -738,19 +793,57 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		if !haveLease {
 			return task, fmt.Errorf("%w: active task lease token unavailable after process restart", ErrRunBlocked)
 		}
-		assignment, err := o.assignments.ResolveAssignment(ctx, task.ID, lease.AttemptID, task.AssignedRoleID)
-		if err != nil {
+
+		// ModelDispatch intentionally allows creation of an assignment only
+		// for a running task/attempt. Starting the attempt is therefore the
+		// durable boundary that must precede assignment resolution. This
+		// transition performs no model dispatch and remains lease-authorized
+		// by the same role-bound principal that claimed the attempt.
+		if _, startErr := o.tasks.StartAttempt(ctx, lease, actorID); startErr != nil {
+			return task, startErr
+		}
+		refreshed, getErr := o.tasks.GetTask(ctx, task.ID)
+		if getErr != nil {
+			return task, getErr
+		}
+		task = refreshed
+	}
+
+	if task.Status == "running" {
+		if !haveLease {
+			return task, fmt.Errorf("%w: running task lease token unavailable after process restart", ErrRunBlocked)
+		}
+
+		// Assignment authorization is checked only after the attempt is
+		// running, matching ModelDispatch's task-attempt invariant. Missing
+		// authorization blocks the root before context construction, budget
+		// authorization, or Harness/model execution.
+		assignment, assignmentErr := o.assignments.ResolveAssignment(
+			ctx,
+			task.ID,
+			lease.AttemptID,
+			task.AssignedRoleID,
+		)
+		if assignmentErr != nil {
+			_, _ = o.tasks.BlockTask(
+				ctx,
+				root.ID,
+				"dispatch_assignment_required",
+				fmt.Sprintf(
+					"task=%d attempt=%d subject_role=%s lease_expires_at=%s",
+					task.ID,
+					lease.AttemptID,
+					task.AssignedRoleID,
+					lease.ExpiresAt.UTC().Format(time.RFC3339),
+				),
+				"service",
+				orchestratorWorkerID,
+			)
 			return task, ErrDispatchAssignmentRequired
 		}
-		if assignment.OrganizationRevisionID != task.OrganizationRevisionID {
-			return task, fmt.Errorf("%w: assignment revision drift", ErrRegistryMismatch)
-		}
-		if _, err = o.tasks.StartAttempt(ctx, lease, actorID); err != nil {
-			return task, err
-		}
-		task, err = o.tasks.GetTask(ctx, task.ID)
-		if err != nil {
-			return task, err
+		if assignment.OrganizationRevisionID != task.OrganizationRevisionID ||
+			assignment.SubjectRoleID != task.AssignedRoleID {
+			return task, fmt.Errorf("%w: dispatch assignment scope mismatch", ErrRegistryMismatch)
 		}
 	}
 	if task.Status != "running" {
@@ -810,6 +903,7 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		Context:              snapshot,
 		Purpose:              purpose,
 		OutputSchema:         schema,
+		ExecutionContract:    executionContractFor(purpose),
 		MaxOutputTokens:      o.limits.MaxOutputTokens,
 		CorrelationID:        root.CorrelationID,
 		CausationID:          attemptCausation(task.ID, lease.AttemptID),
@@ -851,6 +945,26 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		return o.recordHarnessSuccess(ctx, task, lease, actorID, outcome, validate)
 	}
 	return o.handleHarnessFailure(ctx, root, task, lease, actorID, outcome)
+}
+
+// executionContractFor returns the execution-time output-contract guidance that
+// must reach the model for a given purpose, regardless of when the durable task
+// was created. A task created by an older Executive build is re-driven through
+// the same TaskRecord (never re-created), so its persisted Instructions may lack
+// the contract; injecting it here, at run time, is what closes that gap without
+// rewriting durable instructions or the context snapshot.
+//
+// The guidance is an execution instruction, not evidence and not authority:
+// ValidTaskClass in the host-side parser remains the final acceptance boundary.
+// A single definition (taskClassGuidance) is reused so the create-time and
+// run-time paths cannot diverge.
+func executionContractFor(purpose ExecutionPurpose) string {
+	switch purpose {
+	case PurposeDepartmentPlan, PurposeDepartmentReview:
+		return taskClassGuidance
+	default:
+		return ""
+	}
 }
 
 // harnessRunID is the durable identity of one cognitive execution. It is a
@@ -980,7 +1094,16 @@ func (o *Orchestrator) recordHarnessSuccess(ctx context.Context, task TaskRecord
 		return task, fmt.Errorf("%w: harness final output does not match the durable model result", ErrContractRejected)
 	}
 	if err = validate(result); err != nil {
-		return task, err
+		// Provider succeeded but host-side semantic validation rejected the
+		// result. The invocation stays succeeded (it was executed and charged).
+		// The attempt must NOT stay running — close it durably as a contract
+		// rejection so the next tick can retry with a fresh attempt.
+		_, failErr := o.tasks.RecordAttemptFailed(ctx, lease, actorID, "model_result_contract_rejected", truncate(err.Error(), 2000), true)
+		o.forgetLease(task.ID)
+		if failErr != nil {
+			return task, failErr
+		}
+		return task, fmt.Errorf("%w: %v", ErrModelResultContractRejected, err)
 	}
 	reqID := resultRequirementID(task.Requirements)
 	if reqID == 0 {
@@ -1240,6 +1363,12 @@ func (o *Orchestrator) handlePhaseError(ctx context.Context, root, task TaskReco
 	if errors.Is(err, ErrExecutionPrincipalUnusable) {
 		code = "execution_principal_unusable"
 	}
+	if errors.Is(err, ErrModelResultContractRejected) {
+		code = "model_result_contract_rejected"
+	}
+	if errors.Is(err, ErrContractRejected) {
+		code = "model_result_contract_rejected"
+	}
 	run, blockErr := o.blockRoot(ctx, root, code, err.Error())
 	if blockErr != nil {
 		return Run{}, blockErr
@@ -1258,7 +1387,8 @@ func isNonBlockingPhaseError(err error) bool {
 		errors.Is(err, ErrExecutionAuthorityUnavailable),
 		errors.Is(err, ErrExecutionPrincipalUnavailable),
 		errors.Is(err, ErrPriorExecutionUnresolved),
-		errors.Is(err, ErrExecutionInterrupted):
+		errors.Is(err, ErrExecutionInterrupted),
+		errors.Is(err, ErrModelResultContractRejected):
 		return true
 	}
 	return false

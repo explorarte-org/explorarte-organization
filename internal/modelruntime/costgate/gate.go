@@ -14,13 +14,24 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/costledger"
 	"github.com/Mireuz13/explorarte-organization/internal/modelpricing"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
+	"github.com/Mireuz13/explorarte-organization/internal/programbudget"
 )
 
 type Gate struct {
-	pricing              *modelpricing.Service
-	ledger               costledger.Ledger
-	budgets              agentbudget.Ledger
+	pricing               *modelpricing.Service
+	ledger                costledger.Ledger
+	budgets               agentbudget.Ledger
 	subscriptionProviders map[string]bool
+	programResolver       interface {
+		Resolve(context.Context, int64, string, string) (programbudget.Scope, error)
+	}
+}
+
+func (g *Gate) WithProgramBudgetResolver(r interface {
+	Resolve(context.Context, int64, string, string) (programbudget.Scope, error)
+}) *Gate {
+	g.programResolver = r
+	return g
 }
 
 // New wires the PAYG cost/budget gate. subscriptionProviders names
@@ -57,6 +68,13 @@ func (g *Gate) Reserve(ctx context.Context, request modelruntime.CostReservation
 		budgetTracked = false
 	} else if err != nil {
 		return modelruntime.CostReservation{}, fmt.Errorf("resolve budget for task: %w", err)
+	}
+	var programScope programbudget.Scope
+	if g.programResolver != nil {
+		programScope, err = g.programResolver.Resolve(ctx, request.TaskID, request.ProviderID, request.ProviderModelID)
+		if err != nil {
+			return modelruntime.CostReservation{}, err
+		}
 	}
 
 	if g.subscriptionProviders[request.ProviderID] {
@@ -96,7 +114,19 @@ func (g *Gate) Reserve(ctx context.Context, request modelruntime.CostReservation
 		return modelruntime.CostReservation{}, fmt.Errorf("estimate call cost: %w", err)
 	}
 
-	if err := g.ledger.Reserve(ctx, request.ProviderID, request.InvocationID, estimatedUSD, now); err != nil {
+	if g.programResolver != nil {
+		if programScope.Family.Key != "" {
+			scoped, ok := g.ledger.(costledger.ProgramScopedReserver)
+			if !ok {
+				return modelruntime.CostReservation{}, fmt.Errorf("program scoped reservation unavailable")
+			}
+			if err := scoped.ReserveWithinProgramCeiling(ctx, costledger.ProgramReservation{ProviderID: request.ProviderID, FamilyModelIDs: append([]string(nil), programScope.Family.ModelIDs...), InvocationID: request.InvocationID, CorrelationID: programScope.CorrelationID, MaxUSD: programScope.Family.MaxUSD, EstimatedUSD: estimatedUSD}, now); err != nil {
+				return modelruntime.CostReservation{}, err
+			}
+		} else if err := g.ledger.Reserve(ctx, request.ProviderID, request.InvocationID, estimatedUSD, now); err != nil {
+			return modelruntime.CostReservation{}, err
+		}
+	} else if err := g.ledger.Reserve(ctx, request.ProviderID, request.InvocationID, estimatedUSD, now); err != nil {
 		return modelruntime.CostReservation{}, err
 	}
 	reservation := modelruntime.CostReservation{
