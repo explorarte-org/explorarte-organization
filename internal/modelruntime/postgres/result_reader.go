@@ -7,6 +7,25 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
 )
 
+// canonicalStoredInvocationJSON restores Model Runtime's canonical JSON
+// representation after the value has crossed PostgreSQL JSONB. JSONB
+// preserves the JSON value but not its original lexical byte representation;
+// callers that bind durable results by canonical bytes must therefore
+// canonicalize again at the read boundary.
+func canonicalStoredInvocationJSON(raw []byte) ([]byte, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	canonical, err := modelruntime.CanonicalizeRawJSON(raw)
+	if err != nil {
+		return nil, err
+	}
+	if string(canonical) == "null" {
+		return nil, nil
+	}
+	return canonical, nil
+}
+
 func (s *Store) GetInvocationResult(ctx context.Context, invocationID int64) (modelruntime.InvocationResult, error) {
 	var result modelruntime.InvocationResult
 	var textOutput *string
@@ -24,8 +43,12 @@ FROM model_invocation_results WHERE invocation_id=$1`, invocationID).Scan(
 	if textOutput != nil {
 		result.TextOutput = *textOutput
 	}
-	if len(jsonOutput) > 0 && string(jsonOutput) != "null" {
-		result.JSONOutput = append([]byte(nil), jsonOutput...)
+	canonicalJSON, canonicalErr := canonicalStoredInvocationJSON(jsonOutput)
+	if canonicalErr != nil {
+		return modelruntime.InvocationResult{}, canonicalErr
+	}
+	if len(canonicalJSON) > 0 {
+		result.JSONOutput = canonicalJSON
 	}
 	if len(toolBody) == 0 || string(toolBody) == "null" {
 		result.ToolIntents = []modelruntime.ToolIntent{}

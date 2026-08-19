@@ -363,15 +363,63 @@ func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error
 	return o.Status(ctx, root.ID)
 }
 
+const ceoPlanInstructionPrefix = `Produce only the ExecutivePlan JSON contract for the authoritative owner goal below. Propose operational departments; do not select providers, models, capabilities, tools, authority, credentials, or egress.
+AUTHORITATIVE_OWNER_GOAL_JSON=`
+
+// buildCEOPlanInstructions preserves the owner's actual durable request across
+// the root -> CEO-planning boundary. The planning task is the TaskRef used by
+// Context Assembly, so referring vaguely to "the owner goal" is insufficient:
+// the authoritative root content must travel with the child task.
+//
+// This fails closed rather than truncating the owner request. A plan generated
+// from a silently shortened goal is not an acceptable substitute for the goal.
+func buildCEOPlanInstructions(root TaskRecord, maxBytes int) (string, error) {
+	payload, err := json.Marshal(struct {
+		Goal               string   `json:"goal"`
+		AcceptanceCriteria []string `json:"acceptance_criteria"`
+	}{
+		Goal:               root.Instructions,
+		AcceptanceCriteria: append([]string(nil), root.AcceptanceCriteria...),
+	})
+	if err != nil {
+		return "", fmt.Errorf("encode authoritative owner goal: %w", err)
+	}
+
+	if maxBytes <= 0 || len(ceoPlanInstructionPrefix)+len(payload) > maxBytes {
+		return "", fmt.Errorf(
+			"%w: authoritative owner goal cannot fit CEO planning instructions without truncation",
+			ErrPlanTooLarge,
+		)
+	}
+
+	return ceoPlanInstructionPrefix + string(payload), nil
+}
+
 func (o *Orchestrator) createCEOPlanTask(ctx context.Context, root TaskRecord) (TaskRecord, bool, error) {
+	instructions, err := buildCEOPlanInstructions(root, o.limits.MaxInstructionsBytes)
+	if err != nil {
+		return TaskRecord{}, false, err
+	}
+
 	task, reused, err := o.tasks.CreateTask(ctx, CreateTaskCommand{
 		RequestedByRoleID: OwnerRoleID, AssignedRoleID: CEORoleID,
 		TaskClass:      TaskClassCoordinationCEOPlan,
 		IdempotencyKey: childKey(root.ID, "ceo-plan"),
-		Title:          "CEO executive planning", Instructions: "Produce only the ExecutivePlan JSON contract for the owner goal. Propose operational departments; do not select providers, models, capabilities, tools, authority, credentials, or egress.",
-		AcceptanceCriteria: []string{"Return one strict ExecutivePlan JSON value", "Use only operational registry unit IDs", "Do not grant authority or capabilities"},
-		Priority:           100, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID),
-		Requirements: []RequirementProposal{{Key: "typed_plan", Type: "result", Description: "Validated ExecutivePlan invocation result", Required: true}},
+		Title:          "CEO executive planning",
+		Instructions:   instructions,
+		AcceptanceCriteria: []string{
+			"Return one strict ExecutivePlan JSON value",
+			"Use only operational registry unit IDs",
+			"Do not grant authority or capabilities",
+		},
+		Priority: 100, MaxAttempts: 3,
+		CorrelationID: root.CorrelationID,
+		CausationID:   taskCausation(root.ID),
+		Requirements: []RequirementProposal{{
+			Key: "typed_plan", Type: "result",
+			Description: "Validated ExecutivePlan invocation result",
+			Required:    true,
+		}},
 	})
 	if err != nil {
 		return TaskRecord{}, false, err
