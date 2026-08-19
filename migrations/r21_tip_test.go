@@ -24,7 +24,7 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const wantCount = 53
+	const wantCount = 54
 	if len(loaded) != wantCount {
 		t.Fatalf("migration count=%d want %d", len(loaded), wantCount)
 	}
@@ -55,6 +55,9 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		52: "add_context_token_telemetry",
 		// CONTEXT-ASSEMBLY-M1.3:
 		53: "add_semantic_selector_facts",
+		// GROK-ADVERSARIAL-REVIEW-001: pricing is a precondition of
+		// activation -- without it costgate refuses every review.
+		54: "add_xai_grok_pricing",
 	}
 	byVersion := make(map[int64]string, len(loaded))
 	for _, migration := range loaded {
@@ -66,8 +69,8 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		}
 	}
 
-	if tip := loaded[len(loaded)-1]; tip.Version != 53 {
-		t.Fatalf("migration tip=%06d want 000053", tip.Version)
+	if tip := loaded[len(loaded)-1]; tip.Version != 54 {
+		t.Fatalf("migration tip=%06d want 000054", tip.Version)
 	}
 }
 
