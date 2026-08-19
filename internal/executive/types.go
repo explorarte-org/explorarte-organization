@@ -150,7 +150,7 @@ func DefaultLimits() Limits {
 		MaxInputBytes: 256 << 10, MaxDepartments: 7, MaxWorkerTasksPerPlan: 24,
 		MaxFollowupTasks: 12, MaxArrayItems: 64, MaxStringBytes: 4000,
 		MaxInstructionsBytes: 16000, MaxAcceptanceCriteria: 32, MaxRequirementsPerTask: 32,
-		MaxDepartmentReplans: 1, MaxModelCalls: 128, MaxOutputTokens: 32768,
+		MaxDepartmentReplans: 1, MaxModelCalls: 128, MaxOutputTokens: 128000,
 		InvocationDeadline: 10 * time.Minute,
 	}
 }
