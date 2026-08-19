@@ -29,7 +29,7 @@ func TestLoadCurrentCanonicalDocuments(t *testing.T) {
 	if snapshot.Counts.OperationalUnits != 4 || snapshot.Counts.TransversalUnits != 2 {
 		t.Fatalf("unit counts=%+v", snapshot.Counts)
 	}
-	if snapshot.Counts.Roles != 49 || snapshot.Counts.ImportedRoles != 46 || snapshot.Counts.ProposedRoles != 3 {
+	if snapshot.Counts.Roles != 49 || snapshot.Counts.ImportedRoles != 47 || snapshot.Counts.ProposedRoles != 2 {
 		t.Fatalf("role counts=%+v", snapshot.Counts)
 	}
 	documentHashes := make(map[string]string, len(snapshot.Documents))
@@ -46,7 +46,7 @@ func TestLoadCurrentCanonicalDocuments(t *testing.T) {
 	if documentHashes[modelegress.PolicyFileName] != egress.CanonicalHash {
 		t.Fatalf("registry/model-egress semantic hash mismatch: %s != %s", documentHashes[modelegress.PolicyFileName], egress.CanonicalHash)
 	}
-	for _, id := range []string{"empresa/ceo_observer", "ingenieria_ia/razonamiento_logico", "investigacion/revisor_adversarial"} {
+	for _, id := range []string{"empresa/ceo_observer", "ingenieria_ia/razonamiento_logico"} {
 		role := findRole(snapshot, id)
 		if role == nil || role.Enabled || role.Executable {
 			t.Fatalf("proposed role %s=%+v", id, role)

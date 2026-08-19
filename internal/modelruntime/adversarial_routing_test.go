@@ -52,9 +52,8 @@ func TestReviewerRoleResolvesToTheXAIProfileThroughRoutingAlone(t *testing.T) {
 	reviewer := RoleRef{
 		ID: "investigacion/revisor_adversarial", ModelPolicy: "research.adversarial_review",
 		AuthorityClass: "transversal_audit", UnitID: "investigacion",
-		// Disabled and non-executable, matching the canonical catalog's
-		// proposed_profile_required status.
-		Enabled: false, Executable: false,
+		// Activated, matching the canonical catalog's imported_source status.
+		Enabled: true, Executable: true,
 	}
 	author := RoleRef{ID: "ingenieria_ia/orquestador", ModelPolicy: "department.leader", Enabled: true, Executable: true}
 
@@ -75,10 +74,8 @@ func TestReviewerRoleResolvesToTheXAIProfileThroughRoutingAlone(t *testing.T) {
 	if binding.PolicyID != "research.adversarial_review" || binding.ProfileID != "research.adversarial_review" {
 		t.Fatalf("binding=%+v", *binding)
 	}
-	// The binding exists but is inactive: the role is not activated yet, and
-	// an inactive binding is the fail-closed state, not a missing one.
-	if binding.Active {
-		t.Fatal("reviewer binding is active while the role is still proposed")
+	if !binding.Active {
+		t.Fatal("reviewer binding is inactive for an activated role")
 	}
 
 	var version *ProfileVersion

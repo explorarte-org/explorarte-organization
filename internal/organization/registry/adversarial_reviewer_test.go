@@ -44,9 +44,12 @@ func TestAdversarialReviewerIsAnIndependentTransversalRole(t *testing.T) {
 	if reviewer.CanonicalLeader {
 		t.Fatal("the reviewer is marked as a canonical leader")
 	}
-	// Pre-activation state: declared, not runnable.
-	if reviewer.Enabled || reviewer.Executable {
-		t.Fatal("the reviewer is enabled while its provider and model id are unresolved")
+	// Activated: the owner resolved the model id, provisioned the credential
+	// and confirmed the account exposes it. Enabled and executable is now the
+	// asserted state, and the remaining fail-closed layers are the adapter's
+	// own configuration, the egress scope and the pricing row.
+	if !reviewer.Enabled || !reviewer.Executable {
+		t.Fatal("the reviewer role is not dispatchable")
 	}
 
 	// Independence from the design author is structural, not a convention.
