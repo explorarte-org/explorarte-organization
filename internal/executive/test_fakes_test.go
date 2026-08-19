@@ -190,6 +190,10 @@ func (m *memoryTasks) CreateTask(_ context.Context, command CreateTaskCommand) (
 	record := TaskRecord{
 		ID: id, OrganizationID: "explorarte", OrganizationRevisionID: 7,
 		RequestedByRoleID: command.RequestedByRoleID, AssignedRoleID: command.AssignedRoleID,
+		// TaskClass and AssignedUnitID are durable columns in the real store.
+		// Dropping them here made the fake claim every task was classless,
+		// which any phase that selects by task class cannot work against.
+		TaskClass: command.TaskClass, AssignedUnitID: unitOf(command.AssignedRoleID),
 		IdempotencyKey: command.IdempotencyKey, RequestHash: hash, Title: command.Title,
 		Instructions: command.Instructions, AcceptanceCriteria: append([]string(nil), command.AcceptanceCriteria...),
 		Status: "ready", Priority: command.Priority, MaxAttempts: command.MaxAttempts,
@@ -199,6 +203,14 @@ func (m *memoryTasks) CreateTask(_ context.Context, command CreateTaskCommand) (
 	m.keys[command.IdempotencyKey] = id
 	m.createCalls = append(m.createCalls, command)
 	return record, false, nil
+}
+
+// unitOf mirrors how the registry derives a role's unit from its id.
+func unitOf(roleID string) string {
+	if index := strings.Index(roleID, "/"); index > 0 {
+		return roleID[:index]
+	}
+	return ""
 }
 
 func (m *memoryTasks) AddDependency(context.Context, int64, int64) error { return nil }

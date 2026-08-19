@@ -232,6 +232,17 @@ func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error
 			// Reopening this automatically is the one thing that could
 			// duplicate it, so it stays blocked until a human reconciles.
 			return ProjectRun(root, nil), ErrIndeterminateToolExecution
+		case ReasonDesignRevisionRequired:
+			// A design sent back for changes is waiting on a human. Silently
+			// unblocking would re-run the reviewer and the adjudicator to
+			// re-decide something already decided, at the reviewer's cost.
+			return ProjectRun(root, nil), ErrRunBlocked
+		case ReasonDesignRejected:
+			return ProjectRun(root, nil), ErrRunBlocked
+		case ReasonAdversarialReviewUnavailable:
+			// Fails closed and stays closed: there is no second provider to
+			// fall back to, so retrying on its own would only spin.
+			return ProjectRun(root, nil), ErrRunBlocked
 		case "dispatch_assignment_required":
 			if !o.anyProvisionedLeasedTask(ctx, root.CorrelationID) {
 				return o.Status(ctx, rootTaskID)
@@ -315,6 +326,24 @@ func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error
 		return run, nil
 	}
 
+	all, err = o.tasks.ListByCorrelation(ctx, root.CorrelationID)
+	if err != nil {
+		return Run{}, err
+	}
+	// The candidate design exists once the departments are done. If this run
+	// is governed by a design freeze, it is decided here -- before closure,
+	// because a CEO closure over an unfrozen design would report a settled
+	// answer the organization never actually settled.
+	root, err = o.tasks.GetTask(ctx, root.ID)
+	if err != nil {
+		return Run{}, err
+	}
+	if run, done, freezeErr := o.driveDesignFreeze(ctx, root, all); done || freezeErr != nil {
+		if freezeErr != nil {
+			return Run{}, freezeErr
+		}
+		return run, nil
+	}
 	all, err = o.tasks.ListByCorrelation(ctx, root.CorrelationID)
 	if err != nil {
 		return Run{}, err
@@ -1493,7 +1522,7 @@ func latestFinishedAttemptID(attempts []AttemptRecord) int64 {
 }
 func resultRequirementID(reqs []RequirementRecord) int64 {
 	for _, r := range reqs {
-		if r.Required && r.Type == "result" && (r.Key == "typed_plan" || r.Key == "typed_review" || r.Key == "typed_closure" || r.Key == "model_result" || r.Key == "executive_closure_verified") {
+		if r.Required && r.Type == "result" && (r.Key == "typed_plan" || r.Key == "typed_review" || r.Key == "typed_closure" || r.Key == "model_result" || r.Key == "executive_closure_verified" || r.Key == "typed_adversarial_review" || r.Key == "typed_design_adjudication") {
 			return r.ID
 		}
 	}
