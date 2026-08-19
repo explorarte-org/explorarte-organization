@@ -34,6 +34,12 @@ policies:
     model: deepseek-v4-flash
     transport: http_adapter
     source_of_decision: global_agent_and_owner_description
+  research.adversarial_review:
+    provider: xai
+    model: UNRESOLVED_PENDING_XAI_PREFLIGHT
+    transport: http_adapter
+    source_of_decision: owner_conversation_grok_adversarial_review_001
+    decision_status: owner_confirmation_required
   research.audit:
     provider: deepseek
     model: deepseek-v4-pro

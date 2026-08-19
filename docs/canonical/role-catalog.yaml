@@ -388,6 +388,34 @@ roles:
   reports_to:
   - empresa/ceo
   - empresa/human
+- id: investigacion/revisor_adversarial
+  department: investigacion
+  role: revisor_adversarial
+  display_name: Revisor adversarial independiente (Investigacion)
+  runtime_kind: auditor_agent
+  authority_class: transversal_audit
+  canonical_leader: false
+  legacy_frontmatter_leader: false
+  model_policy: research.adversarial_review
+  profile_path: null
+  department_agent_path: investigacion/AGENT.md
+  memory_domain: investigacion
+  memory_path: null
+  summary: 'Revisa de forma adversarial un candidate design ANTES de que exista cualquier plan de implementacion,
+    y publica hallazgos. Es una segunda perspectiva epistemologica, deliberadamente independiente del departamento
+    que produjo el diseno (ingenieria_ia): no comparte su cadena de mando, su memoria operativa ni su modelo. No
+    aprueba, no adjudica, no congela y no gobierna el grafo de tareas -- encuentra problemas y los deja como
+    evidencia. La decision epistemologica (freeze/revise/reject) pertenece exclusivamente a empresa/ceo.'
+  reports_to_source_text: 'Unidad transversal de Investigacion, par del CEO y no subordinada a ningun departamento
+    operativo. Su independencia respecto de ingenieria_ia/orquestador es la propiedad que lo hace util: un revisor
+    que reporta al autor del diseno no es un revisor.'
+  rag_topics_source_text: 'Ninguno propio en esta fase. Recibe exclusivamente el review bundle sanitizado y
+    determinista que el host construye para cada revision; no acumula memoria operativa del negocio ni consulta
+    dominios RAG por su cuenta.'
+  status: proposed_profile_required
+  reports_to:
+  - empresa/ceo
+  - empresa/human
 - id: negocio/administrador_financiero
   department: negocio
   role: administrador_financiero

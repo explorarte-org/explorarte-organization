@@ -59,3 +59,4 @@ transversal:
   investigacion:
   - investigacion/auditor_cerebro_empresa
   - investigacion/research_worker_hourly
+  - investigacion/revisor_adversarial

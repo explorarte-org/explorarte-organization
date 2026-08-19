@@ -46,6 +46,7 @@ transversal_units:
   roles:
   - investigacion/auditor_cerebro_empresa
   - investigacion/research_worker_hourly
+  - investigacion/revisor_adversarial
   hourly_schedule: 0 * * * *
   timezone: America/Santiago
   publishes_directly_to_approved_rag: false
@@ -57,4 +58,4 @@ daily_cycle:
 counts:
   operational_departments: 4
   imported_profiles: 46
-  proposed_profiles: 2
+  proposed_profiles: 3

@@ -161,6 +161,11 @@ hard_denies:
   - code.stage_write
   - code.commit
   - deployment.request
+  - task.assign_worker
+  - task.review
+  - memory.approve
+  - model.dispatch_assignment.create
+  - model.dispatch_assignment.revoke
 skill_lifecycle:
   states:
   - draft
