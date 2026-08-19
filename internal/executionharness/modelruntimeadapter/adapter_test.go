@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,6 +24,7 @@ type fakeCreator struct {
 	found    *modelruntime.Invocation
 	input    modelruntime.PreparedModelInput
 	findErr  error
+	findKeys []string
 }
 
 func (f *fakeCreator) Create(_ context.Context, command modelruntime.CreateInvocationCommand) (modelruntime.CreateInvocationResult, error) {
@@ -55,7 +57,8 @@ func (f *fakeCreator) Outcome(_ context.Context, _ int64) (modelruntime.Dispatch
 	return f.outcome, nil
 }
 
-func (f *fakeCreator) FindIdempotent(_ context.Context, _ string) (modelruntime.Invocation, modelruntime.PreparedModelInput, error) {
+func (f *fakeCreator) FindIdempotent(_ context.Context, key string) (modelruntime.Invocation, modelruntime.PreparedModelInput, error) {
+	f.findKeys = append(f.findKeys, key)
 	if f.findErr != nil {
 		return modelruntime.Invocation{}, modelruntime.PreparedModelInput{}, f.findErr
 	}
@@ -434,5 +437,175 @@ func TestCanonicalBytesPassedThroughDigestBinding(t *testing.T) {
 	}
 	if !bytes.Equal([]byte(creator.commands[0].ModelInput.StablePrefix[0].Content), []byte(spec.Context.Content)) {
 		t.Fatal("context bytes drifted")
+	}
+}
+
+// TestExecutionContractReachesModelInputStablePrefix proves that execution-time
+// contract guidance is delivered to the model as a separate stable-prefix user
+// message AFTER the byte-exact context render, without modifying that render.
+// This is the boundary that lets a task whose durable context predates the
+// contract still receive it at execution time.
+func TestExecutionContractReachesModelInputStablePrefix(t *testing.T) {
+	spec := fixtureSpec()
+	request := project(t, spec, nil)
+	creator := &fakeCreator{}
+	dispatcher := &fakeDispatcher{results: []modelruntime.DispatchResult{successfulDispatch(1, "done", nil)}}
+	const contract = "task_class MUST use lowercase dotted syntax and never equal legacy.unspecified"
+	adapter, err := New(creator, dispatcher, ClockFunc(func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }), Config{
+		MaxOutputTokens:               256,
+		ThinkingMode:                  modelruntime.ThinkingDisabled,
+		InvocationTTL:                 time.Hour,
+		ExecutionContractInstructions: contract,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.Invoke(context.Background(), spec.Identity, request); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if len(creator.commands) != 1 {
+		t.Fatalf("expected 1 invocation, got %d", len(creator.commands))
+	}
+	input := creator.commands[0].ModelInput
+	if input == nil {
+		t.Fatal("invocation has no model input")
+	}
+	prefix := input.StablePrefix
+	if len(prefix) != 2 {
+		t.Fatalf("expected 2 stable-prefix messages (context render + contract), got %d", len(prefix))
+	}
+	// First message stays the byte-exact context render (provenance intact).
+	if prefix[0].Role != modelruntime.ModelInputRoleUser || prefix[0].Content != spec.Context.Content {
+		t.Fatalf("stable prefix[0] must be the exact context render, got role=%q content=%q", prefix[0].Role, prefix[0].Content)
+	}
+	// Second message carries the contract.
+	if prefix[1].Role != modelruntime.ModelInputRoleUser || prefix[1].Content != contract {
+		t.Fatalf("stable prefix[1] must carry the execution contract, got role=%q content=%q", prefix[1].Role, prefix[1].Content)
+	}
+	// Prove Model Runtime itself accepts the contract-augmented envelope: the
+	// first prefix message still binds byte-exact to the snapshot render.
+	snapshot := modelruntime.ContextSnapshotRef{ID: 41, RenderedHash: digest([]byte(spec.Context.Content))}
+	if _, err := modelruntime.PrepareModelInput(input, snapshot, []byte(spec.Context.Content)); err != nil {
+		t.Fatalf("Model Runtime rejected the contract-augmented envelope: %v", err)
+	}
+}
+
+// TestNoExecutionContractKeepsSingleMessagePrefix proves legacy behavior is
+// preserved when no execution contract is configured.
+func TestNoExecutionContractKeepsSingleMessagePrefix(t *testing.T) {
+	spec := fixtureSpec()
+	request := project(t, spec, nil)
+	creator := &fakeCreator{}
+	dispatcher := &fakeDispatcher{results: []modelruntime.DispatchResult{successfulDispatch(1, "done", nil)}}
+	adapter := newAdapter(t, creator, dispatcher)
+	if _, err := adapter.Invoke(context.Background(), spec.Identity, request); err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	input := creator.commands[0].ModelInput
+	if len(input.StablePrefix) != 1 {
+		t.Fatalf("expected 1 stable-prefix message without a contract, got %d", len(input.StablePrefix))
+	}
+}
+
+// contractAdapter builds an adapter that carries execution-contract
+// instructions, mirroring newAdapter for every other field.
+func contractAdapter(t *testing.T, creator InvocationCreator, dispatcher InvocationDispatcher, contract string) *Adapter {
+	t.Helper()
+	value, err := New(creator, dispatcher, ClockFunc(func() time.Time { return time.Unix(1_700_000_000, 0).UTC() }), Config{
+		MaxOutputTokens:               256,
+		ThinkingMode:                  modelruntime.ThinkingDisabled,
+		InvocationTTL:                 time.Hour,
+		ExecutionContractInstructions: contract,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return value
+}
+
+// TestSameExecutionContractProducesSameIdempotencyKey proves re-entry under
+// the SAME execution contract is deterministic: the same projection, output
+// contract and execution contract yield the same invocation idempotency key,
+// so a resumed attempt looks up and adopts its existing invocation instead of
+// creating a second one.
+func TestSameExecutionContractProducesSameIdempotencyKey(t *testing.T) {
+	spec := fixtureSpec()
+	request := project(t, spec, nil)
+	const contract = "task_class MUST use lowercase dotted syntax and never equal legacy.unspecified"
+
+	firstCreator := &fakeCreator{}
+	if _, err := contractAdapter(t, firstCreator, &fakeDispatcher{results: []modelruntime.DispatchResult{successfulDispatch(1, "done", nil)}}, contract).Invoke(context.Background(), spec.Identity, request); err != nil {
+		t.Fatal(err)
+	}
+	secondCreator := &fakeCreator{}
+	if _, err := contractAdapter(t, secondCreator, &fakeDispatcher{results: []modelruntime.DispatchResult{successfulDispatch(1, "done", nil)}}, contract).Invoke(context.Background(), spec.Identity, request); err != nil {
+		t.Fatal(err)
+	}
+	if len(firstCreator.commands) != 1 || len(secondCreator.commands) != 1 {
+		t.Fatalf("expected one invocation per adapter, got %d and %d", len(firstCreator.commands), len(secondCreator.commands))
+	}
+	first := firstCreator.commands[0].IdempotencyKey
+	second := secondCreator.commands[0].IdempotencyKey
+	if first == "" || first != second {
+		t.Fatalf("same contract must produce the same idempotency key: %q vs %q", first, second)
+	}
+
+	// A re-entry that finds the durable invocation under that key adopts it
+	// without creating or dispatching a second one, and the lookup itself
+	// used exactly the key the original creation used.
+	durable := successfulDispatch(7, "recovered answer", nil)
+	invocation := durable.Invocation
+	reuseCreator := &fakeCreator{found: &invocation, input: storedInput(request, 41), outcome: durable}
+	reuseDispatcher := &fakeDispatcher{}
+	result, err := contractAdapter(t, reuseCreator, reuseDispatcher, contract).Invoke(context.Background(), spec.Identity, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.InvocationRef != "7" || len(reuseCreator.commands) != 0 || len(reuseDispatcher.calls) != 0 {
+		t.Fatalf("same-contract re-entry must adopt the existing invocation: ref=%s created=%d dispatched=%d",
+			result.InvocationRef, len(reuseCreator.commands), len(reuseDispatcher.calls))
+	}
+	if len(reuseCreator.findKeys) != 1 || reuseCreator.findKeys[0] != first {
+		t.Fatalf("re-entry looked up key %v, want the original creation key %q", reuseCreator.findKeys, first)
+	}
+}
+
+// TestDifferentExecutionContractProducesDifferentIdempotencyKey proves a
+// re-entry under DIFFERENT execution-contract instructions cannot adopt an
+// invocation created under other instructions: the key changes with the
+// contract, exactly like the output schema it sits beside. A run without a
+// contract keeps the historical key shape.
+func TestDifferentExecutionContractProducesDifferentIdempotencyKey(t *testing.T) {
+	spec := fixtureSpec()
+	request := project(t, spec, nil)
+
+	invokeWithContract := func(contract string) string {
+		t.Helper()
+		creator := &fakeCreator{}
+		if _, err := contractAdapter(t, creator, &fakeDispatcher{results: []modelruntime.DispatchResult{successfulDispatch(1, "done", nil)}}, contract).Invoke(context.Background(), spec.Identity, request); err != nil {
+			t.Fatal(err)
+		}
+		if len(creator.commands) != 1 {
+			t.Fatalf("expected one invocation, got %d", len(creator.commands))
+		}
+		return creator.commands[0].IdempotencyKey
+	}
+
+	keyA := invokeWithContract("contract A")
+	keyB := invokeWithContract("contract B")
+	keyNone := invokeWithContract("")
+
+	if keyA == keyB {
+		t.Fatalf("different execution contracts must produce different idempotency keys: %q", keyA)
+	}
+	if keyA == keyNone || keyB == keyNone {
+		t.Fatalf("a contract run must not share the no-contract key: A=%q B=%q none=%q", keyA, keyB, keyNone)
+	}
+	// The no-contract key keeps the historical shape: projection digest +
+	// output contract, with no extra component appended.
+	prefix := "execution-harness:" + request.CanonicalDigest + ":"
+	rest := strings.TrimPrefix(keyNone, prefix)
+	if !strings.HasPrefix(keyNone, prefix) || rest == "" || strings.Contains(rest, ":") {
+		t.Fatalf("no-contract key changed shape: %q", keyNone)
 	}
 }

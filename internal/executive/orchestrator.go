@@ -451,7 +451,7 @@ func (o *Orchestrator) createLeaderPlanTask(ctx context.Context, root TaskRecord
 		RequestedByRoleID: CEORoleID, AssignedRoleID: leader.ID,
 		TaskClass:      TaskClassCoordinationDeptPlan,
 		IdempotencyKey: childKey(root.ID, "leader-plan:"+req.UnitID), Title: "Department planning: " + req.UnitID,
-		Instructions:       "Produce only DepartmentPlan JSON for this bounded request: " + instructions,
+		Instructions:       "Produce only DepartmentPlan JSON for this bounded request: " + instructions + "\n\n" + taskClassGuidance,
 		AcceptanceCriteria: []string{"Return one strict DepartmentPlan JSON value", "Delegate only to active assignable roles in this department", "Use only existing requirement types"},
 		Priority:           req.Priority, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID),
 		Requirements: []RequirementProposal{{Key: "typed_plan", Type: "result", Description: "Validated DepartmentPlan invocation result", Required: true}},
@@ -702,7 +702,7 @@ func (o *Orchestrator) createReviewTask(ctx context.Context, root TaskRecord, re
 	if replan > 0 {
 		suffix += ":replan:" + strconv.Itoa(replan)
 	}
-	task, reused, err := o.tasks.CreateTask(ctx, CreateTaskCommand{RequestedByRoleID: CEORoleID, AssignedRoleID: leader.ID, TaskClass: TaskClassCoordinationDeptReview, IdempotencyKey: childKey(root.ID, suffix), Title: "Department review: " + req.UnitID, Instructions: "Review only this bounded durable task/evidence summary and return DepartmentReview JSON: " + summary, AcceptanceCriteria: []string{"Use only durable task states and evidence refs", "Return strict DepartmentReview JSON", "Do not execute tool intents"}, Priority: req.Priority, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID), Requirements: []RequirementProposal{{Key: "typed_review", Type: "result", Description: "Validated DepartmentReview invocation result", Required: true}}})
+	task, reused, err := o.tasks.CreateTask(ctx, CreateTaskCommand{RequestedByRoleID: CEORoleID, AssignedRoleID: leader.ID, TaskClass: TaskClassCoordinationDeptReview, IdempotencyKey: childKey(root.ID, suffix), Title: "Department review: " + req.UnitID, Instructions: "Review only this bounded durable task/evidence summary and return DepartmentReview JSON: " + summary + "\n\n" + taskClassGuidance, AcceptanceCriteria: []string{"Use only durable task states and evidence refs", "Return strict DepartmentReview JSON", "Do not execute tool intents"}, Priority: req.Priority, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID), Requirements: []RequirementProposal{{Key: "typed_review", Type: "result", Description: "Validated DepartmentReview invocation result", Required: true}}})
 	if err != nil {
 		return TaskRecord{}, false, err
 	}
@@ -903,6 +903,7 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		Context:              snapshot,
 		Purpose:              purpose,
 		OutputSchema:         schema,
+		ExecutionContract:    executionContractFor(purpose),
 		MaxOutputTokens:      o.limits.MaxOutputTokens,
 		CorrelationID:        root.CorrelationID,
 		CausationID:          attemptCausation(task.ID, lease.AttemptID),
@@ -944,6 +945,26 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		return o.recordHarnessSuccess(ctx, task, lease, actorID, outcome, validate)
 	}
 	return o.handleHarnessFailure(ctx, root, task, lease, actorID, outcome)
+}
+
+// executionContractFor returns the execution-time output-contract guidance that
+// must reach the model for a given purpose, regardless of when the durable task
+// was created. A task created by an older Executive build is re-driven through
+// the same TaskRecord (never re-created), so its persisted Instructions may lack
+// the contract; injecting it here, at run time, is what closes that gap without
+// rewriting durable instructions or the context snapshot.
+//
+// The guidance is an execution instruction, not evidence and not authority:
+// ValidTaskClass in the host-side parser remains the final acceptance boundary.
+// A single definition (taskClassGuidance) is reused so the create-time and
+// run-time paths cannot diverge.
+func executionContractFor(purpose ExecutionPurpose) string {
+	switch purpose {
+	case PurposeDepartmentPlan, PurposeDepartmentReview:
+		return taskClassGuidance
+	default:
+		return ""
+	}
 }
 
 // harnessRunID is the durable identity of one cognitive execution. It is a
@@ -1073,7 +1094,16 @@ func (o *Orchestrator) recordHarnessSuccess(ctx context.Context, task TaskRecord
 		return task, fmt.Errorf("%w: harness final output does not match the durable model result", ErrContractRejected)
 	}
 	if err = validate(result); err != nil {
-		return task, err
+		// Provider succeeded but host-side semantic validation rejected the
+		// result. The invocation stays succeeded (it was executed and charged).
+		// The attempt must NOT stay running — close it durably as a contract
+		// rejection so the next tick can retry with a fresh attempt.
+		_, failErr := o.tasks.RecordAttemptFailed(ctx, lease, actorID, "model_result_contract_rejected", truncate(err.Error(), 2000), true)
+		o.forgetLease(task.ID)
+		if failErr != nil {
+			return task, failErr
+		}
+		return task, fmt.Errorf("%w: %v", ErrModelResultContractRejected, err)
 	}
 	reqID := resultRequirementID(task.Requirements)
 	if reqID == 0 {
@@ -1333,6 +1363,12 @@ func (o *Orchestrator) handlePhaseError(ctx context.Context, root, task TaskReco
 	if errors.Is(err, ErrExecutionPrincipalUnusable) {
 		code = "execution_principal_unusable"
 	}
+	if errors.Is(err, ErrModelResultContractRejected) {
+		code = "model_result_contract_rejected"
+	}
+	if errors.Is(err, ErrContractRejected) {
+		code = "model_result_contract_rejected"
+	}
 	run, blockErr := o.blockRoot(ctx, root, code, err.Error())
 	if blockErr != nil {
 		return Run{}, blockErr
@@ -1351,7 +1387,8 @@ func isNonBlockingPhaseError(err error) bool {
 		errors.Is(err, ErrExecutionAuthorityUnavailable),
 		errors.Is(err, ErrExecutionPrincipalUnavailable),
 		errors.Is(err, ErrPriorExecutionUnresolved),
-		errors.Is(err, ErrExecutionInterrupted):
+		errors.Is(err, ErrExecutionInterrupted),
+		errors.Is(err, ErrModelResultContractRejected):
 		return true
 	}
 	return false

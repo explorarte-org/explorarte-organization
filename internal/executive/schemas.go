@@ -19,6 +19,16 @@ import "encoding/json"
 //
 // Model Runtime is the provider-boundary schema authority; Executive must not
 // maintain a richer incompatible schema dialect above it.
+//
+// NOTE (Bug A): task_class in WorkerTaskProposal is declared as {"type":"string"}
+// here because Model Runtime does not support the "pattern" keyword. The actual
+// syntactic contract (dotted identifiers, max 100 bytes, no legacy.unspecified)
+// is enforced exclusively by ValidTaskClass in the host-side parser
+// (validateWorkerTaskShape). Both DepartmentPlan.tasks[] and
+// DepartmentReview.proposed_followup_tasks[] embed the identical
+// taskOutputSchemaJSON const (see below), guaranteeing structural parity
+// across all provider-facing paths. Tests in bug_fixes_test.go verify full
+// parity between ValidTaskClass rejection and the parser.
 
 const requirementOutputSchemaJSON = `{
   "type":"object",
@@ -35,6 +45,11 @@ const requirementOutputSchemaJSON = `{
   }
 }`
 
+// taskOutputSchemaJSON is the complete inline JSON-Schema fragment for a
+// WorkerTaskProposal item. It is embedded verbatim into both
+// departmentPlanOutputSchema (as tasks[]) and departmentReviewOutputSchema
+// (as proposed_followup_tasks[]), guaranteeing that every provider-facing
+// path uses the exact same task contract. Changing one changes both.
 const taskOutputSchemaJSON = `{
   "type":"object",
   "additionalProperties":false,

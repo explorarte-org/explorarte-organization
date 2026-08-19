@@ -58,6 +58,15 @@ type Config struct {
 	// post-parsing whatever text came back.
 	OutputMode   modelruntime.OutputMode
 	OutputSchema json.RawMessage
+	// ExecutionContractInstructions is optional execution-time contract
+	// guidance appended to the model's stable prefix as its own user message,
+	// after the byte-exact context snapshot render. It exists so a caller can
+	// deliver an output-contract instruction to the model even when the durable
+	// context (e.g. a task created before the instruction existed) does not
+	// carry it. It never modifies the context snapshot render: StablePrefix[0]
+	// stays byte-exact, and this instruction is a separate, provider-visible
+	// message. Empty means no additional instruction (legacy behavior).
+	ExecutionContractInstructions string
 }
 
 // Adapter deliberately enters Model Runtime through its two application
@@ -73,6 +82,16 @@ type Adapter struct {
 	// re-entry under a different contract cannot silently adopt an invocation
 	// created under the previous one.
 	outputContract string
+	// executionContractKey is the digest of the execution-contract
+	// instructions this adapter delivers with the model input, or empty when
+	// the run carries none. Like outputContract, it participates in the
+	// idempotency key: a re-entry under different execution-contract
+	// instructions must not silently adopt an invocation created under other
+	// instructions. It is deliberately NOT folded into outputContract, which
+	// is re-derived from the durable invocation row on reuse and therefore
+	// can only contain facts that row persists. Empty keeps the historical
+	// key shape byte-identical for runs without an execution contract.
+	executionContractKey string
 }
 
 var _ executionharness.ModelExecutor = (*Adapter)(nil)
@@ -130,7 +149,14 @@ func New(invocations InvocationCreator, dispatch InvocationDispatcher, clock Clo
 	if err != nil {
 		return nil, err
 	}
-	return &Adapter{invocations: invocations, dispatch: dispatch, clock: clock, config: config, outputContract: contract}, nil
+	// The execution-contract key component exists exactly when the delivered
+	// model input carries the contract message (same TrimSpace predicate as
+	// modelInputEnvelope), so key shape and model input shape cannot drift.
+	executionContractKey := ""
+	if strings.TrimSpace(config.ExecutionContractInstructions) != "" {
+		executionContractKey = digest([]byte(config.ExecutionContractInstructions))
+	}
+	return &Adapter{invocations: invocations, dispatch: dispatch, clock: clock, config: config, outputContract: contract, executionContractKey: executionContractKey}, nil
 }
 
 // outputContractDigest is a stable digest of everything that decides what the
@@ -162,11 +188,14 @@ func (a *Adapter) Invoke(ctx context.Context, identity executionharness.RunIdent
 	if err != nil || contextSnapshotID <= 0 {
 		return executionharness.ModelResult{}, fmt.Errorf("%w: initial context ID must be a positive model runtime snapshot ID", ErrInvalidProjection)
 	}
-	envelope, err := modelInputEnvelope(contextSnapshotID, request, projection)
+	envelope, err := modelInputEnvelope(contextSnapshotID, request, projection, a.config.ExecutionContractInstructions)
 	if err != nil {
 		return executionharness.ModelResult{}, err
 	}
 	idempotencyKey := "execution-harness:" + request.CanonicalDigest + ":" + a.outputContract
+	if a.executionContractKey != "" {
+		idempotencyKey += ":" + a.executionContractKey
+	}
 	if existing, stored, findErr := a.invocations.FindIdempotent(ctx, idempotencyKey); findErr == nil {
 		if err = a.validateExistingInvocation(existing, stored, identity, contextSnapshotID, request.CanonicalDigest); err != nil {
 			return executionharness.ModelResult{}, err
@@ -290,7 +319,7 @@ func validateProjection(identity executionharness.RunIdentity, request execution
 	return validatedProjection{Wire: wire, Prefix: prefix}, nil
 }
 
-func modelInputEnvelope(contextSnapshotID int64, request executionharness.NormalizedModelRequest, projection validatedProjection) (modelruntime.ModelInputEnvelope, error) {
+func modelInputEnvelope(contextSnapshotID int64, request executionharness.NormalizedModelRequest, projection validatedProjection, executionContract string) (modelruntime.ModelInputEnvelope, error) {
 	tools := make([]modelruntime.ModelInputToolDefinition, len(projection.Prefix.Tools))
 	for i, tool := range projection.Prefix.Tools {
 		tools[i] = modelruntime.ModelInputToolDefinition{Name: tool.Name, Description: tool.Description, InputSchema: append([]byte(nil), tool.InputSchema...)}
@@ -314,11 +343,20 @@ func modelInputEnvelope(contextSnapshotID int64, request executionharness.Normal
 			return modelruntime.ModelInputEnvelope{}, fmt.Errorf("%w: unsupported visible history role", ErrInvalidProjection)
 		}
 	}
+	// The first stable-prefix message is always the byte-exact context snapshot
+	// render; Model Runtime binds the invocation to it. Any execution-contract
+	// guidance is appended as a separate user message AFTER it, so the snapshot
+	// render's content/digest/provenance is never rewritten while the contract
+	// still reaches the model at execution time.
+	stablePrefix := []modelruntime.ModelInputMessage{{Role: modelruntime.ModelInputRoleUser, Content: projection.Prefix.Context.Content}}
+	if strings.TrimSpace(executionContract) != "" {
+		stablePrefix = append(stablePrefix, modelruntime.ModelInputMessage{Role: modelruntime.ModelInputRoleUser, Content: executionContract})
+	}
 	return modelruntime.ModelInputEnvelope{
 		SchemaVersion:             modelruntime.ModelInputEnvelopeSchemaV1,
 		ContextSnapshotID:         contextSnapshotID,
 		CanonicalProjectionDigest: request.CanonicalDigest,
-		StablePrefix:              []modelruntime.ModelInputMessage{{Role: modelruntime.ModelInputRoleUser, Content: projection.Prefix.Context.Content}},
+		StablePrefix:              stablePrefix,
 		VisibleHistory:            history,
 		ToolDefinitions:           tools,
 		ProviderContinuationRef:   request.ProviderContinuationRef,
