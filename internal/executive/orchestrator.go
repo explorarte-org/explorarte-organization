@@ -1175,17 +1175,60 @@ func (o *Orchestrator) recordHarnessSuccess(ctx context.Context, task TaskRecord
 	return o.gatedComplete(ctx, finished)
 }
 
+// rescheduleAfterAuthorityOutage hands re-entry to the task engine after
+// authority could not be CONSULTED -- an infrastructure fact, not a statement
+// about the principal.
+//
+// Previously this returned the sentinel and left the attempt holding its
+// lease, on the reasoning that the same run would resume on the next tick.
+// Nothing scheduled that tick. The run sat until its lease expired, which is
+// a slower and less legible path to the same place, and on a busy outage it
+// meant the work simply stopped.
+//
+// Re-entry is delegated rather than invented: RecordAttemptFailed with
+// retryable=true routes the attempt through the task engine's own retry
+// policy, so backoff and max_attempts are the engine's, the state is durable
+// across a restart, and an outage that never clears ends terminal on its own
+// instead of looping. Nothing else in this switch becomes retryable.
+//
+// Two guards run first, and both exist to protect the same thing: a retry
+// must never become a second provider call for work that may already have
+// reached the provider.
+func (o *Orchestrator) rescheduleAfterAuthorityOutage(ctx context.Context, root, task TaskRecord, lease LeaseRecord, actorID string, outcome HarnessRunOutcome) (TaskRecord, error) {
+	// An execution whose send is unresolved at the provider boundary is
+	// exactly the case where retrying duplicates it.
+	if handled, blocked, err := o.ambiguityGuard(ctx, root, task, lease.AttemptID); handled {
+		return blocked, err
+	}
+	// AuthorityUnavailable means the Harness wrote nothing, so this attempt
+	// should have no durable invocation. If one exists anyway, the two facts
+	// disagree, and choosing which to believe is how a duplicate provider
+	// call happens. Fail closed and non-retryably instead.
+	invocations, err := o.models.FindTaskAttemptInvocations(ctx, task.ID, lease.AttemptID)
+	if err != nil {
+		return task, err
+	}
+	if len(invocations) > 0 {
+		return o.failAttempt(ctx, task, lease, actorID, "authority_unavailable_with_durable_invocation",
+			fmt.Sprintf("authority was reported unavailable while attempt %d already had %d durable invocation(s)", lease.AttemptID, len(invocations)),
+			ErrExecutionAuthorityUnavailable)
+	}
+	failed, recErr := o.tasks.RecordAttemptFailed(ctx, lease, actorID, "execution_authority_unavailable",
+		truncate(outcome.TerminationReason, 2000), true)
+	o.forgetLease(task.ID)
+	if recErr != nil {
+		return task, recErr
+	}
+	return failed, fmt.Errorf("%w: %s", ErrExecutionAuthorityUnavailable, outcome.TerminationReason)
+}
+
 // handleHarnessFailure maps one Harness verdict onto existing Executive task
 // semantics. There is deliberately no new state machine here: every branch
 // lands on a status the Executive already had.
 func (o *Orchestrator) handleHarnessFailure(ctx context.Context, root, task TaskRecord, lease LeaseRecord, actorID string, outcome HarnessRunOutcome) (TaskRecord, error) {
 	switch outcome.Failure {
 	case HarnessFailureAuthorityUnavailable:
-		// Not a denial and not terminal: the Harness wrote nothing, the
-		// attempt keeps its lease, and the same run identity resumes on the
-		// next tick. Failing the attempt here would turn an outage into a
-		// durable statement about the principal.
-		return task, fmt.Errorf("%w: %s", ErrExecutionAuthorityUnavailable, outcome.TerminationReason)
+		return o.rescheduleAfterAuthorityOutage(ctx, root, task, lease, actorID, outcome)
 	case HarnessFailureAuthorizationDenied:
 		return o.failAttempt(ctx, task, lease, actorID, "execution_authority_denied", outcome.TerminationReason, ErrExecutionAuthorityDenied)
 	case HarnessFailureIndeterminateTool:

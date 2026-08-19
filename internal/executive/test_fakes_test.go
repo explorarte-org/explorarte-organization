@@ -196,7 +196,10 @@ func (m *memoryTasks) CreateTask(_ context.Context, command CreateTaskCommand) (
 		TaskClass: command.TaskClass, AssignedUnitID: unitOf(command.AssignedRoleID),
 		IdempotencyKey: command.IdempotencyKey, RequestHash: hash, Title: command.Title,
 		Instructions: command.Instructions, AcceptanceCriteria: append([]string(nil), command.AcceptanceCriteria...),
-		Status: "ready", Priority: command.Priority, MaxAttempts: command.MaxAttempts,
+		// tasks.Service defaults MaxAttempts when the caller leaves it zero;
+		// without the same defaulting here every fake task had an attempt
+		// ceiling of zero, which no retry policy can be expressed against.
+		Status: "ready", Priority: command.Priority, MaxAttempts: defaultedMaxAttempts(command.MaxAttempts),
 		CorrelationID: command.CorrelationID, CausationID: command.CausationID, Requirements: requirements,
 	}
 	m.tasks[id] = record
@@ -211,6 +214,15 @@ func unitOf(roleID string) string {
 		return roleID[:index]
 	}
 	return ""
+}
+
+const fakeDefaultMaxAttempts = 3
+
+func defaultedMaxAttempts(requested int) int {
+	if requested <= 0 {
+		return fakeDefaultMaxAttempts
+	}
+	return requested
 }
 
 func (m *memoryTasks) AddDependency(context.Context, int64, int64) error { return nil }
@@ -355,7 +367,7 @@ func (m *memoryTasks) RecordAttemptSucceeded(_ context.Context, lease LeaseRecor
 	return task, nil
 }
 
-func (m *memoryTasks) RecordAttemptFailed(_ context.Context, lease LeaseRecord, actor string, code, reason string, _ bool) (TaskRecord, error) {
+func (m *memoryTasks) RecordAttemptFailed(_ context.Context, lease LeaseRecord, actor string, code, reason string, retryable bool) (TaskRecord, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err := m.verifyLeaseActor(lease, actor); err != nil {
@@ -363,7 +375,15 @@ func (m *memoryTasks) RecordAttemptFailed(_ context.Context, lease LeaseRecord, 
 	}
 	m.failed = append(m.failed, code)
 	task := m.tasks[lease.TaskID]
-	task.Status = "failed"
+	// The retryable flag is the task engine's retry hook, and ignoring it
+	// made this fake unable to represent a bounded retry at all. Mirrors the
+	// real engine's shape: a retryable failure with attempts left parks the
+	// task in retry_wait, and exhausting max_attempts is terminal.
+	if retryable && task.AttemptCount < task.MaxAttempts {
+		task.Status = "retry_wait"
+	} else {
+		task.Status = "failed"
+	}
 	task.ReasonCode = code
 	task.Reason = reason
 	task.ActiveLease = nil
@@ -429,7 +449,19 @@ func (m *memoryTasks) UnblockTask(_ context.Context, id int64, _, _ string) (Tas
 	return task, nil
 }
 
-func (m *memoryTasks) Reconcile(context.Context, int) error { return nil }
+// Reconcile releases retry_wait back to ready, which is what the real engine
+// does once a backoff window elapses.
+func (m *memoryTasks) Reconcile(context.Context, int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, task := range m.tasks {
+		if task.Status == "retry_wait" {
+			task.Status = "ready"
+			m.tasks[id] = task
+		}
+	}
+	return nil
+}
 
 type fakeContexts struct {
 	mu    sync.Mutex
