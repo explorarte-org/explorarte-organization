@@ -412,7 +412,7 @@ roles:
   rag_topics_source_text: 'Ninguno propio en esta fase. Recibe exclusivamente el review bundle sanitizado y
     determinista que el host construye para cada revision; no acumula memoria operativa del negocio ni consulta
     dominios RAG por su cuenta.'
-  status: proposed_profile_required
+  status: imported_source
   reports_to:
   - empresa/ceo
   - empresa/human
