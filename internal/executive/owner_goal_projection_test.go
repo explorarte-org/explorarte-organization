@@ -27,12 +27,31 @@ func TestBuildCEOPlanInstructionsCarriesAuthoritativeOwnerGoal(t *testing.T) {
 
 	body := strings.TrimPrefix(got, ceoPlanInstructionPrefix)
 
+	parts := strings.SplitN(body, ceoPlanInstructionSuffix, 2)
+	if len(parts) != 2 {
+		t.Fatal("CEO plan instructions lost the owner-decision policy suffix")
+	}
+
 	var projected struct {
 		Goal               string   `json:"goal"`
 		AcceptanceCriteria []string `json:"acceptance_criteria"`
 	}
-	if err := json.Unmarshal([]byte(body), &projected); err != nil {
+	if err := json.Unmarshal([]byte(parts[0]), &projected); err != nil {
 		t.Fatalf("decode projected owner goal: %v", err)
+	}
+
+	if !strings.Contains(
+		ceoPlanInstructionSuffix,
+		"owner_decisions_required MUST be []",
+	) {
+		t.Fatal("CEO planning contract does not constrain ordinary owner escalation")
+	}
+
+	if !strings.Contains(
+		ceoPlanInstructionSuffix,
+		"GROK_REVIEW_UNAVAILABLE",
+	) {
+		t.Fatal("CEO planning contract lost the authorized Grok fallback")
 	}
 
 	if projected.Goal != root.Instructions {
