@@ -36,14 +36,17 @@ func TestReviewerRoleResolvesToTheXAIProfileThroughRoutingAlone(t *testing.T) {
 	if policy.Transport != TransportHTTP {
 		t.Fatalf("transport=%q", policy.Transport)
 	}
-	// The exact Grok 4.6 model id is not resolvable without a real xAI
-	// preflight, so the canonical document must carry the placeholder rather
-	// than a guess that could dispatch somewhere plausible-looking.
-	if policy.Model != "UNRESOLVED_PENDING_XAI_PREFLIGHT" {
-		t.Fatalf("model=%q -- the account-exposed id is still unresolved", policy.Model)
+	// The model id is owner-resolved. It is pinned here so a silent edit of
+	// the canonical document cannot re-point the adversarial reviewer at a
+	// different model without this test failing.
+	if policy.Model != "grok-4.6" {
+		t.Fatalf("model=%q", policy.Model)
 	}
-	if policy.DecisionStatus != "owner_confirmation_required" {
-		t.Fatalf("decision_status=%q", policy.DecisionStatus)
+	// xAI accepts only none/low/medium/high; the adapter rejects anything
+	// else before the request, so a routing document carrying this repo's
+	// usual "xhigh" would fail closed rather than 400 at the provider.
+	if policy.ReasoningEffort != "high" {
+		t.Fatalf("reasoning_effort=%q", policy.ReasoningEffort)
 	}
 
 	reviewer := RoleRef{

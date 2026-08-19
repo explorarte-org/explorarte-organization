@@ -36,10 +36,12 @@ policies:
     source_of_decision: global_agent_and_owner_description
   research.adversarial_review:
     provider: xai
-    model: UNRESOLVED_PENDING_XAI_PREFLIGHT
+    model: grok-4.6
+    reasoning_effort: high
     transport: http_adapter
     source_of_decision: owner_conversation_grok_adversarial_review_001
-    decision_status: owner_confirmation_required
+    legacy_conflicts:
+    - UNRESOLVED_PENDING_XAI_PREFLIGHT placeholder held while the account model id was unconfirmed
   research.audit:
     provider: deepseek
     model: deepseek-v4-pro
