@@ -12,6 +12,7 @@ const (
 	ExecutiveClosureSchemaVersion   = "executive-closure/v1"
 	AdversarialReviewSchemaVersion  = "adversarial-review/v1"
 	DesignAdjudicationSchemaVersion = "design-adjudication/v1"
+	ImplementationPlanSchemaVersion = "implementation-plan/v1"
 
 	OwnerRoleID    = "empresa/human"
 	CEORoleID      = "empresa/ceo"

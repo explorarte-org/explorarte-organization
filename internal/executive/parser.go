@@ -17,6 +17,10 @@ var forbiddenModelKeys = map[string]struct{}{
 	"sql": {}, "capability_grant": {}, "capability_grants": {}, "authority": {}, "approval_decision": {},
 	"direct_publish": {}, "direct_promote": {}, "memory_visibility": {}, "rag_visibility": {}, "filesystem": {},
 	"network": {}, "deployment_permissions": {}, "leader_role_id": {},
+	// Mission authority. These are host decisions in every contract; a
+	// model naming one is trying to grant itself reach, not describe work.
+	"allowed_paths": {}, "required_gates": {}, "base_sha": {}, "budget": {},
+	"max_cost": {}, "promotion_approval": {}, "mission_policy": {}, "scope": {},
 }
 
 func ParseExecutivePlan(body []byte, limits Limits) (ExecutivePlan, error) {
