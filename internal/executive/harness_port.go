@@ -19,6 +19,18 @@ const (
 	PurposeDepartmentWorker ExecutionPurpose = "department-worker"
 	PurposeDepartmentReview ExecutionPurpose = "department-review"
 	PurposeCEOClosure       ExecutionPurpose = "ceo-closure"
+	// PurposeAdversarialReview is an independent review of a CANDIDATE
+	// DESIGN, before any implementation plan exists. It is deliberately not
+	// PurposeDepartmentReview: that one reviews a department's completed
+	// execution against its own plan, and collapsing the two would merge two
+	// unrelated run histories under one durable identity.
+	PurposeAdversarialReview ExecutionPurpose = "adversarial-review"
+	// PurposeDesignAdjudication is the executive decision over an
+	// adversarial review's findings, and the only execution that can produce
+	// a freeze verdict. It is not PurposeCEOPlan: planning answers "what
+	// should be done", adjudication answers "which findings stand, and may
+	// this design be frozen". Same role, same profile, different question.
+	PurposeDesignAdjudication ExecutionPurpose = "design-adjudication"
 )
 
 // LegacyPurpose is the free-text purpose the Context Engine and Model Runtime
@@ -37,13 +49,21 @@ func (p ExecutionPurpose) LegacyPurpose() string {
 		return "department_review"
 	case PurposeCEOClosure:
 		return "executive_ceo_closure"
+	case PurposeAdversarialReview:
+		// Matches modelegress.ExecutiveScopeMarker's "adversarial_review"
+		// case. These two strings are one contract in two packages that
+		// deliberately do not import each other.
+		return "adversarial_review"
+	case PurposeDesignAdjudication:
+		return "design_adjudication"
 	}
 	return ""
 }
 
 func (p ExecutionPurpose) Valid() bool {
 	switch p {
-	case PurposeCEOPlan, PurposeDepartmentPlan, PurposeDepartmentWorker, PurposeDepartmentReview, PurposeCEOClosure:
+	case PurposeCEOPlan, PurposeDepartmentPlan, PurposeDepartmentWorker, PurposeDepartmentReview, PurposeCEOClosure,
+		PurposeAdversarialReview, PurposeDesignAdjudication:
 		return true
 	}
 	return false
