@@ -3,10 +3,17 @@ package modelegress
 import "strings"
 
 const (
-	ScopeExecutiveCEO     = "scope.executive.ceo"
-	ScopeDepartmentLeader = "scope.executive.department_leader"
-	ScopeDepartmentWorker = "scope.executive.department_worker"
+	ScopeExecutiveCEO      = "scope.executive.ceo"
+	ScopeDepartmentLeader  = "scope.executive.department_leader"
+	ScopeDepartmentWorker  = "scope.executive.department_worker"
+	ScopeAdversarialReview = "scope.executive.adversarial_review"
 )
+
+// AdversarialReviewerRoleID is the only role whose durable context may derive
+// ScopeAdversarialReview. Naming the role here mirrors how ScopeExecutiveCEO
+// is already pinned to empresa/ceo: the scope is a statement about WHO ran,
+// and a scope that any role could earn would not be one.
+const AdversarialReviewerRoleID = "investigacion/revisor_adversarial"
 
 // ExecutiveScopeMarker derives an internal egress scope exclusively from
 // durable Context Engine metadata. It is never rendered into model context,
@@ -32,6 +39,10 @@ func ExecutiveScopeMarker(actorRoleID, purpose, correlationID, taskRef string) s
 		if scopedDepartmentRole(actorRoleID) {
 			return ScopeDepartmentWorker
 		}
+	case "adversarial_review":
+		if actorRoleID == AdversarialReviewerRoleID {
+			return ScopeAdversarialReview
+		}
 	}
 	return ""
 }
@@ -46,7 +57,11 @@ func scopedDepartmentRole(roleID string) bool {
 
 func scopeRequired(provider string, dataClasses []string) bool {
 	switch provider {
-	case "alibaba_token_plan_via_claude_code", "deepseek":
+	case "alibaba_token_plan_via_claude_code", "deepseek", "xai":
+		// xAI always requires a durable scope, for every classification
+		// including public. Making the requirement unconditional is what
+		// stops a new provider from being reachable by default the moment
+		// a policy allow exists for it.
 		return true
 	case "openai_compatible":
 		for _, class := range dataClasses {
@@ -79,6 +94,13 @@ func scopeAllows(provider, transport, scope string, singleProviderTest bool) boo
 		// accepted here.
 		return transport == "http_adapter" &&
 			(scope == ScopeDepartmentLeader || scope == ScopeDepartmentWorker)
+	case "xai":
+		// The adversarial reviewer's scope and nothing else. Executive and
+		// department scopes are refused here, and singleProviderTest does not
+		// widen this the way it widens openai_compatible: a test mode that
+		// could route ordinary department work to the reviewer's provider
+		// would defeat the independence the reviewer exists to provide.
+		return transport == "http_adapter" && scope == ScopeAdversarialReview
 	default:
 		return false
 	}
@@ -92,6 +114,8 @@ func scopeVerifiedReason(scope string) string {
 		return "executive_scope_verified_department_leader"
 	case ScopeDepartmentWorker:
 		return "executive_scope_verified_department_worker"
+	case ScopeAdversarialReview:
+		return "executive_scope_verified_adversarial_review"
 	default:
 		return ""
 	}
