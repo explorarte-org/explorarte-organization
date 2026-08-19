@@ -269,26 +269,67 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 		outcome := responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", code, false)
 		return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureResponseReceived, Outcome: outcome, Cause: modelruntime.ErrResponseRejected}
 	}
+	// The outer Responses envelope has been decoded successfully at this
+	// point, so provider-reported usage is recoverable even if the business
+	// response is about to be rejected. Preserve that usage on every
+	// post-decode failure just as the DeepSeek adapter does: DispatchService
+	// can then commit the real cost instead of parking/releasing an estimate.
+	usageOnlyResponse := modelruntime.RawResponse{
+		ProviderRequestID: providerRequestID,
+		InputTokens:       decoded.Usage.InputTokens,
+		OutputTokens:      decoded.Usage.OutputTokens,
+		ProviderReported:  true,
+	}
+
 	content, tools, err := decodeOutput(decoded.Output)
 	if err != nil {
 		outcome := responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", "response_content_invalid", false)
-		return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureResponseReceived, Outcome: outcome, Cause: err}
+		return usageOnlyResponse, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureResponseReceived, Outcome: outcome, Cause: err}
 	}
-	// Same fail-closed rule as the Chat Completions adapter (see its own
-	// comment): a response that ran out of budget with nothing usable must
-	// never be reported as success just because the HTTP call succeeded.
-	// The Responses API reports this as status=="incomplete" with
-	// incomplete_details.reason=="max_output_tokens" rather than
-	// finish_reason=="length" -- different field, same failure mode
-	// (reasoning tokens consuming the entire budget before visible output).
-	if decoded.Status == "incomplete" && len(content) == 0 && len(tools) == 0 {
-		reason := "response_incomplete_empty"
-		if decoded.IncompleteDetails != nil && strings.TrimSpace(decoded.IncompleteDetails.Reason) != "" {
-			reason = normalizeProviderToken("response_incomplete_"+decoded.IncompleteDetails.Reason, reason, 160)
+
+	// A structured-output contract cannot safely consume a partial Responses
+	// result. Even when the visible prefix happens to be syntactically valid
+	// JSON, status=="incomplete" means the provider did not complete the
+	// requested answer contract. Reject it before Normalizer so it receives
+	// the precise provider failure classification rather than the generic
+	// response_normalization_failed business error.
+	//
+	// Text callers retain the existing behavior: partial visible text is
+	// usable when present. Empty incomplete responses remain failures for all
+	// output modes.
+	if decoded.Status == "incomplete" {
+		rejectIncomplete := request.OutputMode == modelruntime.OutputJSON ||
+			(len(content) == 0 && len(tools) == 0)
+
+		if rejectIncomplete {
+			reason := "response_incomplete"
+			if len(content) == 0 && len(tools) == 0 {
+				reason = "response_incomplete_empty"
+			}
+			if decoded.IncompleteDetails != nil && strings.TrimSpace(decoded.IncompleteDetails.Reason) != "" {
+				reason = normalizeProviderToken(
+					"response_incomplete_"+decoded.IncompleteDetails.Reason,
+					reason,
+					160,
+				)
+			}
+
+			outcome := responseErrorOutcome(
+				response.StatusCode,
+				providerRequestID,
+				responseHash,
+				"response",
+				reason,
+				false,
+			)
+			return usageOnlyResponse, &modelruntime.AdapterError{
+				Phase:   modelruntime.AdapterFailureResponseReceived,
+				Outcome: outcome,
+				Cause:   modelruntime.ErrResponseRejected,
+			}
 		}
-		outcome := responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", reason, false)
-		return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureResponseReceived, Outcome: outcome, Cause: modelruntime.ErrResponseRejected}
 	}
+
 	a.breaker.success()
 	outcome := modelruntime.ProviderOutcome{
 		OutcomeClassification: modelruntime.ProviderOutcomeResponseReceived,

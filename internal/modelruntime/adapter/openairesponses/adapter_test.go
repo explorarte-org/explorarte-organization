@@ -191,17 +191,29 @@ func TestDispatchRejectsIncompleteEmptyResponseAsFailure(t *testing.T) {
 		_, _ = io.WriteString(w, `{"id":"r1","object":"response","status":"incomplete","incomplete_details":{"reason":"max_tokens"},"output":[{"type":"reasoning"}],"usage":{"input_tokens":76000,"output_tokens":8000}}`)
 	}))
 	defer server.Close()
+
 	adapter, err := newAdapter(adapterConfig(server.URL+"/v1/responses", credential), server.Client(), time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = adapter.Dispatch(context.Background(), validRequest(time.Now().Add(time.Minute)))
+
+	response, err := adapter.Dispatch(context.Background(), validRequest(time.Now().Add(time.Minute)))
 	classified, ok := modelruntime.AsAdapterError(err)
-	if !ok || !strings.Contains(classified.Outcome.ErrorCode, "max_tokens") || classified.Outcome.Retryable {
+
+	if !ok ||
+		classified.Phase != modelruntime.AdapterFailureResponseReceived ||
+		!strings.Contains(classified.Outcome.ErrorCode, "max_tokens") ||
+		classified.Outcome.Retryable {
 		t.Fatalf("error=%v classified=%+v", err, classified)
 	}
-}
 
+	if !response.ProviderReported ||
+		response.ProviderRequestID != "r1" ||
+		response.InputTokens != 76000 ||
+		response.OutputTokens != 8000 {
+		t.Fatalf("failed response lost provider usage: %+v", response)
+	}
+}
 func TestDispatchAcceptsIncompleteResponseWithPartialContent(t *testing.T) {
 	credential := writeCredential(t, "test-provider-token")
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -219,6 +231,40 @@ func TestDispatchAcceptsIncompleteResponseWithPartialContent(t *testing.T) {
 	}
 }
 
+func TestDispatchRejectsIncompleteJSONWithPartialContentAndPreservesUsage(t *testing.T) {
+	credential := writeCredential(t, "test-provider-token")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"r1","object":"response","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"message","content":[{"type":"output_text","text":"{\"ok\":true}"}]}],"usage":{"input_tokens":76000,"output_tokens":8000}}`)
+	}))
+	defer server.Close()
+
+	adapter, err := newAdapter(adapterConfig(server.URL+"/v1/responses", credential), server.Client(), time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := validRequest(time.Now().Add(time.Minute))
+	request.OutputMode = modelruntime.OutputJSON
+	request.OutputSchema = []byte(`{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"],"additionalProperties":false}`)
+
+	response, err := adapter.Dispatch(context.Background(), request)
+	classified, ok := modelruntime.AsAdapterError(err)
+
+	if !ok ||
+		classified.Phase != modelruntime.AdapterFailureResponseReceived ||
+		classified.Outcome.ErrorCode != "response_incomplete_max_output_tokens" ||
+		classified.Outcome.Retryable {
+		t.Fatalf("error=%v classified=%+v", err, classified)
+	}
+
+	if !response.ProviderReported ||
+		response.ProviderRequestID != "r1" ||
+		response.InputTokens != 76000 ||
+		response.OutputTokens != 8000 {
+		t.Fatalf("incomplete JSON failure lost provider usage: %+v", response)
+	}
+}
 func TestDispatchClassifiesProviderRejectionWithoutLeakingMessage(t *testing.T) {
 	credential := writeCredential(t, "super-secret-provider-token")
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
