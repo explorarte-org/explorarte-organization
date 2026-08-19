@@ -22,12 +22,12 @@ var (
 		"openai_responses":  {"public": {}, "sanitized": {}, "organizational": {}},
 		"gemini":            {"public": {}, "sanitized": {}, "organizational": {}},
 		// R10.2: kept in sync with modelegress.ProductiveLoadOptions.
-		"mimo":              {"public": {}, "sanitized": {}, "organizational": {}},
+		"mimo": {"public": {}, "sanitized": {}, "organizational": {}},
 		// xAI carries NO "organizational" entry, and that absence is the
 		// enforcement: an allow rule for xai/organizational fails canonical
 		// validation outright rather than relying on anyone remembering that
 		// the adversarial reviewer only ever sees a sanitized bundle.
-		"xai":               {"public": {}, "sanitized": {}},
+		"xai": {"public": {}, "sanitized": {}},
 	}
 )
 
