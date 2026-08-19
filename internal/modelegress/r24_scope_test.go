@@ -64,6 +64,7 @@ func TestValidateExecutiveScopeMatrix(t *testing.T) {
 		{"leader openai organizational", "openai_compatible", "http_adapter", []string{"organizational"}, ScopeDepartmentLeader, false, true, "executive_scope_verified_department_leader"},
 		{"leader wrong scope", "openai_compatible", "http_adapter", []string{"organizational"}, ScopeDepartmentWorker, false, false, "executive_scope_required"},
 		{"openai public legacy", "openai_compatible", "http_adapter", []string{"public"}, "", false, true, "executive_scope_not_required"},
+		{"leader deepseek", "deepseek", "http_adapter", []string{"sanitized", "organizational"}, ScopeDepartmentLeader, false, true, "executive_scope_verified_department_leader"},
 		{"worker deepseek", "deepseek", "http_adapter", []string{"sanitized", "organizational"}, ScopeDepartmentWorker, false, true, "executive_scope_verified_department_worker"},
 		{"worker deepseek no scope", "deepseek", "http_adapter", []string{"public"}, "", false, false, "executive_scope_required"},
 		// Single-provider test mode: same production data, but openai_compatible

@@ -73,7 +73,12 @@ func scopeAllows(provider, transport, scope string, singleProviderTest bool) boo
 		}
 		return scope == ScopeExecutiveCEO || scope == ScopeDepartmentLeader
 	case "deepseek":
-		return transport == "http_adapter" && scope == ScopeDepartmentWorker
+		// Canonical routing assigns department.leader to DeepSeek Pro and
+		// department.worker to DeepSeek Flash. Both remain constrained to a
+		// durable executive department scope; CEO scope is deliberately not
+		// accepted here.
+		return transport == "http_adapter" &&
+			(scope == ScopeDepartmentLeader || scope == ScopeDepartmentWorker)
 	default:
 		return false
 	}
