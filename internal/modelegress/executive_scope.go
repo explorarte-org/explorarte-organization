@@ -43,6 +43,15 @@ func ExecutiveScopeMarker(actorRoleID, purpose, correlationID, taskRef string) s
 		if actorRoleID == AdversarialReviewerRoleID {
 			return ScopeAdversarialReview
 		}
+	case "implementation_plan":
+		// Produced by the department leader that owns the work, so it earns
+		// the same scope as its other leader executions. It gets no scope of
+		// its own: writing an implementation plan is ordinary leader work,
+		// and inventing a scope for it would imply an authority it does not
+		// have.
+		if scopedDepartmentRole(actorRoleID) {
+			return ScopeDepartmentLeader
+		}
 	}
 	return ""
 }
