@@ -80,8 +80,8 @@ type RoleBoundPrincipalResolver interface {
 }
 
 type CreateTaskCommand struct {
-	RequestedByRoleID string
-	AssignedRoleID    string
+	RequestedByRoleID  string
+	AssignedRoleID     string
 	// TaskClass is OPTIONAL: empty is defaulted by the Tasks Engine to
 	// its own safe generic class. When non-empty it is validated by the
 	// HOST (see ValidTaskClass) before it ever reaches persistence --

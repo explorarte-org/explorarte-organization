@@ -69,7 +69,7 @@ func TestConfigRequiresSecureExplicitEndpointAndCredentialReference(t *testing.T
 	// fixed, so both shapes below must validate.
 	for name, endpoint := range map[string]string{
 		"documented base URL": "https://token-plan-sgp.xiaomimimo.com/v1/chat/completions",
-		"no prefix":           "https://api.example.com/chat/completions",
+		"no prefix":            "https://api.example.com/chat/completions",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := adapterConfig(endpoint, credential).Validate(); err != nil {
