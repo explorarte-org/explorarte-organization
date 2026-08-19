@@ -364,38 +364,18 @@ func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error
 }
 
 const ceoPlanInstructionPrefix = `Produce only the ExecutivePlan JSON contract for the authoritative owner goal below. Propose operational departments; do not select providers, models, capabilities, tools, authority, credentials, or egress.
-AUTHORITATIVE_OWNER_GOAL_JSON=`
 
-const ceoPlanInstructionSuffix = `
 OWNER_DECISION_POLICY:
-The authoritative owner goal already delegates ordinary architecture, sequencing, decomposition and implementation choices to the CEO within its stated constraints.
+- owner_decisions_required is reserved ONLY for a human decision that is strictly required to continue THIS owner goal safely.
+- Every requested owner decision must be directly grounded in the authoritative owner goal below or in a concrete blocker discovered while executing that goal.
+- Do NOT copy, inherit, summarize, or reactivate historical pending decisions from memory, RAG, prior tasks, canonical documents, previous executive runs, or unrelated organizational work merely because they appear in context.
+- A historical decision may be requested only when the current owner goal explicitly depends on it and cannot safely continue without the owner's choice.
+- Optional unavailable integrations that the current owner goal explicitly declares non-blocking must NOT become owner decisions.
+- Existing unresolved decisions concerning unrelated models, schedules, cells, repositories, profiles, skills, products, or previous milestones are not blockers for this goal.
+- If this owner goal can proceed under existing authority, budget, safety constraints, and registered capabilities, owner_decisions_required MUST be [].
+- Never suppress a genuine current-goal security, data-corruption, budget-escape, irreversible-data-loss, or real-execution blocker merely to keep owner_decisions_required empty.
 
-You MUST make those ordinary decisions yourself and preserve rationale for later review.
-
-owner_decisions_required MUST be [] unless proceeding requires a genuinely new human decision because of a true P0 that is not already resolved by the authoritative owner goal.
-
-A true P0 is limited to matters such as:
-- possible production or data corruption;
-- security or authority boundary violation;
-- budget escape;
-- irreversible data loss;
-- real execution impossibility;
-- an architectural contradiction that makes safe implementation impossible.
-
-Do NOT request owner decisions for:
-- ordinary architecture choices;
-- implementation details;
-- work decomposition or sequencing;
-- which existing authorized department should perform work;
-- whether to continue when an optional integration is unavailable;
-- Grok/xAI unavailability;
-- internal review fallback already authorized by the owner goal;
-- choices already answered by the authoritative owner goal.
-
-If Grok is unavailable, record GROK_REVIEW_UNAVAILABLE and use the already-authorized independent internal reviewer, exactly as the owner goal directs.
-
-Do not invent new requirements merely to escalate them to the owner.
-`
+AUTHORITATIVE_OWNER_GOAL_JSON=`
 
 // buildCEOPlanInstructions preserves the owner's actual durable request across
 // the root -> CEO-planning boundary. The planning task is the TaskRef used by
@@ -417,14 +397,14 @@ func buildCEOPlanInstructions(root TaskRecord, maxBytes int) (string, error) {
 	}
 
 	if maxBytes <= 0 ||
-		len(ceoPlanInstructionPrefix)+len(payload)+len(ceoPlanInstructionSuffix) > maxBytes {
+		len(ceoPlanInstructionPrefix)+len(payload) > maxBytes {
 		return "", fmt.Errorf(
 			"%w: authoritative owner goal cannot fit CEO planning instructions without truncation",
 			ErrPlanTooLarge,
 		)
 	}
 
-	return ceoPlanInstructionPrefix + string(payload) + ceoPlanInstructionSuffix, nil
+	return ceoPlanInstructionPrefix + string(payload), nil
 }
 
 func (o *Orchestrator) createCEOPlanTask(ctx context.Context, root TaskRecord) (TaskRecord, bool, error) {
@@ -443,7 +423,9 @@ func (o *Orchestrator) createCEOPlanTask(ctx context.Context, root TaskRecord) (
 			"Return one strict ExecutivePlan JSON value",
 			"Use only operational registry unit IDs",
 			"Do not grant authority or capabilities",
-			"Return owner_decisions_required as an empty array unless a true unresolved P0 requires a new human decision",
+			"OwnerDecisionsRequired may contain only unresolved decisions that are actually required to execute the current owner goal",
+			"Do not copy historical, bootstrap, prior-run, memory, RAG, evidence, or canonical-context decisions into OwnerDecisionsRequired",
+			"If the current owner goal already decides an issue, treat it as decided and do not ask the owner again",
 		},
 		Priority: 100, MaxAttempts: 3,
 		CorrelationID: root.CorrelationID,

@@ -13,6 +13,7 @@ func TestBuildCEOPlanInstructionsCarriesAuthoritativeOwnerGoal(t *testing.T) {
 		AcceptanceCriteria: []string{
 			"Design before implementation",
 			"Preserve immutable experience memory",
+			"Do not ask the owner again for decisions already made in the current goal",
 		},
 	}
 
@@ -25,33 +26,26 @@ func TestBuildCEOPlanInstructionsCarriesAuthoritativeOwnerGoal(t *testing.T) {
 		t.Fatal("CEO plan instructions lost the planning prefix")
 	}
 
+	// The current contract is exactly:
+	//
+	//     ceoPlanInstructionPrefix + authoritative owner-goal JSON
+	//
+	// There is intentionally no instruction suffix. Parsing the ENTIRE
+	// remainder as one JSON value protects that contract: any text appended
+	// after the JSON would make this unmarshal fail.
 	body := strings.TrimPrefix(got, ceoPlanInstructionPrefix)
-
-	parts := strings.SplitN(body, ceoPlanInstructionSuffix, 2)
-	if len(parts) != 2 {
-		t.Fatal("CEO plan instructions lost the owner-decision policy suffix")
-	}
 
 	var projected struct {
 		Goal               string   `json:"goal"`
 		AcceptanceCriteria []string `json:"acceptance_criteria"`
 	}
-	if err := json.Unmarshal([]byte(parts[0]), &projected); err != nil {
-		t.Fatalf("decode projected owner goal: %v", err)
-	}
 
-	if !strings.Contains(
-		ceoPlanInstructionSuffix,
-		"owner_decisions_required MUST be []",
-	) {
-		t.Fatal("CEO planning contract does not constrain ordinary owner escalation")
-	}
-
-	if !strings.Contains(
-		ceoPlanInstructionSuffix,
-		"GROK_REVIEW_UNAVAILABLE",
-	) {
-		t.Fatal("CEO planning contract lost the authorized Grok fallback")
+	if err := json.Unmarshal([]byte(body), &projected); err != nil {
+		t.Fatalf(
+			"decode complete projected owner-goal payload: %v\npayload=%q",
+			err,
+			body,
+		)
 	}
 
 	if projected.Goal != root.Instructions {
@@ -90,5 +84,40 @@ func TestBuildCEOPlanInstructionsFailsClosedInsteadOfTruncatingOwnerGoal(t *test
 	_, err := buildCEOPlanInstructions(root, 128)
 	if !errors.Is(err, ErrPlanTooLarge) {
 		t.Fatalf("expected ErrPlanTooLarge, got %v", err)
+	}
+}
+
+func TestBuildCEOPlanInstructionsFitsAtExactBoundary(t *testing.T) {
+	root := TaskRecord{
+		Instructions: "bounded owner goal",
+		AcceptanceCriteria: []string{
+			"criterion-a",
+			"criterion-b",
+		},
+	}
+
+	full, err := buildCEOPlanInstructions(root, 16000)
+	if err != nil {
+		t.Fatalf("build reference instructions: %v", err)
+	}
+
+	got, err := buildCEOPlanInstructions(root, len(full))
+	if err != nil {
+		t.Fatalf(
+			"exact configured byte boundary should be accepted: %v",
+			err,
+		)
+	}
+
+	if got != full {
+		t.Fatal("exact-boundary projection changed content")
+	}
+
+	_, err = buildCEOPlanInstructions(root, len(full)-1)
+	if !errors.Is(err, ErrPlanTooLarge) {
+		t.Fatalf(
+			"one byte below required boundary should fail with ErrPlanTooLarge, got %v",
+			err,
+		)
 	}
 }
