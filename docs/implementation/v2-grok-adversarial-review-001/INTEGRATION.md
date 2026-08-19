@@ -180,6 +180,32 @@ against DeepSeek or anything else.
 5. Attach the campaign budget ceiling (USD 5 total) — not attached here, no
    DB budget was touched.
 
+## Executive integration
+
+The phase is driven by the Executive orchestrator itself
+(`Orchestrator.driveDesignFreeze`, `internal/executive/design_freeze_phase.go`),
+called from `Resume` between the department phase and CEO closure.
+
+It is opt-in per run: it engages only when the owner attached a
+`design-freeze` requirement to the root goal, so runs without it are
+unaffected. Closure sits after the phase because a CEO closure over an
+unfrozen design would report a settled answer that was never settled.
+
+`internal/designreview` owns no control flow. It holds the independence rule
+and the closed-field bundle; the ordering runs through `driveTypedTask` like
+every other execution, inheriting the lease, prior-execution barrier,
+dispatch-assignment check, budget gate and gated completion.
+
+Verdicts: `freeze` satisfies the root requirement with the freeze record as
+approval evidence; `revise` blocks with `design_revision_required`; `reject`
+blocks with `design_rejected`. `Resume` does not auto-unblock either, nor
+`adversarial_review_unavailable`.
+
+Round handling never advances on its own. Deriving the round from the count
+of completed adjudications caused an unbounded loop -- every Resume after a
+finished round opened a new one and never evaluated the previous round's
+gate. The round is now the highest round that already has tasks.
+
 ## Deferred
 
 - **Executive -> engineeringmission seam.** The Executive still does not
@@ -190,9 +216,6 @@ against DeepSeek or anything else.
   correct only while it runs no Harness work.
 - **`AuthorityUnavailable` autonomous retry.** The Harness reports
   `Retryable`; nothing schedules the re-entry.
-- **Triggering `designreview.Coordinator.Run` from the Executive run state
-  machine.** The coordinator is complete and tested; the orchestrator does not
-  call it yet.
 - **Exact Grok 4.6 model id, credential activation and a real provider smoke.**
 
 ## Known pre-existing defect, unrelated to this slice
@@ -203,7 +226,22 @@ adapter-directory allowlists, so the script aborted before reaching its
 compiled-availability assertion. That is repaired here, because adding `xai`
 without the repair would have left the new entry unverified.
 
+Necessity was demonstrated rather than asserted: reverting only the mimo
+hunks while keeping the xai ones makes the script abort on mimo's own files
+and never reach the compiled-availability assertion that validates the xai
+entry. The mimo change is two lines plus one message line, all in
+`scripts/check-model-runtime-fitness.sh`, and is confined to commit
+`f4efcbb`.
+
 A second failure remains and is **not** fixed here: the script forbids
 `cmd/orgd` from importing `internal/modelruntime`, and `cmd/orgd/main.go`
 already does so at the base commit for `modelruntime.BuildSHA`. It is
 untouched by this branch and out of scope.
+
+## Also observed, deliberately not changed
+
+`recordHarnessSuccess` wraps a validator error as `%w: %v`
+(`internal/executive/orchestrator.go`), which flattens the inner sentinel:
+`errors.Is` cannot reach `ErrDesignIdentityMismatch` through it. The
+end-to-end test asserts what the code actually guarantees instead. Changing
+the wrap would touch every typed phase and belongs to its own change.
