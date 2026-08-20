@@ -117,21 +117,23 @@ func (b *countingBudget) count() int {
 // unguarded fake would report data races that the real, transactional task
 // service does not have.
 type memoryTasks struct {
-	mu              sync.Mutex
-	heartbeatErr    error
-	heartbeatActors []string
-	nextID          int64
-	nextAttempt     int64
-	tasks           map[int64]TaskRecord
-	keys            map[string]int64
-	createCalls     []CreateTaskCommand
-	claims          []ClaimTaskCommand
-	workerIDs       map[int64]string
-	finalized       []int64
-	blocked         []int64
-	failed          []string
-	heartbeats      int
-	evidence        []EvidenceCommand
+	addDependencyCalls [][2]int64
+	deps               map[int64][]int64
+	mu                 sync.Mutex
+	heartbeatErr       error
+	heartbeatActors    []string
+	nextID             int64
+	nextAttempt        int64
+	tasks              map[int64]TaskRecord
+	keys               map[string]int64
+	createCalls        []CreateTaskCommand
+	claims             []ClaimTaskCommand
+	workerIDs          map[int64]string
+	finalized          []int64
+	blocked            []int64
+	failed             []string
+	heartbeats         int
+	evidence           []EvidenceCommand
 }
 
 func newMemoryTasks() *memoryTasks {
@@ -199,10 +201,19 @@ func (m *memoryTasks) CreateTask(_ context.Context, command CreateTaskCommand) (
 		// tasks.Service defaults MaxAttempts when the caller leaves it zero;
 		// without the same defaulting here every fake task had an attempt
 		// ceiling of zero, which no retry policy can be expressed against.
-		Status: "ready", Priority: command.Priority, MaxAttempts: defaultedMaxAttempts(command.MaxAttempts),
+		// tasks.Service inserts the task, its dependencies and its
+		// requirements in one transaction, and a task WITH dependencies is
+		// born pending rather than ready. Modelling only "ready" made this
+		// fake unable to represent the gate at all, which is the property the
+		// dependency fix exists to restore.
+		Status: initialStatusFor(command.Dependencies), Priority: command.Priority, MaxAttempts: defaultedMaxAttempts(command.MaxAttempts),
 		CorrelationID: command.CorrelationID, CausationID: command.CausationID, Requirements: requirements,
 	}
 	m.tasks[id] = record
+	if m.deps == nil {
+		m.deps = map[int64][]int64{}
+	}
+	m.deps[id] = append([]int64(nil), command.Dependencies...)
 	m.keys[command.IdempotencyKey] = id
 	m.createCalls = append(m.createCalls, command)
 	return record, false, nil
@@ -225,7 +236,29 @@ func defaultedMaxAttempts(requested int) int {
 	return requested
 }
 
-func (m *memoryTasks) AddDependency(context.Context, int64, int64) error { return nil }
+func initialStatusFor(dependencies []int64) string {
+	if len(dependencies) > 0 {
+		return "pending"
+	}
+	return "ready"
+}
+
+func (m *memoryTasks) AddDependency(_ context.Context, taskID, dependsOn int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.addDependencyCalls = append(m.addDependencyCalls, [2]int64{taskID, dependsOn})
+	task := m.tasks[taskID]
+	// The real engine refuses to change dependencies on a running task. Model
+	// that, so a test cannot pass by mutating state the engine would reject.
+	if task.Status == "running" || task.Status == "leased" {
+		return errors.New("task state transition is not allowed: dependencies cannot be changed while task is running")
+	}
+	if m.deps == nil {
+		m.deps = map[int64][]int64{}
+	}
+	m.deps[taskID] = append(m.deps[taskID], dependsOn)
+	return nil
+}
 
 func (m *memoryTasks) GetTask(_ context.Context, id int64) (TaskRecord, error) {
 	m.mu.Lock()
