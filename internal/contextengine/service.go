@@ -316,7 +316,7 @@ func (s *contextService) resolve(ctx context.Context, request BuildRequest) (reg
 	// this context: the reviewer's provider may not receive organizational
 	// data, and the ordinary assembly is organizational by construction.
 	if adversarialReviewRequested(request) {
-		if err = validateAdversarialPairing(request); err != nil {
+		if err = validateAdversarialSelector(request); err != nil {
 			return registry.Organization{}, nil, registry.Role{}, registry.Unit{}, CanonicalBundle{}, nil, nil, err
 		}
 		restricted, restrictedErr := s.resolveAdversarialSources(ctx, request, role)
