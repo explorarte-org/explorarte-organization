@@ -64,7 +64,12 @@ type chatRequest struct {
 	ResponseFormat      json.RawMessage `json:"response_format,omitempty"`
 	ReasoningEffort     string          `json:"reasoning_effort,omitempty"`
 	Stream              bool            `json:"stream"`
+	StreamOptions       *streamOptions  `json:"stream_options,omitempty"`
 	Tools               []chatTool      `json:"tools,omitempty"`
+}
+
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type chatMessage struct {
@@ -252,7 +257,11 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 		// The specific structural reason survives into the durable record.
 		// Reporting only "response_read_failed" is what turned the first
 		// streaming failure into archaeology that could not be completed.
-		outcome := responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", StreamErrorCode(readErr, "response_read_failed"), response.StatusCode >= 500)
+		// A provider error carried inside the stream arrives with HTTP 200,
+		// so retryability cannot come from the status code. It comes from
+		// what the provider said.
+		retryable := response.StatusCode >= 500 || StreamErrorRetryable(readErr)
+		outcome := responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", StreamErrorCode(readErr, "response_read_failed"), retryable)
 		return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureResponseReceived, Outcome: outcome, Cause: readErr}
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
@@ -368,7 +377,11 @@ func encodeRequest(request modelruntime.CanonicalRequest) ([]byte, error) {
 		// the transport's ResponseHeaderTimeout race the model's entire
 		// thinking time -- and on a reasoning model it loses. See stream.go.
 		Stream: true,
-		Tools:  tools,
+		// Without this xAI sends no usage chunk at all, and the reassembled
+		// document reports zero tokens for a call that really consumed them
+		// -- which the cost ledger then settles real spend against.
+		StreamOptions: &streamOptions{IncludeUsage: true},
+		Tools:         tools,
 	}
 	if request.OutputMode == modelruntime.OutputJSON {
 		if len(request.OutputSchema) > 0 {

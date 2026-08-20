@@ -59,12 +59,23 @@ const streamBudgetMultiplier = 16
 type streamError struct {
 	code string
 	err  error
+	// retryable is set only for failures the provider itself described as
+	// transient. Everything else stays false, because guessing that a
+	// failure is safe to repeat is how one bad request becomes several.
+	retryable bool
 }
 
 func (e *streamError) Error() string { return e.err.Error() }
 func (e *streamError) Unwrap() error { return e.err }
 
 func streamFailure(code string, err error) error { return &streamError{code: code, err: err} }
+
+// StreamErrorRetryable reports whether a stream failure is one the provider
+// said would pass. It is false for anything else, including a nil error.
+func StreamErrorRetryable(err error) bool {
+	var streamErr *streamError
+	return errors.As(err, &streamErr) && streamErr.retryable
+}
 
 // StreamErrorCode returns the specific failure code for a stream error, or the
 // generic fallback for anything else.
@@ -115,6 +126,19 @@ func reassembleStream(reader io.Reader, documentLimit int) ([]byte, error) {
 			break
 		}
 		events++
+		// xAI reports mid-stream failures as an event carrying an error
+		// object, with HTTP 200 and an event-stream content type. Treating
+		// that as "no completion events" is what turned a transient
+		// "model is currently at capacity" -- which says to retry in a few
+		// minutes -- into an opaque, NOT-RETRYABLE read failure that ended
+		// AUTONOMY-SMOKE-001's campaign permanently in one second.
+		//
+		// The provider's own words are the diagnosis. They are surfaced with
+		// its code, and its type decides retryability rather than a guess
+		// made here.
+		if providerErr := decodeStreamError(payload); providerErr != nil {
+			return nil, providerErr
+		}
 		var chunk streamChunk
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			// The offending bytes are deliberately not quoted: this string
@@ -218,6 +242,48 @@ func eventPayload(line string) (string, bool) {
 		return "", false
 	}
 	return strings.TrimSpace(strings.TrimPrefix(trimmed, "data:")), true
+}
+
+// decodeStreamError recognises a provider error event and returns it as a
+// failure that names itself, or nil when the payload is an ordinary chunk.
+//
+// The provider's message is deliberately NOT copied into the error. It is
+// free-form text from an external service that would then be logged, wrapped
+// and read by humans; the stable `code` is what an operator or a retry policy
+// can act on, and it is a closed value rather than prose.
+func decodeStreamError(payload string) error {
+	var envelope struct {
+		Error *struct {
+			Type string `json:"type"`
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(payload), &envelope); err != nil || envelope.Error == nil {
+		return nil
+	}
+	code := strings.TrimSpace(envelope.Error.Code)
+	if code == "" {
+		code = "unspecified"
+	}
+	// A capacity or server error is the provider saying "later"; anything
+	// else -- a rejected request, an authorization problem -- would only be
+	// rejected again.
+	retryable := envelope.Error.Type == "server_error" || code == "resource-exhausted"
+	return &streamError{
+		code:      bounded("stream_provider_error:" + code),
+		err:       fmt.Errorf("provider reported %q (%s) in the response stream", code, envelope.Error.Type),
+		retryable: retryable,
+	}
+}
+
+// bounded keeps a code inside the durable column's limit without truncating
+// it into something that looks like a different code.
+func bounded(code string) string {
+	const limit = 120
+	if len(code) <= limit {
+		return code
+	}
+	return code[:limit]
 }
 
 func isJSONNull(raw json.RawMessage) bool { return strings.TrimSpace(string(raw)) == "null" }

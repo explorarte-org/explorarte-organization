@@ -182,3 +182,77 @@ func TestNonDataLinesAreSkipped(t *testing.T) {
 		t.Fatalf("content=%q", content)
 	}
 }
+
+// The failure that ended AUTONOMY-SMOKE-001's campaign. xAI reports mid-stream
+// failures as an event carrying an error object, with HTTP 200 and an
+// event-stream content type. Reading that as "no completion events" threw away
+// the provider's own diagnosis and, worse, marked a transient capacity error
+// NOT retryable -- so a condition that says "try again in a few minutes" ended
+// the run permanently, in one second.
+func TestProviderErrorsInsideTheStreamAreSurfaced(t *testing.T) {
+	const capacity = `data: {"error":{"message":"The model is currently at capacity due to high demand. Please try again in a few minutes","type":"server_error","code":"resource-exhausted"}}` + "\n"
+
+	err := reassembleStream2(strings.NewReader(capacity), 1<<20)
+	if err == nil {
+		t.Fatal("a provider error event must fail the read, not produce an empty completion")
+	}
+	if code := StreamErrorCode(err, "generic"); code != "stream_provider_error:resource-exhausted" {
+		t.Fatalf("the durable record must carry the provider's own code, got %q", code)
+	}
+	if !StreamErrorRetryable(err) {
+		t.Fatal("a capacity error is the provider saying \"later\"; refusing to retry ends a campaign for a condition that resolves itself")
+	}
+	// The provider's free-form message must not travel in the error: it is
+	// external text that gets logged, wrapped and read by humans. The stable
+	// code is what an operator and a retry policy act on.
+	if strings.Contains(err.Error(), "high demand") {
+		t.Fatalf("the failure quoted the provider's prose: %v", err)
+	}
+}
+
+// Not every provider error is transient. Guessing that one is safe to repeat
+// is how a single rejected request becomes several.
+func TestNonTransientProviderErrorsAreNotRetried(t *testing.T) {
+	for _, tc := range []struct {
+		name, stream string
+		wantRetry    bool
+	}{
+		{"capacity", `data: {"error":{"type":"server_error","code":"resource-exhausted"}}`, true},
+		{"bad request", `data: {"error":{"type":"invalid_request_error","code":"invalid_schema"}}`, false},
+		{"auth", `data: {"error":{"type":"authentication_error","code":"invalid_api_key"}}`, false},
+		{"no code", `data: {"error":{"type":"invalid_request_error"}}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := reassembleStream2(strings.NewReader(tc.stream+"\n"), 1<<20)
+			if err == nil {
+				t.Fatal("expected a failure")
+			}
+			if got := StreamErrorRetryable(err); got != tc.wantRetry {
+				t.Fatalf("retryable=%v want %v (code %q)", got, tc.wantRetry, StreamErrorCode(err, "-"))
+			}
+		})
+	}
+}
+
+// Usage arrives only when it is asked for, and the cost ledger settles real
+// spend against it. A document reporting zero tokens for a call that consumed
+// them is not a missing detail, it is wrong accounting.
+func TestUsageSurvivesWhenTheProviderSendsIt(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"id":"r","choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}`,
+		`data: {"id":"r","choices":[],"usage":{"prompt_tokens":4321,"completion_tokens":765}}`,
+		"data: [DONE]",
+		"",
+	}, "\n")
+	body, err := reassembleStream(strings.NewReader(stream), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded chatResponse
+	if err = json.Unmarshal(body, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Usage.PromptTokens != 4321 || decoded.Usage.CompletionTokens != 765 {
+		t.Fatalf("usage lost: %+v", decoded.Usage)
+	}
+}
