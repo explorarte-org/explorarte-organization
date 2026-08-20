@@ -604,6 +604,27 @@ func (s *contextService) Validate(ctx context.Context, id int64) (SnapshotValida
 		}
 		drift = append(drift, DriftFinding{ReasonCode: string(code), Reference: "docs/canonical"})
 	}
+	// An adversarial snapshot is a different representation of the same
+	// SourceKinds, so the generic per-kind validation below cannot judge it:
+	// its SourceTaskContext is a review bundle re-encoded from a closed field
+	// list, and the Tasks provider would compare that against a freshly
+	// rebuilt organizational task record. Those hashes never match by design,
+	// which reported drift on every single adversarial review.
+	if selectorOfSnapshot(snapshot).requested() {
+		if validateErr := s.adversarialReviewSources().ValidateSnapshot(ctx, snapshot, role); validateErr != nil {
+			if IsOperational(validateErr) {
+				return SnapshotValidation{}, fmt.Errorf("validate adversarial snapshot %d: %w", snapshot.ID, validateErr)
+			}
+			drift = append(drift, DriftFinding{ReasonCode: string(ReasonOf(validateErr)), Reference: snapshot.TaskRef})
+		}
+		if err = s.verifySnapshotIntegrity(ctx, snapshot); err != nil {
+			drift = append(drift, DriftFinding{ReasonCode: string(ReasonRenderedHashMismatch), Expected: snapshot.RenderedHash})
+		}
+		if len(drift) > 0 {
+			return s.recordStale(ctx, snapshot, drift)
+		}
+		return SnapshotValidation{Valid: true}, nil
+	}
 	for _, segment := range snapshot.Segments {
 		switch segment.SourceKind {
 		case SourceOrganizationAgent, SourceDepartmentAgent, SourceRoleProfile:
@@ -669,15 +690,22 @@ func (s *contextService) Validate(ctx context.Context, id int64) (SnapshotValida
 		drift = append(drift, DriftFinding{ReasonCode: string(ReasonRenderedHashMismatch), Expected: snapshot.RenderedHash})
 	}
 	if len(drift) > 0 {
-		validation := SnapshotValidation{Valid: false, ReasonCode: string(ReasonSnapshotStale), Drift: drift}
-		if recorder, ok := s.store.(ValidationEventRecorder); ok {
-			if recordErr := recorder.RecordValidationFailure(ctx, snapshot, validation, s.clock.Now().UTC()); recordErr != nil {
-				return SnapshotValidation{}, fmt.Errorf("record snapshot validation failure: %w", recordErr)
-			}
-		}
-		return validation, nil
+		return s.recordStale(ctx, snapshot, drift)
 	}
 	return SnapshotValidation{Valid: true}, nil
+}
+
+// recordStale is the one place a stale verdict is shaped and durably recorded,
+// so the adversarial path and the ordinary one cannot report the same finding
+// two different ways.
+func (s *contextService) recordStale(ctx context.Context, snapshot Snapshot, drift []DriftFinding) (SnapshotValidation, error) {
+	validation := SnapshotValidation{Valid: false, ReasonCode: string(ReasonSnapshotStale), Drift: drift}
+	if recorder, ok := s.store.(ValidationEventRecorder); ok {
+		if recordErr := recorder.RecordValidationFailure(ctx, snapshot, validation, s.clock.Now().UTC()); recordErr != nil {
+			return SnapshotValidation{}, fmt.Errorf("record snapshot validation failure: %w", recordErr)
+		}
+	}
+	return validation, nil
 }
 
 func (s *contextService) Invalidate(ctx context.Context, command InvalidateCommand) (Snapshot, error) {

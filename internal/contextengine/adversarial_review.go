@@ -61,22 +61,57 @@ const (
 	adversarialReviewerProfilePath = "investigacion/revisor_adversarial/PERFIL.md"
 )
 
-// adversarialReviewRequested reports whether the request carries a marker that
-// is EXCLUSIVE to adversarial review. Any one of them commits the request to
-// the full five-fact validation below, so a request holding part of the
-// selector is refused rather than quietly assembled the ordinary way.
+// adversarialSelector is the five durable facts that decide whether a context
+// is an adversarial review, in the one shape both callers can produce.
+//
+// A build has them on its BuildRequest; a durable snapshot has them on its own
+// columns, because M1.3 records them precisely so a snapshot can be reasoned
+// about later without re-deriving anything. Having one type and two
+// constructors is what keeps "is this an adversarial context" from being
+// answered twice, slightly differently, in the two places that must agree:
+// the build and the revalidation of what the build produced.
+type adversarialSelector struct {
+	Purpose          string
+	TaskClass        string
+	ExecutionPurpose string
+	ActorRoleID      string
+	ActorUnitID      string
+}
+
+func selectorOf(request BuildRequest) adversarialSelector {
+	return adversarialSelector{
+		Purpose: strings.TrimSpace(request.Purpose), TaskClass: strings.TrimSpace(request.TaskClass),
+		ExecutionPurpose: strings.TrimSpace(request.ExecutionPurpose),
+		ActorRoleID:      strings.TrimSpace(request.ActorRoleID), ActorUnitID: strings.TrimSpace(request.ActorUnitID),
+	}
+}
+
+func selectorOfSnapshot(snapshot Snapshot) adversarialSelector {
+	return adversarialSelector{
+		Purpose: strings.TrimSpace(snapshot.Purpose), TaskClass: strings.TrimSpace(snapshot.TaskClass),
+		ExecutionPurpose: strings.TrimSpace(snapshot.ExecutionPurpose),
+		ActorRoleID:      strings.TrimSpace(snapshot.ActorRoleID), ActorUnitID: strings.TrimSpace(snapshot.ActorUnitID),
+	}
+}
+
+// requested reports whether the selector carries a marker that is EXCLUSIVE to
+// adversarial review. Any one of them commits the caller to the full five-fact
+// validation, so a partial selector is refused rather than quietly handled the
+// ordinary way.
 //
 // It deliberately tests four of the five facts, not all of them. ActorUnitID
 // is the exception: "investigacion" is a real unit with other roles in it, so
 // on its own it says nothing about adversarial review and must not drag an
-// ordinary research request into this mode. The other four have no meaning
+// ordinary research context into this mode. The other four have no meaning
 // outside it.
-func adversarialReviewRequested(request BuildRequest) bool {
-	return strings.TrimSpace(request.Purpose) == AdversarialReviewPurpose ||
-		strings.TrimSpace(request.TaskClass) == AdversarialReviewTaskClass ||
-		strings.TrimSpace(request.ExecutionPurpose) == AdversarialReviewExecutionPurpose ||
-		strings.TrimSpace(request.ActorRoleID) == AdversarialReviewerRoleID
+func (a adversarialSelector) requested() bool {
+	return a.Purpose == AdversarialReviewPurpose ||
+		a.TaskClass == AdversarialReviewTaskClass ||
+		a.ExecutionPurpose == AdversarialReviewExecutionPurpose ||
+		a.ActorRoleID == AdversarialReviewerRoleID
 }
+
+func adversarialReviewRequested(request BuildRequest) bool { return selectorOf(request).requested() }
 
 // validateAdversarialSelector requires the entire durable selector, exactly.
 //
@@ -88,13 +123,17 @@ func adversarialReviewRequested(request BuildRequest) bool {
 // five facts must be present and exact, or the build is refused. A request
 // missing any of them is a request whose intent this package cannot verify.
 func validateAdversarialSelector(request BuildRequest) error {
-	actor := strings.TrimSpace(request.ActorRoleID)
+	return selectorOf(request).validate()
+}
+
+func (a adversarialSelector) validate() error {
+	actor := a.ActorRoleID
 	for _, field := range []struct{ name, got, want string }{
-		{"purpose", strings.TrimSpace(request.Purpose), AdversarialReviewPurpose},
-		{"task_class", strings.TrimSpace(request.TaskClass), AdversarialReviewTaskClass},
-		{"execution_purpose", strings.TrimSpace(request.ExecutionPurpose), AdversarialReviewExecutionPurpose},
+		{"purpose", a.Purpose, AdversarialReviewPurpose},
+		{"task_class", a.TaskClass, AdversarialReviewTaskClass},
+		{"execution_purpose", a.ExecutionPurpose, AdversarialReviewExecutionPurpose},
 		{"actor_role_id", actor, AdversarialReviewerRoleID},
-		{"actor_unit_id", strings.TrimSpace(request.ActorUnitID), AdversarialReviewerUnitID},
+		{"actor_unit_id", a.ActorUnitID, AdversarialReviewerUnitID},
 	} {
 		if field.got != field.want {
 			return Reject(ReasonRoleNotExecutable, actor, fmt.Sprintf(
@@ -232,9 +271,21 @@ func (a adversarialReviewSources) Validate(ctx context.Context, request BuildReq
 	return nil
 }
 
+// assertNoDrift compares CONTENT, not the durable row's own version counter.
+//
+// That distinction is the whole point of this representation. An adversarial
+// source is derived exclusively from a closed field list, so the only thing
+// that can make it stale is the content it was derived from changing. The
+// task row's version increments on things this source does not contain at all
+// -- status transitions, attempt counts, evidence rows -- and comparing it
+// would report drift for a bundle that is byte-identical.
+//
+// It is not a weaker check. A task reassigned to another role, or carrying a
+// different design, changes the content and is caught; reviewerContract and
+// reviewBundle also re-verify identity before hashing anything.
 func assertNoDrift(stored, current SourceRecord, reason ReasonCode) error {
-	if stored.ContentHash != current.ContentHash || stored.Version != current.Version {
-		return Reject(reason, stored.Reference, "source changed during context build")
+	if stored.ContentHash != current.ContentHash {
+		return Reject(reason, stored.Reference, "source content changed since the snapshot was built")
 	}
 	return nil
 }
@@ -347,10 +398,9 @@ func (a adversarialReviewSources) reviewBundle(ctx context.Context, request Buil
 		return SourceRecord{}, Reject(ReasonSourceNotFound, task.Reference, err.Error())
 	}
 	// Built here, from the closed field list, with its own hash. Nothing from
-	// the rendered task record survives into Content. The Version is the
-	// durable task's own version, so a task that moved is caught by Validate
-	// even in the vanishingly unlikely case that its bundle re-encodes
-	// identically.
+	// the rendered task record survives into Content. Version is carried for
+	// provenance only -- drift is decided on content, because the task row's
+	// version counts changes this source deliberately does not contain.
 	record := SourceRecord{
 		Kind:      SourceTaskContext,
 		Reference: task.Reference,
@@ -394,4 +444,41 @@ func assertAdversarialEgressSafe(sources []SourceRecord) error {
 		}
 	}
 	return nil
+}
+
+// ValidateSnapshot revalidates a DURABLE adversarial snapshot, which is the
+// second place the representation has to be understood and the place the first
+// fix missed.
+//
+// Service.Build revalidates what it just resolved; Service.Validate
+// revalidates a stored snapshot later, and the Executive's context adapter
+// calls it before every dispatch. Both switch on SourceKind, so both would
+// hand this snapshot's SourceTaskContext to the Tasks provider, which rebuilds
+// the full organizational task record and compares hashes against a re-encoded
+// review bundle. Those two hashes are never meant to match, so every
+// adversarial review failed with "task context N version drift" -- after the
+// snapshot had been built and the campaign paid for everything before it.
+//
+// The selector comes from the snapshot's own durable columns, so this decides
+// what the snapshot IS from what was recorded when it was built, never from
+// what a caller now claims about it.
+func (a adversarialReviewSources) ValidateSnapshot(ctx context.Context, snapshot Snapshot, role registry.Role) error {
+	request := BuildRequest{
+		OrganizationID:         snapshot.OrganizationID,
+		OrganizationRevisionID: snapshot.OrganizationRevisionID,
+		ActorRoleID:            snapshot.ActorRoleID,
+		ActorUnitID:            snapshot.ActorUnitID,
+		Purpose:                snapshot.Purpose,
+		TaskClass:              snapshot.TaskClass,
+		ExecutionPurpose:       snapshot.ExecutionPurpose,
+		TaskRef:                snapshot.TaskRef,
+	}
+	if err := selectorOfSnapshot(snapshot).validate(); err != nil {
+		return err
+	}
+	records := make([]SourceRecord, 0, len(snapshot.Segments))
+	for _, segment := range snapshot.Segments {
+		records = append(records, segmentToRecord(segment))
+	}
+	return a.Validate(ctx, request, role, records)
 }

@@ -1,6 +1,7 @@
 package contextengine
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -176,15 +177,53 @@ func TestAdversarialSanitizedSourceIsNotValidatedAsATaskRecord(t *testing.T) {
 	}
 }
 
-// TestAdversarialValidationDetectsDurableTaskDrift proves the replacement rule
-// is a real check and not merely a way to skip validation.
-func TestAdversarialValidationDetectsDurableTaskDrift(t *testing.T) {
+// TestAdversarialValidationDetectsBundleDrift proves the replacement rule is a
+// real check and not merely a way to skip validation. What must drift is the
+// BUNDLE changing, because the bundle is the entire content of this source.
+func TestAdversarialValidationDetectsBundleDrift(t *testing.T) {
 	f := newAdversarialFixture(t, reviewTaskPayload(t))
 	f.service.(*contextService).tasks = &driftingTaskProvider{inner: fakeTaskProvider{payload: f.payload}, mutate: f.payload}
 	if _, err := f.service.Build(context.Background(), adversarialRequest()); err == nil {
-		t.Fatal("a durable task that moved mid-build must drift")
+		t.Fatal("a review bundle that changed mid-build must drift")
 	} else if ReasonOf(err) != ReasonTaskVersionDrift {
 		t.Fatalf("want task_version_drift, got %s (%v)", ReasonOf(err), err)
+	}
+}
+
+// TestTaskChurnThatLeavesTheBundleIdenticalIsNotDrift is the production
+// regression. The durable task row's version increments on things this source
+// deliberately does not contain -- status transitions, attempt counts -- and
+// an earlier revision compared that version, so every adversarial review died
+// with "task context N version drift" the moment its task started running.
+func TestTaskChurnThatLeavesTheBundleIdenticalIsNotDrift(t *testing.T) {
+	f := newAdversarialFixture(t, reviewTaskPayload(t))
+	f.service.(*contextService).tasks = &churningTaskProvider{inner: fakeTaskProvider{payload: f.payload}}
+	if _, err := f.service.Build(context.Background(), adversarialRequest()); err != nil {
+		t.Fatalf("a task whose status moved but whose bundle is byte-identical must not drift: %v", err)
+	}
+}
+
+// TestDurableAdversarialSnapshotRevalidates covers the SECOND validation path.
+// Service.Build revalidates what it just resolved; Service.Validate
+// revalidates a stored snapshot later, and the Executive calls it before every
+// dispatch. Routing only the first one left the second handing this snapshot
+// to the generic Tasks provider, which is what actually blocked root 138.
+func TestDurableAdversarialSnapshotRevalidates(t *testing.T) {
+	f := newAdversarialFixture(t, reviewTaskPayload(t))
+	built, err := f.service.Build(context.Background(), adversarialRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Between build and revalidation the task starts running, exactly as it
+	// does in production between the snapshot being created and the dispatch
+	// that consumes it.
+	f.service.(*contextService).tasks = &churningTaskProvider{inner: fakeTaskProvider{payload: f.payload}}
+	validation, err := f.service.Validate(context.Background(), built.Snapshot.ID)
+	if err != nil {
+		t.Fatalf("revalidating a durable adversarial snapshot must not error: %v", err)
+	}
+	if !validation.Valid {
+		t.Fatalf("a durable adversarial snapshot must revalidate, got drift %+v", validation.Drift)
 	}
 }
 
@@ -386,8 +425,8 @@ func (f fakeTaskProvider) ValidateVersion(_ context.Context, _ string, source So
 	return nil
 }
 
-// driftingTaskProvider mutates the durable payload after the first read, which
-// is what a task genuinely moving mid-build looks like from here.
+// driftingTaskProvider changes the review bundle after the first read, which
+// is what a design genuinely changing mid-build looks like from here.
 type driftingTaskProvider struct {
 	inner  fakeTaskProvider
 	mutate *[]byte
@@ -401,8 +440,13 @@ func (d *driftingTaskProvider) GetTaskContext(ctx context.Context, request Build
 	}
 	if !d.read {
 		d.read = true
-		moved := append([]byte(nil), *d.mutate...)
-		moved = append(moved, ' ')
+		// Change the CANDIDATE DESIGN itself, not the envelope. Perturbing
+		// the payload's bytes would leave the decoded bundle identical, and
+		// correctly would not be drift.
+		moved := bytes.Replace(*d.mutate, []byte("a candidate design under review"), []byte("a DIFFERENT candidate design"), 1)
+		if bytes.Equal(moved, *d.mutate) {
+			panic("drift fixture no longer changes the bundle; it would assert nothing")
+		}
 		*d.mutate = moved
 	}
 	return record, nil
@@ -431,4 +475,32 @@ func (d *driftingDocuments) Load(ctx context.Context, path string, limit int64) 
 	}
 	normalized := append(append([]byte(nil), doc.Normalized...), 0x0a)
 	return LoadedDocument{Path: doc.Path, Normalized: normalized, Body: doc.Body, Hash: DigestMarkdown(normalized), Frontmatter: doc.Frontmatter}, nil
+}
+
+// churningTaskProvider advances the durable task the way execution does --
+// status and attempts -- while leaving the review bundle in the instructions
+// byte-identical.
+type churningTaskProvider struct {
+	inner fakeTaskProvider
+	reads int
+}
+
+func (c *churningTaskProvider) GetTaskContext(ctx context.Context, request BuildRequest) (*SourceRecord, error) {
+	record, err := c.inner.GetTaskContext(ctx, request)
+	if err != nil || record == nil {
+		return record, err
+	}
+	c.reads++
+	if c.reads > 1 {
+		moved := bytes.Replace(record.Content, []byte(`"status":"leased"`), []byte(`"status":"running"`), 1)
+		moved = bytes.Replace(moved, []byte(`"attempts":1`), []byte(`"attempts":2`), 1)
+		record.Content = moved
+		record.ContentHash = DigestCanonicalBytes(moved)
+		record.Version = "task.v1:" + DigestCanonicalBytes(moved)[:8]
+	}
+	return record, nil
+}
+
+func (c *churningTaskProvider) ValidateVersion(ctx context.Context, actor string, source SourceRecord) error {
+	return c.inner.ValidateVersion(ctx, actor, source)
 }
