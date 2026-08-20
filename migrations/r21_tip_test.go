@@ -24,7 +24,7 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const wantCount = 55
+	const wantCount = 56
 	if len(loaded) != wantCount {
 		t.Fatalf("migration count=%d want %d", len(loaded), wantCount)
 	}
@@ -63,6 +63,7 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		// explained later without that explanation entering any path built
 		// for material that carries no secrets.
 		55: "create_model_invocation_reasoning",
+		56: "create_composition_lifecycle",
 	}
 	byVersion := make(map[int64]string, len(loaded))
 	for _, migration := range loaded {
@@ -74,8 +75,8 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		}
 	}
 
-	if tip := loaded[len(loaded)-1]; tip.Version != 55 {
-		t.Fatalf("migration tip=%06d want 000055", tip.Version)
+	if tip := loaded[len(loaded)-1]; tip.Version != 56 {
+		t.Fatalf("migration tip=%06d want 000056", tip.Version)
 	}
 }
 
