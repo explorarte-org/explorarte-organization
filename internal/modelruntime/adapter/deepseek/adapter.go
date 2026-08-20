@@ -68,8 +68,14 @@ type chatChoice struct {
 }
 
 type chatResponseMessage struct {
-	Content   json.RawMessage `json:"content"`
-	ToolCalls []chatToolCall  `json:"tool_calls"`
+	Content json.RawMessage `json:"content"`
+	// ReasoningContent is DeepSeek's account of how it reached the answer.
+	// It is routed onto RawResponse.HiddenReasoning and NEVER onto Content:
+	// Content is the result and is hashed, projected and acted on, while this
+	// explains the result and is kept separately for traceability. Mixing
+	// them would put reasoning into every path the result travels.
+	ReasoningContent string         `json:"reasoning_content"`
+	ToolCalls        []chatToolCall `json:"tool_calls"`
 }
 
 type chatToolCall struct {
@@ -438,6 +444,7 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 		Content: content, ToolIntents: tools, ProviderRequestID: providerRequestID,
 		InputTokens: decoded.Usage.PromptTokens, OutputTokens: decoded.Usage.CompletionTokens,
 		ProviderReported: true, ProviderOutcome: outcome,
+		HiddenReasoning:      []byte(decoded.Choices[0].Message.ReasoningContent),
 		PromptCacheHitTokens: decoded.Usage.PromptCacheHitTokens, PromptCacheMissTokens: decoded.Usage.PromptCacheMissTokens,
 	}, nil
 }

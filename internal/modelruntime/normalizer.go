@@ -30,8 +30,23 @@ func (n Normalizer) Normalize(invocation Invocation, dispatchAttemptID int64, ra
 		return NormalizedResponse{}, fmt.Errorf("%w: invalid token usage", ErrResponseRejected)
 	}
 
-	// Hidden reasoning is deliberately discarded before any durable structure is
-	// assembled. It must never participate in result hashing, logs, audit, or outbox.
+	// Reasoning is lifted out of the working copy before the result is
+	// assembled, exactly as it was when it was discarded here.
+	//
+	// The rule that clearing enforced still holds: nothing built below this
+	// line can reach the reasoning, so it cannot participate in result
+	// hashing, logs, audit events or the outbox. What changes is only its
+	// destination -- NormalizedResponse now carries it to a table of its own,
+	// so a role's decision can be explained later without that explanation
+	// entering any path built for material that carries no secrets.
+	//
+	// raw is a value, so this clears THIS function's copy, not the caller's.
+	// That is enough for the invariant, because every durable structure is
+	// built from here down; the caller reads only token counts from its own
+	// copy (see recoveredUsage). Saying it plainly matters: a comment
+	// claiming the caller was cleared would be false, and someone would
+	// eventually rely on it.
+	roleReasoning := boundedReasoning(raw.HiddenReasoning, n.MaxResponseBytes)
 	raw.HiddenReasoning = nil
 
 	result := InvocationResult{
@@ -157,6 +172,7 @@ func (n Normalizer) Normalize(invocation Invocation, dispatchAttemptID int64, ra
 		Usage:                 usage,
 		ProviderRequestID:     raw.ProviderRequestID,
 		CancellationConfirmed: raw.CancellationConfirmed,
+		RoleReasoning:         roleReasoning,
 	}, nil
 }
 
@@ -174,4 +190,21 @@ func decodeJSONWithNumbers(body []byte) (any, error) {
 		return nil, err
 	}
 	return value, nil
+}
+
+// boundedReasoning keeps a provider's reasoning inside the same size budget
+// the rest of its response answers to.
+//
+// It truncates rather than rejects: reasoning explains a decision, and losing
+// the whole invocation because the explanation ran long would trade the thing
+// that matters for the thing that describes it. An empty result stays empty
+// rather than becoming an empty row.
+func boundedReasoning(reasoning []byte, limit int) []byte {
+	if len(reasoning) == 0 {
+		return nil
+	}
+	if limit > 0 && len(reasoning) > limit {
+		reasoning = reasoning[:limit]
+	}
+	return append([]byte(nil), reasoning...)
 }

@@ -283,6 +283,28 @@ RETURNING id,created_at`,
 		).Scan(&resultID, &createdAt); err != nil {
 			return modelruntime.DispatchResult{}, mapError(err)
 		}
+		// Reasoning is written here, in the same transaction as the result it
+		// explains, so a result can never exist without its justification or
+		// a justification without its result.
+		//
+		// It goes to its own table and nowhere else. It is not part of the
+		// result row, so it cannot reach response hashing; it is not in the
+		// outbox payload, so it cannot leave the system; and no context
+		// projection reads this table, so it cannot travel back into a model
+		// prompt. Those three exclusions are what let ORGANIZATIONAL data be
+		// kept at all.
+		if reasoning := command.Response.RoleReasoning; len(reasoning) > 0 {
+			if _, err = tx.Exec(ctx, `
+INSERT INTO model_invocation_reasoning(
+    invocation_id,dispatch_attempt_id,content,content_hash,content_bytes
+) VALUES($1,$2,$3,$4,$5)
+ON CONFLICT (invocation_id) DO NOTHING`,
+				invocation.ID, attempt.ID, reasoning,
+				modelruntime.SHA256Bytes(reasoning), len(reasoning),
+			); err != nil {
+				return modelruntime.DispatchResult{}, mapError(err)
+			}
+		}
 		// prompt_cache_hit_tokens/prompt_cache_miss_tokens: fixed R9.1 --
 		// normalizer.go's Normalize now copies
 		// RawResponse.PromptCacheHitTokens/PromptCacheMissTokens onto the
