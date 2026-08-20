@@ -152,6 +152,17 @@ func (w *World) Transition(id EpisodeID, to Lifecycle, now time.Time) error {
 	if lapsable(e.State) && !now.Before(e.LeaseExpiresAt) {
 		return fmt.Errorf("composition: episode %q has a lapsed lease and must be adjudicated, not transitioned to %s", id, to)
 	}
+	// One activation of a component may be Active at a time. Two would be
+	// two answers to a fact that has one owner. This is what forces a
+	// replacement through Leave before Reload rather than letting the new
+	// episode appear beside the old one: the outgoing episode keeps
+	// serving the consumers already committed to it from Unloading, where
+	// it is no longer selectable.
+	if to == Active {
+		if incumbent := w.activeEpisodeOf(e.ComponentID); incumbent != "" && incumbent != id {
+			return fmt.Errorf("composition: episode %q of %s cannot become active while %q still is", id, e.ComponentID, incumbent)
+		}
+	}
 	if e.State == Unloading && to == Inactive {
 		if holders := w.Relied(id, now); len(holders) > 0 {
 			return fmt.Errorf("composition: episode %q may not finish unloading, still relied on by %v", id, holders)

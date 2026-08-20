@@ -94,7 +94,12 @@ func TestANewEpisodeDoesNotInheritTheOldEpisodesBindings(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Same component, new activation.
+	// Same component, new activation. The incumbent has to leave selection
+	// first, which is the only way two episodes of one component ever
+	// coexist.
+	if err := w.Transition("orgd-1", Unloading, t0); err != nil {
+		t.Fatal(err)
+	}
 	active(t, w, "orgd-2", "runtime-orgd")
 	if held := w.Relied("orgd-2", t0); len(held) != 0 {
 		t.Fatalf("the new episode inherited a binding it never accepted: %v", held)
@@ -213,8 +218,10 @@ func TestIllegalTransitionsAreRefused(t *testing.T) {
 
 func TestAConsumerCannotHoldTwoProvidersForOneKey(t *testing.T) {
 	w := NewWorld()
+	// Two different components, so both may be Active at once. What is
+	// under test is the consumer's committed view, not the providers.
 	active(t, w, "p1", "runtime-orgd")
-	active(t, w, "p2", "runtime-orgd")
+	active(t, w, "p2", "egress-binding")
 	active(t, w, "c", "assignment-controller")
 	b := CommittedBinding{Key: KeyRuntimeObservedSHA, Consumer: "c", Provider: "p1"}
 	if err := w.Bind(b, t0); err != nil {
