@@ -23,7 +23,6 @@ import (
 
 	"github.com/Mireuz13/explorarte-organization/internal/composition"
 	"github.com/Mireuz13/explorarte-organization/internal/modelegress"
-	"github.com/Mireuz13/explorarte-organization/internal/platform/buildinfo"
 )
 
 // EgressStatusReader reports the canonical revision in force and whether the
@@ -54,9 +53,12 @@ type Observer struct {
 	Schema  SchemaTipReader
 	Desired DesiredBuildReader
 
-	// Build is local knowledge, not a read. The binary already knows its
-	// own commit and the highest migration compiled into it.
-	Build buildinfo.Info
+	// Fleet reports what the running fleet is. It is a read like any
+	// other, and deliberately NOT the local buildinfo: the process doing
+	// the observing is not the process being observed, and substituting
+	// one for the other produces a refusal whose reason is about the
+	// wrong subject.
+	Fleet FleetBuildReader
 }
 
 // Result is what a single observation pass produced.
@@ -83,23 +85,7 @@ func (o Observer) Observe(ctx context.Context) Result {
 		Unobserved:  map[composition.Key]string{},
 	}
 
-	if commit := o.Build.Commit; commit != "" {
-		result.Observation[composition.KeyRuntimeObservedSHA] = commit
-	} else {
-		result.miss(composition.KeyRuntimeObservedSHA, "this binary was built without its commit injected")
-	}
-
-	// Today a binary accepts exactly the migration it was compiled at, so
-	// this is a set of one and MemberOf degenerates to equality. That is
-	// the truth and it is worth stating plainly rather than widening the
-	// set to look flexible. The set-valued key is what lets a binary that
-	// genuinely does span two migrations say so later, without the
-	// predicate or anything reading it having to change.
-	if tip := o.Build.MigrationTip; tip > 0 {
-		result.Observation[composition.KeyRuntimeSchemaCompatibility] = strconv.FormatInt(tip, 10)
-	} else {
-		result.miss(composition.KeyRuntimeSchemaCompatibility, "this binary reports no migration tip")
-	}
+	o.observeFleet(ctx, &result)
 
 	if o.Schema == nil {
 		result.miss(composition.KeyDatabaseSchemaTip, "no schema reader configured")
@@ -160,6 +146,46 @@ func (o Observer) observeCanonical(ctx context.Context, result *Result) {
 	result.miss(composition.KeyEgressBoundRevision, fmt.Sprintf(
 		"revision %s is current but its canonical egress policy is not bound to it, and the status does not say which revision it is bound to",
 		revision))
+}
+
+// observeFleet asks the running fleet what it is.
+//
+// There is no fallback to the local binary, and that absence is the point. A
+// reconciler runs beside the runtime, not inside it, so its own commit and
+// migration tip say nothing about the thing it is judging. Reporting them
+// under these keys produces an answer shaped like a diagnosis and aimed at
+// the wrong subject -- which is worse than no answer, because no answer is
+// refused and a wrong one is acted upon.
+func (o Observer) observeFleet(ctx context.Context, result *Result) {
+	if o.Fleet == nil {
+		const reason = "no fleet build reader configured; this process must not report its own build as the fleet's"
+		result.miss(composition.KeyRuntimeObservedSHA, reason)
+		result.miss(composition.KeyRuntimeSchemaCompatibility, reason)
+		return
+	}
+	info, err := o.Fleet.FleetBuild(ctx)
+	if err != nil {
+		reason := fmt.Sprintf("asking the fleet what it is failed: %v", err)
+		result.miss(composition.KeyRuntimeObservedSHA, reason)
+		result.miss(composition.KeyRuntimeSchemaCompatibility, reason)
+		return
+	}
+	if info.Commit != "" && info.Commit != "unknown" {
+		result.Observation[composition.KeyRuntimeObservedSHA] = info.Commit
+	} else {
+		result.miss(composition.KeyRuntimeObservedSHA, "the fleet reports no commit; it was built without one injected")
+	}
+	// Today a binary accepts exactly the migration it was compiled at, so
+	// this is a set of one and MemberOf degenerates to equality. That is
+	// the truth and it is worth stating plainly rather than widening the
+	// set to look flexible. The set-valued key is what lets a binary that
+	// genuinely does span two migrations say so later, without the
+	// predicate or anything reading it having to change.
+	if info.MigrationTip > 0 {
+		result.Observation[composition.KeyRuntimeSchemaCompatibility] = strconv.FormatInt(info.MigrationTip, 10)
+	} else {
+		result.miss(composition.KeyRuntimeSchemaCompatibility, "the fleet reports no migration tip")
+	}
 }
 
 func (r *Result) miss(key composition.Key, reason string) {

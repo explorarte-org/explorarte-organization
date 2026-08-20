@@ -32,6 +32,13 @@ type fakeDesired struct {
 	err error
 }
 
+type fakeFleet struct {
+	info buildinfo.Info
+	err  error
+}
+
+func (f fakeFleet) FleetBuild(context.Context) (buildinfo.Info, error) { return f.info, f.err }
+
 func (f fakeDesired) DesiredSHA(context.Context) (string, error) { return f.sha, f.err }
 
 func healthyObserver() Observer {
@@ -39,7 +46,7 @@ func healthyObserver() Observer {
 		Egress:  fakeEgress{status: modelegress.RegistryStatus{OrganizationRevisionID: 19, Synchronized: true}},
 		Schema:  fakeSchema{tip: 55},
 		Desired: fakeDesired{sha: "abc123"},
-		Build:   buildinfo.Info{Commit: "abc123", MigrationTip: 55},
+		Fleet:   fakeFleet{info: buildinfo.Info{Commit: "abc123", MigrationTip: 55}},
 	}
 }
 
@@ -117,13 +124,9 @@ func TestAFailedReaderCostsOnlyItsOwnKeys(t *testing.T) {
 }
 
 func TestAMissingReaderIsAFactNotAnError(t *testing.T) {
-	result := Observer{Build: buildinfo.Info{Commit: "abc123", MigrationTip: 55}}.Observe(context.Background())
-	// The binary still knows itself.
-	if result.Observation[composition.KeyRuntimeObservedSHA] != "abc123" {
-		t.Fatal("local knowledge needs no reader")
-	}
-	if got := len(result.Missing()); got != 4 {
-		t.Fatalf("every key needing a reader must be reported missing, got %d: %v", got, result.Missing())
+	result := Observer{}.Observe(context.Background())
+	if got := len(result.Missing()); got != 6 {
+		t.Fatalf("every key needs a reader, so all six must be missing, got %d: %v", got, result.Missing())
 	}
 	for _, k := range result.Missing() {
 		if !strings.Contains(result.Unobserved[k], "no ") {
@@ -174,5 +177,52 @@ func TestDivergenceIsObservedWithoutDenyingAdmission(t *testing.T) {
 	// The fleet running the previous build is still entitled to serve.
 	if err := g.Admit("runtime-orgd", result.Observation); err != nil {
 		t.Fatalf("owing a transition is not losing the right to run: %v", err)
+	}
+}
+
+// The first read-only run against production got this backwards: the observer
+// reported its own commit and migration tip as the fleet's, and the admission
+// refusal that followed was computed about the wrong subject. An answer shaped
+// like a diagnosis and aimed at the wrong thing is worse than no answer,
+// because no answer is refused and a wrong one is acted upon.
+func TestTheObserverNeverReportsItselfAsTheFleet(t *testing.T) {
+	o := healthyObserver()
+	o.Fleet = nil
+	result := o.Observe(context.Background())
+
+	for _, k := range []composition.Key{composition.KeyRuntimeObservedSHA, composition.KeyRuntimeSchemaCompatibility} {
+		if got, ok := result.Observation[k]; ok {
+			t.Fatalf("%s must stay unobserved, got %q", k, got)
+		}
+		if !strings.Contains(result.Unobserved[k], "must not report its own build") {
+			t.Errorf("the reason must name the mistake it is preventing: %q", result.Unobserved[k])
+		}
+	}
+	// And the refusal that follows is about not knowing, not about a
+	// comparison against the wrong binary.
+	g, err := composition.Baseline()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Admit("runtime-orgd", result.Observation); err == nil {
+		t.Fatal("a fleet nobody can see must not be admitted")
+	} else if !strings.Contains(err.Error(), "not observed") {
+		t.Fatalf("the refusal must say the fleet was never observed: %v", err)
+	}
+}
+
+func TestAFleetThatCannotBeReachedIsUnobservedNotAssumed(t *testing.T) {
+	o := healthyObserver()
+	o.Fleet = fakeFleet{err: errors.New("connection refused")}
+	result := o.Observe(context.Background())
+	if _, ok := result.Observation[composition.KeyRuntimeObservedSHA]; ok {
+		t.Fatal("an unreachable fleet must not produce a build")
+	}
+	if !strings.Contains(result.Unobserved[composition.KeyRuntimeObservedSHA], "connection refused") {
+		t.Fatalf("the underlying error must survive: %q", result.Unobserved[composition.KeyRuntimeObservedSHA])
+	}
+	// The keys that were readable still are.
+	if result.Observation[composition.KeyDatabaseSchemaTip] != "55" {
+		t.Fatal("a fleet failure must not cost the database read")
 	}
 }

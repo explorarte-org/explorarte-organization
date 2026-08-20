@@ -16,10 +16,7 @@ import (
 	compositionpostgres "github.com/Mireuz13/explorarte-organization/internal/composition/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/config"
 	egressbootstrap "github.com/Mireuz13/explorarte-organization/internal/modelegress/bootstrap"
-	"github.com/Mireuz13/explorarte-organization/internal/platform/buildinfo"
-	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
 	"github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
-	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 )
 
 func printCompositionUsage(w io.Writer) {
@@ -122,17 +119,16 @@ func openReconciler(ctx context.Context, cfg config.Config, store *postgres.Stor
 		fmt.Fprintf(stderr, "create model egress runtime: %v\n", err)
 		return reconciler{}, exitInternal
 	}
-	// The tip compiled into this binary is the list it carries, not a
-	// constant somebody has to remember to bump.
-	tip, err := compiledMigrationTip()
-	if err != nil {
-		fmt.Fprintf(stderr, "read compiled migrations: %v\n", err)
-		return reconciler{}, exitInternal
-	}
 	observer := observe.Observer{
 		Egress: egressRuntime.Service,
 		Schema: observe.NewSchemaTip(store.Pool()),
-		Build:  buildinfo.Info{Version: version, Commit: commit, BuildTime: buildTime, MigrationTip: tip},
+	}
+	// The fleet's identity is read from the fleet, never from this
+	// process. Without a configured endpoint those two keys stay
+	// unobserved, which denies admission and says why -- the correct
+	// answer for a deployment that does not publish what it is running.
+	if url := os.Getenv("ORG_COMPOSITION_FLEET_VERSION_URL"); url != "" {
+		observer.Fleet = observe.NewHTTPBuild(url)
 	}
 	if dir, ref := os.Getenv("ORG_COMPOSITION_REPO_DIR"), os.Getenv("ORG_COMPOSITION_TARGET_REF"); dir != "" && ref != "" {
 		observer.Desired = observe.NewGitRef(dir, ref)
@@ -141,45 +137,36 @@ func openReconciler(ctx context.Context, cfg config.Config, store *postgres.Stor
 	return reconciler{graph: graph, observer: observer, store: lifecycle}, exitOK
 }
 
-func compiledMigrationTip() (int64, error) {
-	loaded, err := platformmigrations.Load(rootmigrations.Files)
-	if err != nil {
-		return 0, err
-	}
-	var tip int64
-	for _, m := range loaded {
-		if m.Version > tip {
-			tip = m.Version
-		}
-	}
-	return tip, nil
-}
-
 type observationReport struct {
 	Observed   map[string]string `json:"observed"`
 	Unobserved map[string]string `json:"unobserved,omitempty"`
 	Admitted   []string          `json:"admitted"`
 	Refused    map[string]string `json:"refused,omitempty"`
 	Converged  bool              `json:"converged"`
+	Lifecycle  string            `json:"lifecycle_error,omitempty"`
 	Divergence []string          `json:"divergence,omitempty"`
 	Next       string            `json:"next_step,omitempty"`
 }
 
+// look reads both halves and keeps them independent.
+//
+// The observation of the world's keys and the durable lifecycle record are
+// two different reads, and a failure of the second must not suppress the
+// first. Before the lifecycle table exists there is nothing to load and every
+// key is still perfectly readable -- which is exactly the state a deployment
+// is in when somebody most wants to ask what this model sees, and the worst
+// possible moment to answer "database error" instead of answering.
 func (r reconciler) look(ctx context.Context) (composition.Observation, *composition.World, observe.Result, error) {
 	result := r.observer.Observe(ctx)
 	world, err := r.store.Load(ctx)
 	if err != nil {
-		return nil, nil, result, err
+		return result.Observation, nil, result, err
 	}
 	return result.Observation, world, result, nil
 }
 
 func (r reconciler) report(ctx context.Context, asJSON bool, stdout, stderr io.Writer) int {
-	obs, world, result, err := r.look(ctx)
-	if err != nil {
-		fmt.Fprintf(stderr, "load composition state: %v\n", err)
-		return exitDatabase
-	}
+	obs, world, result, lifecycleErr := r.look(ctx)
 	admitted, refused := r.graph.Admissible(obs)
 	converged, divergence := r.graph.Converged(obs)
 
@@ -187,14 +174,19 @@ func (r reconciler) report(ctx context.Context, asJSON bool, stdout, stderr io.W
 		Observed: map[string]string{}, Unobserved: map[string]string{},
 		Admitted: admitted, Refused: refused, Converged: converged, Divergence: divergence,
 	}
+	if lifecycleErr != nil {
+		report.Lifecycle = lifecycleErr.Error()
+	}
 	for k, v := range obs {
 		report.Observed[string(k)] = v
 	}
 	for _, k := range result.Missing() {
 		report.Unobserved[string(k)] = result.Unobserved[k]
 	}
-	if step, ok := composition.Next(r.graph, world, obs, time.Now()); ok {
-		report.Next = step.String()
+	if world != nil {
+		if step, ok := composition.Next(r.graph, world, obs, time.Now()); ok {
+			report.Next = step.String()
+		}
 	}
 
 	if asJSON {
@@ -227,9 +219,13 @@ func (r reconciler) report(ctx context.Context, asJSON bool, stdout, stderr io.W
 			fmt.Fprintf(stdout, "diverged   %s\n", d)
 		}
 	}
-	if report.Next != "" {
+	switch {
+	case lifecycleErr != nil:
+		fmt.Fprintf(stdout, "lifecycle  unavailable: %v\n", lifecycleErr)
+		fmt.Fprintln(stdout, "next       unknown -- the observation above stands on its own")
+	case report.Next != "":
 		fmt.Fprintf(stdout, "next       %s\n", report.Next)
-	} else {
+	default:
 		fmt.Fprintln(stdout, "next       nothing to do")
 	}
 	return exitOK
@@ -241,6 +237,7 @@ func (r reconciler) report(ctx context.Context, asJSON bool, stdout, stderr io.W
 func (r reconciler) once(ctx context.Context, apply bool, stdout, stderr io.Writer) int {
 	obs, world, _, err := r.look(ctx)
 	if err != nil {
+		// Taking a step needs the durable record; observing does not.
 		fmt.Fprintf(stderr, "load composition state: %v\n", err)
 		return exitDatabase
 	}
