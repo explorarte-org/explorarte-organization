@@ -108,16 +108,24 @@ type ComponentSpec struct {
 	Requires []Key
 	Provides []Key
 	Effects  []EffectSpec
+
+	// Admits are the statements that must hold over observed values for
+	// this component to be Active. Topology says which facts it depends
+	// on; admission says what those facts have to say. A component may
+	// only admit on keys it requires or provides, so admission can never
+	// hinge on a fact the component has no declared relationship to.
+	Admits []Predicate
 }
 
 // Graph is a validated composition. Holding one is the evidence that the
 // checks in NewGraph passed; there is no way to build an invalid Graph and no
 // exported field to invalidate one afterwards.
 type Graph struct {
-	keys       map[Key]KeySpec
-	components map[string]ComponentSpec
-	providers  map[Key][]string
-	order      []string
+	keys        map[Key]KeySpec
+	components  map[string]ComponentSpec
+	providers   map[Key][]string
+	convergence []ConvergenceSpec
+	order       []string
 }
 
 // NewGraph validates a composition and, if it is well formed, returns it
@@ -126,11 +134,12 @@ type Graph struct {
 // Every check here is a gate, not a warning, and they run before anything can
 // reach an active state. A cycle discovered while components are already
 // running is not a diagnosis, it is a deadlock with extra steps.
-func NewGraph(keys []KeySpec, components []ComponentSpec) (*Graph, error) {
+func NewGraph(keys []KeySpec, components []ComponentSpec, convergence ...ConvergenceSpec) (*Graph, error) {
 	g := &Graph{
-		keys:       make(map[Key]KeySpec, len(keys)),
-		components: make(map[string]ComponentSpec, len(components)),
-		providers:  make(map[Key][]string),
+		keys:        make(map[Key]KeySpec, len(keys)),
+		components:  make(map[string]ComponentSpec, len(components)),
+		providers:   make(map[Key][]string),
+		convergence: append([]ConvergenceSpec{}, convergence...),
 	}
 
 	for _, k := range keys {
@@ -170,6 +179,9 @@ func NewGraph(keys []KeySpec, components []ComponentSpec) (*Graph, error) {
 	}
 
 	if err := g.assertSingleOwnership(); err != nil {
+		return nil, err
+	}
+	if err := g.assertConvergencePairs(); err != nil {
 		return nil, err
 	}
 	if err := g.assertSatisfiable(); err != nil {
@@ -224,6 +236,43 @@ func (g *Graph) validateEdges(c ComponentSpec) error {
 			return fmt.Errorf("composition: component %q both requires and provides key %q, so it can never be brought up", c.ID, k)
 		}
 		requires[k] = struct{}{}
+	}
+	for _, p := range c.Admits {
+		if p == nil {
+			return fmt.Errorf("composition: component %q declares a nil admission predicate", c.ID)
+		}
+		for _, k := range p.Keys() {
+			if _, known := g.keys[k]; !known {
+				return fmt.Errorf("composition: component %q admits on undeclared key %q", c.ID, k)
+			}
+			_, req := requires[k]
+			_, prov := provides[k]
+			if !req && !prov {
+				return fmt.Errorf("composition: component %q admits on %q (%s), a key it neither requires nor provides", c.ID, k, p)
+			}
+		}
+	}
+	return nil
+}
+
+// assertConvergencePairs rejects a desired/observed pair that names an
+// undeclared key, or that names the same key twice -- a pair comparing a key
+// to itself always converges and would silently report quiescence.
+func (g *Graph) assertConvergencePairs() error {
+	for _, pair := range g.convergence {
+		for _, k := range []Key{pair.Desired, pair.Observed} {
+			if _, known := g.keys[k]; !known {
+				return fmt.Errorf("composition: convergence pair names undeclared key %q", k)
+			}
+		}
+		if pair.Desired == pair.Observed {
+			return fmt.Errorf("composition: convergence pair compares key %q to itself, which can never diverge", pair.Desired)
+		}
+		if len(g.providers[pair.Desired]) > 0 && len(g.providers[pair.Observed]) > 0 &&
+			g.providers[pair.Desired][0] == g.providers[pair.Observed][0] &&
+			len(g.providers[pair.Desired]) == 1 && len(g.providers[pair.Observed]) == 1 {
+			return fmt.Errorf("composition: %q and %q are both owned by %s; what the world should be and what it is must have different owners", pair.Desired, pair.Observed, g.providers[pair.Desired][0])
+		}
 	}
 	return nil
 }

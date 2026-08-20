@@ -29,8 +29,8 @@ func TestTheBaselineCompositionIsWellFormed(t *testing.T) {
 	if at("egress-binding") > at("runtime-orgd") {
 		t.Errorf("orgd must come up after egress is bound: %v", order)
 	}
-	if at("schema-compatibility") != 0 {
-		t.Errorf("everything depends on the schema, so it comes up first: %v", order)
+	if at("database-schema") != 0 {
+		t.Errorf("everything depends on the database schema, so it comes up first: %v", order)
 	}
 }
 
