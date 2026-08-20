@@ -39,6 +39,9 @@ func (s *Store) Create(ctx context.Context, input tasks.PreparedCreate) (tasks.T
 			input.AssignedUnitID, input.TaskClass, input.Request.IdempotencyKey, input.RequestHash, input.Request.Title,
 			input.Request.Instructions, criteria, input.InitialStatus, input.Request.Priority, availableAt,
 			input.Request.MaxAttempts, nullableString(input.Request.CorrelationID), nullableString(input.Request.CausationID),
+			// Written by the INSERT itself: a coordination hold applied in a
+			// second statement would leave the task claimable in between.
+			nullableString(input.InitialStatusReasonCode), nullableString(input.InitialStatusReason),
 		))
 		if scanErr != nil {
 			if !errors.Is(scanErr, tasks.ErrNotFound) {
