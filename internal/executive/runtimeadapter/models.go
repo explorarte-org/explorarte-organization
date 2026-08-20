@@ -68,3 +68,9 @@ func mapInvocation(value modelruntime.Invocation) executive.InvocationRecord {
 }
 
 var _ executive.ModelInvocationReader = Models{}
+
+// ProviderFailureRetryable forwards the question to Model Runtime, which owns
+// the answer.
+func (m Models) ProviderFailureRetryable(ctx context.Context, invocationID int64) (bool, error) {
+	return m.Service.ProviderFailureRetryable(ctx, invocationID)
+}

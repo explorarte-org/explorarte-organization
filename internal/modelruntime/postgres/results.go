@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -539,4 +540,33 @@ RETURNING `+invocationColumns, command.InvocationID, command.ErrorCode))
 		}
 		return invocation, nil
 	})
+}
+
+// ProviderFailureRetryable answers whether the durable provider outcome for an
+// invocation described a TRANSIENT failure.
+//
+// It reads the answer Model Runtime already recorded rather than re-deriving
+// it from an error code. Deriving it elsewhere would put a second copy of
+// "which failures are worth repeating" outside the package that decides it,
+// and the two would drift the first time a provider added a code.
+//
+// Absent means false: an invocation with no recorded outcome has not failed in
+// a way anyone can call transient, and guessing otherwise would repeat calls
+// that may already have been billed.
+func (s *Store) ProviderFailureRetryable(ctx context.Context, invocationID int64) (bool, error) {
+	var retryable bool
+	err := s.pool.QueryRow(ctx, `
+SELECT o.retryable
+FROM model_provider_outcomes o
+JOIN model_provider_requests r ON r.id = o.provider_request_record_id
+WHERE r.invocation_id = $1
+ORDER BY o.id DESC
+LIMIT 1`, invocationID).Scan(&retryable)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, mapError(err)
+	}
+	return retryable, nil
 }

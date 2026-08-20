@@ -1049,7 +1049,9 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		if handled, blocked, ambiguityErr := o.ambiguityGuard(ctx, root, task, lease.AttemptID); handled {
 			return blocked, ambiguityErr
 		}
-		return o.failAttempt(ctx, task, lease, actorID, "harness_execution_failed", execErr.Error(), ErrCompletionFailed)
+		// The Harness itself failed to run, which says nothing about the
+		// provider. Repeating it would meet the same broken execution.
+		return o.failAttempt(ctx, task, lease, actorID, "harness_execution_failed", execErr.Error(), ErrCompletionFailed, false)
 	}
 	if err = outcome.Validate(); err != nil {
 		return task, err
@@ -1173,8 +1175,16 @@ func (o *Orchestrator) ambiguityGuard(ctx context.Context, root, task TaskRecord
 	return false, task, nil
 }
 
-func (o *Orchestrator) failAttempt(ctx context.Context, task TaskRecord, lease LeaseRecord, actorID, code, detail string, sentinel error) (TaskRecord, error) {
-	failed, recErr := o.tasks.RecordAttemptFailed(ctx, lease, actorID, code, truncate(detail, 2000), false)
+// failAttempt records a terminal failure for THIS attempt. retryable decides
+// whether the task may spend another one of its attempts or is finished.
+//
+// It is a parameter because the answer differs by failure. Identity drift and
+// a broken run history describe something structural that a second attempt
+// would meet again; a provider that was momentarily at capacity does not. A
+// task carrying max_attempts=3 that died on attempt 1 of a transient failure
+// is a task whose retry budget was never real.
+func (o *Orchestrator) failAttempt(ctx context.Context, task TaskRecord, lease LeaseRecord, actorID, code, detail string, sentinel error, retryable bool) (TaskRecord, error) {
+	failed, recErr := o.tasks.RecordAttemptFailed(ctx, lease, actorID, code, truncate(detail, 2000), retryable)
 	o.forgetLease(task.ID)
 	if recErr != nil {
 		return task, recErr
@@ -1273,9 +1283,11 @@ func (o *Orchestrator) rescheduleAfterAuthorityOutage(ctx context.Context, root,
 		return task, err
 	}
 	if len(invocations) > 0 {
+		// A run that claimed unavailable authority while durable invocations
+		// already existed is contradictory, not transient.
 		return o.failAttempt(ctx, task, lease, actorID, "authority_unavailable_with_durable_invocation",
 			fmt.Sprintf("authority was reported unavailable while attempt %d already had %d durable invocation(s)", lease.AttemptID, len(invocations)),
-			ErrExecutionAuthorityUnavailable)
+			ErrExecutionAuthorityUnavailable, false)
 	}
 	failed, recErr := o.tasks.RecordAttemptFailed(ctx, lease, actorID, "execution_authority_unavailable",
 		truncate(outcome.TerminationReason, 2000), true)
@@ -1294,7 +1306,8 @@ func (o *Orchestrator) handleHarnessFailure(ctx context.Context, root, task Task
 	case HarnessFailureAuthorityUnavailable:
 		return o.rescheduleAfterAuthorityOutage(ctx, root, task, lease, actorID, outcome)
 	case HarnessFailureAuthorizationDenied:
-		return o.failAttempt(ctx, task, lease, actorID, "execution_authority_denied", outcome.TerminationReason, ErrExecutionAuthorityDenied)
+		// Authority said no. It will say no again.
+		return o.failAttempt(ctx, task, lease, actorID, "execution_authority_denied", outcome.TerminationReason, ErrExecutionAuthorityDenied, false)
 	case HarnessFailureIndeterminateTool:
 		// A tool may already have reached outside the system. This is the one
 		// outcome that must never be retried automatically, so the attempt
@@ -1311,9 +1324,11 @@ func (o *Orchestrator) handleHarnessFailure(ctx context.Context, root, task Task
 		// and never a completion.
 		return task, ErrToolIntentRejected
 	case HarnessFailureLimitReached:
-		return o.failAttempt(ctx, task, lease, actorID, "harness_limit_reached", outcome.TerminationReason, ErrBudgetExceeded)
+		// A budget that is spent stays spent; retrying would only spend the
+		// task's remaining attempts against the same exhausted ceiling.
+		return o.failAttempt(ctx, task, lease, actorID, "harness_limit_reached", outcome.TerminationReason, ErrBudgetExceeded, false)
 	case HarnessFailureIdentityDrift:
-		return o.failAttempt(ctx, task, lease, actorID, "harness_identity_drift", outcome.TerminationReason, ErrRunIdentityDrift)
+		return o.failAttempt(ctx, task, lease, actorID, "harness_identity_drift", outcome.TerminationReason, ErrRunIdentityDrift, false)
 	case HarnessFailureCancelled:
 		if handled, blocked, err := o.ambiguityGuard(ctx, root, task, lease.AttemptID); handled {
 			return blocked, err
@@ -1323,12 +1338,23 @@ func (o *Orchestrator) handleHarnessFailure(ctx context.Context, root, task Task
 		if handled, blocked, err := o.ambiguityGuard(ctx, root, task, lease.AttemptID); handled {
 			return blocked, err
 		}
-		return o.failAttempt(ctx, task, lease, actorID, "harness_history_error", outcome.TerminationReason, ErrHarnessHistoryFailed)
+		return o.failAttempt(ctx, task, lease, actorID, "harness_history_error", outcome.TerminationReason, ErrHarnessHistoryFailed, false)
 	case HarnessFailureModelError:
 		if handled, blocked, err := o.ambiguityGuard(ctx, root, task, lease.AttemptID); handled {
 			return blocked, err
 		}
-		return o.failAttempt(ctx, task, lease, actorID, "model_invocation_failed", outcome.TerminationReason, ErrCompletionFailed)
+		// Model Runtime already decided whether this failure was transient
+		// and recorded the answer; the Executive reads it rather than
+		// re-deriving it. An unreadable answer means no retry: spending an
+		// attempt on a guess can repeat a call the provider may already have
+		// billed.
+		retryable := false
+		if outcome.InvocationID > 0 {
+			if value, readErr := o.models.ProviderFailureRetryable(ctx, outcome.InvocationID); readErr == nil {
+				retryable = value
+			}
+		}
+		return o.failAttempt(ctx, task, lease, actorID, "model_invocation_failed", outcome.TerminationReason, ErrCompletionFailed, retryable)
 	default:
 		return task, fmt.Errorf("%w: unknown harness failure %q", ErrContractRejected, outcome.Failure)
 	}

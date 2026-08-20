@@ -157,6 +157,7 @@ type InvocationStore interface {
 	CreateInvocation(context.Context, PreparedInvocation, int) (CreateInvocationResult, error)
 	GetModelInput(context.Context, int64) (PreparedModelInput, error)
 	GetInvocation(context.Context, int64) (Invocation, error)
+	ProviderFailureRetryable(context.Context, int64) (bool, error)
 	ListInvocations(context.Context, string, int) ([]Invocation, error)
 	ClaimInvocation(context.Context, ClaimCommand, RuntimeConfig) (ClaimedInvocation, error)
 	ClaimInvocationAuthenticated(context.Context, AuthenticatedClaimCommand, RuntimeConfig) (ClaimedInvocation, error)

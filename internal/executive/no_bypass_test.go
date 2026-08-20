@@ -14,7 +14,15 @@ import (
 
 func TestModelInvocationReaderExposesOnlyReads(t *testing.T) {
 	readerType := reflect.TypeOf((*ModelInvocationReader)(nil)).Elem()
-	allowed := map[string]bool{"GetInvocation": true, "FindTaskAttemptInvocations": true, "GetResult": true}
+	// ProviderFailureRetryable asks Model Runtime a question and receives a
+	// bool. It creates, claims, dispatches and cancels nothing, which is the
+	// line this guard exists to hold. It is listed rather than the count
+	// merely bumped, so adding one is always a deliberate act with a name
+	// attached.
+	allowed := map[string]bool{
+		"GetInvocation": true, "FindTaskAttemptInvocations": true, "GetResult": true,
+		"ProviderFailureRetryable": true,
+	}
 	if readerType.NumMethod() != len(allowed) {
 		t.Fatalf("read side has %d methods; every addition here is a potential execute path", readerType.NumMethod())
 	}

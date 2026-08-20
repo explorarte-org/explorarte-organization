@@ -593,10 +593,23 @@ type fakeModels struct {
 	nextID      int64
 	invocations map[string][]InvocationRecord
 	results     map[int64]InvocationResult
+	// retryableFailures mirrors what Model Runtime records about a provider
+	// outcome. It defaults to false, which is what most fixtures mean: a
+	// failure the run should not repeat.
+	retryableFailures map[int64]bool
+}
+
+// ProviderFailureRetryable answers what Model Runtime recorded, exactly as the
+// real reader does. The Executive must not infer retryability from anything
+// else, so this fake gives it nothing else to infer from.
+func (f *fakeModels) ProviderFailureRetryable(_ context.Context, invocationID int64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.retryableFailures[invocationID], nil
 }
 
 func newFakeModels() *fakeModels {
-	return &fakeModels{nextID: 500, invocations: map[string][]InvocationRecord{}, results: map[int64]InvocationResult{}}
+	return &fakeModels{nextID: 500, invocations: map[string][]InvocationRecord{}, results: map[int64]InvocationResult{}, retryableFailures: map[int64]bool{}}
 }
 
 func invocationKey(taskID, attemptID int64) string { return fmt.Sprintf("%d/%d", taskID, attemptID) }

@@ -91,6 +91,15 @@ func (p ExecutionPurpose) Valid() bool {
 // property of the type.
 type ModelInvocationReader interface {
 	GetInvocation(context.Context, int64) (InvocationRecord, error)
+	// ProviderFailureRetryable reports whether a failed invocation's recorded
+	// provider outcome was transient.
+	//
+	// The Executive asks rather than deciding. Which provider failures are
+	// worth repeating is Model Runtime's rule, and re-deriving it here from an
+	// error code would be a second copy of that rule outside the package that
+	// owns it -- the same reason ProviderExecutionMayHaveStarted is a stored
+	// answer and not a condition evaluated here.
+	ProviderFailureRetryable(context.Context, int64) (bool, error)
 	FindTaskAttemptInvocations(context.Context, int64, int64) ([]InvocationRecord, error)
 	GetResult(context.Context, int64) (InvocationResult, error)
 }
