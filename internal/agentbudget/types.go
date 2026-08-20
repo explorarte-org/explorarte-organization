@@ -39,6 +39,27 @@ func DefaultLimits() Limits {
 	}
 }
 
+// SameRootBudget reports whether an already-durable budget describes exactly
+// what a CreateRootBudget call is asking for.
+//
+// It lives here, next to the type it compares, because it is the definition of
+// "the same root budget" and there must be one. Limits is a comparable struct
+// of seven scalars, so equality is the whole comparison: adding a dimension
+// extends this automatically instead of leaving a field silently unchecked in
+// a hand-written list.
+//
+// Usage and Version are deliberately not compared. They are what the budget
+// has DONE, not what it IS, and a retry arriving after the campaign has spent
+// something is still the same budget.
+func (b Budget) SameRootBudget(organizationID string, rootTaskID int64, roleID string, limits Limits) bool {
+	return b.OrganizationID == organizationID &&
+		b.RootTaskID == rootTaskID &&
+		b.TaskID == rootTaskID &&
+		b.RoleID == roleID &&
+		b.ParentBudgetID == nil &&
+		b.Limits == limits
+}
+
 // Usage is both a running total (current consumption of a budget) and, when
 // passed to Reserve as a delta, the amount one operation wants to consume.
 // Depth is the exception: it is not cumulative, it is the current depth in
