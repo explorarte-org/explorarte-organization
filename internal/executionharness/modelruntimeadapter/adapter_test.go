@@ -601,11 +601,29 @@ func TestDifferentExecutionContractProducesDifferentIdempotencyKey(t *testing.T)
 	if keyA == keyNone || keyB == keyNone {
 		t.Fatalf("a contract run must not share the no-contract key: A=%q B=%q none=%q", keyA, keyB, keyNone)
 	}
-	// The no-contract key keeps the historical shape: projection digest +
-	// output contract, with no extra component appended.
-	prefix := "execution-harness:" + request.CanonicalDigest + ":"
-	rest := strings.TrimPrefix(keyNone, prefix)
-	if !strings.HasPrefix(keyNone, prefix) || rest == "" || strings.Contains(rest, ":") {
-		t.Fatalf("no-contract key changed shape: %q", keyNone)
+	// Every key is namespaced and fixed-length. The components are folded into
+	// one digest rather than concatenated, because concatenating pushed a key
+	// carrying an execution contract past Model Runtime's 200-byte limit --
+	// which meant department planning and department review could never
+	// dispatch. What must hold is that the components still DECIDE the key,
+	// which the three comparisons above already prove.
+	for name, key := range map[string]string{"A": keyA, "B": keyB, "none": keyNone} {
+		if !strings.HasPrefix(key, "execution-harness:") {
+			t.Fatalf("key %s lost its namespace: %q", name, key)
+		}
+		if len(key) > 200 {
+			t.Fatalf("key %s exceeds the Model Runtime bound: %d", name, len(key))
+		}
+	}
+	// The compatible case keeps its historical 147-byte shape so invocations
+	// created by earlier runtimes stay adoptable; only the contract case,
+	// which would otherwise be 212, is folded to a fixed 82.
+	if len(keyNone) != len("execution-harness:")+64+1+64 {
+		t.Fatalf("no-contract key left its historical shape: %q", keyNone)
+	}
+	for name, key := range map[string]string{"A": keyA, "B": keyB} {
+		if len(key) != len("execution-harness:")+64 {
+			t.Fatalf("contract key %s is not folded: %q", name, key)
+		}
 	}
 }
