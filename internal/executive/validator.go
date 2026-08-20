@@ -163,14 +163,23 @@ func (v *Validator) ValidateDepartmentPlan(ctx context.Context, revisionID int64
 		// completion and can carry real descriptive intent. What must never
 		// exist is a blocking one with no satisfier.
 		for _, requirement := range t.Requirements {
-			if !requirement.Required {
+			// The key is reserved. Occupying it with any other shape is worse
+			// than proposing an unsatisfiable requirement, because
+			// appendResultRequirement would then see the key, decline to
+			// attach the real one, and leave the task with no blocking
+			// requirement at all -- so the model runs and its result is
+			// rejected for having nowhere to be recorded.
+			if requirement.Key == hostOwnedResultRequirementKey {
+				if !isHostOwnedWorkerRequirement(requirement) {
+					return fmt.Errorf("%w: reserved host-owned requirement %q on cognitive worker task %q must be type result and required, got type %q required=%v",
+						ErrRequirementUnsatisfiable, hostOwnedResultRequirementKey, t.ClientKey, requirement.Type, requirement.Required)
+				}
 				continue
 			}
-			if requirement.Type == "result" && requirement.Key == hostOwnedResultRequirementKey {
-				continue
+			if requirement.Required {
+				return fmt.Errorf("%w: blocking requirement %q of type %q on cognitive worker task %q; only %q is host-owned and nothing else can satisfy one",
+					ErrRequirementUnsatisfiable, requirement.Key, requirement.Type, t.ClientKey, hostOwnedResultRequirementKey)
 			}
-			return fmt.Errorf("%w: blocking requirement %q of type %q on cognitive worker task %q; the host owns the only blocking requirement (%q) and nothing else can satisfy one",
-				ErrRequirementUnsatisfiable, requirement.Key, requirement.Type, t.ClientKey, hostOwnedResultRequirementKey)
 		}
 		decision, e := v.authz.Evaluate(ctx, AuthorizationRequest{OrganizationRevisionID: revisionID, ActorRoleID: leaderRoleID, CapabilityID: "task.assign_worker", ResourceType: "role", ResourceID: role.ID, ActionDigest: actionDigest("assign-worker", departmentID, t.ClientKey, role.ID, t.Instructions)})
 		if e != nil {

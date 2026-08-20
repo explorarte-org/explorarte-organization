@@ -829,10 +829,26 @@ func topologicalProposals(proposals []WorkerTaskProposal) ([]WorkerTaskProposal,
 // validator that enforces it cannot drift from the code that creates it.
 const hostOwnedResultRequirementKey = "model_result"
 
+// isHostOwnedWorkerRequirement recognizes the host's blocking requirement by
+// its COMPLETE shape, not by its key.
+//
+// The key alone was not enough. A leader could occupy model_result with any
+// other shape -- optional, or typed as an artifact -- and appendResultRequirement,
+// which matched on key, would then decline to attach the real one. The task
+// would run, and recordHarnessSuccess would look for a required result
+// requirement to record its evidence against, find none, and reject a
+// perfectly good model result with "result requirement missing".
+//
+// resultRequirementID demands Required and Type=="result" for this key, so
+// those two fields are as much a part of the host's ownership as the key is.
+func isHostOwnedWorkerRequirement(r RequirementProposal) bool {
+	return r.Key == hostOwnedResultRequirementKey && r.Type == "result" && r.Required
+}
+
 func appendResultRequirement(in []RequirementProposal) []RequirementProposal {
 	out := append([]RequirementProposal(nil), in...)
 	for _, r := range out {
-		if r.Key == hostOwnedResultRequirementKey {
+		if isHostOwnedWorkerRequirement(r) {
 			return out
 		}
 	}
