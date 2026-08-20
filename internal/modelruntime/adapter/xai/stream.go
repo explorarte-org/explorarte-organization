@@ -3,6 +3,7 @@ package xai
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -31,6 +32,61 @@ import (
 // finish-reason handling and usage accounting downstream are untouched and
 // cannot drift from a second shape.
 
+// A stream is not a document, and sizing it like one was wrong.
+//
+// Every SSE chunk repeats the envelope -- id, object, created, model,
+// system_fingerprint, service_tier -- around a few tokens of delta. Measured
+// on a real reasoning review: 876,829 stream bytes carrying a 14,901 byte
+// document, a 14.5x ratio. Applying MaxResponseBytes (1 MiB by default, sized
+// for a response document) to the raw stream therefore put a moderate review
+// at 84% of the ceiling and made a harder one fail for its length rather than
+// its content.
+//
+// The multiplier gives the stream its own budget derived from the configured
+// one, so a deployment that raises the document limit raises both together and
+// the two cannot be tuned into disagreement. The DOCUMENT this produces is
+// still bounded by the original limit -- that is the value the rest of the
+// pipeline was sized for.
+const streamBudgetMultiplier = 16
+
+// streamError names which structural condition failed, so the durable record
+// says what went wrong instead of only that something did.
+//
+// The codes are content-free by construction. A failure code that quoted the
+// payload would put provider output into an error string that gets logged,
+// wrapped, and read by humans -- and for the adversarial reviewer that payload
+// is the one thing the whole context boundary exists to control.
+type streamError struct {
+	code string
+	err  error
+	// retryable is set only for failures the provider itself described as
+	// transient. Everything else stays false, because guessing that a
+	// failure is safe to repeat is how one bad request becomes several.
+	retryable bool
+}
+
+func (e *streamError) Error() string { return e.err.Error() }
+func (e *streamError) Unwrap() error { return e.err }
+
+func streamFailure(code string, err error) error { return &streamError{code: code, err: err} }
+
+// StreamErrorRetryable reports whether a stream failure is one the provider
+// said would pass. It is false for anything else, including a nil error.
+func StreamErrorRetryable(err error) bool {
+	var streamErr *streamError
+	return errors.As(err, &streamErr) && streamErr.retryable
+}
+
+// StreamErrorCode returns the specific failure code for a stream error, or the
+// generic fallback for anything else.
+func StreamErrorCode(err error, fallback string) string {
+	var streamErr *streamError
+	if errors.As(err, &streamErr) {
+		return streamErr.code
+	}
+	return fallback
+}
+
 // streamContentType is what the provider must answer with when Stream is set.
 // A JSON body here means the provider ignored the flag, and reassembly would
 // silently produce an empty document from a perfectly good response.
@@ -42,7 +98,8 @@ const streamContentType = "text/event-stream"
 // The byte limit applies to the accumulated stream, not to one event, because
 // the thing that must stay bounded is what the provider can make this process
 // hold in memory.
-func reassembleStream(reader io.Reader, limit int) ([]byte, error) {
+func reassembleStream(reader io.Reader, documentLimit int) ([]byte, error) {
+	limit := documentLimit * streamBudgetMultiplier
 	var (
 		id           string
 		content      strings.Builder
@@ -51,6 +108,7 @@ func reassembleStream(reader io.Reader, limit int) ([]byte, error) {
 		calls        = map[int]*streamToolCall{}
 		order        []int
 		consumed     int
+		events       int
 	)
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64*1024), limit+1)
@@ -58,7 +116,7 @@ func reassembleStream(reader io.Reader, limit int) ([]byte, error) {
 		line := scanner.Text()
 		consumed += len(line) + 1
 		if consumed > limit {
-			return nil, fmt.Errorf("provider stream exceeds %d bytes", limit)
+			return nil, streamFailure("stream_exceeds_budget", fmt.Errorf("provider stream exceeds %d bytes", limit))
 		}
 		payload, ok := eventPayload(line)
 		if !ok {
@@ -67,9 +125,26 @@ func reassembleStream(reader io.Reader, limit int) ([]byte, error) {
 		if payload == "[DONE]" {
 			break
 		}
+		events++
+		// xAI reports mid-stream failures as an event carrying an error
+		// object, with HTTP 200 and an event-stream content type. Treating
+		// that as "no completion events" is what turned a transient
+		// "model is currently at capacity" -- which says to retry in a few
+		// minutes -- into an opaque, NOT-RETRYABLE read failure that ended
+		// AUTONOMY-SMOKE-001's campaign permanently in one second.
+		//
+		// The provider's own words are the diagnosis. They are surfaced with
+		// its code, and its type decides retryability rather than a guess
+		// made here.
+		if providerErr := decodeStreamError(payload); providerErr != nil {
+			return nil, providerErr
+		}
 		var chunk streamChunk
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
-			return nil, fmt.Errorf("stream event is not valid JSON: %w", err)
+			// The offending bytes are deliberately not quoted: this string
+			// is logged and read by humans, and provider output must not
+			// reach it.
+			return nil, streamFailure("stream_event_invalid", fmt.Errorf("stream event %d is not valid JSON: %w", events, err))
 		}
 		if id == "" {
 			id = strings.TrimSpace(chunk.ID)
@@ -114,13 +189,13 @@ func reassembleStream(reader io.Reader, limit int) ([]byte, error) {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("read provider stream: %w", err)
+		return nil, streamFailure("stream_read_failed", fmt.Errorf("read provider stream after %d events: %w", events, err))
 	}
 	// A stream that produced no event at all is not an empty completion, it
 	// is a failed one. Emitting a well-formed document with no id would let
 	// it pass every downstream check as a legitimately empty review.
 	if id == "" && content.Len() == 0 && len(order) == 0 && finishReason == "" {
-		return nil, fmt.Errorf("provider stream carried no completion events")
+		return nil, streamFailure("stream_empty", fmt.Errorf("provider stream carried no completion events (%d data events seen)", events))
 	}
 	return encodeReassembled(id, content.String(), finishReason, usage, calls, order)
 }
@@ -167,6 +242,48 @@ func eventPayload(line string) (string, bool) {
 		return "", false
 	}
 	return strings.TrimSpace(strings.TrimPrefix(trimmed, "data:")), true
+}
+
+// decodeStreamError recognises a provider error event and returns it as a
+// failure that names itself, or nil when the payload is an ordinary chunk.
+//
+// The provider's message is deliberately NOT copied into the error. It is
+// free-form text from an external service that would then be logged, wrapped
+// and read by humans; the stable `code` is what an operator or a retry policy
+// can act on, and it is a closed value rather than prose.
+func decodeStreamError(payload string) error {
+	var envelope struct {
+		Error *struct {
+			Type string `json:"type"`
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(payload), &envelope); err != nil || envelope.Error == nil {
+		return nil
+	}
+	code := strings.TrimSpace(envelope.Error.Code)
+	if code == "" {
+		code = "unspecified"
+	}
+	// A capacity or server error is the provider saying "later"; anything
+	// else -- a rejected request, an authorization problem -- would only be
+	// rejected again.
+	retryable := envelope.Error.Type == "server_error" || code == "resource-exhausted"
+	return &streamError{
+		code:      bounded("stream_provider_error:" + code),
+		err:       fmt.Errorf("provider reported %q (%s) in the response stream", code, envelope.Error.Type),
+		retryable: retryable,
+	}
+}
+
+// bounded keeps a code inside the durable column's limit without truncating
+// it into something that looks like a different code.
+func bounded(code string) string {
+	const limit = 120
+	if len(code) <= limit {
+		return code
+	}
+	return code[:limit]
 }
 
 func isJSONNull(raw json.RawMessage) bool { return strings.TrimSpace(string(raw)) == "null" }

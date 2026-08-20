@@ -64,7 +64,12 @@ type chatRequest struct {
 	ResponseFormat      json.RawMessage `json:"response_format,omitempty"`
 	ReasoningEffort     string          `json:"reasoning_effort,omitempty"`
 	Stream              bool            `json:"stream"`
+	StreamOptions       *streamOptions  `json:"stream_options,omitempty"`
 	Tools               []chatTool      `json:"tools,omitempty"`
+}
+
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type chatMessage struct {
@@ -116,6 +121,37 @@ type chatUsage struct {
 	PromptTokens       int64                `json:"prompt_tokens"`
 	CompletionTokens   int64                `json:"completion_tokens"`
 	PromptTokensDetail *promptTokensDetails `json:"prompt_tokens_details"`
+	// CompletionTokensDetail carries the reasoning count, which xAI reports
+	// SEPARATELY from completion_tokens rather than inside it.
+	CompletionTokensDetail *completionTokensDetails `json:"completion_tokens_details"`
+}
+
+type completionTokensDetails struct {
+	ReasoningTokens int64 `json:"reasoning_tokens"`
+}
+
+// billedOutputTokens is everything the model generated, visible or not.
+//
+// xAI reports completion_tokens as VISIBLE output only and reasoning
+// separately, and its own total confirms the split: 208 prompt + 10
+// completion + 1036 reasoning = 1254 total. Reading completion_tokens alone
+// therefore recorded 10 output tokens for a call that generated 1046.
+//
+// Reasoning is billed at the output rate, which xAI's own figure confirms:
+// that call reported cost_in_usd_ticks 65000000, and at the configured
+// $2/M input and $6/M output, counting reasoning as output gives $0.0067
+// while ignoring it gives $0.0005 -- fourteen times under.
+//
+// This is not an accounting detail. The agent budget's token ceiling and the
+// provider wallet both settle against these numbers, so undercounting lets a
+// campaign spend past a limit the owner set and the ledger believe money is
+// available that is not. It undercounts most exactly where it matters most,
+// on a reasoning model at high effort, where thinking is the bulk of the work.
+func (u chatUsage) billedOutputTokens() int64 {
+	if u.CompletionTokensDetail == nil {
+		return u.CompletionTokens
+	}
+	return u.CompletionTokens + u.CompletionTokensDetail.ReasoningTokens
 }
 
 type promptTokensDetails struct {
@@ -248,8 +284,42 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 	responseHash := modelruntime.SHA256Bytes(responseBody)
 	providerRequestID := strings.TrimSpace(response.Header.Get("x-request-id"))
 	if readErr != nil {
+		// A timeout or cancellation while the body is still arriving is
+		// AMBIGUOUS, not a rejection. Headers came back, so the provider
+		// accepted the request and may finish and bill it; the client simply
+		// stopped listening. Before streaming this could not happen -- a
+		// timeout struck at client.Do, which the transport branch above
+		// already classifies ambiguous -- so treating a mid-stream timeout
+		// as a clean provider rejection would be a regression introduced by
+		// streaming, and would let a paid call be repeated as if nothing had
+		// been sent.
+		//
+		// This is a live case, not a precaution: xAI holds a queued request
+		// open with keepalive comments and no data events while it is at
+		// capacity, so the wait for the first real event can outlast any
+		// timeout that is set.
+		if errors.Is(readErr, context.DeadlineExceeded) || errors.Is(readErr, context.Canceled) {
+			if !errors.Is(readErr, context.Canceled) {
+				a.breaker.failure(a.now())
+			}
+			outcome := modelruntime.ProviderOutcome{
+				OutcomeClassification: modelruntime.ProviderOutcomeAmbiguous,
+				ProviderRequestID:     providerRequestID,
+				HTTPStatus:            response.StatusCode,
+				ErrorClass:            "transport", ErrorCode: "stream_incomplete", Retryable: true,
+				ResponseHash: responseHash, ResponseSchemaVersion: ResponseSchemaVersion,
+			}
+			return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureAmbiguous, Outcome: outcome, Cause: readErr}
+		}
 		a.breaker.failure(a.now())
-		outcome := responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", "response_read_failed", response.StatusCode >= 500)
+		// The specific structural reason survives into the durable record.
+		// Reporting only "response_read_failed" is what turned the first
+		// streaming failure into archaeology that could not be completed.
+		// A provider error carried inside the stream arrives with HTTP 200,
+		// so retryability cannot come from the status code. It comes from
+		// what the provider said.
+		retryable := response.StatusCode >= 500 || StreamErrorRetryable(readErr)
+		outcome := responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", StreamErrorCode(readErr, "response_read_failed"), retryable)
 		return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureResponseReceived, Outcome: outcome, Cause: readErr}
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
@@ -311,7 +381,7 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 	}
 	raw := modelruntime.RawResponse{
 		Content: content, ToolIntents: tools, ProviderRequestID: providerRequestID,
-		InputTokens: decoded.Usage.PromptTokens, OutputTokens: decoded.Usage.CompletionTokens,
+		InputTokens: decoded.Usage.PromptTokens, OutputTokens: decoded.Usage.billedOutputTokens(),
 		ProviderReported: true, ProviderOutcome: outcome,
 	}
 	if hit, miss, reported := promptCacheSplit(decoded.Usage); reported {
@@ -365,7 +435,11 @@ func encodeRequest(request modelruntime.CanonicalRequest) ([]byte, error) {
 		// the transport's ResponseHeaderTimeout race the model's entire
 		// thinking time -- and on a reasoning model it loses. See stream.go.
 		Stream: true,
-		Tools:  tools,
+		// Without this xAI sends no usage chunk at all, and the reassembled
+		// document reports zero tokens for a call that really consumed them
+		// -- which the cost ledger then settles real spend against.
+		StreamOptions: &streamOptions{IncludeUsage: true},
+		Tools:         tools,
 	}
 	if request.OutputMode == modelruntime.OutputJSON {
 		if len(request.OutputSchema) > 0 {
