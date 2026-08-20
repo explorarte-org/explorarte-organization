@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Mireuz13/explorarte-organization/internal/agentbudget"
 	agentbudgetpostgres "github.com/Mireuz13/explorarte-organization/internal/agentbudget/postgres"
 	agentmessagingpostgres "github.com/Mireuz13/explorarte-organization/internal/agentmessaging/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/evaluation/fixtures"
@@ -116,7 +115,7 @@ func (r Runner) Run(ctx context.Context, f fixtures.Fixture, subjectID string) (
 			Limits:        executive.DefaultLimits(),
 			Clock:         executive.ClockFunc(time.Now),
 		},
-		executive.WithAgentBudgets(runtimeadapter.AgentBudgets{Ledger: budgetLedger, Limits: agentbudget.DefaultLimits()}),
+		executive.WithAgentBudgets(runtimeadapter.AgentBudgets{Ledger: budgetLedger}),
 		executive.WithAgentMessaging(runtimeadapter.AgentMessages{
 			Ledger: messageLedger, MaxAttempts: 10,
 			PrincipalStore: dispatchStore, OrganizationID: fixtureOrganization,

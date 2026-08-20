@@ -3,65 +3,48 @@ package bootstrap
 import (
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
-
-	"github.com/Mireuz13/explorarte-organization/internal/agentbudget"
-	"github.com/Mireuz13/explorarte-organization/internal/modelpricing"
 )
 
-// The per-run agent budget bounds an execution tree. Its ceilings were a code
-// constant, which meant a deployment could not state its own campaign budget
-// without changing the binary -- and the token ceiling silently became the
-// real limit while the dollar ceiling went unused.
+// The per-run agent budget bounds a campaign's execution tree, and it used to
+// be read from this process's environment.
 //
-// That is not hypothetical. A run stopped at 510,917 of 500,000 tokens having
-// spent $0.29 of $5.00: 68% of the token budget against 5.8% of the money.
-// The dollar figure is the one an owner actually reasons about, so the token
-// ceiling must be derived from it rather than set independently.
+// That is why a campaign could be born under ceilings nobody chose. Submit
+// created the root budget from whatever limits its own process had resolved,
+// and the durable row is ON CONFLICT (task_id) DO NOTHING, so the first writer
+// won permanently. A campaign submitted by a CLI without these variables was
+// born with the package defaults and kept them for its whole life, while the
+// Executive runtime driving it had been started with completely different
+// ones. Neither process was wrong; there were simply two answers to one
+// question, and the race picked one.
 //
-// Deriving it means dividing the dollar budget by the CHEAPEST blended rate
-// any model in the tree can charge. Anything tighter makes tokens the binding
-// constraint again for a run that happens to use a cheaper model, which is the
-// failure being fixed. The token ceiling's remaining job is to stop a runaway
-// loop, not to price the work.
+// The ceilings are now stated at submission and recorded durably with the
+// campaign's root, so the runtime holds none at all and has nothing to
+// diverge from. See executive.CampaignBudget.
 const (
-	maxUSDEnv    = "ORG_EXECUTIVE_AGENT_BUDGET_MAX_USD"
-	maxTokensEnv = "ORG_EXECUTIVE_AGENT_BUDGET_MAX_TOKENS"
+	deprecatedMaxUSDEnv    = "ORG_EXECUTIVE_AGENT_BUDGET_MAX_USD"
+	deprecatedMaxTokensEnv = "ORG_EXECUTIVE_AGENT_BUDGET_MAX_TOKENS"
 )
 
-// agentBudgetLimits starts from the compiled defaults and overrides only what
-// the deployment states. An unset variable keeps the default; a set but
-// unusable one fails closed, because a budget that silently fell back to a
-// smaller ceiling than the operator asked for would stop a run for a reason
-// nobody chose.
-func agentBudgetLimits() (agentbudget.Limits, error) {
-	limits := agentbudget.DefaultLimits()
-
-	if raw, ok := os.LookupEnv(maxUSDEnv); ok && strings.TrimSpace(raw) != "" {
-		dollars, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
-		if err != nil {
-			return agentbudget.Limits{}, fmt.Errorf("%s: %w", maxUSDEnv, err)
+// rejectDeprecatedAgentBudgetEnv fails startup when a deployment still sets the
+// old variables.
+//
+// Ignoring them would be the worse failure. An operator who exports a $17
+// ceiling and gets a $5 campaign has been told nothing, and would find out
+// when a run stops early for a reason nobody chose -- which is precisely how
+// the original defect presented. Refusing to start says it once, at the
+// moment it can still be acted on.
+func rejectDeprecatedAgentBudgetEnv() error {
+	stale := make([]string, 0, 2)
+	for _, name := range []string{deprecatedMaxUSDEnv, deprecatedMaxTokensEnv} {
+		if raw, ok := os.LookupEnv(name); ok && strings.TrimSpace(raw) != "" {
+			stale = append(stale, name)
 		}
-		// A zero or negative ceiling would authorize nothing while looking
-		// like configuration; an absurd one is more likely a typo than an
-		// intention.
-		if dollars <= 0 || dollars > 10_000 {
-			return agentbudget.Limits{}, fmt.Errorf("%s: %v is outside the allowed range (0, 10000]", maxUSDEnv, dollars)
-		}
-		limits.MaxUSD = modelpricing.USDFromDollars(dollars)
 	}
-
-	if raw, ok := os.LookupEnv(maxTokensEnv); ok && strings.TrimSpace(raw) != "" {
-		tokens, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
-		if err != nil {
-			return agentbudget.Limits{}, fmt.Errorf("%s: %w", maxTokensEnv, err)
-		}
-		if tokens <= 0 {
-			return agentbudget.Limits{}, fmt.Errorf("%s: %d must be positive", maxTokensEnv, tokens)
-		}
-		limits.MaxTokens = tokens
+	if len(stale) == 0 {
+		return nil
 	}
-
-	return limits, nil
+	return fmt.Errorf(
+		"%s is set but no longer configures anything: a campaign's ceilings are now stated when it is submitted and recorded durably with its root, so that they cannot depend on which process submitted it. Unset it and pass the ceilings to `orgctl executive submit` instead",
+		strings.Join(stale, " and "))
 }
