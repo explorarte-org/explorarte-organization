@@ -158,6 +158,64 @@ func TestAdversarialBuildRejectsATaskThatIsNotTheReview(t *testing.T) {
 	}
 }
 
+// TestAdversarialSanitizedSourceIsNotValidatedAsATaskRecord is the regression
+// for the defect the permissive fake used to hide. The sanitized bundle and
+// the rendered task record have deliberately different hashes, so routing the
+// restricted source set through TaskContextProvider.ValidateVersion would fail
+// EVERY adversarial review with task_version_drift. The build must succeed.
+func TestAdversarialSanitizedSourceIsNotValidatedAsATaskRecord(t *testing.T) {
+	f := newAdversarialFixture(t, reviewTaskPayload(t))
+	result, err := f.service.Build(context.Background(), adversarialRequest())
+	if err != nil {
+		t.Fatalf("the sanitized representation must have its own validation rule, got %v", err)
+	}
+	bundle := segmentByKind(t, result.Snapshot, SourceTaskContext)
+	rendered := fakeTaskProvider{payload: f.payload}.record("task:41")
+	if bundle.ContentHash == rendered.ContentHash {
+		t.Fatal("the sanitized bundle must not hash equal to the rendered organizational record; if it does, the record leaked")
+	}
+}
+
+// TestAdversarialValidationDetectsDurableTaskDrift proves the replacement rule
+// is a real check and not merely a way to skip validation.
+func TestAdversarialValidationDetectsDurableTaskDrift(t *testing.T) {
+	f := newAdversarialFixture(t, reviewTaskPayload(t))
+	f.service.(*contextService).tasks = &driftingTaskProvider{inner: fakeTaskProvider{payload: f.payload}, mutate: f.payload}
+	if _, err := f.service.Build(context.Background(), adversarialRequest()); err == nil {
+		t.Fatal("a durable task that moved mid-build must drift")
+	} else if ReasonOf(err) != ReasonTaskVersionDrift {
+		t.Fatalf("want task_version_drift, got %s (%v)", ReasonOf(err), err)
+	}
+}
+
+// TestAdversarialValidationDetectsReviewerContractDrift covers the other half:
+// the profile is reloaded and compared, which is why pinning its PATH is
+// enough and pinning a literal content hash in Go would be redundant.
+func TestAdversarialValidationDetectsReviewerContractDrift(t *testing.T) {
+	f := newAdversarialFixture(t, reviewTaskPayload(t))
+	service := f.service.(*contextService)
+	service.documents = &driftingDocuments{inner: f.docs}
+	if _, err := f.service.Build(context.Background(), adversarialRequest()); err == nil {
+		t.Fatal("a reviewer contract edited mid-build must drift")
+	} else if ReasonOf(err) != ReasonProfileDrift {
+		t.Fatalf("want profile_drift, got %s (%v)", ReasonOf(err), err)
+	}
+}
+
+// TestAdversarialRejectsAForeignReviewerContract covers the pinned path: the
+// classification decision is about the document at that path, so a registry
+// that points the reviewer somewhere else must not get its bytes sanitized.
+func TestAdversarialRejectsAForeignReviewerContract(t *testing.T) {
+	f := newAdversarialFixture(t, reviewTaskPayload(t))
+	service := f.service.(*contextService)
+	other := "investigacion/analista/PERFIL.md"
+	f.docs.docs[other] = profileDoc(other, AdversarialReviewerUnitID, "revisor_adversarial", AdversarialReviewerUnitID)
+	service.registry.(*fakeRegistry).role.ProfilePath = &other
+	if _, err := f.service.Build(context.Background(), adversarialRequest()); err == nil {
+		t.Fatal("only the pinned reviewer contract may be classified sanitized")
+	}
+}
+
 func TestAdversarialEgressSafeRefusesInadmissibleClasses(t *testing.T) {
 	for _, class := range []DataClass{DataOrganizational, DataSecret, DataClinical, DataClass("")} {
 		err := assertAdversarialEgressSafe([]SourceRecord{{Kind: SourceRAGEvidence, Reference: "evidence:1", DataClass: class}})
@@ -220,11 +278,13 @@ func reviewTaskPayload(t *testing.T) []byte {
 type adversarialFixture struct {
 	service Service
 	store   *memoryStore
+	docs    *fakeDocuments
+	payload *[]byte
 }
 
 func newAdversarialFixture(t *testing.T, taskPayload []byte) *adversarialFixture {
 	t.Helper()
-	profilePath := "investigacion/revisor_adversarial/PERFIL.md"
+	profilePath := adversarialReviewerProfilePath
 	agentPath := "investigacion/AGENT.md"
 	memory := "investigacion"
 	reg := &fakeRegistry{
@@ -268,16 +328,33 @@ func newAdversarialFixture(t *testing.T, taskPayload []byte) *adversarialFixture
 	service, err := NewService(
 		ServiceConfig{OrganizationAgentPath: "AGENT.md", MaxTotalBytes: 65536, MaxSegmentBytes: 8192, MaxSegments: 64, MaxSkills: 16, MaxMemorySegments: 32, MaxRAGSegments: 20},
 		reg, docs, canonical, NoopOwnerConstraintProvider{}, UnavailableMemoryProvider{}, emptySkillProvider{},
-		UnavailableProjectProvider{}, fakeTaskProvider{payload: taskPayload}, UnavailableRAGProvider{},
+		UnavailableProjectProvider{}, fakeTaskProvider{payload: &taskPayload}, UnavailableRAGProvider{},
 		NewAssembler(), NewRenderer(), store, fixedClock{time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC)},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &adversarialFixture{service: service, store: store}
+	return &adversarialFixture{service: service, store: store, docs: docs, payload: &taskPayload}
 }
 
-type fakeTaskProvider struct{ payload []byte }
+// fakeTaskProvider reproduces the PRODUCTION provider's semantics, including
+// the part that matters most here: ValidateVersion rebuilds the full
+// organizational task record and demands an identical ContentHash. An earlier
+// revision of this fake returned nil unconditionally, which is exactly why a
+// real defect -- the generic validator reporting drift on every adversarial
+// review, because the sanitized bundle's hash can never equal the rendered
+// record's -- passed a green suite.
+type fakeTaskProvider struct{ payload *[]byte }
+
+func (f fakeTaskProvider) record(reference string) SourceRecord {
+	payload := *f.payload
+	return SourceRecord{
+		Kind: SourceTaskContext, Reference: reference, Version: "task.v1:" + DigestCanonicalBytes(payload)[:8],
+		AuthorityTier: TierTask, InstructionClass: InstructionScoped, TrustClass: TrustUntrusted,
+		DataClass: DataOrganizational, Content: append([]byte(nil), payload...),
+		ContentHash: DigestCanonicalBytes(payload), Included: true, Relevance: 1, ProviderPriority: 1,
+	}
+}
 
 func (f fakeTaskProvider) GetTaskContext(ctx context.Context, request BuildRequest) (*SourceRecord, error) {
 	if err := ctx.Err(); err != nil {
@@ -286,12 +363,8 @@ func (f fakeTaskProvider) GetTaskContext(ctx context.Context, request BuildReque
 	if request.TaskRef == "" {
 		return nil, nil
 	}
-	return &SourceRecord{
-		Kind: SourceTaskContext, Reference: request.TaskRef, Version: "task.v1:1:hash",
-		AuthorityTier: TierTask, InstructionClass: InstructionScoped, TrustClass: TrustUntrusted,
-		DataClass: DataOrganizational, Content: append([]byte(nil), f.payload...),
-		ContentHash: DigestCanonicalBytes(f.payload), Included: true, Relevance: 1, ProviderPriority: 1,
-	}, nil
+	record := f.record(request.TaskRef)
+	return &record, nil
 }
 
 func segmentByKind(t *testing.T, snapshot Snapshot, kind SourceKind) Segment {
@@ -305,4 +378,57 @@ func segmentByKind(t *testing.T, snapshot Snapshot, kind SourceKind) Segment {
 	return Segment{}
 }
 
-func (f fakeTaskProvider) ValidateVersion(context.Context, string, SourceRecord) error { return nil }
+func (f fakeTaskProvider) ValidateVersion(_ context.Context, _ string, source SourceRecord) error {
+	current := f.record(source.Reference)
+	if current.ContentHash != source.ContentHash || current.Version != source.Version {
+		return Reject(ReasonTaskVersionDrift, source.Reference, "task context changed during context build")
+	}
+	return nil
+}
+
+// driftingTaskProvider mutates the durable payload after the first read, which
+// is what a task genuinely moving mid-build looks like from here.
+type driftingTaskProvider struct {
+	inner  fakeTaskProvider
+	mutate *[]byte
+	read   bool
+}
+
+func (d *driftingTaskProvider) GetTaskContext(ctx context.Context, request BuildRequest) (*SourceRecord, error) {
+	record, err := d.inner.GetTaskContext(ctx, request)
+	if err != nil || record == nil {
+		return record, err
+	}
+	if !d.read {
+		d.read = true
+		moved := append([]byte(nil), *d.mutate...)
+		moved = append(moved, ' ')
+		*d.mutate = moved
+	}
+	return record, nil
+}
+
+func (d *driftingTaskProvider) ValidateVersion(ctx context.Context, actor string, source SourceRecord) error {
+	return d.inner.ValidateVersion(ctx, actor, source)
+}
+
+// driftingDocuments edits the document AFTER the first read, so Build sees the
+// original and Validate sees the edit. Mutating it up front would prove
+// nothing: both halves would agree.
+type driftingDocuments struct {
+	inner *fakeDocuments
+	read  bool
+}
+
+func (d *driftingDocuments) Load(ctx context.Context, path string, limit int64) (LoadedDocument, error) {
+	doc, err := d.inner.Load(ctx, path, limit)
+	if err != nil {
+		return doc, err
+	}
+	if !d.read {
+		d.read = true
+		return doc, nil
+	}
+	normalized := append(append([]byte(nil), doc.Normalized...), 0x0a)
+	return LoadedDocument{Path: doc.Path, Normalized: normalized, Body: doc.Body, Hash: DigestMarkdown(normalized), Frontmatter: doc.Frontmatter}, nil
+}

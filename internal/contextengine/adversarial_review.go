@@ -49,13 +49,28 @@ const (
 	// AdversarialReviewerUnitID is the transversal audit unit the reviewer
 	// must belong to for the review to be independent.
 	AdversarialReviewerUnitID = "investigacion"
+	// adversarialReviewerProfilePath is the exact document whose bytes this
+	// package is willing to classify sanitized.
+	//
+	// The path is pinned, not the content hash. Pinning a hash would turn
+	// every legitimate edit of the owner-authored profile into a Go change,
+	// which is a bad trade: the document is meant to evolve. Pinning the path
+	// gives stable identity, and integrity is already covered downstream --
+	// revalidation reloads SourceRoleProfile and compares the durable
+	// ContentHash, so a profile edited mid-build drifts on its own.
+	adversarialReviewerProfilePath = "investigacion/revisor_adversarial/PERFIL.md"
 )
 
-// adversarialSelectorMarkers is every request field whose adversarial value
-// alone is enough to mean the caller intended this mode. Presence of ANY of
-// them commits the request to the strict validation below, so a request that
-// carries some of the selector but not all of it is refused rather than
-// quietly assembled the ordinary way.
+// adversarialReviewRequested reports whether the request carries a marker that
+// is EXCLUSIVE to adversarial review. Any one of them commits the request to
+// the full five-fact validation below, so a request holding part of the
+// selector is refused rather than quietly assembled the ordinary way.
+//
+// It deliberately tests four of the five facts, not all of them. ActorUnitID
+// is the exception: "investigacion" is a real unit with other roles in it, so
+// on its own it says nothing about adversarial review and must not drag an
+// ordinary research request into this mode. The other four have no meaning
+// outside it.
 func adversarialReviewRequested(request BuildRequest) bool {
 	return strings.TrimSpace(request.Purpose) == AdversarialReviewPurpose ||
 		strings.TrimSpace(request.TaskClass) == AdversarialReviewTaskClass ||
@@ -100,7 +115,33 @@ type renderedTaskFacts struct {
 	Instructions   string `json:"instructions"`
 }
 
-// resolveAdversarialSources enumerates the entire admissible source set.
+// adversarialReviewSources owns both halves of the restricted source set:
+// building it and revalidating it.
+//
+// It exists because SourceTaskContext stopped meaning one thing. On the
+// ordinary path it is the rendered task record, and TaskContextProvider's
+// ValidateVersion rebuilds exactly that record and compares hashes. On this
+// path it is a review bundle re-encoded from a closed field list, whose hash
+// can never equal the rendered record's -- that is the entire point of the
+// previous commit. Handing the sanitized representation to the generic
+// validator would report version drift on every single adversarial review.
+//
+// The fix is not another conditional inside revalidateResolved. A
+// representation with its own construction rule needs its own validation rule,
+// and putting both on one collaborator is what makes them impossible to drift
+// apart: Validate re-runs the very functions Build ran, then compares.
+type adversarialReviewSources struct {
+	documents       DocumentLoader
+	tasks           TaskContextProvider
+	rag             RAGEvidenceProvider
+	maxSegmentBytes int
+}
+
+func (s *contextService) adversarialReviewSources() adversarialReviewSources {
+	return adversarialReviewSources{documents: s.documents, tasks: s.tasks, rag: s.rag, maxSegmentBytes: s.config.MaxSegmentBytes}
+}
+
+// Build enumerates the entire admissible source set.
 //
 // Two things, plus explicitly authorized evidence:
 //
@@ -111,23 +152,21 @@ type renderedTaskFacts struct {
 // No canonical bundle, no owner decisions, no organization or department
 // AGENT, no memory, no skills, no project context. Those are not filtered out
 // later; they are never loaded.
-func (s *contextService) resolveAdversarialSources(ctx context.Context, request BuildRequest, role registry.Role) ([]SourceRecord, error) {
-	if role.UnitID != AdversarialReviewerUnitID {
-		return nil, Reject(ReasonRoleNotExecutable, role.ID, fmt.Sprintf(
-			"the adversarial reviewer must belong to unit %q, registry says %q",
-			AdversarialReviewerUnitID, role.UnitID))
+func (a adversarialReviewSources) Build(ctx context.Context, request BuildRequest, role registry.Role) ([]SourceRecord, error) {
+	if err := a.assertReviewerIdentity(role); err != nil {
+		return nil, err
 	}
-	profile, err := s.adversarialReviewerContract(ctx, role)
+	profile, err := a.reviewerContract(ctx, role)
 	if err != nil {
 		return nil, err
 	}
-	bundle, err := s.adversarialReviewBundle(ctx, request, role)
+	bundle, err := a.reviewBundle(ctx, request, role)
 	if err != nil {
 		return nil, err
 	}
 	sources := []SourceRecord{profile, bundle}
 
-	evidence, err := s.rag.ListApprovedEvidence(ctx, request)
+	evidence, err := a.rag.ListApprovedEvidence(ctx, request)
 	if err != nil && !errors.Is(err, ErrSourceProviderUnavailable) {
 		return nil, fmt.Errorf("resolve authorized evidence: %w", err)
 	}
@@ -145,26 +184,103 @@ func (s *contextService) resolveAdversarialSources(ctx context.Context, request 
 	return sources, nil
 }
 
-// adversarialReviewerContract loads the reviewer's profile and classifies it
-// sanitized HERE and only here.
+// Validate re-derives the restricted sources from durable state and refuses
+// the build if anything they were made from moved underneath them.
 //
-// That classification is a deliberate decision about THESE bytes, not about
-// whatever happens to sit behind ProfilePath. A role profile is the agent's
-// own operating contract; this one describes how to review a design and
-// carries no organizational data about the company, which is what the
+// It rebuilds rather than re-checks: the same reviewerContract and the same
+// reviewBundle, then Version and ContentHash compared against what Build
+// produced. A validator that reimplemented the comparison would be free to
+// disagree with the builder; one that calls the builder cannot.
+//
+// Evidence is the exception and keeps the generic provider semantics, because
+// evidence records pass through unmodified and the provider really is the
+// authority on their version.
+func (a adversarialReviewSources) Validate(ctx context.Context, request BuildRequest, role registry.Role, sources []SourceRecord) error {
+	if err := a.assertReviewerIdentity(role); err != nil {
+		return err
+	}
+	for _, source := range sources {
+		switch source.Kind {
+		case SourceRoleProfile:
+			current, err := a.reviewerContract(ctx, role)
+			if err != nil {
+				return err
+			}
+			if err = assertNoDrift(source, current, ReasonProfileDrift); err != nil {
+				return err
+			}
+		case SourceTaskContext:
+			current, err := a.reviewBundle(ctx, request, role)
+			if err != nil {
+				return err
+			}
+			if err = assertNoDrift(source, current, ReasonTaskVersionDrift); err != nil {
+				return err
+			}
+		case SourceRAGEvidence:
+			if err := a.rag.ValidateVersion(ctx, request.ActorRoleID, source); err != nil {
+				return err
+			}
+		default:
+			// Unreachable by construction: Build emits exactly the three
+			// kinds above. If it ever emits a fourth, that source has no
+			// validation rule and must not be sent.
+			return Reject(ReasonSourceNotFound, string(source.Kind),
+				"adversarial review context carries a source with no validation rule")
+		}
+	}
+	return nil
+}
+
+func assertNoDrift(stored, current SourceRecord, reason ReasonCode) error {
+	if stored.ContentHash != current.ContentHash || stored.Version != current.Version {
+		return Reject(reason, stored.Reference, "source changed during context build")
+	}
+	return nil
+}
+
+// assertReviewerIdentity pins the role the registry handed us to the reviewer
+// this mode exists for, including the exact profile document.
+//
+// Without the path check, the sanitized classification would apply to whatever
+// ProfilePath the registry happens to carry, which contradicts the claim that
+// the decision is about these bytes.
+func (a adversarialReviewSources) assertReviewerIdentity(role registry.Role) error {
+	if role.ID != AdversarialReviewerRoleID {
+		return Reject(ReasonRoleNotExecutable, role.ID, "adversarial review context may only be built for "+AdversarialReviewerRoleID)
+	}
+	if role.UnitID != AdversarialReviewerUnitID {
+		return Reject(ReasonRoleNotExecutable, role.ID, fmt.Sprintf(
+			"the adversarial reviewer must belong to unit %q, registry says %q",
+			AdversarialReviewerUnitID, role.UnitID))
+	}
+	if role.ProfilePath == nil || strings.TrimSpace(*role.ProfilePath) != adversarialReviewerProfilePath {
+		got := "none"
+		if role.ProfilePath != nil {
+			got = *role.ProfilePath
+		}
+		return Reject(ReasonSourceNotFound, role.ID, fmt.Sprintf(
+			"the adversarial reviewer contract must be %q, registry says %q",
+			adversarialReviewerProfilePath, got))
+	}
+	return nil
+}
+
+// reviewerContract loads the reviewer's profile and classifies it sanitized
+// HERE and only here.
+//
+// That classification is a deliberate decision about THESE bytes: the document
+// at the pinned path, validated as this role's own profile and scanned for
+// credential material before the class is assigned. A role profile is the
+// agent's own operating contract; this one describes how to review a design
+// and carries no organizational data about the company, which is what the
 // organizational class exists to protect. The blanket organizational default
 // applied to every other profile in the ordinary path stays exactly as it is.
 //
-// The bytes are validated as the reviewer's own profile and scanned for
-// credential material before the class is assigned, so "sanitized" is a
-// statement about content that was checked rather than a label applied on
-// trust. The scan is not a proof; the narrow path to this function is what
-// keeps arbitrary documents from reaching it.
-func (s *contextService) adversarialReviewerContract(ctx context.Context, role registry.Role) (SourceRecord, error) {
-	if role.ProfilePath == nil || strings.TrimSpace(*role.ProfilePath) == "" {
-		return SourceRecord{}, Reject(ReasonSourceNotFound, role.ID, "role profile path is missing")
-	}
-	profile, err := s.documents.Load(ctx, *role.ProfilePath, int64(s.config.MaxSegmentBytes))
+// The scan is not a proof. The pinned path and the narrow route to this
+// function are what keep arbitrary documents from reaching it.
+func (a adversarialReviewSources) reviewerContract(ctx context.Context, role registry.Role) (SourceRecord, error) {
+	profile, err := a.documents.Load(ctx, *role.ProfilePath, int64(a.maxSegmentBytes))
 	if err != nil {
 		return SourceRecord{}, err
 	}
@@ -181,8 +297,8 @@ func (s *contextService) adversarialReviewerContract(ctx context.Context, role r
 	return documentRecord(profile, TierRoleProfile, SourceRoleProfile, InstructionRole, TrustAuthoritative, DataSanitized), nil
 }
 
-// adversarialReviewBundle turns the durable task into an egress-safe source by
-// REBUILDING it, never by relabelling it.
+// reviewBundle turns the durable task into an egress-safe source by REBUILDING
+// it, never by relabelling it.
 //
 // The Tasks provider renders a task as an organizational payload carrying the
 // id, title, instructions, acceptance criteria, status, requirements, evidence
@@ -199,8 +315,12 @@ func (s *contextService) adversarialReviewerContract(ctx context.Context, role r
 // assigned to the reviewer has no decodable bundle in its instructions and is
 // refused on that ground, which is the property the request metadata alone
 // could never give us.
-func (s *contextService) adversarialReviewBundle(ctx context.Context, request BuildRequest, role registry.Role) (SourceRecord, error) {
-	task, err := s.tasks.GetTaskContext(ctx, request)
+//
+// Being deterministic is a requirement, not a convenience: Validate calls this
+// again and compares, so the same durable task must always produce the same
+// bytes and the same hash.
+func (a adversarialReviewSources) reviewBundle(ctx context.Context, request BuildRequest, role registry.Role) (SourceRecord, error) {
+	task, err := a.tasks.GetTaskContext(ctx, request)
 	if err != nil {
 		return SourceRecord{}, fmt.Errorf("resolve task context: %w", err)
 	}
@@ -227,7 +347,10 @@ func (s *contextService) adversarialReviewBundle(ctx context.Context, request Bu
 		return SourceRecord{}, Reject(ReasonSourceNotFound, task.Reference, err.Error())
 	}
 	// Built here, from the closed field list, with its own hash. Nothing from
-	// the rendered task record survives into Content.
+	// the rendered task record survives into Content. The Version is the
+	// durable task's own version, so a task that moved is caught by Validate
+	// even in the vanishingly unlikely case that its bundle re-encodes
+	// identically.
 	record := SourceRecord{
 		Kind:      SourceTaskContext,
 		Reference: task.Reference,
