@@ -185,7 +185,15 @@ func runExecutiveWorker(args []string, stdout, stderr io.Writer) int {
 		return exitInternal
 	}
 	rootSource := runtimeadapter.Tasks{Service: runtime.Tasks, OrganizationID: cfg.Tasks.OrganizationID}
-	worker, err := executive.NewWorker(runtime.Orchestrator, rootSource, executive.WorkerConfig{PollInterval: *poll, ErrorBackoff: *errorBackoff, BatchSize: *batch})
+	// The worker's own error handling assumes model executions get
+	// reconciled -- it skips unresolved provider-side executions expecting
+	// them to settle. Nothing ran that sweep: it existed only as
+	// `orgctl model invocation reconcile`, so a stranded invocation stayed
+	// stranded and every pass skipped it again. Wiring it here is what makes
+	// the assumption true in the deployment, not just in the code.
+	worker, err := executive.NewWorker(runtime.Orchestrator, rootSource,
+		executive.WorkerConfig{PollInterval: *poll, ErrorBackoff: *errorBackoff, BatchSize: *batch},
+		executive.WithExecutionReconciler(runtimeadapter.ExecutionReconciler{Invocations: runtime.Models.Invocations}))
 	if err != nil {
 		fmt.Fprintf(stderr, "create executive worker: %v\n", err)
 		return exitInternal
