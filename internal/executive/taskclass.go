@@ -68,4 +68,9 @@ invalid examples: discovery, design, Review, foo/bar, legacy.unspecified
 
 Do not assign worker tasks to roles whose authority_class is execution_service.
 Execution-service roles are deterministic executors invoked through their
-governed execution path, not cognitive department workers.`
+governed execution path, not cognitive department workers.
+
+Cognitive worker tasks may require model results only. Do not attach required
+artifact, check, approval, or condition requirements to cognitive worker
+tasks. Repository artifacts and governed checks are materialized later through
+design-freeze / EngineeringMission / CodeRunner / promotion.`
