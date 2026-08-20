@@ -300,11 +300,21 @@ type CreateRequest struct {
 	// coordination hold: durable immediately, claimable only once its
 	// creator releases it. See ReasonCodeCoordinationHold.
 	//
-	// omitempty is load-bearing, exactly as it is for TaskClass above: a
-	// false value is omitted from the JSON, so HashCreateRequest stays
-	// byte-identical for every caller that does not ask for a hold, and no
-	// existing durable request hash changes.
-	HoldForCoordination bool `json:"hold_for_coordination,omitempty"`
+	// It is excluded from the request hash, and that is a statement about
+	// what the hash means rather than a compatibility trick. The request
+	// hash exists to catch a contradictory IDENTITY reused under one
+	// idempotency key -- a different assignee, different instructions, a
+	// different classification of the work. The hold is none of those. It is
+	// a host-owned instruction about how to sequence creation, and two
+	// requests that differ only in it describe the same task.
+	//
+	// Including it would also break resume across the deploy that introduces
+	// it: a child created before it existed hashes without the field, the
+	// resumed caller now always asks for a hold, and neither the current nor
+	// the legacy hash would match -- so every in-flight run would die with
+	// ErrIdempotencyConflict on its first existing child. Excluding it is
+	// both the correct modelling and the reason no such window exists.
+	HoldForCoordination bool `json:"-"`
 }
 
 type PreparedCreate struct {
