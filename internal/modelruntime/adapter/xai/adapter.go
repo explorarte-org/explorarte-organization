@@ -221,7 +221,7 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 	}
 	httpRequest.Header.Set("Authorization", "Bearer "+string(token))
 	httpRequest.Header.Set("Content-Type", "application/json")
-	httpRequest.Header.Set("Accept", "application/json")
+	httpRequest.Header.Set("Accept", "text/event-stream")
 	httpRequest.Header.Set("X-Client-Request-Id", request.ProviderIdempotencyKey)
 
 	response, err := a.client.Do(httpRequest)
@@ -241,7 +241,10 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 		return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureAmbiguous, Outcome: outcome, Cause: err}
 	}
 	defer response.Body.Close()
-	responseBody, readErr := readBounded(response.Body, a.config.MaxResponseBytes)
+	// An error status never arrives as a stream, so it is read as the plain
+	// JSON body it is. Reassembling it would turn a perfectly readable
+	// provider error into "carried no completion events" and lose the reason.
+	responseBody, readErr := a.readResponse(response)
 	responseHash := modelruntime.SHA256Bytes(responseBody)
 	providerRequestID := strings.TrimSpace(response.Header.Get("x-request-id"))
 	if readErr != nil {
@@ -357,8 +360,12 @@ func encodeRequest(request modelruntime.CanonicalRequest) ([]byte, error) {
 		MaxCompletionTokens: request.MaxOutputTokens,
 		Temperature:         request.Temperature,
 		ReasoningEffort:     effort,
-		Stream:              false,
-		Tools:               tools,
+		// Streaming is not a performance choice here. A non-streaming
+		// completion sends no bytes until generation finishes, which makes
+		// the transport's ResponseHeaderTimeout race the model's entire
+		// thinking time -- and on a reasoning model it loses. See stream.go.
+		Stream: true,
+		Tools:  tools,
 	}
 	if request.OutputMode == modelruntime.OutputJSON {
 		if len(request.OutputSchema) > 0 {
@@ -435,6 +442,25 @@ func decodeContent(raw json.RawMessage) ([]byte, error) {
 		}
 	}
 	return []byte(builder.String()), nil
+}
+
+// readResponse returns the response document, whatever transport carried it.
+//
+// The reassembled stream and the plain body are the same shape on purpose:
+// everything downstream -- the hash, the choice check, content decoding, tool
+// intents, finish reason, usage -- reads one representation and cannot drift
+// into handling two.
+func (a *Adapter) readResponse(response *http.Response) ([]byte, error) {
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return readBounded(response.Body, a.config.MaxResponseBytes)
+	}
+	if !strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), streamContentType) {
+		// The provider ignored the stream flag and answered with a whole
+		// document. Honouring that is strictly better than failing: the call
+		// succeeded and the bytes are usable.
+		return readBounded(response.Body, a.config.MaxResponseBytes)
+	}
+	return reassembleStream(response.Body, a.config.MaxResponseBytes)
 }
 
 func readBounded(reader io.Reader, limit int) ([]byte, error) {
