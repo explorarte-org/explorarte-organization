@@ -144,15 +144,33 @@ func (v *Validator) ValidateDepartmentPlan(ctx context.Context, revisionID int64
 		// EngineeringMission and CodeRunner, approvals by promotion review,
 		// conditions by the gates that own them.
 		//
+		// Type alone is not enough, and assuming it was is what let the next
+		// run fail the same way one level down. The host satisfies a result
+		// requirement only when its KEY is one the host itself owns: a leader
+		// that invents "document_content_result" produces a well-typed
+		// obligation that nothing ever discharges, and the task hangs exactly
+		// as it did with a required artifact.
+		//
+		// The host already attaches its own blocking requirement to every
+		// worker task (appendResultRequirement adds model_result), so the
+		// only blocking obligation a cognitive worker task needs already
+		// exists and is guaranteed to be satisfied by the validated model
+		// result. A leader proposing that same key is redundant but harmless;
+		// proposing any other blocking requirement is asking for something
+		// no part of this path can deliver.
+		//
 		// Optional requirements of any type are left alone: they do not block
 		// completion and can carry real descriptive intent. What must never
-		// exist is a required one with no satisfier.
+		// exist is a blocking one with no satisfier.
 		for _, requirement := range t.Requirements {
-			if !requirement.Required || requirement.Type == "result" {
+			if !requirement.Required {
 				continue
 			}
-			return fmt.Errorf("%w: required requirement %q of type %q on cognitive worker task %q",
-				ErrRequirementUnsatisfiable, requirement.Key, requirement.Type, t.ClientKey)
+			if requirement.Type == "result" && requirement.Key == hostOwnedResultRequirementKey {
+				continue
+			}
+			return fmt.Errorf("%w: blocking requirement %q of type %q on cognitive worker task %q; the host owns the only blocking requirement (%q) and nothing else can satisfy one",
+				ErrRequirementUnsatisfiable, requirement.Key, requirement.Type, t.ClientKey, hostOwnedResultRequirementKey)
 		}
 		decision, e := v.authz.Evaluate(ctx, AuthorizationRequest{OrganizationRevisionID: revisionID, ActorRoleID: leaderRoleID, CapabilityID: "task.assign_worker", ResourceType: "role", ResourceID: role.ID, ActionDigest: actionDigest("assign-worker", departmentID, t.ClientKey, role.ID, t.Instructions)})
 		if e != nil {

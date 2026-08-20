@@ -823,14 +823,20 @@ func topologicalProposals(proposals []WorkerTaskProposal) ([]WorkerTaskProposal,
 	return ordered, nil
 }
 
+// hostOwnedResultRequirementKey is the single blocking requirement the host
+// attaches to every worker task and guarantees to satisfy from the validated
+// model result. It is named here, beside the function that attaches it, so the
+// validator that enforces it cannot drift from the code that creates it.
+const hostOwnedResultRequirementKey = "model_result"
+
 func appendResultRequirement(in []RequirementProposal) []RequirementProposal {
 	out := append([]RequirementProposal(nil), in...)
 	for _, r := range out {
-		if r.Key == "model_result" {
+		if r.Key == hostOwnedResultRequirementKey {
 			return out
 		}
 	}
-	return append(out, RequirementProposal{Key: "model_result", Type: "result", Description: "Validated durable model invocation result", Required: true})
+	return append(out, RequirementProposal{Key: hostOwnedResultRequirementKey, Type: "result", Description: "Validated durable model invocation result", Required: true})
 }
 
 func (o *Orchestrator) createReviewTask(ctx context.Context, root TaskRecord, req DepartmentRequest, leader RoleRef, all []TaskRecord, replan int) (TaskRecord, bool, error) {
