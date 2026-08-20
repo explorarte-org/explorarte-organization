@@ -20,6 +20,12 @@ import (
 type Runtime struct {
 	Service *staging.Service
 	Catalog staging.RepositoryCatalog
+	// Git is the backend this runtime already constructed. It is exposed so a
+	// consumer that needs to read a ref uses the SAME backend staging itself
+	// uses -- a second gitexec.Backend over the same repository would be a
+	// second opinion about what a ref points at, which is precisely the
+	// disagreement the retained conflicted promotion recorded.
+	Git *gitexec.Backend
 }
 
 func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
@@ -75,7 +81,7 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create staging service: %w", err)
 	}
-	return &Runtime{Service: service, Catalog: catalog}, nil
+	return &Runtime{Service: service, Catalog: catalog, Git: gitBackend}, nil
 }
 
 // stagingAuthorizationAdapter translates authorization-domain decisions at the
