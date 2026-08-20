@@ -30,9 +30,9 @@ func (s *Store) Create(ctx context.Context, input tasks.PreparedCreate) (tasks.T
 			INSERT INTO tasks(
 				organization_id,organization_revision_id,requested_by_role_id,assigned_role_id,assigned_unit_id,task_class,
 				idempotency_key,request_hash,title,instructions,acceptance_criteria,status,priority,available_at,
-				max_attempts,correlation_id,causation_id
+				max_attempts,correlation_id,causation_id,status_reason_code,status_reason
 			)
-			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,COALESCE($14::timestamptz,clock_timestamp()),$15,$16,$17)
+			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,COALESCE($14::timestamptz,clock_timestamp()),$15,$16,$17,$18,$19)
 			ON CONFLICT (organization_id,idempotency_key) DO NOTHING
 			RETURNING `+taskColumns,
 			input.Request.OrganizationID, input.OrganizationRevisionID, requester, input.Request.AssignedRoleID,
