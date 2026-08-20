@@ -176,23 +176,24 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 		Clock: executive.ClockFunc(time.Now),
 	}
 
-	orchestrator, err := executive.NewOrchestrator(
-		executive.Dependencies{
-			OrganizationID: cfg.Tasks.OrganizationID,
-			Registry:       runtimeadapter.Registry{Reader: registryRepository, OrganizationID: cfg.Tasks.OrganizationID},
-			Tasks:          dagTasks,
-			Contexts:       runtimeadapter.Context{Service: contextRuntime.Service, Assembly: contextcompiler.ContextAssemblyService{Store: executionContextViewStore}, OrganizationID: cfg.Tasks.OrganizationID},
-			Assignments:    runtimeadapter.Assignment{Resolver: modelRuntime.Dispatcher.Store, OrganizationID: cfg.Tasks.OrganizationID},
-			Principals:     runtimeadapter.RoleBoundPrincipals{Resolver: roleBoundResolver},
-			Models:         baseModels,
-			Harness:        harness,
-			Budget:         modelBudget,
-			Completion:     completionGate,
-			Decisions:      decisionRecorder,
-			Authorization:  runtimeadapter.Authorization{Service: authorizationRuntime.Service, OrganizationID: cfg.Tasks.OrganizationID},
-			Limits:         limits,
-			Clock:          executive.ClockFunc(time.Now),
-		},
+	var orchestrator *executive.Orchestrator
+	dependencies := executive.Dependencies{
+		OrganizationID: cfg.Tasks.OrganizationID,
+		Registry:       runtimeadapter.Registry{Reader: registryRepository, OrganizationID: cfg.Tasks.OrganizationID},
+		Tasks:          dagTasks,
+		Contexts:       runtimeadapter.Context{Service: contextRuntime.Service, Assembly: contextcompiler.ContextAssemblyService{Store: executionContextViewStore}, OrganizationID: cfg.Tasks.OrganizationID},
+		Assignments:    runtimeadapter.Assignment{Resolver: modelRuntime.Dispatcher.Store, OrganizationID: cfg.Tasks.OrganizationID},
+		Principals:     runtimeadapter.RoleBoundPrincipals{Resolver: roleBoundResolver},
+		Models:         baseModels,
+		Harness:        harness,
+		Budget:         modelBudget,
+		Completion:     completionGate,
+		Decisions:      decisionRecorder,
+		Authorization:  runtimeadapter.Authorization{Service: authorizationRuntime.Service, OrganizationID: cfg.Tasks.OrganizationID},
+		Limits:         limits,
+		Clock:          executive.ClockFunc(time.Now),
+	}
+	options := []executive.OrchestratorOption{
 		executive.WithAgentBudgets(runtimeadapter.AgentBudgets{Ledger: agentBudgetLedger, Limits: agentbudget.DefaultLimits()}),
 		executive.WithAgentMessaging(runtimeadapter.AgentMessages{
 			Ledger:         agentMessageLedger,
@@ -200,7 +201,13 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 			PrincipalStore: principalStore,
 			OrganizationID: cfg.Tasks.OrganizationID,
 		}),
-	)
+	}
+	missionOptions, err := missionProvisioningOptions(cfg, store, taskService)
+	if err != nil {
+		return nil, err
+	}
+	options = append(options, missionOptions...)
+	orchestrator, err = executive.NewOrchestrator(dependencies, options...)
 	if err != nil {
 		return nil, fmt.Errorf("create executive orchestrator: %w", err)
 	}

@@ -73,6 +73,16 @@ func TestProductiveExecutiveNeverNamesAnExecuteSideOperation(t *testing.T) {
 			if path == filepath.Join("runtimeadapter", "harness.go") {
 				continue
 			}
+			// bootstrap/missionprovisioning.go calls
+			// engineeringmission.Service.Create, which creates a durable TASK and
+			// touches no model runtime at all. The forbidden token list is a
+			// substring heuristic aimed at Model Runtime's own Create /
+			// EnsureInvocation; this file reaches models through nothing, and
+			// exempting it by path is narrower than loosening the token for
+			// every file in the package.
+			if path == filepath.Join("bootstrap", "missionprovisioning.go") {
+				continue
+			}
 			for _, token := range forbidden {
 				if !strings.Contains(string(body), token) {
 					continue
