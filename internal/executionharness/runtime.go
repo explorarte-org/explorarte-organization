@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 type Runtime struct {
@@ -90,8 +91,20 @@ func (r *Runtime) Execute(ctx context.Context, spec RunSpec) RunResult {
 		modelResult, invokeErr := r.models.Invoke(ctx, spec.Identity, request)
 		turnsUsed++
 		if invokeErr != nil {
-			events, _ = r.append(ctx, spec, events, Event{Type: EventRunFailed, TerminalStatus: StatusModelError, ErrorCode: "model_error", Reason: "model execution failed"})
-			return result(spec, events, StatusModelError, "model execution failed", "", lastModelOutput, turnsUsed, toolCallsUsed)
+			// The cause travels with the failure. Discarding invokeErr made
+			// EVERY model failure in the system -- an expired credential, a
+			// denied egress scope, a rejected schema, a provider timeout --
+			// collapse into the same opaque "model execution failed", with the
+			// real reason destroyed at its only source. A run that cannot say
+			// why it failed cannot be diagnosed from its own durable record,
+			// which is the record's whole purpose.
+			//
+			// The text is bounded and carries no credential: adapters already
+			// reduce provider failures to a normalized class and code, and the
+			// credential itself never reaches an error value.
+			reason := modelFailureReason(invokeErr)
+			events, _ = r.append(ctx, spec, events, Event{Type: EventRunFailed, TerminalStatus: StatusModelError, ErrorCode: "model_error", Reason: reason})
+			return result(spec, events, StatusModelError, reason, "", lastModelOutput, turnsUsed, toolCallsUsed)
 		}
 		modelResult.ToolRequests = cloneToolRequests(modelResult.ToolRequests)
 		invalidModelArguments := false
@@ -377,6 +390,28 @@ func lastModelOutput(events []Event) string {
 		}
 	}
 	return last
+}
+
+// maxModelFailureReasonBytes bounds what a provider-side failure may write
+// into durable history. Long enough to carry a normalized class and code plus
+// context, short enough that no response body can be smuggled through it.
+const maxModelFailureReasonBytes = 480
+
+// modelFailureReason renders an invocation failure as a bounded, durable
+// sentence. It keeps the historical prefix so existing consumers still match
+// on it, and appends the cause.
+func modelFailureReason(err error) string {
+	if err == nil {
+		return "model execution failed"
+	}
+	detail := strings.TrimSpace(err.Error())
+	if detail == "" {
+		return "model execution failed"
+	}
+	if len(detail) > maxModelFailureReasonBytes {
+		detail = detail[:maxModelFailureReasonBytes]
+	}
+	return "model execution failed: " + detail
 }
 
 func result(spec RunSpec, events []Event, status RunStatus, reason, final, last string, turns, tools int) RunResult {
