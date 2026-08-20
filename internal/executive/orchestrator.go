@@ -1705,13 +1705,33 @@ func departmentWorkerTasks(all []TaskRecord, rootID int64, dept string) []TaskRe
 	}
 	return out
 }
+
+// allDepartmentWorkersTerminal reports whether the department's workers have
+// FINISHED, which is not the same as whether they succeeded.
+//
+// It used to require every worker to be completed or no_action, so a single
+// failed or dead-lettered worker held the department open forever: the review
+// that would have judged the department never ran, and the run waited on a
+// task that was never coming back. One worker's failure took down its
+// siblings' whole phase.
+//
+// A failure belongs to the worker that had it. What the department does about
+// it is the reviewer's judgement, and the reviewer is equipped to make it --
+// the summary it receives carries each worker's status, so a failed sibling
+// is evidence it can weigh, and its verdict already has the vocabulary to
+// respond: needs_replan to try again, blocked or fail to stop. Holding the
+// phase open instead denies the review the chance to say any of that.
+//
+// Only terminal states count. A worker in retry_wait has not finished and
+// still holds the phase open, which is correct: it is coming back. A blocked
+// worker holds it open too, blocked being the state that asks for a human.
 func allDepartmentWorkersTerminal(all []TaskRecord, rootID int64, dept string) bool {
 	tasks := departmentWorkerTasks(all, rootID, dept)
 	if len(tasks) == 0 {
 		return true
 	}
 	for _, t := range tasks {
-		if t.Status != "completed" && t.Status != "no_action" {
+		if !isTerminalTask(t.Status) {
 			return false
 		}
 	}
