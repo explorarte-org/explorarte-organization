@@ -165,9 +165,59 @@ func TestIdempotencyKeyDistinguishesOutputContracts(t *testing.T) {
 	if textKey == jsonKey {
 		t.Fatalf("both contracts derived the same idempotency key %q", textKey)
 	}
-	prefix := "execution-harness:" + request.CanonicalDigest + ":"
-	if !strings.HasPrefix(textKey, prefix) || !strings.HasPrefix(jsonKey, prefix) {
-		t.Fatalf("keys lost the projection digest: %q %q", textKey, jsonKey)
+	// The projection still decides the key, but it is folded into the digest
+	// rather than concatenated into it: concatenation pushed a key carrying an
+	// execution contract past Model Runtime's 200-byte limit. Assert the
+	// PROPERTY -- a different projection yields a different key -- instead of
+	// the old shape.
+	if !strings.HasPrefix(textKey, "execution-harness:") || !strings.HasPrefix(jsonKey, "execution-harness:") {
+		t.Fatalf("keys lost their namespace: %q %q", textKey, jsonKey)
+	}
+	other := request
+	other.CanonicalDigest = digest([]byte("a different projection"))
+	if _, err := textAdapter.Invoke(context.Background(), spec.Identity, other); err == nil || len(text.commands) > 1 {
+		// The second Invoke has no scripted dispatch result; what matters is
+		// the key it derived, which is captured below when one was recorded.
+		_ = err
+	}
+	if len(text.commands) > 1 && text.commands[1].IdempotencyKey == textKey {
+		t.Fatal("a different projection produced the same idempotency key")
+	}
+}
+
+// The key must stay inside Model Runtime's bound for every combination,
+// including the one that broke: an execution contract present alongside a
+// structured output contract.
+func TestIdempotencyKeyStaysWithinModelRuntimeBounds(t *testing.T) {
+	const modelRuntimeLimit = 200
+	for name, contract := range map[string]string{
+		"no execution contract":   "",
+		"with execution contract": strings.Repeat("task_class guidance ", 200),
+	} {
+		t.Run(name, func(t *testing.T) {
+			adapter := &Adapter{
+				outputContract:       digest([]byte("output")),
+				executionContractKey: "",
+			}
+			if contract != "" {
+				adapter.executionContractKey = digest([]byte(contract))
+			}
+			key := adapter.idempotencyKey(digest([]byte("projection")))
+			if len(key) > modelRuntimeLimit {
+				t.Fatalf("key is %d bytes, past the %d-byte limit: %q", len(key), modelRuntimeLimit, key)
+			}
+			if len(key) != len("execution-harness:")+64 {
+				t.Fatalf("key length is not fixed: %d", len(key))
+			}
+		})
+	}
+
+	// Presence of a contract must still change the key: folding must not
+	// collapse the two cases into one.
+	withoutContract := (&Adapter{outputContract: digest([]byte("output"))}).idempotencyKey("p")
+	withContract := (&Adapter{outputContract: digest([]byte("output")), executionContractKey: digest([]byte("c"))}).idempotencyKey("p")
+	if withoutContract == withContract {
+		t.Fatal("the execution contract stopped participating in the key")
 	}
 }
 

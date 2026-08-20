@@ -192,10 +192,7 @@ func (a *Adapter) Invoke(ctx context.Context, identity executionharness.RunIdent
 	if err != nil {
 		return executionharness.ModelResult{}, err
 	}
-	idempotencyKey := "execution-harness:" + request.CanonicalDigest + ":" + a.outputContract
-	if a.executionContractKey != "" {
-		idempotencyKey += ":" + a.executionContractKey
-	}
+	idempotencyKey := a.idempotencyKey(request.CanonicalDigest)
 	if existing, stored, findErr := a.invocations.FindIdempotent(ctx, idempotencyKey); findErr == nil {
 		if err = a.validateExistingInvocation(existing, stored, identity, contextSnapshotID, request.CanonicalDigest); err != nil {
 			return executionharness.ModelResult{}, err
@@ -477,6 +474,30 @@ func equalMessages(left, right []executionharness.Message) bool {
 	leftBytes, leftErr := json.Marshal(left)
 	rightBytes, rightErr := json.Marshal(right)
 	return leftErr == nil && rightErr == nil && bytes.Equal(leftBytes, rightBytes)
+}
+
+// idempotencyKey folds every component into ONE digest instead of
+// concatenating them.
+//
+// Concatenating was a latent arithmetic bug. The prefix is 18 bytes and each
+// component is a 64-character digest, so a run WITHOUT an execution contract
+// produced 147 bytes and fit, while a run WITH one produced 212 -- past Model
+// Runtime's 200-byte limit, which rejects the invocation before it is ever
+// created. The execution contract is injected for exactly two purposes,
+// department planning and department review, so those two could never
+// dispatch through the Harness at all while every other purpose worked. The
+// failure was invisible for as long as the cause was discarded upstream.
+//
+// Folding keeps the key at a fixed 82 bytes no matter how many components are
+// added later, and the components still participate: the same three inputs
+// always produce the same key, and any change to any of them produces a
+// different one, which is the entire property idempotency needs.
+//
+// The empty execution-contract case is folded as an empty component rather
+// than omitted, so "no contract" and "a contract that hashes to empty" stay
+// distinguishable.
+func (a *Adapter) idempotencyKey(canonicalDigest string) string {
+	return "execution-harness:" + digest([]byte(canonicalDigest+"\x00"+a.outputContract+"\x00"+a.executionContractKey))
 }
 
 func digest(body []byte) string {
