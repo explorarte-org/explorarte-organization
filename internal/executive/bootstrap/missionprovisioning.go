@@ -12,54 +12,76 @@ import (
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/staging"
 	stagingbootstrap "github.com/Mireuz13/explorarte-organization/internal/staging/bootstrap"
-	"github.com/Mireuz13/explorarte-organization/internal/staging/gitexec"
 	"github.com/Mireuz13/explorarte-organization/internal/tasks"
 )
 
 // Mission provisioning is wired here rather than assumed. The Executive holds
 // the ports; without a concrete implementation behind them
 // driveImplementationMission blocks the run with
-// mission_provisioning_unavailable, which is honest but means a deployment
-// that intends to self-modify never can.
+// mission_provisioning_unavailable. That fail-closed behaviour is correct, but
+// it means a deployment that intends to self-modify never can.
 //
-// Both env values are trusted configuration, read from the process
-// environment and never from a model or a task: they name WHICH repository
-// and WHICH ref a mission may be based on.
+// The repository and target ref come from the SAME trusted configuration the
+// CodeRunner worker already uses. Reusing those two variables is deliberate:
+// the Executive that bases a mission on a ref and the worker that later
+// promotes onto it must be reading the same ref, and a second pair of
+// variables is how those two drift apart.
 const (
-	missionRepositoryEnv = "ORG_MISSION_REPOSITORY_ID"
-	missionTargetRefEnv  = "ORG_MISSION_TARGET_REF"
+	missionRepositoryEnv = "ORG_CODE_RUNNER_REPOSITORY_ID"
+	missionTargetRefEnv  = "ORG_CODE_RUNNER_TARGET_REF"
 )
 
+// TargetReader is the narrow slice of the staging Git backend this needs. It
+// is an interface so the resolver can be tested against a real repository
+// without a database, and so nothing here can reach the mutating operations.
+type TargetReader interface {
+	ReadTarget(context.Context, staging.RepositoryConfig, string) (string, error)
+}
+
 // programTargetResolver answers "what commit is the promotion target at right
-// now" by reading the ref through the staging Git backend -- the same backend
-// staging itself uses, so a mission's base and a promotion's expected base are
-// read the same way and cannot disagree about what the ref means.
+// now" by reading the governed LOCAL ref.
+//
+// It never reads HEAD, never consults origin, and never fetches. HEAD is
+// whatever the working tree happens to be checked out at, and origin is a
+// mirror that can lag or lead; the promotion target is the only thing a
+// mission may be based on, because it is the only thing a promotion will be
+// applied to.
 type programTargetResolver struct {
-	backend    *gitexec.Backend
+	git        TargetReader
 	repository staging.RepositoryConfig
 	targetRef  string
 }
 
 func (r programTargetResolver) ResolveProgramTargetSHA(ctx context.Context) (string, error) {
-	sha, err := r.backend.ReadTarget(ctx, r.repository, r.targetRef)
+	sha, err := r.git.ReadTarget(ctx, r.repository, r.targetRef)
 	if err != nil {
 		return "", fmt.Errorf("read program target %s: %w", r.targetRef, err)
 	}
 	return sha, nil
 }
 
-// missionProvisioner is a thin pass-through onto engineeringmission.Service.
+// missionCreator is the one operation the provisioner may perform.
+type missionCreator interface {
+	Create(ctx context.Context, policy engineeringmission.MissionPolicy, plan string,
+		organization, requestedBy, actorType, actorID string) (tasks.Task, error)
+}
+
+// missionProvisioner translates the Executive's command into a mission and
+// returns its task id. That is its whole surface: it cannot execute
+// CodeRunner, review, approve or promote, and it passes the policy through
+// untouched -- it has no way to change a BaseSHA, widen AllowedPaths or drop a
+// gate, because it never constructs a policy of its own.
+//
 // Create is already idempotent on the normalized policy's content digest, so
-// this adds no bookkeeping of its own -- deliberately, because a second
-// idempotency scheme layered on top is how two systems end up disagreeing
-// about whether a mission exists.
+// this adds no bookkeeping. A second idempotency scheme layered on top is how
+// two systems end up disagreeing about whether a mission exists.
 type missionProvisioner struct {
-	service        engineeringmission.Service
+	missions       missionCreator
 	organizationID string
 }
 
 func (p missionProvisioner) ProvisionMission(ctx context.Context, command executive.MissionProvisionCommand) (executive.MissionRecord, error) {
-	task, err := p.service.Create(ctx, command.Policy, string(command.PlanJSON),
+	task, err := p.missions.Create(ctx, command.Policy, string(command.PlanJSON),
 		p.organizationID, command.RequestedByRoleID, command.ActorType, command.ActorID)
 	if err != nil {
 		return executive.MissionRecord{}, fmt.Errorf("provision engineering mission: %w", err)
@@ -68,13 +90,12 @@ func (p missionProvisioner) ProvisionMission(ctx context.Context, command execut
 }
 
 // missionProvisioningOptions returns the orchestrator option when this
-// deployment is configured to provision missions, and nil when it is not.
+// deployment is configured to provision missions, and none when it is not.
 //
-// Absence is a supported state, not a failure: an Executive that only decides
-// designs is a legitimate deployment, and staging being disabled must not stop
-// it from starting. What must never happen is a run that believes it will
-// implement something and quietly does not -- that case is caught in the
-// phase, which blocks rather than skipping.
+// Absence is a supported state: an Executive that only decides designs is a
+// legitimate deployment, and staging being disabled must not stop it from
+// starting. A root that then asks for an implementation mission still fails
+// closed inside the phase.
 func missionProvisioningOptions(cfg config.Config, store *platformpostgres.Store, taskService *tasks.Service) ([]executive.OrchestratorOption, error) {
 	repositoryID := strings.TrimSpace(os.Getenv(missionRepositoryEnv))
 	targetRef := strings.TrimSpace(os.Getenv(missionTargetRefEnv))
@@ -82,21 +103,37 @@ func missionProvisioningOptions(cfg config.Config, store *platformpostgres.Store
 		return nil, nil
 	}
 	if !cfg.Staging.Enabled {
-		// Configured to provision but unable to: refusing here is better than
-		// starting an Executive that would block every governed run at the
-		// last step, after spending the design and review budget.
+		// Configured to provision but unable to. Refusing here beats starting
+		// an Executive that would spend the design and review budget on every
+		// governed run and then block at the last step.
 		return nil, fmt.Errorf("%s/%s are set but staging is disabled", missionRepositoryEnv, missionTargetRefEnv)
 	}
 	stagingRuntime, err := stagingbootstrap.Open(cfg, store)
 	if err != nil {
 		return nil, fmt.Errorf("open staging runtime for mission provisioning: %w", err)
 	}
-	repository, _, err := stagingRuntime.Catalog.Get(context.Background(), repositoryID)
+	resolver, err := newProgramTargetResolver(context.Background(), stagingRuntime.Git, stagingRuntime.Catalog, repositoryID, targetRef)
 	if err != nil {
-		return nil, fmt.Errorf("resolve mission repository %q: %w", repositoryID, err)
+		return nil, err
 	}
-	// The target ref must be one the repository already permits. A mission
-	// cannot introduce a new promotion target by naming one.
+	provisioner := missionProvisioner{
+		missions:       engineeringmission.Service{Tasks: taskService, Promotion: stagingRuntime.Service},
+		organizationID: cfg.Tasks.OrganizationID,
+	}
+	return []executive.OrchestratorOption{executive.WithMissionProvisioning(resolver, provisioner)}, nil
+}
+
+// newProgramTargetResolver resolves the repository through the catalog and
+// refuses a target ref the repository does not already allow. A mission cannot
+// introduce a new promotion target by naming one.
+func newProgramTargetResolver(ctx context.Context, git TargetReader, catalog staging.RepositoryCatalog, repositoryID, targetRef string) (programTargetResolver, error) {
+	if git == nil || catalog == nil {
+		return programTargetResolver{}, fmt.Errorf("mission provisioning requires a staging git backend and catalog")
+	}
+	repository, _, err := catalog.Get(ctx, repositoryID)
+	if err != nil {
+		return programTargetResolver{}, fmt.Errorf("resolve mission repository %q: %w", repositoryID, err)
+	}
 	allowed := false
 	for _, candidate := range repository.AllowedTargetRefs {
 		if candidate == targetRef {
@@ -105,16 +142,7 @@ func missionProvisioningOptions(cfg config.Config, store *platformpostgres.Store
 		}
 	}
 	if !allowed {
-		return nil, fmt.Errorf("target ref %q is not an allowed target of repository %q", targetRef, repositoryID)
+		return programTargetResolver{}, fmt.Errorf("target ref %q is not an allowed target of repository %q", targetRef, repositoryID)
 	}
-	backend, err := gitexec.New(cfg.Staging.GitBinary, cfg.Staging.WorkspaceRoot, cfg.Staging.CommandTimeout)
-	if err != nil {
-		return nil, fmt.Errorf("create Git backend for mission provisioning: %w", err)
-	}
-	resolver := programTargetResolver{backend: backend, repository: repository, targetRef: targetRef}
-	provisioner := missionProvisioner{
-		service:        engineeringmission.Service{Tasks: taskService, Promotion: stagingRuntime.Service},
-		organizationID: cfg.Tasks.OrganizationID,
-	}
-	return []executive.OrchestratorOption{executive.WithMissionProvisioning(resolver, provisioner)}, nil
+	return programTargetResolver{git: git, repository: repository, targetRef: targetRef}, nil
 }
