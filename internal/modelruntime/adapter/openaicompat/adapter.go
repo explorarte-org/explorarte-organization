@@ -108,7 +108,7 @@ func newAdapter(config Config, client *http.Client, now func() time.Time) (*Adap
 	endpoint.RawQuery = ""
 	endpoint.Fragment = ""
 	if client == nil {
-		client = defaultHTTPClient()
+		client = defaultHTTPClient(config.RequestTimeout)
 	} else {
 		clone := *client
 		client = &clone

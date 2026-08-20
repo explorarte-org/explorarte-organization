@@ -108,17 +108,23 @@ func (c Config) Validate() error {
 	return nil
 }
 
-func defaultHTTPClient() *http.Client {
+func defaultHTTPClient(requestTimeout time.Duration) *http.Client {
 	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
 	transport := &http.Transport{
-		Proxy:                 nil,
-		DialContext:           dialer.DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          32,
-		MaxIdleConnsPerHost:   16,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 90 * time.Second,
+		Proxy:               nil,
+		DialContext:         dialer.DialContext,
+		ForceAttemptHTTP2:   true,
+		MaxIdleConns:        32,
+		MaxIdleConnsPerHost: 16,
+		IdleConnTimeout:     90 * time.Second,
+		TLSHandshakeTimeout: 10 * time.Second,
+		// ResponseHeaderTimeout measures the wait for the FIRST response byte.
+		// A non-streaming completion sends none until it has finished
+		// generating, so a fixed 90s here silently overrode whatever
+		// RequestTimeout the deployment configured and cut calls at half the
+		// bound an operator had set. The configured timeout is the authority;
+		// this must never be the shorter of the two.
+		ResponseHeaderTimeout: requestTimeout,
 		ExpectContinueTimeout: time.Second,
 		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
 	}
