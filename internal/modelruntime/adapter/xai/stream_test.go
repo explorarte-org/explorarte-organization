@@ -196,7 +196,7 @@ func TestProviderErrorsInsideTheStreamAreSurfaced(t *testing.T) {
 	if err == nil {
 		t.Fatal("a provider error event must fail the read, not produce an empty completion")
 	}
-	if code := StreamErrorCode(err, "generic"); code != "stream_provider_error:resource-exhausted" {
+	if code := StreamErrorCode(err, "generic"); code != "stream_provider_error.resource-exhausted" {
 		t.Fatalf("the durable record must carry the provider's own code, got %q", code)
 	}
 	if !StreamErrorRetryable(err) {
@@ -282,5 +282,62 @@ func TestReasoningTokensAreCountedAsBilledOutput(t *testing.T) {
 	plain := chatUsage{PromptTokens: 100, CompletionTokens: 40}
 	if got := plain.billedOutputTokens(); got != 40 {
 		t.Fatalf("without a reasoning detail the completion count stands, got %d", got)
+	}
+}
+
+// A provider error code is EXTERNAL INPUT, and it lands in a field this system
+// validates. Concatenating it in verbatim let an upstream service choose the
+// shape of that field, and the first code xAI sent did not fit: the colon in
+// "stream_provider_error:resource-exhausted" made the outcome invalid, so the
+// failure could not be RECORDED, so invocation 62's attempt stayed in
+// send_started forever. One capacity error became a stranded invocation and a
+// campaign that could not explain itself.
+//
+// The property is therefore not "the code looks nice". It is that no provider
+// input can ever produce a code this system will refuse to store.
+func TestProviderErrorCodeIsAlwaysStorable(t *testing.T) {
+	for _, providerCode := range []string{
+		"resource-exhausted",
+		"RESOURCE_EXHAUSTED",
+		"invalid:request:shape",
+		"weird///code",
+		"  spaced  out  ",
+		"acentuación y ñ",
+		"...",
+		"-",
+		"",
+		strings.Repeat("verylongsegment-", 40),
+	} {
+		t.Run(providerCode, func(t *testing.T) {
+			code := providerErrorCode(providerCode)
+			if normalizeProviderToken(code, "", 120) != code {
+				t.Fatalf("providerErrorCode(%q)=%q is not a normalized token; storing it would fail the outcome and strand the invocation", providerCode, code)
+			}
+			if len(code) > 120 {
+				t.Fatalf("code is %d bytes, past the durable column", len(code))
+			}
+			if !strings.HasPrefix(code, streamProviderErrorPrefix) {
+				t.Fatalf("code=%q lost the class of failure it describes", code)
+			}
+		})
+	}
+}
+
+// Sanitising must not erase the provider's answer: the point of carrying its
+// code is that an operator can tell a capacity error from a rejected request.
+func TestProviderErrorCodeKeepsTheProvidersMeaning(t *testing.T) {
+	if got := providerErrorCode("resource-exhausted"); got != "stream_provider_error.resource-exhausted" {
+		t.Fatalf("code=%q", got)
+	}
+	// Case is normalised; a separator the rule already allows is preserved
+	// rather than rewritten, because rewriting it would make two provider
+	// codes that differ only in punctuation indistinguishable.
+	if got := providerErrorCode("RESOURCE_EXHAUSTED"); got != "stream_provider_error.resource_exhausted" {
+		t.Fatalf("case normalisation changed the meaning: %q", got)
+	}
+	// Two different provider codes must not collapse into one, or the field
+	// stops distinguishing anything.
+	if providerErrorCode("invalid-request") == providerErrorCode("resource-exhausted") {
+		t.Fatal("distinct provider codes collapsed to the same durable code")
 	}
 }
