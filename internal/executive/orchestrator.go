@@ -709,14 +709,55 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 	return Run{}, false, nil
 }
 
+// materializeWorkerTasks creates each worker task WITH its dependencies, in
+// topological order.
+//
+// It used to create every task first and wire dependencies afterwards. Two
+// things went wrong with that, and only one of them was visible.
+//
+// The visible one: a worker claims a task the instant it exists, and the task
+// engine refuses to change dependencies on a running task, so AddDependency
+// failed outright once a poll landed between the two loops.
+//
+// The one that matters: a dependent task was created with no dependencies, so
+// it was born ready and claimable. Its prerequisite gate did not exist yet. In
+// the run that exposed this, a design task and the review of that design were
+// created 18 milliseconds apart and both became runnable immediately -- the
+// review did not run first by luck of scheduling, not by guarantee.
+//
+// tasks.Service already does the right thing when dependencies are supplied at
+// creation: it inserts the task, its dependencies and its requirements in one
+// transaction, and a task with dependencies is born pending rather than ready.
+// The capability was there; this function simply was not using it.
+//
+// Ordering is topological and stable: among nodes that become available at the
+// same time, the DepartmentPlan's own order is preserved, so this introduces no
+// new semantic ordering of its own and the same plan always materializes the
+// same way.
 func (o *Orchestrator) materializeWorkerTasks(ctx context.Context, root, source TaskRecord, departmentID string, proposals []WorkerTaskProposal, replan int) error {
+	ordered, err := topologicalProposals(proposals)
+	if err != nil {
+		return err
+	}
 	created := map[string]TaskRecord{}
-	for _, p := range proposals {
+	for _, p := range ordered {
+		// Every dependency is already created, because the order guarantees
+		// it. A missing one is a graph this function cannot materialize, and
+		// creating the task anyway would reproduce exactly the bug being
+		// fixed: a dependent task, ready, with no gate.
+		dependencies := make([]int64, 0, len(p.Dependencies))
+		for _, dep := range p.Dependencies {
+			prerequisite, ok := created[dep]
+			if !ok {
+				return fmt.Errorf("%w: worker task %q depends on %q, which was not materialized first", ErrContractRejected, p.ClientKey, dep)
+			}
+			dependencies = append(dependencies, prerequisite.ID)
+		}
 		suffix := "worker:" + departmentID + ":" + p.ClientKey
 		if replan > 0 {
 			suffix += "-replan:" + strconv.Itoa(replan)
 		}
-		t, _, err := o.tasks.CreateTask(ctx, CreateTaskCommand{RequestedByRoleID: source.AssignedRoleID, AssignedRoleID: p.AssignedRoleID, TaskClass: p.TaskClass, IdempotencyKey: childKey(root.ID, suffix), Title: p.Title, Instructions: p.Instructions, AcceptanceCriteria: p.AcceptanceCriteria, Priority: p.Priority, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(source.ID), Requirements: appendResultRequirement(p.Requirements)})
+		t, _, err := o.tasks.CreateTask(ctx, CreateTaskCommand{RequestedByRoleID: source.AssignedRoleID, AssignedRoleID: p.AssignedRoleID, TaskClass: p.TaskClass, IdempotencyKey: childKey(root.ID, suffix), Title: p.Title, Instructions: p.Instructions, AcceptanceCriteria: p.AcceptanceCriteria, Dependencies: dependencies, Priority: p.Priority, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(source.ID), Requirements: appendResultRequirement(p.Requirements)})
 		if err != nil {
 			return err
 		}
@@ -725,14 +766,61 @@ func (o *Orchestrator) materializeWorkerTasks(ctx context.Context, root, source 
 		}
 		created[p.ClientKey] = t
 	}
+	return nil
+}
+
+// topologicalProposals orders proposals so every dependency precedes its
+// dependents, breaking ties by the plan's own order.
+//
+// The tie-break is not cosmetic: it makes materialization deterministic, so a
+// replan or a restart derives the same order, reuses the same idempotency keys
+// and therefore the same tasks.
+//
+// A cycle or an unknown dependency fails closed. ValidateDepartmentPlan
+// already rejects both, so reaching either here means the two disagree -- and
+// materializing half a graph is worse than refusing it.
+func topologicalProposals(proposals []WorkerTaskProposal) ([]WorkerTaskProposal, error) {
+	index := make(map[string]int, len(proposals))
+	for i, p := range proposals {
+		index[p.ClientKey] = i
+	}
+	remaining := make(map[string]int, len(proposals))
 	for _, p := range proposals {
+		outstanding := 0
 		for _, dep := range p.Dependencies {
-			if err := o.tasks.AddDependency(ctx, created[p.ClientKey].ID, created[dep].ID); err != nil {
-				return err
+			if _, known := index[dep]; !known {
+				return nil, fmt.Errorf("%w: worker task %q depends on unknown %q", ErrContractRejected, p.ClientKey, dep)
+			}
+			outstanding++
+		}
+		remaining[p.ClientKey] = outstanding
+	}
+	ordered := make([]WorkerTaskProposal, 0, len(proposals))
+	placed := make(map[string]struct{}, len(proposals))
+	for len(ordered) < len(proposals) {
+		progressed := false
+		// Scanning in plan order every pass is what preserves the original
+		// order among simultaneously available nodes.
+		for _, p := range proposals {
+			if _, done := placed[p.ClientKey]; done || remaining[p.ClientKey] != 0 {
+				continue
+			}
+			ordered = append(ordered, p)
+			placed[p.ClientKey] = struct{}{}
+			progressed = true
+			for _, other := range proposals {
+				for _, dep := range other.Dependencies {
+					if dep == p.ClientKey {
+						remaining[other.ClientKey]--
+					}
+				}
 			}
 		}
+		if !progressed {
+			return nil, fmt.Errorf("%w: worker task dependencies are not materializable", ErrDependencyCycle)
+		}
 	}
-	return nil
+	return ordered, nil
 }
 
 func appendResultRequirement(in []RequirementProposal) []RequirementProposal {
