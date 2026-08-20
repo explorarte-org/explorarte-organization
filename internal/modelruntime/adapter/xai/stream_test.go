@@ -2,6 +2,7 @@ package xai
 
 import (
 	"encoding/json"
+	"io"
 	"strings"
 	"testing"
 )
@@ -102,11 +103,60 @@ func TestAnEmptyStreamIsAFailureNotAnEmptyReview(t *testing.T) {
 	}
 }
 
-func TestStreamRespectsTheByteLimit(t *testing.T) {
-	huge := `data: {"id":"resp-3","choices":[{"delta":{"content":"` + strings.Repeat("a", 4096) + `"}}]}`
-	if _, err := reassembleStream(strings.NewReader(huge), 512); err == nil {
+// The stream gets its own budget, derived from the document limit rather than
+// equal to it. Sizing a stream like a document is what put a real review at
+// 84% of the ceiling: 876,829 stream bytes carried a 14,901 byte document,
+// because every chunk repeats the envelope around a few tokens of delta.
+func TestStreamBudgetIsAMultipleOfTheDocumentLimit(t *testing.T) {
+	const documentLimit = 512
+
+	// Comfortably over the document limit, comfortably under the stream
+	// budget: this must succeed, and under the old sizing it did not.
+	moderate := `data: {"id":"r","choices":[{"delta":{"content":"` + strings.Repeat("a", documentLimit*4) + `"},"finish_reason":"stop"}]}`
+	if _, err := reassembleStream(strings.NewReader(moderate), documentLimit); err != nil {
+		t.Fatalf("a stream larger than the document it produces must still be read: %v", err)
+	}
+
+	// Past the stream budget it must still stop, and say why.
+	huge := `data: {"id":"r","choices":[{"delta":{"content":"` + strings.Repeat("a", documentLimit*streamBudgetMultiplier*2) + `"}}]}`
+	err := reassembleStream2(strings.NewReader(huge), documentLimit)
+	if err == nil {
 		t.Fatal("the accumulated stream must stay bounded")
 	}
+	if code := StreamErrorCode(err, "generic"); code != "stream_exceeds_budget" {
+		t.Fatalf("the durable record must name the reason, got %q", code)
+	}
+}
+
+// Every structural failure names itself. Reporting a single generic code is
+// what turned the first streaming failure in production into archaeology that
+// could not be completed from the durable record alone.
+func TestStreamFailuresNameTheirCause(t *testing.T) {
+	for _, tc := range []struct{ name, stream, want string }{
+		{"empty", "data: [DONE]\n", "stream_empty"},
+		{"invalid event", "data: {not json}\n", "stream_event_invalid"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := reassembleStream2(strings.NewReader(tc.stream), 1<<20)
+			if err == nil {
+				t.Fatal("expected a failure")
+			}
+			if code := StreamErrorCode(err, "generic"); code != tc.want {
+				t.Fatalf("code=%q want %q", code, tc.want)
+			}
+			// The payload must never travel in an error string: it is
+			// logged, wrapped and read by humans, and for the adversarial
+			// reviewer it is exactly what the context boundary controls.
+			if strings.Contains(err.Error(), "not json") {
+				t.Fatalf("the failure quoted provider output: %v", err)
+			}
+		})
+	}
+}
+
+func reassembleStream2(r io.Reader, limit int) error {
+	_, err := reassembleStream(r, limit)
+	return err
 }
 
 // Keep-alive comments and event names are not data and must not be parsed as

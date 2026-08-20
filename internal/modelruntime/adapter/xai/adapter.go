@@ -249,7 +249,10 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 	providerRequestID := strings.TrimSpace(response.Header.Get("x-request-id"))
 	if readErr != nil {
 		a.breaker.failure(a.now())
-		outcome := responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", "response_read_failed", response.StatusCode >= 500)
+		// The specific structural reason survives into the durable record.
+		// Reporting only "response_read_failed" is what turned the first
+		// streaming failure into archaeology that could not be completed.
+		outcome := responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", StreamErrorCode(readErr, "response_read_failed"), response.StatusCode >= 500)
 		return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureResponseReceived, Outcome: outcome, Cause: readErr}
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
