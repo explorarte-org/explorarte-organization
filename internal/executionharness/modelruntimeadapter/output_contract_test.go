@@ -206,8 +206,15 @@ func TestIdempotencyKeyStaysWithinModelRuntimeBounds(t *testing.T) {
 			if len(key) > modelRuntimeLimit {
 				t.Fatalf("key is %d bytes, past the %d-byte limit: %q", len(key), modelRuntimeLimit, key)
 			}
-			if len(key) != len("execution-harness:")+64 {
-				t.Fatalf("key length is not fixed: %d", len(key))
+			// Only the contract case is folded. The compatible case keeps its
+			// historical 147-byte shape on purpose, so invocations created by
+			// earlier runtimes stay adoptable.
+			want := len("execution-harness:") + 64 + 1 + 64
+			if contract != "" {
+				want = len("execution-harness:") + 64
+			}
+			if len(key) != want {
+				t.Fatalf("key length=%d want %d", len(key), want)
 			}
 		})
 	}

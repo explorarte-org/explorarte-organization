@@ -476,28 +476,36 @@ func equalMessages(left, right []executionharness.Message) bool {
 	return leftErr == nil && rightErr == nil && bytes.Equal(leftBytes, rightBytes)
 }
 
-// idempotencyKey folds every component into ONE digest instead of
-// concatenating them.
+// idempotencyKey is bounded without changing what a historical run already
+// wrote down.
 //
-// Concatenating was a latent arithmetic bug. The prefix is 18 bytes and each
-// component is a 64-character digest, so a run WITHOUT an execution contract
-// produced 147 bytes and fit, while a run WITH one produced 212 -- past Model
-// Runtime's 200-byte limit, which rejects the invocation before it is ever
-// created. The execution contract is injected for exactly two purposes,
-// department planning and department review, so those two could never
-// dispatch through the Harness at all while every other purpose worked. The
-// failure was invisible for as long as the cause was discarded upstream.
+// The legacy representation concatenated the namespace prefix with each
+// 64-character digest. Without an execution contract that is 18 + 64 + 1 + 64
+// = 147 bytes, which was always inside Model Runtime's 200-byte bound. WITH
+// one it becomes 212, past the bound, so the invocation is rejected before it
+// is ever created -- and the execution contract is injected for exactly two
+// purposes, department planning and department review, which is why those two
+// alone could never dispatch through the Harness.
 //
-// Folding keeps the key at a fixed 82 bytes no matter how many components are
-// added later, and the components still participate: the same three inputs
-// always produce the same key, and any change to any of them produces a
-// different one, which is the entire property idempotency needs.
-//
-// The empty execution-contract case is folded as an empty component rather
-// than omitted, so "no contract" and "a contract that hashes to empty" stay
-// distinguishable.
+// Only the oversized case is compacted. Rewriting the compatible case too
+// would have been tidier and was wrong: Invoke resolves an existing
+// invocation through FindIdempotent BEFORE creating one, so a runtime that
+// derives a different key for the same work stops finding invocations that
+// earlier runtimes durably created, and creates a second one instead. That is
+// the restart-duplication failure this system already closed once, and a
+// cosmetic change to a key that was never too long is not worth reopening it.
 func (a *Adapter) idempotencyKey(canonicalDigest string) string {
-	return "execution-harness:" + digest([]byte(canonicalDigest+"\x00"+a.outputContract+"\x00"+a.executionContractKey))
+	if a.executionContractKey == "" {
+		// Byte-for-byte the historical shape, so every invocation created by
+		// an earlier runtime is still adoptable by this one.
+		return "execution-harness:" + canonicalDigest + ":" + a.outputContract
+	}
+	// The three-component form is the only one that exceeds the bound. Folding
+	// keeps every component participating -- same inputs, same key; any change,
+	// a different key -- at a fixed 82 bytes.
+	return "execution-harness:" + digest([]byte(
+		canonicalDigest+"\x00"+a.outputContract+"\x00"+a.executionContractKey,
+	))
 }
 
 func digest(body []byte) string {

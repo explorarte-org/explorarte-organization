@@ -611,11 +611,19 @@ func TestDifferentExecutionContractProducesDifferentIdempotencyKey(t *testing.T)
 		if !strings.HasPrefix(key, "execution-harness:") {
 			t.Fatalf("key %s lost its namespace: %q", name, key)
 		}
-		if len(key) != len("execution-harness:")+64 {
-			t.Fatalf("key %s is not a fixed-length digest: %q", name, key)
-		}
 		if len(key) > 200 {
 			t.Fatalf("key %s exceeds the Model Runtime bound: %d", name, len(key))
+		}
+	}
+	// The compatible case keeps its historical 147-byte shape so invocations
+	// created by earlier runtimes stay adoptable; only the contract case,
+	// which would otherwise be 212, is folded to a fixed 82.
+	if len(keyNone) != len("execution-harness:")+64+1+64 {
+		t.Fatalf("no-contract key left its historical shape: %q", keyNone)
+	}
+	for name, key := range map[string]string{"A": keyA, "B": keyB} {
+		if len(key) != len("execution-harness:")+64 {
+			t.Fatalf("contract key %s is not folded: %q", name, key)
 		}
 	}
 }
