@@ -230,7 +230,12 @@ type AuthorizationRequest struct {
 // WithAgentBudgets) — a nil provider means no budget tracking, existing
 // behavior is unaffected.
 type AgentBudgetProvider interface {
-	CreateRootBudget(ctx context.Context, root TaskRecord, now time.Time) error
+	// CreateRootBudget starts the campaign's budget tree at the ceilings the
+	// submission resolved. The limits are a parameter, not provider state:
+	// a provider that carried its own would be a second answer to what a
+	// campaign may spend, and the durable row keeps whichever answer arrived
+	// first.
+	CreateRootBudget(ctx context.Context, root TaskRecord, limits CampaignBudget, now time.Time) error
 	// InheritForChild attaches child to root's budget tree at depth. It
 	// shares root's remaining budget outright — it never carves out a
 	// separate sub-allocation, since the orchestrator has no per-child

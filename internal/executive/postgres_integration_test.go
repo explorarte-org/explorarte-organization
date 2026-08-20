@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Mireuz13/explorarte-organization/internal/agentbudget"
 	agentbudgetpostgres "github.com/Mireuz13/explorarte-organization/internal/agentbudget/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/agentmessaging"
 	agentmessagingpostgres "github.com/Mireuz13/explorarte-organization/internal/agentmessaging/postgres"
@@ -561,7 +560,7 @@ func TestExecutivePostgreSQL17AgentBudgetsAndMessagingAreWiredThroughDelegation(
 		t.Fatal(err)
 	}
 	orchestrator := newOrchestrator(t, h, models, integrationAssignments{}, completionGate,
-		executive.WithAgentBudgets(runtimeadapter.AgentBudgets{Ledger: budgetLedger, Limits: agentbudget.DefaultLimits()}),
+		executive.WithAgentBudgets(runtimeadapter.AgentBudgets{Ledger: budgetLedger}),
 		executive.WithAgentMessaging(runtimeadapter.AgentMessages{
 			Ledger: messageLedger, MaxAttempts: 10,
 			PrincipalStore: dispatchStore, OrganizationID: "explorarte",

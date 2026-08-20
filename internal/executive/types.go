@@ -168,6 +168,14 @@ type SubmitRequest struct {
 	Goal           OwnerGoal
 	ActorRoleID    string
 	IdempotencyKey string
+	// Budget is what this campaign may spend, stated once at submission and
+	// recorded durably with its root. Leaving it nil means
+	// DefaultCampaignBudget, identically in every process.
+	//
+	// It belongs to the request rather than to the runtime because the
+	// alternative is what this replaced: ceilings read from whichever
+	// process's environment reached the ledger first.
+	Budget *CampaignBudget
 }
 
 type Run struct {

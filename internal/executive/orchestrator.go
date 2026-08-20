@@ -162,6 +162,12 @@ func (o *Orchestrator) Submit(ctx context.Context, request SubmitRequest) (Run, 
 		return Run{}, false, fmt.Errorf("%w: reserved requirement key", ErrInvalidInput)
 	}
 	requirements = append(requirements, RequirementProposal{Key: "executive_closure_verified", Type: "result", Description: "CEO closure is materialized from verified departmental results", Required: true})
+	// Resolved BEFORE the root exists, so a campaign is never created with a
+	// budget the system then fails to record.
+	budget, err := resolveCampaignBudget(request.Budget)
+	if err != nil {
+		return Run{}, false, err
+	}
 	correlation := correlationID(request)
 	root, reused, err := o.tasks.CreateTask(ctx, CreateTaskCommand{
 		RequestedByRoleID:  OwnerRoleID,
@@ -181,7 +187,7 @@ func (o *Orchestrator) Submit(ctx context.Context, request SubmitRequest) (Run, 
 		return Run{}, false, err
 	}
 	if o.budgets != nil {
-		if err := o.budgets.CreateRootBudget(ctx, root, o.clock.Now()); err != nil {
+		if err := o.budgets.CreateRootBudget(ctx, root, budget, o.clock.Now()); err != nil {
 			return Run{}, false, fmt.Errorf("create root agent budget for task %d: %w", root.ID, err)
 		}
 	}

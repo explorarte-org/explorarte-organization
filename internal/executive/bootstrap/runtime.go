@@ -175,9 +175,10 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 		Clock: executive.ClockFunc(time.Now),
 	}
 
-	budgetLimits, err := agentBudgetLimits()
-	if err != nil {
-		return nil, fmt.Errorf("resolve executive agent budget limits: %w", err)
+	// The runtime resolves no campaign ceilings of its own; it only refuses to
+	// start pretending it still does.
+	if err := rejectDeprecatedAgentBudgetEnv(); err != nil {
+		return nil, err
 	}
 	var orchestrator *executive.Orchestrator
 	dependencies := executive.Dependencies{
@@ -197,7 +198,7 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 		Clock:          executive.ClockFunc(time.Now),
 	}
 	options := []executive.OrchestratorOption{
-		executive.WithAgentBudgets(runtimeadapter.AgentBudgets{Ledger: agentBudgetLedger, Limits: budgetLimits}),
+		executive.WithAgentBudgets(runtimeadapter.AgentBudgets{Ledger: agentBudgetLedger}),
 		executive.WithAgentMessaging(runtimeadapter.AgentMessages{
 			Ledger:         agentMessageLedger,
 			MaxAttempts:    agentMessageMaxAttempts,
