@@ -171,6 +171,7 @@ type fakeStore struct {
 	// usage-survives-failure mechanism (see recoveredUsage in
 	// dispatch_service.go). nil means the call passed no recovered usage.
 	lastFailureUsage *Usage
+	retryableFailure bool
 }
 
 // fakeCostBudgetGate is a deterministic CostBudgetGate double used to
@@ -284,6 +285,12 @@ func (f *fakeStore) Verify(key modelidentity.ExecutionIdentityKey, issued modeli
 }
 func (f *fakeStore) LoadExecutionPrivateKey(string) (ed25519.PrivateKey, error) {
 	return append(ed25519.PrivateKey(nil), f.identityPrivateKey...), nil
+}
+
+// ProviderFailureRetryable defaults to false: a fixture that has recorded no
+// provider outcome has nothing to call transient.
+func (f *fakeStore) ProviderFailureRetryable(context.Context, int64) (bool, error) {
+	return f.retryableFailure, nil
 }
 
 func (f *fakeStore) CreateInvocation(_ context.Context, p PreparedInvocation, _ int) (CreateInvocationResult, error) {

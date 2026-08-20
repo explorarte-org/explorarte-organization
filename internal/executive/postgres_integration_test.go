@@ -321,6 +321,13 @@ func modelAttemptKey(taskID, attemptID int64) string { return fmt.Sprintf("%d/%d
 // is the billed provider call, exactly as before the migration. It leaves the
 // same durable trace a real run leaves: one invocation row per attempt, its
 // result, and a verdict that references it.
+// ProviderFailureRetryable answers what Model Runtime recorded. This fixture
+// seeds no provider outcomes, so nothing it produces is transient and every
+// failure it drives is terminal -- which is what its assertions expect.
+func (f *integrationModelRuntime) ProviderFailureRetryable(context.Context, int64) (bool, error) {
+	return false, nil
+}
+
 func (f *integrationModelRuntime) Execute(_ context.Context, command executive.HarnessRunCommand) (executive.HarnessRunOutcome, error) {
 	f.runs = append(f.runs, command)
 	if f.stopWithoutVerdict {
