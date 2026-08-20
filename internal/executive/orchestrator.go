@@ -462,7 +462,7 @@ func (o *Orchestrator) createCEOPlanTask(ctx context.Context, root TaskRecord) (
 		return TaskRecord{}, false, err
 	}
 
-	task, reused, err := o.tasks.CreateTask(ctx, CreateTaskCommand{
+	task, reused, err := o.coordinatedChildren().Materialize(ctx, childRequest{Root: root, Sender: root, Depth: 1, Command: CreateTaskCommand{
 		RequestedByRoleID: OwnerRoleID, AssignedRoleID: CEORoleID,
 		TaskClass:      TaskClassCoordinationCEOPlan,
 		IdempotencyKey: childKey(root.ID, "ceo-plan"),
@@ -484,11 +484,8 @@ func (o *Orchestrator) createCEOPlanTask(ctx context.Context, root TaskRecord) (
 			Description: "Validated ExecutivePlan invocation result",
 			Required:    true,
 		}},
-	})
+	}})
 	if err != nil {
-		return TaskRecord{}, false, err
-	}
-	if err := o.attachChildCoordination(ctx, root, root, task, 1); err != nil {
 		return TaskRecord{}, false, err
 	}
 	return task, reused, nil
@@ -496,7 +493,7 @@ func (o *Orchestrator) createCEOPlanTask(ctx context.Context, root TaskRecord) (
 
 func (o *Orchestrator) createLeaderPlanTask(ctx context.Context, root TaskRecord, req DepartmentRequest, leader RoleRef) (TaskRecord, bool, error) {
 	instructions := boundedJSON(map[string]any{"department_id": req.UnitID, "objective": req.Objective, "deliverable": req.Deliverable, "constraints": req.Constraints, "priority": req.Priority}, o.limits.MaxInstructionsBytes)
-	task, reused, err := o.tasks.CreateTask(ctx, CreateTaskCommand{
+	task, reused, err := o.coordinatedChildren().Materialize(ctx, childRequest{Root: root, Sender: root, Depth: 2, Command: CreateTaskCommand{
 		RequestedByRoleID: CEORoleID, AssignedRoleID: leader.ID,
 		TaskClass:      TaskClassCoordinationDeptPlan,
 		IdempotencyKey: childKey(root.ID, "leader-plan:"+req.UnitID), Title: "Department planning: " + req.UnitID,
@@ -504,51 +501,11 @@ func (o *Orchestrator) createLeaderPlanTask(ctx context.Context, root TaskRecord
 		AcceptanceCriteria: []string{"Return one strict DepartmentPlan JSON value", "Delegate only to active assignable roles in this department", "Use only existing requirement types"},
 		Priority:           req.Priority, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID),
 		Requirements: []RequirementProposal{{Key: "typed_plan", Type: "result", Description: "Validated DepartmentPlan invocation result", Required: true}},
-	})
+	}})
 	if err != nil {
 		return TaskRecord{}, false, err
 	}
-	if err := o.attachChildCoordination(ctx, root, root, task, 2); err != nil {
-		return TaskRecord{}, false, err
-	}
 	return task, reused, nil
-}
-
-// attachChildCoordination inherits child's budget from root's tree and
-// sends a durable delegation message from sender to child, when the
-// orchestrator has those optional providers configured. Both are
-// independently optional and independently best-effort against
-// already-created tasks: a budget/messaging failure here must not undo a
-// task creation that already durably happened, so it is surfaced as a
-// wrapped error for the caller to decide on, not silently swallowed.
-func (o *Orchestrator) attachChildCoordination(ctx context.Context, root, sender, child TaskRecord, depth int64) error {
-	now := o.clock.Now()
-	if o.budgets != nil {
-		if err := o.budgets.InheritForChild(ctx, root, child, depth, now); err != nil {
-			return fmt.Errorf("inherit agent budget for task %d: %w", child.ID, err)
-		}
-	}
-	// A role creating its own sub-task (e.g. the CEO's root task spawning its
-	// own "CEO planning" task -- both AssignedRoleID==CEORoleID) crosses no
-	// organizational trust boundary: nothing is being delegated to a
-	// different actor, so there is nothing for agent-messaging to
-	// authenticate. agentmessaging's own topology validator enforces this as
-	// a hard invariant (ValidateEdge denies senderRole==recipientRole
-	// unconditionally, see internal/agentmessaging/topology.go) -- this is
-	// not a gap to route around, it is the reason a same-role hop must never
-	// reach SendDelegation in the first place.
-	if o.messages != nil && sender.AssignedRoleID != child.AssignedRoleID {
-		// FIX 6 (EXEC-PRINCIPAL-001): no principal is configured on the
-		// Orchestrator itself anymore -- AgentMessagingProvider resolves the
-		// correct, role-bound principal internally from sender.AssignedRoleID.
-		// A single static principal here could not authenticate more than one
-		// sender role across a multi-hop flow (CEO->leader, leader->worker,
-		// worker->leader, leader->CEO); see runtimeadapter.AgentMessages.
-		if err := o.messages.SendDelegation(ctx, sender, child, now); err != nil {
-			return fmt.Errorf("send delegation message for task %d: %w", child.ID, err)
-		}
-	}
-	return nil
 }
 
 // driveInProgress signals that driveDepartments made partial progress this
@@ -757,11 +714,8 @@ func (o *Orchestrator) materializeWorkerTasks(ctx context.Context, root, source 
 		if replan > 0 {
 			suffix += "-replan:" + strconv.Itoa(replan)
 		}
-		t, _, err := o.tasks.CreateTask(ctx, CreateTaskCommand{RequestedByRoleID: source.AssignedRoleID, AssignedRoleID: p.AssignedRoleID, TaskClass: p.TaskClass, IdempotencyKey: childKey(root.ID, suffix), Title: p.Title, Instructions: p.Instructions, AcceptanceCriteria: p.AcceptanceCriteria, Dependencies: dependencies, Priority: p.Priority, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(source.ID), Requirements: appendResultRequirement(p.Requirements)})
+		t, _, err := o.coordinatedChildren().Materialize(ctx, childRequest{Root: root, Sender: source, Depth: 3, Command: CreateTaskCommand{RequestedByRoleID: source.AssignedRoleID, AssignedRoleID: p.AssignedRoleID, TaskClass: p.TaskClass, IdempotencyKey: childKey(root.ID, suffix), Title: p.Title, Instructions: p.Instructions, AcceptanceCriteria: p.AcceptanceCriteria, Dependencies: dependencies, Priority: p.Priority, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(source.ID), Requirements: appendResultRequirement(p.Requirements)}})
 		if err != nil {
-			return err
-		}
-		if err := o.attachChildCoordination(ctx, root, source, t, 3); err != nil {
 			return err
 		}
 		created[p.ClientKey] = t
@@ -861,11 +815,8 @@ func (o *Orchestrator) createReviewTask(ctx context.Context, root TaskRecord, re
 	if replan > 0 {
 		suffix += ":replan:" + strconv.Itoa(replan)
 	}
-	task, reused, err := o.tasks.CreateTask(ctx, CreateTaskCommand{RequestedByRoleID: CEORoleID, AssignedRoleID: leader.ID, TaskClass: TaskClassCoordinationDeptReview, IdempotencyKey: childKey(root.ID, suffix), Title: "Department review: " + req.UnitID, Instructions: "Review only this bounded durable task/evidence summary and return DepartmentReview JSON: " + summary + "\n\n" + taskClassGuidance, AcceptanceCriteria: []string{"Use only durable task states and evidence refs", "Return strict DepartmentReview JSON", "Do not execute tool intents"}, Priority: req.Priority, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID), Requirements: []RequirementProposal{{Key: "typed_review", Type: "result", Description: "Validated DepartmentReview invocation result", Required: true}}})
+	task, reused, err := o.coordinatedChildren().Materialize(ctx, childRequest{Root: root, Sender: root, Depth: 2, Command: CreateTaskCommand{RequestedByRoleID: CEORoleID, AssignedRoleID: leader.ID, TaskClass: TaskClassCoordinationDeptReview, IdempotencyKey: childKey(root.ID, suffix), Title: "Department review: " + req.UnitID, Instructions: "Review only this bounded durable task/evidence summary and return DepartmentReview JSON: " + summary + "\n\n" + taskClassGuidance, AcceptanceCriteria: []string{"Use only durable task states and evidence refs", "Return strict DepartmentReview JSON", "Do not execute tool intents"}, Priority: req.Priority, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID), Requirements: []RequirementProposal{{Key: "typed_review", Type: "result", Description: "Validated DepartmentReview invocation result", Required: true}}}})
 	if err != nil {
-		return TaskRecord{}, false, err
-	}
-	if err := o.attachChildCoordination(ctx, root, root, task, 2); err != nil {
 		return TaskRecord{}, false, err
 	}
 	return task, reused, nil
@@ -873,11 +824,8 @@ func (o *Orchestrator) createReviewTask(ctx context.Context, root TaskRecord, re
 
 func (o *Orchestrator) createClosureTask(ctx context.Context, root TaskRecord, plan ExecutivePlan, all []TaskRecord) (TaskRecord, bool, error) {
 	summary := boundedClosureSummary(plan, all, root.ID, o.limits.MaxInstructionsBytes)
-	task, reused, err := o.tasks.CreateTask(ctx, CreateTaskCommand{RequestedByRoleID: OwnerRoleID, AssignedRoleID: CEORoleID, TaskClass: TaskClassCoordinationCEOClosure, IdempotencyKey: childKey(root.ID, "ceo-closure"), Title: "CEO executive closure", Instructions: "Synthesize only from this bounded durable summary and return ExecutiveClosure JSON. A completed claim cannot override backend verification: " + summary, AcceptanceCriteria: []string{"Return strict ExecutiveClosure JSON", "Cite only supplied evidence refs", "Report blockers and unresolved owner decisions explicitly"}, Priority: 100, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID), Requirements: []RequirementProposal{{Key: "typed_closure", Type: "result", Description: "Validated ExecutiveClosure invocation result", Required: true}}})
+	task, reused, err := o.coordinatedChildren().Materialize(ctx, childRequest{Root: root, Sender: root, Depth: 1, Command: CreateTaskCommand{RequestedByRoleID: OwnerRoleID, AssignedRoleID: CEORoleID, TaskClass: TaskClassCoordinationCEOClosure, IdempotencyKey: childKey(root.ID, "ceo-closure"), Title: "CEO executive closure", Instructions: "Synthesize only from this bounded durable summary and return ExecutiveClosure JSON. A completed claim cannot override backend verification: " + summary, AcceptanceCriteria: []string{"Return strict ExecutiveClosure JSON", "Cite only supplied evidence refs", "Report blockers and unresolved owner decisions explicitly"}, Priority: 100, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID), Requirements: []RequirementProposal{{Key: "typed_closure", Type: "result", Description: "Validated ExecutiveClosure invocation result", Required: true}}}})
 	if err != nil {
-		return TaskRecord{}, false, err
-	}
-	if err := o.attachChildCoordination(ctx, root, root, task, 1); err != nil {
 		return TaskRecord{}, false, err
 	}
 	return task, reused, nil

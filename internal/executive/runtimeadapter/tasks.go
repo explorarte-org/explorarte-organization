@@ -35,20 +35,21 @@ func (a Tasks) CreateTask(ctx context.Context, command executive.CreateTaskComma
 	// when an existing task with this idempotency key was found). Invert
 	// here, once, at the adapter boundary, rather than at every caller.
 	value, created, err := a.Service.CreateTask(ctx, tasks.CreateRequest{
-		OrganizationID:     a.OrganizationID,
-		RequestedByRoleID:  command.RequestedByRoleID,
-		AssignedRoleID:     command.AssignedRoleID,
-		TaskClass:          command.TaskClass,
-		IdempotencyKey:     command.IdempotencyKey,
-		Title:              command.Title,
-		Instructions:       command.Instructions,
-		AcceptanceCriteria: append([]string(nil), command.AcceptanceCriteria...),
-		Priority:           command.Priority,
-		MaxAttempts:        command.MaxAttempts,
-		CorrelationID:      command.CorrelationID,
-		CausationID:        command.CausationID,
-		Dependencies:       append([]int64(nil), command.Dependencies...),
-		Requirements:       requirements,
+		OrganizationID:      a.OrganizationID,
+		RequestedByRoleID:   command.RequestedByRoleID,
+		AssignedRoleID:      command.AssignedRoleID,
+		TaskClass:           command.TaskClass,
+		IdempotencyKey:      command.IdempotencyKey,
+		Title:               command.Title,
+		Instructions:        command.Instructions,
+		AcceptanceCriteria:  append([]string(nil), command.AcceptanceCriteria...),
+		HoldForCoordination: command.HoldForCoordination,
+		Priority:            command.Priority,
+		MaxAttempts:         command.MaxAttempts,
+		CorrelationID:       command.CorrelationID,
+		CausationID:         command.CausationID,
+		Dependencies:        append([]int64(nil), command.Dependencies...),
+		Requirements:        requirements,
 	}, "service", serviceActor)
 	if err != nil {
 		return executive.TaskRecord{}, false, err
@@ -269,6 +270,18 @@ func (a Tasks) BlockTask(ctx context.Context, id int64, code, reason, actorType,
 func (a Tasks) UnblockTask(ctx context.Context, id int64, actorType, actorID string) (executive.TaskRecord, error) {
 	_, err := a.Service.UnblockTask(ctx, tasks.UnblockCommand{TaskID: id, ActorType: actorType, ActorID: actorID})
 	if err != nil {
+		return executive.TaskRecord{}, err
+	}
+	return a.GetTask(ctx, id)
+}
+
+func (a Tasks) ReleaseCoordinationHold(ctx context.Context, id int64) (executive.TaskRecord, error) {
+	// The actor is the orchestrator itself: publishing a held child is a
+	// host decision about a host-owned barrier, never an act of the role the
+	// child is assigned to.
+	if _, err := a.Service.ReleaseCoordinationHold(ctx, tasks.ReleaseCoordinationHoldCommand{
+		TaskID: id, ActorType: "system", ActorID: "executive-orchestrator",
+	}); err != nil {
 		return executive.TaskRecord{}, err
 	}
 	return a.GetTask(ctx, id)

@@ -79,6 +79,10 @@ func (f *fakePersistence) Unblock(_ context.Context, _ UnblockCommand, check Ass
 	f.check = check
 	return f.created, nil
 }
+func (f *fakePersistence) ReleaseCoordinationHold(_ context.Context, _ ReleaseCoordinationHoldCommand, check AssigneeCheck, _ int) (Task, error) {
+	f.check = check
+	return f.created, nil
+}
 func (f *fakePersistence) Cancel(context.Context, CancelCommand, int) (Task, error) {
 	return f.created, nil
 }

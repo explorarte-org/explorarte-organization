@@ -23,6 +23,31 @@ const (
 	StatusCancelled            Status = "cancelled"
 )
 
+// ReasonCodeCoordinationHold marks a task that exists durably but is not yet
+// published for execution because the coordination its creator owes it --
+// budget inheritance, a delegation edge -- is not durably in place yet.
+//
+// It is the ONE durable representation of "this task cannot be claimed yet
+// for a reason that is nobody's operational problem to clear". Everything
+// that decides claimability reads this single fact rather than reimplementing
+// the rule:
+//
+//   - a held task is created blocked, in the same write that creates it, so
+//     no window exists in which it is claimable and uncoordinated;
+//   - the readiness reconciler promotes blocked tasks only for the three
+//     operational reason codes it knows how to resolve, and this is not one
+//     of them, so nothing promotes a held task behind its creator's back;
+//   - UnblockTask, the operator's tool for clearing an operational block,
+//     refuses it, because an operator clearing a dependency block must not
+//     be able to publish a child whose coordination never happened;
+//   - ReleaseCoordinationHold is the only transition out, and it evaluates
+//     dependencies exactly as an unblock does.
+//
+// The publication barrier and the dependency barrier are different concepts
+// and are deliberately not merged: releasing the hold publishes the task,
+// which then becomes ready or pending on its dependencies' own merits.
+const ReasonCodeCoordinationHold = "awaiting_child_coordination"
+
 var allStatuses = map[Status]struct{}{
 	StatusPending: {}, StatusReady: {}, StatusLeased: {}, StatusRunning: {},
 	StatusAwaitingVerification: {}, StatusBlocked: {}, StatusRetryWait: {},
@@ -271,6 +296,25 @@ type CreateRequest struct {
 	CausationID        string            `json:"causation_id,omitempty"`
 	Dependencies       []int64           `json:"dependencies,omitempty"`
 	Requirements       []RequirementSpec `json:"requirements,omitempty"`
+	// HoldForCoordination asks for the task to be created under a
+	// coordination hold: durable immediately, claimable only once its
+	// creator releases it. See ReasonCodeCoordinationHold.
+	//
+	// It is excluded from the request hash, and that is a statement about
+	// what the hash means rather than a compatibility trick. The request
+	// hash exists to catch a contradictory IDENTITY reused under one
+	// idempotency key -- a different assignee, different instructions, a
+	// different classification of the work. The hold is none of those. It is
+	// a host-owned instruction about how to sequence creation, and two
+	// requests that differ only in it describe the same task.
+	//
+	// Including it would also break resume across the deploy that introduces
+	// it: a child created before it existed hashes without the field, the
+	// resumed caller now always asks for a hold, and neither the current nor
+	// the legacy hash would match -- so every in-flight run would die with
+	// ErrIdempotencyConflict on its first existing child. Excluding it is
+	// both the correct modelling and the reason no such window exists.
+	HoldForCoordination bool `json:"-"`
 }
 
 type PreparedCreate struct {
@@ -293,8 +337,14 @@ type PreparedCreate struct {
 	// other and must be compared like one (independent review round 2).
 	TaskClassExplicit bool
 	RequestHash       string
-	InitialStatus          Status
-	DefaultMaxAttempts     int
+	InitialStatus Status
+	// InitialStatusReasonCode/InitialStatusReason are persisted with the
+	// row itself rather than applied afterwards. A hold that had to be
+	// applied in a second write would leave the task claimable in between,
+	// which is the entire race this exists to close.
+	InitialStatusReasonCode string
+	InitialStatusReason     string
+	DefaultMaxAttempts      int
 	OutboxMaxAttempts      int
 	ActorType              string
 	ActorID                string
@@ -417,6 +467,18 @@ type BlockCommand struct {
 }
 
 type UnblockCommand struct {
+	TaskID    int64
+	ActorType string
+	ActorID   string
+}
+
+// ReleaseCoordinationHoldCommand publishes a task that was created held.
+//
+// It is a distinct operation from UnblockCommand because it answers a
+// distinct question. An unblock says "the operational obstacle is gone";
+// this says "the coordination I owed this task now exists durably". Only
+// the creator can truthfully say the second thing.
+type ReleaseCoordinationHoldCommand struct {
 	TaskID    int64
 	ActorType string
 	ActorID   string

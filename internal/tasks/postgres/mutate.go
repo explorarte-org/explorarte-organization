@@ -255,6 +255,13 @@ func (s *Store) Unblock(ctx context.Context, command tasks.UnblockCommand, check
 		if task.Status != tasks.StatusBlocked {
 			return tasks.Task{}, fmt.Errorf("%w: only blocked tasks can be unblocked", tasks.ErrInvalidTransition)
 		}
+		// An operator clearing an operational block cannot know whether a
+		// held child's budget and delegation exist. Letting this path publish
+		// one would move the invariant out of its owner's hands, so a
+		// coordination hold is released only by ReleaseCoordinationHold.
+		if isCoordinationHeld(task) {
+			return tasks.Task{}, fmt.Errorf("%w: task is under a coordination hold and is published by its creator, not by an unblock", tasks.ErrInvalidTransition)
+		}
 		if !check.Available {
 			return tasks.Task{}, fmt.Errorf("%w: %s", tasks.ErrAssigneeUnavailable, check.Reason)
 		}
@@ -268,11 +275,63 @@ func (s *Store) Unblock(ctx context.Context, command tasks.UnblockCommand, check
 		if dependencyState.TerminalFailure {
 			return tasks.Task{}, tasks.ErrDependencyUnsatisfied
 		}
-		target := tasks.StatusReady
-		if dependencyState.Waiting || task.AvailableAt.After(dependencyState.Now) {
-			target = tasks.StatusPending
+		return transitionTask(ctx, tx, task, releaseTargetStatus(task, dependencyState), "task.unblocked", "", "", command.ActorType, command.ActorID, map[string]any{"dependencies_waiting": dependencyState.Waiting}, outboxMaxAttempts)
+	})
+}
+
+// isCoordinationHeld is the single read of the durable fact "this task is not
+// published yet". Every place that must respect the hold asks this rather than
+// comparing reason-code strings of its own.
+func isCoordinationHeld(task tasks.Task) bool {
+	return task.Status == tasks.StatusBlocked &&
+		task.StatusReasonCode != nil &&
+		*task.StatusReasonCode == tasks.ReasonCodeCoordinationHold
+}
+
+// releaseTargetStatus decides where a task lands when it stops being blocked.
+//
+// Unblocking and publishing differ in what they are allowed to release, not in
+// what happens afterwards: in both cases the task rejoins the ordinary
+// lifecycle and its dependencies decide whether it is ready or still pending.
+// One function owns that rule so the two callers cannot drift into two
+// slightly different notions of "claimable now".
+func releaseTargetStatus(task tasks.Task, dependencyState dependencyInspection) tasks.Status {
+	if dependencyState.Waiting || task.AvailableAt.After(dependencyState.Now) {
+		return tasks.StatusPending
+	}
+	return tasks.StatusReady
+}
+
+// ReleaseCoordinationHold publishes a task created under a coordination hold.
+//
+// The transaction re-reads the row under lock and refuses anything that is not
+// actually held, which is what makes the operation idempotent across restarts:
+// a task published by a previous attempt is reported as already published
+// rather than transitioned a second time.
+func (s *Store) ReleaseCoordinationHold(ctx context.Context, command tasks.ReleaseCoordinationHoldCommand, check tasks.AssigneeCheck, outboxMaxAttempts int) (tasks.Task, error) {
+	return withTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) (tasks.Task, error) {
+		task, err := lockTask(ctx, tx, command.TaskID)
+		if err != nil {
+			return tasks.Task{}, err
 		}
-		return transitionTask(ctx, tx, task, target, "task.unblocked", "", "", command.ActorType, command.ActorID, map[string]any{"dependencies_waiting": dependencyState.Waiting}, outboxMaxAttempts)
+		if !isCoordinationHeld(task) {
+			// Already published, or never held. Either way this call has
+			// nothing left to do, and saying so is what lets a resumed
+			// orchestrator run the whole create/coordinate/publish sequence
+			// again without producing a second effect.
+			return task, nil
+		}
+		if !check.Available {
+			return tasks.Task{}, fmt.Errorf("%w: %s", tasks.ErrAssigneeUnavailable, check.Reason)
+		}
+		dependencyState, err := inspectDependencies(ctx, tx, task.ID)
+		if err != nil {
+			return tasks.Task{}, err
+		}
+		if dependencyState.TerminalFailure {
+			return tasks.Task{}, tasks.ErrDependencyUnsatisfied
+		}
+		return transitionTask(ctx, tx, task, releaseTargetStatus(task, dependencyState), "task.coordination_hold_released", "", "", command.ActorType, command.ActorID, map[string]any{"dependencies_waiting": dependencyState.Waiting}, outboxMaxAttempts)
 	})
 }
 
