@@ -41,6 +41,8 @@ import (
 	authorizationbootstrap "github.com/Mireuz13/explorarte-organization/internal/authorization/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/config"
 	"github.com/Mireuz13/explorarte-organization/internal/executive/runtimeadapter"
+	egressbootstrap "github.com/Mireuz13/explorarte-organization/internal/modelegress/bootstrap"
+	"github.com/Mireuz13/explorarte-organization/internal/organization/canonicalsync"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -61,7 +63,10 @@ type Toolkit struct {
 	Messages        runtimeadapter.AgentMessages
 	Authorizer      *authorization.Authorizer
 	RegistryService *registry.Service
-	OrganizationID  string
+	// Canonical answers whether the current revision is executable, which
+	// is a different question from whether the registry is synchronized.
+	Canonical      canonicalsync.Applier
+	OrganizationID string
 }
 
 // WireToolkit constructs Wire's AgentMessages plus the additional
@@ -88,10 +93,15 @@ func WireToolkit(cfg config.Config, store *platformpostgres.Store) (Toolkit, err
 	if err != nil {
 		return Toolkit{}, fmt.Errorf("create registry service: %w", err)
 	}
+	egressRuntime, err := egressbootstrap.Open(cfg, store)
+	if err != nil {
+		return Toolkit{}, fmt.Errorf("open model egress runtime: %w", err)
+	}
 	return Toolkit{
 		Messages:        messages,
 		Authorizer:      authorizationRuntime.Authorizer,
 		RegistryService: registryService,
+		Canonical:       canonicalsync.Applier{Registry: registryService, Egress: egressRuntime.Service},
 		OrganizationID:  cfg.Tasks.OrganizationID,
 	}, nil
 }
@@ -109,8 +119,14 @@ type CapabilityCheck struct {
 type PreflightReport struct {
 	RegistrySynchronized bool
 	RegistryRevisionID   int64
-	CapabilityChecks     []CapabilityCheck
-	AllPassed            bool
+	// EgressBound reports whether the current revision has a durable model
+	// egress binding. Without one, every dispatch fails with "model egress
+	// policy not found" -- but only after the campaign has been created and
+	// the first model call attempted, which is how root 124 discovered it.
+	EgressBound      bool
+	EgressError      string
+	CapabilityChecks []CapabilityCheck
+	AllPassed        bool
 }
 
 // Preflight verifies, without creating or claiming anything, that this
@@ -134,6 +150,22 @@ func Preflight(ctx context.Context, tk Toolkit, roles Roles) (PreflightReport, e
 	}
 	if comparison.CurrentRevision != nil {
 		report.RegistryRevisionID = comparison.CurrentRevision.ID
+	}
+
+	// A synchronized registry says the applied documents match the canonical
+	// ones. It says nothing about whether the revision they produced can
+	// dispatch: applying the registry makes a new revision current, and the
+	// egress binding for that revision is a separate durable fact. A run that
+	// starts without it gets as far as its first model call and dies there,
+	// having already paid for everything before it.
+	if status, egressErr := tk.Canonical.Verify(ctx); egressErr != nil {
+		report.EgressError = egressErr.Error()
+		report.AllPassed = false
+		if status.OrganizationRevisionID != 0 {
+			report.RegistryRevisionID = status.OrganizationRevisionID
+		}
+	} else {
+		report.EgressBound = true
 	}
 
 	roleList := []string{roles.CEO, roles.Leader, roles.Worker}
