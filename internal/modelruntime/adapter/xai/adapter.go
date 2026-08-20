@@ -253,6 +253,33 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 	responseHash := modelruntime.SHA256Bytes(responseBody)
 	providerRequestID := strings.TrimSpace(response.Header.Get("x-request-id"))
 	if readErr != nil {
+		// A timeout or cancellation while the body is still arriving is
+		// AMBIGUOUS, not a rejection. Headers came back, so the provider
+		// accepted the request and may finish and bill it; the client simply
+		// stopped listening. Before streaming this could not happen -- a
+		// timeout struck at client.Do, which the transport branch above
+		// already classifies ambiguous -- so treating a mid-stream timeout
+		// as a clean provider rejection would be a regression introduced by
+		// streaming, and would let a paid call be repeated as if nothing had
+		// been sent.
+		//
+		// This is a live case, not a precaution: xAI holds a queued request
+		// open with keepalive comments and no data events while it is at
+		// capacity, so the wait for the first real event can outlast any
+		// timeout that is set.
+		if errors.Is(readErr, context.DeadlineExceeded) || errors.Is(readErr, context.Canceled) {
+			if !errors.Is(readErr, context.Canceled) {
+				a.breaker.failure(a.now())
+			}
+			outcome := modelruntime.ProviderOutcome{
+				OutcomeClassification: modelruntime.ProviderOutcomeAmbiguous,
+				ProviderRequestID:     providerRequestID,
+				HTTPStatus:            response.StatusCode,
+				ErrorClass:            "transport", ErrorCode: "stream_incomplete", Retryable: true,
+				ResponseHash: responseHash, ResponseSchemaVersion: ResponseSchemaVersion,
+			}
+			return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureAmbiguous, Outcome: outcome, Cause: readErr}
+		}
 		a.breaker.failure(a.now())
 		// The specific structural reason survives into the durable record.
 		// Reporting only "response_read_failed" is what turned the first
