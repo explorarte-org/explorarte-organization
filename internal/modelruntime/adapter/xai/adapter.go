@@ -121,6 +121,37 @@ type chatUsage struct {
 	PromptTokens       int64                `json:"prompt_tokens"`
 	CompletionTokens   int64                `json:"completion_tokens"`
 	PromptTokensDetail *promptTokensDetails `json:"prompt_tokens_details"`
+	// CompletionTokensDetail carries the reasoning count, which xAI reports
+	// SEPARATELY from completion_tokens rather than inside it.
+	CompletionTokensDetail *completionTokensDetails `json:"completion_tokens_details"`
+}
+
+type completionTokensDetails struct {
+	ReasoningTokens int64 `json:"reasoning_tokens"`
+}
+
+// billedOutputTokens is everything the model generated, visible or not.
+//
+// xAI reports completion_tokens as VISIBLE output only and reasoning
+// separately, and its own total confirms the split: 208 prompt + 10
+// completion + 1036 reasoning = 1254 total. Reading completion_tokens alone
+// therefore recorded 10 output tokens for a call that generated 1046.
+//
+// Reasoning is billed at the output rate, which xAI's own figure confirms:
+// that call reported cost_in_usd_ticks 65000000, and at the configured
+// $2/M input and $6/M output, counting reasoning as output gives $0.0067
+// while ignoring it gives $0.0005 -- fourteen times under.
+//
+// This is not an accounting detail. The agent budget's token ceiling and the
+// provider wallet both settle against these numbers, so undercounting lets a
+// campaign spend past a limit the owner set and the ledger believe money is
+// available that is not. It undercounts most exactly where it matters most,
+// on a reasoning model at high effort, where thinking is the bulk of the work.
+func (u chatUsage) billedOutputTokens() int64 {
+	if u.CompletionTokensDetail == nil {
+		return u.CompletionTokens
+	}
+	return u.CompletionTokens + u.CompletionTokensDetail.ReasoningTokens
 }
 
 type promptTokensDetails struct {
@@ -350,7 +381,7 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 	}
 	raw := modelruntime.RawResponse{
 		Content: content, ToolIntents: tools, ProviderRequestID: providerRequestID,
-		InputTokens: decoded.Usage.PromptTokens, OutputTokens: decoded.Usage.CompletionTokens,
+		InputTokens: decoded.Usage.PromptTokens, OutputTokens: decoded.Usage.billedOutputTokens(),
 		ProviderReported: true, ProviderOutcome: outcome,
 	}
 	if hit, miss, reported := promptCacheSplit(decoded.Usage); reported {

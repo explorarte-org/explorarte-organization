@@ -256,3 +256,31 @@ func TestUsageSurvivesWhenTheProviderSendsIt(t *testing.T) {
 		t.Fatalf("usage lost: %+v", decoded.Usage)
 	}
 }
+
+// Reasoning tokens are generated, billed, and reported OUTSIDE
+// completion_tokens. Reading completion_tokens alone recorded 10 output
+// tokens for a call that produced 1046, and the agent budget's ceiling and
+// the provider wallet both settle against that number.
+func TestReasoningTokensAreCountedAsBilledOutput(t *testing.T) {
+	// The exact figures xAI returned for a trivial call: the parts add up to
+	// its own total, which is what proves reasoning is not already inside
+	// completion_tokens.
+	usage := chatUsage{
+		PromptTokens:           208,
+		CompletionTokens:       10,
+		CompletionTokensDetail: &completionTokensDetails{ReasoningTokens: 1036},
+	}
+	if got := usage.billedOutputTokens(); got != 1046 {
+		t.Fatalf("billed output=%d, want 1046: reasoning is generated and billed like any other output token", got)
+	}
+	if usage.PromptTokens+usage.billedOutputTokens() != 1254 {
+		t.Fatal("the parts must reconstruct the provider's own total, or one of them is being double counted or dropped")
+	}
+
+	// A provider or model that reports no reasoning detail must be unchanged,
+	// not treated as zero output.
+	plain := chatUsage{PromptTokens: 100, CompletionTokens: 40}
+	if got := plain.billedOutputTokens(); got != 40 {
+		t.Fatalf("without a reasoning detail the completion count stands, got %d", got)
+	}
+}
