@@ -270,20 +270,38 @@ func decodeStreamError(payload string) error {
 	// rejected again.
 	retryable := envelope.Error.Type == "server_error" || code == "resource-exhausted"
 	return &streamError{
-		code:      bounded("stream_provider_error:" + code),
+		code:      providerErrorCode(code),
 		err:       fmt.Errorf("provider reported %q (%s) in the response stream", code, envelope.Error.Type),
 		retryable: retryable,
 	}
 }
 
-// bounded keeps a code inside the durable column's limit without truncating
-// it into something that looks like a different code.
-func bounded(code string) string {
-	const limit = 120
-	if len(code) <= limit {
-		return code
-	}
-	return code[:limit]
+const streamProviderErrorPrefix = "stream_provider_error"
+
+// providerErrorCode turns a provider's own error code into a durable one.
+//
+// The provider's code is EXTERNAL INPUT and it lands in a field this system
+// validates: an outcome whose ErrorCode is not a normalized token is rejected.
+// That rejection happens while RECORDING a failure, so the failure cannot be
+// recorded and the attempt it described is left in send_started forever.
+//
+// That is not hypothetical. This code was previously concatenated in verbatim
+// with a colon, which no normalized token may contain, so xAI's first capacity
+// error became a stranded invocation (62) and a campaign that could not
+// explain itself. An upstream service was effectively choosing the shape of a
+// field this system enforces.
+//
+// The normalization is this package's existing normalizeProviderToken -- the
+// same rule already applied to HTTP error bodies -- rather than a second
+// sanitizer written beside it. A provider code that does not survive becomes
+// "unspecified": losing which capacity error it was costs an operator a
+// detail, while an unstorable code costs an invocation.
+//
+// The 90-byte bound leaves room for the prefix and separator inside the
+// durable column's 120, so an over-long provider code is replaced rather than
+// cut into something that reads like a different code.
+func providerErrorCode(providerCode string) string {
+	return streamProviderErrorPrefix + "." + normalizeProviderToken(providerCode, "unspecified", 90)
 }
 
 func isJSONNull(raw json.RawMessage) bool { return strings.TrimSpace(string(raw)) == "null" }
