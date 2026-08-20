@@ -203,6 +203,18 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 	responseHash := modelruntime.SHA256Bytes(responseBody)
 	providerRequestID := strings.TrimSpace(response.Header.Get("x-request-id"))
 	if readErr != nil {
+		// A deadline or cancellation while the body is still arriving leaves
+		// the call AMBIGUOUS, not rejected: the provider accepted the request
+		// and may finish and bill it. The rule is shared rather than restated
+		// here -- it was restated in six adapters and two of those copies
+		// ended a campaign for a transient failure.
+		if modelruntime.IsIncompleteRead(readErr) {
+			if !modelruntime.IsCallerCancellation(readErr) {
+				a.breaker.failure(a.now())
+			}
+			outcome := modelruntime.IncompleteReadOutcome(response.StatusCode, providerRequestID, responseHash, ResponseSchemaVersion)
+			return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureAmbiguous, Outcome: outcome, Cause: readErr}
+		}
 		a.breaker.failure(a.now())
 		outcome := responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", "response_read_failed", response.StatusCode >= 500)
 		return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureResponseReceived, Outcome: outcome, Cause: readErr}

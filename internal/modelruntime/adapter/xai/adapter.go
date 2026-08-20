@@ -298,17 +298,11 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 		// open with keepalive comments and no data events while it is at
 		// capacity, so the wait for the first real event can outlast any
 		// timeout that is set.
-		if errors.Is(readErr, context.DeadlineExceeded) || errors.Is(readErr, context.Canceled) {
-			if !errors.Is(readErr, context.Canceled) {
+		if modelruntime.IsIncompleteRead(readErr) {
+			if !modelruntime.IsCallerCancellation(readErr) {
 				a.breaker.failure(a.now())
 			}
-			outcome := modelruntime.ProviderOutcome{
-				OutcomeClassification: modelruntime.ProviderOutcomeAmbiguous,
-				ProviderRequestID:     providerRequestID,
-				HTTPStatus:            response.StatusCode,
-				ErrorClass:            "transport", ErrorCode: "stream_incomplete", Retryable: true,
-				ResponseHash: responseHash, ResponseSchemaVersion: ResponseSchemaVersion,
-			}
+			outcome := modelruntime.IncompleteReadOutcome(response.StatusCode, providerRequestID, responseHash, ResponseSchemaVersion)
 			return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureAmbiguous, Outcome: outcome, Cause: readErr}
 		}
 		a.breaker.failure(a.now())
