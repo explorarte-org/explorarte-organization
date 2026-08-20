@@ -129,6 +129,31 @@ func (v *Validator) ValidateDepartmentPlan(ctx context.Context, revisionID int64
 		if role.AuthorityClass == "execution_service" {
 			return fmt.Errorf("%w: execution service %s cannot be assigned as a cognitive department worker", ErrRoleNotAssignable, role.ID)
 		}
+		// A cognitive worker task runs a model and produces a validated
+		// result. That is the entire lifecycle available to it: its outcome
+		// is a durable model result plus evidence references, and it has no
+		// mechanism to write a file, run a check, grant an approval or make a
+		// condition true. A BLOCKING requirement of any of those types is an
+		// obligation nothing in that path can discharge, so the task can
+		// never complete -- CompletionGate correctly refuses it, and the run
+		// dies after the model has already been paid for.
+		//
+		// The five requirement types stay valid everywhere else, because the
+		// question is not whether a type is legitimate but WHO can satisfy
+		// it: artifacts and checks are materialized later by
+		// EngineeringMission and CodeRunner, approvals by promotion review,
+		// conditions by the gates that own them.
+		//
+		// Optional requirements of any type are left alone: they do not block
+		// completion and can carry real descriptive intent. What must never
+		// exist is a required one with no satisfier.
+		for _, requirement := range t.Requirements {
+			if !requirement.Required || requirement.Type == "result" {
+				continue
+			}
+			return fmt.Errorf("%w: required requirement %q of type %q on cognitive worker task %q",
+				ErrRequirementUnsatisfiable, requirement.Key, requirement.Type, t.ClientKey)
+		}
 		decision, e := v.authz.Evaluate(ctx, AuthorizationRequest{OrganizationRevisionID: revisionID, ActorRoleID: leaderRoleID, CapabilityID: "task.assign_worker", ResourceType: "role", ResourceID: role.ID, ActionDigest: actionDigest("assign-worker", departmentID, t.ClientKey, role.ID, t.Instructions)})
 		if e != nil {
 			return e

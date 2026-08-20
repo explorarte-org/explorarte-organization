@@ -17,10 +17,14 @@ var (
 	// other than the one it was handed. It is deliberately its own sentinel:
 	// a mismatch here is not a malformed contract, it is a correct-looking
 	// verdict about the wrong artifact, and freeze must never see it.
-	ErrDesignIdentityMismatch     = errors.New("executive adjudication design identity mismatch")
-	ErrPlanTooLarge               = errors.New("executive plan exceeds configured bounds")
-	ErrRegistryMismatch           = errors.New("executive organization registry mismatch")
-	ErrRoleNotAssignable          = errors.New("executive role is not assignable")
+	ErrDesignIdentityMismatch = errors.New("executive adjudication design identity mismatch")
+	ErrPlanTooLarge           = errors.New("executive plan exceeds configured bounds")
+	ErrRegistryMismatch       = errors.New("executive organization registry mismatch")
+	ErrRoleNotAssignable      = errors.New("executive role is not assignable")
+	// ErrRequirementUnsatisfiable means a plan attached a blocking obligation
+	// to an executor that has no way to discharge it. The contract is
+	// well-formed; the topology is impossible.
+	ErrRequirementUnsatisfiable   = errors.New("executive required requirement has no satisfier in the receiving execution path")
 	ErrCrossDepartmentDelegation  = errors.New("executive cross-department delegation rejected")
 	ErrDependencyCycle            = errors.New("executive dependency cycle")
 	ErrBudgetExceeded             = errors.New("executive invocation budget exceeded")
