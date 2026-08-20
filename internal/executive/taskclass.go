@@ -70,7 +70,9 @@ Do not assign worker tasks to roles whose authority_class is execution_service.
 Execution-service roles are deterministic executors invoked through their
 governed execution path, not cognitive department workers.
 
-Cognitive worker tasks may require model results only. Do not attach required
-artifact, check, approval, or condition requirements to cognitive worker
-tasks. Repository artifacts and governed checks are materialized later through
+Cognitive worker tasks carry exactly one blocking requirement and the host
+attaches it for you. Do not propose required requirements of any kind on a
+worker task -- not artifact, check, approval or condition, and not a result
+under your own key. Optional requirements are allowed and are descriptive
+only. Repository artifacts and governed checks are materialized later through
 design-freeze / EngineeringMission / CodeRunner / promotion.`

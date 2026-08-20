@@ -10,9 +10,13 @@ import (
 // requirementPlan builds a department plan whose single worker task carries
 // one requirement of the given type and blocking-ness.
 func requirementPlan(reqType string, required bool) DepartmentPlan {
+	return keyedRequirementPlan("the_requirement", reqType, required)
+}
+
+func keyedRequirementPlan(key, reqType string, required bool) DepartmentPlan {
 	plan := workerPlan("ingenieria_ia/arquitecto_software")
 	plan.Tasks[0].Requirements = []RequirementProposal{{
-		Key:         "the_requirement",
+		Key:         key,
 		Type:        reqType,
 		Description: "an obligation attached by the department leader",
 		Required:    required,
@@ -43,11 +47,35 @@ func validateRequirement(t *testing.T, reqType string, required bool) error {
 		"ingenieria_ia", "ingenieria_ia/orquestador", requirementPlan(reqType, required))
 }
 
-// A: a required result is the one obligation a cognitive worker can actually
-// discharge -- its outcome IS a validated durable model result.
-func TestRequiredResultIsAllowedOnACognitiveWorker(t *testing.T) {
-	if err := validateRequirement(t, "result", true); err != nil {
-		t.Fatalf("required result was rejected: %v", err)
+// A: the host's own blocking requirement is the one a cognitive worker can
+// discharge -- its outcome IS that validated durable model result. A leader
+// restating it is redundant but harmless.
+func TestTheHostOwnedBlockingRequirementIsAllowed(t *testing.T) {
+	plan := keyedRequirementPlan(hostOwnedResultRequirementKey, "result", true)
+	err := satisfiabilityValidator(t).ValidateDepartmentPlan(context.Background(), 7,
+		"ingenieria_ia", "ingenieria_ia/orquestador", plan)
+	if err != nil {
+		t.Fatalf("the host-owned requirement was rejected: %v", err)
+	}
+}
+
+// The gap the previous rule missed: type alone is not enough. A leader can
+// invent a result key, pass the type check, and produce an obligation nothing
+// satisfies -- which is exactly how a run hung on "document_content_result"
+// after required artifacts had already been refused.
+func TestLeaderInventedResultKeysAreRefused(t *testing.T) {
+	for _, key := range []string{"document_content_result", "typed_plan", "custom_outcome"} {
+		t.Run(key, func(t *testing.T) {
+			plan := keyedRequirementPlan(key, "result", true)
+			err := satisfiabilityValidator(t).ValidateDepartmentPlan(context.Background(), 7,
+				"ingenieria_ia", "ingenieria_ia/orquestador", plan)
+			if !errors.Is(err, ErrRequirementUnsatisfiable) {
+				t.Fatalf("blocking result key %q was accepted: %v", key, err)
+			}
+			if !strings.Contains(err.Error(), hostOwnedResultRequirementKey) {
+				t.Fatalf("the refusal does not name the host-owned key: %v", err)
+			}
+		})
 	}
 }
 
@@ -89,7 +117,7 @@ func TestTheProductionFailureShapeIsRefusedUpFront(t *testing.T) {
 	plan.Tasks[0].Requirements = []RequirementProposal{
 		{Key: "updated_doc_artifact", Type: "artifact", Description: "the document exists and is updated", Required: true},
 		{Key: "scope_limited_condition", Type: "condition", Description: "only the authorized file changed", Required: true},
-		{Key: "model_result", Type: "result", Description: "validated durable model invocation result", Required: true},
+		{Key: hostOwnedResultRequirementKey, Type: "result", Description: "validated durable model invocation result", Required: true},
 	}
 	err := satisfiabilityValidator(t).ValidateDepartmentPlan(context.Background(), 7,
 		"ingenieria_ia", "ingenieria_ia/orquestador", plan)
@@ -104,8 +132,13 @@ func TestReviewFollowupsInheritTheSatisfiabilityRule(t *testing.T) {
 	if err := validateRequirement(t, "artifact", true); !errors.Is(err, ErrRequirementUnsatisfiable) {
 		t.Fatalf("followup path accepted an unsatisfiable requirement: %v", err)
 	}
-	if err := validateRequirement(t, "result", true); err != nil {
-		t.Fatalf("followup path rejected a satisfiable requirement: %v", err)
+	if err := validateRequirement(t, "result", true); !errors.Is(err, ErrRequirementUnsatisfiable) {
+		t.Fatalf("followup path accepted a leader-invented result key: %v", err)
+	}
+	plan := keyedRequirementPlan(hostOwnedResultRequirementKey, "result", true)
+	if err := satisfiabilityValidator(t).ValidateDepartmentPlan(context.Background(), 7,
+		"ingenieria_ia", "ingenieria_ia/orquestador", plan); err != nil {
+		t.Fatalf("followup path rejected the host-owned requirement: %v", err)
 	}
 }
 
@@ -126,7 +159,7 @@ func TestUnsatisfiableRequirementsAreRefusedNotRewritten(t *testing.T) {
 }
 
 func TestGuidanceStatesTheRequirementRule(t *testing.T) {
-	if !strings.Contains(taskClassGuidance, "may require model results only") {
+	if !strings.Contains(taskClassGuidance, "the host\nattaches it for you") {
 		t.Fatal("the delivered guidance does not state the requirement rule")
 	}
 }
