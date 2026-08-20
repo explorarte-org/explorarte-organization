@@ -117,6 +117,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runCuration(args[1:], stdout, stderr)
 	case "objectstorage":
 		return runObjectStorage(args[1:], stdout, stderr)
+	case "composition":
+		return runComposition(args[1:], stdout, stderr)
 	case "corpus":
 		return runCorpus(args[1:], stdout, stderr)
 	case "help", "-h", "--help":

@@ -1,0 +1,43 @@
+# Template. The launcher path and the pinned orgctl build are deployment
+# facts, not repository facts, so this file is a starting point rather than
+# something to install unchanged.
+#
+# The one property that is NOT negotiable: this unit must not run the binary
+# it is responsible for replacing. It reconciles runtime.binary.desired_sha
+# against runtime.binary.observed_sha, and a reconciler that disappears
+# halfway through the replacement it is performing cannot finish it. Point
+# ExecStart at an orgctl build pinned independently of the fleet's orgd.
+#
+# Replacing the controller itself is the remaining case, and it is why the
+# lifecycle is durable rather than in-process: a restarted controller loads
+# the world it left and continues from the state that is actually there,
+# instead of from what the plan it never finished assumed would be there.
+
+[Unit]
+Description=Explorarte V2 Composition Reconciler
+Documentation=internal/composition
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/libexec/explorarte-composition-controller
+
+# One safe transition per turn, so restarting mid-turn costs one step.
+Restart=always
+RestartSec=10s
+
+# Never more than one reconciler. Two would each observe, decide, and write
+# against a world the other is moving. The stale-step guard in the store
+# makes that survivable rather than corrupting, but survivable is not a
+# reason to arrange it.
+KillMode=mixed
+TimeoutStopSec=30s
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
