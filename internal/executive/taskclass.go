@@ -64,4 +64,8 @@ const taskClassGuidance = `task_class MUST:
   - never equal legacy.unspecified
 
 valid examples: memory.discovery, memory.design, engineering.review, general.work
-invalid examples: discovery, design, Review, foo/bar, legacy.unspecified`
+invalid examples: discovery, design, Review, foo/bar, legacy.unspecified
+
+Do not assign worker tasks to roles whose authority_class is execution_service.
+Execution-service roles are deterministic executors invoked through their
+governed execution path, not cognitive department workers.`

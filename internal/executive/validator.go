@@ -106,6 +106,29 @@ func (v *Validator) ValidateDepartmentPlan(ctx context.Context, revisionID int64
 		if role.ID == OwnerRoleID || role.ID == CEORoleID || role.ID == ObserverRoleID {
 			return fmt.Errorf("%w: prohibited worker role %s", ErrCrossDepartmentDelegation, role.ID)
 		}
+		// An execution service is a deterministic executor, not a cognitive
+		// worker. It has no model policy and no model binding, so a worker
+		// task assigned to one can never be dispatched: the run reaches the
+		// department phase, waits for an authorization nothing will ever
+		// issue, and stalls. Rejecting it here fails at plan validation
+		// instead of six steps later.
+		//
+		// Executable=true does NOT mean "can be executed through the
+		// Harness". It means the role may participate operationally. This
+		// validator previously conflated the two, which is exactly how
+		// ingenieria_ia/code-runner -- named "Ejecutor de código", the only
+		// role in its department with shell access and the one that can
+		// commit -- became a semantically reasonable and structurally
+		// impossible choice for "modify this file".
+		//
+		// Execution services enter through their own governed path
+		// (EngineeringMission -> CodeRunner), never through a department
+		// plan. The rule is deliberately negative and narrow: no positive
+		// allowlist of authority classes, because the invariant we actually
+		// found is that an execution service is not a cognitive worker.
+		if role.AuthorityClass == "execution_service" {
+			return fmt.Errorf("%w: execution service %s cannot be assigned as a cognitive department worker", ErrRoleNotAssignable, role.ID)
+		}
 		decision, e := v.authz.Evaluate(ctx, AuthorizationRequest{OrganizationRevisionID: revisionID, ActorRoleID: leaderRoleID, CapabilityID: "task.assign_worker", ResourceType: "role", ResourceID: role.ID, ActionDigest: actionDigest("assign-worker", departmentID, t.ClientKey, role.ID, t.Instructions)})
 		if e != nil {
 			return e
