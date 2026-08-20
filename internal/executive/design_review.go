@@ -222,12 +222,25 @@ func ParseDesignAdjudication(body []byte, expected DesignIdentity, limits Limits
 	default:
 		return DesignAdjudication{}, fmt.Errorf("%w: invalid adjudication verdict", ErrContractRejected)
 	}
-	if !out.Identity().Valid() {
-		return DesignAdjudication{}, fmt.Errorf("%w: adjudication design identity is invalid", ErrContractRejected)
-	}
-	if out.DesignDigest != expected.DesignDigest || out.DesignID != expected.DesignID || out.DesignVersion != expected.DesignVersion {
-		return DesignAdjudication{}, fmt.Errorf("%w: adjudication identity does not match the design under adjudication", ErrDesignIdentityMismatch)
-	}
+	// The HOST binds the design identity. It is not asked of the model and
+	// not read back from it.
+	//
+	// It used to be an echo, checked field by field against this same
+	// expected value. That never verified anything: a model repeating a
+	// 64-character hex digest proves only that it can copy, and the host
+	// generated the digest in the first place. What actually ties a verdict
+	// to the exact bytes reviewed is that the host hands over one design and
+	// binds that design's identity to whatever verdict comes back -- which is
+	// what happens here, unconditionally.
+	//
+	// The echo was not merely useless, it was a check that could only fail.
+	// AUTONOMY-SMOKE-001's adjudication produced a complete, well-formed
+	// verdict three times and was rejected all three, dead-lettering the
+	// task, because the model transcribed 63 of the digest's 64 characters.
+	// Nothing about the design or the verdict was wrong.
+	out.DesignID = expected.DesignID
+	out.DesignVersion = expected.DesignVersion
+	out.DesignDigest = expected.DesignDigest
 	for name, values := range map[string][]string{
 		"accepted_findings":          out.AcceptedFindings,
 		"rejected_findings":          out.RejectedFindings,
@@ -338,9 +351,6 @@ var designAdjudicationOutputSchema = json.RawMessage(`{
     "rejected_findings",
     "required_changes",
     "unresolved_owner_decisions",
-    "design_id",
-    "design_version",
-    "design_digest",
     "evidence_refs"
   ],
   "properties":{

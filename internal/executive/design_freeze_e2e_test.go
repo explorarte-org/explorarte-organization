@@ -333,13 +333,10 @@ func TestRejectBlocksTheRunWithItsOwnReason(t *testing.T) {
 
 // An adjudication naming another digest cannot freeze this design, through the
 // real orchestrator and not only through the parser.
-func TestAdjudicationOverAForeignDigestCannotFreezeTheRun(t *testing.T) {
+func TestAForeignDigestFromTheModelCannotMisTargetTheFreeze(t *testing.T) {
+	const foreignDigest = "dd11111111111111111111111111111111111111111111111111111111111111"
 	fixture := newFreezeFixture(t, "freeze", true)
-	fixture.harness.corruptDigest = "dd11111111111111111111111111111111111111111111111111111111111111"
-
-	// The mismatch surfaces as a rejected model result rather than being
-	// absorbed: the provider succeeded, so the failure belongs to the
-	// contract, and the run must not advance on it.
+	fixture.harness.corruptDigest = foreignDigest
 	var lastErr error
 	var run Run
 	for i := 0; i < 24; i++ {
@@ -353,29 +350,29 @@ func TestAdjudicationOverAForeignDigestCannotFreezeTheRun(t *testing.T) {
 			break
 		}
 	}
-	if lastErr == nil {
-		t.Fatalf("a freeze over a foreign digest was accepted silently: %+v", run)
+	// What the model claims about identity is no longer part of the contract,
+	// so a foreign digest in its output cannot mis-target the freeze: the host
+	// binds its own design and the run proceeds on that.
+	//
+	// The property this test protects is unchanged -- a freeze applies only to
+	// the design the host handed over -- but it is now guaranteed by binding
+	// rather than by asking an untrusted party to repeat a 64-character hash
+	// and refusing the whole verdict when it miscopies one character.
+	if lastErr != nil {
+		t.Fatalf("a verdict must not be refused for what it claims about identity: %v", lastErr)
 	}
-	// recordHarnessSuccess flattens the validator's error with %v rather than
-	// %w (orchestrator.go), so the sentinel does not survive the wrap. That
-	// flattening is pre-existing and not changed here; the assertion matches
-	// what the code actually guarantees.
-	if !errors.Is(lastErr, ErrModelResultContractRejected) {
-		t.Fatalf("err=%v", lastErr)
-	}
-	if !strings.Contains(lastErr.Error(), "design identity mismatch") {
-		t.Fatalf("the rejection did not name the identity mismatch: %v", lastErr)
-	}
-	if status := requirementStatus(fixture.rootRecord(t), designfreeze.RequirementKey); status == "satisfied" {
-		t.Fatal("a freeze over a foreign digest satisfied the requirement")
+	if status := requirementStatus(fixture.rootRecord(t), designfreeze.RequirementKey); status != "satisfied" {
+		t.Fatalf("the freeze did not satisfy the requirement: status=%q", status)
 	}
 	for _, evidence := range fixture.tasks.evidence {
-		if evidence.Type == "approval" && evidence.Satisfies {
-			t.Fatal("approval evidence was recorded for a mismatched adjudication")
+		if strings.Contains(evidence.Reference, foreignDigest) || strings.Contains(evidence.Digest, foreignDigest) {
+			t.Fatalf("the model's foreign digest reached durable evidence: %+v", evidence)
 		}
 	}
-	if _, closed := fixture.commandFor(PurposeCEOClosure); closed {
-		t.Fatal("the CEO closed a run whose adjudication named another design")
+	// Closure is now the correct outcome: the design that was frozen is the
+	// host's, so there is nothing left to refuse.
+	if _, closed := fixture.commandFor(PurposeCEOClosure); !closed {
+		t.Fatal("the run never closed, so the freeze did not carry it forward")
 	}
 }
 

@@ -223,23 +223,47 @@ func TestAdjudicationAcceptsEveryVerdictAgainstTheExactDesign(t *testing.T) {
 	}
 }
 
-// The single most important refusal in this slice: a freeze that names a
-// different design than the one under adjudication.
-func TestAdjudicationRefusesADifferentDesign(t *testing.T) {
-	other := "2222222222222222222222222222222222222222222222222222222222222222"
-	_, err := ParseDesignAdjudication([]byte(adjudicationJSON("freeze", other)), testDesign(), DefaultLimits())
-	if !errors.Is(err, ErrDesignIdentityMismatch) {
-		t.Fatalf("freeze over a foreign digest was not refused as an identity mismatch: %v", err)
+// The most important property in this slice: a freeze can only ever apply to
+// the design the host handed over.
+//
+// It used to be enforced by making the model echo the identity and comparing
+// field by field. That never verified anything -- a model repeating a digest
+// the host generated proves only that it can copy -- and it was a check that
+// could only fail: AUTONOMY-SMOKE-001's adjudication was rejected three times
+// and dead-lettered for transcribing 63 of 64 hex characters, with nothing
+// wrong in the design or the verdict.
+//
+// The property is stronger now, not weaker: the model cannot name a different
+// design because it names none at all, and the host binds its own.
+func TestAFreezeAlwaysBindsTheHostsDesign(t *testing.T) {
+	foreign := "2222222222222222222222222222222222222222222222222222222222222222"
+	host := testDesign()
+
+	out, err := ParseDesignAdjudication([]byte(adjudicationJSON("freeze", foreign)), host, DefaultLimits())
+	if err != nil {
+		t.Fatalf("a verdict must not be refused for what it claims about identity: %v", err)
 	}
-	// Drifting only the version label is still a different artifact.
+	if out.Identity() != host {
+		t.Fatalf("the adjudication carries %+v, not the host's design %+v", out.Identity(), host)
+	}
+
+	// A drifted version label cannot survive either, for the same reason.
 	body := strings.Replace(adjudicationJSON("freeze", testDesignDigest), `"design_version":"v1"`, `"design_version":"v2"`, 1)
-	if _, err = ParseDesignAdjudication([]byte(body), testDesign(), DefaultLimits()); !errors.Is(err, ErrDesignIdentityMismatch) {
-		t.Fatalf("version drift accepted: %v", err)
+	out, err = ParseDesignAdjudication([]byte(body), host, DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
 	}
-	// And a malformed digest is refused before it can be compared.
-	body = strings.Replace(adjudicationJSON("freeze", testDesignDigest), testDesignDigest, "not-a-digest", 1)
-	if _, err = ParseDesignAdjudication([]byte(body), testDesign(), DefaultLimits()); err == nil {
-		t.Fatal("malformed digest accepted")
+	if out.DesignVersion != host.DesignVersion {
+		t.Fatalf("design_version=%q survived from the model", out.DesignVersion)
+	}
+}
+
+// The host's own identity must still be sound: binding an invalid design
+// would freeze something unnameable.
+func TestAdjudicationRefusesAnInvalidHostIdentity(t *testing.T) {
+	if _, err := ParseDesignAdjudication([]byte(adjudicationJSON("freeze", testDesignDigest)),
+		DesignIdentity{}, DefaultLimits()); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("err=%v", err)
 	}
 }
 
