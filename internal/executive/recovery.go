@@ -176,7 +176,28 @@ func (o *Orchestrator) findOrphanedSucceededInvocation(ctx context.Context, root
 			continue
 		}
 		for _, attempt := range task.Attempts {
-			if attempt.State == "finished" || attempt.State == "running" || attempt.State == "leased" {
+			// An ADJUDICATED attempt is not orphaned, whatever its invocation
+			// produced. Orphaned means nobody recorded what happened -- a
+			// result exists and no process ever claimed it -- which is the
+			// crash this guard was written for. These states all mean the
+			// opposite: the orchestrator reached a decision and wrote it down.
+			//
+			// "failed" is the case that made the distinction matter. A model
+			// can answer perfectly while its OUTPUT fails the typed contract,
+			// which is recorded as model_result_contract_rejected and left
+			// retryable so the task can try again. That deliberately leaves a
+			// succeeded invocation behind with no adoptable lease -- exactly
+			// the shape this guard looked for. AUTONOMY-SMOKE-001's root 213
+			// blocked on it: the department review was on its way to a second
+			// attempt and the run was declared unrecoverable instead.
+			//
+			// A crash between the provider answering and the decision being
+			// written does NOT reach here as "failed": the attempt would still
+			// be leased or running, which the same list skips for the opposite
+			// reason -- nothing has been decided yet, so the barrier stands.
+			if attempt.State == "finished" || attempt.State == "running" ||
+				attempt.State == "leased" || attempt.State == "failed" ||
+				attempt.State == "cancelled" {
 				continue
 			}
 			invocations, err := o.models.FindTaskAttemptInvocations(ctx, task.ID, attempt.ID)
