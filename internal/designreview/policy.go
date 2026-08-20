@@ -15,6 +15,7 @@
 package designreview
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -113,11 +114,55 @@ func (b Bundle) Encode() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err = AssertNoCredentialMaterial("bundle", body); err != nil {
+		return nil, err
+	}
+	return body, nil
+}
+
+// AssertNoCredentialMaterial is the credential scan Encode has always run,
+// exported so every producer of egress-safe bytes uses the SAME list rather
+// than keeping a second copy that drifts out of step with this one.
+//
+// It is a scan, not a proof. It is the belt on top of a closed field list,
+// never a substitute for one: passing this check does not make arbitrary
+// content egress-safe.
+func AssertNoCredentialMaterial(label string, body []byte) error {
 	lowered := strings.ToLower(string(body))
 	for _, needle := range forbiddenBundleSubstrings {
 		if strings.Contains(lowered, needle) {
-			return nil, fmt.Errorf("%w: bundle contains %q", ErrBundleContaminated, needle)
+			return fmt.Errorf("%w: %s contains %q", ErrBundleContaminated, label, needle)
 		}
 	}
-	return body, nil
+	return nil
+}
+
+// DecodeBundle recovers a Bundle from bytes that claim to be one, and is the
+// only supported way to turn untrusted stored text back into an egress-safe
+// bundle.
+//
+// It is deliberately strict. Unknown fields are refused rather than dropped,
+// because a payload carrying fields this contract does not name is not a
+// bundle that happens to have extras -- it is a different document, and
+// silently trimming it would let arbitrary content ride in under the bundle's
+// classification. Trailing content is refused for the same reason.
+//
+// The returned bytes come from re-encoding the decoded value, so what the
+// caller ends up carrying is generated from the closed field list rather than
+// copied from the input.
+func DecodeBundle(raw []byte) (Bundle, []byte, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var bundle Bundle
+	if err := decoder.Decode(&bundle); err != nil {
+		return Bundle{}, nil, fmt.Errorf("%w: not a well-formed review bundle: %v", ErrBundleContaminated, err)
+	}
+	if decoder.More() {
+		return Bundle{}, nil, fmt.Errorf("%w: trailing content after the review bundle", ErrBundleContaminated)
+	}
+	encoded, err := bundle.Encode()
+	if err != nil {
+		return Bundle{}, nil, err
+	}
+	return bundle, encoded, nil
 }

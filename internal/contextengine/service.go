@@ -310,6 +310,21 @@ func (s *contextService) resolve(ctx context.Context, request BuildRequest) (reg
 	if err != nil {
 		return registry.Organization{}, nil, registry.Role{}, registry.Unit{}, CanonicalBundle{}, nil, nil, err
 	}
+	// Adversarial review resolves an enumerated source set instead of the
+	// assembled one. The canonical bundle is still loaded above because the
+	// Snapshot's own identity is bound to it, but none of its records enter
+	// this context: the reviewer's provider may not receive organizational
+	// data, and the ordinary assembly is organizational by construction.
+	if adversarialReviewRequested(request) {
+		if err = validateAdversarialSelector(request); err != nil {
+			return registry.Organization{}, nil, registry.Role{}, registry.Unit{}, CanonicalBundle{}, nil, nil, err
+		}
+		restricted, restrictedErr := s.adversarialReviewSources().Build(ctx, request, role)
+		if restrictedErr != nil {
+			return registry.Organization{}, nil, registry.Role{}, registry.Unit{}, CanonicalBundle{}, nil, nil, restrictedErr
+		}
+		return organization, revision, role, unit, bundle, restricted, nil, nil
+	}
 	sources := canonicalRecords(bundle)
 	ownerSources, err := s.owner.ListApplicable(ctx, request)
 	if err != nil {
@@ -471,6 +486,22 @@ func (s *contextService) revalidateResolved(ctx context.Context, request BuildRe
 	}
 	if err = s.canonical.Validate(ctx, bundle.PrecedenceHash, bundle.BundleHash); err != nil {
 		return err
+	}
+	// The adversarial source set is a different representation of the same
+	// kinds, so it cannot be revalidated by the generic providers below. Its
+	// SourceTaskContext is a review bundle re-encoded from a closed field
+	// list; TaskContextProvider.ValidateVersion would rebuild the full
+	// organizational task record and report drift on every review, because
+	// those two hashes are never meant to match. Build and Validate live on
+	// one collaborator precisely so they cannot disagree about what the
+	// representation is.
+	if adversarialReviewRequested(request) {
+		if len(skills) > 0 {
+			// Build resolves no skills for this mode. If that ever changes,
+			// this branch would skip their validation silently.
+			return Reject(ReasonSkillNotFound, request.ActorRoleID, "adversarial review context must not carry skills")
+		}
+		return s.adversarialReviewSources().Validate(ctx, request, role, sources)
 	}
 	for _, source := range sources {
 		switch source.Kind {
