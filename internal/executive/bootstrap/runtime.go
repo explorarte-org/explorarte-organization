@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Mireuz13/explorarte-organization/internal/agentbudget"
 	agentbudgetpostgres "github.com/Mireuz13/explorarte-organization/internal/agentbudget/postgres"
 	agentmessagingpostgres "github.com/Mireuz13/explorarte-organization/internal/agentmessaging/postgres"
 	authorizationbootstrap "github.com/Mireuz13/explorarte-organization/internal/authorization/bootstrap"
@@ -176,6 +175,10 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 		Clock: executive.ClockFunc(time.Now),
 	}
 
+	budgetLimits, err := agentBudgetLimits()
+	if err != nil {
+		return nil, fmt.Errorf("resolve executive agent budget limits: %w", err)
+	}
 	var orchestrator *executive.Orchestrator
 	dependencies := executive.Dependencies{
 		OrganizationID: cfg.Tasks.OrganizationID,
@@ -194,7 +197,7 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 		Clock:          executive.ClockFunc(time.Now),
 	}
 	options := []executive.OrchestratorOption{
-		executive.WithAgentBudgets(runtimeadapter.AgentBudgets{Ledger: agentBudgetLedger, Limits: agentbudget.DefaultLimits()}),
+		executive.WithAgentBudgets(runtimeadapter.AgentBudgets{Ledger: agentBudgetLedger, Limits: budgetLimits}),
 		executive.WithAgentMessaging(runtimeadapter.AgentMessages{
 			Ledger:         agentMessageLedger,
 			MaxAttempts:    agentMessageMaxAttempts,
