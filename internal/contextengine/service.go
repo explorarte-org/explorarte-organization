@@ -310,6 +310,21 @@ func (s *contextService) resolve(ctx context.Context, request BuildRequest) (reg
 	if err != nil {
 		return registry.Organization{}, nil, registry.Role{}, registry.Unit{}, CanonicalBundle{}, nil, nil, err
 	}
+	// Adversarial review resolves an enumerated source set instead of the
+	// assembled one. The canonical bundle is still loaded above because the
+	// Snapshot's own identity is bound to it, but none of its records enter
+	// this context: the reviewer's provider may not receive organizational
+	// data, and the ordinary assembly is organizational by construction.
+	if adversarialReviewRequested(request) {
+		if err = validateAdversarialPairing(request); err != nil {
+			return registry.Organization{}, nil, registry.Role{}, registry.Unit{}, CanonicalBundle{}, nil, nil, err
+		}
+		restricted, restrictedErr := s.resolveAdversarialSources(ctx, request, role)
+		if restrictedErr != nil {
+			return registry.Organization{}, nil, registry.Role{}, registry.Unit{}, CanonicalBundle{}, nil, nil, restrictedErr
+		}
+		return organization, revision, role, unit, bundle, restricted, nil, nil
+	}
 	sources := canonicalRecords(bundle)
 	ownerSources, err := s.owner.ListApplicable(ctx, request)
 	if err != nil {
