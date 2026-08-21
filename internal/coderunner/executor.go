@@ -335,10 +335,19 @@ func opValidate(op Operation) error {
 }
 
 // failureExcerptBytes bounds what a failed operation contributes to the
-// recorded reason. The tail is what is kept: a compiler or test runner puts
-// the summary of what went wrong at the end, and a head-truncated excerpt is
-// reliably the least informative part of the output.
+// recorded reason.
 const failureExcerptBytes = 1500
+
+// failureMarkers are how Go's own tools announce what went wrong: go test
+// prefixes a failed package with FAIL and a failed assertion with --- FAIL,
+// go build and go vet prefix a package's diagnostics with #, and the
+// compiler's own lines carry error:.
+//
+// Matching on them is content-aware, which is a cost worth naming. It is
+// bounded by falling back to the tail whenever no marker is present, so a
+// command whose failures look like nothing here is reported exactly as it was
+// before.
+var failureMarkers = []string{"FAIL", "--- FAIL", "# ", "error:", "panic:"}
 
 // operationFailure reports a failed operation with what the command actually
 // said.
@@ -353,14 +362,80 @@ const failureExcerptBytes = 1500
 // The Result carrying exit code and output was already in hand at this exact
 // line. It was simply dropped.
 func operationFailure(r Result) error {
-	excerpt := strings.TrimSpace(r.Output)
-	if len(excerpt) > failureExcerptBytes {
-		excerpt = "..." + excerpt[len(excerpt)-failureExcerptBytes:]
-	}
+	excerpt := failureExcerpt(r.Output)
 	if excerpt == "" {
 		// A command that failed silently is itself the finding, and saying
 		// so beats an empty quotation that reads like missing data.
 		return fmt.Errorf("operation %s failed with exit code %d and produced no output", r.Type, r.ExitCode)
 	}
 	return fmt.Errorf("operation %s failed with exit code %d: %s", r.Type, r.ExitCode, excerpt)
+}
+
+// failureExcerpt keeps the part of the output that says what went wrong.
+//
+// Keeping the tail alone was the first attempt, on the reasoning that a tool
+// puts its summary at the end. That is true of a compiler and of a single
+// package. It is false of go test ./..., which prints one line per package as
+// each finishes and has no final summary -- so the tail is the alphabetical
+// remainder of the packages that PASSED, and the one line naming the failure
+// sits in the middle and was cut. A real gate failure was recorded that way:
+// exit code 1, followed by fourteen hundred bytes of "ok".
+//
+// A failure is a block, not a line. "# package" is followed by the compiler
+// diagnostics that say what is actually wrong, and "--- FAIL" is followed by
+// the assertion that actually failed; keeping only the marker throws away the
+// half that carries the information. So a block runs from its marker until
+// the next package-status line, and every block is kept.
+//
+// Falling back to the tail when nothing is marked is what keeps this from
+// being a heuristic that can lose the output: a command whose failures look
+// like nothing recognised is reported exactly as it was before.
+func failureExcerpt(output string) string {
+	trimmed := strings.TrimSpace(output)
+	if trimmed == "" {
+		return ""
+	}
+	var kept []string
+	inBlock := false
+	for _, line := range strings.Split(trimmed, "\n") {
+		switch {
+		case isFailureLine(line):
+			inBlock = true
+		case endsFailureBlock(line):
+			inBlock = false
+		}
+		if inBlock {
+			kept = append(kept, line)
+		}
+	}
+	if len(kept) == 0 {
+		return boundedTail(trimmed)
+	}
+	// Kept from the END, because when a run produces more failures than
+	// fit, the later ones are the ones no earlier excerpt has shown.
+	return boundedTail(strings.Join(kept, "\n"))
+}
+
+func isFailureLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	for _, marker := range failureMarkers {
+		if strings.HasPrefix(trimmed, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// endsFailureBlock reports a line that announces a package's result, which is
+// where one failure's details stop and the next package's story starts.
+func endsFailureBlock(line string) bool {
+	return strings.HasPrefix(line, "ok  \t") || strings.HasPrefix(line, "ok\t") ||
+		strings.HasPrefix(line, "?   \t") || strings.HasPrefix(line, "?\t")
+}
+
+func boundedTail(text string) string {
+	if len(text) <= failureExcerptBytes {
+		return text
+	}
+	return "..." + text[len(text)-failureExcerptBytes:]
 }
