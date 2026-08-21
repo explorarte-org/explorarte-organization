@@ -341,6 +341,19 @@ var adversarialReviewOutputSchema = json.RawMessage(`{
   }
 }`)
 
+// designAdjudicationOutputSchema deliberately has no design_id,
+// design_version or design_digest.
+//
+// The host binds the design identity onto the verdict from its own record, so
+// the model has no business supplying it -- an echo it cannot get wrong is not
+// evidence, and one it can get wrong is a way to lose a well-formed
+// adjudication to a transcription slip, which is exactly how one was
+// dead-lettered over a single hex character.
+//
+// Leaving them in properties while dropping them from required was the
+// half-measure between those two positions, and it made the schema invalid:
+// under strict structured outputs every property must be required, so the
+// provider rejected the request before any model saw it.
 var designAdjudicationOutputSchema = json.RawMessage(`{
   "type":"object",
   "additionalProperties":false,
@@ -367,9 +380,6 @@ var designAdjudicationOutputSchema = json.RawMessage(`{
     "rejected_findings":{"type":"array","items":` + findingRefSchemaJSON + `},
     "required_changes":{"type":"array","items":{"type":"string"}},
     "unresolved_owner_decisions":{"type":"array","items":{"type":"string"}},
-    "design_id":{"type":"string"},
-    "design_version":{"type":"string"},
-    "design_digest":{"type":"string","description":"Lowercase SHA-256 hex digest of the design under adjudication. Echo it exactly as supplied."},
     "evidence_refs":{"type":"array","items":{"type":"string"}}
   }
 }`)
