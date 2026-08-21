@@ -98,6 +98,7 @@ func newMissionFixture(t *testing.T, planPath string, widenScope bool) *missionF
 	harness := &scriptedHarness{models: models, tasks: tasksPort, bodies: bodies, adjudicationVerdict: "freeze"}
 
 	leader := RoleRef{ID: "ingenieria_ia/orquestador", UnitID: "ingenieria_ia", Enabled: true, Executable: true, CanonicalLeader: true}
+	workerRole := RoleRef{ID: "ingenieria_ia/qa", UnitID: "ingenieria_ia", Enabled: true, Executable: true}
 	reviewer := RoleRef{ID: AdversarialReviewerRoleID, UnitID: "investigacion", Enabled: true, Executable: true}
 	ceo := RoleRef{ID: CEORoleID, UnitID: "empresa", Enabled: true, Executable: true}
 	target := &fakeProgramTarget{sha: targetSHA}
@@ -108,7 +109,7 @@ func newMissionFixture(t *testing.T, planPath string, widenScope bool) *missionF
 		Registry: fakeRegistry{
 			rev:     RevisionRef{ID: 7},
 			units:   map[string]UnitRef{"ingenieria_ia": {ID: "ingenieria_ia", Operational: true, LeaderRoleID: leader.ID}},
-			roles:   map[string]RoleRef{leader.ID: leader, reviewer.ID: reviewer, ceo.ID: ceo},
+			roles:   map[string]RoleRef{leader.ID: leader, workerRole.ID: workerRole, reviewer.ID: reviewer, ceo.ID: ceo},
 			leaders: map[string]RoleRef{"ingenieria_ia": leader},
 		},
 		Tasks: tasksPort, Contexts: &fakeContexts{}, Assignments: fakeAssignments{},
@@ -302,6 +303,7 @@ func TestMissionProvisioningIsIdempotentAcrossResumeAndRestart(t *testing.T) {
 	// engineeringmission.Service.Create faces, where idempotency comes from
 	// the policy digest rather than from process memory.
 	leader := RoleRef{ID: "ingenieria_ia/orquestador", UnitID: "ingenieria_ia", Enabled: true, Executable: true, CanonicalLeader: true}
+	workerRole := RoleRef{ID: "ingenieria_ia/qa", UnitID: "ingenieria_ia", Enabled: true, Executable: true}
 	reviewer := RoleRef{ID: AdversarialReviewerRoleID, UnitID: "investigacion", Enabled: true, Executable: true}
 	ceo := RoleRef{ID: CEORoleID, UnitID: "empresa", Enabled: true, Executable: true}
 	restarted, err := NewOrchestrator(Dependencies{Acceptance: newMemoryAcceptance(),
@@ -309,7 +311,7 @@ func TestMissionProvisioningIsIdempotentAcrossResumeAndRestart(t *testing.T) {
 		Registry: fakeRegistry{
 			rev:     RevisionRef{ID: 7},
 			units:   map[string]UnitRef{"ingenieria_ia": {ID: "ingenieria_ia", Operational: true, LeaderRoleID: leader.ID}},
-			roles:   map[string]RoleRef{leader.ID: leader, reviewer.ID: reviewer, ceo.ID: ceo},
+			roles:   map[string]RoleRef{leader.ID: leader, workerRole.ID: workerRole, reviewer.ID: reviewer, ceo.ID: ceo},
 			leaders: map[string]RoleRef{"ingenieria_ia": leader},
 		},
 		Tasks: fixture.tasks, Contexts: &fakeContexts{}, Assignments: fakeAssignments{},
