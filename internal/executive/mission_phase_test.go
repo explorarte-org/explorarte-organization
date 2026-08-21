@@ -225,7 +225,11 @@ func TestMissionRequiresASatisfiedFreeze(t *testing.T) {
 	fixture := newMissionFixture(t, smokePath, false)
 	fixture.harness.adjudicationVerdict = "revise"
 	run := fixture.drive(t)
-	if run.State != StateBlocked || run.ReasonCode != ReasonDesignRevisionRequired {
+	// A revise now opens a bounded revision round rather than stopping at
+	// once, so the run ends when the rounds run out. What this test guards is
+	// unchanged and stronger for it: through every round, and at the end of
+	// them, no mission exists.
+	if run.State != StateBlocked || run.ReasonCode != ReasonDesignRoundsExhausted {
 		t.Fatalf("run=%+v", run)
 	}
 	if fixture.provisioner.count() != 0 {

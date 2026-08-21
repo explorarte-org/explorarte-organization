@@ -45,7 +45,13 @@ const (
 	// human, and silently retrying it would spend the reviewer's budget
 	// re-deciding something already decided.
 	ReasonDesignRevisionRequired = "design_revision_required"
-	ReasonDesignRejected         = "design_rejected"
+	// ReasonDesignRoundsExhausted ends the revision loop. A design that has
+	// been sent back the allowed number of times and still is not settled is
+	// waiting on a human, not on another round: the reviewer has said the
+	// same kind of thing twice and a third attempt spends budget to hear it
+	// again.
+	ReasonDesignRoundsExhausted = "design_rounds_exhausted"
+	ReasonDesignRejected        = "design_rejected"
 	// ReasonAdversarialReviewUnavailable covers every way the reviewer cannot
 	// be dispatched at all -- role absent, disabled, not executable, or its
 	// provider unconfigured. It fails the run closed. There is deliberately
@@ -124,8 +130,20 @@ func (o *Orchestrator) driveDesignFreeze(ctx context.Context, root TaskRecord, a
 		return Run{}, true, err
 	}
 
-	artifact, units, ok := o.candidateDesign(ctx, root, all)
+	round := o.activeDesignRound(ctx, all, root.ID)
+	if round > o.limits.MaxDesignRounds {
+		run, blockErr := o.blockRoot(ctx, root, ReasonDesignRoundsExhausted,
+			fmt.Sprintf("the design was sent back %d times and is still not settled", o.limits.MaxDesignRounds))
+		return run, true, blockErr
+	}
+	artifact, units, ok := o.candidateDesign(ctx, root, all, round)
 	if !ok {
+		if round > 1 {
+			// A later round exists because a revise asked for one, and its
+			// deliverables are not in yet. That is ordinary progress, not a
+			// missing design: the departments are working on the changes.
+			return o.driveInProgress(ctx, root)
+		}
 		run, blockErr := o.blockRoot(ctx, root, "candidate_design_missing",
 			"no completed department deliverable is available to review")
 		return run, true, blockErr
@@ -306,8 +324,8 @@ func (o *Orchestrator) driveDesignFreeze(ctx context.Context, root TaskRecord, a
 // candidateDesign builds the artifact from completed department review
 // deliverables. It returns the contributing unit ids alongside it so the
 // independence rule can be evaluated against every author, not just the lead.
-func (o *Orchestrator) candidateDesign(ctx context.Context, root TaskRecord, all []TaskRecord) (designArtifact, []string, bool) {
-	artifact := designArtifact{RootTaskID: root.ID, Round: designRound(all, root.ID)}
+func (o *Orchestrator) candidateDesign(ctx context.Context, root TaskRecord, all []TaskRecord, round int) (designArtifact, []string, bool) {
+	artifact := designArtifact{RootTaskID: root.ID, Round: round}
 	units := make([]string, 0, len(all))
 	for _, task := range all {
 		// A completed department review is what says this department has
@@ -316,9 +334,19 @@ func (o *Orchestrator) candidateDesign(ctx context.Context, root TaskRecord, all
 		if task.TaskClass != TaskClassCoordinationDeptReview || task.Status != "completed" {
 			continue
 		}
+		if designRoundOf(task.IdempotencyKey) != round {
+			// A round's design is the work that round produced. Carrying an
+			// earlier round's deliverables forward would put the design that
+			// was sent back for changes in front of the reviewer again,
+			// alongside the one meant to replace it.
+			continue
+		}
 		unit := task.AssignedUnitID
 		contributed := false
 		for _, worker := range departmentWorkerTasks(all, root.ID, unit) {
+			if designRoundOf(worker.IdempotencyKey) != round {
+				continue
+			}
 			// Only completed workers. A failed one produced no
 			// deliverable, and the leader review already weighed its
 			// failure; presenting nothing as part of the design would
@@ -365,6 +393,86 @@ func (o *Orchestrator) candidateDesign(ctx context.Context, root TaskRecord, all
 // A new round exists only when someone creates its tasks. Since a revise or
 // reject verdict blocks the root and Resume does not auto-unblock those
 // reasons, no new round can appear without a deliberate act.
+// designRoundSuffix scopes a task to the design round that produced it.
+//
+// Round 1 carries no suffix, so every key predating design rounds keeps the
+// exact identity it already had durably. Later rounds are separate tasks with
+// separate keys, which is what makes a round immutable: nothing is reopened
+// or overwritten, and round N's work stays exactly as it was judged.
+// activeDesignRound is the round the run is working on now.
+//
+// It advances for exactly one reason: the previous round's adjudication
+// returned revise. Not because the artifact changed, not because a task was
+// retried, and never on its own -- an earlier revision derived the round from
+// a count and advanced on every Resume, which created a fresh review and
+// adjudication pair forever over the most expensive execution in the system.
+//
+// A revise is a governed decision that this design must change, so the work
+// that follows belongs to a new round with its own keys. Round N stays
+// exactly as it was judged.
+func (o *Orchestrator) activeDesignRound(ctx context.Context, all []TaskRecord, rootID int64) int {
+	round := designRound(all, rootID)
+	adjudication, ok := findTaskByKey(all, childKey(rootID, "design-adjudication:round:"+strconv.Itoa(round)))
+	if !ok || adjudication.Status != "completed" {
+		return round
+	}
+	result, ok := o.resultForCompletedTask(ctx, adjudication)
+	if !ok {
+		return round
+	}
+	verdict, err := adjudicationVerdictOf(result.JSONOutput)
+	if err != nil || verdict != AdjudicationRevise {
+		return round
+	}
+	return round + 1
+}
+
+// adjudicationVerdictOf reads only the verdict, without the host identity
+// binding a full parse requires. The round decision needs the verdict alone,
+// and demanding the whole contract here would make an unparseable adjudication
+// silently stop the round from advancing.
+func adjudicationVerdictOf(body []byte) (AdjudicationVerdict, error) {
+	var envelope struct {
+		Verdict AdjudicationVerdict `json:"verdict"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return "", err
+	}
+	return envelope.Verdict, nil
+}
+
+func designRoundSuffix(round int) string {
+	if round <= 1 {
+		return ""
+	}
+	return ":design-round:" + strconv.Itoa(round)
+}
+
+// designRoundOf recovers the round a task belongs to from its key.
+//
+// The marker is not always last. A review key ends with it
+// (leader-review:<unit>:design-round:2) but a worker key continues past it
+// (worker:<unit>:design-round:2:<client-key>), so reading to the end of the
+// string parsed "2:design-1" and silently fell back to round 1 -- which put
+// every later round's worker in round 1 and left round 2 with no design at
+// all. Only the digits up to the next separator belong to the round.
+func designRoundOf(key string) int {
+	marker := ":design-round:"
+	index := strings.LastIndex(key, marker)
+	if index < 0 {
+		return 1
+	}
+	rest := key[index+len(marker):]
+	if end := strings.Index(rest, ":"); end >= 0 {
+		rest = rest[:end]
+	}
+	round, err := strconv.Atoi(rest)
+	if err != nil || round < 1 {
+		return 1
+	}
+	return round
+}
+
 func designRound(all []TaskRecord, rootID int64) int {
 	prefix := childKey(rootID, "design-review:round:")
 	highest := 0

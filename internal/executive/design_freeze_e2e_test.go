@@ -311,22 +311,105 @@ func TestExecutiveRunReachesDesignFreezeThroughTheRealOrchestrator(t *testing.T)
 }
 
 // REVISE: the design is not frozen, the run stops, and it stays stopped.
-func TestReviseBlocksTheRunAndDoesNotAutoRetry(t *testing.T) {
+// REVISE opens the next design round instead of stopping the run.
+//
+// A design sent back for changes used to block and wait for a human, which
+// made a correct judgement the end of the work: the adjudicator could say
+// "this must change" and nothing changed. The round that follows is a
+// successor, not a revision -- round N keeps its keys, its deliverables and
+// its verdict exactly as they were judged.
+func TestReviseOpensTheNextRoundAndNeverReopensTheLast(t *testing.T) {
 	fixture := newFreezeFixture(t, "revise", true)
-	run := fixture.drive(t)
-	if run.State != StateBlocked || run.ReasonCode != ReasonDesignRevisionRequired {
-		t.Fatalf("run=%+v", run)
-	}
-	root := fixture.rootRecord(t)
-	if status := requirementStatus(root, designfreeze.RequirementKey); status == "satisfied" {
-		t.Fatal("a revise verdict satisfied the design freeze")
-	}
-	if _, closed := fixture.commandFor(PurposeCEOClosure); closed {
-		t.Fatal("the CEO closed a run whose design was sent back for revision")
+	fixture.drive(t)
+	all, err := fixture.tasks.ListByCorrelation(context.Background(), fixture.rootRecord(t).CorrelationID)
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	// Resuming again must not silently re-run the reviewer: that would spend
-	// the adversarial budget re-deciding a decision the executive made.
+	// Round 1 ran and was judged.
+	for _, key := range []string{"design-review:round:1", "design-adjudication:round:1"} {
+		task, ok := findTaskByKey(all, childKey(fixture.root, key))
+		if !ok || task.Status != "completed" {
+			t.Fatalf("round 1 is incomplete: %s", key)
+		}
+	}
+	// Round 2 exists, with its own department work and its own review.
+	for _, key := range []string{
+		"leader-plan:ingenieria_ia:design-round:2",
+		"leader-review:ingenieria_ia:design-round:2",
+		"design-review:round:2",
+		"design-adjudication:round:2",
+	} {
+		if _, ok := findTaskByKey(all, childKey(fixture.root, key)); !ok {
+			t.Fatalf("the revision round did not produce %s", key)
+		}
+	}
+	// And exactly one successor: a revise opens round N+1, never N+2.
+	if _, ok := findTaskByKey(all, childKey(fixture.root, "design-review:round:3")); ok {
+		t.Fatal("a single revise opened more than one round")
+	}
+	// Round 1's own tasks were never re-keyed or reused for round 2's work.
+	if reviewOne, ok := findTaskByKey(all, childKey(fixture.root, "leader-review:ingenieria_ia")); !ok || reviewOne.Status != "completed" {
+		t.Fatal("round 1's department review was disturbed by the revision")
+	}
+}
+
+// What the adjudicator demanded is what the next round is planned against.
+// Planning it from the original goal would produce the same design again and
+// spend the reviewer's budget re-deciding something already decided.
+func TestTheRequiredChangesReachTheNextRound(t *testing.T) {
+	fixture := newFreezeFixture(t, "revise", true)
+	fixture.drive(t)
+	all, err := fixture.tasks.ListByCorrelation(context.Background(), fixture.rootRecord(t).CorrelationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, ok := findTaskByKey(all, childKey(fixture.root, "leader-plan:ingenieria_ia:design-round:2"))
+	if !ok {
+		t.Fatal("round 2 has no planning task")
+	}
+	if !strings.Contains(plan.Instructions, "Prove the seal protocol under concurrency.") {
+		t.Fatalf("the required change never reached the planner: %q", plan.Instructions)
+	}
+	if !strings.Contains(plan.Instructions, "REQUIRED CHANGES") {
+		t.Error("the planner must be told these are the required changes, not fresh objectives")
+	}
+}
+
+// The loop is bounded. A design sent back the allowed number of times and
+// still unsettled is waiting on a human, not on another round.
+func TestTheRevisionLoopStopsAtItsBound(t *testing.T) {
+	fixture := newFreezeFixture(t, "revise", true)
+	run := fixture.drive(t)
+	if run.State != StateBlocked || run.ReasonCode != ReasonDesignRoundsExhausted {
+		t.Fatalf("the loop must stop at its bound, got %+v", run)
+	}
+	all, err := fixture.tasks.ListByCorrelation(context.Background(), fixture.rootRecord(t).CorrelationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rounds := 0
+	for _, task := range all {
+		if strings.Contains(task.IdempotencyKey, ":design-review:round:") {
+			rounds++
+		}
+	}
+	if rounds > DefaultLimits().MaxDesignRounds {
+		t.Fatalf("ran %d rounds against a bound of %d", rounds, DefaultLimits().MaxDesignRounds)
+	}
+	if status := requirementStatus(fixture.rootRecord(t), designfreeze.RequirementKey); status == "satisfied" {
+		t.Fatal("an exhausted revision loop satisfied the design freeze")
+	}
+	if _, closed := fixture.commandFor(PurposeCEOClosure); closed {
+		t.Fatal("the CEO closed a run whose design never settled")
+	}
+}
+
+// A blocked run still stays blocked: the bound stops the loop, and after it
+// nothing re-runs the reviewer.
+func TestAnExhaustedRunDoesNotAutoUnblock(t *testing.T) {
+	fixture := newFreezeFixture(t, "revise", true)
+	fixture.drive(t)
 	before := len(fixture.purposes())
 	_, err := fixture.orchestrator.Resume(context.Background(), fixture.root)
 	if !errors.Is(err, ErrRunBlocked) {

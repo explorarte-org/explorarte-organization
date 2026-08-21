@@ -143,9 +143,15 @@ type Limits struct {
 	MaxAcceptanceCriteria  int
 	MaxRequirementsPerTask int
 	MaxDepartmentReplans   int
-	MaxModelCalls          int
-	MaxOutputTokens        int
-	InvocationDeadline     time.Duration
+	// MaxDesignRounds bounds how many times a design may be sent back for
+	// revision before the run stops and waits for a human. Separate from
+	// MaxDepartmentReplans because they bound different loops: a replan is a
+	// leader reworking its own department's tasks, a design round is the
+	// adjudicator refusing the whole design.
+	MaxDesignRounds    int
+	MaxModelCalls      int
+	MaxOutputTokens    int
+	InvocationDeadline time.Duration
 }
 
 func DefaultLimits() Limits {
@@ -153,7 +159,7 @@ func DefaultLimits() Limits {
 		MaxInputBytes: 256 << 10, MaxDepartments: 7, MaxWorkerTasksPerPlan: 24,
 		MaxFollowupTasks: 12, MaxArrayItems: 64, MaxStringBytes: 4000,
 		MaxInstructionsBytes: 16000, MaxAcceptanceCriteria: 32, MaxRequirementsPerTask: 32,
-		MaxDepartmentReplans: 1, MaxModelCalls: 128, MaxOutputTokens: 128000,
+		MaxDepartmentReplans: 1, MaxDesignRounds: 2, MaxModelCalls: 128, MaxOutputTokens: 128000,
 		InvocationDeadline: 10 * time.Minute,
 	}
 }
