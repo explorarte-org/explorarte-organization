@@ -28,7 +28,7 @@ func materializeFixture(t *testing.T, proposals []WorkerTaskProposal) *memoryTas
 	orchestrator := testOrchestratorForPorts(t, tasksPort, newFakeModels(), &fakeCompletion{verdict: CompletionPass})
 	root := TaskRecord{ID: 1, OrganizationID: "explorarte", CorrelationID: "executive:corr", AssignedRoleID: CEORoleID}
 	source := TaskRecord{ID: 2, AssignedRoleID: "ingenieria_ia/orquestador"}
-	if err := orchestrator.materializeWorkerTasks(context.Background(), root, source, "ingenieria_ia", proposals, 0); err != nil {
+	if err := orchestrator.materializeWorkerTasks(context.Background(), root, source, "ingenieria_ia", proposals, 0, 1); err != nil {
 		t.Fatalf("materialize: %v", err)
 	}
 	return tasksPort
@@ -169,7 +169,7 @@ func TestRematerializationReusesTasksAndAddsNoEdges(t *testing.T) {
 	proposals := []WorkerTaskProposal{proposal("a", ""), proposal("b", "a")}
 
 	for i := 0; i < 3; i++ {
-		if err := orchestrator.materializeWorkerTasks(context.Background(), root, source, "ingenieria_ia", proposals, 0); err != nil {
+		if err := orchestrator.materializeWorkerTasks(context.Background(), root, source, "ingenieria_ia", proposals, 0, 1); err != nil {
 			t.Fatalf("materialize %d: %v", i, err)
 		}
 	}
@@ -198,10 +198,10 @@ func TestReplanKeepsItsOwnKeysAndDependencySemantics(t *testing.T) {
 	source := TaskRecord{ID: 2, AssignedRoleID: "ingenieria_ia/orquestador"}
 	proposals := []WorkerTaskProposal{proposal("a", ""), proposal("b", "a")}
 
-	if err := orchestrator.materializeWorkerTasks(context.Background(), root, source, "ingenieria_ia", proposals, 0); err != nil {
+	if err := orchestrator.materializeWorkerTasks(context.Background(), root, source, "ingenieria_ia", proposals, 0, 1); err != nil {
 		t.Fatal(err)
 	}
-	if err := orchestrator.materializeWorkerTasks(context.Background(), root, source, "ingenieria_ia", proposals, 1); err != nil {
+	if err := orchestrator.materializeWorkerTasks(context.Background(), root, source, "ingenieria_ia", proposals, 1, 1); err != nil {
 		t.Fatal(err)
 	}
 	tasksPort.mu.Lock()
@@ -249,11 +249,11 @@ func TestUnmaterializableGraphsFailClosed(t *testing.T) {
 	source := TaskRecord{ID: 2, AssignedRoleID: "ingenieria_ia/orquestador"}
 
 	cyclic := []WorkerTaskProposal{proposal("a", "b"), proposal("b", "a")}
-	if err := orchestrator.materializeWorkerTasks(context.Background(), root, source, "ingenieria_ia", cyclic, 0); !errors.Is(err, ErrDependencyCycle) {
+	if err := orchestrator.materializeWorkerTasks(context.Background(), root, source, "ingenieria_ia", cyclic, 0, 1); !errors.Is(err, ErrDependencyCycle) {
 		t.Fatalf("cycle err=%v", err)
 	}
 	unknown := []WorkerTaskProposal{proposal("a", "nowhere")}
-	if err := orchestrator.materializeWorkerTasks(context.Background(), root, source, "ingenieria_ia", unknown, 0); !errors.Is(err, ErrContractRejected) {
+	if err := orchestrator.materializeWorkerTasks(context.Background(), root, source, "ingenieria_ia", unknown, 0, 1); !errors.Is(err, ErrContractRejected) {
 		t.Fatalf("unknown dependency err=%v", err)
 	}
 	tasksPort.mu.Lock()

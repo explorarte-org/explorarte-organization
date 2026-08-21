@@ -269,6 +269,13 @@ func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error
 			return ProjectRun(root, nil), ErrRunBlocked
 		case ReasonDesignRejected:
 			return ProjectRun(root, nil), ErrRunBlocked
+		case ReasonDesignRoundsExhausted:
+			// The bound was reached. Unblocking would restart the very loop
+			// the bound exists to stop, and it would restart it at full
+			// price: a fresh department plan, fresh worker calls, a fresh
+			// adversarial review and a fresh adjudication, to be told again
+			// what was already said twice.
+			return ProjectRun(root, nil), ErrRunBlocked
 		case ReasonAdversarialReviewUnavailable:
 			// Fails closed and stays closed: there is no second provider to
 			// fall back to, so retrying on its own would only spin.
@@ -553,8 +560,28 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 		if err != nil {
 			return Run{}, false, err
 		}
-		planTask, ok := findTaskByKey(all, childKey(root.ID, "leader-plan:"+req.UnitID))
+		// Every department key is scoped to the design round it belongs to.
+		// Round 1 carries no suffix, so a run that never gets a revise keys
+		// exactly as it always did; a later round is separate tasks, which is
+		// what keeps the earlier round immutable rather than reopened.
+		round := o.activeDesignRound(ctx, all, root.ID)
+		suffix := designRoundSuffix(round)
+		planTask, ok := findTaskByKey(all, childKey(root.ID, "leader-plan:"+req.UnitID+suffix))
 		if !ok {
+			if round > o.limits.MaxDesignRounds {
+				// Out of rounds. Opening another would be the loop this
+				// bound exists to prevent; the freeze phase blocks the run
+				// and says so, which is where that decision belongs.
+				return Run{}, false, nil
+			}
+			if round > 1 {
+				// The round exists because a revise asked for it. Opening its
+				// planning task is what turns that decision into work.
+				if _, err = o.openDesignRoundPlan(ctx, root, all, req, leader, round); err != nil {
+					return Run{}, false, err
+				}
+				return o.driveInProgress(ctx, root)
+			}
 			return Run{}, false, fmt.Errorf("%w: department planning task missing", ErrRegistryMismatch)
 		}
 		if planTask.Status != "completed" {
@@ -566,7 +593,7 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 				if e = o.validator.ValidateDepartmentPlan(ctx, revision.ID, req.UnitID, leader.ID, parsed); e != nil {
 					return e
 				}
-				return o.materializeWorkerTasks(ctx, root, planTask, req.UnitID, parsed.Tasks, 0)
+				return o.materializeWorkerTasks(ctx, root, planTask, req.UnitID, parsed.Tasks, 0, round)
 			})
 			if err != nil {
 				return Run{}, false, err
@@ -584,7 +611,7 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 		if e = o.validator.ValidateDepartmentPlan(ctx, revision.ID, req.UnitID, leader.ID, deptPlan); e != nil {
 			return Run{}, false, e
 		}
-		if e = o.materializeWorkerTasks(ctx, root, planTask, req.UnitID, deptPlan.Tasks, 0); e != nil {
+		if e = o.materializeWorkerTasks(ctx, root, planTask, req.UnitID, deptPlan.Tasks, 0, round); e != nil {
 			return Run{}, false, e
 		}
 
@@ -612,12 +639,12 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 		if e != nil {
 			return Run{}, false, e
 		}
-		if !allDepartmentWorkersTerminal(all, root.ID, req.UnitID) {
+		if !allDepartmentWorkersTerminal(all, root.ID, req.UnitID+suffix) {
 			return o.driveInProgress(ctx, root)
 		}
-		reviewTask, ok := latestReviewTask(all, root.ID, req.UnitID)
+		reviewTask, ok := latestReviewTask(all, root.ID, req.UnitID+suffix)
 		if !ok {
-			reviewTask, _, e = o.createReviewTask(ctx, root, req, leader, all, 0)
+			reviewTask, _, e = o.createReviewTask(ctx, root, req, leader, all, 0, round)
 			if e != nil {
 				return Run{}, false, e
 			}
@@ -635,7 +662,7 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 					if pErr = o.validator.ValidateFollowups(ctx, revision.ID, req.UnitID, leader.ID, review.ProposedFollowupTasks); pErr != nil {
 						return pErr
 					}
-					return o.materializeWorkerTasks(ctx, root, reviewTask, req.UnitID, review.ProposedFollowupTasks, reviewReplanOrdinal(reviewTask.IdempotencyKey)+1)
+					return o.materializeWorkerTasks(ctx, root, reviewTask, req.UnitID, review.ProposedFollowupTasks, reviewReplanOrdinal(reviewTask.IdempotencyKey)+1, round)
 				}
 				if len(review.ProposedFollowupTasks) > 0 {
 					return fmt.Errorf("%w: followup tasks require needs_replan verdict", ErrContractRejected)
@@ -669,18 +696,18 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 			if e = o.validator.ValidateFollowups(ctx, revision.ID, req.UnitID, leader.ID, review.ProposedFollowupTasks); e != nil {
 				return Run{}, false, e
 			}
-			if e = o.materializeWorkerTasks(ctx, root, reviewTask, req.UnitID, review.ProposedFollowupTasks, ordinal); e != nil {
+			if e = o.materializeWorkerTasks(ctx, root, reviewTask, req.UnitID, review.ProposedFollowupTasks, ordinal, round); e != nil {
 				return Run{}, false, e
 			}
 			all, e = o.tasks.ListByCorrelation(ctx, root.CorrelationID)
 			if e != nil {
 				return Run{}, false, e
 			}
-			if !allDepartmentWorkersTerminal(all, root.ID, req.UnitID) {
+			if !allDepartmentWorkersTerminal(all, root.ID, req.UnitID+suffix) {
 				return o.driveInProgress(ctx, root)
 			}
-			if _, exists := findTaskByKey(all, childKey(root.ID, "leader-review:"+req.UnitID+":replan:"+strconv.Itoa(ordinal))); !exists {
-				if _, _, e = o.createReviewTask(ctx, root, req, leader, all, ordinal); e != nil {
+			if _, exists := findTaskByKey(all, childKey(root.ID, "leader-review:"+req.UnitID+suffix+":replan:"+strconv.Itoa(ordinal))); !exists {
+				if _, _, e = o.createReviewTask(ctx, root, req, leader, all, ordinal, round); e != nil {
 					return Run{}, false, e
 				}
 			}
@@ -718,7 +745,8 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 // same time, the DepartmentPlan's own order is preserved, so this introduces no
 // new semantic ordering of its own and the same plan always materializes the
 // same way.
-func (o *Orchestrator) materializeWorkerTasks(ctx context.Context, root, source TaskRecord, departmentID string, proposals []WorkerTaskProposal, replan int) error {
+func (o *Orchestrator) materializeWorkerTasks(ctx context.Context, root, source TaskRecord, departmentID string, proposals []WorkerTaskProposal, replan, round int) error {
+	departmentID += designRoundSuffix(round)
 	ordered, err := topologicalProposals(proposals)
 	if err != nil {
 		return err
@@ -836,9 +864,9 @@ func appendResultRequirement(in []RequirementProposal) []RequirementProposal {
 	return append(out, RequirementProposal{Key: hostOwnedResultRequirementKey, Type: "result", Description: "Validated durable model invocation result", Required: true})
 }
 
-func (o *Orchestrator) createReviewTask(ctx context.Context, root TaskRecord, req DepartmentRequest, leader RoleRef, all []TaskRecord, replan int) (TaskRecord, bool, error) {
-	summary := boundedDepartmentSummary(all, root.ID, req.UnitID, o.limits.MaxInstructionsBytes)
-	suffix := "leader-review:" + req.UnitID
+func (o *Orchestrator) createReviewTask(ctx context.Context, root TaskRecord, req DepartmentRequest, leader RoleRef, all []TaskRecord, replan, round int) (TaskRecord, bool, error) {
+	summary := boundedDepartmentSummary(all, root.ID, req.UnitID+designRoundSuffix(round), o.limits.MaxInstructionsBytes)
+	suffix := "leader-review:" + req.UnitID + designRoundSuffix(round)
 	if replan > 0 {
 		suffix += ":replan:" + strconv.Itoa(replan)
 	}
@@ -1828,4 +1856,72 @@ func boundedClosureSummary(plan ExecutivePlan, all []TaskRecord, rootID int64, m
 		}
 	}
 	return boundedJSON(map[string]any{"objective": plan.Objective, "success_criteria": plan.SuccessCriteria, "departments": items, "owner_decisions_required": plan.OwnerDecisionsRequired}, max)
+}
+
+// openDesignRoundPlan creates the planning task for a design round that a
+// revise asked for.
+//
+// The leader is given what the adjudicator required, not a fresh copy of the
+// original goal: the round exists because specific changes were demanded, and
+// planning it without them would produce the same design again and spend the
+// reviewer's budget re-deciding something already decided.
+//
+// The previous round is untouched. Its plan, its work, its review and its
+// adjudication keep their keys and their content -- this is a successor, not
+// a revision of what happened.
+func (o *Orchestrator) openDesignRoundPlan(ctx context.Context, root TaskRecord, all []TaskRecord, req DepartmentRequest, leader RoleRef, round int) (TaskRecord, error) {
+	if round > o.limits.MaxDesignRounds {
+		return TaskRecord{}, fmt.Errorf("%w: design rounds", ErrBudgetExceeded)
+	}
+	changes, err := o.requiredChangesOf(ctx, all, root.ID, round-1)
+	if err != nil {
+		return TaskRecord{}, err
+	}
+	if len(changes) == 0 {
+		// A revise with nothing to change cannot be planned against. The
+		// contract already refuses that adjudication, so reaching here means
+		// the decision could not be read -- and inventing an empty round
+		// would burn a round and a department plan on no instruction at all.
+		return TaskRecord{}, fmt.Errorf("%w: design round %d has no required changes to plan against", ErrContractRejected, round)
+	}
+	task, _, err := o.coordinatedChildren().Materialize(ctx, childRequest{
+		Root: root, Sender: root, Depth: 2,
+		Command: CreateTaskCommand{
+			RequestedByRoleID: CEORoleID, AssignedRoleID: leader.ID,
+			TaskClass:      TaskClassCoordinationDeptPlan,
+			IdempotencyKey: childKey(root.ID, "leader-plan:"+req.UnitID+designRoundSuffix(round)),
+			Title:          "Department planning: " + req.UnitID + " (design round " + strconv.Itoa(round) + ")",
+			Instructions: "The previous design was sent back for revision. Plan the work that addresses " +
+				"exactly these required changes and return DepartmentPlan JSON.\n\nREQUIRED CHANGES:\n" +
+				joinLines(changes) + "\n\nORIGINAL OBJECTIVE:\n" + req.Objective,
+			AcceptanceCriteria: []string{
+				"Return strict DepartmentPlan JSON",
+				"Every proposed task addresses a required change",
+				"Do not restate work the previous round already delivered",
+			},
+			Priority: req.Priority, MaxAttempts: 3,
+			CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID),
+			Requirements: []RequirementProposal{{Key: "typed_plan", Type: "result", Description: "Validated DepartmentPlan invocation result", Required: true}},
+		},
+	})
+	return task, err
+}
+
+// requiredChangesOf reads what the adjudicator demanded of a round.
+func (o *Orchestrator) requiredChangesOf(ctx context.Context, all []TaskRecord, rootID int64, round int) ([]string, error) {
+	adjudication, ok := findTaskByKey(all, childKey(rootID, "design-adjudication:round:"+strconv.Itoa(round)))
+	if !ok || adjudication.Status != "completed" {
+		return nil, fmt.Errorf("%w: design round %d has no completed adjudication", ErrContractRejected, round)
+	}
+	result, ok := o.resultForCompletedTask(ctx, adjudication)
+	if !ok {
+		return nil, fmt.Errorf("%w: design round %d adjudication has no durable result", ErrContractRejected, round)
+	}
+	var envelope struct {
+		RequiredChanges []string `json:"required_changes"`
+	}
+	if err := json.Unmarshal(result.JSONOutput, &envelope); err != nil {
+		return nil, err
+	}
+	return envelope.RequiredChanges, nil
 }
