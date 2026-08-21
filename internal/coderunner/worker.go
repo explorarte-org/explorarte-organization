@@ -21,6 +21,12 @@ const RoleID = "ingenieria_ia/code-runner"
 // this grace to see that outcome land on resultCh.
 const defaultShutdownGrace = 30 * time.Second
 
+// reconcileBatch bounds one sweep. It matches what the Executive's worker
+// uses, because both are sweeping the same queue and a runner that reconciled
+// in different-sized bites than the Executive would make the queue's
+// behaviour depend on which worker got there first.
+const reconcileBatch = 100
+
 type Queue interface {
 	ClaimTasks(context.Context, tasks.ClaimRequest) ([]tasks.ClaimedTask, error)
 	StartAttempt(context.Context, tasks.LeaseCommand) (tasks.Task, error)
@@ -31,6 +37,16 @@ type Queue interface {
 
 type PlanExecutor interface {
 	Execute(context.Context, Plan) ([]Result, error)
+}
+
+// QueueReconciler promotes tasks whose retry delay has elapsed back to
+// claimable, and settles leases that expired.
+//
+// It is a separate, optional port rather than a method on Queue because not
+// every deployment that claims tasks is entitled to reconcile the queue --
+// the same reason the Executive's own reconciler is an option there.
+type QueueReconciler interface {
+	Reconcile(ctx context.Context, batch int) (tasks.ReconcileResult, error)
 }
 
 // PlanGuard is an optional trusted policy layer applied before execution and
@@ -80,6 +96,11 @@ type Worker struct {
 	// persistent worker serving distinct missions with distinct policies.
 	// See PlanGuardResolver's own doc comment.
 	PlanGuardResolver PlanGuardResolver
+	// Reconciler promotes retryable tasks back to claimable before this
+	// worker looks for work. Optional: without it the worker behaves
+	// exactly as before, which is what a deployment whose queue somebody
+	// else reconciles needs.
+	Reconciler QueueReconciler
 }
 
 func (w Worker) shutdownGrace() time.Duration {
@@ -92,6 +113,23 @@ func (w Worker) shutdownGrace() time.Duration {
 func (w Worker) RunOnce(ctx context.Context) (int, error) {
 	if w.Queue == nil || w.Executor == nil || w.WorkerID == "" || w.HolderPrincipalID == "" || w.LeaseDuration <= 0 {
 		return 0, fmt.Errorf("invalid code-runner worker")
+	}
+	// Reconciliation runs BEFORE the queue is read, so a mission whose retry
+	// delay has elapsed is claimable on this pass rather than the next one.
+	//
+	// It runs here at all because a mission's retries were, until now,
+	// hostage to somebody else's work. Nothing but the Executive reconciled
+	// the queue, and it only did so while driving one of its own roots -- so
+	// a mission whose root had already finished sat in retry_wait forever,
+	// with attempts remaining that could never be taken. max_attempts was
+	// fiction for exactly the missions most likely to need it.
+	//
+	// A reconciliation failure must not stop the pass, for the same reason
+	// it does not stop the Executive's: it is a recovery sweep, not a
+	// precondition, and refusing to claim work because a cleanup query
+	// failed would turn a transient database hiccup into a stalled runner.
+	if w.Reconciler != nil {
+		_, _ = w.Reconciler.Reconcile(ctx, reconcileBatch)
 	}
 	claimed, err := w.Queue.ClaimTasks(ctx, tasks.ClaimRequest{WorkerID: w.WorkerID, HolderPrincipalID: w.HolderPrincipalID, AssignedRoleID: RoleID, BatchSize: 1, LeaseDuration: w.LeaseDuration})
 	if err != nil {
