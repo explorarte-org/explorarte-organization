@@ -392,5 +392,77 @@ func AdversarialReviewOutputSchema() json.RawMessage {
 }
 
 func DesignAdjudicationOutputSchema() json.RawMessage {
-	return append(json.RawMessage(nil), designAdjudicationOutputSchema...)
+	return DesignAdjudicationOutputSchemaFor(nil)
+}
+
+// DesignAdjudicationOutputSchemaFor builds the adjudication contract for one
+// specific review, enumerating the finding identifiers that actually exist in
+// it.
+//
+// The static schema typed accepted_findings and rejected_findings as plain
+// strings while the host held them to an identifier pattern. The contract the
+// model was shown was looser than the one it was judged by, so a sentence --
+// a perfectly valid string -- passed the schema and failed the parse. A
+// campaign died at adjudication with an explanatory clause recorded as a
+// finding reference.
+//
+// An enum closes that at the only place that can refuse it before a model
+// speaks: the provider. With no findings there is nothing to enumerate and
+// the subset forbids maxItems, so the field falls back to a described string
+// and AssertFindingsExist carries the invariant alone. That fallback is why
+// the host check exists in the first place rather than being left to the
+// schema: the schema can only help when there is something to enumerate.
+func DesignAdjudicationOutputSchemaFor(findingIDs []string) json.RawMessage {
+	unique := make(map[string]struct{}, len(findingIDs))
+	ordered := make([]string, 0, len(findingIDs))
+	for _, id := range findingIDs {
+		if !findingIDPattern.MatchString(id) {
+			continue
+		}
+		if _, seen := unique[id]; seen {
+			continue
+		}
+		unique[id] = struct{}{}
+		ordered = append(ordered, id)
+	}
+	const describedString = `{"type":"string","description":"Identifier of a finding raised by the adversarial review, such as AR-001. Never prose."}`
+	refItems := describedString
+	if len(ordered) > 0 {
+		if encoded, err := json.Marshal(ordered); err == nil {
+			refItems = `{"type":"string","enum":` + string(encoded) + `}`
+		}
+	}
+	schema := string(designAdjudicationOutputSchema)
+	for _, field := range []string{"accepted_findings", "rejected_findings"} {
+		schema = strings.ReplaceAll(schema,
+			`"`+field+`":{"type":"array","items":`+findingRefSchemaJSON+`}`,
+			`"`+field+`":{"type":"array","items":`+refItems+`}`)
+	}
+	return json.RawMessage(schema)
+}
+
+// AssertFindingsExist refuses an adjudication that cites a finding the review
+// never raised.
+//
+// This is the invariant the identifier pattern was standing in for. A
+// well-formed identifier is not the same as a real one: "AR-009" satisfies
+// every syntactic rule and still refers to nothing, and an adjudication that
+// accepts findings nobody made is a verdict about a review that does not
+// exist.
+func AssertFindingsExist(adjudication DesignAdjudication, reviewFindingIDs []string) error {
+	known := make(map[string]struct{}, len(reviewFindingIDs))
+	for _, id := range reviewFindingIDs {
+		known[id] = struct{}{}
+	}
+	for label, cited := range map[string][]string{
+		"accepted": adjudication.AcceptedFindings,
+		"rejected": adjudication.RejectedFindings,
+	} {
+		for _, id := range cited {
+			if _, exists := known[id]; !exists {
+				return fmt.Errorf("%w: %s finding %q was never raised by the review", ErrContractRejected, label, id)
+			}
+		}
+	}
+	return nil
 }
