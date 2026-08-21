@@ -146,7 +146,12 @@ type Event struct {
 	ToolProvenance string          `json:"tool_provenance,omitempty"`
 	TerminalStatus RunStatus       `json:"terminal_status,omitempty"`
 	ErrorCode      string          `json:"error_code,omitempty"`
-	Reason         string          `json:"reason,omitempty"`
+	// InvocationRef names the durable model invocation this event concerns
+	// when there is one and no ModelResult carries it -- which is exactly
+	// the failure case, where a response was never recorded and the
+	// reference would otherwise be lost.
+	InvocationRef string `json:"invocation_ref,omitempty"`
+	Reason        string `json:"reason,omitempty"`
 }
 
 type RunStatus string

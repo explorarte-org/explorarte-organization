@@ -564,7 +564,10 @@ ORDER BY o.id DESC
 LIMIT 1`, invocationID).Scan(&retryable)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return false, nil
+			// Not "false". Nothing was recorded, and reporting that as a
+			// definite no makes an unasked question indistinguishable from
+			// an answered one.
+			return false, modelruntime.ErrProviderOutcomeUnknown
 		}
 		return false, mapError(err)
 	}

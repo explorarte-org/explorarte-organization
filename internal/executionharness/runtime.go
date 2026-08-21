@@ -103,7 +103,15 @@ func (r *Runtime) Execute(ctx context.Context, spec RunSpec) RunResult {
 			// reduce provider failures to a normalized class and code, and the
 			// credential itself never reaches an error value.
 			reason := modelFailureReason(invokeErr)
-			events, _ = r.append(ctx, spec, events, Event{Type: EventRunFailed, TerminalStatus: StatusModelError, ErrorCode: "model_error", Reason: reason})
+			// The invocation this run made is named even though it produced
+			// no response. Retryability is decided by asking Model Runtime
+			// about a specific invocation, and a failed run that points at
+			// nothing cannot have that question asked about it.
+			events, _ = r.append(ctx, spec, events, Event{
+				Type: EventRunFailed, TerminalStatus: StatusModelError,
+				ErrorCode: "model_error", Reason: reason,
+				InvocationRef: InvocationRefOf(invokeErr),
+			})
 			return result(spec, events, StatusModelError, reason, "", lastModelOutput, turnsUsed, toolCallsUsed)
 		}
 		modelResult.ToolRequests = cloneToolRequests(modelResult.ToolRequests)

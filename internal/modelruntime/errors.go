@@ -46,3 +46,13 @@ var (
 	// is never silently overwritten.
 	ErrContextTokenTelemetryContradiction = errors.New("context token telemetry: contradictory telemetry was already recorded for this invocation")
 )
+
+// ErrProviderOutcomeUnknown reports that no provider outcome was recorded for
+// an invocation, so nothing is known about whether its failure was transient.
+//
+// It exists because "no answer" and "the answer is no" were the same value.
+// The Executive's own comment said an unreadable answer means no retry, and
+// it could not apply that rule: a missing row and a recorded false arrived
+// identically, so a run that had never been asked about looked exactly like
+// one that had been judged permanent.
+var ErrProviderOutcomeUnknown = errors.New("model runtime: no provider outcome recorded for invocation")
