@@ -193,7 +193,10 @@ func runExecutiveWorker(args []string, stdout, stderr io.Writer) int {
 	// the assumption true in the deployment, not just in the code.
 	worker, err := executive.NewWorker(runtime.Orchestrator, rootSource,
 		executive.WorkerConfig{PollInterval: *poll, ErrorBackoff: *errorBackoff, BatchSize: *batch},
-		executive.WithExecutionReconciler(runtimeadapter.ExecutionReconciler{Invocations: runtime.Models.Invocations}))
+		executive.WithExecutionReconciler(runtimeadapter.ExecutionReconciler{Invocations: runtime.Models.Invocations}),
+		executive.WithFailureObserver(func(rootTaskID int64, err error) {
+			fmt.Fprintf(stderr, "executive worker: root %d: %v\n", rootTaskID, err)
+		}))
 	if err != nil {
 		fmt.Fprintf(stderr, "create executive worker: %v\n", err)
 		return exitInternal

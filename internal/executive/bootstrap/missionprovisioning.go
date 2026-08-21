@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -84,6 +85,16 @@ func (p missionProvisioner) ProvisionMission(ctx context.Context, command execut
 	task, err := p.missions.Create(ctx, command.Policy, string(command.PlanJSON),
 		p.organizationID, command.RequestedByRoleID, command.ActorType, command.ActorID)
 	if err != nil {
+		// Classified here because this is where the two vocabularies meet.
+		// The task engine says "invalid input"; the Executive needs to know
+		// whether coming back later could possibly help. For a malformed
+		// request it cannot: the same policy and the same plan produce the
+		// same refusal every time. Deciding that upstream would mean the
+		// Executive re-deriving the task engine's own rule, and deciding it
+		// downstream means never deciding it at all.
+		if errors.Is(err, tasks.ErrInvalidInput) {
+			return executive.MissionRecord{}, fmt.Errorf("%w: %w", executive.ErrMissionRejected, err)
+		}
 		return executive.MissionRecord{}, fmt.Errorf("provision engineering mission: %w", err)
 	}
 	return executive.MissionRecord{TaskID: task.ID}, nil
