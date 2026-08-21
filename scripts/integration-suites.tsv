@@ -75,6 +75,7 @@ decisiongraph-postgres	all,decision	integration	30m	-	compose_run go test -count
 decisiongraphtrace	all,trace	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/decisiongraphtrace
 improvement-postgres	all,improvement	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/improvement/postgres
 composition-postgres	all,composition	integration	10m	-	compose_run go test -count=1 -tags=integration ./internal/composition/postgres
+engineeringmission-postgres	all,mission	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/engineeringmission
 completion-postgres	all,completion	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/completion/postgres
 shadowverifier-postgres	all,shadow	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/shadowverifier/postgres
 agentmessaging-postgres	all,messaging	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/agentmessaging/postgres
