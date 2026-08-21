@@ -111,11 +111,17 @@ type freezeFixture struct {
 	tasks        *memoryTasks
 	harness      *scriptedHarness
 	root         int64
+	// acceptance belongs to the fixture, not the orchestrator, because the
+	// real one is a table. A restart test that gave the new process its own
+	// empty recorder would be modelling a store that forgets, which is the
+	// opposite of the property under test.
+	acceptance *memoryAcceptance
 }
 
 func newFreezeFixture(t *testing.T, adjudicationVerdict string, reviewerEnabled bool) *freezeFixture {
 	t.Helper()
 	tasksPort := newMemoryTasks()
+	acceptance := newMemoryAcceptance()
 	models := newFakeModels()
 	harness := &scriptedHarness{models: models, tasks: tasksPort, bodies: freezeBodies(), adjudicationVerdict: adjudicationVerdict}
 
@@ -128,7 +134,7 @@ func newFreezeFixture(t *testing.T, adjudicationVerdict string, reviewerEnabled 
 		roles:   map[string]RoleRef{leader.ID: leader, reviewer.ID: reviewer, ceo.ID: ceo},
 		leaders: map[string]RoleRef{"ingenieria_ia": leader},
 	}
-	orchestrator, err := NewOrchestrator(Dependencies{
+	orchestrator, err := NewOrchestrator(Dependencies{Acceptance: acceptance,
 		OrganizationID: "explorarte", Registry: registry, Tasks: tasksPort, Contexts: &fakeContexts{},
 		Assignments: fakeAssignments{}, Principals: newFakePrincipals(), Models: models, Harness: harness,
 		Budget: &countingBudget{}, Completion: &fakeCompletion{verdict: CompletionPass},
@@ -142,7 +148,7 @@ func newFreezeFixture(t *testing.T, adjudicationVerdict string, reviewerEnabled 
 		ActorRoleID: OwnerRoleID, IdempotencyKey: "m2-1-design-freeze",
 		Goal: OwnerGoal{
 			Goal:               "M2.1 -- design first, review adversarially, then freeze.",
-			AcceptanceCriteria: []string{"Design before implementation"},
+			AcceptanceCriteria: []AcceptanceCriterion{{Text: "Design before implementation", Phase: AcceptanceDesign}},
 			Requirements: []RequirementProposal{{
 				Key: designfreeze.RequirementKey, Type: "approval",
 				Description: "Design frozen by executive adjudication", Required: true,
@@ -152,7 +158,7 @@ func newFreezeFixture(t *testing.T, adjudicationVerdict string, reviewerEnabled 
 	if err != nil {
 		t.Fatalf("submit: %v", err)
 	}
-	return &freezeFixture{orchestrator: orchestrator, tasks: tasksPort, harness: harness, root: run.RootTaskID}
+	return &freezeFixture{orchestrator: orchestrator, tasks: tasksPort, harness: harness, root: run.RootTaskID, acceptance: acceptance}
 }
 
 // drive resumes until the run stops changing, exactly as a worker loop would.
@@ -407,7 +413,7 @@ func TestRunsWithoutADesignFreezeRequirementAreUnaffected(t *testing.T) {
 		roles:   map[string]RoleRef{leader.ID: leader},
 		leaders: map[string]RoleRef{"ingenieria_ia": leader},
 	}
-	orchestrator, err := NewOrchestrator(Dependencies{
+	orchestrator, err := NewOrchestrator(Dependencies{Acceptance: newMemoryAcceptance(),
 		OrganizationID: "explorarte", Registry: registry, Tasks: tasksPort, Contexts: &fakeContexts{},
 		Assignments: fakeAssignments{}, Principals: newFakePrincipals(), Models: models, Harness: harness,
 		Budget: &countingBudget{}, Completion: &fakeCompletion{verdict: CompletionPass},
@@ -419,7 +425,7 @@ func TestRunsWithoutADesignFreezeRequirementAreUnaffected(t *testing.T) {
 	}
 	run, _, err := orchestrator.Submit(context.Background(), SubmitRequest{
 		ActorRoleID: OwnerRoleID, IdempotencyKey: "ungoverned",
-		Goal: OwnerGoal{Goal: "Analyze one area.", AcceptanceCriteria: []string{"done"}},
+		Goal: OwnerGoal{Goal: "Analyze one area.", AcceptanceCriteria: []AcceptanceCriterion{{Text: "done", Phase: AcceptanceDesign}}},
 	})
 	if err != nil {
 		t.Fatal(err)

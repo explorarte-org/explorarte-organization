@@ -402,8 +402,25 @@ func (o *Orchestrator) reviewBundle(ctx context.Context, root TaskRecord, design
 	if err != nil {
 		return nil, err
 	}
+	// Only the criteria the owner assigned to the design phase. The rest
+	// describe what the built change must demonstrate, and asking a design
+	// reviewer to verify them is asking it to verify the future -- which
+	// it refused, correctly, on every campaign that got this far.
+	recorded, err := o.acceptance.Acceptance(ctx, root.ID)
+	if err != nil {
+		return nil, fmt.Errorf("read acceptance phases for root %d: %w", root.ID, err)
+	}
+	if len(recorded) == 0 {
+		return nil, fmt.Errorf("%w: root %d has no recorded acceptance phases; it predates phase ownership and must be resubmitted",
+			ErrContractRejected, root.ID)
+	}
+	designRequirements := AcceptanceForPhase(recorded, AcceptanceDesign)
+	if len(designRequirements) == 0 {
+		return nil, fmt.Errorf("%w: root %d has no design-phase acceptance criterion to judge the design against",
+			ErrContractRejected, root.ID)
+	}
 	bundle := designreview.Bundle{
-		OwnerRequirements: root.AcceptanceCriteria,
+		OwnerRequirements: designRequirements,
 		CandidateDesign:   body,
 		ArchitectureConstraints: []string{
 			// The old text claimed the reviewer saw only identities and

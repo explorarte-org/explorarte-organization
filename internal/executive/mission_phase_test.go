@@ -103,7 +103,7 @@ func newMissionFixture(t *testing.T, planPath string, widenScope bool) *missionF
 	target := &fakeProgramTarget{sha: targetSHA}
 	provisioner := newFakeMissionProvisioner()
 
-	orchestrator, err := NewOrchestrator(Dependencies{
+	orchestrator, err := NewOrchestrator(Dependencies{Acceptance: newMemoryAcceptance(),
 		OrganizationID: "explorarte",
 		Registry: fakeRegistry{
 			rev:     RevisionRef{ID: 7},
@@ -135,7 +135,7 @@ func newMissionFixture(t *testing.T, planPath string, widenScope bool) *missionF
 		ActorRoleID: OwnerRoleID, IdempotencyKey: "autonomy-smoke-001",
 		Goal: OwnerGoal{
 			Goal:               "AUTONOMY-SMOKE-001: record the autonomous cycle evidence.",
-			AcceptanceCriteria: []string{"Exactly one allowed file changes"},
+			AcceptanceCriteria: []AcceptanceCriterion{{Text: "Exactly one allowed file changes", Phase: AcceptanceDesign}},
 			Requirements:       requirements,
 		},
 	})
@@ -304,7 +304,7 @@ func TestMissionProvisioningIsIdempotentAcrossResumeAndRestart(t *testing.T) {
 	leader := RoleRef{ID: "ingenieria_ia/orquestador", UnitID: "ingenieria_ia", Enabled: true, Executable: true, CanonicalLeader: true}
 	reviewer := RoleRef{ID: AdversarialReviewerRoleID, UnitID: "investigacion", Enabled: true, Executable: true}
 	ceo := RoleRef{ID: CEORoleID, UnitID: "empresa", Enabled: true, Executable: true}
-	restarted, err := NewOrchestrator(Dependencies{
+	restarted, err := NewOrchestrator(Dependencies{Acceptance: newMemoryAcceptance(),
 		OrganizationID: "explorarte",
 		Registry: fakeRegistry{
 			rev:     RevisionRef{ID: 7},

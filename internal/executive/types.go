@@ -159,8 +159,12 @@ func DefaultLimits() Limits {
 }
 
 type OwnerGoal struct {
-	Goal               string                `json:"goal"`
-	AcceptanceCriteria []string              `json:"acceptance_criteria"`
+	Goal string `json:"goal"`
+	// AcceptanceCriteria carries each requirement with the phase that owns
+	// it. A bare string is refused at decode: a criterion with no phase
+	// has no safe default, and guessing one from its words is the
+	// classifier this type exists to avoid.
+	AcceptanceCriteria []AcceptanceCriterion `json:"acceptance_criteria"`
 	Requirements       []RequirementProposal `json:"requirements,omitempty"`
 }
 

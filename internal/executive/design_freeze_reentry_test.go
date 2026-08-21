@@ -107,7 +107,7 @@ func TestRestartResumesTheSameRoundWithoutRepeatingTheReview(t *testing.T) {
 	leader := RoleRef{ID: "ingenieria_ia/orquestador", UnitID: "ingenieria_ia", Enabled: true, Executable: true, CanonicalLeader: true}
 	reviewer := RoleRef{ID: AdversarialReviewerRoleID, UnitID: "investigacion", Enabled: true, Executable: true}
 	ceo := RoleRef{ID: CEORoleID, UnitID: "empresa", Enabled: true, Executable: true}
-	restarted, err := NewOrchestrator(Dependencies{
+	restarted, err := NewOrchestrator(Dependencies{Acceptance: fixture.acceptance,
 		OrganizationID: "explorarte",
 		Registry: fakeRegistry{
 			rev:     RevisionRef{ID: 7},

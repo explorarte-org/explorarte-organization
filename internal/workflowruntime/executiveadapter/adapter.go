@@ -22,8 +22,17 @@ func (a Adapter) Start(ctx context.Context, request workflowruntime.GoalRequest)
 			Key: requirement.Key, Type: requirement.Type, Description: requirement.Description, Required: requirement.Required,
 		})
 	}
+	criteria := make([]executive.AcceptanceCriterion, 0, len(request.AcceptanceCriteria))
+	for _, criterion := range request.AcceptanceCriteria {
+		// The phase is passed through unvalidated: the Executive owns
+		// which phases exist and refuses the rest, and checking here
+		// would be a second copy of that rule.
+		criteria = append(criteria, executive.AcceptanceCriterion{
+			Text: criterion.Text, Phase: executive.AcceptancePhase(criterion.Phase),
+		})
+	}
 	run, reused, err := a.Orchestrator.Submit(ctx, executive.SubmitRequest{
-		Goal:        executive.OwnerGoal{Goal: request.Goal, AcceptanceCriteria: append([]string(nil), request.AcceptanceCriteria...), Requirements: requirements},
+		Goal:        executive.OwnerGoal{Goal: request.Goal, AcceptanceCriteria: criteria, Requirements: requirements},
 		ActorRoleID: request.Actor.RoleID, IdempotencyKey: request.IdempotencyKey,
 	})
 	if err != nil {

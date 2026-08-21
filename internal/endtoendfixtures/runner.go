@@ -142,8 +142,11 @@ func (r Runner) Run(ctx context.Context, f fixtures.Fixture, subjectID string) (
 	run, reused, err := orchestrator.Submit(ctx, executive.SubmitRequest{
 		ActorRoleID: executive.OwnerRoleID, IdempotencyKey: fmt.Sprintf("r30-14-%s-%d", suffix, time.Now().UnixNano()),
 		Goal: executive.OwnerGoal{
-			Goal:               "Analizar el caso sintetico r30-14 citando la evidencia de investigacion aprobada.",
-			AcceptanceCriteria: []string{"un departamento revisado", "cierre verificado"},
+			Goal: "Analizar el caso sintetico r30-14 citando la evidencia de investigacion aprobada.",
+			AcceptanceCriteria: []executive.AcceptanceCriterion{
+				{Text: "un departamento revisado", Phase: executive.AcceptanceDesign},
+				{Text: "cierre verificado", Phase: executive.AcceptanceImplementation},
+			},
 		},
 	})
 	if err != nil {

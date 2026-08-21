@@ -19,6 +19,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/executionharness/modelruntimeadapter"
 	executionharnesspostgres "github.com/Mireuz13/explorarte-organization/internal/executionharness/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/executive"
+	executivepostgres "github.com/Mireuz13/explorarte-organization/internal/executive/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/executive/runtimeadapter"
 	modelbootstrap "github.com/Mireuz13/explorarte-organization/internal/modelruntime/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
@@ -180,6 +181,10 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 	if err := rejectDeprecatedAgentBudgetEnv(); err != nil {
 		return nil, err
 	}
+	acceptanceStore, err := executivepostgres.NewAcceptanceStore(store.Pool())
+	if err != nil {
+		return nil, fmt.Errorf("create executive acceptance store: %w", err)
+	}
 	var orchestrator *executive.Orchestrator
 	dependencies := executive.Dependencies{
 		OrganizationID: cfg.Tasks.OrganizationID,
@@ -190,6 +195,7 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 		Principals:     runtimeadapter.RoleBoundPrincipals{Resolver: roleBoundResolver},
 		Models:         baseModels,
 		Harness:        harness,
+		Acceptance:     acceptanceStore,
 		Budget:         modelBudget,
 		Completion:     completionGate,
 		Decisions:      decisionRecorder,
