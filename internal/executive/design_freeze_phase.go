@@ -134,7 +134,7 @@ func (o *Orchestrator) driveDesignFreeze(ctx context.Context, root TaskRecord, a
 		Version: "v" + strconv.Itoa(artifact.Round),
 		Digest:  artifactDigest(artifact),
 	}
-	bundle, err := o.reviewBundle(root, design, artifact)
+	bundle, err := o.reviewBundle(ctx, root, design, artifact)
 	if err != nil {
 		run, blockErr := o.blockRoot(ctx, root, "adversarial_review_bundle_rejected", err.Error())
 		if blockErr != nil {
@@ -353,18 +353,83 @@ func designRound(all []TaskRecord, rootID int64) int {
 	return highest
 }
 
-func (o *Orchestrator) reviewBundle(root TaskRecord, design designfreeze.Design, artifact designArtifact) ([]byte, error) {
+// candidateBody resolves the exact durable deliverable behind each unit of
+// the artifact and renders it as an inspectable design.
+//
+// Every unit's body is fetched by its own invocation id and then checked
+// against the result hash the artifact recorded. That check is the whole
+// point: what the reviewer reads must be provably the same object the
+// artifact says is under review. Without it, "here is the design" and "here
+// is its digest" would be two independent claims, and an inspectable body
+// would have bought readability at the cost of provenance.
+//
+// Nothing else is read. Not task instructions, not repository files, not
+// whole task contexts -- only the durable results the artifact already names.
+func (o *Orchestrator) candidateBody(ctx context.Context, artifact designArtifact) (string, error) {
+	sections := make([]string, 0, len(artifact.Units))
+	for _, unit := range artifact.Units {
+		result, err := o.models.GetResult(ctx, unit.InvocationID)
+		if err != nil {
+			return "", fmt.Errorf("resolving deliverable for %s (task:%d invocation:%d): %w", unit.UnitID, unit.TaskID, unit.InvocationID, err)
+		}
+		if result.ResponseHash != unit.ResultHash {
+			return "", fmt.Errorf("%w: deliverable for %s (task:%d invocation:%d) hashes %s but the artifact records %s",
+				ErrContractRejected, unit.UnitID, unit.TaskID, unit.InvocationID, result.ResponseHash, unit.ResultHash)
+		}
+		body := strings.TrimSpace(result.TextOutput)
+		if body == "" {
+			body = strings.TrimSpace(string(result.JSONOutput))
+		}
+		if body == "" {
+			return "", fmt.Errorf("%w: deliverable for %s (task:%d invocation:%d) is empty",
+				ErrContractRejected, unit.UnitID, unit.TaskID, unit.InvocationID)
+		}
+		if limit := o.limits.MaxStringBytes; limit > 0 && len(body) > limit {
+			body = body[:limit]
+		}
+		sections = append(sections, fmt.Sprintf("%s (task:%d model-invocation:%d result:%s)\n%s",
+			unit.UnitID, unit.TaskID, unit.InvocationID, unit.ResultHash, body))
+	}
+	return joinLines(sections), nil
+}
+
+func (o *Orchestrator) reviewBundle(ctx context.Context, root TaskRecord, design designfreeze.Design, artifact designArtifact) ([]byte, error) {
 	evidence := make([]string, 0, len(artifact.Units))
-	summary := make([]string, 0, len(artifact.Units))
 	for _, unit := range artifact.Units {
 		evidence = append(evidence, fmt.Sprintf("task:%d:model-invocation:%d", unit.TaskID, unit.InvocationID))
-		summary = append(summary, fmt.Sprintf("%s -> task:%d result:%s", unit.UnitID, unit.TaskID, unit.ResultHash))
+	}
+	body, err := o.candidateBody(ctx, artifact)
+	if err != nil {
+		return nil, err
+	}
+	// Only the criteria the owner assigned to the design phase. The rest
+	// describe what the built change must demonstrate, and asking a design
+	// reviewer to verify them is asking it to verify the future -- which
+	// it refused, correctly, on every campaign that got this far.
+	recorded, err := o.acceptance.Acceptance(ctx, root.ID)
+	if err != nil {
+		return nil, fmt.Errorf("read acceptance phases for root %d: %w", root.ID, err)
+	}
+	if len(recorded) == 0 {
+		return nil, fmt.Errorf("%w: root %d has no recorded acceptance phases; it predates phase ownership and must be resubmitted",
+			ErrContractRejected, root.ID)
+	}
+	designRequirements := AcceptanceForPhase(recorded, AcceptanceDesign)
+	if len(designRequirements) == 0 {
+		return nil, fmt.Errorf("%w: root %d has no design-phase acceptance criterion to judge the design against",
+			ErrContractRejected, root.ID)
 	}
 	bundle := designreview.Bundle{
-		OwnerRequirements: root.AcceptanceCriteria,
-		CandidateDesign:   "Durable department deliverables under review:\n" + joinLines(summary),
+		OwnerRequirements: designRequirements,
+		CandidateDesign:   body,
 		ArchitectureConstraints: []string{
-			"The reviewer sees only durable deliverable identities and their result digests.",
+			// The old text claimed the reviewer saw only identities and
+			// digests. It was true, and it made the review impossible:
+			// a reviewer that cannot read the design can only report
+			// that it could not verify anything, which is what it did,
+			// every time. This states the property we actually want --
+			// readable AND provably the object under review.
+			"The reviewer sees the sanitized candidate design bound to the durable deliverable identities and result digests listed in this bundle.",
 		},
 		AuthorityConstraints: []string{
 			"The reviewer publishes findings; it does not approve, adjudicate or freeze.",

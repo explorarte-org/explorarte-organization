@@ -275,7 +275,7 @@ type BranchDecision struct {
 type GoalRequest struct {
 	Actor              Actor
 	Goal               string
-	AcceptanceCriteria []string
+	AcceptanceCriteria []GoalAcceptanceCriterion
 	Requirements       []RequirementSpec
 	IdempotencyKey     string
 }
@@ -290,4 +290,14 @@ type ExecutiveStart struct {
 type WorkflowStart struct {
 	Executive ExecutiveStart
 	Snapshot  Snapshot
+}
+
+// GoalAcceptanceCriterion carries an owner requirement and the phase that
+// owns it. Phase is a plain string here on purpose: this package passes it
+// through, and internal/executive is the package that decides which phases
+// exist and rejects the rest. Copying the enum would put the rule in two
+// places, and the two would eventually disagree.
+type GoalAcceptanceCriterion struct {
+	Text  string
+	Phase string
 }

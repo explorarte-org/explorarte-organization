@@ -20,7 +20,7 @@ func TestCampaignBudgetDoesNotDependOnTheSubmittingProcess(t *testing.T) {
 	stated.MaxTokens = 120_000_000
 
 	request := SubmitRequest{
-		Goal:           OwnerGoal{Goal: "rewrite the next steps", AcceptanceCriteria: []string{"a plan exists"}},
+		Goal:           OwnerGoal{Goal: "rewrite the next steps", AcceptanceCriteria: []AcceptanceCriterion{{Text: "a plan exists", Phase: AcceptanceDesign}}},
 		ActorRoleID:    OwnerRoleID,
 		IdempotencyKey: "campaign-1",
 		Budget:         &stated,
@@ -49,7 +49,7 @@ func TestCampaignBudgetDoesNotDependOnTheSubmittingProcess(t *testing.T) {
 func TestAnUnstatedCampaignBudgetMeansTheDocumentedDefault(t *testing.T) {
 	fixture := newBudgetFixture(t)
 	request := SubmitRequest{
-		Goal:           OwnerGoal{Goal: "rewrite the next steps", AcceptanceCriteria: []string{"a plan exists"}},
+		Goal:           OwnerGoal{Goal: "rewrite the next steps", AcceptanceCriteria: []AcceptanceCriterion{{Text: "a plan exists", Phase: AcceptanceDesign}}},
 		ActorRoleID:    OwnerRoleID,
 		IdempotencyKey: "campaign-default",
 	}
@@ -79,7 +79,7 @@ func TestAnInvalidCampaignBudgetIsRefusedBeforeTheCampaignExists(t *testing.T) {
 	invalid.MaxTokens = 0
 	fixture := newBudgetFixture(t)
 	_, _, err := fixture.orchestrator.Submit(context.Background(), SubmitRequest{
-		Goal:           OwnerGoal{Goal: "rewrite the next steps", AcceptanceCriteria: []string{"a plan exists"}},
+		Goal:           OwnerGoal{Goal: "rewrite the next steps", AcceptanceCriteria: []AcceptanceCriterion{{Text: "a plan exists", Phase: AcceptanceDesign}}},
 		ActorRoleID:    OwnerRoleID,
 		IdempotencyKey: "campaign-invalid",
 		Budget:         &invalid,
@@ -111,7 +111,7 @@ func newBudgetFixture(t *testing.T) *budgetFixture {
 	tasksPort := newMemoryTasks()
 	budgets := &recordingCampaignBudgets{}
 	ceo := RoleRef{ID: CEORoleID, Enabled: true, Executable: true, UnitID: "empresa"}
-	orchestrator, err := NewOrchestrator(Dependencies{
+	orchestrator, err := NewOrchestrator(Dependencies{Acceptance: newMemoryAcceptance(),
 		OrganizationID: "explorarte",
 		Registry: fakeRegistry{
 			rev:   RevisionRef{ID: 7},

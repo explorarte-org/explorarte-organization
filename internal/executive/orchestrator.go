@@ -32,6 +32,7 @@ type Orchestrator struct {
 	assignments    DispatchProvisioner
 	principals     RoleBoundPrincipalResolver
 	models         ModelInvocationReader
+	acceptance     AcceptanceRecorder
 	harness        HarnessExecutor
 	budget         ModelBudgetGate
 	completion     CompletionGate
@@ -70,6 +71,10 @@ type Dependencies struct {
 	Harness HarnessExecutor
 	// Budget is the Executive's correlation-wide model-call limit, enforced
 	// before the Harness is entered.
+	// Acceptance records which phase owns each owner criterion, so the
+	// design reviewer is never handed a requirement only the built change
+	// could satisfy.
+	Acceptance    AcceptanceRecorder
 	Budget        ModelBudgetGate
 	Completion    CompletionGate
 	Decisions     DecisionRecorder
@@ -99,7 +104,8 @@ func WithAgentMessaging(messages AgentMessagingProvider) OrchestratorOption {
 func NewOrchestrator(deps Dependencies, opts ...OrchestratorOption) (*Orchestrator, error) {
 	if strings.TrimSpace(deps.OrganizationID) == "" || deps.Registry == nil || deps.Tasks == nil || deps.Contexts == nil ||
 		deps.Assignments == nil || deps.Principals == nil || deps.Models == nil || deps.Harness == nil ||
-		deps.Budget == nil || deps.Completion == nil || deps.Decisions == nil || deps.Authorization == nil {
+		deps.Budget == nil || deps.Completion == nil || deps.Decisions == nil || deps.Authorization == nil ||
+		deps.Acceptance == nil {
 		return nil, errors.New("executive orchestrator dependencies are incomplete")
 	}
 	limits := deps.Limits
@@ -117,7 +123,8 @@ func NewOrchestrator(deps Dependencies, opts ...OrchestratorOption) (*Orchestrat
 	orchestrator := &Orchestrator{
 		organizationID: strings.TrimSpace(deps.OrganizationID), registry: deps.Registry, tasks: deps.Tasks,
 		contexts: deps.Contexts, assignments: deps.Assignments, principals: deps.Principals, models: deps.Models,
-		harness: deps.Harness, budget: deps.Budget, completion: deps.Completion, decisions: deps.Decisions, validator: validator, limits: limits,
+		acceptance: deps.Acceptance,
+		harness:    deps.Harness, budget: deps.Budget, completion: deps.Completion, decisions: deps.Decisions, validator: validator, limits: limits,
 		clock: clock, leases: map[int64]LeaseRecord{}, leaseKeeper: DefaultLeaseKeeperConfig(),
 	}
 	for _, opt := range opts {
@@ -141,8 +148,16 @@ func (o *Orchestrator) Submit(ctx context.Context, request SubmitRequest) (Run, 
 	if len(request.Goal.AcceptanceCriteria) == 0 || len(request.Goal.AcceptanceCriteria) > o.limits.MaxAcceptanceCriteria {
 		return Run{}, false, fmt.Errorf("%w: acceptance criteria", ErrInvalidInput)
 	}
-	if err := validateStrings(request.Goal.AcceptanceCriteria, o.limits, "acceptance_criteria"); err != nil {
+	criteriaTexts := AcceptanceTexts(request.Goal.AcceptanceCriteria)
+	if err := validateStrings(criteriaTexts, o.limits, "acceptance_criteria"); err != nil {
 		return Run{}, false, err
+	}
+	// A goal whose criteria are all deferred leaves the design reviewer
+	// nothing to judge the design against, which is the mirror image of
+	// the bug that motivated phases: a review with no applicable
+	// requirement is as useless as one with unsatisfiable requirements.
+	if len(AcceptanceForPhase(request.Goal.AcceptanceCriteria, AcceptanceDesign)) == 0 {
+		return Run{}, false, fmt.Errorf("%w: at least one acceptance criterion must belong to the design phase", ErrInvalidInput)
 	}
 	if len(request.Goal.Requirements) > o.limits.MaxRequirementsPerTask {
 		return Run{}, false, ErrPlanTooLarge
@@ -176,7 +191,7 @@ func (o *Orchestrator) Submit(ctx context.Context, request SubmitRequest) (Run, 
 		IdempotencyKey:     request.IdempotencyKey,
 		Title:              "Executive owner goal",
 		Instructions:       request.Goal.Goal,
-		AcceptanceCriteria: append([]string(nil), request.Goal.AcceptanceCriteria...),
+		AcceptanceCriteria: criteriaTexts,
 		Priority:           100,
 		MaxAttempts:        2,
 		CorrelationID:      correlation,
@@ -185,6 +200,12 @@ func (o *Orchestrator) Submit(ctx context.Context, request SubmitRequest) (Run, 
 	})
 	if err != nil {
 		return Run{}, false, err
+	}
+	// The phase assignment is written before anything can read it, and it
+	// is idempotent, so a resumed submit finds what the first one stored
+	// rather than a second opinion about the same goal.
+	if err := o.acceptance.RecordAcceptance(ctx, root.ID, request.Goal.AcceptanceCriteria); err != nil {
+		return Run{}, false, fmt.Errorf("record acceptance phases for task %d: %w", root.ID, err)
 	}
 	if o.budgets != nil {
 		if err := o.budgets.CreateRootBudget(ctx, root, budget, o.clock.Now()); err != nil {
