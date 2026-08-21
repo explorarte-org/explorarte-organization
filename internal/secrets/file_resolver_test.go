@@ -26,6 +26,14 @@ func writePrivateKey(t *testing.T, mode os.FileMode) string {
 	if err = os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), mode); err != nil {
 		t.Fatal(err)
 	}
+	// WriteFile's mode is a request, not a result: the process umask clears
+	// bits from it. Under a service running with umask 0077 a file asked for
+	// as 0644 lands as 0600, so the test that checks a permissive key is
+	// REJECTED was writing a safe key and then failing because nothing
+	// rejected it. Chmod sets the mode that was actually meant.
+	if err = os.Chmod(path, mode); err != nil {
+		t.Fatal(err)
+	}
 	return path
 }
 
