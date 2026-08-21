@@ -74,6 +74,22 @@ type designUnitRef struct {
 // because an execution is still in flight, or because the executive decided
 // the design is not frozen. done=false means the phase has nothing to hold up
 // and the run may proceed to closure.
+// designAdjudicationPreamble is everything the adjudicator is told before the
+// bundle itself.
+//
+// It deliberately does not ask for the design identity back. The host binds
+// design_id, design_version and design_digest onto the verdict from its own
+// record, and the output schema has no place to put them, so an instruction
+// to echo them commands the model to return something with nowhere to go. It
+// obeyed: one campaign died with the identity written out as prose inside a
+// findings array, rejected as an invalid finding reference.
+//
+// Removing the fields from the schema and leaving the sentence that demanded
+// them was half a change. This is the other half.
+const designAdjudicationPreamble = "Adjudicate the adversarial review of this candidate design and return DesignAdjudication JSON. " +
+	"The design identity is bound by the host and must not be restated; return only the fields the schema declares. " +
+	"Only verdict=freeze settles the design.\n\n"
+
 func (o *Orchestrator) driveDesignFreeze(ctx context.Context, root TaskRecord, all []TaskRecord) (Run, bool, error) {
 	requirement, found := findRequirementByKey(root.Requirements, designfreeze.RequirementKey)
 	if !found {
@@ -181,12 +197,10 @@ func (o *Orchestrator) driveDesignFreeze(ctx context.Context, root TaskRecord, a
 			TaskClass:      TaskClassCoordinationDesignAdjudication,
 			IdempotencyKey: childKey(root.ID, "design-adjudication"+suffix),
 			Title:          "Design adjudication: " + design.ID + " " + design.Version,
-			Instructions: "Adjudicate the adversarial review of this candidate design and return DesignAdjudication JSON. " +
-				"Echo design_id, design_version and design_digest exactly as supplied. Only verdict=freeze settles the design.\n\n" +
+			Instructions: designAdjudicationPreamble +
 				string(bundle) + "\n\nADVERSARIAL REVIEW:\n" + string(reviewResult.JSONOutput),
 			AcceptanceCriteria: []string{
 				"Return strict DesignAdjudication JSON",
-				"Echo the supplied design identity exactly",
 				"A freeze verdict may not carry required changes or unresolved owner decisions",
 			},
 			Priority: 95, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID),
