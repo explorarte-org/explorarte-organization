@@ -191,10 +191,17 @@ func (h Harness) lastInvocationID(ctx context.Context, runID string) (int64, err
 	}
 	var invocationID int64
 	for _, event := range events {
-		if event.Type != executionharness.EventModelResponseRecorded || event.ModelResult == nil {
-			continue
+		// A recorded response carries the reference; a failed run carries it
+		// on the event itself, because there was no response to put it in.
+		// Reading only the first meant the reference was available exactly
+		// when it did not matter and absent exactly when it did.
+		reference := ""
+		switch {
+		case event.Type == executionharness.EventModelResponseRecorded && event.ModelResult != nil:
+			reference = strings.TrimSpace(event.ModelResult.InvocationRef)
+		case event.Type == executionharness.EventRunFailed:
+			reference = strings.TrimSpace(event.InvocationRef)
 		}
-		reference := strings.TrimSpace(event.ModelResult.InvocationRef)
 		if reference == "" {
 			continue
 		}

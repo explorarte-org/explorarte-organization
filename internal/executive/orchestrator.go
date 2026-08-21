@@ -1369,6 +1369,13 @@ func (o *Orchestrator) handleHarnessFailure(ctx context.Context, root, task Task
 		// re-deriving it. An unreadable answer means no retry: spending an
 		// attempt on a guess can repeat a call the provider may already have
 		// billed.
+		// A failure with no invocation to ask about, and an invocation with
+		// no recorded outcome, are both "unknown" -- and unknown means no
+		// retry, because spending an attempt on a guess can repeat a call
+		// the provider may already have billed. What changed is that the
+		// two are no longer indistinguishable from a recorded "no": the
+		// reader now says which case it is, so a future decision can act on
+		// the difference instead of inheriting it.
 		retryable := false
 		if outcome.InvocationID > 0 {
 			if value, readErr := o.models.ProviderFailureRetryable(ctx, outcome.InvocationID); readErr == nil {
