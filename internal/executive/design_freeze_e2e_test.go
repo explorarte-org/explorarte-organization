@@ -92,8 +92,19 @@ func freezeBodies() map[ExecutionPurpose]string {
 		PurposeCEOPlan: `{"schema_version":"executive-plan/v1","objective":"Design M2.1",` +
 			`"department_requests":[{"unit_id":"ingenieria_ia","objective":"design","deliverable":"candidate design","priority":1,"constraints":[]}],` +
 			`"global_constraints":[],"success_criteria":["design reviewed"],"owner_decisions_required":[]}`,
+		// The department must actually produce something. A plan with no
+		// tasks models a department that delivers nothing, and for a long
+		// time that was why nobody noticed the candidate design was the
+		// leader's review verdict: with no deliverable, the verdict was
+		// the only durable text there was.
 		PurposeDepartmentPlan: `{"schema_version":"department-plan/v1","department_id":"ingenieria_ia",` +
-			`"tasks":[],"review_criteria":["design is complete"],"unresolved":[]}`,
+			`"tasks":[{"client_key":"design-1","assigned_role_id":"ingenieria_ia/qa","task_class":"engineering.design",` +
+			`"title":"Draft the candidate design","instructions":"Write the design for M2.1.",` +
+			`"acceptance_criteria":["names what changes"],"dependencies":[],"requirements":[],"priority":50}],` +
+			`"review_criteria":["design is complete"],"unresolved":[]}`,
+		PurposeDepartmentWorker: `{"schema_version":"worker-result/v1",` +
+			`"summary":"M2.1 seals the design before implementation and names every file it will touch.",` +
+			`"evidence_refs":[]}`,
 		PurposeDepartmentReview: `{"schema_version":"department-review/v1","verdict":"accept","findings":["design drafted"],` +
 			`"unsatisfied_criteria":[],"evidence_refs":["task:1:context"],"proposed_followup_tasks":[]}`,
 		PurposeAdversarialReview: `{"schema_version":"adversarial-review/v1","verdict":"revise",` +
@@ -126,12 +137,16 @@ func newFreezeFixture(t *testing.T, adjudicationVerdict string, reviewerEnabled 
 	harness := &scriptedHarness{models: models, tasks: tasksPort, bodies: freezeBodies(), adjudicationVerdict: adjudicationVerdict}
 
 	leader := RoleRef{ID: "ingenieria_ia/orquestador", UnitID: "ingenieria_ia", Enabled: true, Executable: true, CanonicalLeader: true}
+	// A worker distinct from the leader, because the deliverable and the
+	// verdict about it come from different roles. Collapsing them is how
+	// the two got confused for as long as they did.
+	worker := RoleRef{ID: "ingenieria_ia/qa", UnitID: "ingenieria_ia", Enabled: true, Executable: true}
 	reviewer := RoleRef{ID: AdversarialReviewerRoleID, UnitID: "investigacion", Enabled: reviewerEnabled, Executable: reviewerEnabled}
 	ceo := RoleRef{ID: CEORoleID, UnitID: "empresa", Enabled: true, Executable: true}
 	registry := fakeRegistry{
 		rev:     RevisionRef{ID: 7},
 		units:   map[string]UnitRef{"ingenieria_ia": {ID: "ingenieria_ia", Operational: true, LeaderRoleID: leader.ID}},
-		roles:   map[string]RoleRef{leader.ID: leader, reviewer.ID: reviewer, ceo.ID: ceo},
+		roles:   map[string]RoleRef{leader.ID: leader, worker.ID: worker, reviewer.ID: reviewer, ceo.ID: ceo},
 		leaders: map[string]RoleRef{"ingenieria_ia": leader},
 	}
 	orchestrator, err := NewOrchestrator(Dependencies{Acceptance: acceptance,
@@ -410,7 +425,7 @@ func TestRunsWithoutADesignFreezeRequirementAreUnaffected(t *testing.T) {
 	registry := fakeRegistry{
 		rev:     RevisionRef{ID: 7},
 		units:   map[string]UnitRef{"ingenieria_ia": {ID: "ingenieria_ia", Operational: true, LeaderRoleID: leader.ID}},
-		roles:   map[string]RoleRef{leader.ID: leader},
+		roles:   map[string]RoleRef{leader.ID: leader, RoleRef{ID: "ingenieria_ia/qa"}.ID: {ID: "ingenieria_ia/qa", UnitID: "ingenieria_ia", Enabled: true, Executable: true}},
 		leaders: map[string]RoleRef{"ingenieria_ia": leader},
 	}
 	orchestrator, err := NewOrchestrator(Dependencies{Acceptance: newMemoryAcceptance(),
@@ -458,6 +473,12 @@ func TestFreezeCreatesNoImplementationEligibility(t *testing.T) {
 		TaskClassCoordinationDeptReview: {}, TaskClassCoordinationCEOClosure: {},
 		TaskClassCoordinationAdversarialReview: {}, TaskClassCoordinationDesignAdjudication: {},
 		TaskClassGeneralWork: {}, "": {},
+		// A department producing a design is what this phase is FOR. The
+		// guard is about implementation work leaking in early -- missions,
+		// promotions, staging -- and the needle check below is what
+		// actually enforces that. A design deliverable is the opposite of
+		// the thing being guarded against.
+		"engineering.design": {},
 	}
 	tasks, err := fixture.tasks.ListByCorrelation(context.Background(), fixture.rootRecord(t).CorrelationID)
 	if err != nil {

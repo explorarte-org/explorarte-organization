@@ -53,7 +53,20 @@ const (
 	ReasonAdversarialReviewUnavailable = "adversarial_review_unavailable"
 )
 
-// designArtifact is the host's own definition of "the candidate design": the
+// The candidate design is the set of deliverables the departments produced,
+// not the verdicts their leaders returned about them.
+//
+// Those were confused for a long time and nothing could tell, because the
+// artifact only ever surfaced as identities and digests. The moment the body
+// became readable the adjudicator read it and said so in one line: replace
+// the department-review verdict with a textual design artifact. It had been
+// judging the review summary and calling it the design.
+//
+// A completed department review still gates which units contribute -- it is
+// what says a department has finished and been judged. It is simply not the
+// thing the department made.
+//
+// designArtifact is the host'"'"'s own definition of "the candidate design": the
 // ordered durable deliverables the department phase produced. It is computed
 // from durable task state only, so the same run always yields the same digest
 // and a changed deliverable necessarily yields a different one.
@@ -297,18 +310,35 @@ func (o *Orchestrator) candidateDesign(ctx context.Context, root TaskRecord, all
 	artifact := designArtifact{RootTaskID: root.ID, Round: designRound(all, root.ID)}
 	units := make([]string, 0, len(all))
 	for _, task := range all {
+		// A completed department review is what says this department has
+		// finished and been judged by its leader. It gates which units
+		// contribute -- it is not itself the thing they produced.
 		if task.TaskClass != TaskClassCoordinationDeptReview || task.Status != "completed" {
 			continue
 		}
-		result, ok := o.resultForCompletedTask(ctx, task)
-		if !ok {
-			continue
+		unit := task.AssignedUnitID
+		contributed := false
+		for _, worker := range departmentWorkerTasks(all, root.ID, unit) {
+			// Only completed workers. A failed one produced no
+			// deliverable, and the leader review already weighed its
+			// failure; presenting nothing as part of the design would
+			// be worse than presenting less.
+			if worker.Status != "completed" {
+				continue
+			}
+			result, ok := o.resultForCompletedTask(ctx, worker)
+			if !ok {
+				continue
+			}
+			artifact.Units = append(artifact.Units, designUnitRef{
+				UnitID: unit, TaskID: worker.ID,
+				InvocationID: result.InvocationID, ResultHash: result.ResponseHash,
+			})
+			contributed = true
 		}
-		artifact.Units = append(artifact.Units, designUnitRef{
-			UnitID: task.AssignedUnitID, TaskID: task.ID,
-			InvocationID: result.InvocationID, ResultHash: result.ResponseHash,
-		})
-		units = append(units, task.AssignedUnitID)
+		if contributed {
+			units = append(units, unit)
+		}
 	}
 	if len(artifact.Units) == 0 {
 		return designArtifact{}, nil, false
