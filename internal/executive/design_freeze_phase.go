@@ -212,9 +212,16 @@ func (o *Orchestrator) driveDesignFreeze(ctx context.Context, root TaskRecord, a
 	}
 	expected := DesignIdentity{DesignID: design.ID, DesignVersion: design.Version, DesignDigest: design.Digest}
 	if adjudicationTask.Status != "completed" {
-		if _, err = o.driveTypedTask(ctx, root, adjudicationTask, DesignAdjudicationOutputSchema(), PurposeDesignAdjudication, func(result InvocationResult) error {
-			_, parseErr := ParseDesignAdjudication(result.JSONOutput, expected, o.limits)
-			return parseErr
+		// The adjudicator may only cite findings this review actually
+		// raised, so the schema is built from the review in hand rather
+		// than from a constant that cannot know what is in it.
+		reviewIDs := reviewFindingIDs(reviewResult.JSONOutput, o.limits)
+		if _, err = o.driveTypedTask(ctx, root, adjudicationTask, DesignAdjudicationOutputSchemaFor(reviewIDs), PurposeDesignAdjudication, func(result InvocationResult) error {
+			parsed, parseErr := ParseDesignAdjudication(result.JSONOutput, expected, o.limits)
+			if parseErr != nil {
+				return parseErr
+			}
+			return AssertFindingsExist(parsed, reviewIDs)
 		}); err != nil {
 			run, phaseErr := o.handlePhaseError(ctx, root, adjudicationTask, err)
 			return run, true, phaseErr
@@ -228,6 +235,9 @@ func (o *Orchestrator) driveDesignFreeze(ctx context.Context, root TaskRecord, a
 		return run, true, blockErr
 	}
 	adjudication, err := ParseDesignAdjudication(adjudicationResult.JSONOutput, expected, o.limits)
+	if err == nil {
+		err = AssertFindingsExist(adjudication, reviewFindingIDs(reviewResult.JSONOutput, o.limits))
+	}
 	if err != nil {
 		run, blockErr := o.blockRoot(ctx, root, "design_adjudication_invalid", err.Error())
 		return run, true, blockErr
@@ -407,4 +417,22 @@ func findRequirementByKey(requirements []RequirementRecord, key string) (Require
 		}
 	}
 	return RequirementRecord{}, false
+}
+
+// reviewFindingIDs recovers the identifiers the adversarial review raised.
+//
+// A review that will not parse yields no identifiers, which pins the
+// adjudicator's finding lists empty. That is the right failure: an
+// adjudication cannot cite findings from a review nobody could read, and the
+// unparseable review is a separate problem that surfaces on its own.
+func reviewFindingIDs(body []byte, limits Limits) []string {
+	review, err := ParseAdversarialReview(body, limits)
+	if err != nil {
+		return nil
+	}
+	ids := make([]string, 0, len(review.Findings))
+	for _, finding := range review.Findings {
+		ids = append(ids, finding.ID)
+	}
+	return ids
 }
