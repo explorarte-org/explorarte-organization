@@ -2,6 +2,7 @@ package executive
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/Mireuz13/explorarte-organization/internal/designfreeze"
@@ -31,6 +32,7 @@ const (
 	ReasonImplementationPlanUnavailable  = "implementation_plan_unavailable"
 	ReasonMissionProvisioningUnavailable = "mission_provisioning_unavailable"
 	ReasonMissionPolicyRejected          = "mission_policy_rejected"
+	ReasonMissionRejected                = "mission_rejected"
 )
 
 // ProgramTargetResolver reports the exact commit the program's promotion
@@ -187,6 +189,15 @@ func (o *Orchestrator) driveImplementationMission(ctx context.Context, root Task
 		RequestedByRoleID: CEORoleID, ActorType: "service", ActorID: principal.ID,
 	})
 	if err != nil {
+		// A refused mission is a refusal, not a retry -- the same reason the
+		// policy rejection above blocks rather than returning. Re-submitting
+		// the identical policy and plan is refused identically, so returning
+		// the error would leave the root executable and the worker would
+		// resume it forever.
+		if errors.Is(err, ErrMissionRejected) {
+			run, blockErr := o.blockRoot(ctx, root, ReasonMissionRejected, err.Error())
+			return run, true, blockErr
+		}
 		return Run{}, true, err
 	}
 

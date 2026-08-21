@@ -29,12 +29,24 @@ var (
 	ErrDependencyCycle            = errors.New("executive dependency cycle")
 	ErrBudgetExceeded             = errors.New("executive invocation budget exceeded")
 	ErrDispatchAssignmentRequired = errors.New("executive dispatch assignment required")
-	ErrModelOutcomeAmbiguous      = errors.New("executive model outcome ambiguous")
-	ErrToolIntentRejected         = errors.New("executive tool intent rejected")
-	ErrCompletionFailed           = errors.New("executive completion verification failed")
-	ErrCompletionInconclusive     = errors.New("executive completion verification inconclusive")
-	ErrRunBlocked                 = errors.New("executive run blocked")
-	ErrRunTerminal                = errors.New("executive run is terminal")
+
+	// ErrMissionRejected marks a mission the task engine refused because the
+	// request itself was malformed -- not because anything was unavailable.
+	//
+	// The distinction is the whole point. An unavailable dependency is worth
+	// coming back for; a rejected request is not, because the next attempt
+	// submits the same policy and the same plan and is refused for the same
+	// reason. Without it a deterministic refusal reads as a transient one,
+	// and the worker retries it until somebody notices -- which took eight
+	// hours and about nine thousand six hundred attempts the first time,
+	// silently, on a campaign whose design had already frozen.
+	ErrMissionRejected        = errors.New("executive engineering mission rejected")
+	ErrModelOutcomeAmbiguous  = errors.New("executive model outcome ambiguous")
+	ErrToolIntentRejected     = errors.New("executive tool intent rejected")
+	ErrCompletionFailed       = errors.New("executive completion verification failed")
+	ErrCompletionInconclusive = errors.New("executive completion verification inconclusive")
+	ErrRunBlocked             = errors.New("executive run blocked")
+	ErrRunTerminal            = errors.New("executive run is terminal")
 
 	// ErrExecutionPrincipalUnavailable means the canonical role-bound
 	// principal could not be consulted. It is not a statement about the

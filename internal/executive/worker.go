@@ -46,7 +46,29 @@ type Worker struct {
 	orchestrator *Orchestrator
 	roots        RootSource
 	executions   ExecutionReconciler
+	observe      func(rootTaskID int64, err error)
 	cfg          WorkerConfig
+}
+
+// WithFailureObserver reports a durable run failure the worker did not
+// recognise.
+//
+// The loop below skips the failures it knows will resolve themselves and
+// falls through on everything else, trusting that the orchestrator already
+// blocked the run. That trust was misplaced once and cost eight hours: a
+// deterministic refusal returned as an ordinary error left the root
+// executable, and the worker resumed it roughly nine thousand six hundred
+// times without writing a single line anywhere. The campaign looked idle
+// while the worker burned a twentieth of a core against the same wall.
+//
+// Classification is what stops the loop; this is what makes the next
+// unclassified one findable in seconds instead of a session.
+func WithFailureObserver(observe func(rootTaskID int64, err error)) WorkerOption {
+	return func(w *Worker) {
+		if observe != nil {
+			w.observe = observe
+		}
+	}
 }
 
 // WithExecutionReconciler runs model-execution reconciliation on every pass.
@@ -105,25 +127,16 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 		if runErr == nil {
 			continue
 		}
-		if errors.Is(runErr, ErrDispatchAssignmentRequired) ||
-			errors.Is(runErr, ErrModelOutcomeAmbiguous) ||
-			errors.Is(runErr, ErrIndeterminateToolExecution) ||
-			errors.Is(runErr, ErrCompletionInconclusive) ||
-			errors.Is(runErr, ErrRunBlocked) ||
-			// The lease will expire, the task engine will reconcile the
-			// attempt, and the next pass claims a fresh one. Nothing here has
-			// to act on it.
-			errors.Is(runErr, ErrLeaseLost) ||
-			errors.Is(runErr, ErrExecutionAuthorityUnavailable) ||
-			errors.Is(runErr, ErrExecutionPrincipalUnavailable) ||
-			// An unresolved provider-side execution resolves itself once Model
-			// Runtime reconciles it; the worker just comes back later.
-			errors.Is(runErr, ErrPriorExecutionUnresolved) ||
-			errors.Is(runErr, ErrExecutionInterrupted) {
+		if resolvesItself(runErr) {
 			continue
 		}
-		// A single durable run failure must not terminate the process. The run
-		// itself has already been blocked/failed by the orchestrator when safe.
+		// A single durable run failure must not terminate the process. The
+		// run itself has already been blocked/failed by the orchestrator
+		// when safe -- and when it has not, this is the only place that will
+		// ever say so.
+		if w.observe != nil {
+			w.observe(rootID, runErr)
+		}
 	}
 	return nil
 }
@@ -154,4 +167,35 @@ func sleepContext(ctx context.Context, duration time.Duration) bool {
 	case <-timer.C:
 		return true
 	}
+}
+
+// resolvesItself reports whether a durable run failure will clear on its own,
+// so the worker can come back later and do nothing about it now.
+//
+// It is a named predicate rather than an inline chain because the whole
+// question the worker asks about a failure is "is this one of those?", and
+// the answer for everything else decides whether anybody ever hears about it.
+// As a wall of conditions it was unreadable and untestable, and the case it
+// got wrong -- a deterministic refusal that is not on this list and was not
+// blocked either -- looked exactly like the cases it got right.
+func resolvesItself(err error) bool {
+	switch {
+	case errors.Is(err, ErrDispatchAssignmentRequired),
+		errors.Is(err, ErrModelOutcomeAmbiguous),
+		errors.Is(err, ErrIndeterminateToolExecution),
+		errors.Is(err, ErrCompletionInconclusive),
+		// The orchestrator already blocked the run and said why.
+		errors.Is(err, ErrRunBlocked),
+		// The lease will expire, the task engine will reconcile the attempt,
+		// and the next pass claims a fresh one.
+		errors.Is(err, ErrLeaseLost),
+		errors.Is(err, ErrExecutionAuthorityUnavailable),
+		errors.Is(err, ErrExecutionPrincipalUnavailable),
+		// An unresolved provider-side execution resolves itself once Model
+		// Runtime reconciles it; the worker just comes back later.
+		errors.Is(err, ErrPriorExecutionUnresolved),
+		errors.Is(err, ErrExecutionInterrupted):
+		return true
+	}
+	return false
 }
