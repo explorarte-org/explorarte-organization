@@ -170,7 +170,7 @@ func (e *Executor) Execute(ctx context.Context, plan Plan) ([]Result, error) {
 			return results, fmt.Errorf("plan output budget exceeded")
 		}
 		if !r.Success {
-			return results, fmt.Errorf("operation %s failed", op.Type)
+			return results, operationFailure(r)
 		}
 	}
 	return results, nil
@@ -332,4 +332,35 @@ func opValidate(op Operation) error {
 		}
 	}
 	return nil
+}
+
+// failureExcerptBytes bounds what a failed operation contributes to the
+// recorded reason. The tail is what is kept: a compiler or test runner puts
+// the summary of what went wrong at the end, and a head-truncated excerpt is
+// reliably the least informative part of the output.
+const failureExcerptBytes = 1500
+
+// operationFailure reports a failed operation with what the command actually
+// said.
+//
+// The type alone was all that got recorded, so a gate failure was
+// unfalsifiable from outside: "operation GO_TEST failed" is consistent with a
+// broken test, an unwritable cache, a missing toolchain and an out-of-space
+// device, and distinguishes none of them. Diagnosing one meant reconstructing
+// the workspace by hand and guessing at the difference, which is how an hour
+// went into discovering that the tests passed in eighty-eight seconds.
+//
+// The Result carrying exit code and output was already in hand at this exact
+// line. It was simply dropped.
+func operationFailure(r Result) error {
+	excerpt := strings.TrimSpace(r.Output)
+	if len(excerpt) > failureExcerptBytes {
+		excerpt = "..." + excerpt[len(excerpt)-failureExcerptBytes:]
+	}
+	if excerpt == "" {
+		// A command that failed silently is itself the finding, and saying
+		// so beats an empty quotation that reads like missing data.
+		return fmt.Errorf("operation %s failed with exit code %d and produced no output", r.Type, r.ExitCode)
+	}
+	return fmt.Errorf("operation %s failed with exit code %d: %s", r.Type, r.ExitCode, excerpt)
 }
