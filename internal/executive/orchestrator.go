@@ -276,6 +276,11 @@ func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error
 			// adversarial review and a fresh adjudication, to be told again
 			// what was already said twice.
 			return ProjectRun(root, nil), ErrRunBlocked
+		case ReasonRunChildFailed:
+			// Unblocking would walk straight back into the pass that
+			// found the dead child and block again, one model call
+			// poorer each time it re-drove whatever came before it.
+			return ProjectRun(root, nil), ErrRunBlocked
 		case ReasonAdversarialReviewUnavailable:
 			// Fails closed and stays closed: there is no second provider to
 			// fall back to, so retrying on its own would only spin.
@@ -905,6 +910,44 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 	}
 	if task.Status == "awaiting_verification" {
 		return o.gatedComplete(ctx, task)
+	}
+	// A dead-lettered task has exhausted its attempts: the task engine will
+	// never bring it back, and no later pass can make it produce the result
+	// it owed. Whether that ends the RUN depends on whose result it was.
+	//
+	// The condition is dead_letter alone, not every terminal status.
+	// "failed" looks terminal and is not the end of the story here: a model
+	// that answers perfectly while its output fails the typed contract is
+	// recorded failed-but-retryable precisely so the task can try again, and
+	// an authority outage schedules its own re-entry. Treating those as the
+	// end of the run would stop campaigns that the system is already
+	// designed to resume.
+	//
+	// A department worker's failure belongs to the worker that had it
+	// (6eaa74e): its phase still closes, and department_review weighs the
+	// failed sibling as evidence and answers with needs_replan, blocked or
+	// fail. Propagating it here would make failures contagious again and
+	// replace that judgement with a stall -- the exact defect 6eaa74e
+	// removed.
+	//
+	// Every other purpose here is a host-driven step whose typed result the
+	// orchestrator itself consumes and which no governed semantics can
+	// substitute: nothing reviews a dead CEO plan or a dead adjudication,
+	// and no later pass can conjure one. Those end the run, durably and out
+	// loud, instead of leaving the root ready with nothing recorded.
+	//
+	// Engineering missions never reach this function at all, so a
+	// dead-lettered mission cannot stop its campaign here -- which is what
+	// leaves recovery free to open a successor for it.
+	if task.Status == "dead_letter" && purpose != PurposeDepartmentWorker {
+		reason := fmt.Sprintf("%s task %d exhausted its attempts without producing its result", purpose, task.ID)
+		if task.ReasonCode != "" {
+			reason += ": " + task.ReasonCode
+		}
+		if _, blockErr := o.tasks.BlockTask(ctx, root.ID, ReasonRunChildFailed, truncate(reason, 480), "service", orchestratorWorkerID); blockErr != nil {
+			return task, blockErr
+		}
+		return task, fmt.Errorf("%w: %s", ErrRunBlocked, reason)
 	}
 	// Before anything else -- before a claim, before a budget charge, before
 	// the Harness -- ask whether an earlier execution of this task is still
@@ -1710,6 +1753,26 @@ func findTaskByKey(all []TaskRecord, key string) (TaskRecord, bool) {
 	}
 	return TaskRecord{}, false
 }
+
+// ReasonRunChildFailed blocks a root whose run cannot advance because a
+// host-driven step ended terminally without producing the result the
+// orchestrator itself needed from it.
+//
+// Deliberately NOT every terminal child: a department worker that fails is
+// judged by its department's review, and stopping the run on its behalf would
+// make failures contagious again (see 6eaa74e). A dead-lettered engineering
+// mission does not stop its campaign either -- recovery may open a successor
+// for it, and a stop here would outlive that successor.
+//
+// Nothing used to happen here at all. driveTypedTask has branches for
+// completed, awaiting_verification, ready, leased and running, and a
+// dead-lettered task matches none of them, so it fell through to
+// "return task, nil" -- no progress, no error, and therefore no entry in the
+// worker's failure observer, which only logs errors. The campaign stopped and
+// said nothing. A bootstrap that halts silently is worse than one that fails
+// loudly, because the absence of a signal reads exactly like progress.
+const ReasonRunChildFailed = "run_child_failed"
+
 func isTerminalTask(s string) bool {
 	switch s {
 	case "completed", "no_action", "failed", "dead_letter", "rejected", "cancelled":
