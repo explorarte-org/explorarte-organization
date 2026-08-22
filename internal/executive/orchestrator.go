@@ -47,7 +47,12 @@ type Orchestrator struct {
 	leaseKeeper    LeaseKeeperConfig
 
 	programTarget ProgramTargetResolver
-	missions      MissionProvisioner
+	// snapshotSources reads back what a context snapshot actually carried.
+	// Optional: without it no repository citation can be verified, and the
+	// review bundle carries none -- which is the correct behaviour for a
+	// deployment whose designs never observe code.
+	snapshotSources SnapshotSourceReader
+	missions        MissionProvisioner
 
 	mu     sync.Mutex
 	leases map[int64]LeaseRecord

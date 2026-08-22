@@ -636,11 +636,75 @@ func (o *Orchestrator) candidateBody(ctx context.Context, artifact designArtifac
 	return joinLines(sections), nil
 }
 
+// verifiedDesignCitations confirms which repository citations in a candidate
+// design were really in front of the model that wrote it.
+//
+// Each deliverable is checked against ITS OWN invocation's context snapshot,
+// not against a shared or rebuilt one. Two workers in the same round can see
+// different excerpts -- the selection reads each task's own instructions -- so
+// checking one design's citations against another's context would verify
+// claims their author never had grounds for.
+func (o *Orchestrator) verifiedDesignCitations(ctx context.Context, root TaskRecord, artifact designArtifact) ([]VerifiedCitation, error) {
+	if o.snapshotSources == nil {
+		return nil, nil
+	}
+	baseSHA, err := o.frozenDesignBaseSHA(ctx, root)
+	if err != nil || baseSHA == "" {
+		// A campaign with no pinned world has no repository claims to
+		// ground, and nothing to verify them against.
+		return nil, nil
+	}
+	seen := map[string]struct{}{}
+	all := make([]VerifiedCitation, 0, len(artifact.Units))
+	for _, unit := range artifact.Units {
+		invocation, readErr := o.models.GetInvocation(ctx, unit.InvocationID)
+		if readErr != nil {
+			return nil, readErr
+		}
+		if invocation.ContextSnapshotID == 0 {
+			continue
+		}
+		result, resultErr := o.models.GetResult(ctx, unit.InvocationID)
+		if resultErr != nil {
+			return nil, resultErr
+		}
+		body := strings.TrimSpace(result.TextOutput)
+		if body == "" {
+			body = strings.TrimSpace(string(result.JSONOutput))
+		}
+		verified, verifyErr := o.VerifyRepositoryCitations(ctx, o.snapshotSources, invocation.ContextSnapshotID, baseSHA, body)
+		if verifyErr != nil {
+			return nil, verifyErr
+		}
+		for _, citation := range verified {
+			if _, already := seen[citation.Reference]; already {
+				continue
+			}
+			seen[citation.Reference] = struct{}{}
+			all = append(all, citation)
+		}
+	}
+	return all, nil
+}
+
 func (o *Orchestrator) reviewBundle(ctx context.Context, root TaskRecord, design designfreeze.Design, artifact designArtifact) ([]byte, error) {
 	evidence := make([]string, 0, len(artifact.Units))
 	for _, unit := range artifact.Units {
 		evidence = append(evidence, fmt.Sprintf("task:%d:model-invocation:%d", unit.TaskID, unit.InvocationID))
 	}
+	// Repository citations the host has confirmed were really in front of the
+	// designer that used them.
+	//
+	// References only, never the source behind them. The reviewer's context
+	// admits public and sanitized data, and repository evidence is
+	// organizational: widening that so it could read code would be an egress
+	// decision taken as a side effect of a convenience. What it gets instead
+	// is exactly what it needs -- the set of claims it may treat as grounded.
+	verified, err := o.verifiedDesignCitations(ctx, root, artifact)
+	if err != nil {
+		return nil, err
+	}
+	evidence = append(evidence, authorizedEvidenceRefs(verified)...)
 	body, err := o.candidateBody(ctx, artifact)
 	if err != nil {
 		return nil, err
@@ -673,6 +737,14 @@ func (o *Orchestrator) reviewBundle(ctx context.Context, root TaskRecord, design
 			// every time. This states the property we actually want --
 			// readable AND provably the object under review.
 			"The reviewer sees the sanitized candidate design bound to the durable deliverable identities and result digests listed in this bundle.",
+			// The rule that makes repository grounding worth anything. A
+			// design may now look at code, so a claim about code can be
+			// checked -- and one that cites nothing is no longer merely
+			// unsupported, it is a claim the designer had every means to
+			// ground and did not.
+			"Any claim about concrete repository structure, files, symbols, existing behavior or implementation must cite an authorized repository:// evidence reference listed in this bundle.",
+			"A claim of that kind with no authorized repository citation is a finding of kind unverifiable_repository_claim.",
+			"Do not infer that a repository citation exists merely because the candidate design names a file or path.",
 		},
 		AuthorityConstraints: []string{
 			"The reviewer publishes findings; it does not approve, adjudicate or freeze.",
