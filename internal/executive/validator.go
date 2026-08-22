@@ -87,10 +87,22 @@ func ValidatePlanDependencies(tasks []WorkerTaskProposal) error {
 	for _, task := range tasks {
 		keys[task.ClientKey] = struct{}{}
 	}
+	declared := make([]string, 0, len(keys))
+	for key := range keys {
+		declared = append(declared, key)
+	}
+	sort.Strings(declared)
 	for _, task := range tasks {
 		for _, dependency := range task.Dependencies {
 			if _, ok := keys[dependency]; !ok {
-				return fmt.Errorf("%w: missing dependency %s", ErrContractRejected, dependency)
+				// The message is read by the model on its next attempt:
+				// a failed attempt's summary travels in the task's
+				// history. "missing dependency task:106594" told it that
+				// a task it had just seen complete did not exist, which
+				// is both false and unactionable. Naming the rule and
+				// the legal values is what gives a retry somewhere to go.
+				return fmt.Errorf("%w: dependency %q is not a client_key declared in this response (declared: %s); a task that already exists cannot be waited for, and references to existing work belong in evidence_refs",
+					ErrContractRejected, dependency, strings.Join(declared, ", "))
 			}
 		}
 	}

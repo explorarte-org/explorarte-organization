@@ -66,8 +66,23 @@ func TestTheHostEnforcesTheDependencyRuleItNowStates(t *testing.T) {
 		ClientKey:    "task.106612.followup.qa.verify.001",
 		Dependencies: []string{"task:106594"},
 	}}
-	if err := ValidatePlanDependencies(incident); !errors.Is(err, ErrContractRejected) {
+	err := ValidatePlanDependencies(incident)
+	if !errors.Is(err, ErrContractRejected) {
 		t.Fatalf("a dependency naming an already-existing task must be refused, got %v", err)
+	}
+	// The refusal is read by the model on its next attempt: a failed
+	// attempt's summary travels in the task's own history, which is how the
+	// provider learns what happened. The original message said "missing
+	// dependency task:106594" about a task that had just completed in front
+	// of it -- false, and with nowhere to go. A retry can only do better if
+	// the refusal says what the rule is and what would satisfy it.
+	for _, needed := range []string{"client_key", "evidence_refs", "task.106612.followup.qa.verify.001"} {
+		if !strings.Contains(err.Error(), needed) {
+			t.Fatalf("the refusal must mention %q so a retry has somewhere to go, got %q", needed, err.Error())
+		}
+	}
+	if strings.Contains(err.Error(), "missing dependency") {
+		t.Fatalf("the refusal must not claim an existing task is missing, got %q", err.Error())
 	}
 
 	// The legal form the schema now describes.
