@@ -74,7 +74,7 @@ func TestReadingIsAlwaysAboutTheCommitAsked(t *testing.T) {
 	// new tree, which is how a stale suggestion fails safe rather than
 	// producing evidence about code that no longer exists.
 	hits, err := source.Search(ctx, second, "driveDepartmentsRenamed", 5)
-	if err != nil || len(hits) != 1 || hits[0] != "internal/executive/orchestrator.go" {
+	if err != nil || len(hits) != 1 || hits[0].Path != "internal/executive/orchestrator.go" || hits[0].Line != 3 {
 		t.Fatalf("search at the new commit returned %v (err=%v)", hits, err)
 	}
 

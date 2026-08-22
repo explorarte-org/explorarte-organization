@@ -12,16 +12,28 @@ import (
 // here: a Source that could answer about HEAD would eventually be asked to,
 // and the answer would be evidence about a repository nobody decided on.
 type Source interface {
-	// Search returns candidate paths for a query. It is DISCOVERY: it may be
-	// backed by an index, may be approximate, and may be stale without
-	// consequence, because nothing it returns is quoted to anyone.
-	Search(ctx context.Context, baseSHA, query string, limit int) ([]string, error)
+	// Search returns candidate LOCATIONS for a query. It is DISCOVERY: it
+	// may be backed by an index, may be approximate, and may be stale
+	// without consequence, because nothing it returns is quoted to anyone.
+	//
+	// Locations rather than paths, because "which file mentions this" is
+	// rarely the question. What a designer needs is the code around the
+	// mention, and a path alone forces reading a file from the top and
+	// hoping.
+	Search(ctx context.Context, baseSHA, query string, limit int) ([]Match, error)
 	// ReadRange returns the exact lines of a file at a commit. It is
 	// AUTHORITY: everything an agent cites comes from here.
 	ReadRange(ctx context.Context, baseSHA, path string, start, end int) (string, error)
 	// Lines reports a file's length at a commit, so a range can be bounded
 	// without reading the file to find out.
 	Lines(ctx context.Context, baseSHA, path string) (int, error)
+}
+
+// Match is a place worth reading. It is not evidence: nothing here is quoted
+// until the source is read at that location.
+type Match struct {
+	Path string
+	Line int
 }
 
 // Explorer turns a question about the repository into citable excerpts.
@@ -51,7 +63,7 @@ func NewExplorer(repository, baseSHA string, source Source, limits Limits) (*Exp
 }
 
 // Search suggests where to look. Nothing it returns is evidence.
-func (e *Explorer) Search(ctx context.Context, query string) ([]string, error) {
+func (e *Explorer) Search(ctx context.Context, query string) ([]Match, error) {
 	if strings.TrimSpace(query) == "" {
 		return nil, fmt.Errorf("%w: empty search", ErrInvalidFragment)
 	}
@@ -59,17 +71,34 @@ func (e *Explorer) Search(ctx context.Context, query string) ([]string, error) {
 		return nil, fmt.Errorf("%w: %d searches", ErrBudgetExhausted, e.Limits.MaxSearches)
 	}
 	e.searches++
-	paths, err := e.Source.Search(ctx, e.BaseSHA, query, e.Limits.MaxFiles)
+	matches, err := e.Source.Search(ctx, e.BaseSHA, query, e.Limits.MaxFiles)
 	if err != nil {
 		return nil, err
 	}
-	kept := make([]string, 0, len(paths))
-	for _, candidate := range paths {
-		if ValidatePath(candidate) == nil {
+	kept := make([]Match, 0, len(matches))
+	for _, candidate := range matches {
+		if ValidatePath(candidate.Path) == nil && candidate.Line > 0 {
 			kept = append(kept, candidate)
 		}
 	}
 	return kept, nil
+}
+
+// ReadAround produces the excerpt surrounding a location.
+//
+// A declaration is rarely understandable from its own line: the window is what
+// turns "this symbol exists here" into something a reader can reason about,
+// and it is what a citation has to contain for the claim resting on it to be
+// checkable.
+func (e *Explorer) ReadAround(ctx context.Context, match Match, window int) (Fragment, error) {
+	if window < 0 {
+		window = 0
+	}
+	start := match.Line - window
+	if start < 1 {
+		start = 1
+	}
+	return e.Read(ctx, match.Path, start, match.Line+window)
 }
 
 // Read produces one citable excerpt, within budget.

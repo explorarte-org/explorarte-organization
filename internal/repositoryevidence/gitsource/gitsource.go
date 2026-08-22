@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/Mireuz13/explorarte-organization/internal/repositoryevidence"
@@ -44,7 +45,7 @@ func New(directory, binary string, maxFileBytes int) (*Source, error) {
 //
 // This is discovery: it may miss, it may over-return, and nothing it produces
 // is quoted to anyone. Its results are path candidates and nothing else.
-func (s *Source) Search(ctx context.Context, baseSHA, query string, limit int) ([]string, error) {
+func (s *Source) Search(ctx context.Context, baseSHA, query string, limit int) ([]repositoryevidence.Match, error) {
 	if err := validate(baseSHA); err != nil {
 		return nil, err
 	}
@@ -54,28 +55,45 @@ func (s *Source) Search(ctx context.Context, baseSHA, query string, limit int) (
 	if limit < 1 {
 		limit = 10
 	}
-	// -l lists names only, -F treats the query as a literal so a search
-	// string can never become a pattern with its own semantics, and the
-	// commit is named explicitly.
-	out, err := s.run(ctx, "grep", "-l", "-F", "-e", query, baseSHA)
+	// -n gives the line of each hit, -F treats the query as a literal so a
+	// search string can never become a pattern with its own semantics, and
+	// the commit is named explicitly rather than implied by a checkout.
+	out, err := s.run(ctx, "grep", "-n", "-F", "-e", query, baseSHA)
 	if err != nil {
 		// git grep exits non-zero when nothing matched, which is an answer,
 		// not a failure.
 		return nil, nil
 	}
-	paths := make([]string, 0, limit)
+	matches := make([]repositoryevidence.Match, 0, limit)
+	seen := map[string]struct{}{}
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		// git prefixes each hit with "<commit>:".
-		candidate := strings.TrimPrefix(strings.TrimSpace(line), baseSHA+":")
-		if candidate == "" || repositoryevidence.ValidatePath(candidate) != nil {
+		// Each hit is "<commit>:<path>:<line>:<content>".
+		rest := strings.TrimPrefix(strings.TrimSpace(line), baseSHA+":")
+		path, after, ok := strings.Cut(rest, ":")
+		if !ok || repositoryevidence.ValidatePath(path) != nil {
 			continue
 		}
-		paths = append(paths, candidate)
-		if len(paths) >= limit {
+		number, _, ok := strings.Cut(after, ":")
+		if !ok {
+			continue
+		}
+		at, convErr := strconv.Atoi(number)
+		if convErr != nil || at < 1 {
+			continue
+		}
+		// One location per file: a term appearing twenty times in one file
+		// is one place to look, not twenty, and spending the range budget
+		// on repetitions of the same neighbourhood buys nothing.
+		if _, already := seen[path]; already {
+			continue
+		}
+		seen[path] = struct{}{}
+		matches = append(matches, repositoryevidence.Match{Path: path, Line: at})
+		if len(matches) >= limit {
 			break
 		}
 	}
-	return paths, nil
+	return matches, nil
 }
 
 // Lines reports a file's length at a commit.

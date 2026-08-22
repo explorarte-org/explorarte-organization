@@ -17,12 +17,12 @@ const (
 type fakeSource struct {
 	lines    map[string]int
 	content  map[string]string
-	found    []string
+	found    []Match
 	searches int
 	reads    int
 }
 
-func (f *fakeSource) Search(_ context.Context, _, _ string, _ int) ([]string, error) {
+func (f *fakeSource) Search(_ context.Context, _, _ string, _ int) ([]Match, error) {
 	f.searches++
 	return f.found, nil
 }
@@ -51,7 +51,7 @@ func (o *Orchestrator) driveDesignFreeze() {}
 	return &fakeSource{
 		lines:   map[string]int{"internal/executive/orchestrator.go": 4},
 		content: map[string]string{"internal/executive/orchestrator.go": body},
-		found:   []string{"internal/executive/orchestrator.go"},
+		found:   []Match{{Path: "internal/executive/orchestrator.go", Line: 3}},
 	}
 }
 
@@ -163,15 +163,17 @@ func TestExplorationIsBounded(t *testing.T) {
 // quoted -- it only says where to read.
 func TestSearchSuggestsAndOnlyReadingCites(t *testing.T) {
 	source := newSource()
-	source.found = append(source.found, "internal/executive/deleted-since.go", "../escape.go")
+	source.found = append(source.found,
+		Match{Path: "internal/executive/deleted-since.go", Line: 1},
+		Match{Path: "../escape.go", Line: 1})
 	explorer, _ := NewExplorer("explorarte-organization", shaA, source, DefaultLimits())
 
-	paths, err := explorer.Search(context.Background(), "orchestrator")
+	matches, err := explorer.Search(context.Background(), "orchestrator")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 2 {
-		t.Fatalf("search returned %v; a path outside the repository must never be offered", paths)
+	if len(matches) != 2 {
+		t.Fatalf("search returned %v; a path outside the repository must never be offered", matches)
 	}
 	if source.reads != 0 {
 		t.Fatal("searching must not read anything: discovery produces no evidence")
