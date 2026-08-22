@@ -1294,7 +1294,7 @@ func TestKnowledgeVersionSurvivesPostgresRoundtripWithNanosecondPrecisionInput(t
 		Title: "Nanosecond roundtrip regression", Body: "Body content for the roundtrip regression test.",
 		SourceKind: rag.SourceResearch, SourceReference: "investigacion:report:99", ProposedBy: ragIntegrationProposer,
 		EvidenceRefs: []rag.EvidenceRef{{Reference: "evidence:nano", Digest: "aaa"}},
-		Admission:    rag.AdmissionAttestation{DataClass: rag.DataOrganizational, AttestedBy: ragIntegrationProposer, SourceBoundary: "organization", EvidenceRef: "admission:nano", AttestedAt: nanoAttestedAt},
+		Admission: rag.AdmissionAttestation{DataClass: rag.DataOrganizational, AttestedBy: ragIntegrationProposer, SourceBoundary: "organization", EvidenceRef: "admission:nano", AttestedAt: nanoAttestedAt},
 	})
 	if err != nil {
 		t.Fatalf("Propose with nanosecond-precision, non-UTC AttestedAt: %v", err)
@@ -1330,7 +1330,7 @@ func TestKnowledgeVersionSurvivesPostgresRoundtripWithNanosecondPrecisionInput(t
 		Title: "Nanosecond roundtrip regression", Body: "Body content for the roundtrip regression test.",
 		SourceKind: rag.SourceResearch, SourceReference: "investigacion:report:99", ProposedBy: ragIntegrationProposer,
 		EvidenceRefs: []rag.EvidenceRef{{Reference: "evidence:nano", Digest: "aaa"}},
-		Admission:    rag.AdmissionAttestation{DataClass: rag.DataOrganizational, AttestedBy: ragIntegrationProposer, SourceBoundary: "organization", EvidenceRef: "admission:nano", AttestedAt: nanoAttestedAt},
+		Admission: rag.AdmissionAttestation{DataClass: rag.DataOrganizational, AttestedBy: ragIntegrationProposer, SourceBoundary: "organization", EvidenceRef: "admission:nano", AttestedAt: nanoAttestedAt},
 	})
 	if err != nil {
 		t.Fatalf("replay Propose: %v", err)

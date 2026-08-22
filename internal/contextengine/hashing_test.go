@@ -32,7 +32,7 @@ func TestDigestBuildRequestIsDeterministicAndSortsRequestedSkills(t *testing.T) 
 // the same stored hash.
 func TestDigestBuildRequest_LegacyCompatibility(t *testing.T) {
 	base := CanonicalBuildRequest{
-		Request:        BuildRequest{OrganizationID: "explorarte", OrganizationRevisionID: 2, ActorRoleID: "investigacion/research_worker_hourly", Purpose: "department_worker"},
+		Request: BuildRequest{OrganizationID: "explorarte", OrganizationRevisionID: 2, ActorRoleID: "investigacion/research_worker_hourly", Purpose: "department_worker"},
 		PrecedenceHash: DigestMarkdown([]byte("p")), CanonicalBundleHash: DigestMarkdown([]byte("c")),
 		MaxTotalBytes: 100, MaxSegmentBytes: 50, MaxSegments: 10, MaxSkills: 2,
 	}

@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Mireuz13/explorarte-organization/internal/designfreeze"
 )
 
 // orchestratorWorkerID is operational provenance only: it names the process
@@ -335,8 +337,17 @@ func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error
 	// reasoning over, which is the whole point: a design is evidence about a
 	// repository only if the repository was decided before anyone looked at
 	// it. Every model that can see code must see the same code.
-	if _, err = o.designBaseSHA(ctx, root); err != nil {
-		return Run{}, err
+	//
+	// Only for campaigns governed by a design freeze, though. "A design about
+	// code must fix its world before reasoning" is a rule about designs; it
+	// must not become "every cognitive act in the organization depends on
+	// resolving git". A campaign that has nothing to do with the repository
+	// keeps working when the promotion target does not, which is the opt-in
+	// shape driveDesignFreeze already declares.
+	if _, governed := findRequirementByKey(root.Requirements, designfreeze.RequirementKey); governed {
+		if _, err = o.designBaseSHA(ctx, root); err != nil {
+			return Run{}, err
+		}
 	}
 
 	planTask, ok := findTaskByMarker(children, keyCEOPlanMarker)

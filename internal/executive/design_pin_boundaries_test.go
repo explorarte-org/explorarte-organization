@@ -2,9 +2,12 @@ package executive
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/Mireuz13/explorarte-organization/internal/designfreeze"
 )
 
 var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -85,5 +88,47 @@ func TestTheWorldIsFixedBeforeTheFirstCognitiveCall(t *testing.T) {
 	}
 	if !strings.Contains(fixture.rootRecord(t).Reason, pinned) {
 		t.Fatal("the reason must name the world the design was decided about")
+	}
+}
+
+// Pinning the world is a rule about DESIGNS, not a tax on every cognitive act
+// the organization performs.
+//
+// designBaseSHA consults the promotion target, so pinning unconditionally
+// would have made a campaign that has nothing to do with the repository depend
+// on git being reachable. "A design about code must fix its world before
+// reasoning" must not quietly become "everything the organization thinks
+// requires resolving a commit".
+func TestACampaignWithNoDesignFreezeDoesNotDependOnTheRepository(t *testing.T) {
+	fixture := newMissionFixture(t, smokePath, false)
+
+	// Strip the design-freeze requirement: this campaign is not governed by
+	// a design, so it has no world to fix.
+	root, err := fixture.orchestrator.tasks.GetTask(context.Background(), fixture.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := root.Requirements[:0]
+	for _, requirement := range root.Requirements {
+		if requirement.Key != designfreeze.RequirementKey && requirement.Key != MissionRequirementKey {
+			kept = append(kept, requirement)
+		}
+	}
+	root.Requirements = kept
+	fixture.tasks.tasks[root.ID] = root
+
+	// And break the repository entirely.
+	fixture.target.err = errors.New("promotion target unreachable")
+
+	if _, err := fixture.orchestrator.Resume(context.Background(), fixture.root); err != nil {
+		t.Fatalf("a campaign with no design freeze must not need the repository: %v", err)
+	}
+	if len(fixture.purposes()) == 0 {
+		t.Fatal("the campaign did not reach a cognitive call, so this proves nothing")
+	}
+	for _, evidence := range fixture.rootRecord(t).Evidence {
+		if evidence.Reference == DesignBaseSHAReference+"1" {
+			t.Fatal("a campaign with no design freeze pinned a world it will never reason about")
+		}
 	}
 }
