@@ -325,6 +325,20 @@ func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error
 		return Run{}, err
 	}
 	children := withoutRoot(all, root.ID)
+
+	// The world this campaign is about is fixed HERE, before the first
+	// cognitive call of any kind.
+	//
+	// Pinning it later -- at the freeze, once the reviewer and the
+	// adjudicator had already finished -- proved only that the mission would
+	// inherit a commit. It proved nothing about what the designers had been
+	// reasoning over, which is the whole point: a design is evidence about a
+	// repository only if the repository was decided before anyone looked at
+	// it. Every model that can see code must see the same code.
+	if _, err = o.designBaseSHA(ctx, root); err != nil {
+		return Run{}, err
+	}
+
 	planTask, ok := findTaskByMarker(children, keyCEOPlanMarker)
 	if !ok {
 		planTask, _, err = o.createCEOPlanTask(ctx, root)

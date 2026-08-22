@@ -2,6 +2,8 @@ package repositoryevidence
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"testing"
@@ -114,19 +116,29 @@ func TestRepositoryEvidenceCanNeverGrantAuthority(t *testing.T) {
 	if record.TrustClass != contextengine.TrustUntrusted {
 		t.Fatalf("trust_class=%q", record.TrustClass)
 	}
-	// The assembler enforces the same thing independently. This is the
-	// comparison between the two, so neither can be the only guard.
-	if _, err := contextengine.NewAssembler().Assemble(context.Background(), contextengine.AssemblyInput{
-		Sources: []contextengine.SourceRecord{record},
-	}); err != nil && strings.Contains(err.Error(), "unsafe") {
-		t.Fatalf("a correctly classified excerpt must pass the assembler gate: %v", err)
+	// The record must be one Context Engine actually accepts. An earlier
+	// version of this test called the assembler with zero limits, which the
+	// assembler rejects before it ever looks at a source -- so a correctly
+	// classified record "passed" and a capability-claiming one "failed" for
+	// the same unrelated reason, and the test proved nothing either way.
+	if err := contextengine.ValidateSourceMetadata(record); err != nil {
+		t.Fatalf("repository evidence must be valid context metadata: %v", err)
 	}
+	if record.AuthorityPriority == 0 {
+		t.Fatal("a record with no authority priority is rejected by the context engine")
+	}
+	// The hash must describe the bytes actually sent, header included: the
+	// request hash downstream trusts ContentHash to stand for Content.
+	sum := sha256.Sum256(record.Content)
+	if record.ContentHash != hex.EncodeToString(sum[:]) {
+		t.Fatal("content hash does not describe the payload the model receives")
+	}
+	// And the assembler refuses the same claim independently, so neither
+	// side is the only guard.
 	unsafe := record
 	unsafe.MayGrantCapabilities = true
-	if _, err := contextengine.NewAssembler().Assemble(context.Background(), contextengine.AssemblyInput{
-		Sources: []contextengine.SourceRecord{unsafe},
-	}); err == nil {
-		t.Fatal("the assembler must refuse repository evidence claiming capability authority")
+	if err := contextengine.ValidateSourceMetadata(unsafe); err == nil {
+		t.Fatal("the context engine must refuse repository evidence claiming capability authority")
 	}
 }
 

@@ -56,12 +56,12 @@ type ProjectionFunc func(segment contextengine.Segment, actorRoleID string) (pro
 // snapshot, whether or not a projection applied, so "why did/didn't
 // this content reach the model" is always answerable deterministically.
 type SegmentDiff struct {
-	SourceReference   string
-	AuthorityTier     contextengine.AuthorityTier
-	OriginalBytes     int
-	ProjectedBytes    int
-	Projected         bool
-	Reason            string
+	SourceReference      string
+	AuthorityTier        contextengine.AuthorityTier
+	OriginalBytes        int
+	ProjectedBytes       int
+	Projected            bool
+	Reason               string
 	OriginalContentHash  string
 	ProjectedContentHash string
 }

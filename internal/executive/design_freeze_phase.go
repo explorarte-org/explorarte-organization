@@ -165,9 +165,15 @@ func (o *Orchestrator) designBaseSHA(ctx context.Context, root TaskRecord) (stri
 	if strings.TrimSpace(head) == "" {
 		return "", fmt.Errorf("%w: promotion target resolved to no commit", ErrContractRejected)
 	}
+	// The digest is a SHA-256 of the FACT being recorded, not the commit id.
+	// A git SHA is 40 hex characters and the Tasks Engine accepts only 64:
+	// writing the commit here would have been refused by the real store while
+	// passing every test, because the fakes did not reproduce that boundary.
+	// The commit itself lives in metadata, where it is read from.
+	factDigest := sha256.Sum256([]byte("design_base_sha\x00" + head))
 	if err = o.tasks.RecordEvidence(ctx, EvidenceCommand{
 		TaskID: root.ID, Type: "result", Reference: reference,
-		Digest: head, RecordedBy: orchestratorWorkerID,
+		Digest: hex.EncodeToString(factDigest[:]), RecordedBy: orchestratorWorkerID,
 		Metadata: map[string]any{"design_base_sha": head},
 	}); err != nil {
 		return "", err
@@ -387,9 +393,8 @@ func (o *Orchestrator) driveDesignFreeze(ctx context.Context, root TaskRecord, a
 		return run, true, blockErr
 	}
 
-	// Pinned here at the latest, if it was not pinned earlier: the freeze is
-	// the moment the decision becomes durable, so it is the last point at
-	// which the world it was decided about can still be recorded truthfully.
+	// Already pinned before the first cognitive call; read back here so the
+	// freeze records the commit the whole decision was actually made about.
 	pinnedBaseSHA, err := o.designBaseSHA(ctx, root)
 	if err != nil {
 		return Run{}, true, err

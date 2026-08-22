@@ -9,6 +9,7 @@ package gitsource
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"regexp"
@@ -58,10 +59,16 @@ func (s *Source) Search(ctx context.Context, baseSHA, query string, limit int) (
 	// -n gives the line of each hit, -F treats the query as a literal so a
 	// search string can never become a pattern with its own semantics, and
 	// the commit is named explicitly rather than implied by a checkout.
-	out, err := s.run(ctx, "grep", "-n", "-F", "-e", query, baseSHA)
+	out, code, err := s.run(ctx, "grep", "-n", "-F", "-e", query, baseSHA)
 	if err != nil {
-		// git grep exits non-zero when nothing matched, which is an answer,
-		// not a failure.
+		// git grep exits 1 for "nothing matched", which is an ANSWER.
+		// Anything else -- an unreadable repository, a commit that does not
+		// exist, a broken git -- is a sensor failure, and turning it into
+		// "no code found" is how the design phase would go back to guessing
+		// while everything looked healthy. Blindness must be loud.
+		if code != 1 {
+			return nil, fmt.Errorf("%w: searching %s at %s: %v", ErrSourceUnavailable, s.Directory, baseSHA, err)
+		}
 		return nil, nil
 	}
 	matches := make([]repositoryevidence.Match, 0, limit)
@@ -100,6 +107,12 @@ func (s *Source) Search(ctx context.Context, baseSHA, query string, limit int) (
 func (s *Source) Lines(ctx context.Context, baseSHA, path string) (int, error) {
 	content, err := s.file(ctx, baseSHA, path)
 	if err != nil {
+		// A path that is absent at this commit is an answer -- a stale
+		// suggestion, which is exactly how discovery is allowed to fail. An
+		// unreachable repository is not, and must not read as "empty file".
+		if errors.Is(err, ErrSourceUnavailable) {
+			return 0, err
+		}
 		return 0, nil
 	}
 	if content == "" {
@@ -131,8 +144,15 @@ func (s *Source) file(ctx context.Context, baseSHA, path string) (string, error)
 	if err := repositoryevidence.ValidatePath(path); err != nil {
 		return "", err
 	}
-	out, err := s.run(ctx, "show", baseSHA+":"+path)
+	out, code, err := s.run(ctx, "show", baseSHA+":"+path)
 	if err != nil {
+		// git show exits 128 both for "no such path in that commit" and for
+		// "no such commit". The first is a stale candidate; the second means
+		// the sensor is pointed at a repository that cannot answer, so the
+		// commit is checked separately rather than guessed from the code.
+		if code != 128 || !s.commitExists(ctx, baseSHA) {
+			return "", fmt.Errorf("%w: reading %s at %s from %s: %v", ErrSourceUnavailable, path, baseSHA, s.Directory, err)
+		}
 		return "", fmt.Errorf("%w: %s does not exist at %s", repositoryevidence.ErrInvalidFragment, path, baseSHA)
 	}
 	if len(out) > s.MaxFileBytes {
@@ -153,16 +173,38 @@ func validate(baseSHA string) error {
 // Arguments are never concatenated into a command line, the commit is always
 // validated before it gets here, and the environment is not inherited: a
 // repository read must not be able to become anything other than a read.
-func (s *Source) run(ctx context.Context, args ...string) (string, error) {
+func (s *Source) run(ctx context.Context, args ...string) (string, int, error) {
 	command := exec.CommandContext(ctx, s.Binary, append([]string{"-C", s.Directory}, args...)...)
 	command.Env = []string{"GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0", "HOME=/nonexistent"}
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	if err := command.Run(); err != nil {
-		return "", fmt.Errorf("git %s: %w: %s", args[0], err, strings.TrimSpace(stderr.String()))
+		// The exit code is returned rather than folded into the error,
+		// because "nothing matched" and "the repository is unreachable" are
+		// different facts and only the caller knows which one it can absorb.
+		code := -1
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			code = exitErr.ExitCode()
+		}
+		return "", code, fmt.Errorf("git %s: %w: %s", args[0], err, strings.TrimSpace(stderr.String()))
 	}
-	return stdout.String(), nil
+	return stdout.String(), 0, nil
 }
+
+// commitExists distinguishes a repository that cannot answer from a commit
+// that simply does not contain a path.
+func (s *Source) commitExists(ctx context.Context, baseSHA string) bool {
+	_, _, err := s.run(ctx, "cat-file", "-e", baseSHA+"^{commit}")
+	return err == nil
+}
+
+// ErrSourceUnavailable reports that the repository could not be read at all.
+//
+// It is deliberately distinct from an absent path: one is a fact about the
+// code, the other is a fact about the sensor, and collapsing them is what
+// turns a broken observer into a design that quietly starts guessing again.
+var ErrSourceUnavailable = errors.New("gitsource: repository could not be read")
 
 var _ repositoryevidence.Source = (*Source)(nil)

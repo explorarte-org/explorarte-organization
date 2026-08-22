@@ -1,6 +1,8 @@
 package repositoryevidence
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 
 	"github.com/Mireuz13/explorarte-organization/internal/contextengine"
@@ -28,23 +30,42 @@ func Render(fragment Fragment, baseSHA string) (contextengine.SourceRecord, erro
 	if fragment.Symbol != "" {
 		header += " (" + fragment.Symbol + ")"
 	}
-	return contextengine.SourceRecord{
+	priority, ok := contextengine.AuthorityPriority(contextengine.TierRAGEvidence)
+	if !ok {
+		return contextengine.SourceRecord{}, fmt.Errorf("%w: no authority priority for the evidence tier", ErrInvalidFragment)
+	}
+	// The payload is what the model is actually given, so it is what the
+	// hash must cover. Hashing only the excerpt while sending excerpt plus
+	// header would have put a value into Context Engine's request hash that
+	// did not describe the bytes it accompanied.
+	payload := []byte(header + "\n" + fragment.Content)
+	sum := sha256.Sum256(payload)
+	record := contextengine.SourceRecord{
 		Kind:      contextengine.SourceRepositoryEvidence,
 		Reference: fragment.Reference(),
 		// The version IS the commit. Anything else would let two excerpts of
 		// the same file at different commits look like one source seen twice.
 		Version: fragment.BaseSHA,
-		// The lowest authority tier there is: an excerpt informs, and
-		// ranks below every policy, profile and instruction it might
-		// appear to contradict.
+		// The lowest authority tier there is: an excerpt informs, and ranks
+		// below every policy, profile and instruction it might appear to
+		// contradict.
 		AuthorityTier:        contextengine.TierRAGEvidence,
+		AuthorityPriority:    priority,
 		InstructionClass:     contextengine.InstructionData,
 		TrustClass:           contextengine.TrustUntrusted,
 		DataClass:            contextengine.DataOrganizational,
 		MayGrantCapabilities: false,
-		Content:              []byte(header + "\n" + fragment.Content),
-		ContentHash:          fragment.Digest,
-	}, nil
+		Content:              payload,
+		ContentHash:          hex.EncodeToString(sum[:]),
+		Included:             true,
+	}
+	// Validated here so a provider cannot construct something Context Engine
+	// will reject later: the two must agree at the point of construction, not
+	// discover their disagreement downstream.
+	if err := contextengine.ValidateSourceMetadata(record); err != nil {
+		return contextengine.SourceRecord{}, err
+	}
+	return record, nil
 }
 
 // RenderBundle renders a whole exploration, refusing the set if any excerpt
