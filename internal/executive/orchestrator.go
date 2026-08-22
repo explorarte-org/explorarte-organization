@@ -276,6 +276,16 @@ func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error
 			// adversarial review and a fresh adjudication, to be told again
 			// what was already said twice.
 			return ProjectRun(root, nil), ErrRunBlocked
+		case ReasonDepartmentReviewBlocked:
+			// The department said the work cannot proceed. Re-driving it
+			// would ask the same reviewer to re-decide what it already
+			// decided, at its price.
+			return ProjectRun(root, nil), ErrRunBlocked
+		case ReasonDepartmentReplansExhausted:
+			// The bound was reached on a valid review. Unblocking would
+			// re-drive the department and arrive at the same refusal,
+			// having paid for the whole phase again.
+			return ProjectRun(root, nil), ErrRunBlocked
 		case ReasonRunChildFailed:
 			// Unblocking would walk straight back into the pass that
 			// found the dead child and block again, one model call
@@ -660,23 +670,59 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 				if pErr != nil {
 					return pErr
 				}
-				if review.Verdict == ReviewNeedsReplan {
-					if reviewReplanOrdinal(reviewTask.IdempotencyKey) >= o.limits.MaxDepartmentReplans {
-						return fmt.Errorf("%w: department replan budget exhausted", ErrBudgetExceeded)
-					}
+				// This callback answers exactly one question: did the
+				// MODEL produce a valid result? Everything it returns is
+				// recorded against the attempt as
+				// model_result_contract_rejected and retried, so anything
+				// decided here is attributed to the provider and paid for
+				// again on the next attempt.
+				//
+				// Host lifecycle therefore does not belong here. Whether
+				// the department may have another replan, whether the
+				// follow-ups may be materialized, and what a blocked or
+				// failed verdict does to the run are decisions the HOST
+				// makes about a valid answer -- and the path that makes
+				// them already exists below, on the completed review.
+				// Keeping copies here meant a governed budget refusal was
+				// written down as the model breaking its contract, and
+				// then re-purchased twice.
+				//
+				// What stays is a genuine contract violation: follow-up
+				// tasks only mean something under needs_replan, so
+				// proposing them under any other verdict is the model's
+				// own output contradicting itself.
+				if review.Verdict != ReviewNeedsReplan && len(review.ProposedFollowupTasks) > 0 {
+					return fmt.Errorf("%w: followup tasks require needs_replan verdict", ErrContractRejected)
+				}
+				// The follow-ups ARE the model's output, so whether they
+				// are well formed is a question about that output and
+				// belongs here, where a rejection still leaves the task
+				// able to try again.
+				//
+				// Moving this out was a regression the bound fix nearly
+				// shipped: a review proposing invalid follow-ups would
+				// complete successfully, validation would fail on the path
+				// below, and every later pass would re-read the same
+				// completed result and fail identically -- with no attempt
+				// left for the model to correct anything. The exact
+				// opposite of the convergence this branch series proved.
+				//
+				// Only while a replan can still be granted, though. Once
+				// the bound is reached those follow-ups will never be
+				// materialized by anyone, so whether they are well formed
+				// has stopped being an actionable question -- and letting
+				// it block the review from completing would buy attempt
+				// after attempt to rediscover a decision the host had
+				// already made. That is the same waste the bound fix
+				// removed, arriving through the other door.
+				//
+				// This is not forgiving the model a bad contract. It is
+				// declining to validate the part of a proposal the host
+				// has no budget to execute.
+				if review.Verdict == ReviewNeedsReplan && replanCapacityRemains(reviewTask.IdempotencyKey, o.limits.MaxDepartmentReplans) {
 					if pErr = o.validator.ValidateFollowups(ctx, revision.ID, req.UnitID, leader.ID, review.ProposedFollowupTasks); pErr != nil {
 						return pErr
 					}
-					return o.materializeWorkerTasks(ctx, root, reviewTask, req.UnitID, review.ProposedFollowupTasks, reviewReplanOrdinal(reviewTask.IdempotencyKey)+1, round)
-				}
-				if len(review.ProposedFollowupTasks) > 0 {
-					return fmt.Errorf("%w: followup tasks require needs_replan verdict", ErrContractRejected)
-				}
-				if review.Verdict == ReviewBlocked {
-					return ErrRunBlocked
-				}
-				if review.Verdict == ReviewFail {
-					return fmt.Errorf("%w: department review failed", ErrCompletionFailed)
 				}
 				return nil
 			})
@@ -695,8 +741,16 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 		}
 		if review.Verdict == ReviewNeedsReplan {
 			ordinal := reviewReplanOrdinal(reviewTask.IdempotencyKey) + 1
-			if ordinal > o.limits.MaxDepartmentReplans {
-				return Run{}, false, ErrBudgetExceeded
+			if !replanCapacityRemains(reviewTask.IdempotencyKey, o.limits.MaxDepartmentReplans) {
+				// Nothing failed. The department produced a valid review
+				// and the host declined to grant another iteration, which
+				// is the bound doing its job. It is recorded as the host's
+				// decision, against the root, and the review it decided on
+				// stays completed.
+				run, blockErr := o.blockRoot(ctx, root, ReasonDepartmentReplansExhausted,
+					fmt.Sprintf("the host declined replan %d of at most %d for department %s; its review is valid and complete, and nothing about it failed",
+						ordinal, o.limits.MaxDepartmentReplans, req.UnitID))
+				return run, true, blockErr
 			}
 			if e = o.validator.ValidateFollowups(ctx, revision.ID, req.UnitID, leader.ID, review.ProposedFollowupTasks); e != nil {
 				return Run{}, false, e
@@ -717,6 +771,29 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 				}
 			}
 			return o.driveInProgress(ctx, root)
+		}
+		// A verdict that ends the run has to END it, durably.
+		//
+		// This used to return an error and nothing else, so a blocked or
+		// failed review produced the same error on every pass forever: the
+		// root stayed executable, the completed review kept being re-read,
+		// and the run never reached a state anyone could act on. It cost no
+		// provider calls, which is precisely what made it easy to miss --
+		// and it is why the claim that these were "already implemented
+		// below" was wrong.
+		if review.Verdict == ReviewBlocked {
+			run, blockErr := o.blockRoot(ctx, root, ReasonDepartmentReviewBlocked,
+				fmt.Sprintf("department %s blocked its own review: %s", req.UnitID, strings.Join(review.UnsatisfiedCriteria, "; ")))
+			return run, true, blockErr
+		}
+		if review.Verdict == ReviewFail {
+			if _, finErr := o.tasks.FinalizeFailed(ctx, root.ID, ReasonDepartmentReviewFailed,
+				truncate(fmt.Sprintf("department %s failed its own review: %s", req.UnitID, strings.Join(review.UnsatisfiedCriteria, "; ")), 2000),
+				"service", orchestratorWorkerID); finErr != nil {
+				return Run{}, false, finErr
+			}
+			run, statusErr := o.Status(ctx, root.ID)
+			return run, true, statusErr
 		}
 		if review.Verdict != ReviewAccept {
 			return Run{}, false, fmt.Errorf("%w: department review %s", ErrCompletionFailed, review.Verdict)
@@ -1675,6 +1752,19 @@ func isNonBlockingPhaseError(err error) bool {
 	return false
 }
 
+// replanCapacityRemains reports whether the host can still grant this
+// department another round of rework.
+//
+// One function, used by both sides of the same decision: the callback asks it
+// to decide whether validating the proposed follow-ups is still an actionable
+// question, and the completed-review path asks it to decide whether to grant
+// the replan or stop the run. Two copies of this predicate would eventually
+// disagree, and the disagreement would appear as a review that can never
+// complete and a bound that can never be reached.
+func replanCapacityRemains(reviewKey string, limit int) bool {
+	return reviewReplanOrdinal(reviewKey) < limit
+}
+
 func (o *Orchestrator) blockRoot(ctx context.Context, root TaskRecord, code, reason string) (Run, error) {
 	_, err := o.tasks.BlockTask(ctx, root.ID, code, truncate(reason, 2000), "service", orchestratorWorkerID)
 	if err != nil {
@@ -1753,6 +1843,28 @@ func findTaskByKey(all []TaskRecord, key string) (TaskRecord, bool) {
 	}
 	return TaskRecord{}, false
 }
+
+// ReasonDepartmentReviewBlocked and ReasonDepartmentReviewFailed carry a
+// department's own terminal verdict onto the root.
+//
+// The review said the work cannot proceed, or that it failed. Those are
+// answers, not malfunctions, and each needs a durable transition of its own:
+// without one the orchestrator re-read the same completed verdict on every
+// pass and returned the same error forever.
+const (
+	ReasonDepartmentReviewBlocked = "department_review_blocked"
+	ReasonDepartmentReviewFailed  = "department_review_failed"
+)
+
+// ReasonDepartmentReplansExhausted stops a run whose department asked for one
+// more round of rework than its bound allows.
+//
+// It is deliberately not ReasonRunChildFailed: nothing failed. The department
+// produced a valid review, the host read it and declined to grant another
+// iteration. Recording that as a failure -- of the review, or of the model
+// that wrote it -- would put a host policy decision on the provider's record,
+// which is what it used to do.
+const ReasonDepartmentReplansExhausted = "department_replans_exhausted"
 
 // ReasonRunChildFailed blocks a root whose run cannot advance because a
 // host-driven step ended terminally without producing the result the
