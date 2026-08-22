@@ -23,6 +23,9 @@ type SnapshotSource struct {
 	Kind      string
 	Reference string
 	Version   string
+	// Content is the payload the model was actually shown. The declassifier
+	// needs it to tell a claim ABOUT the code from a copy OF it.
+	Content string
 	// Included is whether it survived assembly. A source that was known and
 	// then dropped for budget is not something the model read.
 	Included bool

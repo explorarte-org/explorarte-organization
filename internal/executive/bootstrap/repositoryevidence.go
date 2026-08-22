@@ -80,6 +80,10 @@ func (r snapshotSourceReader) SnapshotSources(ctx context.Context, snapshotID in
 			// certifying a claim on it would ground a design in code nobody
 			// saw.
 			Included: segment.Included,
+			// Only included segments carry payload: an omitted one was
+			// never shown, so it is neither citable nor something the
+			// candidate could have copied.
+			Content: string(segment.Content),
 		})
 	}
 	return sources, nil

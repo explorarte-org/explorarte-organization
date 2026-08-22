@@ -45,7 +45,7 @@ func citationFixture(t *testing.T, invocation InvocationRecord, result Invocatio
 		tasks: tasksPort, models: mismatchModels{invocation: invocation, result: result},
 		snapshotSources: snapshotWith(),
 	}
-	_, err := orchestrator.verifiedDesignCitations(context.Background(),
+	_, _, err := orchestrator.verifiedDesignCitations(context.Background(),
 		tasksPort.tasks[rootID], designArtifact{Units: []designUnitRef{unit}})
 	return err
 }
@@ -118,7 +118,7 @@ func TestAWellFormedDeliverableIsAuthorizedWithItsWholeTuple(t *testing.T) {
 		},
 		snapshotSources: snapshotWith(),
 	}
-	deliverables, err := orchestrator.verifiedDesignCitations(context.Background(),
+	deliverables, _, err := orchestrator.verifiedDesignCitations(context.Background(),
 		tasksPort.tasks[rootID],
 		designArtifact{Units: []designUnitRef{{UnitID: "ingenieria_ia", TaskID: 2, InvocationID: 5, ResultHash: "d1"}}})
 	if err != nil {

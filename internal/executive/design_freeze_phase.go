@@ -644,21 +644,22 @@ func (o *Orchestrator) candidateBody(ctx context.Context, artifact designArtifac
 // different excerpts -- the selection reads each task's own instructions -- so
 // checking one design's citations against another's context would verify
 // claims their author never had grounds for.
-func (o *Orchestrator) verifiedDesignCitations(ctx context.Context, root TaskRecord, artifact designArtifact) ([]designreview.DeliverableCitations, error) {
+func (o *Orchestrator) verifiedDesignCitations(ctx context.Context, root TaskRecord, artifact designArtifact) ([]designreview.DeliverableCitations, []string, error) {
 	if o.snapshotSources == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	baseSHA, err := o.frozenDesignBaseSHA(ctx, root)
 	if err != nil || baseSHA == "" {
 		// A campaign with no pinned world has no repository claims to
 		// ground, and nothing to verify them against.
-		return nil, nil
+		return nil, nil, nil
 	}
+	organizational := make([]string, 0, 8)
 	deliverables := make([]designreview.DeliverableCitations, 0, len(artifact.Units))
 	for _, unit := range artifact.Units {
 		invocation, readErr := o.models.GetInvocation(ctx, unit.InvocationID)
 		if readErr != nil {
-			return nil, readErr
+			return nil, nil, readErr
 		}
 		// Authorization is the tuple (task, invocation, result digest,
 		// reference). Every check below binds one element of it, and each
@@ -668,7 +669,7 @@ func (o *Orchestrator) verifiedDesignCitations(ctx context.Context, root TaskRec
 		// An invocation belonging to another task cannot ground this
 		// deliverable's claims, however genuine its own citations are.
 		if invocation.TaskID != unit.TaskID {
-			return nil, fmt.Errorf("%w: deliverable claims task %d but invocation %d belongs to task %d",
+			return nil, nil, fmt.Errorf("%w: deliverable claims task %d but invocation %d belongs to task %d",
 				ErrContractRejected, unit.TaskID, unit.InvocationID, invocation.TaskID)
 		}
 		// No snapshot means there is no record of what this model was shown.
@@ -677,12 +678,12 @@ func (o *Orchestrator) verifiedDesignCitations(ctx context.Context, root TaskRec
 		// other deliverables' references, which is the laundering this
 		// structure exists to prevent, arriving through omission.
 		if invocation.ContextSnapshotID == 0 {
-			return nil, fmt.Errorf("%w: invocation %d records no context snapshot, so what it was shown is unknown",
+			return nil, nil, fmt.Errorf("%w: invocation %d records no context snapshot, so what it was shown is unknown",
 				ErrContractRejected, unit.InvocationID)
 		}
 		result, resultErr := o.models.GetResult(ctx, unit.InvocationID)
 		if resultErr != nil {
-			return nil, resultErr
+			return nil, nil, resultErr
 		}
 		// The text verified must be the text the artifact recorded. Without
 		// this, citations found in whatever GetResult returns today would be
@@ -690,17 +691,26 @@ func (o *Orchestrator) verifiedDesignCitations(ctx context.Context, root TaskRec
 		// would be told that D1 was entitled to references extracted from
 		// something that is not D1.
 		if result.ResponseHash != unit.ResultHash {
-			return nil, fmt.Errorf("%w: deliverable for task %d hashes %s but the artifact records %s",
+			return nil, nil, fmt.Errorf("%w: deliverable for task %d hashes %s but the artifact records %s",
 				ErrContractRejected, unit.TaskID, result.ResponseHash, unit.ResultHash)
 		}
 		body := strings.TrimSpace(result.TextOutput)
 		if body == "" {
 			body = strings.TrimSpace(string(result.JSONOutput))
 		}
+		shown, shownErr := o.snapshotSources.SnapshotSources(ctx, invocation.ContextSnapshotID)
+		if shownErr != nil {
+			return nil, nil, shownErr
+		}
+		for _, source := range shown {
+			if source.Kind == "repository_evidence" && source.Included && source.Content != "" {
+				organizational = append(organizational, source.Content)
+			}
+		}
 		verified, verifyErr := o.VerifyRepositoryCitations(ctx, o.snapshotSources,
 			invocation.ContextSnapshotID, baseSHA, body, unit.TaskID, unit.InvocationID, result.ResponseHash)
 		if verifyErr != nil {
-			return nil, verifyErr
+			return nil, nil, verifyErr
 		}
 		// The entry is emitted even with no verified references. Silence and
 		// "this deliverable grounded nothing" are different facts, and the
@@ -711,7 +721,7 @@ func (o *Orchestrator) verifiedDesignCitations(ctx context.Context, root TaskRec
 			// describing another deliverable must never be published under
 			// this one.
 			if citation.TaskID != unit.TaskID || citation.InvocationID != unit.InvocationID || citation.ResultDigest != unit.ResultHash {
-				return nil, fmt.Errorf("%w: verified citation %s does not belong to task %d invocation %d",
+				return nil, nil, fmt.Errorf("%w: verified citation %s does not belong to task %d invocation %d",
 					ErrContractRejected, citation.Reference, unit.TaskID, unit.InvocationID)
 			}
 			refs = append(refs, citation.Reference)
@@ -721,7 +731,7 @@ func (o *Orchestrator) verifiedDesignCitations(ctx context.Context, root TaskRec
 			ResultDigest: result.ResponseHash, VerifiedRepositoryRefs: refs,
 		})
 	}
-	return deliverables, nil
+	return deliverables, organizational, nil
 }
 
 func (o *Orchestrator) reviewBundle(ctx context.Context, root TaskRecord, design designfreeze.Design, artifact designArtifact) ([]byte, error) {
@@ -737,12 +747,23 @@ func (o *Orchestrator) reviewBundle(ctx context.Context, root TaskRecord, design
 	// organizational: widening that so it could read code would be an egress
 	// decision taken as a side effect of a convenience. What it gets instead
 	// is exactly what it needs -- the set of claims it may treat as grounded.
-	deliverables, err := o.verifiedDesignCitations(ctx, root, artifact)
+	deliverables, organizational, err := o.verifiedDesignCitations(ctx, root, artifact)
 	if err != nil {
 		return nil, err
 	}
 	body, err := o.candidateBody(ctx, artifact)
 	if err != nil {
+		return nil, err
+	}
+	// The candidate is model text written by designers that read
+	// organizational source. Before any of it leaves for a reviewer whose
+	// context admits only public and sanitized data, the host establishes
+	// that it carries claims about the code and not the code.
+	//
+	// Against the union of everything the contributing deliverables were
+	// shown, not only what the author of a given passage saw: egress is not
+	// a property of the author.
+	if err = DeclassifyCandidate(body, organizational); err != nil {
 		return nil, err
 	}
 	// Only the criteria the owner assigned to the design phase. The rest
