@@ -66,7 +66,7 @@ func (s *Store) ReserveWithinProgramCeiling(ctx context.Context, req costledger.
 		return err
 	}
 	var used int64
-	err = tx.QueryRow(ctx, `WITH inv AS (SELECT mi.id FROM model_invocations mi JOIN tasks t ON t.id=mi.task_id WHERE t.correlation_id=$1 AND mi.provider_id=$2 AND mi.provider_model_id = ANY($3::text[])), amounts AS (SELECT i.id, MAX(e.amount_usd_nanos) FILTER (WHERE e.kind='reserved') reserved, MAX(e.amount_usd_nanos) FILTER (WHERE e.kind='committed') committed, MAX(e.amount_usd_nanos) FILTER (WHERE e.kind='released') released FROM inv i JOIN provider_wallet_events e ON e.invocation_id=i.id GROUP BY i.id) SELECT COALESCE(SUM(CASE WHEN committed IS NOT NULL THEN committed WHEN released IS NOT NULL THEN 0 ELSE reserved END),0) FROM amounts`, req.CorrelationID, req.ProviderID, req.FamilyModelIDs).Scan(&used)
+	err = tx.QueryRow(ctx, familySpendSQL(`t.correlation_id=$1`), req.CorrelationID, req.ProviderID, req.FamilyModelIDs).Scan(&used)
 	if err != nil {
 		return err
 	}
@@ -499,3 +499,64 @@ func lockWalletAndReservation(ctx context.Context, tx pgx.Tx, providerID string)
 	}
 	return balance, reserved, nil
 }
+
+// familySpendSQL builds the family-scoped spend query used both by the
+// ceiling enforced at reservation time and by the read-only admission checks
+// that decide whether new autonomous work may be opened at all.
+//
+// It is one function rather than two similar query literals on purpose. Two
+// copies would eventually disagree about what "spent" means -- whether a
+// released reservation counts, whether a still-open reservation counts at its
+// estimate -- and the disagreement would appear as work admitted against a
+// budget the reservation path then refuses, or worse, admitted against a
+// budget that is already gone.
+//
+// scope is the row predicate selecting which invocations belong to the
+// question being asked; $2 is always the provider and $3 the family's model
+// IDs.
+func familySpendSQL(scope string) string {
+	return `WITH inv AS (
+			SELECT mi.id FROM model_invocations mi JOIN tasks t ON t.id=mi.task_id
+			WHERE ` + scope + ` AND mi.provider_id=$2 AND mi.provider_model_id = ANY($3::text[])
+		), amounts AS (
+			SELECT i.id,
+				MAX(e.amount_usd_nanos) FILTER (WHERE e.kind='reserved') reserved,
+				MAX(e.amount_usd_nanos) FILTER (WHERE e.kind='committed') committed,
+				MAX(e.amount_usd_nanos) FILTER (WHERE e.kind='released') released
+			FROM inv i JOIN provider_wallet_events e ON e.invocation_id=i.id GROUP BY i.id
+		)
+		SELECT COALESCE(SUM(CASE WHEN committed IS NOT NULL THEN committed WHEN released IS NOT NULL THEN 0 ELSE reserved END),0) FROM amounts`
+}
+
+// ProgramFamilySpend reports what a program has already spent in one budget
+// family. It answers the same question, with the same arithmetic, that
+// ReserveWithinProgramCeiling asks before admitting a reservation.
+func (s *Store) ProgramFamilySpend(ctx context.Context, correlationID, providerID string, familyModelIDs []string) (modelpricing.USDNanos, error) {
+	if strings.TrimSpace(correlationID) == "" || strings.TrimSpace(providerID) == "" || len(familyModelIDs) == 0 {
+		return 0, fmt.Errorf("%w: invalid program spend query", costledger.ErrInvalidRequest)
+	}
+	var used int64
+	if err := s.pool.QueryRow(ctx, familySpendSQL(`t.correlation_id=$1`), correlationID, providerID, familyModelIDs).Scan(&used); err != nil {
+		return 0, err
+	}
+	return modelpricing.USDNanos(used), nil
+}
+
+// TaskFamilySpend reports what ONE task spent in a budget family.
+//
+// Recovery uses it as the estimate for a successor episode: the failed
+// episode just performed the same work, so what it actually cost is the best
+// available prediction of what repeating it will cost. That is a measurement,
+// not a fixed per-episode allowance.
+func (s *Store) TaskFamilySpend(ctx context.Context, taskID int64, providerID string, familyModelIDs []string) (modelpricing.USDNanos, error) {
+	if taskID <= 0 || strings.TrimSpace(providerID) == "" || len(familyModelIDs) == 0 {
+		return 0, fmt.Errorf("%w: invalid task spend query", costledger.ErrInvalidRequest)
+	}
+	var used int64
+	if err := s.pool.QueryRow(ctx, familySpendSQL(`t.id=$1`), taskID, providerID, familyModelIDs).Scan(&used); err != nil {
+		return 0, err
+	}
+	return modelpricing.USDNanos(used), nil
+}
+
+var _ costledger.SpendReader = (*Store)(nil)

@@ -214,7 +214,7 @@ func (s *Store) ListWorkspaces(ctx context.Context, filter staging.WorkspaceFilt
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	rows, err := s.pool.Query(ctx, `SELECT `+workspaceColumns+` FROM staging_workspaces WHERE ($1='' OR status=$1) ORDER BY created_at DESC,id DESC LIMIT $2`, string(filter.Status), limit)
+	rows, err := s.pool.Query(ctx, `SELECT `+workspaceColumns+` FROM staging_workspaces WHERE ($1='' OR status=$1) AND ($2=0 OR task_id=$2) ORDER BY created_at DESC,id DESC LIMIT $3`, string(filter.Status), filter.TaskID, limit)
 	if err != nil {
 		return nil, mapError(err)
 	}

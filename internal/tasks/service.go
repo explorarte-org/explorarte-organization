@@ -172,6 +172,14 @@ func (s *Service) GetDeadLetter(ctx context.Context, id int64) (DeadLetter, erro
 }
 
 func (s *Service) CreateTask(ctx context.Context, request CreateRequest, actorType, actorID string) (Task, bool, error) {
+	prepared, err := s.prepareCreate(ctx, request, actorType, actorID)
+	if err != nil {
+		return Task{}, false, err
+	}
+	return s.persistence.Create(ctx, prepared)
+}
+
+func (s *Service) prepareCreate(ctx context.Context, request CreateRequest, actorType, actorID string) (PreparedCreate, error) {
 	request = NormalizeCreateRequest(request)
 	if request.OrganizationID == "" {
 		request.OrganizationID = s.cfg.OrganizationID
@@ -181,7 +189,7 @@ func (s *Service) CreateTask(ctx context.Context, request CreateRequest, actorTy
 		request.MaxAttempts = s.cfg.DefaultMaxAttempts
 	}
 	if err := ValidateCreateRequest(request); err != nil {
-		return Task{}, false, err
+		return PreparedCreate{}, err
 	}
 	// A newly persisted task always gets an explicit, non-empty TaskClass
 	// -- an empty request.TaskClass just means the caller didn't propose
@@ -204,31 +212,31 @@ func (s *Service) CreateTask(ctx context.Context, request CreateRequest, actorTy
 	}
 	actorType, actorID = normalizeActor(actorType, actorID)
 	if err := validateActor(actorType, actorID); err != nil {
-		return Task{}, false, err
+		return PreparedCreate{}, err
 	}
 	revision, err := s.catalog.CurrentRevision(ctx, request.OrganizationID)
 	if err != nil {
-		return Task{}, false, mapCatalogError(err)
+		return PreparedCreate{}, mapCatalogError(err)
 	}
 	assigned, err := s.catalog.GetRole(ctx, request.OrganizationID, request.AssignedRoleID)
 	if err != nil {
-		return Task{}, false, mapCatalogError(err)
+		return PreparedCreate{}, mapCatalogError(err)
 	}
 	if !roleAssignable(assigned) {
-		return Task{}, false, fmt.Errorf("%w: %s", ErrAssigneeUnavailable, request.AssignedRoleID)
+		return PreparedCreate{}, fmt.Errorf("%w: %s", ErrAssigneeUnavailable, request.AssignedRoleID)
 	}
 	if request.RequestedByRoleID != "" {
 		requester, roleErr := s.catalog.GetRole(ctx, request.OrganizationID, request.RequestedByRoleID)
 		if roleErr != nil {
-			return Task{}, false, mapCatalogError(roleErr)
+			return PreparedCreate{}, mapCatalogError(roleErr)
 		}
 		if requester.Retired {
-			return Task{}, false, fmt.Errorf("%w: requester %s is retired", ErrInvalidInput, requester.ID)
+			return PreparedCreate{}, fmt.Errorf("%w: requester %s is retired", ErrInvalidInput, requester.ID)
 		}
 	}
 	hash, err := HashCreateRequest(request)
 	if err != nil {
-		return Task{}, false, err
+		return PreparedCreate{}, err
 	}
 	initial := StatusReady
 	if len(request.Dependencies) > 0 || request.AvailableAt != nil {
@@ -249,14 +257,14 @@ func (s *Service) CreateTask(ctx context.Context, request CreateRequest, actorTy
 		reasonCode = ReasonCodeCoordinationHold
 		reason = "task is not published until its creator's coordination is durable"
 	}
-	return s.persistence.Create(ctx, PreparedCreate{
+	return PreparedCreate{
 		Request: request, OrganizationRevisionID: revision.ID, AssignedUnitID: assigned.UnitID,
 		TaskClass: request.TaskClass, TaskClassExplicit: taskClassExplicit,
 		RequestHash: hash, InitialStatus: initial,
 		InitialStatusReasonCode: reasonCode, InitialStatusReason: reason,
 		DefaultMaxAttempts: s.cfg.DefaultMaxAttempts,
 		OutboxMaxAttempts:  s.cfg.OutboxMaxAttempts, ActorType: actorType, ActorID: actorID,
-	})
+	}, nil
 }
 
 // ReleaseCoordinationHold publishes a task created under a coordination hold.
