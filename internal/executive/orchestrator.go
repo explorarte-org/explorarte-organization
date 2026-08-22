@@ -706,7 +706,20 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 				// completed result and fail identically -- with no attempt
 				// left for the model to correct anything. The exact
 				// opposite of the convergence this branch series proved.
-				if review.Verdict == ReviewNeedsReplan {
+				//
+				// Only while a replan can still be granted, though. Once
+				// the bound is reached those follow-ups will never be
+				// materialized by anyone, so whether they are well formed
+				// has stopped being an actionable question -- and letting
+				// it block the review from completing would buy attempt
+				// after attempt to rediscover a decision the host had
+				// already made. That is the same waste the bound fix
+				// removed, arriving through the other door.
+				//
+				// This is not forgiving the model a bad contract. It is
+				// declining to validate the part of a proposal the host
+				// has no budget to execute.
+				if review.Verdict == ReviewNeedsReplan && replanCapacityRemains(reviewTask.IdempotencyKey, o.limits.MaxDepartmentReplans) {
 					if pErr = o.validator.ValidateFollowups(ctx, revision.ID, req.UnitID, leader.ID, review.ProposedFollowupTasks); pErr != nil {
 						return pErr
 					}
@@ -728,7 +741,7 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 		}
 		if review.Verdict == ReviewNeedsReplan {
 			ordinal := reviewReplanOrdinal(reviewTask.IdempotencyKey) + 1
-			if ordinal > o.limits.MaxDepartmentReplans {
+			if !replanCapacityRemains(reviewTask.IdempotencyKey, o.limits.MaxDepartmentReplans) {
 				// Nothing failed. The department produced a valid review
 				// and the host declined to grant another iteration, which
 				// is the bound doing its job. It is recorded as the host's
@@ -1737,6 +1750,19 @@ func isNonBlockingPhaseError(err error) bool {
 		return true
 	}
 	return false
+}
+
+// replanCapacityRemains reports whether the host can still grant this
+// department another round of rework.
+//
+// One function, used by both sides of the same decision: the callback asks it
+// to decide whether validating the proposed follow-ups is still an actionable
+// question, and the completed-review path asks it to decide whether to grant
+// the replan or stop the run. Two copies of this predicate would eventually
+// disagree, and the disagreement would appear as a review that can never
+// complete and a bound that can never be reached.
+func replanCapacityRemains(reviewKey string, limit int) bool {
+	return reviewReplanOrdinal(reviewKey) < limit
 }
 
 func (o *Orchestrator) blockRoot(ctx context.Context, root TaskRecord, code, reason string) (Run, error) {

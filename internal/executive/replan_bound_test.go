@@ -354,3 +354,53 @@ func TestAFailedReviewFinalizesTheRoot(t *testing.T) {
 		t.Fatalf("root is %q after a second pass, want failed", got)
 	}
 }
+
+// J: the crossing neither A nor G covered.
+//
+// A used a valid follow-up with no budget; G used an invalid follow-up with
+// budget to spare. Between them sat the combination that still bought useless
+// attempts: the bound is exhausted AND the follow-ups are malformed. Once no
+// replan can be granted, nobody will ever materialize those follow-ups, so
+// their validity has stopped being actionable -- and letting it block the
+// review from completing meant paying the provider again and again to
+// rediscover a decision the host had already made after the first answer.
+//
+// The pair is the point: with budget, an invalid follow-up is the model's to
+// fix (G). Without budget, there is nothing to fix, and the host's bound is
+// what speaks (J).
+func TestAnExhaustedBoundOutranksAnInvalidFollowup(t *testing.T) {
+	invalid := strings.Replace(replanReviewNeedsReplan,
+		`"assigned_role_id":"ingenieria_ia/qa"`, `"assigned_role_id":"ingenieria_ia/does-not-exist"`, 1)
+	fixture := newReplanFixture(t, 0, invalid)
+	fixture.drive(t)
+
+	if got := fixture.reviewInvocations(); got != 1 {
+		t.Fatalf("the provider was paid %d times; once the bound is known, the follow-ups are not worth re-asking about", got)
+	}
+	if got := fixture.contractRejections(t); got != 0 {
+		t.Fatalf("%d attempts blamed the model for follow-ups nobody was ever going to run", got)
+	}
+	var reviewStatus string
+	for _, task := range fixture.tasks.tasks {
+		if strings.Contains(task.IdempotencyKey, ":leader-review:") {
+			reviewStatus = task.Status
+		}
+		if strings.Contains(task.IdempotencyKey, "followup-1") {
+			t.Fatal("no follow-up may be materialized past the bound")
+		}
+	}
+	if reviewStatus != "completed" {
+		t.Fatalf("the review is %q: with no replan to grant, it must be allowed to complete so the bound can be reached", reviewStatus)
+	}
+	root := fixture.rootRecord(t)
+	if root.Status != "blocked" || root.ReasonCode != ReasonDepartmentReplansExhausted {
+		t.Fatalf("root=%q reason=%q, want blocked on the bound", root.Status, root.ReasonCode)
+	}
+	before := fixture.reviewInvocations()
+	if _, err := fixture.orchestrator.Resume(context.Background(), fixture.root); !errors.Is(err, ErrRunBlocked) {
+		t.Fatalf("a run stopped at its bound must stay stopped, got %v", err)
+	}
+	if after := fixture.reviewInvocations(); after != before {
+		t.Fatalf("a second pass bought %d more reviews", after-before)
+	}
+}
