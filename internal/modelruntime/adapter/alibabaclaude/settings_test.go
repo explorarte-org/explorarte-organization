@@ -57,6 +57,15 @@ func TestValidateSettingsRejectsGroupReadableSecretFile(t *testing.T) {
 	if err := os.WriteFile(path, body, 0o640); err != nil {
 		t.Fatal(err)
 	}
+	// The umask clears bits from WriteFile's mode, so a fixture that must
+	// be group-readable has to say so explicitly. Under the umask 0077 that
+	// systemd gives these services, WriteFile produced 0600 and the file
+	// this test needs to be REJECTED was in fact perfectly safe -- so the
+	// validator correctly accepted it and the test failed while reporting
+	// a permission bug that did not exist.
+	if err := os.Chmod(path, 0o640); err != nil {
+		t.Fatal(err)
+	}
 	cfg := settingsOnlyConfig(path, body)
 	if _, err := validateSettingsFile(cfg); err == nil {
 		t.Fatal("group-readable settings file accepted")
