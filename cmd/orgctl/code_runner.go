@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -202,11 +203,30 @@ func runCodeRunner(args []string, stdout, stderr io.Writer) int {
 					if recoverErr != nil {
 						fmt.Fprintf(stderr, "recovery sweep: %v\n", recoverErr)
 					}
+					// A sweep that refuses everything must still say so.
+					// Otherwise the only evidence that recovery runs at
+					// all is the absence of successors -- and an absent
+					// successor is equally consistent with a sweep that
+					// refused every candidate and one that never ran.
+					// For a mechanism whose whole job is deciding when
+					// autonomous work may be created, "I declined and
+					// told nobody" is not an acceptable resting state.
+					counts := map[engineeringmission.RecoveryReason]int{}
 					for _, decision := range decisions {
+						counts[decision.Reason]++
 						if decision.Eligible() {
 							fmt.Fprintf(stdout, "recovery successor opened: dead_letter=%d recovered_task=%d change=%q\n",
 								decision.DeadLetterID, decision.TaskID, decision.ObservedChange)
 						}
+					}
+					if len(decisions) > 0 {
+						reasons := make([]string, 0, len(counts))
+						for reason, count := range counts {
+							reasons = append(reasons, fmt.Sprintf("%s=%d", reason, count))
+						}
+						sort.Strings(reasons)
+						fmt.Fprintf(stdout, "recovery sweep: considered=%d %s\n",
+							len(decisions), strings.Join(reasons, " "))
 					}
 				}
 				time.Sleep(500 * time.Millisecond)
