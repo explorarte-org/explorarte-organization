@@ -660,19 +660,45 @@ func (o *Orchestrator) verifiedDesignCitations(ctx context.Context, root TaskRec
 		if readErr != nil {
 			return nil, readErr
 		}
+		// Authorization is the tuple (task, invocation, result digest,
+		// reference). Every check below binds one element of it, and each
+		// one was missing: the tuple was assembled from labels the artifact
+		// asserted rather than from facts the host confirmed.
+		//
+		// An invocation belonging to another task cannot ground this
+		// deliverable's claims, however genuine its own citations are.
+		if invocation.TaskID != unit.TaskID {
+			return nil, fmt.Errorf("%w: deliverable claims task %d but invocation %d belongs to task %d",
+				ErrContractRejected, unit.TaskID, unit.InvocationID, invocation.TaskID)
+		}
+		// No snapshot means there is no record of what this model was shown.
+		// Skipping it left the deliverable out of deliverables[] while its
+		// text stayed in the candidate design -- claims with no owner beside
+		// other deliverables' references, which is the laundering this
+		// structure exists to prevent, arriving through omission.
 		if invocation.ContextSnapshotID == 0 {
-			continue
+			return nil, fmt.Errorf("%w: invocation %d records no context snapshot, so what it was shown is unknown",
+				ErrContractRejected, unit.InvocationID)
 		}
 		result, resultErr := o.models.GetResult(ctx, unit.InvocationID)
 		if resultErr != nil {
 			return nil, resultErr
+		}
+		// The text verified must be the text the artifact recorded. Without
+		// this, citations found in whatever GetResult returns today would be
+		// published under a digest describing different bytes -- the reviewer
+		// would be told that D1 was entitled to references extracted from
+		// something that is not D1.
+		if result.ResponseHash != unit.ResultHash {
+			return nil, fmt.Errorf("%w: deliverable for task %d hashes %s but the artifact records %s",
+				ErrContractRejected, unit.TaskID, result.ResponseHash, unit.ResultHash)
 		}
 		body := strings.TrimSpace(result.TextOutput)
 		if body == "" {
 			body = strings.TrimSpace(string(result.JSONOutput))
 		}
 		verified, verifyErr := o.VerifyRepositoryCitations(ctx, o.snapshotSources,
-			invocation.ContextSnapshotID, baseSHA, body, unit.TaskID, unit.InvocationID)
+			invocation.ContextSnapshotID, baseSHA, body, unit.TaskID, unit.InvocationID, result.ResponseHash)
 		if verifyErr != nil {
 			return nil, verifyErr
 		}
@@ -681,11 +707,18 @@ func (o *Orchestrator) verifiedDesignCitations(ctx context.Context, root TaskRec
 		// reviewer needs the second one to judge a claim that cites nothing.
 		refs := make([]string, 0, len(verified))
 		for _, citation := range verified {
+			// Belt and braces on the tuple: a citation that came back
+			// describing another deliverable must never be published under
+			// this one.
+			if citation.TaskID != unit.TaskID || citation.InvocationID != unit.InvocationID || citation.ResultDigest != unit.ResultHash {
+				return nil, fmt.Errorf("%w: verified citation %s does not belong to task %d invocation %d",
+					ErrContractRejected, citation.Reference, unit.TaskID, unit.InvocationID)
+			}
 			refs = append(refs, citation.Reference)
 		}
 		deliverables = append(deliverables, designreview.DeliverableCitations{
 			TaskID: unit.TaskID, InvocationID: unit.InvocationID,
-			ResultDigest: unit.ResultHash, VerifiedRepositoryRefs: refs,
+			ResultDigest: result.ResponseHash, VerifiedRepositoryRefs: refs,
 		})
 	}
 	return deliverables, nil

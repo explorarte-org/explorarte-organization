@@ -24,7 +24,7 @@ func TestACitationAuthorizedForOneDeliverableDoesNotAuthorizeAnother(t *testing.
 
 	claim := "The validator already handles this, see " + realCite + "."
 
-	forB, err := orchestrator.VerifyRepositoryCitations(context.Background(), sawIt, 22, designSHA, claim, 2, 202)
+	forB, err := orchestrator.VerifyRepositoryCitations(context.Background(), sawIt, 22, designSHA, claim, 2, 202, "d1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +35,7 @@ func TestACitationAuthorizedForOneDeliverableDoesNotAuthorizeAnother(t *testing.
 		t.Fatalf("a verified citation must name whose it is, got %+v", forB[0])
 	}
 
-	forA, err := orchestrator.VerifyRepositoryCitations(context.Background(), sawNothing, 11, designSHA, claim, 1, 101)
+	forA, err := orchestrator.VerifyRepositoryCitations(context.Background(), sawNothing, 11, designSHA, claim, 1, 101, "d1")
 	if err != nil {
 		t.Fatal(err)
 	}

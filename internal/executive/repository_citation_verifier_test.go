@@ -41,7 +41,7 @@ func snapshotWith() stubSnapshotSources {
 func TestACitationTheModelActuallySawIsVerified(t *testing.T) {
 	orchestrator := &Orchestrator{}
 	verified, err := orchestrator.VerifyRepositoryCitations(context.Background(), snapshotWith(), 7, designSHA,
-		"The validator already rejects this, see "+realCite+".", 42, 99)
+		"The validator already rejects this, see "+realCite+".", 42, 99, "d1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestACitationTheModelActuallySawIsVerified(t *testing.T) {
 func TestAnInventedCitationIsNeverVerified(t *testing.T) {
 	orchestrator := &Orchestrator{}
 	verified, err := orchestrator.VerifyRepositoryCitations(context.Background(), snapshotWith(), 7, designSHA,
-		"As shown in "+inventedCi+", the helper is unused.", 42, 99)
+		"As shown in "+inventedCi+", the helper is unused.", 42, 99, "d1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestAnInventedCitationIsNeverVerified(t *testing.T) {
 func TestACitationOfAnotherCommitIsNeverVerified(t *testing.T) {
 	orchestrator := &Orchestrator{}
 	verified, err := orchestrator.VerifyRepositoryCitations(context.Background(), snapshotWith(), 7, designSHA,
-		"Per "+staleCite+" the behaviour is already correct.", 42, 99)
+		"Per "+staleCite+" the behaviour is already correct.", 42, 99, "d1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestACitationOfAnotherCommitIsNeverVerified(t *testing.T) {
 func TestADroppedSourceIsNeverVerified(t *testing.T) {
 	orchestrator := &Orchestrator{}
 	verified, err := orchestrator.VerifyRepositoryCitations(context.Background(), snapshotWith(), 7, designSHA,
-		"See "+droppedCit+" for the current shape.", 42, 99)
+		"See "+droppedCit+" for the current shape.", 42, 99, "d1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestTheVerifierOnlyAnswersProvenance(t *testing.T) {
 	orchestrator := &Orchestrator{}
 	// A claim that is obviously false, resting on a genuine citation.
 	verified, err := orchestrator.VerifyRepositoryCitations(context.Background(), snapshotWith(), 7, designSHA,
-		"This file is empty and does nothing, see "+realCite+".", 42, 99)
+		"This file is empty and does nothing, see "+realCite+".", 42, 99, "d1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestTheVerifierOnlyAnswersProvenance(t *testing.T) {
 func TestAnUnreadableSnapshotIsAnError(t *testing.T) {
 	orchestrator := &Orchestrator{}
 	_, err := orchestrator.VerifyRepositoryCitations(context.Background(),
-		stubSnapshotSources{err: errors.New("snapshot unavailable")}, 7, designSHA, "see "+realCite, 42, 99)
+		stubSnapshotSources{err: errors.New("snapshot unavailable")}, 7, designSHA, "see "+realCite, 42, 99, "d1")
 	if err == nil {
 		t.Fatal("an unreadable snapshot must not read as a design with no valid citations")
 	}

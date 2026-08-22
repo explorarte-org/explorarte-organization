@@ -41,6 +41,10 @@ type VerifiedCitation struct {
 	BaseSHA      string
 	TaskID       int64
 	InvocationID int64
+	// ResultDigest names the exact bytes the citation was found in. Without
+	// it, a reference extracted from one version of a deliverable could be
+	// published under the digest of another.
+	ResultDigest string
 }
 
 // VerifyRepositoryCitations answers the only questions a host can answer about
@@ -59,7 +63,7 @@ type VerifiedCitation struct {
 //	did it actually reach the model, rather than being dropped
 //
 // Everything the reviewer then says rests on evidence nobody invented.
-func (o *Orchestrator) VerifyRepositoryCitations(ctx context.Context, sources SnapshotSourceReader, snapshotID int64, baseSHA, text string, taskID, invocationID int64) ([]VerifiedCitation, error) {
+func (o *Orchestrator) VerifyRepositoryCitations(ctx context.Context, sources SnapshotSourceReader, snapshotID int64, baseSHA, text string, taskID, invocationID int64, resultDigest string) ([]VerifiedCitation, error) {
 	if sources == nil || snapshotID <= 0 || baseSHA == "" {
 		return nil, nil
 	}
@@ -96,7 +100,7 @@ func (o *Orchestrator) VerifyRepositoryCitations(ctx context.Context, sources Sn
 		seen[candidate] = struct{}{}
 		verified = append(verified, VerifiedCitation{
 			Reference: candidate, BaseSHA: baseSHA,
-			TaskID: taskID, InvocationID: invocationID,
+			TaskID: taskID, InvocationID: invocationID, ResultDigest: resultDigest,
 		})
 	}
 	sort.Slice(verified, func(i, j int) bool { return verified[i].Reference < verified[j].Reference })
