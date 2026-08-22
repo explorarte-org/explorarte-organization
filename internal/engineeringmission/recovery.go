@@ -66,6 +66,12 @@ const (
 	// RecoveryBudgetExhausted: the program that owns this work cannot
 	// absorb another episode the size of the one that failed.
 	RecoveryBudgetExhausted RecoveryReason = "budget_exhausted"
+	// RecoveryOrphanedSuccessor: this dead letter is stamped, but its
+	// successor is still held and its mission policy never became durable
+	// -- and the policy cannot be reconstructed, because the world moved
+	// again since. The successor stays blocked and visible rather than
+	// being published with a guessed policy or silently forgotten.
+	RecoveryOrphanedSuccessor RecoveryReason = "orphaned_successor"
 	// RecoveryIdentityTaken: an identical successor already exists under a
 	// different dead letter. Adopting it would link work scheduled for
 	// another failure into this chain and report a recovery that never
@@ -179,7 +185,8 @@ func (r Recovery) Evaluate(ctx context.Context, dead tasks.DeadLetter) (Recovery
 		return decision, nil
 	}
 
-	if _, err := r.Mission.Resolve(ctx, dead.TaskID); err != nil {
+	policy, err := r.Mission.Resolve(ctx, dead.TaskID)
+	if err != nil {
 		// A dead letter that is not an engineering mission is simply not
 		// this policy's business. Reporting it as an error would make an
 		// ordinary sweep over a mixed queue look like a malfunction.
@@ -187,9 +194,9 @@ func (r Recovery) Evaluate(ctx context.Context, dead tasks.DeadLetter) (Recovery
 		return decision, nil
 	}
 
-	classified, err := r.classify(ctx, dead.TaskID)
-	if err != nil {
-		return decision, err
+	classified, classifyErr := r.classify(ctx, dead.TaskID)
+	if classifyErr != nil {
+		return decision, classifyErr
 	}
 	if classified == nil {
 		decision.Reason = RecoveryUnclassified
@@ -212,7 +219,7 @@ func (r Recovery) Evaluate(ctx context.Context, dead tasks.DeadLetter) (Recovery
 		return decision, nil
 	}
 
-	world, err := r.worldOf(ctx, dead.TaskID)
+	world, err := r.worldOf(ctx, dead.TaskID, policy)
 	if err != nil {
 		return decision, err
 	}
@@ -265,14 +272,28 @@ func (r Recovery) Evaluate(ctx context.Context, dead tasks.DeadLetter) (Recovery
 // repo advanced" is not "the world relevant to this mission changed".
 //
 // nil means the mission never opened a workspace, which is fail-closed.
-func (r Recovery) worldOf(ctx context.Context, taskID int64) (*staging.Workspace, error) {
-	spaces, err := r.Workspaces.ListWorkspaces(ctx, staging.WorkspaceFilter{TaskID: taskID, Limit: 50})
+func (r Recovery) worldOf(ctx context.Context, taskID int64, policy MissionPolicy) (*staging.Workspace, error) {
+	spaces, err := r.Workspaces.ListWorkspaces(ctx, staging.WorkspaceFilter{TaskID: taskID, Limit: 200})
 	if err != nil {
 		return nil, err
 	}
 	var latest *staging.Workspace
 	for index := range spaces {
-		if spaces[index].BaseCommit == "" || spaces[index].TargetRef == "" || spaces[index].RepositoryID == "" {
+		repository := strings.TrimSpace(spaces[index].RepositoryID)
+		target := strings.TrimSpace(spaces[index].TargetRef)
+		base := strings.TrimSpace(spaces[index].BaseCommit)
+		if repository == "" || target == "" || base == "" {
+			continue
+		}
+		// The mission policy is the authority on which commit this
+		// mission was pinned to; the workspace is the authority on which
+		// repository and ref it used. A workspace whose base disagrees
+		// with the policy describes some other piece of work -- a
+		// different attempt under a repointed worker, or a mis-pinned
+		// run -- and treating it as this mission's world would let
+		// recovery declare movement against a base the policy never
+		// used. Adversarial review round 2, finding A.
+		if base != policy.BaseSHA {
 			continue
 		}
 		if latest == nil || spaces[index].ID > latest.ID {
@@ -326,20 +347,24 @@ func (r Recovery) classify(ctx context.Context, taskID int64) (*bool, error) {
 // successor episode. It returns the decision it acted on.
 //
 // The successor is born under a COORDINATION HOLD -- durable immediately,
-// claimable by nobody -- and is only published once its mission policy, pinned
-// to the new head, is durable against it.
-//
-// That ordering is the fix for the defect adversarial review found: the first
-// version created an ordinary task carrying the failed episode's instructions
-// and put the new BaseSHA only inside the idempotency digest. Nothing durable
-// said the successor was a mission at all, so Mission.Resolve would fail on
-// it, and a runner would either reject it or run it unconstrained by mission
-// policy. If anything below fails now, the successor stays blocked forever:
-// visible, never claimed, nothing spent.
+// claimable by nobody -- and is published only once its mission policy, pinned
+// to the new head, is durable against it. If anything below fails, the
+// successor stays blocked: visible, never claimed, nothing spent.
 func (r Recovery) Recover(ctx context.Context, dead tasks.DeadLetter) (RecoveryDecision, tasks.RedriveResult, error) {
 	decision, err := r.Evaluate(ctx, dead)
-	if err != nil || !decision.Eligible() {
+	if err != nil {
 		return decision, tasks.RedriveResult{}, err
+	}
+	// A stamped letter is not necessarily a finished recovery: the process
+	// can die between the redrive commit and publication. Round 2 of
+	// adversarial review showed the first version returned here and never
+	// came back, so the successor stayed blocked forever while its comment
+	// claimed the sweep would repair it. Now it actually does.
+	if decision.Reason == RecoveryAlreadyRecovered && dead.RedriveTaskID != nil {
+		return r.repair(ctx, dead, decision)
+	}
+	if !decision.Eligible() {
+		return decision, tasks.RedriveResult{}, nil
 	}
 	if r.MaxRecoveryEpisodes < 1 {
 		return decision, tasks.RedriveResult{}, fmt.Errorf("max_recovery_episodes must be configured before recovery can run")
@@ -377,19 +402,81 @@ func (r Recovery) Recover(ctx context.Context, dead tasks.DeadLetter) (RecoveryD
 	return decision, result, nil
 }
 
+// repair finishes a recovery that was interrupted after its successor became
+// durable but before it was published.
+//
+// The successor's policy cannot simply be rebuilt from today's head: the head
+// may have moved again, and publishing a policy the successor's identity was
+// not derived from would bind it to work it never claimed to be. So the
+// candidate policy is checked against the successor's own idempotency key, and
+// only a match is published. A mismatch leaves the task blocked and says so.
+func (r Recovery) repair(ctx context.Context, dead tasks.DeadLetter, decision RecoveryDecision) (RecoveryDecision, tasks.RedriveResult, error) {
+	successorDetail, err := r.Tasks.GetTask(ctx, *dead.RedriveTaskID)
+	if err != nil {
+		return decision, tasks.RedriveResult{}, err
+	}
+	if successorDetail.Task.Status != tasks.StatusBlocked {
+		return decision, tasks.RedriveResult{}, nil
+	}
+	policy, err := r.Mission.Resolve(ctx, dead.TaskID)
+	if err != nil {
+		return decision, tasks.RedriveResult{}, nil
+	}
+	world, err := r.worldOf(ctx, dead.TaskID, policy)
+	if err != nil || world == nil {
+		decision.Reason = RecoveryOrphanedSuccessor
+		return decision, tasks.RedriveResult{}, err
+	}
+	head, err := r.Head.ResolveHead(ctx, world.RepositoryID, world.TargetRef)
+	if err != nil {
+		return decision, tasks.RedriveResult{}, err
+	}
+	candidate, err := successorPolicy(policy, strings.TrimSpace(head))
+	if err != nil {
+		return decision, tasks.RedriveResult{}, err
+	}
+	if err := r.publishSuccessor(ctx, successorDetail.Task, candidate); err != nil {
+		if errors.Is(err, errSuccessorIdentityMismatch) {
+			decision.Reason = RecoveryOrphanedSuccessor
+			return decision, tasks.RedriveResult{}, nil
+		}
+		return decision, tasks.RedriveResult{}, err
+	}
+	return decision, tasks.RedriveResult{Successor: successorDetail.Task}, nil
+}
+
+// errSuccessorIdentityMismatch reports that a policy was offered for a
+// successor whose identity was derived from a different one.
+var errSuccessorIdentityMismatch = errors.New("successor policy does not match its identity")
+
 // publishSuccessor makes the held successor a real, claimable mission: its
 // policy becomes durable against its own ID, and only then is the hold
-// released.
+// released. It is idempotent, so an interrupted sweep finishes the job later.
 //
-// It is idempotent so that a sweep interrupted between the two steps finishes
-// the job on its next pass rather than leaving a permanently blocked task.
+// The identity guard is what stops one worker from writing its own policy onto
+// a successor another worker created: the task's idempotency key IS the digest
+// of the policy it was created for, so a policy that does not reproduce that
+// key is not this task's policy, whatever else it might be.
 func (r Recovery) publishSuccessor(ctx context.Context, successor tasks.Task, policy MissionPolicy) error {
-	policy.TaskID = successor.ID
-	policy, err := policy.Normalize()
+	identity, err := successorPolicy(policy, policy.BaseSHA)
 	if err != nil {
 		return err
 	}
-	metadata, digest, err := policy.MarshalEvidence()
+	_, keyDigest, err := identity.MarshalEvidence()
+	if err != nil {
+		return err
+	}
+	if successor.IdempotencyKey != "engineering-mission/"+keyDigest {
+		return fmt.Errorf("%w: task %d", errSuccessorIdentityMismatch, successor.ID)
+	}
+
+	bound := identity
+	bound.TaskID = successor.ID
+	bound, err = bound.Normalize()
+	if err != nil {
+		return err
+	}
+	metadata, digest, err := bound.MarshalEvidence()
 	if err != nil {
 		return err
 	}
@@ -424,6 +511,19 @@ func (r Recovery) publishSuccessor(ctx context.Context, successor tasks.Task, po
 	return nil
 }
 
+// successorPolicy derives the identity-form policy of a successor pinned to
+// head: the predecessor's mission with a new base and no task bound yet.
+//
+// It exists so that the digest used for the successor's idempotency key and
+// the digest checked before publishing it are produced by ONE function. Two
+// derivations of "the successor's policy" would eventually disagree, and the
+// disagreement would appear as a successor nobody could publish.
+func successorPolicy(policy MissionPolicy, head string) (MissionPolicy, error) {
+	policy.TaskID = 0
+	policy.BaseSHA = head
+	return policy.Normalize()
+}
+
 // RecoverPending sweeps the dead-letter queue and opens every successor it is
 // entitled to open, returning one decision per dead letter it considered.
 //
@@ -432,7 +532,13 @@ func (r Recovery) publishSuccessor(ctx context.Context, successor tasks.Task, po
 // because of an unrelated neighbour.
 func (r Recovery) RecoverPending(ctx context.Context, limit int) ([]RecoveryDecision, error) {
 	if limit <= 0 {
-		limit = 50
+		// Dead letters are listed newest first and a permanent failure
+		// stays listed forever, so a small window would eventually be
+		// filled entirely by letters that can never be recovered, hiding
+		// eligible work behind them. Evaluation of an ineligible letter
+		// is one or two cheap reads, and the sweep only runs when the
+		// runner has nothing else to do.
+		limit = 200
 	}
 	letters, err := r.Tasks.ListDeadLetters(ctx, limit)
 	if err != nil {
@@ -463,9 +569,7 @@ func (r Recovery) successorRequest(ctx context.Context, failedTaskID int64, head
 	if err != nil {
 		return tasks.CreateRequest{}, MissionPolicy{}, err
 	}
-	policy.TaskID = 0
-	policy.BaseSHA = head
-	policy, err = policy.Normalize()
+	policy, err = successorPolicy(policy, head)
 	if err != nil {
 		return tasks.CreateRequest{}, MissionPolicy{}, err
 	}
@@ -484,11 +588,23 @@ func (r Recovery) successorRequest(ctx context.Context, failedTaskID int64, head
 	if failed.Task.RequestedByRoleID != nil && *failed.Task.RequestedByRoleID != "" {
 		requestedBy = *failed.Task.RequestedByRoleID
 	}
-	// The idempotency key is the successor policy's own content digest,
-	// exactly as Service.Create derives it. Because BaseSHA is part of what
-	// is hashed, a successor pinned to a new commit necessarily gets a key
-	// distinct from its predecessor's -- the observed change that justifies
-	// the episode is the same fact that gives it a separate identity.
+	// The correlation is what binds a task to its program, and the program
+	// ceiling is enforced BY CORRELATION at reservation time. Round 2 of
+	// adversarial review found the episode being admitted against a
+	// program's remaining budget and then created without it: permission
+	// granted against a ceiling the resulting spend would never debit,
+	// leaving every later admission looking at a remainder that never
+	// moved. Carrying it forward is what makes the admission mean
+	// something -- and it is also what makes the admission merely an early
+	// stop rather than the only gate, since ReserveWithinProgramCeiling
+	// then refuses the actual invocations once the ceiling is reached.
+	correlation := ""
+	if failed.Task.CorrelationID != nil {
+		correlation = *failed.Task.CorrelationID
+	}
+	// The successor is caused by the failure it recovers, not by whatever
+	// caused the original mission.
+	causation := fmt.Sprint(failedTaskID)
 	return tasks.CreateRequest{
 		OrganizationID:     failed.Task.OrganizationID,
 		RequestedByRoleID:  requestedBy,
@@ -497,6 +613,8 @@ func (r Recovery) successorRequest(ctx context.Context, failedTaskID int64, head
 		Instructions:       failed.Task.Instructions,
 		AcceptanceCriteria: policy.AcceptanceCriteria,
 		IdempotencyKey:     "engineering-mission/" + digest,
+		CorrelationID:      correlation,
+		CausationID:        causation,
 		// Born held: durable at once, claimable by nobody until its
 		// mission policy is durable too. See publishSuccessor.
 		HoldForCoordination: true,

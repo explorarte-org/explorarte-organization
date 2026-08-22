@@ -51,7 +51,7 @@ const (
 	// dead letters twice a second. Recovery is about failures that already
 	// happened; nothing about them changes between two passes.
 	recoverySweepInterval = 60 * time.Second
-	recoverySweepBatch    = 50
+	recoverySweepBatch    = 200
 	// defaultCodeRunnerMaxRecoveryEpisodes permits ONE successor per
 	// original failure by default. A single successor is what turns a
 	// transient failure against a since-fixed target into completed work;

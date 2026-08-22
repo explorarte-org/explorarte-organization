@@ -41,7 +41,10 @@ func (f *fakeRecoveryPort) RedriveDeadLetter(_ context.Context, c tasks.RedriveC
 	if f.redrive != nil {
 		return f.redrive(c)
 	}
-	return tasks.RedriveResult{Successor: tasks.Task{ID: 999, Status: tasks.StatusBlocked}, Created: true, Episode: 1}, nil
+	return tasks.RedriveResult{
+		Successor: tasks.Task{ID: 999, Status: tasks.StatusBlocked, IdempotencyKey: c.Successor.IdempotencyKey},
+		Created:   true, Episode: 1,
+	}, nil
 }
 func (f *fakeRecoveryPort) RecordEvidence(_ context.Context, c tasks.RecordEvidenceCommand) (tasks.Evidence, error) {
 	f.evidence = append(f.evidence, c)
@@ -104,6 +107,16 @@ func missionWorkspace() fixedWorkspaces {
 	return fixedWorkspaces{{
 		ID: 11, TaskID: 82668, RepositoryID: missionRepo,
 		TargetRef: missionRef, BaseCommit: failedBase,
+	}}
+}
+
+const failedCorrelation = "executive:86ea919cb47f079c22c2ea201f79c805"
+
+func failedMissionDetail() tasks.TaskDetail {
+	correlation := failedCorrelation
+	return tasks.TaskDetail{Task: tasks.Task{
+		ID: 82668, OrganizationID: "explorarte", Status: tasks.StatusBlocked,
+		Instructions: "{\"operations\":[]}", CorrelationID: &correlation,
 	}}
 }
 
@@ -340,7 +353,7 @@ func TestRecoverySuccessorIsARealMissionPinnedToTheNewHead(t *testing.T) {
 	ctx := context.Background()
 	port := &fakeRecoveryPort{
 		attempts: []tasks.Attempt{retryableAttempt(true)},
-		detail:   tasks.TaskDetail{Task: tasks.Task{ID: 82668, OrganizationID: "explorarte", Status: tasks.StatusBlocked, Instructions: "{\"operations\":[]}"}},
+		detail:   failedMissionDetail(),
 	}
 	decision, result, err := recoveryWith(port, recoveryOpts{}).Recover(ctx, tasks.DeadLetter{ID: 7, TaskID: 82668})
 	if err != nil {
@@ -432,7 +445,7 @@ func TestRecoveryReportsGovernedStopsAsDecisions(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			port := &fakeRecoveryPort{
 				attempts: []tasks.Attempt{retryableAttempt(true)},
-				detail:   tasks.TaskDetail{Task: tasks.Task{ID: 82668, OrganizationID: "explorarte", Instructions: "{\"operations\":[]}"}},
+				detail:   failedMissionDetail(),
 				letters:  []tasks.DeadLetter{{ID: 7, TaskID: 82668}},
 			}
 			port.redrive = func(tasks.RedriveCommand) (tasks.RedriveResult, error) {
@@ -449,5 +462,92 @@ func TestRecoveryReportsGovernedStopsAsDecisions(t *testing.T) {
 				t.Fatal("nothing may be published when no successor was created")
 			}
 		})
+	}
+}
+
+// A budget check that admits an episode against a program's remaining ceiling
+// has to attach the episode to that program, or it grants permission against a
+// ceiling the resulting spend will never debit -- and every later admission
+// then reads a remainder that never moved. Adversarial review round 2 found
+// exactly that: admitted, then created uncorrelated.
+func TestRecoverySuccessorJoinsTheProgramThatAdmittedIt(t *testing.T) {
+	ctx := context.Background()
+	port := &fakeRecoveryPort{attempts: []tasks.Attempt{retryableAttempt(true)}, detail: failedMissionDetail()}
+	if _, _, err := recoveryWith(port, recoveryOpts{}).Recover(ctx, tasks.DeadLetter{ID: 7, TaskID: 82668}); err != nil {
+		t.Fatal(err)
+	}
+	if len(port.redrives) != 1 {
+		t.Fatalf("expected one redrive, got %d", len(port.redrives))
+	}
+	successor := port.redrives[0].Successor
+	if successor.CorrelationID != failedCorrelation {
+		t.Fatalf("successor correlation=%q, want the program that admitted it (%q)", successor.CorrelationID, failedCorrelation)
+	}
+	if successor.CausationID != "82668" {
+		t.Fatalf("successor causation=%q, want the failure it recovers", successor.CausationID)
+	}
+}
+
+// A policy may only be published onto a successor whose identity was derived
+// from that same policy. Otherwise a second worker, arriving with its own view
+// of the head, could bind a successor to work it never claimed to be.
+func TestRecoveryRefusesToPublishAForeignPolicy(t *testing.T) {
+	ctx := context.Background()
+	port := &fakeRecoveryPort{attempts: []tasks.Attempt{retryableAttempt(true)}, detail: failedMissionDetail()}
+	port.redrive = func(c tasks.RedriveCommand) (tasks.RedriveResult, error) {
+		// A successor whose identity belongs to some other policy.
+		return tasks.RedriveResult{
+			Successor: tasks.Task{ID: 999, Status: tasks.StatusBlocked, IdempotencyKey: "engineering-mission/somebody-elses-digest"},
+			Created:   true, Episode: 1,
+		}, nil
+	}
+	_, _, err := recoveryWith(port, recoveryOpts{}).Recover(ctx, tasks.DeadLetter{ID: 7, TaskID: 82668})
+	if err == nil {
+		t.Fatal("publishing a policy onto a successor with a different identity must fail")
+	}
+	if len(port.released) != 0 {
+		t.Fatal("a successor whose policy was refused must stay held")
+	}
+}
+
+// A stamped dead letter whose successor never got published is not a finished
+// recovery. The sweep must come back and finish it, which the first version
+// did not do: Evaluate short-circuited on already_recovered and the successor
+// stayed blocked forever while the comment claimed otherwise.
+func TestRecoveryFinishesAnInterruptedPublication(t *testing.T) {
+	ctx := context.Background()
+	successorID := int64(999)
+	held := failedMissionDetail()
+	predecessor := MissionPolicy(basePolicy())
+	identity, err := successorPolicy(predecessor, movedHead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, digest, err := identity.MarshalEvidence()
+	if err != nil {
+		t.Fatal(err)
+	}
+	held.Task = tasks.Task{
+		ID: successorID, OrganizationID: "explorarte", Status: tasks.StatusBlocked,
+		IdempotencyKey: "engineering-mission/" + digest,
+	}
+	port := &fakeRecoveryPort{attempts: []tasks.Attempt{retryableAttempt(true)}, detail: held}
+
+	stamped := tasks.DeadLetter{ID: 7, TaskID: 82668, RedriveTaskID: &successorID}
+	decision, _, err := recoveryWith(port, recoveryOpts{}).Recover(ctx, stamped)
+	if err != nil {
+		t.Fatalf("repair: %v", err)
+	}
+	if decision.Reason != RecoveryAlreadyRecovered {
+		t.Fatalf("reason=%q", decision.Reason)
+	}
+	if len(port.evidence) != 1 {
+		t.Fatalf("the interrupted policy must be recorded, got %d writes", len(port.evidence))
+	}
+	if len(port.released) != 1 || port.released[0] != successorID {
+		t.Fatalf("the held successor must be published, released=%v", port.released)
+	}
+	if len(port.redrives) != 0 {
+		t.Fatal("repair must not open a second episode")
 	}
 }
