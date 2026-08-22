@@ -161,6 +161,7 @@ func runCodeRunner(args []string, stdout, stderr io.Writer) int {
 		},
 
 		MaxRecoveryEpisodes: codeRunnerMaxRecoveryEpisodes(stderr),
+		Settled:             map[int64]engineeringmission.RecoveryReason{},
 		// No fallback requester: a mission whose own requester was
 		// never recorded is left unattributed rather than credited to
 		// whatever role happened to be in scope here.

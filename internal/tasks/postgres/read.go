@@ -144,6 +144,34 @@ func (s *Store) ListDeadLetters(ctx context.Context, limit int) ([]tasks.DeadLet
 	return values, mapError(rows.Err())
 }
 
+// ListUnrecoveredDeadLetters lists only dead letters that have no successor
+// yet, newest first.
+//
+// A recovery sweep reading the plain listing eventually sees nothing but
+// letters it has already recovered, because a dead letter is never deleted and
+// a stamped one stays at the top of the list forever. Excluding them here is
+// what keeps a bounded sweep window pointed at work that can still change.
+func (s *Store) ListUnrecoveredDeadLetters(ctx context.Context, limit int) ([]tasks.DeadLetter, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id,task_id,attempt_id,reason_code,reason,attempt_count,created_at,redriven_at,redrive_task_id
+		FROM task_dead_letters WHERE redrive_task_id IS NULL
+		ORDER BY created_at DESC,id DESC LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	var result []tasks.DeadLetter
+	for rows.Next() {
+		value, scanErr := scanDeadLetter(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		result = append(result, value)
+	}
+	return result, mapError(rows.Err())
+}
+
 func (s *Store) GetDeadLetter(ctx context.Context, id int64) (tasks.DeadLetter, error) {
 	return scanDeadLetter(s.pool.QueryRow(ctx, `
 		SELECT id,task_id,attempt_id,reason_code,reason,attempt_count,created_at,redriven_at,redrive_task_id

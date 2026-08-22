@@ -72,6 +72,14 @@ const (
 	// again since. The successor stays blocked and visible rather than
 	// being published with a guessed policy or silently forgotten.
 	RecoveryOrphanedSuccessor RecoveryReason = "orphaned_successor"
+	// RecoveryWorldAmbiguous: the failed mission has workspaces pinned to
+	// its policy base but disagreeing about which repository or ref they
+	// were opened on -- a worker was repointed between attempts, or two
+	// runners served the same task differently. Which of them is "this
+	// mission's world" is then not a fact the system holds, and picking
+	// the most recent would let an unrelated branch's movement recover a
+	// mission pinned elsewhere. Fail closed.
+	RecoveryWorldAmbiguous RecoveryReason = "world_ambiguous"
 	// RecoveryIdentityTaken: an identical successor already exists under a
 	// different dead letter. Adopting it would link work scheduled for
 	// another failure into this chain and report a recovery that never
@@ -130,6 +138,18 @@ type WorkspaceReader interface {
 	ListWorkspaces(context.Context, staging.WorkspaceFilter) ([]staging.Workspace, error)
 }
 
+// UnrecoveredLister is an optional capability: list only the dead letters that
+// have no successor yet.
+//
+// Without it a bounded sweep window fills, permanently, with letters it has
+// already recovered -- dead letters are never deleted and stamped ones stay at
+// the top of a newest-first listing forever. It is optional rather than part
+// of RecoveryPort so a store that has not grown the query still works, just
+// with the older liveness limit.
+type UnrecoveredLister interface {
+	ListUnrecoveredDeadLetters(ctx context.Context, limit int) ([]tasks.DeadLetter, error)
+}
+
 // AmbiguityReader reports model invocations whose outcome never settled.
 type AmbiguityReader interface {
 	UnreconciledAmbiguousInvocations(ctx context.Context, taskID int64) (int, error)
@@ -172,6 +192,27 @@ type Recovery struct {
 	RequestedBy string
 	ActorType   string
 	ActorID     string
+
+	// Settled remembers dead letters whose decision cannot change without
+	// something else in the system changing first -- a letter that is not a
+	// mission, one whose failure was classified permanent, one never
+	// classified at all. Re-deciding them every minute costs queries and,
+	// worse, consumes the bounded sweep window that eligible work needs.
+	//
+	// It is a cache, never an authority: losing it on restart only means
+	// deciding those letters once more, and it can never cause a recovery to
+	// happen, only to be skipped.
+	Settled map[int64]RecoveryReason
+}
+
+// settledForever reports decisions that cannot change on their own.
+func settledForever(reason RecoveryReason) bool {
+	switch reason {
+	case RecoveryNotAMission, RecoveryPermanent, RecoveryUnclassified:
+		return true
+	default:
+		return false
+	}
 }
 
 // Evaluate decides one dead letter without changing anything.
@@ -220,6 +261,10 @@ func (r Recovery) Evaluate(ctx context.Context, dead tasks.DeadLetter) (Recovery
 	}
 
 	world, err := r.worldOf(ctx, dead.TaskID, policy)
+	if errors.Is(err, errWorldAmbiguous) {
+		decision.Reason = RecoveryWorldAmbiguous
+		return decision, nil
+	}
 	if err != nil {
 		return decision, err
 	}
@@ -296,12 +341,28 @@ func (r Recovery) worldOf(ctx context.Context, taskID int64, policy MissionPolic
 		if base != policy.BaseSHA {
 			continue
 		}
+		// Taking the most recent matching workspace was not enough:
+		// round 3 showed that if one attempt opened on the mission's
+		// promotion target and a later one opened on main, "latest wins"
+		// makes main's movement recover a release-pinned mission. When
+		// the surviving workspaces disagree about the world, the system
+		// does not know this mission's world, and saying so is the only
+		// honest answer.
+		if latest != nil && (target != strings.TrimSpace(latest.TargetRef) || repository != strings.TrimSpace(latest.RepositoryID)) {
+			return nil, errWorldAmbiguous
+		}
 		if latest == nil || spaces[index].ID > latest.ID {
-			latest = &spaces[index]
+			trimmed := spaces[index]
+			trimmed.RepositoryID, trimmed.TargetRef, trimmed.BaseCommit = repository, target, base
+			latest = &trimmed
 		}
 	}
 	return latest, nil
 }
+
+// errWorldAmbiguous reports workspaces that disagree about the world a mission
+// worked in.
+var errWorldAmbiguous = errors.New("mission workspaces disagree about repository or target ref")
 
 // classify reports the runtime's own durable verdict on the attempt that
 // EXHAUSTED the task: true retryable, false permanent, nil never classified.
@@ -386,10 +447,13 @@ func (r Recovery) Recover(ctx context.Context, dead tasks.DeadLetter) (RecoveryD
 	case errors.Is(err, tasks.ErrRecoveryEpisodesExhausted):
 		decision.Reason, decision.ObservedChange = RecoveryExhausted, ""
 		return decision, tasks.RedriveResult{}, nil
-	case errors.Is(err, tasks.ErrSuccessorIdentityTaken):
-		// Governed, not exceptional: an identical successor already
-		// exists under another dead letter. Surfacing this as an error
-		// made the sweep retry it every minute forever.
+	case errors.Is(err, tasks.ErrSuccessorIdentityTaken), errors.Is(err, tasks.ErrIdempotencyConflict):
+		// ErrIdempotencyConflict reaches here when two missions
+		// normalize to the same policy and recover to the same head:
+		// same successor key, different causation, so the request hash
+		// differs and the store refuses rather than reusing. Round 3
+		// found only the first sentinel mapped, which left the second
+		// mission erroring on every sweep forever.
 		decision.Reason, decision.ObservedChange = RecoveryIdentityTaken, ""
 		return decision, tasks.RedriveResult{}, nil
 	case err != nil:
@@ -420,7 +484,9 @@ func (r Recovery) repair(ctx context.Context, dead tasks.DeadLetter, decision Re
 	}
 	policy, err := r.Mission.Resolve(ctx, dead.TaskID)
 	if err != nil {
-		return decision, tasks.RedriveResult{}, nil
+		// A blip here must not read as a finished recovery: the
+		// successor is still held, and reporting success would hide it.
+		return decision, tasks.RedriveResult{}, err
 	}
 	world, err := r.worldOf(ctx, dead.TaskID, policy)
 	if err != nil || world == nil {
@@ -458,28 +524,6 @@ var errSuccessorIdentityMismatch = errors.New("successor policy does not match i
 // of the policy it was created for, so a policy that does not reproduce that
 // key is not this task's policy, whatever else it might be.
 func (r Recovery) publishSuccessor(ctx context.Context, successor tasks.Task, policy MissionPolicy) error {
-	identity, err := successorPolicy(policy, policy.BaseSHA)
-	if err != nil {
-		return err
-	}
-	_, keyDigest, err := identity.MarshalEvidence()
-	if err != nil {
-		return err
-	}
-	if successor.IdempotencyKey != "engineering-mission/"+keyDigest {
-		return fmt.Errorf("%w: task %d", errSuccessorIdentityMismatch, successor.ID)
-	}
-
-	bound := identity
-	bound.TaskID = successor.ID
-	bound, err = bound.Normalize()
-	if err != nil {
-		return err
-	}
-	metadata, digest, err := bound.MarshalEvidence()
-	if err != nil {
-		return err
-	}
 	reference := "engineering-mission://" + fmt.Sprint(successor.ID)
 	detail, err := r.Tasks.GetTask(ctx, successor.ID)
 	if err != nil {
@@ -492,7 +536,40 @@ func (r Recovery) publishSuccessor(ctx context.Context, successor tasks.Task, po
 			break
 		}
 	}
+
+	// A successor that already carries its policy needs nothing derived:
+	// its own durable evidence IS the answer, whatever the head has done
+	// since. Round 3 found the first version checking the identity guard
+	// first, so a crash after recording evidence but before releasing the
+	// hold left the successor stranded as soon as the target moved --
+	// which is exactly when repair is needed.
 	if !recorded {
+		// The task's idempotency key IS the digest of the policy it was
+		// created for, so a policy that does not reproduce that key is
+		// not this task's policy, whatever else it might be. This is
+		// what stops one worker from binding another worker's successor
+		// to its own view of the head.
+		identity, err := successorPolicy(policy, policy.BaseSHA)
+		if err != nil {
+			return err
+		}
+		_, keyDigest, err := identity.MarshalEvidence()
+		if err != nil {
+			return err
+		}
+		if successor.IdempotencyKey != "engineering-mission/"+keyDigest {
+			return fmt.Errorf("%w: task %d", errSuccessorIdentityMismatch, successor.ID)
+		}
+		bound := identity
+		bound.TaskID = successor.ID
+		bound, err = bound.Normalize()
+		if err != nil {
+			return err
+		}
+		metadata, digest, err := bound.MarshalEvidence()
+		if err != nil {
+			return err
+		}
 		if _, err := r.Tasks.RecordEvidence(ctx, tasks.RecordEvidenceCommand{
 			TaskID: successor.ID, Type: tasks.RequirementResult, Reference: reference,
 			Digest: digest, RecordedBy: r.ActorID, Metadata: metadata,
@@ -532,25 +609,32 @@ func successorPolicy(policy MissionPolicy, head string) (MissionPolicy, error) {
 // because of an unrelated neighbour.
 func (r Recovery) RecoverPending(ctx context.Context, limit int) ([]RecoveryDecision, error) {
 	if limit <= 0 {
-		// Dead letters are listed newest first and a permanent failure
-		// stays listed forever, so a small window would eventually be
-		// filled entirely by letters that can never be recovered, hiding
-		// eligible work behind them. Evaluation of an ineligible letter
-		// is one or two cheap reads, and the sweep only runs when the
-		// runner has nothing else to do.
 		limit = 200
 	}
-	letters, err := r.Tasks.ListDeadLetters(ctx, limit)
+	var letters []tasks.DeadLetter
+	var err error
+	if lister, ok := r.Tasks.(UnrecoveredLister); ok {
+		letters, err = lister.ListUnrecoveredDeadLetters(ctx, limit)
+	} else {
+		letters, err = r.Tasks.ListDeadLetters(ctx, limit)
+	}
 	if err != nil {
 		return nil, err
 	}
 	decisions := make([]RecoveryDecision, 0, len(letters))
 	var failures []error
 	for _, dead := range letters {
+		if reason, known := r.Settled[dead.TaskID]; known {
+			decisions = append(decisions, RecoveryDecision{DeadLetterID: dead.ID, TaskID: dead.TaskID, Reason: reason})
+			continue
+		}
 		decision, _, recoverErr := r.Recover(ctx, dead)
 		if recoverErr != nil {
 			failures = append(failures, fmt.Errorf("dead letter %d: %w", dead.ID, recoverErr))
 			continue
+		}
+		if r.Settled != nil && settledForever(decision.Reason) {
+			r.Settled[dead.TaskID] = decision.Reason
 		}
 		decisions = append(decisions, decision)
 	}
@@ -604,7 +688,12 @@ func (r Recovery) successorRequest(ctx context.Context, failedTaskID int64, head
 	}
 	// The successor is caused by the failure it recovers, not by whatever
 	// caused the original mission.
-	causation := fmt.Sprint(failedTaskID)
+	//
+	// "task:<id>" is the shape every other causation edge in this system
+	// already uses; writing a bare id here would have made recovery
+	// episodes the only rows whose causation could not be joined back to
+	// anything.
+	causation := "task:" + fmt.Sprint(failedTaskID)
 	return tasks.CreateRequest{
 		OrganizationID:     failed.Task.OrganizationID,
 		RequestedByRoleID:  requestedBy,

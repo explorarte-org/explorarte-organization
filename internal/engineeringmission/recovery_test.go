@@ -103,6 +103,22 @@ func admitted() budget {
 }
 func exhausted() budget { return budget{Family: "engineering", Reason: "family engineering is spent"} }
 
+// disagreeingWorkspaces is one mission opened on two different refs: the
+// promotion target it was pinned for, and main under a repointed worker.
+func disagreeingWorkspaces() fixedWorkspaces {
+	return fixedWorkspaces{
+		{ID: 11, TaskID: 82668, RepositoryID: missionRepo, TargetRef: missionRef, BaseCommit: failedBase},
+		{ID: 12, TaskID: 82668, RepositoryID: missionRepo, TargetRef: "refs/heads/main", BaseCommit: failedBase},
+	}
+}
+
+// mispinnedWorkspace belongs to some other pinning entirely.
+func mispinnedWorkspace() fixedWorkspaces {
+	return fixedWorkspaces{
+		{ID: 13, TaskID: 82668, RepositoryID: missionRepo, TargetRef: missionRef, BaseCommit: movedHead},
+	}
+}
+
 func missionWorkspace() fixedWorkspaces {
 	return fixedWorkspaces{{
 		ID: 11, TaskID: 82668, RepositoryID: missionRepo,
@@ -483,7 +499,7 @@ func TestRecoverySuccessorJoinsTheProgramThatAdmittedIt(t *testing.T) {
 	if successor.CorrelationID != failedCorrelation {
 		t.Fatalf("successor correlation=%q, want the program that admitted it (%q)", successor.CorrelationID, failedCorrelation)
 	}
-	if successor.CausationID != "82668" {
+	if successor.CausationID != "task:82668" {
 		t.Fatalf("successor causation=%q, want the failure it recovers", successor.CausationID)
 	}
 }
@@ -549,5 +565,97 @@ func TestRecoveryFinishesAnInterruptedPublication(t *testing.T) {
 	}
 	if len(port.redrives) != 0 {
 		t.Fatal("repair must not open a second episode")
+	}
+}
+
+// Round 3: "latest workspace wins" let a mission pinned to a release target be
+// recovered because main moved, as long as any attempt had ever been opened on
+// main. When the surviving workspaces disagree about the world, the system does
+// not know this mission's world.
+func TestRecoveryRefusesWhenWorkspacesDisagreeAboutTheWorld(t *testing.T) {
+	ctx := context.Background()
+	port := &fakeRecoveryPort{attempts: []tasks.Attempt{retryableAttempt(true)}}
+	decision, err := recoveryWith(port, recoveryOpts{workspaces: disagreeingWorkspaces()}).
+		Evaluate(ctx, tasks.DeadLetter{ID: 7, TaskID: 82668})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Reason != RecoveryWorldAmbiguous {
+		t.Fatalf("reason=%q, want world_ambiguous", decision.Reason)
+	}
+}
+
+// A workspace whose base disagrees with the mission policy describes some
+// other piece of work and must not stand in for this mission's world.
+func TestRecoveryIgnoresWorkspacesPinnedElsewhere(t *testing.T) {
+	ctx := context.Background()
+	port := &fakeRecoveryPort{attempts: []tasks.Attempt{retryableAttempt(true)}}
+	decision, err := recoveryWith(port, recoveryOpts{workspaces: mispinnedWorkspace()}).
+		Evaluate(ctx, tasks.DeadLetter{ID: 7, TaskID: 82668})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Reason != RecoveryNoWorkspace {
+		t.Fatalf("reason=%q, want no_workspace", decision.Reason)
+	}
+}
+
+// A successor that already carries its policy needs nothing derived: its own
+// durable evidence is the answer, whatever the head has done since. The first
+// version checked the identity guard first, so a crash after recording
+// evidence but before releasing the hold stranded the successor as soon as the
+// target moved -- exactly when repair is needed.
+func TestRecoveryPublishesAStrandedSuccessorAfterTheHeadMovedAgain(t *testing.T) {
+	ctx := context.Background()
+	successorID := int64(999)
+	held := failedMissionDetail()
+	held.Task = tasks.Task{
+		ID: successorID, OrganizationID: "explorarte", Status: tasks.StatusBlocked,
+		IdempotencyKey: "engineering-mission/created-against-a-head-that-has-since-moved",
+	}
+	held.Evidence = []tasks.Evidence{{Reference: "engineering-mission://999"}}
+	port := &fakeRecoveryPort{attempts: []tasks.Attempt{retryableAttempt(true)}, detail: held}
+
+	stamped := tasks.DeadLetter{ID: 7, TaskID: 82668, RedriveTaskID: &successorID}
+	// The head has moved on again since the successor was created, so no
+	// policy derived from today's head could reproduce its identity.
+	decision, _, err := recoveryWith(port, recoveryOpts{head: "9999999999999999999999999999999999999999"}).Recover(ctx, stamped)
+	if err != nil {
+		t.Fatalf("repair: %v", err)
+	}
+	if decision.Reason != RecoveryAlreadyRecovered {
+		t.Fatalf("reason=%q", decision.Reason)
+	}
+	if len(port.evidence) != 0 {
+		t.Fatal("a successor that already carries its policy must not be rewritten")
+	}
+	if len(port.released) != 1 || port.released[0] != successorID {
+		t.Fatalf("the stranded successor must be published, released=%v", port.released)
+	}
+}
+
+// Decisions that cannot change on their own must not consume the sweep window
+// on every pass, or eligible work behind them is never reached.
+func TestRecoverySweepStopsRedecidingSettledLetters(t *testing.T) {
+	ctx := context.Background()
+	port := &fakeRecoveryPort{
+		attempts: []tasks.Attempt{retryableAttempt(false)},
+		detail:   failedMissionDetail(),
+		letters:  []tasks.DeadLetter{{ID: 7, TaskID: 82668}},
+	}
+	recovery := recoveryWith(port, recoveryOpts{})
+	recovery.Settled = map[int64]RecoveryReason{}
+
+	for pass := 0; pass < 3; pass++ {
+		decisions, err := recovery.RecoverPending(ctx, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(decisions) != 1 || decisions[0].Reason != RecoveryPermanent {
+			t.Fatalf("pass %d: decisions=%+v", pass, decisions)
+		}
+	}
+	if got := recovery.Settled[82668]; got != RecoveryPermanent {
+		t.Fatalf("the permanent verdict must be remembered, got %q", got)
 	}
 }
