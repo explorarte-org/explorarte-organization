@@ -40,6 +40,10 @@ var (
 	ErrInvalidFragment = errors.New("repositoryevidence: invalid fragment")
 	ErrStaleEvidence   = errors.New("repositoryevidence: evidence cites a different commit")
 	ErrBudgetExhausted = errors.New("repositoryevidence: exploration budget exhausted")
+	// ErrNoEvidenceFound reports that an execution asked to observe code was
+	// given none. It is an error rather than an empty result because the two
+	// are indistinguishable to the caller and only one of them is safe.
+	ErrNoEvidenceFound = errors.New("repositoryevidence: no evidence found for this execution")
 )
 
 var (
