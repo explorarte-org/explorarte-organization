@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Mireuz13/explorarte-organization/internal/staging"
 	"github.com/Mireuz13/explorarte-organization/internal/tasks"
 )
 
@@ -50,6 +51,26 @@ const (
 	// RecoveryNotAMission: the dead-lettered task carries no mission policy,
 	// so this policy has nothing to say about it.
 	RecoveryNotAMission RecoveryReason = "not_a_mission"
+	// RecoveryNoWorkspace: the failed mission never recorded a workspace,
+	// so there is no durable record of which repository, target ref and
+	// base commit it actually worked against. Without that, "the world
+	// moved" cannot be evaluated against the mission's own world, only
+	// against the worker's current configuration -- which is not the same
+	// question. Fail closed.
+	RecoveryNoWorkspace RecoveryReason = "no_workspace"
+	// RecoveryUnreconciled: the failed mission has model invocations still
+	// in the durable 'ambiguous' state. The provider may already have
+	// received and acted on the request. Until that is settled, repeating
+	// the work would duplicate side effects while spending again.
+	RecoveryUnreconciled RecoveryReason = "unreconciled_ambiguous_outcome"
+	// RecoveryBudgetExhausted: the program that owns this work cannot
+	// absorb another episode the size of the one that failed.
+	RecoveryBudgetExhausted RecoveryReason = "budget_exhausted"
+	// RecoveryIdentityTaken: an identical successor already exists under a
+	// different dead letter. Adopting it would link work scheduled for
+	// another failure into this chain and report a recovery that never
+	// scheduled anything new.
+	RecoveryIdentityTaken RecoveryReason = "successor_identity_taken"
 )
 
 // RecoveryDecision explains one dead letter's eligibility.
@@ -60,11 +81,16 @@ type RecoveryDecision struct {
 	// ObservedChange is set only when Reason is RecoveryEligible, and is
 	// the justification carried into the successor's durable record.
 	ObservedChange string
-	// BaseSHA is what the failed mission pinned; Head is what the target
-	// points at now. Both are reported for every decision so that a refusal
-	// is as inspectable as an approval.
-	BaseSHA string
-	Head    string
+	// BaseSHA is what the failed mission actually worked against; Head is
+	// what that mission's own target points at now. RepositoryID and
+	// TargetRef name the world both refer to. All are reported for every
+	// decision so that a refusal is as inspectable as an approval.
+	BaseSHA      string
+	Head         string
+	RepositoryID string
+	TargetRef    string
+	// Budget carries the admission answer when one was reached.
+	Budget BudgetVerdict
 }
 
 func (d RecoveryDecision) Eligible() bool { return d.Reason == RecoveryEligible }
@@ -83,6 +109,24 @@ type HeadResolver interface {
 type RecoveryPort interface {
 	tasks.TaskReader
 	RedriveDeadLetter(context.Context, tasks.RedriveCommand) (tasks.RedriveResult, error)
+	RecordEvidence(context.Context, tasks.RecordEvidenceCommand) (tasks.Evidence, error)
+	ReleaseCoordinationHold(context.Context, tasks.ReleaseCoordinationHoldCommand) (tasks.Task, error)
+}
+
+// WorkspaceReader reads the workspaces a task actually opened.
+//
+// A workspace row is the only durable record of the repository, target ref
+// and base commit an attempt really used. Recovery reads it instead of its own
+// configuration because those can differ: a worker repointed at another target
+// would otherwise decide that a mission's world had changed on the strength of
+// a ref that mission never touched.
+type WorkspaceReader interface {
+	ListWorkspaces(context.Context, staging.WorkspaceFilter) ([]staging.Workspace, error)
+}
+
+// AmbiguityReader reports model invocations whose outcome never settled.
+type AmbiguityReader interface {
+	UnreconciledAmbiguousInvocations(ctx context.Context, taskID int64) (int, error)
 }
 
 // MissionResolver reads a task back as the engineering mission it declared.
@@ -102,12 +146,12 @@ type MissionResolver interface {
 // the commit the target points at now, linked to the dead letter that
 // justified it.
 type Recovery struct {
-	Tasks   RecoveryPort
-	Mission MissionResolver
-	Head    HeadResolver
-
-	RepositoryID string
-	TargetRef    string
+	Tasks      RecoveryPort
+	Mission    MissionResolver
+	Head       HeadResolver
+	Workspaces WorkspaceReader
+	Ambiguity  AmbiguityReader
+	Budget     BudgetAdmission
 
 	// MaxRecoveryEpisodes bounds one failure's chain of successors. It is
 	// deliberately separate from a task's own MaxAttempts and from the
@@ -127,23 +171,21 @@ type Recovery struct {
 // Evaluate decides one dead letter without changing anything.
 func (r Recovery) Evaluate(ctx context.Context, dead tasks.DeadLetter) (RecoveryDecision, error) {
 	decision := RecoveryDecision{DeadLetterID: dead.ID, TaskID: dead.TaskID}
-	if r.Tasks == nil || r.Head == nil || r.Mission == nil {
-		return decision, fmt.Errorf("recovery requires a task port, a mission resolver and a head resolver")
+	if r.Tasks == nil || r.Head == nil || r.Mission == nil || r.Workspaces == nil || r.Ambiguity == nil || r.Budget == nil {
+		return decision, fmt.Errorf("recovery requires task, mission, workspace, ambiguity, head and budget ports")
 	}
 	if dead.RedriveTaskID != nil {
 		decision.Reason = RecoveryAlreadyRecovered
 		return decision, nil
 	}
 
-	policy, err := r.Mission.Resolve(ctx, dead.TaskID)
-	if err != nil {
+	if _, err := r.Mission.Resolve(ctx, dead.TaskID); err != nil {
 		// A dead letter that is not an engineering mission is simply not
 		// this policy's business. Reporting it as an error would make an
 		// ordinary sweep over a mixed queue look like a malfunction.
 		decision.Reason = RecoveryNotAMission
 		return decision, nil
 	}
-	decision.BaseSHA = policy.BaseSHA
 
 	classified, err := r.classify(ctx, dead.TaskID)
 	if err != nil {
@@ -158,52 +200,142 @@ func (r Recovery) Evaluate(ctx context.Context, dead tasks.DeadLetter) (Recovery
 		return decision, nil
 	}
 
-	head, err := r.Head.ResolveHead(ctx, r.RepositoryID, r.TargetRef)
+	// An outcome nobody settled is not a transient failure. Checked before
+	// anything else costs a git read, and before budget, because the answer
+	// does not depend on either.
+	unsettled, err := r.Ambiguity.UnreconciledAmbiguousInvocations(ctx, dead.TaskID)
+	if err != nil {
+		return decision, err
+	}
+	if unsettled > 0 {
+		decision.Reason = RecoveryUnreconciled
+		return decision, nil
+	}
+
+	world, err := r.worldOf(ctx, dead.TaskID)
+	if err != nil {
+		return decision, err
+	}
+	if world == nil {
+		decision.Reason = RecoveryNoWorkspace
+		return decision, nil
+	}
+	decision.RepositoryID, decision.TargetRef, decision.BaseSHA = world.RepositoryID, world.TargetRef, world.BaseCommit
+
+	head, err := r.Head.ResolveHead(ctx, world.RepositoryID, world.TargetRef)
 	if err != nil {
 		return decision, err
 	}
 	decision.Head = strings.TrimSpace(head)
 	if decision.Head == "" {
-		return decision, fmt.Errorf("head resolver returned no commit for %s@%s", r.RepositoryID, r.TargetRef)
+		return decision, fmt.Errorf("head resolver returned no commit for %s@%s", world.RepositoryID, world.TargetRef)
 	}
-	if decision.Head == policy.BaseSHA {
+	if decision.Head == world.BaseCommit {
 		decision.Reason = RecoveryUnchangedWorld
+		return decision, nil
+	}
+
+	// Budget last: it is the only check whose answer can change minute to
+	// minute, so deciding it against a candidate that already passed every
+	// stable test keeps the verdict meaningful.
+	verdict, err := r.Budget.Admit(ctx, dead.TaskID)
+	if err != nil {
+		return decision, err
+	}
+	decision.Budget = verdict
+	if !verdict.Admitted {
+		decision.Reason = RecoveryBudgetExhausted
 		return decision, nil
 	}
 
 	decision.Reason = RecoveryEligible
 	decision.ObservedChange = fmt.Sprintf("%s@%s advanced from %s to %s since the mission failed",
-		r.RepositoryID, r.TargetRef, policy.BaseSHA, decision.Head)
+		world.RepositoryID, world.TargetRef, world.BaseCommit, decision.Head)
 	return decision, nil
 }
 
-// classify reports the runtime's own durable verdict on the last attempt that
-// reached a verdict: true retryable, false permanent, nil never classified.
+// worldOf reports the repository, target ref and base commit the failed
+// mission ACTUALLY worked against, from its own most recent workspace.
+//
+// Adversarial review broke the first version here: it compared the mission's
+// pinned base against whatever ORG_CODE_RUNNER_TARGET_REF the running worker
+// happened to be configured with. A mission pinned to one promotion target
+// would then be "recovered" because an unrelated branch moved, and its
+// successor retargeted at a commit that mission would never check out. "The
+// repo advanced" is not "the world relevant to this mission changed".
+//
+// nil means the mission never opened a workspace, which is fail-closed.
+func (r Recovery) worldOf(ctx context.Context, taskID int64) (*staging.Workspace, error) {
+	spaces, err := r.Workspaces.ListWorkspaces(ctx, staging.WorkspaceFilter{TaskID: taskID, Limit: 50})
+	if err != nil {
+		return nil, err
+	}
+	var latest *staging.Workspace
+	for index := range spaces {
+		if spaces[index].BaseCommit == "" || spaces[index].TargetRef == "" || spaces[index].RepositoryID == "" {
+			continue
+		}
+		if latest == nil || spaces[index].ID > latest.ID {
+			latest = &spaces[index]
+		}
+	}
+	return latest, nil
+}
+
+// classify reports the runtime's own durable verdict on the attempt that
+// EXHAUSTED the task: true retryable, false permanent, nil never classified.
 //
 // It reads attempts rather than the failure text for the reason stated on
-// RecoveryReason, and it takes the LAST classified attempt because that is the
-// one whose failure actually exhausted the task.
+// RecoveryReason.
+//
+// Which attempt is read is the whole safety property, and the first version of
+// this function got it wrong: it walked every attempt and skipped the ones
+// carrying no verdict, so a task whose FINAL attempt was never classified
+// inherited an earlier attempt's "retryable" and recovered on a failure nobody
+// had classified. Adversarial review found it with attempts [true, nil].
+//
+// The exhausting attempt is the only one that can justify an episode, and if
+// IT carries no verdict the answer is nil -- fail closed. Absence of a
+// classification is not evidence of a transient failure.
 func (r Recovery) classify(ctx context.Context, taskID int64) (*bool, error) {
 	attempts, err := r.Tasks.ListAttempts(ctx, taskID)
 	if err != nil {
 		return nil, err
 	}
-	var verdict *bool
-	for _, attempt := range attempts {
-		if attempt.Retryable == nil {
-			continue
-		}
+	var exhausting *tasks.Attempt
+	for index := range attempts {
+		attempt := attempts[index]
 		if attempt.State != tasks.AttemptFailed && attempt.State != tasks.AttemptLeaseExpired {
 			continue
 		}
-		value := *attempt.Retryable
-		verdict = &value
+		if exhausting == nil || attempt.Ordinal > exhausting.Ordinal {
+			exhausting = &attempts[index]
+		}
 	}
-	return verdict, nil
+	if exhausting == nil {
+		return nil, nil
+	}
+	if exhausting.Retryable == nil {
+		return nil, nil
+	}
+	verdict := *exhausting.Retryable
+	return &verdict, nil
 }
 
 // Recover evaluates one dead letter and, if it is eligible, opens the
 // successor episode. It returns the decision it acted on.
+//
+// The successor is born under a COORDINATION HOLD -- durable immediately,
+// claimable by nobody -- and is only published once its mission policy, pinned
+// to the new head, is durable against it.
+//
+// That ordering is the fix for the defect adversarial review found: the first
+// version created an ordinary task carrying the failed episode's instructions
+// and put the new BaseSHA only inside the idempotency digest. Nothing durable
+// said the successor was a mission at all, so Mission.Resolve would fail on
+// it, and a runner would either reject it or run it unconstrained by mission
+// policy. If anything below fails now, the successor stays blocked forever:
+// visible, never claimed, nothing spent.
 func (r Recovery) Recover(ctx context.Context, dead tasks.DeadLetter) (RecoveryDecision, tasks.RedriveResult, error) {
 	decision, err := r.Evaluate(ctx, dead)
 	if err != nil || !decision.Eligible() {
@@ -213,7 +345,7 @@ func (r Recovery) Recover(ctx context.Context, dead tasks.DeadLetter) (RecoveryD
 		return decision, tasks.RedriveResult{}, fmt.Errorf("max_recovery_episodes must be configured before recovery can run")
 	}
 
-	successor, err := r.successorRequest(ctx, dead.TaskID, decision.Head)
+	successor, policy, err := r.successorRequest(ctx, dead.TaskID, decision.Head)
 	if err != nil {
 		return decision, tasks.RedriveResult{}, err
 	}
@@ -225,15 +357,71 @@ func (r Recovery) Recover(ctx context.Context, dead tasks.DeadLetter) (RecoveryD
 		ActorType:           r.ActorType,
 		ActorID:             r.ActorID,
 	})
-	if errors.Is(err, tasks.ErrRecoveryEpisodesExhausted) {
-		decision.Reason = RecoveryExhausted
-		decision.ObservedChange = ""
+	switch {
+	case errors.Is(err, tasks.ErrRecoveryEpisodesExhausted):
+		decision.Reason, decision.ObservedChange = RecoveryExhausted, ""
 		return decision, tasks.RedriveResult{}, nil
-	}
-	if err != nil {
+	case errors.Is(err, tasks.ErrSuccessorIdentityTaken):
+		// Governed, not exceptional: an identical successor already
+		// exists under another dead letter. Surfacing this as an error
+		// made the sweep retry it every minute forever.
+		decision.Reason, decision.ObservedChange = RecoveryIdentityTaken, ""
+		return decision, tasks.RedriveResult{}, nil
+	case err != nil:
 		return decision, tasks.RedriveResult{}, err
 	}
+
+	if err := r.publishSuccessor(ctx, result.Successor, policy); err != nil {
+		return decision, result, err
+	}
 	return decision, result, nil
+}
+
+// publishSuccessor makes the held successor a real, claimable mission: its
+// policy becomes durable against its own ID, and only then is the hold
+// released.
+//
+// It is idempotent so that a sweep interrupted between the two steps finishes
+// the job on its next pass rather than leaving a permanently blocked task.
+func (r Recovery) publishSuccessor(ctx context.Context, successor tasks.Task, policy MissionPolicy) error {
+	policy.TaskID = successor.ID
+	policy, err := policy.Normalize()
+	if err != nil {
+		return err
+	}
+	metadata, digest, err := policy.MarshalEvidence()
+	if err != nil {
+		return err
+	}
+	reference := "engineering-mission://" + fmt.Sprint(successor.ID)
+	detail, err := r.Tasks.GetTask(ctx, successor.ID)
+	if err != nil {
+		return err
+	}
+	recorded := false
+	for _, evidence := range detail.Evidence {
+		if evidence.Reference == reference {
+			recorded = true
+			break
+		}
+	}
+	if !recorded {
+		if _, err := r.Tasks.RecordEvidence(ctx, tasks.RecordEvidenceCommand{
+			TaskID: successor.ID, Type: tasks.RequirementResult, Reference: reference,
+			Digest: digest, RecordedBy: r.ActorID, Metadata: metadata,
+		}); err != nil {
+			return err
+		}
+	}
+	if detail.Task.Status != tasks.StatusBlocked {
+		return nil
+	}
+	if _, err := r.Tasks.ReleaseCoordinationHold(ctx, tasks.ReleaseCoordinationHoldCommand{
+		TaskID: successor.ID, ActorType: r.ActorType, ActorID: r.ActorID,
+	}); err != nil {
+		return err
+	}
+	return nil
 }
 
 // RecoverPending sweeps the dead-letter queue and opens every successor it is
@@ -266,24 +454,28 @@ func (r Recovery) RecoverPending(ctx context.Context, limit int) ([]RecoveryDeci
 // successorRequest builds the recovery mission: the same objective, paths,
 // criteria and gates, pinned to the commit that makes a different outcome
 // possible.
-func (r Recovery) successorRequest(ctx context.Context, failedTaskID int64, head string) (tasks.CreateRequest, error) {
+//
+// It returns the policy alongside the request because the policy must become
+// durable against the successor's own ID after creation -- a task carrying
+// mission instructions but no mission policy is not a mission.
+func (r Recovery) successorRequest(ctx context.Context, failedTaskID int64, head string) (tasks.CreateRequest, MissionPolicy, error) {
 	policy, err := r.Mission.Resolve(ctx, failedTaskID)
 	if err != nil {
-		return tasks.CreateRequest{}, err
+		return tasks.CreateRequest{}, MissionPolicy{}, err
 	}
 	policy.TaskID = 0
 	policy.BaseSHA = head
 	policy, err = policy.Normalize()
 	if err != nil {
-		return tasks.CreateRequest{}, err
+		return tasks.CreateRequest{}, MissionPolicy{}, err
 	}
 	_, digest, err := policy.MarshalEvidence()
 	if err != nil {
-		return tasks.CreateRequest{}, err
+		return tasks.CreateRequest{}, MissionPolicy{}, err
 	}
 	failed, err := r.Tasks.GetTask(ctx, failedTaskID)
 	if err != nil {
-		return tasks.CreateRequest{}, err
+		return tasks.CreateRequest{}, MissionPolicy{}, err
 	}
 	// The successor is requested by whoever requested the mission that
 	// failed. Re-attributing it to the recovery machinery would erase the
@@ -305,12 +497,15 @@ func (r Recovery) successorRequest(ctx context.Context, failedTaskID int64, head
 		Instructions:       failed.Task.Instructions,
 		AcceptanceCriteria: policy.AcceptanceCriteria,
 		IdempotencyKey:     "engineering-mission/" + digest,
+		// Born held: durable at once, claimable by nobody until its
+		// mission policy is durable too. See publishSuccessor.
+		HoldForCoordination: true,
 		Requirements: []tasks.RequirementSpec{
 			{Key: "candidate-artifact", Type: tasks.RequirementArtifact, Description: "sealed engineering candidate", Required: boolPtr(true)},
 			{Key: "engineering-required-gates", Type: tasks.RequirementCheck, Description: "all declared engineering gates pass", Required: boolPtr(true)},
 			{Key: "review", Type: tasks.RequirementApproval, Description: "independent engineering review", Required: boolPtr(true)},
 		},
-	}, nil
+	}, policy, nil
 }
 
 // The task engine service is the intended RecoveryPort. Asserting it here is

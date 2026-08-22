@@ -126,3 +126,24 @@ func (s *Store) ListInvocations(ctx context.Context, organizationID string, limi
 	}
 	return result, mapError(rows.Err())
 }
+
+// UnreconciledAmbiguousInvocations counts how many of a task's model
+// invocations are still durably 'ambiguous': the provider may or may not have
+// received and acted on the request, and nothing has since settled which.
+//
+// It exists so that autonomous recovery cannot treat an unsettled call as a
+// clean transient failure. Repeating work whose first attempt may already have
+// landed duplicates its side effects, and does so while spending again.
+// Reconciliation of the outcome has to happen first; until it does, the honest
+// answer about what happened is "unknown", and "unknown" is not "retry".
+func (s *Store) UnreconciledAmbiguousInvocations(ctx context.Context, taskID int64) (int, error) {
+	if taskID <= 0 {
+		return 0, fmt.Errorf("task ID must be positive")
+	}
+	var count int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM model_invocations WHERE task_id=$1 AND status='ambiguous'`, taskID).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}

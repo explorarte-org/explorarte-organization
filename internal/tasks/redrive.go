@@ -15,6 +15,14 @@ import (
 // forever or treat a normal stop as an incident.
 var ErrRecoveryEpisodesExhausted = fmt.Errorf("%w: recovery episodes exhausted", ErrConflict)
 
+// ErrSuccessorIdentityTaken reports that the requested successor's identity
+// already belongs to an existing task.
+//
+// Distinct from a bare ErrConflict so a sweep can treat it as a governed
+// outcome instead of an error to retry forever: an identical successor already
+// existing is a fact about the world, not a malfunction.
+var ErrSuccessorIdentityTaken = fmt.Errorf("%w: successor identity already taken", ErrConflict)
+
 // RedriveCommand asks for one recovery successor to a dead-lettered task.
 //
 // It is NOT a retry. A terminal fact stays terminal: the dead-lettered task

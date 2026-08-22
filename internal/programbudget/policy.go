@@ -127,20 +127,34 @@ func (r Resolver) Policy(ctx context.Context, root int64) (Policy, error) {
 	return *found, nil
 }
 
-func (r Resolver) Resolve(ctx context.Context, taskID int64, provider, model string) (Scope, error) {
+// Program returns the program root task, the correlation that binds the
+// program together, and the budget policy governing taskID.
+//
+// An empty correlation, or a zero-value Policy, means this task belongs to no
+// program: not an error for an ordinary task, but callers admitting autonomous
+// spend must treat it as fail-closed. There is no such thing as an unbounded
+// budget here, only a missing one.
+//
+// It is exported and used by Resolve itself so that "which program governs
+// this task" has exactly one implementation. A second answer to that question
+// would eventually disagree with the ceiling actually enforced at reservation
+// time, and the disagreement would show up as spend admitted against a
+// program that never authorised it.
+func (r Resolver) Program(ctx context.Context, taskID int64) (int64, string, Policy, error) {
 	if r.Tasks == nil {
-		return Scope{}, fmt.Errorf("program budget task reader required")
+		return 0, "", Policy{}, fmt.Errorf("program budget task reader required")
 	}
-	d, e := r.Tasks.GetTask(ctx, taskID)
-	if e != nil {
-		return Scope{}, e
+	d, err := r.Tasks.GetTask(ctx, taskID)
+	if err != nil {
+		return 0, "", Policy{}, err
 	}
 	if d.Task.CorrelationID == nil || strings.TrimSpace(*d.Task.CorrelationID) == "" {
-		return Scope{}, nil
+		return 0, "", Policy{}, nil
 	}
-	items, e := r.Tasks.ListTasks(ctx, tasks.TaskFilter{OrganizationID: d.Task.OrganizationID, CorrelationID: *d.Task.CorrelationID, Limit: 1000})
-	if e != nil {
-		return Scope{}, e
+	correlation := *d.Task.CorrelationID
+	items, err := r.Tasks.ListTasks(ctx, tasks.TaskFilter{OrganizationID: d.Task.OrganizationID, CorrelationID: correlation, Limit: 1000})
+	if err != nil {
+		return 0, "", Policy{}, err
 	}
 	root := d.Task.ID
 	for _, t := range items {
@@ -155,15 +169,29 @@ func (r Resolver) Resolve(ctx context.Context, taskID int64, provider, model str
 			root = t.ID
 		}
 	}
-	found, e := r.Policy(ctx, root)
+	found, err := r.Policy(ctx, root)
+	if err != nil {
+		return 0, "", Policy{}, err
+	}
+	if found.SchemaVersion == "" {
+		return root, correlation, Policy{}, nil
+	}
+	if found.ProgramRootTaskID != root {
+		return 0, "", Policy{}, fmt.Errorf("program budget policy root mismatch")
+	}
+	return root, correlation, found, nil
+}
+
+func (r Resolver) Resolve(ctx context.Context, taskID int64, provider, model string) (Scope, error) {
+	if r.Tasks == nil {
+		return Scope{}, fmt.Errorf("program budget task reader required")
+	}
+	root, correlation, found, e := r.Program(ctx, taskID)
 	if e != nil {
 		return Scope{}, e
 	}
-	if found.SchemaVersion == "" {
+	if correlation == "" || found.SchemaVersion == "" {
 		return Scope{}, nil
-	}
-	if found.ProgramRootTaskID != root {
-		return Scope{}, fmt.Errorf("program budget policy root mismatch")
 	}
 	for _, f := range found.Families {
 		if f.Unavailable {
@@ -172,10 +200,10 @@ func (r Resolver) Resolve(ctx context.Context, taskID int64, provider, model str
 		for _, pr := range f.ProviderIDs {
 			for _, mo := range f.ModelIDs {
 				if pr == provider && mo == model {
-					return Scope{ProgramRootTaskID: root, CorrelationID: *d.Task.CorrelationID, Family: f}, nil
+					return Scope{ProgramRootTaskID: root, CorrelationID: correlation, Family: f}, nil
 				}
 			}
 		}
 	}
-	return Scope{ProgramRootTaskID: root, CorrelationID: *d.Task.CorrelationID}, fmt.Errorf("provider/model outside program policy")
+	return Scope{ProgramRootTaskID: root, CorrelationID: correlation}, fmt.Errorf("provider/model outside program policy")
 }

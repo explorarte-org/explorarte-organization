@@ -70,8 +70,8 @@ func (s *Store) Redrive(ctx context.Context, input tasks.PreparedRedrive) (tasks
 		// chain it never belonged to, and would report a recovery as
 		// having happened when nothing new was scheduled.
 		if !created.Created {
-			return tasks.RedriveResult{}, fmt.Errorf("%w: successor idempotency key already belongs to task %d",
-				tasks.ErrConflict, created.Task.ID)
+			return tasks.RedriveResult{}, fmt.Errorf("%w: it already belongs to task %d",
+				tasks.ErrSuccessorIdentityTaken, created.Task.ID)
 		}
 
 		stamped, err := tx.Exec(ctx, `

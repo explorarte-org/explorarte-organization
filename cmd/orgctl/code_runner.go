@@ -4,12 +4,16 @@ import (
 	"context"
 	"fmt"
 	"github.com/Mireuz13/explorarte-organization/internal/coderunner"
+	costledgerpostgres "github.com/Mireuz13/explorarte-organization/internal/costledger/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/engineeringmission"
 	modeldispatchpostgres "github.com/Mireuz13/explorarte-organization/internal/modeldispatch/postgres"
+	modelruntimepostgres "github.com/Mireuz13/explorarte-organization/internal/modelruntime/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/programbudget"
 	"io"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -58,14 +62,21 @@ const (
 
 // codeRunnerMaxRecoveryEpisodes bounds how many successor episodes one
 // original failure may spawn. Zero disables recovery entirely.
-func codeRunnerMaxRecoveryEpisodes() int {
-	raw := os.Getenv("ORG_CODE_RUNNER_MAX_RECOVERY_EPISODES")
-	if raw == "" {
+//
+// An unset variable takes the default. A SET but unparseable variable
+// disables recovery instead of falling back to the default: the operator
+// clearly meant to say something about this limit, and the one outcome that
+// must never follow from a typo is leaving autonomous succession switched on
+// for someone who believed they had turned it off.
+func codeRunnerMaxRecoveryEpisodes(stderr io.Writer) int {
+	raw, present := os.LookupEnv("ORG_CODE_RUNNER_MAX_RECOVERY_EPISODES")
+	if !present {
 		return defaultCodeRunnerMaxRecoveryEpisodes
 	}
-	n, err := strconv.Atoi(raw)
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
 	if err != nil || n < 0 {
-		return defaultCodeRunnerMaxRecoveryEpisodes
+		fmt.Fprintln(stderr, "ORG_CODE_RUNNER_MAX_RECOVERY_EPISODES is not a non-negative integer; recovery is disabled")
+		return 0
 	}
 	return n
 }
@@ -130,14 +141,26 @@ func runCodeRunner(args []string, stdout, stderr io.Writer) int {
 	// The head is read through the runtime's OWN catalog and git backend
 	// (see bootstrap.Runtime.Git) so that "what the target points at" has a
 	// single definition in this process.
+	ledgerStore, err := costledgerpostgres.New(pstore)
+	if err != nil {
+		return exitInternal
+	}
+	invocationStore, err := modelruntimepostgres.New(pstore)
+	if err != nil {
+		return exitInternal
+	}
 	recovery := engineeringmission.Recovery{
-		Tasks:   taskService,
-		Mission: mission,
-		Head:    engineeringmission.StagingHead{Catalog: stagingRuntime.Catalog, Backend: stagingRuntime.Git},
+		Tasks:      taskService,
+		Mission:    mission,
+		Head:       engineeringmission.StagingHead{Catalog: stagingRuntime.Catalog, Backend: stagingRuntime.Git},
+		Workspaces: stagingRuntime.Service,
+		Ambiguity:  invocationStore,
+		Budget: engineeringmission.ProgramBudgetAdmission{
+			Programs: programbudget.Resolver{Tasks: taskService},
+			Spend:    ledgerStore,
+		},
 
-		RepositoryID:        repo,
-		TargetRef:           target,
-		MaxRecoveryEpisodes: codeRunnerMaxRecoveryEpisodes(),
+		MaxRecoveryEpisodes: codeRunnerMaxRecoveryEpisodes(stderr),
 		// No fallback requester: a mission whose own requester was
 		// never recorded is left unattributed rather than credited to
 		// whatever role happened to be in scope here.

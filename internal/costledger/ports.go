@@ -115,3 +115,14 @@ type PendingReconciliationMarker interface {
 type SubscriptionRecorder interface {
 	RecordSubscriptionConsumption(ctx context.Context, providerID string, invocationID int64, now time.Time) error
 }
+
+// SpendReader is the read-only view of what has already been spent, used to
+// decide whether NEW autonomous work may be admitted at all -- a question
+// asked before any invocation exists to reserve against.
+//
+// It is separate from Ledger for the same reason CallReader is: the dispatch
+// path must depend only on wallet mutations, not on admission queries.
+type SpendReader interface {
+	ProgramFamilySpend(ctx context.Context, correlationID, providerID string, familyModelIDs []string) (modelpricing.USDNanos, error)
+	TaskFamilySpend(ctx context.Context, taskID int64, providerID string, familyModelIDs []string) (modelpricing.USDNanos, error)
+}
