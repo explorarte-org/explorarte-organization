@@ -13,12 +13,24 @@ import (
 // not state the rule, the rule is unknowable to the party expected to obey it.
 //
 // It was unstated, and AUTONOMY-SMOKE-013 is what that cost: a department
-// review asked for one follow-up task and expressed its relationship to an
-// already-completed task the way the system itself names tasks everywhere in
-// the prompt, as "task:106594". The whole 135KB prompt never used the words
-// "dependencies", "client_key" or "evidence_refs" even once; the schema
-// declared dependencies as a bare array of strings. The host rejected it five
-// times identically and the campaign stopped.
+// review asked for a follow-up task and expressed its relationship to an
+// already-completed task the way the system itself names tasks in the prompt,
+// as "task:106594". The schema declared dependencies as a bare array of
+// strings with no description, and the prompt never used the words
+// "dependencies" or "client_key" at all -- so the only surface carrying the
+// rule was the one that said nothing about it. The host refused the plan on
+// every attempt and the campaign stopped.
+//
+// Two details are worth stating precisely, because an earlier version of this
+// comment got them wrong and the decoded record corrected it. The attempts
+// were NOT identical: the model returned different plans each time (two, two
+// and one follow-up task), and it did receive the previous refusal in its
+// attempt history. So retrying was not futile in principle -- it was futile
+// in practice, because the refusal said "missing dependency task:106594" about
+// a task the model had just watched complete. And "evidence_refs" DOES appear
+// in the prompt, seven times, but only as data: once in canonical memory
+// documentation and otherwise inside the previous round's recorded evidence.
+// Seeing a field name used is not being told what it means.
 //
 // This test is the comparison nobody was making between the two sides.
 func TestTheDependencyRuleIsStatedWhereTheModelCanReadIt(t *testing.T) {

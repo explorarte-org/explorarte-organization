@@ -315,21 +315,6 @@ func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error
 		return Run{}, err
 	}
 	children := withoutRoot(all, root.ID)
-	// A child that ended terminally without its result is the end of this
-	// run: no later pass can make it produce one. The projector has always
-	// reported that state; this is what finally acts on it, so the run
-	// stops with a durable reason naming the task that ended it instead of
-	// idling forever with the root still ready.
-	if failed, ok := firstFailedChild(children); ok {
-		reason := fmt.Sprintf("task %d (%s) ended %s without producing its result", failed.ID, failed.TaskClass, failed.Status)
-		if failed.ReasonCode != "" {
-			reason += ": " + failed.ReasonCode
-		}
-		if _, blockErr := o.tasks.BlockTask(ctx, root.ID, ReasonRunChildFailed, truncate(reason, 480), "service", orchestratorWorkerID); blockErr != nil {
-			return Run{}, blockErr
-		}
-		return o.Status(ctx, root.ID)
-	}
 	planTask, ok := findTaskByMarker(children, keyCEOPlanMarker)
 	if !ok {
 		planTask, _, err = o.createCEOPlanTask(ctx, root)
@@ -925,6 +910,44 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 	}
 	if task.Status == "awaiting_verification" {
 		return o.gatedComplete(ctx, task)
+	}
+	// A dead-lettered task has exhausted its attempts: the task engine will
+	// never bring it back, and no later pass can make it produce the result
+	// it owed. Whether that ends the RUN depends on whose result it was.
+	//
+	// The condition is dead_letter alone, not every terminal status.
+	// "failed" looks terminal and is not the end of the story here: a model
+	// that answers perfectly while its output fails the typed contract is
+	// recorded failed-but-retryable precisely so the task can try again, and
+	// an authority outage schedules its own re-entry. Treating those as the
+	// end of the run would stop campaigns that the system is already
+	// designed to resume.
+	//
+	// A department worker's failure belongs to the worker that had it
+	// (6eaa74e): its phase still closes, and department_review weighs the
+	// failed sibling as evidence and answers with needs_replan, blocked or
+	// fail. Propagating it here would make failures contagious again and
+	// replace that judgement with a stall -- the exact defect 6eaa74e
+	// removed.
+	//
+	// Every other purpose here is a host-driven step whose typed result the
+	// orchestrator itself consumes and which no governed semantics can
+	// substitute: nothing reviews a dead CEO plan or a dead adjudication,
+	// and no later pass can conjure one. Those end the run, durably and out
+	// loud, instead of leaving the root ready with nothing recorded.
+	//
+	// Engineering missions never reach this function at all, so a
+	// dead-lettered mission cannot stop its campaign here -- which is what
+	// leaves recovery free to open a successor for it.
+	if task.Status == "dead_letter" && purpose != PurposeDepartmentWorker {
+		reason := fmt.Sprintf("%s task %d exhausted its attempts without producing its result", purpose, task.ID)
+		if task.ReasonCode != "" {
+			reason += ": " + task.ReasonCode
+		}
+		if _, blockErr := o.tasks.BlockTask(ctx, root.ID, ReasonRunChildFailed, truncate(reason, 480), "service", orchestratorWorkerID); blockErr != nil {
+			return task, blockErr
+		}
+		return task, fmt.Errorf("%w: %s", ErrRunBlocked, reason)
 	}
 	// Before anything else -- before a claim, before a budget charge, before
 	// the Harness -- ask whether an earlier execution of this task is still
@@ -1731,8 +1754,15 @@ func findTaskByKey(all []TaskRecord, key string) (TaskRecord, bool) {
 	return TaskRecord{}, false
 }
 
-// ReasonRunChildFailed blocks a root whose run cannot advance because one of
-// its own tasks ended terminally without producing its result.
+// ReasonRunChildFailed blocks a root whose run cannot advance because a
+// host-driven step ended terminally without producing the result the
+// orchestrator itself needed from it.
+//
+// Deliberately NOT every terminal child: a department worker that fails is
+// judged by its department's review, and stopping the run on its behalf would
+// make failures contagious again (see 6eaa74e). A dead-lettered engineering
+// mission does not stop its campaign either -- recovery may open a successor
+// for it, and a stop here would outlive that successor.
 //
 // Nothing used to happen here at all. driveTypedTask has branches for
 // completed, awaiting_verification, ready, leased and running, and a
@@ -1742,26 +1772,6 @@ func findTaskByKey(all []TaskRecord, key string) (TaskRecord, bool) {
 // said nothing. A bootstrap that halts silently is worse than one that fails
 // loudly, because the absence of a signal reads exactly like progress.
 const ReasonRunChildFailed = "run_child_failed"
-
-// firstFailedChild returns a child task that ended terminally without its
-// result, if any.
-//
-// Order is by ID so that the reason names the FIRST thing that went wrong
-// rather than whichever row the query happened to return last: a run usually
-// stops because of one failure, and the later ones are its consequences.
-func firstFailedChild(children []TaskRecord) (TaskRecord, bool) {
-	var found TaskRecord
-	ok := false
-	for _, child := range children {
-		if !isFailedTask(child.Status) {
-			continue
-		}
-		if !ok || child.ID < found.ID {
-			found, ok = child, true
-		}
-	}
-	return found, ok
-}
 
 func isTerminalTask(s string) bool {
 	switch s {
