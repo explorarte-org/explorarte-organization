@@ -276,6 +276,11 @@ func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error
 			// adversarial review and a fresh adjudication, to be told again
 			// what was already said twice.
 			return ProjectRun(root, nil), ErrRunBlocked
+		case ReasonDepartmentReviewBlocked:
+			// The department said the work cannot proceed. Re-driving it
+			// would ask the same reviewer to re-decide what it already
+			// decided, at its price.
+			return ProjectRun(root, nil), ErrRunBlocked
 		case ReasonDepartmentReplansExhausted:
 			// The bound was reached on a valid review. Unblocking would
 			// re-drive the department and arrive at the same refusal,
@@ -689,6 +694,23 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 				if review.Verdict != ReviewNeedsReplan && len(review.ProposedFollowupTasks) > 0 {
 					return fmt.Errorf("%w: followup tasks require needs_replan verdict", ErrContractRejected)
 				}
+				// The follow-ups ARE the model's output, so whether they
+				// are well formed is a question about that output and
+				// belongs here, where a rejection still leaves the task
+				// able to try again.
+				//
+				// Moving this out was a regression the bound fix nearly
+				// shipped: a review proposing invalid follow-ups would
+				// complete successfully, validation would fail on the path
+				// below, and every later pass would re-read the same
+				// completed result and fail identically -- with no attempt
+				// left for the model to correct anything. The exact
+				// opposite of the convergence this branch series proved.
+				if review.Verdict == ReviewNeedsReplan {
+					if pErr = o.validator.ValidateFollowups(ctx, revision.ID, req.UnitID, leader.ID, review.ProposedFollowupTasks); pErr != nil {
+						return pErr
+					}
+				}
 				return nil
 			})
 			if e != nil {
@@ -713,8 +735,8 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 				// decision, against the root, and the review it decided on
 				// stays completed.
 				run, blockErr := o.blockRoot(ctx, root, ReasonDepartmentReplansExhausted,
-					fmt.Sprintf("department %s asked for replan %d of at most %d; the review itself is valid and complete",
-						req.UnitID, ordinal, o.limits.MaxDepartmentReplans))
+					fmt.Sprintf("the host declined replan %d of at most %d for department %s; its review is valid and complete, and nothing about it failed",
+						ordinal, o.limits.MaxDepartmentReplans, req.UnitID))
 				return run, true, blockErr
 			}
 			if e = o.validator.ValidateFollowups(ctx, revision.ID, req.UnitID, leader.ID, review.ProposedFollowupTasks); e != nil {
@@ -736,6 +758,29 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 				}
 			}
 			return o.driveInProgress(ctx, root)
+		}
+		// A verdict that ends the run has to END it, durably.
+		//
+		// This used to return an error and nothing else, so a blocked or
+		// failed review produced the same error on every pass forever: the
+		// root stayed executable, the completed review kept being re-read,
+		// and the run never reached a state anyone could act on. It cost no
+		// provider calls, which is precisely what made it easy to miss --
+		// and it is why the claim that these were "already implemented
+		// below" was wrong.
+		if review.Verdict == ReviewBlocked {
+			run, blockErr := o.blockRoot(ctx, root, ReasonDepartmentReviewBlocked,
+				fmt.Sprintf("department %s blocked its own review: %s", req.UnitID, strings.Join(review.UnsatisfiedCriteria, "; ")))
+			return run, true, blockErr
+		}
+		if review.Verdict == ReviewFail {
+			if _, finErr := o.tasks.FinalizeFailed(ctx, root.ID, ReasonDepartmentReviewFailed,
+				truncate(fmt.Sprintf("department %s failed its own review: %s", req.UnitID, strings.Join(review.UnsatisfiedCriteria, "; ")), 2000),
+				"service", orchestratorWorkerID); finErr != nil {
+				return Run{}, false, finErr
+			}
+			run, statusErr := o.Status(ctx, root.ID)
+			return run, true, statusErr
 		}
 		if review.Verdict != ReviewAccept {
 			return Run{}, false, fmt.Errorf("%w: department review %s", ErrCompletionFailed, review.Verdict)
@@ -1772,6 +1817,18 @@ func findTaskByKey(all []TaskRecord, key string) (TaskRecord, bool) {
 	}
 	return TaskRecord{}, false
 }
+
+// ReasonDepartmentReviewBlocked and ReasonDepartmentReviewFailed carry a
+// department's own terminal verdict onto the root.
+//
+// The review said the work cannot proceed, or that it failed. Those are
+// answers, not malfunctions, and each needs a durable transition of its own:
+// without one the orchestrator re-read the same completed verdict on every
+// pass and returned the same error forever.
+const (
+	ReasonDepartmentReviewBlocked = "department_review_blocked"
+	ReasonDepartmentReviewFailed  = "department_review_failed"
+)
 
 // ReasonDepartmentReplansExhausted stops a run whose department asked for one
 // more round of rework than its bound allows.

@@ -265,3 +265,92 @@ func TestABudgetRefusalIsNeverRecordedAsAContractRejection(t *testing.T) {
 		t.Fatalf("root reason_code=%q, want the bound", got)
 	}
 }
+
+// G: an invalid follow-up must stay the model's problem.
+//
+// Validating follow-ups belongs in the callback, where a rejection still
+// leaves the task able to try again. Moving it to the completed-review path
+// looked tidy and was a regression: the review would complete, validation
+// would fail below, and every later pass would re-read the same completed
+// result and fail identically -- forever, with no attempt left for the model
+// to correct anything.
+func TestAnInvalidFollowupIsRejectedWhileTheModelCanStillFixIt(t *testing.T) {
+	// A follow-up assigned to a role the registry does not know.
+	invalid := strings.Replace(replanReviewNeedsReplan,
+		`"assigned_role_id":"ingenieria_ia/qa"`, `"assigned_role_id":"ingenieria_ia/does-not-exist"`, 1)
+	fixture := newReplanFixture(t, 3, invalid)
+	for i := 0; i < 12; i++ {
+		run, _ := fixture.orchestrator.Resume(context.Background(), fixture.root)
+		if run.State.Terminal() || run.State == StateBlocked {
+			break
+		}
+	}
+
+	if got := fixture.contractRejections(t); got == 0 {
+		t.Fatal("an invalid follow-up must be recorded against the model, not swallowed by a completed review")
+	}
+	// The review must NOT be completed: completing it would freeze the bad
+	// answer in place and remove every chance of convergence.
+	for _, task := range fixture.tasks.tasks {
+		if strings.Contains(task.IdempotencyKey, ":leader-review:") && task.Status == "completed" {
+			t.Fatal("a review whose follow-ups were rejected must not complete: the model would never get to correct them")
+		}
+	}
+}
+
+// H: a department that blocks its own review ends the run durably.
+func TestABlockedReviewBlocksTheRootDurably(t *testing.T) {
+	blocked := `{"schema_version":"department-review/v1","verdict":"blocked",` +
+		`"findings":["the design depends on an unavailable decision"],` +
+		`"unsatisfied_criteria":["owner decision missing"],"evidence_refs":["task:1:context"],` +
+		`"proposed_followup_tasks":[]}`
+	fixture := newReplanFixture(t, 3, blocked)
+	fixture.drive(t)
+
+	root := fixture.rootRecord(t)
+	if root.Status != "blocked" {
+		t.Fatalf("root is %q: a blocked verdict must reach the root", root.Status)
+	}
+	if root.ReasonCode != ReasonDepartmentReviewBlocked {
+		t.Fatalf("reason_code=%q, want %q", root.ReasonCode, ReasonDepartmentReviewBlocked)
+	}
+	if !strings.Contains(root.Reason, "owner decision missing") {
+		t.Fatalf("the reason must carry what the department said, got %q", root.Reason)
+	}
+	before := fixture.reviewInvocations()
+	if _, err := fixture.orchestrator.Resume(context.Background(), fixture.root); !errors.Is(err, ErrRunBlocked) {
+		t.Fatalf("a blocked run must stay blocked, got %v", err)
+	}
+	if after := fixture.reviewInvocations(); after != before {
+		t.Fatalf("a second pass bought %d more reviews", after-before)
+	}
+}
+
+// I: a department that fails its own review ends the run terminally.
+func TestAFailedReviewFinalizesTheRoot(t *testing.T) {
+	failed := `{"schema_version":"department-review/v1","verdict":"fail",` +
+		`"findings":["the deliverable does not meet the objective"],` +
+		`"unsatisfied_criteria":["objective not met"],"evidence_refs":["task:1:context"],` +
+		`"proposed_followup_tasks":[]}`
+	fixture := newReplanFixture(t, 3, failed)
+	fixture.drive(t)
+
+	root := fixture.rootRecord(t)
+	if root.Status != "failed" {
+		t.Fatalf("root is %q: a failing verdict must end the run terminally", root.Status)
+	}
+	if root.ReasonCode != ReasonDepartmentReviewFailed {
+		t.Fatalf("reason_code=%q, want %q", root.ReasonCode, ReasonDepartmentReviewFailed)
+	}
+	if !strings.Contains(root.Reason, "objective not met") {
+		t.Fatalf("the reason must be attributed to what the review said, got %q", root.Reason)
+	}
+	before := fixture.reviewInvocations()
+	_, _ = fixture.orchestrator.Resume(context.Background(), fixture.root)
+	if after := fixture.reviewInvocations(); after != before {
+		t.Fatalf("a terminal run did %d more provider calls", after-before)
+	}
+	if got := fixture.rootRecord(t).Status; got != "failed" {
+		t.Fatalf("root is %q after a second pass, want failed", got)
+	}
+}
