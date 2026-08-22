@@ -60,6 +60,18 @@ type MissionProvisionCommand struct {
 	RequestedByRoleID string
 	ActorType         string
 	ActorID           string
+	// CorrelationID and CausationID bind the mission to the campaign that
+	// provisioned it. The program budget ceiling is enforced by
+	// correlation at reservation time, so a mission created without one
+	// spends outside the budget that authorised its existence -- and any
+	// later attempt to recover it has no ceiling to admit it against.
+	//
+	// They are carried here, at creation, rather than reconstructed
+	// afterwards from "the probable root": a budget association derived by
+	// search is a guess about authority, and authority is not something to
+	// guess at.
+	CorrelationID string
+	CausationID   string
 }
 
 type MissionRecord struct {
@@ -187,6 +199,7 @@ func (o *Orchestrator) driveImplementationMission(ctx context.Context, root Task
 	mission, err := o.missions.ProvisionMission(ctx, MissionProvisionCommand{
 		Policy: derived.Policy, PlanJSON: planJSON,
 		RequestedByRoleID: CEORoleID, ActorType: "service", ActorID: principal.ID,
+		CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID),
 	})
 	if err != nil {
 		// A refused mission is a refusal, not a retry -- the same reason the

@@ -406,3 +406,35 @@ func TestMissionProvisionerSurfaceIsCreateOnly(t *testing.T) {
 		t.Fatal("the provisioner exposes promotion")
 	}
 }
+
+// The budget that authorises a mission's existence is enforced by
+// correlation at reservation time, so the campaign's identity has to be part
+// of provisioning itself. Before this, Executive missions were created with no
+// correlation at all: they spent outside the ceiling that had approved them,
+// and nothing that later tried to recover one had a budget to admit it
+// against.
+//
+// This asserts the seam rather than either side of it: that the campaign root's
+// own correlation is what reaches the provisioner, not a value the phase
+// reconstructed or a plausible-looking substitute.
+func TestAProvisionedMissionBelongsToItsCampaign(t *testing.T) {
+	fixture := newMissionFixture(t, smokePath, false)
+	fixture.drive(t)
+
+	root := fixture.rootRecord(t)
+	command, ok := fixture.provisioner.last()
+	if !ok {
+		t.Fatal("no mission was provisioned")
+	}
+	if root.CorrelationID == "" {
+		t.Fatal("the fixture root carries no correlation, so this test would prove nothing")
+	}
+	if command.CorrelationID != root.CorrelationID {
+		t.Fatalf("mission correlation=%q, want the campaign's own %q", command.CorrelationID, root.CorrelationID)
+	}
+	// The mission is caused by the campaign root, which is also what keeps
+	// it from ever being mistaken for a campaign root itself.
+	if command.CausationID != taskCausation(root.ID) {
+		t.Fatalf("mission causation=%q, want %q", command.CausationID, taskCausation(root.ID))
+	}
+}
