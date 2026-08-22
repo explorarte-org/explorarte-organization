@@ -183,9 +183,17 @@ type ContextRequest struct {
 	TaskClass        string
 	ExecutionPurpose string
 	ActorUnitID      string
-	IdempotencyKey   string
-	CorrelationID    string
-	CausationID      string
+	// RepositoryBaseSHA is the campaign's pinned commit, set only for
+	// executions that are allowed to observe code. It comes from the durable
+	// pin and never from resolving the promotion target again: a context
+	// assembled against a freshly resolved head would show one round a
+	// different repository than the last.
+	RepositoryBaseSHA string
+	// RepositoryQuery is what the selection reads to decide where to look.
+	RepositoryQuery string
+	IdempotencyKey  string
+	CorrelationID   string
+	CausationID     string
 }
 
 type DispatchProvisioner interface {

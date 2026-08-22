@@ -1003,6 +1003,61 @@ func (o *Orchestrator) createClosureTask(ctx context.Context, root TaskRecord, p
 // a provider result: the answer itself is read back from the durable Model
 // Runtime row, so evidence keeps pointing at exactly the bytes that were
 // persisted and hashed.
+// repositoryGroundedPurposes are the executions allowed to observe code.
+//
+// The list is short on purpose. Every excerpt costs tokens on every attempt,
+// so an execution gets eyes only where a repository-specific claim is part of
+// what it has to produce.
+//
+// implementation-plan is on it for a reason worth stating: that model has to
+// deliver exact paths and real diffs. Giving the designers sight while leaving
+// the author of the patch blind would move the same failure one phase later,
+// where it is more expensive to discover.
+//
+// adversarial-review is deliberately ABSENT, and not for cost. Its context is
+// restricted to public and sanitized data, and repository evidence is
+// organizational. Reclassifying it so the reviewer could see source would
+// widen an egress boundary as a side effect of a convenience -- the reviewer
+// judges claims against verified citations instead, which is a decision about
+// evidence rather than about egress.
+//
+// ceo-plan and ceo-closure are absent because neither makes claims about the
+// code: one decides what to attempt, the other reports what happened.
+func repositoryGroundedPurpose(purpose ExecutionPurpose) bool {
+	switch purpose {
+	case PurposeDepartmentPlan, PurposeDepartmentWorker, PurposeDepartmentReview,
+		PurposeDesignAdjudication, PurposeImplementationPlan:
+		return true
+	default:
+		return false
+	}
+}
+
+// repositoryGrounding returns the pinned commit and the selection text for an
+// execution that is allowed to observe code, and empty strings for one that is
+// not.
+//
+// The commit comes from the durable pin, never from resolving the promotion
+// target again. Resolving here would let two rounds of the same design read
+// two different repositories, which is the whole failure the pin exists to
+// prevent, reintroduced at the point where it would be least visible.
+func (o *Orchestrator) repositoryGrounding(ctx context.Context, root, task TaskRecord, purpose ExecutionPurpose) (string, string) {
+	if !repositoryGroundedPurpose(purpose) {
+		return "", ""
+	}
+	if _, governed := findRequirementByKey(root.Requirements, designfreeze.RequirementKey); !governed {
+		return "", ""
+	}
+	pinned, err := o.frozenDesignBaseSHA(ctx, root)
+	if err != nil || pinned == "" {
+		return "", ""
+	}
+	// The goal says what the campaign is about; the task says what this
+	// execution is about. Both, because a worker task naming a symbol needs
+	// that symbol found, and the goal alone would not mention it.
+	return pinned, strings.TrimSpace(root.Instructions + "\n" + task.Instructions)
+}
+
 func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task TaskRecord, schema json.RawMessage, purpose ExecutionPurpose, validate func(InvocationResult) error) (TaskRecord, error) {
 	if !purpose.Valid() {
 		return task, fmt.Errorf("%w: unknown execution purpose %q", ErrContractRejected, purpose)
@@ -1169,6 +1224,7 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 	if len(invocations) > 1 {
 		return task, fmt.Errorf("%w: multiple invocations for one task attempt", ErrContractRejected)
 	}
+	repositoryBaseSHA, repositoryQuery := o.repositoryGrounding(ctx, root, task, purpose)
 	snapshot, err := o.contexts.Build(ctx, ContextRequest{
 		OrganizationRevisionID: task.OrganizationRevisionID, ActorRoleID: task.AssignedRoleID,
 		Purpose: purpose.LegacyPurpose(), TaskRef: "task:" + strconv.FormatInt(task.ID, 10),
@@ -1180,6 +1236,7 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		// value (purpose.Valid() was already checked above), never
 		// model/instruction text.
 		TaskClass: task.TaskClass, ExecutionPurpose: string(purpose), ActorUnitID: task.AssignedUnitID,
+		RepositoryBaseSHA: repositoryBaseSHA, RepositoryQuery: repositoryQuery,
 		IdempotencyKey: childKey(root.ID, fmt.Sprintf("context:%d:%d", task.ID, lease.AttemptID)),
 		CorrelationID:  root.CorrelationID, CausationID: attemptCausation(task.ID, lease.AttemptID),
 	})

@@ -122,8 +122,21 @@ type BuildRequest struct {
 	// querying the Task Engine or inferring from ActorRoleID/Instructions.
 	// Purpose above remains the separate, byte-identical legacy string
 	// Context Engine/Model Runtime compatibility already depends on.
-	TaskClass         string   `json:"task_class,omitempty"`
-	ExecutionPurpose  string   `json:"execution_purpose,omitempty"`
+	TaskClass        string `json:"task_class,omitempty"`
+	ExecutionPurpose string `json:"execution_purpose,omitempty"`
+	// RepositoryBaseSHA is the commit this execution may observe, and it is
+	// the ONLY commit it may observe. It arrives already pinned: the context
+	// engine never resolves a repository head of its own, because a context
+	// built against "whatever the target points at now" would describe a
+	// world nobody decided to reason about.
+	//
+	// Empty means this execution gets no repository evidence at all, which
+	// is the state of every execution that is not governed by a design.
+	RepositoryBaseSHA string `json:"repository_base_sha,omitempty"`
+	// RepositoryQuery is the text the selection is derived from -- the goal
+	// and the task's own instructions. Deterministic input to a
+	// deterministic rule, so the same execution always sees the same code.
+	RepositoryQuery   string   `json:"repository_query,omitempty"`
 	ActorUnitID       string   `json:"actor_unit_id,omitempty"`
 	RequestedSkillIDs []string `json:"requested_skill_ids,omitempty"`
 	IdempotencyKey    string   `json:"idempotency_key"`

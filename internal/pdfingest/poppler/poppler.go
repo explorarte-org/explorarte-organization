@@ -32,8 +32,8 @@ const ParserName = "poppler"
 // depending on whether pdfseparate or the Ghostscript amplification
 // fallback actually produced that page's bytes.
 const (
-	mediaParserPoppler     = "poppler/pdfseparate"
-	mediaParserGhostscript = "ghostscript/pdfwrite"
+	mediaParserPoppler       = "poppler/pdfseparate"
+	mediaParserGhostscript   = "ghostscript/pdfwrite"
 	amplificationFallbackTag = "+poppler-amplification-fallback"
 )
 
