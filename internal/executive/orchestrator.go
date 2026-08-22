@@ -276,6 +276,11 @@ func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error
 			// adversarial review and a fresh adjudication, to be told again
 			// what was already said twice.
 			return ProjectRun(root, nil), ErrRunBlocked
+		case ReasonRunChildFailed:
+			// Unblocking would walk straight back into the pass that
+			// found the dead child and block again, one model call
+			// poorer each time it re-drove whatever came before it.
+			return ProjectRun(root, nil), ErrRunBlocked
 		case ReasonAdversarialReviewUnavailable:
 			// Fails closed and stays closed: there is no second provider to
 			// fall back to, so retrying on its own would only spin.
@@ -310,6 +315,21 @@ func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error
 		return Run{}, err
 	}
 	children := withoutRoot(all, root.ID)
+	// A child that ended terminally without its result is the end of this
+	// run: no later pass can make it produce one. The projector has always
+	// reported that state; this is what finally acts on it, so the run
+	// stops with a durable reason naming the task that ended it instead of
+	// idling forever with the root still ready.
+	if failed, ok := firstFailedChild(children); ok {
+		reason := fmt.Sprintf("task %d (%s) ended %s without producing its result", failed.ID, failed.TaskClass, failed.Status)
+		if failed.ReasonCode != "" {
+			reason += ": " + failed.ReasonCode
+		}
+		if _, blockErr := o.tasks.BlockTask(ctx, root.ID, ReasonRunChildFailed, truncate(reason, 480), "service", orchestratorWorkerID); blockErr != nil {
+			return Run{}, blockErr
+		}
+		return o.Status(ctx, root.ID)
+	}
 	planTask, ok := findTaskByMarker(children, keyCEOPlanMarker)
 	if !ok {
 		planTask, _, err = o.createCEOPlanTask(ctx, root)
@@ -1710,6 +1730,39 @@ func findTaskByKey(all []TaskRecord, key string) (TaskRecord, bool) {
 	}
 	return TaskRecord{}, false
 }
+
+// ReasonRunChildFailed blocks a root whose run cannot advance because one of
+// its own tasks ended terminally without producing its result.
+//
+// Nothing used to happen here at all. driveTypedTask has branches for
+// completed, awaiting_verification, ready, leased and running, and a
+// dead-lettered task matches none of them, so it fell through to
+// "return task, nil" -- no progress, no error, and therefore no entry in the
+// worker's failure observer, which only logs errors. The campaign stopped and
+// said nothing. A bootstrap that halts silently is worse than one that fails
+// loudly, because the absence of a signal reads exactly like progress.
+const ReasonRunChildFailed = "run_child_failed"
+
+// firstFailedChild returns a child task that ended terminally without its
+// result, if any.
+//
+// Order is by ID so that the reason names the FIRST thing that went wrong
+// rather than whichever row the query happened to return last: a run usually
+// stops because of one failure, and the later ones are its consequences.
+func firstFailedChild(children []TaskRecord) (TaskRecord, bool) {
+	var found TaskRecord
+	ok := false
+	for _, child := range children {
+		if !isFailedTask(child.Status) {
+			continue
+		}
+		if !ok || child.ID < found.ID {
+			found, ok = child, true
+		}
+	}
+	return found, ok
+}
+
 func isTerminalTask(s string) bool {
 	switch s {
 	case "completed", "no_action", "failed", "dead_letter", "rejected", "cancelled":
