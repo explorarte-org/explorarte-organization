@@ -87,13 +87,36 @@ func ValidateIndependence(reviewer, adjudicator Participant, authoringUnits []st
 // provider. That is the opposite of filtering a larger structure and trusting
 // the filter to be complete.
 type Bundle struct {
-	OwnerRequirements       []string            `json:"owner_requirements"`
-	CandidateDesign         string              `json:"candidate_design"`
-	ArchitectureConstraints []string            `json:"architecture_constraints"`
-	AuthorityConstraints    []string            `json:"authority_constraints"`
-	UnresolvedDecisions     []string            `json:"unresolved_decisions"`
-	EvidenceRefs            []string            `json:"authorized_evidence_refs"`
-	Design                  designfreeze.Design `json:"design"`
+	OwnerRequirements       []string `json:"owner_requirements"`
+	CandidateDesign         string   `json:"candidate_design"`
+	ArchitectureConstraints []string `json:"architecture_constraints"`
+	AuthorityConstraints    []string `json:"authority_constraints"`
+	UnresolvedDecisions     []string `json:"unresolved_decisions"`
+	EvidenceRefs            []string `json:"authorized_evidence_refs"`
+	// Deliverables carries, per contributing deliverable, the repository
+	// citations the host confirmed were in front of THAT model.
+	//
+	// Per deliverable and not as one list, because authorization is not a
+	// property of a citation -- it is a property of a citation AND the model
+	// that used it. Two workers in the same round see different excerpts, so
+	// a flat union would let a claim made by a designer who never saw a file
+	// inherit the grounding of one who did. Verifying each deliverable
+	// individually and then merging the results would throw away exactly the
+	// distinction the verification established.
+	Deliverables []DeliverableCitations `json:"deliverables"`
+	Design       designfreeze.Design    `json:"design"`
+}
+
+// DeliverableCitations binds authorized repository references to the one
+// deliverable entitled to use them.
+type DeliverableCitations struct {
+	TaskID       int64  `json:"task_id"`
+	InvocationID int64  `json:"invocation_id"`
+	ResultDigest string `json:"result_digest"`
+	// VerifiedRepositoryRefs are references only. The reviewer never receives
+	// the source behind them: its context admits public and sanitized data,
+	// and repository evidence is organizational.
+	VerifiedRepositoryRefs []string `json:"verified_repository_refs"`
 }
 
 // forbiddenBundleSubstrings is a belt-and-braces check on top of the closed

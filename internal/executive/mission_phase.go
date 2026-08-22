@@ -83,6 +83,17 @@ type MissionRecord struct {
 // mission requirement while this is unset blocks rather than proceeding: the
 // alternative is a run that silently ends at a freeze while claiming it would
 // implement something.
+// WithSnapshotSources lets the host verify that a repository citation was
+// really in front of the model that made it.
+//
+// Without it, citations are never verified and the review bundle authorizes
+// none: a design may still claim things about code, and the reviewer correctly
+// treats every such claim as ungrounded. Failing that way round is deliberate
+// -- the alternative is authorizing citations nobody checked.
+func WithSnapshotSources(reader SnapshotSourceReader) OrchestratorOption {
+	return func(o *Orchestrator) { o.snapshotSources = reader }
+}
+
 func WithMissionProvisioning(target ProgramTargetResolver, provisioner MissionProvisioner) OrchestratorOption {
 	return func(o *Orchestrator) {
 		o.programTarget = target

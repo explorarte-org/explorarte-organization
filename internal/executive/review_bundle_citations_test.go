@@ -13,34 +13,75 @@ import (
 // organizational. Widening that so it could read code would be an egress
 // decision taken as a side effect of a convenience, so the bundle carries the
 // set of claims it may treat as grounded and nothing else.
-func TestTheReviewBundleCarriesReferencesAndNoSource(t *testing.T) {
+// P12: the reviewer receives verified citation REFERENCES, bound to the
+// deliverable entitled to use them, and never the source behind them.
+//
+// The first version of this test asserted only that three code-looking strings
+// were absent and two instruction sentences present. It passed against a
+// fixture with no snapshot reader at all -- that is, against exactly the
+// system that in production would never authorize a single citation. Absence
+// of source is not evidence of authorization.
+func TestTheReviewBundleCarriesVerifiedCitationsPerDeliverable(t *testing.T) {
 	fixture := newMissionFixture(t, smokePath, false)
+
+	// The designer saw one excerpt; the host must be able to confirm it.
+	const cited = "repository://explorarte-organization@" + targetSHA + "/internal/executive/validator.go#L52-L92"
+	fixture.orchestrator.snapshotSources = stubSnapshotSources{sources: []SnapshotSource{
+		{Kind: "repository_evidence", Reference: cited, Version: targetSHA, Included: true},
+	}}
+	fixture.harness.bodies[PurposeDepartmentWorker] = `{"schema_version":"worker-result/v1",` +
+		`"summary":"The validator already refuses this, see ` + cited + ` .","evidence_refs":[]}`
 	fixture.drive(t)
 
-	// The bundle travels as the reviewer task's instructions, which is where
-	// it is durable and auditable -- not inside the context snapshot.
-	var bundles []string
+	var bundle string
 	for _, task := range fixture.tasks.tasks {
 		if task.TaskClass == TaskClassCoordinationAdversarialReview {
-			bundles = append(bundles, task.Instructions)
+			bundle = task.Instructions
 		}
 	}
-	if len(bundles) == 0 {
+	if bundle == "" {
 		t.Fatal("no adversarial review ran, so this proves nothing")
 	}
-	for _, bundle := range bundles {
-		// Nothing that looks like source may reach the reviewer.
-		for _, forbidden := range []string{"package executive", "func (o *Orchestrator)", "\tif err != nil {"} {
-			if strings.Contains(bundle, forbidden) {
-				t.Fatalf("the review bundle carries repository source: %q", forbidden)
+
+	var decoded struct {
+		Deliverables []struct {
+			TaskID                 int64    `json:"task_id"`
+			InvocationID           int64    `json:"invocation_id"`
+			VerifiedRepositoryRefs []string `json:"verified_repository_refs"`
+		} `json:"deliverables"`
+	}
+	body := bundle[strings.Index(bundle, "{"):]
+	if err := json.Unmarshal([]byte(body), &decoded); err != nil {
+		t.Fatalf("the bundle must be readable as the contract it declares: %v", err)
+	}
+	if len(decoded.Deliverables) == 0 {
+		t.Fatal("the bundle authorizes nothing per deliverable: the circuit never closed")
+	}
+	authorized := 0
+	for _, deliverable := range decoded.Deliverables {
+		if deliverable.TaskID == 0 || deliverable.InvocationID == 0 {
+			t.Fatalf("an authorization with no owner is a laundered one: %+v", deliverable)
+		}
+		for _, reference := range deliverable.VerifiedRepositoryRefs {
+			if reference != cited {
+				t.Fatalf("an unverified reference was authorized: %q", reference)
 			}
+			authorized++
 		}
-		// And the rule it must apply is stated to it.
-		if !strings.Contains(bundle, "unverifiable_repository_claim") {
-			t.Fatal("the reviewer is not told what to do with an ungrounded repository claim")
+	}
+	if authorized == 0 {
+		t.Fatal("the designer cited evidence it was given and the bundle authorized none of it")
+	}
+
+	// And still no source: references only.
+	for _, forbidden := range []string{"package executive", "func (o *Orchestrator)"} {
+		if strings.Contains(bundle, forbidden) {
+			t.Fatalf("the review bundle carries repository source: %q", forbidden)
 		}
-		if !strings.Contains(bundle, "authorized repository:// evidence reference") {
-			t.Fatal("the reviewer is not told that repository claims require an authorized citation")
+	}
+	for _, needed := range []string{"unverifiable_repository_claim", "deliverables[].verified_repository_refs"} {
+		if !strings.Contains(bundle, needed) {
+			t.Fatalf("the reviewer is not told the rule: missing %q", needed)
 		}
 	}
 }

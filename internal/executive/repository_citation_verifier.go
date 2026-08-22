@@ -30,9 +30,17 @@ type SnapshotSource struct {
 
 // VerifiedCitation is a repository citation the host has confirmed was really
 // in front of the model that used it.
+//
+// TaskID and InvocationID are part of the fact, not decoration. "R is
+// authorized" is not a statement anything can act on: authorization belongs to
+// a citation AND the model that used it, and dropping the second half is how a
+// claim by a designer who never saw a file would inherit the grounding of one
+// who did.
 type VerifiedCitation struct {
-	Reference string
-	BaseSHA   string
+	Reference    string
+	BaseSHA      string
+	TaskID       int64
+	InvocationID int64
 }
 
 // VerifyRepositoryCitations answers the only questions a host can answer about
@@ -51,7 +59,7 @@ type VerifiedCitation struct {
 //	did it actually reach the model, rather than being dropped
 //
 // Everything the reviewer then says rests on evidence nobody invented.
-func (o *Orchestrator) VerifyRepositoryCitations(ctx context.Context, sources SnapshotSourceReader, snapshotID int64, baseSHA, text string) ([]VerifiedCitation, error) {
+func (o *Orchestrator) VerifyRepositoryCitations(ctx context.Context, sources SnapshotSourceReader, snapshotID int64, baseSHA, text string, taskID, invocationID int64) ([]VerifiedCitation, error) {
 	if sources == nil || snapshotID <= 0 || baseSHA == "" {
 		return nil, nil
 	}
@@ -86,7 +94,10 @@ func (o *Orchestrator) VerifyRepositoryCitations(ctx context.Context, sources Sn
 			continue
 		}
 		seen[candidate] = struct{}{}
-		verified = append(verified, VerifiedCitation{Reference: candidate, BaseSHA: baseSHA})
+		verified = append(verified, VerifiedCitation{
+			Reference: candidate, BaseSHA: baseSHA,
+			TaskID: taskID, InvocationID: invocationID,
+		})
 	}
 	sort.Slice(verified, func(i, j int) bool { return verified[i].Reference < verified[j].Reference })
 	return verified, nil

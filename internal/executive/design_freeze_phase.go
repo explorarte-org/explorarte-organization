@@ -644,7 +644,7 @@ func (o *Orchestrator) candidateBody(ctx context.Context, artifact designArtifac
 // different excerpts -- the selection reads each task's own instructions -- so
 // checking one design's citations against another's context would verify
 // claims their author never had grounds for.
-func (o *Orchestrator) verifiedDesignCitations(ctx context.Context, root TaskRecord, artifact designArtifact) ([]VerifiedCitation, error) {
+func (o *Orchestrator) verifiedDesignCitations(ctx context.Context, root TaskRecord, artifact designArtifact) ([]designreview.DeliverableCitations, error) {
 	if o.snapshotSources == nil {
 		return nil, nil
 	}
@@ -654,8 +654,7 @@ func (o *Orchestrator) verifiedDesignCitations(ctx context.Context, root TaskRec
 		// ground, and nothing to verify them against.
 		return nil, nil
 	}
-	seen := map[string]struct{}{}
-	all := make([]VerifiedCitation, 0, len(artifact.Units))
+	deliverables := make([]designreview.DeliverableCitations, 0, len(artifact.Units))
 	for _, unit := range artifact.Units {
 		invocation, readErr := o.models.GetInvocation(ctx, unit.InvocationID)
 		if readErr != nil {
@@ -672,19 +671,24 @@ func (o *Orchestrator) verifiedDesignCitations(ctx context.Context, root TaskRec
 		if body == "" {
 			body = strings.TrimSpace(string(result.JSONOutput))
 		}
-		verified, verifyErr := o.VerifyRepositoryCitations(ctx, o.snapshotSources, invocation.ContextSnapshotID, baseSHA, body)
+		verified, verifyErr := o.VerifyRepositoryCitations(ctx, o.snapshotSources,
+			invocation.ContextSnapshotID, baseSHA, body, unit.TaskID, unit.InvocationID)
 		if verifyErr != nil {
 			return nil, verifyErr
 		}
+		// The entry is emitted even with no verified references. Silence and
+		// "this deliverable grounded nothing" are different facts, and the
+		// reviewer needs the second one to judge a claim that cites nothing.
+		refs := make([]string, 0, len(verified))
 		for _, citation := range verified {
-			if _, already := seen[citation.Reference]; already {
-				continue
-			}
-			seen[citation.Reference] = struct{}{}
-			all = append(all, citation)
+			refs = append(refs, citation.Reference)
 		}
+		deliverables = append(deliverables, designreview.DeliverableCitations{
+			TaskID: unit.TaskID, InvocationID: unit.InvocationID,
+			ResultDigest: unit.ResultHash, VerifiedRepositoryRefs: refs,
+		})
 	}
-	return all, nil
+	return deliverables, nil
 }
 
 func (o *Orchestrator) reviewBundle(ctx context.Context, root TaskRecord, design designfreeze.Design, artifact designArtifact) ([]byte, error) {
@@ -700,11 +704,10 @@ func (o *Orchestrator) reviewBundle(ctx context.Context, root TaskRecord, design
 	// organizational: widening that so it could read code would be an egress
 	// decision taken as a side effect of a convenience. What it gets instead
 	// is exactly what it needs -- the set of claims it may treat as grounded.
-	verified, err := o.verifiedDesignCitations(ctx, root, artifact)
+	deliverables, err := o.verifiedDesignCitations(ctx, root, artifact)
 	if err != nil {
 		return nil, err
 	}
-	evidence = append(evidence, authorizedEvidenceRefs(verified)...)
 	body, err := o.candidateBody(ctx, artifact)
 	if err != nil {
 		return nil, err
@@ -742,7 +745,8 @@ func (o *Orchestrator) reviewBundle(ctx context.Context, root TaskRecord, design
 			// checked -- and one that cites nothing is no longer merely
 			// unsupported, it is a claim the designer had every means to
 			// ground and did not.
-			"Any claim about concrete repository structure, files, symbols, existing behavior or implementation must cite an authorized repository:// evidence reference listed in this bundle.",
+			"Any claim about concrete repository structure, files, symbols, existing behavior or implementation must cite a repository:// reference listed under the SAME deliverable that makes the claim, in deliverables[].verified_repository_refs.",
+			"A reference authorized for one deliverable does not authorize a claim made by another: each deliverable saw different code.",
 			"A claim of that kind with no authorized repository citation is a finding of kind unverifiable_repository_claim.",
 			"Do not infer that a repository citation exists merely because the candidate design names a file or path.",
 		},
@@ -752,6 +756,7 @@ func (o *Orchestrator) reviewBundle(ctx context.Context, root TaskRecord, design
 		},
 		UnresolvedDecisions: nil,
 		EvidenceRefs:        evidence,
+		Deliverables:        deliverables,
 		Design:              design,
 	}
 	return bundle.Encode()

@@ -32,7 +32,16 @@ type Runtime struct {
 // Open wires the context runtime. taskProvider is supplied by the caller
 // because contextengine must not import the tasks domain directly; pass nil
 // to fall back to contextengine.UnavailableTaskProvider.
-func Open(cfg config.Config, platformStore *platformpostgres.Store, taskProvider contextengine.TaskContextProvider) (*Runtime, error) {
+
+// Open builds the context runtime.
+//
+// options carries capabilities the caller can supply and this package should
+// not resolve for itself -- repository evidence in particular. Building the
+// sensor here would mean opening the repository catalog and a git backend
+// again, and a second definition of "the repository" would eventually disagree
+// with the one CodeRunner checks out. A design grounded in the wrong tree is
+// worse than one grounded in nothing.
+func Open(cfg config.Config, platformStore *platformpostgres.Store, taskProvider contextengine.TaskContextProvider, options ...contextengine.ServiceOption) (*Runtime, error) {
 	if platformStore == nil {
 		return nil, errors.New("context bootstrap requires PostgreSQL store")
 	}
@@ -83,7 +92,7 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store, taskProvider
 		MaxSkills:             cfg.Context.MaxSkills,
 		MaxMemorySegments:     cfg.Context.MaxMemorySegments,
 		MaxRAGSegments:        cfg.Context.MaxRAGSegments,
-	}, registryRepository, documents, canonicalProvider, contextengine.NoopOwnerConstraintProvider{}, memoryProvider, skillProvider, contextengine.UnavailableProjectProvider{}, taskProvider, ragProvider, contextengine.NewAssembler(), contextengine.NewRenderer(), store, nil)
+	}, registryRepository, documents, canonicalProvider, contextengine.NoopOwnerConstraintProvider{}, memoryProvider, skillProvider, contextengine.UnavailableProjectProvider{}, taskProvider, ragProvider, contextengine.NewAssembler(), contextengine.NewRenderer(), store, nil, options...)
 	if err != nil {
 		return nil, err
 	}
