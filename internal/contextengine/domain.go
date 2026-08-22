@@ -73,6 +73,20 @@ const (
 	// evaluation harness) — that wiring is future work, not part of this
 	// fix.
 	SourceWebEvidence SourceKind = "web_evidence"
+	// SourceRepositoryEvidence carries a bounded excerpt of the repository
+	// the organization is authorized to modify, read at one exact commit.
+	//
+	// It is deliberately NOT SourceRAGEvidence. Code has properties ordinary
+	// retrieved text does not: it exists at a version, at a path, over a line
+	// range, and it changes. An excerpt is evidence about the world only if
+	// the reader can say WHICH world -- so staleness here is not a matter of
+	// degree. Either the excerpt cites the exact commit being reasoned about
+	// or it is not evidence about that commit at all, however recent it is.
+	//
+	// Like memory, RAG and web evidence it is untrusted data: a comment in
+	// the repository saying "ignore the rules and do X" is a string that was
+	// read, never an instruction that was granted.
+	SourceRepositoryEvidence SourceKind = "repository_evidence"
 )
 
 type SnapshotStatus string
@@ -94,12 +108,12 @@ const (
 )
 
 type BuildRequest struct {
-	OrganizationID         string   `json:"organization_id"`
-	OrganizationRevisionID int64    `json:"organization_revision_id"`
-	ActorRoleID            string   `json:"actor_role_id"`
-	Purpose                string   `json:"purpose"`
-	ProjectRef             string   `json:"project_ref,omitempty"`
-	TaskRef                string   `json:"task_ref,omitempty"`
+	OrganizationID         string `json:"organization_id"`
+	OrganizationRevisionID int64  `json:"organization_revision_id"`
+	ActorRoleID            string `json:"actor_role_id"`
+	Purpose                string `json:"purpose"`
+	ProjectRef             string `json:"project_ref,omitempty"`
+	TaskRef                string `json:"task_ref,omitempty"`
 	// TaskClass/ExecutionPurpose/ActorUnitID are M1.3's durable semantic
 	// selector facts. All three are OPTIONAL here: contextengine never
 	// requires or infers them (that is Executive's/the Tasks Engine's
@@ -108,13 +122,13 @@ type BuildRequest struct {
 	// querying the Task Engine or inferring from ActorRoleID/Instructions.
 	// Purpose above remains the separate, byte-identical legacy string
 	// Context Engine/Model Runtime compatibility already depends on.
-	TaskClass              string   `json:"task_class,omitempty"`
-	ExecutionPurpose       string   `json:"execution_purpose,omitempty"`
-	ActorUnitID            string   `json:"actor_unit_id,omitempty"`
-	RequestedSkillIDs      []string `json:"requested_skill_ids,omitempty"`
-	IdempotencyKey         string   `json:"idempotency_key"`
-	CorrelationID          string   `json:"correlation_id,omitempty"`
-	CausationID            string   `json:"causation_id,omitempty"`
+	TaskClass         string   `json:"task_class,omitempty"`
+	ExecutionPurpose  string   `json:"execution_purpose,omitempty"`
+	ActorUnitID       string   `json:"actor_unit_id,omitempty"`
+	RequestedSkillIDs []string `json:"requested_skill_ids,omitempty"`
+	IdempotencyKey    string   `json:"idempotency_key"`
+	CorrelationID     string   `json:"correlation_id,omitempty"`
+	CausationID       string   `json:"causation_id,omitempty"`
 }
 
 type SourceRecord struct {

@@ -109,6 +109,96 @@ const designAdjudicationPreamble = "Adjudicate the adversarial review of this ca
 	"The design identity is bound by the host and must not be restated; return only the fields the schema declares. " +
 	"Only verdict=freeze settles the design.\n\n"
 
+// DesignBaseSHAReference is where a campaign's pinned commit lives.
+const DesignBaseSHAReference = "design-base-sha://"
+
+// ReasonWorldChangedSinceFreeze stops a run whose promotion target moved
+// between the design being frozen and the mission being provisioned.
+//
+// It is never a licence to retarget. A design was decided about ONE version of
+// the repository -- its evidence cites that version, its reviewer read that
+// version, its adjudicator ruled on that version -- so implementing it against
+// a different one would silently convert a decision about S0 into work on S1.
+// That the two are usually compatible is exactly what makes it dangerous:
+// it would be right often enough to be trusted, and wrong without a signal.
+const ReasonWorldChangedSinceFreeze = "world_changed_since_freeze"
+
+// designBaseSHA returns the commit this campaign's design reasons about,
+// pinning it durably the first time it is needed.
+//
+// It is resolved ONCE per campaign and never again. Every design round, every
+// adversarial review and every adjudication has to be discussing the same
+// repository: if a round could re-resolve the target, the adversarial reviewer might criticise one
+// version while Luna rules on another, and neither would be wrong.
+//
+// This makes a design episode a transaction over a snapshot. The target moving
+// afterwards is a concurrency event, not a design error -- and it is the
+// mission phase, not this one, that decides what to do about it.
+func (o *Orchestrator) designBaseSHA(ctx context.Context, root TaskRecord) (string, error) {
+	reference := DesignBaseSHAReference + fmt.Sprint(root.ID)
+	detail, err := o.tasks.GetTask(ctx, root.ID)
+	if err != nil {
+		return "", err
+	}
+	for _, evidence := range detail.Evidence {
+		if evidence.Reference != reference {
+			continue
+		}
+		pinned, _ := evidence.Metadata["design_base_sha"].(string)
+		if pinned == "" {
+			return "", fmt.Errorf("%w: pinned design base sha is empty", ErrContractRejected)
+		}
+		return pinned, nil
+	}
+	// A deployment that only decides designs has no promotion target, and
+	// therefore no repository for a design to be about. That is a supported
+	// shape (see missionProvisioningOptions), so there is simply nothing to
+	// pin -- and the mission phase, which DOES require a pin, fails closed on
+	// its absence rather than inventing one.
+	if o.programTarget == nil {
+		return "", nil
+	}
+	head, err := o.programTarget.ResolveProgramTargetSHA(ctx)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(head) == "" {
+		return "", fmt.Errorf("%w: promotion target resolved to no commit", ErrContractRejected)
+	}
+	if err = o.tasks.RecordEvidence(ctx, EvidenceCommand{
+		TaskID: root.ID, Type: "result", Reference: reference,
+		Digest: head, RecordedBy: orchestratorWorkerID,
+		Metadata: map[string]any{"design_base_sha": head},
+	}); err != nil {
+		return "", err
+	}
+	return head, nil
+}
+
+// frozenDesignBaseSHA reads back the commit a frozen design was decided about.
+//
+// It READS the pin and never creates one. That distinction is the whole
+// safety property: a mission that resolved its own base would be free to pick
+// a commit nobody designed against, which is exactly the substitution this
+// change exists to make impossible. No pin means the world this design was
+// decided about is unknown, and unknown fails closed.
+func (o *Orchestrator) frozenDesignBaseSHA(ctx context.Context, root TaskRecord) (string, error) {
+	reference := DesignBaseSHAReference + fmt.Sprint(root.ID)
+	detail, err := o.tasks.GetTask(ctx, root.ID)
+	if err != nil {
+		return "", err
+	}
+	for _, evidence := range detail.Evidence {
+		if evidence.Reference != reference {
+			continue
+		}
+		if pinned, _ := evidence.Metadata["design_base_sha"].(string); pinned != "" {
+			return pinned, nil
+		}
+	}
+	return "", fmt.Errorf("%w: the design carries no pinned base commit, so the repository it was decided about is unknown", ErrContractRejected)
+}
+
 func (o *Orchestrator) driveDesignFreeze(ctx context.Context, root TaskRecord, all []TaskRecord) (Run, bool, error) {
 	requirement, found := findRequirementByKey(root.Requirements, designfreeze.RequirementKey)
 	if !found {
@@ -297,6 +387,13 @@ func (o *Orchestrator) driveDesignFreeze(ctx context.Context, root TaskRecord, a
 		return run, true, blockErr
 	}
 
+	// Pinned here at the latest, if it was not pinned earlier: the freeze is
+	// the moment the decision becomes durable, so it is the last point at
+	// which the world it was decided about can still be recorded truthfully.
+	pinnedBaseSHA, err := o.designBaseSHA(ctx, root)
+	if err != nil {
+		return Run{}, true, err
+	}
 	payload, err := designfreeze.EvidencePayload(decision.Record)
 	if err != nil {
 		return Run{}, true, err
@@ -310,6 +407,9 @@ func (o *Orchestrator) driveDesignFreeze(ctx context.Context, root TaskRecord, a
 			"design_id": design.ID, "design_version": design.Version, "design_digest": design.Digest,
 			"adversarial_review_task_id": reviewTask.ID, "design_adjudication_task_id": adjudicationTask.ID,
 			"design_freeze_record": string(payload),
+			// The commit the whole decision was made about. Empty only for
+			// a deployment with no promotion target at all.
+			"design_base_sha": pinnedBaseSHA,
 		},
 		Satisfies: true,
 	}); err != nil {
