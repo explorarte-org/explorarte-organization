@@ -57,7 +57,18 @@ var (
 // deliverable wrote a given passage. Egress is not a property of the author:
 // if these bytes are organizational source and they are about to leave, it
 // does not matter who put them there.
-func DeclassifyCandidate(candidate string, organizational []string) error {
+// OrganizationalSource is one piece of repository evidence together with the
+// citation that names it. The reference travels so that a refusal can say
+// WHICH evidence was reproduced: a path, a line range and a commit are
+// provenance metadata, which may cross the boundary that the source text may
+// not. Naming it costs nothing and saves reconstructing the match by hand from
+// the database, which is what AUTONOMY-SMOKE-017-R2 required.
+type OrganizationalSource struct {
+	Reference string
+	Content   string
+}
+
+func DeclassifyCandidate(candidate string, organizational []OrganizationalSource) error {
 	if strings.TrimSpace(candidate) == "" || len(organizational) == 0 {
 		return nil
 	}
@@ -71,7 +82,11 @@ func DeclassifyCandidate(candidate string, organizational []string) error {
 
 	for _, source := range organizational {
 		for _, haystack := range haystacks {
-			if run, shared := sharedRun(source, haystack); shared {
+			if run, shared := sharedRun(source.Content, haystack); shared {
+				if reference := strings.TrimSpace(source.Reference); reference != "" {
+					return fmt.Errorf("%w: it reproduces %d characters of %s",
+						ErrCandidateContaminated, len(run), reference)
+				}
 				return fmt.Errorf("%w: it reproduces %d characters of source", ErrCandidateContaminated, len(run))
 			}
 		}

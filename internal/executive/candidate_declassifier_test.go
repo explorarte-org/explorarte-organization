@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -94,7 +95,7 @@ func TestTheEgressBoundaryBetweenClaimAndCopy(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := DeclassifyCandidate(tc.candidate, evidence)
+			err := DeclassifyCandidate(tc.candidate, evidenceOf(evidence...))
 			if tc.reject && !errors.Is(err, ErrCandidateContaminated) {
 				t.Fatalf("this must not reach a reviewer that may not read source, got %v", err)
 			}
@@ -114,7 +115,7 @@ func TestContaminationIsJudgedAgainstEveryDeliverablesEvidence(t *testing.T) {
 	seenByAnotherDeliverable := organizationalSource
 	candidate := "Worker A says the helper is unused:\n" + seenByAnotherDeliverable
 
-	if err := DeclassifyCandidate(candidate, []string{seenByAnotherDeliverable}); !errors.Is(err, ErrCandidateContaminated) {
+	if err := DeclassifyCandidate(candidate, evidenceOf(seenByAnotherDeliverable)); !errors.Is(err, ErrCandidateContaminated) {
 		t.Fatalf("source shown to any contributing deliverable must not leave, got %v", err)
 	}
 }
@@ -125,4 +126,17 @@ func TestAnUngroundedCandidateIsUnaffected(t *testing.T) {
 	if err := DeclassifyCandidate("A design that mentions no repository at all.", nil); err != nil {
 		t.Fatalf("an ungrounded candidate must pass untouched: %v", err)
 	}
+}
+
+// evidenceOf names each payload so a refusal can report which citation was
+// reproduced, the way production does.
+func evidenceOf(payloads ...string) []OrganizationalSource {
+	sources := make([]OrganizationalSource, 0, len(payloads))
+	for index, payload := range payloads {
+		sources = append(sources, OrganizationalSource{
+			Reference: fmt.Sprintf("repository://fixture/file%d.go#L1-L9", index+1),
+			Content:   payload,
+		})
+	}
+	return sources
 }
