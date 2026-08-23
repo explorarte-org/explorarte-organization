@@ -28,6 +28,10 @@ type scriptedHarness struct {
 	commands            []HarnessRunCommand
 	adjudicationVerdict string
 	corruptDigest       string
+	// adjudicationEvidence is the raw JSON array of evidence_requirements the
+	// adjudicator proposes alongside a revise. Empty means the body carries
+	// none, which is what every pre-existing test exercises.
+	adjudicationEvidence string
 }
 
 func (h *scriptedHarness) Execute(_ context.Context, command HarnessRunCommand) (HarnessRunOutcome, error) {
@@ -64,8 +68,13 @@ func (h *scriptedHarness) adjudicationBody(taskID int64) string {
 	if verdict == "revise" {
 		required = `["Prove the seal protocol under concurrency."]`
 	}
+	evidence := ""
+	if h.adjudicationEvidence != "" && verdict == "revise" {
+		evidence = `"evidence_requirements":` + h.adjudicationEvidence + `,`
+	}
 	return `{"schema_version":"design-adjudication/v1","verdict":"` + verdict + `",` +
 		`"accepted_findings":["AR-001"],"rejected_findings":[],"required_changes":` + required + `,` +
+		evidence +
 		`"unresolved_owner_decisions":[],"design_id":"` + design.ID + `","design_version":"` + design.Version + `",` +
 		`"design_digest":"` + digest + `","evidence_refs":[]}`
 }

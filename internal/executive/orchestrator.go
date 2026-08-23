@@ -314,6 +314,14 @@ func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error
 			// Fails closed and stays closed: there is no second provider to
 			// fall back to, so retrying on its own would only spin.
 			return ProjectRun(root, nil), ErrRunBlocked
+		case ReasonEvidenceInsufficient:
+			// The host could not put in front of the worker what its own
+			// contract demands. Unblocking would re-drive the same retrieval,
+			// rebuild the same snapshot and block again -- one model-free but
+			// not free loop -- because the obligations decide what is searched
+			// for, and they have not changed. A new obligation or a new world
+			// is what reopens this, and neither arrives through Resume.
+			return ProjectRun(root, nil), ErrRunBlocked
 		case "dispatch_assignment_required":
 			if !o.anyProvisionedLeasedTask(ctx, root.CorrelationID) {
 				return o.Status(ctx, rootTaskID)
@@ -1331,6 +1339,14 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 	if groundingErr != nil {
 		return task, groundingErr
 	}
+	// What this round must ground, read from durable state and never
+	// re-derived from the owner's original JSON or from what retrieval
+	// happens to find. The obligations decide what is searched for; what is
+	// found never decides the obligations.
+	required, requiredErr := o.roundEvidenceRequirements(ctx, root, task, purpose)
+	if requiredErr != nil {
+		return task, requiredErr
+	}
 	snapshot, err := o.contexts.Build(ctx, ContextRequest{
 		OrganizationRevisionID: task.OrganizationRevisionID, ActorRoleID: task.AssignedRoleID,
 		Purpose: purpose.LegacyPurpose(), TaskRef: "task:" + strconv.FormatInt(task.ID, 10),
@@ -1343,12 +1359,54 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		// model/instruction text.
 		TaskClass: task.TaskClass, ExecutionPurpose: string(purpose), ActorUnitID: task.AssignedUnitID,
 		RepositoryBaseSHA: repositoryBaseSHA, RepositoryQuery: repositoryQuery,
-		IdempotencyKey: childKey(root.ID, fmt.Sprintf("context:%d:%d", task.ID, lease.AttemptID)),
-		CorrelationID:  root.CorrelationID, CausationID: attemptCausation(task.ID, lease.AttemptID),
+		RepositorySubjects: evidenceSubjects(required),
+		IdempotencyKey:     childKey(root.ID, fmt.Sprintf("context:%d:%d", task.ID, lease.AttemptID)),
+		CorrelationID:      root.CorrelationID, CausationID: attemptCausation(task.ID, lease.AttemptID),
 	})
 	if err != nil {
 		return task, err
 	}
+	// Supply is checked HERE: the snapshot exists, so the host knows what it
+	// showed, and no model call has been made yet.
+	//
+	// Asked after the call, this question arrives while the artifact is being
+	// judged -- which is where the temptation to blame the artifact lives.
+	// AUTONOMY-SMOKE-017-R5 was blamed for citing a test fixture as a
+	// definition when the file declaring the symbol had never been in its
+	// context. Asked first, the question has only one honest answer.
+	available, availableErr := o.suppliedEvidence(ctx, snapshot.ID, required)
+	if availableErr != nil {
+		return task, availableErr
+	}
+	if supplyErr := ValidateEvidenceSupply(required, available); supplyErr != nil {
+		// The host could not put up what it was about to demand. That is
+		// not the worker's failure, so it costs no model call -- and it is
+		// not a design that needs revising, so it costs no round.
+		o.forgetLease(task.ID)
+		if _, blockErr := o.tasks.BlockTask(ctx, root.ID, ReasonEvidenceInsufficient,
+			truncate(supplyErr.Error(), 480), "service", orchestratorWorkerID); blockErr != nil {
+			return task, blockErr
+		}
+		return task, supplyErr
+	}
+	// Structural validation runs on the way back, wrapped around the
+	// caller's own contract check so it shares the same rejection path: a
+	// worker that leaves a slot unfilled having been shown candidates has
+	// broken its contract, and that is an attempt failure like any other.
+	if len(required) > 0 {
+		callerValidate := validate
+		validate = func(result InvocationResult) error {
+			if err := callerValidate(result); err != nil {
+				return err
+			}
+			parsed, parseErr := ParseWorkerResult(result.JSONOutput, o.limits)
+			if parseErr != nil {
+				return parseErr
+			}
+			return ValidateEvidenceStructure(parsed, required, available)
+		}
+	}
+
 	// The correlation-wide model-call budget is checked HERE, before the run,
 	// because this is the last point the Executive still controls. Once the
 	// Harness is entered, invocation creation happens inside Model Runtime and
@@ -1934,6 +1992,7 @@ func isNonBlockingPhaseError(err error) bool {
 		errors.Is(err, ErrExecutionPrincipalUnavailable),
 		errors.Is(err, ErrPriorExecutionUnresolved),
 		errors.Is(err, ErrExecutionInterrupted),
+		errors.Is(err, ErrEvidenceInsufficient),
 		errors.Is(err, ErrModelResultContractRejected):
 		return true
 	}

@@ -10,8 +10,8 @@ import (
 
 	"github.com/Mireuz13/explorarte-organization/internal/app"
 	"github.com/Mireuz13/explorarte-organization/internal/config"
-	"github.com/Mireuz13/explorarte-organization/internal/platform/buildinfo"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
+	"github.com/Mireuz13/explorarte-organization/internal/platform/buildinfo"
 	"github.com/Mireuz13/explorarte-organization/internal/platform/logging"
 )
 

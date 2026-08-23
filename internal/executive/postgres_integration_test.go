@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -441,9 +442,37 @@ func (c *countingCompletion) Verify(ctx context.Context, taskID, attemptID int64
 	return c.delegate.Verify(ctx, taskID, attemptID)
 }
 
+// integrationAcceptance is the external-package counterpart of the internal
+// memoryAcceptance fake: the same idempotency the durable recorder has, so a
+// resumed submit observes what the first one stored rather than overwriting it.
+type integrationAcceptance struct {
+	mu       sync.Mutex
+	recorded map[int64][]executive.AcceptanceCriterion
+}
+
+func newIntegrationAcceptance() *integrationAcceptance {
+	return &integrationAcceptance{recorded: map[int64][]executive.AcceptanceCriterion{}}
+}
+
+func (a *integrationAcceptance) RecordAcceptance(_ context.Context, rootTaskID int64, criteria []executive.AcceptanceCriterion) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if _, exists := a.recorded[rootTaskID]; exists {
+		return nil
+	}
+	a.recorded[rootTaskID] = append([]executive.AcceptanceCriterion(nil), criteria...)
+	return nil
+}
+
+func (a *integrationAcceptance) Acceptance(_ context.Context, rootTaskID int64) ([]executive.AcceptanceCriterion, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]executive.AcceptanceCriterion(nil), a.recorded[rootTaskID]...), nil
+}
+
 func newOrchestrator(t *testing.T, h *integrationHarness, models *integrationModelRuntime, assignments integrationAssignments, completionGate executive.CompletionGate, opts ...executive.OrchestratorOption) *executive.Orchestrator {
 	t.Helper()
-	value, err := executive.NewOrchestrator(executive.Dependencies{Acceptance: newMemoryAcceptance(),
+	value, err := executive.NewOrchestrator(executive.Dependencies{Acceptance: newIntegrationAcceptance(),
 		OrganizationID: "explorarte",
 		Registry:       runtimeadapter.Registry{Reader: h.registry, OrganizationID: "explorarte"},
 		Tasks:          runtimeadapter.Tasks{Service: h.tasks, OrganizationID: "explorarte"},
@@ -490,7 +519,7 @@ func TestExecutivePostgreSQL17EndToEndAndRestart(t *testing.T) {
 	orchestrator := newOrchestrator(t, h, models, integrationAssignments{}, completionGate)
 	run, reused, err := orchestrator.Submit(h.ctx, executive.SubmitRequest{
 		ActorRoleID: executive.OwnerRoleID, IdempotencyKey: "integration-executive-normal",
-		Goal: executive.OwnerGoal{Goal: "Analyze the organization and return a one-area plan without external actions.", AcceptanceCriteria: []AcceptanceCriterion{{Text: "one department reviewed", Phase: AcceptanceDesign}, {Text: "closure verified", Phase: AcceptanceImplementation}}},
+		Goal: executive.OwnerGoal{Goal: "Analyze the organization and return a one-area plan without external actions.", AcceptanceCriteria: []executive.AcceptanceCriterion{{Text: "one department reviewed", Phase: executive.AcceptanceDesign}, {Text: "closure verified", Phase: executive.AcceptanceImplementation}}},
 	})
 	if err != nil || reused {
 		t.Fatalf("submit: run=%+v reused=%v err=%v", run, reused, err)
@@ -576,7 +605,7 @@ func TestExecutivePostgreSQL17AgentBudgetsAndMessagingAreWiredThroughDelegation(
 
 	run, reused, err := orchestrator.Submit(h.ctx, executive.SubmitRequest{
 		ActorRoleID: executive.OwnerRoleID, IdempotencyKey: "integration-executive-agent-coordination",
-		Goal: executive.OwnerGoal{Goal: "Analyze the organization and return a one-area plan without external actions.", AcceptanceCriteria: []AcceptanceCriterion{{Text: "one department reviewed", Phase: AcceptanceDesign}, {Text: "closure verified", Phase: AcceptanceImplementation}}},
+		Goal: executive.OwnerGoal{Goal: "Analyze the organization and return a one-area plan without external actions.", AcceptanceCriteria: []executive.AcceptanceCriterion{{Text: "one department reviewed", Phase: executive.AcceptanceDesign}, {Text: "closure verified", Phase: executive.AcceptanceImplementation}}},
 	})
 	if err != nil || reused {
 		t.Fatalf("submit: run=%+v reused=%v err=%v", run, reused, err)
@@ -667,7 +696,7 @@ func TestExecutivePostgreSQL17RecordsDecisionGraphTraceForEveryAttempt(t *testin
 	orchestrator := newOrchestrator(t, h, models, integrationAssignments{}, completionGate)
 	run, reused, err := orchestrator.Submit(h.ctx, executive.SubmitRequest{
 		ActorRoleID: executive.OwnerRoleID, IdempotencyKey: "integration-decision-trace",
-		Goal: executive.OwnerGoal{Goal: "Analyze the organization and return a one-area plan without external actions.", AcceptanceCriteria: []AcceptanceCriterion{{Text: "one department reviewed", Phase: AcceptanceDesign}, {Text: "closure verified", Phase: AcceptanceImplementation}}},
+		Goal: executive.OwnerGoal{Goal: "Analyze the organization and return a one-area plan without external actions.", AcceptanceCriteria: []executive.AcceptanceCriterion{{Text: "one department reviewed", Phase: executive.AcceptanceDesign}, {Text: "closure verified", Phase: executive.AcceptanceImplementation}}},
 	})
 	if err != nil || reused {
 		t.Fatalf("submit: run=%+v reused=%v err=%v", run, reused, err)
@@ -748,7 +777,7 @@ func TestExecutivePostgreSQL17AmbiguousBlocksWithoutSecondInvocation(t *testing.
 	models.ambiguousPurpose = "department_worker"
 	gate := &countingCompletion{delegate: h.completion}
 	orchestrator := newOrchestrator(t, h, models, integrationAssignments{}, gate)
-	run, _, err := orchestrator.Submit(h.ctx, executive.SubmitRequest{ActorRoleID: executive.OwnerRoleID, IdempotencyKey: "integration-ambiguous", Goal: executive.OwnerGoal{Goal: "Analyze one area.", AcceptanceCriteria: []AcceptanceCriterion{{Text: "verified", Phase: AcceptanceDesign}}}})
+	run, _, err := orchestrator.Submit(h.ctx, executive.SubmitRequest{ActorRoleID: executive.OwnerRoleID, IdempotencyKey: "integration-ambiguous", Goal: executive.OwnerGoal{Goal: "Analyze one area.", AcceptanceCriteria: []executive.AcceptanceCriterion{{Text: "verified", Phase: executive.AcceptanceDesign}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -772,7 +801,7 @@ func TestExecutivePostgreSQL17CompletionInconclusiveNeverCompletes(t *testing.T)
 	models := newIntegrationModelRuntime()
 	gate := &countingCompletion{delegate: h.completion, forceAt: 3}
 	orchestrator := newOrchestrator(t, h, models, integrationAssignments{}, gate)
-	run, _, err := orchestrator.Submit(h.ctx, executive.SubmitRequest{ActorRoleID: executive.OwnerRoleID, IdempotencyKey: "integration-inconclusive", Goal: executive.OwnerGoal{Goal: "Analyze one area.", AcceptanceCriteria: []AcceptanceCriterion{{Text: "verified", Phase: AcceptanceDesign}}}})
+	run, _, err := orchestrator.Submit(h.ctx, executive.SubmitRequest{ActorRoleID: executive.OwnerRoleID, IdempotencyKey: "integration-inconclusive", Goal: executive.OwnerGoal{Goal: "Analyze one area.", AcceptanceCriteria: []executive.AcceptanceCriterion{{Text: "verified", Phase: executive.AcceptanceDesign}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -800,7 +829,7 @@ func TestExecutivePostgreSQL17RejectsModelOverridesAndCrossDepartmentDelegation(
 			models := newIntegrationModelRuntime()
 			tc.mutate(models)
 			orchestrator := newOrchestrator(t, h, models, integrationAssignments{}, &countingCompletion{delegate: h.completion})
-			run, _, err := orchestrator.Submit(h.ctx, executive.SubmitRequest{ActorRoleID: executive.OwnerRoleID, IdempotencyKey: "integration-reject-" + tc.name, Goal: executive.OwnerGoal{Goal: "Analyze one area.", AcceptanceCriteria: []AcceptanceCriterion{{Text: "verified", Phase: AcceptanceDesign}}}})
+			run, _, err := orchestrator.Submit(h.ctx, executive.SubmitRequest{ActorRoleID: executive.OwnerRoleID, IdempotencyKey: "integration-reject-" + tc.name, Goal: executive.OwnerGoal{Goal: "Analyze one area.", AcceptanceCriteria: []executive.AcceptanceCriterion{{Text: "verified", Phase: executive.AcceptanceDesign}}}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -832,7 +861,7 @@ func TestExecutivePostgreSQL17ReconcileGatedCompletionsRecoversOrphanedTask(t *t
 	orchestrator := newOrchestrator(t, h, models, integrationAssignments{}, completionGate)
 	run, reused, err := orchestrator.Submit(h.ctx, executive.SubmitRequest{
 		ActorRoleID: executive.OwnerRoleID, IdempotencyKey: "integration-reconcile-gating",
-		Goal: executive.OwnerGoal{Goal: "Analyze the organization and return a one-area plan without external actions.", AcceptanceCriteria: []AcceptanceCriterion{{Text: "one department reviewed", Phase: AcceptanceDesign}, {Text: "closure verified", Phase: AcceptanceImplementation}}},
+		Goal: executive.OwnerGoal{Goal: "Analyze the organization and return a one-area plan without external actions.", AcceptanceCriteria: []executive.AcceptanceCriterion{{Text: "one department reviewed", Phase: executive.AcceptanceDesign}, {Text: "closure verified", Phase: executive.AcceptanceImplementation}}},
 	})
 	if err != nil || reused {
 		t.Fatalf("submit: run=%+v reused=%v err=%v", run, reused, err)
@@ -895,7 +924,7 @@ func TestExecutivePostgreSQL17MissingDispatchAssignmentBlocks(t *testing.T) {
 	defer h.close()
 	models := newIntegrationModelRuntime()
 	orchestrator := newOrchestrator(t, h, models, integrationAssignments{fail: true}, &countingCompletion{delegate: h.completion})
-	run, _, err := orchestrator.Submit(h.ctx, executive.SubmitRequest{ActorRoleID: executive.OwnerRoleID, IdempotencyKey: "integration-assignment", Goal: executive.OwnerGoal{Goal: "Analyze one area.", AcceptanceCriteria: []AcceptanceCriterion{{Text: "verified", Phase: AcceptanceDesign}}}})
+	run, _, err := orchestrator.Submit(h.ctx, executive.SubmitRequest{ActorRoleID: executive.OwnerRoleID, IdempotencyKey: "integration-assignment", Goal: executive.OwnerGoal{Goal: "Analyze one area.", AcceptanceCriteria: []executive.AcceptanceCriterion{{Text: "verified", Phase: executive.AcceptanceDesign}}}})
 	if err != nil {
 		t.Fatal(err)
 	}

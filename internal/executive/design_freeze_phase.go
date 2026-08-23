@@ -227,6 +227,15 @@ func (o *Orchestrator) driveDesignFreeze(ctx context.Context, root TaskRecord, a
 	}
 
 	round := o.activeDesignRound(ctx, all, root.ID)
+	// A revise that named new obligations binds the round it opened, and it
+	// is adopted before any of that round's work exists. Persisting it later
+	// would let a design be written against a contract that had not been
+	// decided yet, and judged against one that had.
+	if round > 1 {
+		if err = o.adoptAdjudicationRequirements(ctx, root, all, round); err != nil {
+			return Run{}, true, err
+		}
+	}
 	if round > o.limits.MaxDesignRounds {
 		run, blockErr := o.blockRoot(ctx, root, ReasonDesignRoundsExhausted,
 			fmt.Sprintf("the design was sent back %d times and is still not settled", o.limits.MaxDesignRounds))

@@ -27,6 +27,25 @@ func evidenceRequirementsReference(rootID int64, round int) string {
 	return EvidenceRequirementsReference + strconv.FormatInt(rootID, 10) + "/round/" + strconv.Itoa(round)
 }
 
+// roundHasRecordedRequirements reports whether this round's obligations were
+// already written. The reference is the write-once marker: adoption happens
+// on every pass that drives the round it opened, and the engine appends
+// evidence without uniqueness, so the guard -- not the store -- is what makes
+// a resumed run adopt the same decision once.
+func (o *Orchestrator) roundHasRecordedRequirements(ctx context.Context, rootID int64, round int) (bool, error) {
+	detail, err := o.tasks.GetTask(ctx, rootID)
+	if err != nil {
+		return false, err
+	}
+	reference := evidenceRequirementsReference(rootID, round)
+	for _, evidence := range detail.Evidence {
+		if evidence.Reference == reference {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // recordEvidenceRequirements persists what a round must ground.
 //
 // Obligations already in force for a round are never mutated. An adjudicator
