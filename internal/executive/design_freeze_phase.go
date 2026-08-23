@@ -645,7 +645,10 @@ func (o *Orchestrator) candidateBody(ctx context.Context, artifact designArtifac
 // checking one design's citations against another's context would verify
 // claims their author never had grounds for.
 func (o *Orchestrator) verifiedDesignCitations(ctx context.Context, root TaskRecord, artifact designArtifact) ([]designreview.DeliverableCitations, []string, error) {
-	if o.snapshotSources == nil {
+	if o.programTarget == nil && o.snapshotSources == nil {
+		// Nothing was grounded and nothing can be read back: there are no
+		// repository claims to verify and no source that could have been
+		// shown to a worker.
 		return nil, nil, nil
 	}
 	baseSHA, err := o.frozenDesignBaseSHA(ctx, root)
@@ -653,6 +656,21 @@ func (o *Orchestrator) verifiedDesignCitations(ctx context.Context, root TaskRec
 		// A campaign with no pinned world has no repository claims to
 		// ground, and nothing to verify them against.
 		return nil, nil, nil
+	}
+	// A repository-grounded campaign with no way to read back what the
+	// workers were shown is not an ungrounded campaign, it is an
+	// unobservable one: citations could not be verified and the candidate
+	// could not be checked for source it must not carry. The same
+	// distinction the grounding path makes between "no repository" and "a
+	// repository I cannot read" applies here, and for the same reason --
+	// the second must never degrade into the first.
+	//
+	// The condition is programTarget, not the pin: a governed design freeze
+	// is pinned even where no repository is wired, and there a worker never
+	// saw source, so there is nothing to read back. Refusing on the pin
+	// alone would make an unrelated dependency of every governed campaign.
+	if o.programTarget != nil && o.snapshotSources == nil {
+		return nil, nil, fmt.Errorf("%w: design cites a pinned world but no snapshot reader is wired", ErrContractRejected)
 	}
 	organizational := make([]string, 0, 8)
 	deliverables := make([]designreview.DeliverableCitations, 0, len(artifact.Units))

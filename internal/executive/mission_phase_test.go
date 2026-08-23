@@ -133,7 +133,8 @@ func newMissionFixture(t *testing.T, planPath string, widenScope bool) *missionF
 		Budget: &countingBudget{}, Completion: &fakeCompletion{verdict: CompletionPass},
 		Decisions: &fakeDecisionRecorder{}, Authorization: allowAuthz{}, Limits: DefaultLimits(),
 		Clock: ClockFunc(func() time.Time { return time.Unix(1000, 0) }),
-	}, WithMissionProvisioning(target, provisioner))
+	}, WithMissionProvisioning(target, provisioner),
+		WithSnapshotSources(stubSnapshotSources{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +340,8 @@ func TestMissionProvisioningIsIdempotentAcrossResumeAndRestart(t *testing.T) {
 		Budget: &countingBudget{}, Completion: &fakeCompletion{verdict: CompletionPass},
 		Decisions: &fakeDecisionRecorder{}, Authorization: allowAuthz{}, Limits: DefaultLimits(),
 		Clock: ClockFunc(func() time.Time { return time.Unix(1000, 0) }),
-	}, WithMissionProvisioning(fixture.target, fixture.provisioner))
+	}, WithMissionProvisioning(fixture.target, fixture.provisioner),
+		WithSnapshotSources(stubSnapshotSources{}))
 	if err != nil {
 		t.Fatal(err)
 	}

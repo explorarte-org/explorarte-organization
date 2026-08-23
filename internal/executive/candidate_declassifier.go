@@ -70,11 +70,9 @@ func DeclassifyCandidate(candidate string, organizational []string) error {
 	}
 
 	for _, source := range organizational {
-		for _, run := range significantRuns(source) {
-			for _, haystack := range haystacks {
-				if strings.Contains(haystack, run) {
-					return fmt.Errorf("%w: it reproduces %d characters of source", ErrCandidateContaminated, len(run))
-				}
+		for _, haystack := range haystacks {
+			if run, shared := sharedRun(source, haystack); shared {
+				return fmt.Errorf("%w: it reproduces %d characters of source", ErrCandidateContaminated, len(run))
 			}
 		}
 	}
@@ -136,24 +134,57 @@ func reversibleDecodings(candidate string) []string {
 	return decoded
 }
 
-// significantRuns is what counts as reproduction rather than reference.
+// sharedRun reports the first contiguous span of at least declassifyMinimumRun
+// characters that the candidate and the source have in common, in normal form.
 //
 // A path, a symbol or a short idiomatic fragment must cross freely: those are
 // the metadata a grounded claim is made of. A long contiguous span of the
 // source is not a reference to the code, it is the code.
 //
-// Lines are joined before slicing so that a copy which re-wraps or re-indents
-// the original still matches: the run is over the normalized text, not over
-// the file's layout.
-func significantRuns(source string) []string {
+// The comparison is exact at the stated threshold rather than sampled. An
+// earlier version windowed the SOURCE at a stride and asked whether the
+// candidate contained one of those windows, which made detection depend on
+// where the windows happened to land: a rendered excerpt carries a one-line
+// provenance header, so for a short body every window straddled the header and
+// no window lay inside the source text at all. A verbatim copy of a 53-char
+// function then crossed while the threshold said 48. Indexing every offset of
+// the source removes the alignment luck -- any shared run of the threshold
+// length is found, whatever the payload's framing.
+//
+// Lines are joined before comparison so that a copy which re-wraps or
+// re-indents the original still matches: the run is over the normalized text,
+// not over the file's layout.
+func sharedRun(source, haystack string) (string, bool) {
 	normalized := normalizeForDeclassify(source)
-	if len(normalized) < declassifyMinimumRun {
-		return nil
+	if len(normalized) < declassifyMinimumRun || len(haystack) < declassifyMinimumRun {
+		return "", false
 	}
-	runs := make([]string, 0, 8)
-	step := declassifyMinimumRun / 2
-	for start := 0; start+declassifyMinimumRun <= len(normalized); start += step {
-		runs = append(runs, normalized[start:start+declassifyMinimumRun])
+	// Hashing the source's windows keeps the index linear in the evidence
+	// size; a hit is confirmed against the text itself, so a collision
+	// cannot invent contamination that is not there.
+	index := make(map[uint64]struct{}, len(normalized))
+	for start := 0; start+declassifyMinimumRun <= len(normalized); start++ {
+		index[declassifyHash(normalized[start:start+declassifyMinimumRun])] = struct{}{}
 	}
-	return runs
+	for start := 0; start+declassifyMinimumRun <= len(haystack); start++ {
+		run := haystack[start : start+declassifyMinimumRun]
+		if _, candidate := index[declassifyHash(run)]; !candidate {
+			continue
+		}
+		if strings.Contains(normalized, run) {
+			return run, true
+		}
+	}
+	return "", false
+}
+
+func declassifyHash(run string) uint64 {
+	const offset64 = 14695981039346656037
+	const prime64 = 1099511628211
+	hash := uint64(offset64)
+	for i := 0; i < len(run); i++ {
+		hash ^= uint64(run[i])
+		hash *= prime64
+	}
+	return hash
 }
