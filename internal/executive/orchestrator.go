@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Mireuz13/explorarte-organization/internal/designfreeze"
 )
 
 // orchestratorWorkerID is operational provenance only: it names the process
@@ -45,7 +47,12 @@ type Orchestrator struct {
 	leaseKeeper    LeaseKeeperConfig
 
 	programTarget ProgramTargetResolver
-	missions      MissionProvisioner
+	// snapshotSources reads back what a context snapshot actually carried.
+	// Optional: without it no repository citation can be verified, and the
+	// review bundle carries none -- which is the correct behaviour for a
+	// deployment whose designs never observe code.
+	snapshotSources SnapshotSourceReader
+	missions        MissionProvisioner
 
 	mu     sync.Mutex
 	leases map[int64]LeaseRecord
@@ -325,6 +332,29 @@ func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error
 		return Run{}, err
 	}
 	children := withoutRoot(all, root.ID)
+
+	// The world this campaign is about is fixed HERE, before the first
+	// cognitive call of any kind.
+	//
+	// Pinning it later -- at the freeze, once the reviewer and the
+	// adjudicator had already finished -- proved only that the mission would
+	// inherit a commit. It proved nothing about what the designers had been
+	// reasoning over, which is the whole point: a design is evidence about a
+	// repository only if the repository was decided before anyone looked at
+	// it. Every model that can see code must see the same code.
+	//
+	// Only for campaigns governed by a design freeze, though. "A design about
+	// code must fix its world before reasoning" is a rule about designs; it
+	// must not become "every cognitive act in the organization depends on
+	// resolving git". A campaign that has nothing to do with the repository
+	// keeps working when the promotion target does not, which is the opt-in
+	// shape driveDesignFreeze already declares.
+	if _, governed := findRequirementByKey(root.Requirements, designfreeze.RequirementKey); governed {
+		if _, err = o.designBaseSHA(ctx, root); err != nil {
+			return Run{}, err
+		}
+	}
+
 	planTask, ok := findTaskByMarker(children, keyCEOPlanMarker)
 	if !ok {
 		planTask, _, err = o.createCEOPlanTask(ctx, root)
@@ -978,6 +1008,79 @@ func (o *Orchestrator) createClosureTask(ctx context.Context, root TaskRecord, p
 // a provider result: the answer itself is read back from the durable Model
 // Runtime row, so evidence keeps pointing at exactly the bytes that were
 // persisted and hashed.
+// repositoryGroundedPurposes are the executions allowed to observe code.
+//
+// The list is short on purpose. Every excerpt costs tokens on every attempt,
+// so an execution gets eyes only where a repository-specific claim is part of
+// what it has to produce.
+//
+// implementation-plan is on it for a reason worth stating: that model has to
+// deliver exact paths and real diffs. Giving the designers sight while leaving
+// the author of the patch blind would move the same failure one phase later,
+// where it is more expensive to discover.
+//
+// adversarial-review is deliberately ABSENT, and not for cost. Its context is
+// restricted to public and sanitized data, and repository evidence is
+// organizational. Reclassifying it so the reviewer could see source would
+// widen an egress boundary as a side effect of a convenience -- the reviewer
+// judges claims against verified citations instead, which is a decision about
+// evidence rather than about egress.
+//
+// ceo-plan and ceo-closure are absent because neither makes claims about the
+// code: one decides what to attempt, the other reports what happened.
+func repositoryGroundedPurpose(purpose ExecutionPurpose) bool {
+	switch purpose {
+	case PurposeDepartmentPlan, PurposeDepartmentWorker, PurposeDepartmentReview,
+		PurposeDesignAdjudication, PurposeImplementationPlan:
+		return true
+	default:
+		return false
+	}
+}
+
+// repositoryGrounding returns the pinned commit and the selection text for an
+// execution that is allowed to observe code, and empty strings for one that is
+// not.
+//
+// The commit comes from the durable pin, never from resolving the promotion
+// target again. Resolving here would let two rounds of the same design read
+// two different repositories, which is the whole failure the pin exists to
+// prevent, reintroduced at the point where it would be least visible.
+func (o *Orchestrator) repositoryGrounding(ctx context.Context, root, task TaskRecord, purpose ExecutionPurpose) (string, string, error) {
+	if !repositoryGroundedPurpose(purpose) {
+		return "", "", nil
+	}
+	if _, governed := findRequirementByKey(root.Requirements, designfreeze.RequirementKey); !governed {
+		return "", "", nil
+	}
+	// A deployment with no promotion target has no repository for a design
+	// to be about. That is a supported shape, and an execution there is
+	// legitimately ungrounded rather than broken.
+	if o.programTarget == nil {
+		return "", "", nil
+	}
+	pinned, err := o.frozenDesignBaseSHA(ctx, root)
+	if err != nil || pinned == "" {
+		// But where a repository DOES exist, an execution that is supposed
+		// to observe code and whose pin cannot be read must NOT quietly
+		// become an execution that observes none.
+		//
+		// Returning empty degraded a governed design into an ungrounded
+		// one: the context built, the worker ran, every local component
+		// reported success, and the design went back to guessing. That is
+		// AUTONOMY-SMOKE-016 with the sensor unplugged, and it is the exact
+		// failure this subsystem exists to make impossible.
+		if err == nil {
+			err = fmt.Errorf("%w: the campaign is governed by a design but carries no pinned world", ErrContractRejected)
+		}
+		return "", "", err
+	}
+	// The goal says what the campaign is about; the task says what this
+	// execution is about. Both, because a worker task naming a symbol needs
+	// that symbol found, and the goal alone would not mention it.
+	return pinned, strings.TrimSpace(root.Instructions + "\n" + task.Instructions), nil
+}
+
 func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task TaskRecord, schema json.RawMessage, purpose ExecutionPurpose, validate func(InvocationResult) error) (TaskRecord, error) {
 	if !purpose.Valid() {
 		return task, fmt.Errorf("%w: unknown execution purpose %q", ErrContractRejected, purpose)
@@ -1144,6 +1247,10 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 	if len(invocations) > 1 {
 		return task, fmt.Errorf("%w: multiple invocations for one task attempt", ErrContractRejected)
 	}
+	repositoryBaseSHA, repositoryQuery, groundingErr := o.repositoryGrounding(ctx, root, task, purpose)
+	if groundingErr != nil {
+		return task, groundingErr
+	}
 	snapshot, err := o.contexts.Build(ctx, ContextRequest{
 		OrganizationRevisionID: task.OrganizationRevisionID, ActorRoleID: task.AssignedRoleID,
 		Purpose: purpose.LegacyPurpose(), TaskRef: "task:" + strconv.FormatInt(task.ID, 10),
@@ -1155,6 +1262,7 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		// value (purpose.Valid() was already checked above), never
 		// model/instruction text.
 		TaskClass: task.TaskClass, ExecutionPurpose: string(purpose), ActorUnitID: task.AssignedUnitID,
+		RepositoryBaseSHA: repositoryBaseSHA, RepositoryQuery: repositoryQuery,
 		IdempotencyKey: childKey(root.ID, fmt.Sprintf("context:%d:%d", task.ID, lease.AttemptID)),
 		CorrelationID:  root.CorrelationID, CausationID: attemptCausation(task.ID, lease.AttemptID),
 	})

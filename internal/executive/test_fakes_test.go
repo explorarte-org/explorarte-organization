@@ -466,6 +466,19 @@ func (m *memoryTasks) RecordEvidence(_ context.Context, command EvidenceCommand)
 			task.Requirements[i].Status = "satisfied"
 		}
 	}
+	// Evidence a caller records must be visible to the next GetTask, the way
+	// task_evidence is in the real store -- Mission.Resolve and the design
+	// base-SHA pin both read their own writes back that way. Keeping it only
+	// in m.evidence made this fake silently lossy: production code that
+	// re-read its own evidence looked broken here and worked in the store.
+	task.Evidence = append(task.Evidence, EvidenceRecord{
+		RequirementID: command.RequirementID,
+		Type:          command.Type,
+		Reference:     command.Reference,
+		Digest:        command.Digest,
+		RecordedBy:    command.RecordedBy,
+		Metadata:      command.Metadata,
+	})
 	m.tasks[task.ID] = task
 	m.evidence = append(m.evidence, command)
 	return nil
@@ -628,6 +641,11 @@ func (f *fakeModels) recordDurableInvocation(command HarnessRunCommand, status s
 	invocation := InvocationRecord{
 		ID: f.nextID, TaskID: command.TaskID, AttemptID: command.AttemptID, SubjectRoleID: command.RoleID,
 		Status: status, CorrelationID: command.CorrelationID, CausationID: command.CausationID,
+		// Every real invocation is made with a context snapshot and records
+		// which one. A fake that left this at zero made code which reads its
+		// own invocation's context look broken here and work in production --
+		// the same lossiness the evidence recorder had.
+		ContextSnapshotID: command.Context.ID,
 	}
 	f.invocations[key] = []InvocationRecord{invocation}
 	if len(body) > 0 {

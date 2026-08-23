@@ -64,7 +64,16 @@ var (
 	ErrSnapshotInvalidated       = errors.New("context snapshot is invalidated")
 	ErrSnapshotStale             = errors.New("context snapshot is stale")
 	ErrSourceProviderUnavailable = errors.New("context source provider unavailable")
-	ErrDatabaseUnavailable       = errors.New("context PostgreSQL unavailable")
+	// ErrRepositoryEvidenceUnavailable reports that an execution which must
+	// reason about code could not be given any.
+	//
+	// It is deliberately NOT ErrSourceProviderUnavailable, which callers
+	// absorb: an absent optional source is a context with less in it, while
+	// this is a context that looks complete and is missing the one thing the
+	// execution was supposed to look at. Treating them alike is what would
+	// let a broken sensor produce a confident design about code nobody read.
+	ErrRepositoryEvidenceUnavailable = errors.New("repository evidence required but unavailable")
+	ErrDatabaseUnavailable           = errors.New("context PostgreSQL unavailable")
 )
 
 type RejectionError struct {

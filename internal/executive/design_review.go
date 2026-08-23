@@ -66,8 +66,28 @@ const (
 	SeverityLow      FindingSeverity = "low"
 )
 
+// FindingKind separates a judgement about the design from a judgement about
+// whether the design was entitled to make a claim at all.
+type FindingKind string
+
+const (
+	// FindingDesign is an ordinary finding about the design's substance.
+	FindingDesign FindingKind = "design"
+	// FindingUnverifiableRepositoryClaim is the design asserting something
+	// concrete about the repository -- a file, a symbol, existing behaviour,
+	// current structure -- with no authorized citation behind it.
+	//
+	// It exists as its own kind because it is a different failure. An
+	// ordinary finding says the design is wrong; this one says nobody can
+	// tell, because the thing it rests on was never shown to have existed.
+	// AUTONOMY-SMOKE-016 produced these by the dozen while every component
+	// reported success.
+	FindingUnverifiableRepositoryClaim FindingKind = "unverifiable_repository_claim"
+)
+
 type AdversarialFinding struct {
 	ID                  string          `json:"id"`
+	Kind                FindingKind     `json:"kind"`
 	Severity            FindingSeverity `json:"severity"`
 	Claim               string          `json:"claim"`
 	AffectedRequirement string          `json:"affected_requirement"`
@@ -320,9 +340,14 @@ var adversarialReviewOutputSchema = json.RawMessage(`{
       "items":{
         "type":"object",
         "additionalProperties":false,
-        "required":["id","severity","claim","affected_requirement","required_correction","evidence_refs"],
+        "required":["id","kind","severity","claim","affected_requirement","required_correction","evidence_refs"],
         "properties":{
           "id":{"type":"string","description":"Stable identifier such as AR-001. Uppercase prefix, hyphen, digits."},
+          "kind":{
+            "type":"string",
+            "enum":["design","unverifiable_repository_claim"],
+            "description":"unverifiable_repository_claim: the design asserts something concrete about the repository -- a file, a symbol, existing behavior, current structure -- without citing an authorized repository:// reference from this bundle. Use design for everything else."
+          },
           "severity":{"type":"string","enum":["critical","high","medium","low"]},
           "claim":{"type":"string","description":"What is wrong, stated as a falsifiable claim."},
           "affected_requirement":{"type":"string"},

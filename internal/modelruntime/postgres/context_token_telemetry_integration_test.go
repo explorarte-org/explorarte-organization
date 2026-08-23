@@ -176,7 +176,7 @@ INSERT INTO model_invocations(
 			ContextProfileID: "research.corpus_curate", ContextProfileVersion: "v1",
 			FellBackToCanonical: false, SelectionKind: contextcompiler.SelectionTaskClass, SelectorAlgorithmVersion: contextcompiler.SelectorAlgorithmVersion,
 			ProviderRenderVersion: "research-corpus-curate-render/v2",
-			StablePrefixHash: modelruntime.SHA256Bytes([]byte("stable")), StablePrefixBytes: 30,
+			StablePrefixHash:      modelruntime.SHA256Bytes([]byte("stable")), StablePrefixBytes: 30,
 			DynamicSuffixHash: modelruntime.SHA256Bytes([]byte("dynamic")), DynamicSuffixBytes: 15,
 			AuthorityOrderHash: modelruntime.SHA256Bytes([]byte("order")), CompiledContentHash: modelruntime.SHA256Bytes([]byte("content")),
 			// A non-fallback (FellBackToCanonical=false) view must carry

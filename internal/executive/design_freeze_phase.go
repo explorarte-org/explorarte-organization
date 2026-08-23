@@ -109,6 +109,102 @@ const designAdjudicationPreamble = "Adjudicate the adversarial review of this ca
 	"The design identity is bound by the host and must not be restated; return only the fields the schema declares. " +
 	"Only verdict=freeze settles the design.\n\n"
 
+// DesignBaseSHAReference is where a campaign's pinned commit lives.
+const DesignBaseSHAReference = "design-base-sha://"
+
+// ReasonWorldChangedSinceFreeze stops a run whose promotion target moved
+// between the design being frozen and the mission being provisioned.
+//
+// It is never a licence to retarget. A design was decided about ONE version of
+// the repository -- its evidence cites that version, its reviewer read that
+// version, its adjudicator ruled on that version -- so implementing it against
+// a different one would silently convert a decision about S0 into work on S1.
+// That the two are usually compatible is exactly what makes it dangerous:
+// it would be right often enough to be trusted, and wrong without a signal.
+const ReasonWorldChangedSinceFreeze = "world_changed_since_freeze"
+
+// designBaseSHA returns the commit this campaign's design reasons about,
+// pinning it durably the first time it is needed.
+//
+// It is resolved ONCE per campaign and never again. Every design round, every
+// adversarial review and every adjudication has to be discussing the same
+// repository: if a round could re-resolve the target, the adversarial reviewer might criticise one
+// version while Luna rules on another, and neither would be wrong.
+//
+// This makes a design episode a transaction over a snapshot. The target moving
+// afterwards is a concurrency event, not a design error -- and it is the
+// mission phase, not this one, that decides what to do about it.
+func (o *Orchestrator) designBaseSHA(ctx context.Context, root TaskRecord) (string, error) {
+	reference := DesignBaseSHAReference + fmt.Sprint(root.ID)
+	detail, err := o.tasks.GetTask(ctx, root.ID)
+	if err != nil {
+		return "", err
+	}
+	for _, evidence := range detail.Evidence {
+		if evidence.Reference != reference {
+			continue
+		}
+		pinned, _ := evidence.Metadata["design_base_sha"].(string)
+		if pinned == "" {
+			return "", fmt.Errorf("%w: pinned design base sha is empty", ErrContractRejected)
+		}
+		return pinned, nil
+	}
+	// A deployment that only decides designs has no promotion target, and
+	// therefore no repository for a design to be about. That is a supported
+	// shape (see missionProvisioningOptions), so there is simply nothing to
+	// pin -- and the mission phase, which DOES require a pin, fails closed on
+	// its absence rather than inventing one.
+	if o.programTarget == nil {
+		return "", nil
+	}
+	head, err := o.programTarget.ResolveProgramTargetSHA(ctx)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(head) == "" {
+		return "", fmt.Errorf("%w: promotion target resolved to no commit", ErrContractRejected)
+	}
+	// The digest is a SHA-256 of the FACT being recorded, not the commit id.
+	// A git SHA is 40 hex characters and the Tasks Engine accepts only 64:
+	// writing the commit here would have been refused by the real store while
+	// passing every test, because the fakes did not reproduce that boundary.
+	// The commit itself lives in metadata, where it is read from.
+	factDigest := sha256.Sum256([]byte("design_base_sha\x00" + head))
+	if err = o.tasks.RecordEvidence(ctx, EvidenceCommand{
+		TaskID: root.ID, Type: "result", Reference: reference,
+		Digest: hex.EncodeToString(factDigest[:]), RecordedBy: orchestratorWorkerID,
+		Metadata: map[string]any{"design_base_sha": head},
+	}); err != nil {
+		return "", err
+	}
+	return head, nil
+}
+
+// frozenDesignBaseSHA reads back the commit a frozen design was decided about.
+//
+// It READS the pin and never creates one. That distinction is the whole
+// safety property: a mission that resolved its own base would be free to pick
+// a commit nobody designed against, which is exactly the substitution this
+// change exists to make impossible. No pin means the world this design was
+// decided about is unknown, and unknown fails closed.
+func (o *Orchestrator) frozenDesignBaseSHA(ctx context.Context, root TaskRecord) (string, error) {
+	reference := DesignBaseSHAReference + fmt.Sprint(root.ID)
+	detail, err := o.tasks.GetTask(ctx, root.ID)
+	if err != nil {
+		return "", err
+	}
+	for _, evidence := range detail.Evidence {
+		if evidence.Reference != reference {
+			continue
+		}
+		if pinned, _ := evidence.Metadata["design_base_sha"].(string); pinned != "" {
+			return pinned, nil
+		}
+	}
+	return "", fmt.Errorf("%w: the design carries no pinned base commit, so the repository it was decided about is unknown", ErrContractRejected)
+}
+
 func (o *Orchestrator) driveDesignFreeze(ctx context.Context, root TaskRecord, all []TaskRecord) (Run, bool, error) {
 	requirement, found := findRequirementByKey(root.Requirements, designfreeze.RequirementKey)
 	if !found {
@@ -297,6 +393,12 @@ func (o *Orchestrator) driveDesignFreeze(ctx context.Context, root TaskRecord, a
 		return run, true, blockErr
 	}
 
+	// Already pinned before the first cognitive call; read back here so the
+	// freeze records the commit the whole decision was actually made about.
+	pinnedBaseSHA, err := o.designBaseSHA(ctx, root)
+	if err != nil {
+		return Run{}, true, err
+	}
 	payload, err := designfreeze.EvidencePayload(decision.Record)
 	if err != nil {
 		return Run{}, true, err
@@ -310,6 +412,9 @@ func (o *Orchestrator) driveDesignFreeze(ctx context.Context, root TaskRecord, a
 			"design_id": design.ID, "design_version": design.Version, "design_digest": design.Digest,
 			"adversarial_review_task_id": reviewTask.ID, "design_adjudication_task_id": adjudicationTask.ID,
 			"design_freeze_record": string(payload),
+			// The commit the whole decision was made about. Empty only for
+			// a deployment with no promotion target at all.
+			"design_base_sha": pinnedBaseSHA,
 		},
 		Satisfies: true,
 	}); err != nil {
@@ -531,13 +636,152 @@ func (o *Orchestrator) candidateBody(ctx context.Context, artifact designArtifac
 	return joinLines(sections), nil
 }
 
+// verifiedDesignCitations confirms which repository citations in a candidate
+// design were really in front of the model that wrote it.
+//
+// Each deliverable is checked against ITS OWN invocation's context snapshot,
+// not against a shared or rebuilt one. Two workers in the same round can see
+// different excerpts -- the selection reads each task's own instructions -- so
+// checking one design's citations against another's context would verify
+// claims their author never had grounds for.
+func (o *Orchestrator) verifiedDesignCitations(ctx context.Context, root TaskRecord, artifact designArtifact) ([]designreview.DeliverableCitations, []string, error) {
+	if o.programTarget == nil && o.snapshotSources == nil {
+		// Nothing was grounded and nothing can be read back: there are no
+		// repository claims to verify and no source that could have been
+		// shown to a worker.
+		return nil, nil, nil
+	}
+	baseSHA, err := o.frozenDesignBaseSHA(ctx, root)
+	if err != nil || baseSHA == "" {
+		// A campaign with no pinned world has no repository claims to
+		// ground, and nothing to verify them against.
+		return nil, nil, nil
+	}
+	// A repository-grounded campaign with no way to read back what the
+	// workers were shown is not an ungrounded campaign, it is an
+	// unobservable one: citations could not be verified and the candidate
+	// could not be checked for source it must not carry. The same
+	// distinction the grounding path makes between "no repository" and "a
+	// repository I cannot read" applies here, and for the same reason --
+	// the second must never degrade into the first.
+	//
+	// The condition is programTarget, not the pin: a governed design freeze
+	// is pinned even where no repository is wired, and there a worker never
+	// saw source, so there is nothing to read back. Refusing on the pin
+	// alone would make an unrelated dependency of every governed campaign.
+	if o.programTarget != nil && o.snapshotSources == nil {
+		return nil, nil, fmt.Errorf("%w: design cites a pinned world but no snapshot reader is wired", ErrContractRejected)
+	}
+	organizational := make([]string, 0, 8)
+	deliverables := make([]designreview.DeliverableCitations, 0, len(artifact.Units))
+	for _, unit := range artifact.Units {
+		invocation, readErr := o.models.GetInvocation(ctx, unit.InvocationID)
+		if readErr != nil {
+			return nil, nil, readErr
+		}
+		// Authorization is the tuple (task, invocation, result digest,
+		// reference). Every check below binds one element of it, and each
+		// one was missing: the tuple was assembled from labels the artifact
+		// asserted rather than from facts the host confirmed.
+		//
+		// An invocation belonging to another task cannot ground this
+		// deliverable's claims, however genuine its own citations are.
+		if invocation.TaskID != unit.TaskID {
+			return nil, nil, fmt.Errorf("%w: deliverable claims task %d but invocation %d belongs to task %d",
+				ErrContractRejected, unit.TaskID, unit.InvocationID, invocation.TaskID)
+		}
+		// No snapshot means there is no record of what this model was shown.
+		// Skipping it left the deliverable out of deliverables[] while its
+		// text stayed in the candidate design -- claims with no owner beside
+		// other deliverables' references, which is the laundering this
+		// structure exists to prevent, arriving through omission.
+		if invocation.ContextSnapshotID == 0 {
+			return nil, nil, fmt.Errorf("%w: invocation %d records no context snapshot, so what it was shown is unknown",
+				ErrContractRejected, unit.InvocationID)
+		}
+		result, resultErr := o.models.GetResult(ctx, unit.InvocationID)
+		if resultErr != nil {
+			return nil, nil, resultErr
+		}
+		// The text verified must be the text the artifact recorded. Without
+		// this, citations found in whatever GetResult returns today would be
+		// published under a digest describing different bytes -- the reviewer
+		// would be told that D1 was entitled to references extracted from
+		// something that is not D1.
+		if result.ResponseHash != unit.ResultHash {
+			return nil, nil, fmt.Errorf("%w: deliverable for task %d hashes %s but the artifact records %s",
+				ErrContractRejected, unit.TaskID, result.ResponseHash, unit.ResultHash)
+		}
+		body := strings.TrimSpace(result.TextOutput)
+		if body == "" {
+			body = strings.TrimSpace(string(result.JSONOutput))
+		}
+		shown, shownErr := o.snapshotSources.SnapshotSources(ctx, invocation.ContextSnapshotID)
+		if shownErr != nil {
+			return nil, nil, shownErr
+		}
+		for _, source := range shown {
+			if source.Kind == "repository_evidence" && source.Included && source.Content != "" {
+				organizational = append(organizational, source.Content)
+			}
+		}
+		verified, verifyErr := o.VerifyRepositoryCitations(ctx, o.snapshotSources,
+			invocation.ContextSnapshotID, baseSHA, body, unit.TaskID, unit.InvocationID, result.ResponseHash)
+		if verifyErr != nil {
+			return nil, nil, verifyErr
+		}
+		// The entry is emitted even with no verified references. Silence and
+		// "this deliverable grounded nothing" are different facts, and the
+		// reviewer needs the second one to judge a claim that cites nothing.
+		refs := make([]string, 0, len(verified))
+		for _, citation := range verified {
+			// Belt and braces on the tuple: a citation that came back
+			// describing another deliverable must never be published under
+			// this one.
+			if citation.TaskID != unit.TaskID || citation.InvocationID != unit.InvocationID || citation.ResultDigest != unit.ResultHash {
+				return nil, nil, fmt.Errorf("%w: verified citation %s does not belong to task %d invocation %d",
+					ErrContractRejected, citation.Reference, unit.TaskID, unit.InvocationID)
+			}
+			refs = append(refs, citation.Reference)
+		}
+		deliverables = append(deliverables, designreview.DeliverableCitations{
+			TaskID: unit.TaskID, InvocationID: unit.InvocationID,
+			ResultDigest: result.ResponseHash, VerifiedRepositoryRefs: refs,
+		})
+	}
+	return deliverables, organizational, nil
+}
+
 func (o *Orchestrator) reviewBundle(ctx context.Context, root TaskRecord, design designfreeze.Design, artifact designArtifact) ([]byte, error) {
 	evidence := make([]string, 0, len(artifact.Units))
 	for _, unit := range artifact.Units {
 		evidence = append(evidence, fmt.Sprintf("task:%d:model-invocation:%d", unit.TaskID, unit.InvocationID))
 	}
+	// Repository citations the host has confirmed were really in front of the
+	// designer that used them.
+	//
+	// References only, never the source behind them. The reviewer's context
+	// admits public and sanitized data, and repository evidence is
+	// organizational: widening that so it could read code would be an egress
+	// decision taken as a side effect of a convenience. What it gets instead
+	// is exactly what it needs -- the set of claims it may treat as grounded.
+	deliverables, organizational, err := o.verifiedDesignCitations(ctx, root, artifact)
+	if err != nil {
+		return nil, err
+	}
 	body, err := o.candidateBody(ctx, artifact)
 	if err != nil {
+		return nil, err
+	}
+	// The candidate is model text written by designers that read
+	// organizational source. Before any of it leaves for a reviewer whose
+	// context admits only public and sanitized data, the host establishes
+	// that it carries claims about the code and not the code.
+	//
+	// Against the union of everything the contributing deliverables were
+	// shown, not only what the author of a given passage saw: egress is not
+	// a property of the author.
+	if err = DeclassifyCandidate(body, organizational); err != nil {
 		return nil, err
 	}
 	// Only the criteria the owner assigned to the design phase. The rest
@@ -568,6 +812,15 @@ func (o *Orchestrator) reviewBundle(ctx context.Context, root TaskRecord, design
 			// every time. This states the property we actually want --
 			// readable AND provably the object under review.
 			"The reviewer sees the sanitized candidate design bound to the durable deliverable identities and result digests listed in this bundle.",
+			// The rule that makes repository grounding worth anything. A
+			// design may now look at code, so a claim about code can be
+			// checked -- and one that cites nothing is no longer merely
+			// unsupported, it is a claim the designer had every means to
+			// ground and did not.
+			"Any claim about concrete repository structure, files, symbols, existing behavior or implementation must cite a repository:// reference listed under the SAME deliverable that makes the claim, in deliverables[].verified_repository_refs.",
+			"A reference authorized for one deliverable does not authorize a claim made by another: each deliverable saw different code.",
+			"A claim of that kind with no authorized repository citation is a finding of kind unverifiable_repository_claim.",
+			"Do not infer that a repository citation exists merely because the candidate design names a file or path.",
 		},
 		AuthorityConstraints: []string{
 			"The reviewer publishes findings; it does not approve, adjudicate or freeze.",
@@ -575,6 +828,7 @@ func (o *Orchestrator) reviewBundle(ctx context.Context, root TaskRecord, design
 		},
 		UnresolvedDecisions: nil,
 		EvidenceRefs:        evidence,
+		Deliverables:        deliverables,
 		Design:              design,
 	}
 	return bundle.Encode()

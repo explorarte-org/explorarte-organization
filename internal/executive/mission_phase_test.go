@@ -17,14 +17,30 @@ import (
 const targetSHA = "14a0611b8cf670ccd32b1c9ca662261b0fdbd7c9"
 
 type fakeProgramTarget struct {
-	sha  string
-	err  error
-	hits int
+	sha    string
+	err    error
+	hits   int
+	moveAt int
+	moved  string
 }
 
 func (f *fakeProgramTarget) ResolveProgramTargetSHA(context.Context) (string, error) {
 	f.hits++
+	if f.moveAt > 0 && f.hits > f.moveAt {
+		return f.moved, f.err
+	}
 	return f.sha, f.err
+}
+
+// calls reports how many times the promotion target was consulted, which is
+// what distinguishes a design episode observing ONE world from one that
+// re-resolves it and lets the ground move between rounds.
+func (f *fakeProgramTarget) calls() int { return f.hits }
+
+// moveAfter makes the repository advance once the design has been pinned,
+// modelling somebody else promoting while a campaign is still deciding.
+func (f *fakeProgramTarget) moveAfter(hits int, sha string) {
+	f.moveAt, f.moved = hits, sha
 }
 
 type fakeMissionProvisioner struct {
@@ -117,7 +133,8 @@ func newMissionFixture(t *testing.T, planPath string, widenScope bool) *missionF
 		Budget: &countingBudget{}, Completion: &fakeCompletion{verdict: CompletionPass},
 		Decisions: &fakeDecisionRecorder{}, Authorization: allowAuthz{}, Limits: DefaultLimits(),
 		Clock: ClockFunc(func() time.Time { return time.Unix(1000, 0) }),
-	}, WithMissionProvisioning(target, provisioner))
+	}, WithMissionProvisioning(target, provisioner),
+		WithSnapshotSources(stubSnapshotSources{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +340,8 @@ func TestMissionProvisioningIsIdempotentAcrossResumeAndRestart(t *testing.T) {
 		Budget: &countingBudget{}, Completion: &fakeCompletion{verdict: CompletionPass},
 		Decisions: &fakeDecisionRecorder{}, Authorization: allowAuthz{}, Limits: DefaultLimits(),
 		Clock: ClockFunc(func() time.Time { return time.Unix(1000, 0) }),
-	}, WithMissionProvisioning(fixture.target, fixture.provisioner))
+	}, WithMissionProvisioning(fixture.target, fixture.provisioner),
+		WithSnapshotSources(stubSnapshotSources{}))
 	if err != nil {
 		t.Fatal(err)
 	}

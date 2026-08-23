@@ -114,7 +114,7 @@ func TestExecutionContextViewPostgreSQL17(t *testing.T) {
 				ContextProfileID: "research.corpus_curate", ContextProfileVersion: "v1",
 				FellBackToCanonical: false, SelectionKind: contextcompiler.SelectionTaskClass, SelectorAlgorithmVersion: contextcompiler.SelectorAlgorithmVersion,
 				ProviderRenderVersion: "research-corpus-curate-render/v2",
-				StablePrefixHash: "s1", StablePrefixBytes: 10, DynamicSuffixHash: "d1", DynamicSuffixBytes: 20,
+				StablePrefixHash:      "s1", StablePrefixBytes: 10, DynamicSuffixHash: "d1", DynamicSuffixBytes: 20,
 				AuthorityOrderHash: sha256Hex(t, "order-metadata"), CompiledContentHash: sha256Hex(t, "content-metadata"),
 				SegmentDiffs:         []contextcompiler.SegmentDiff{{SourceReference: "docs/canonical/role-catalog.yaml", Projected: true, Reason: "projected_subset:role_catalog_self_entry"}},
 				ProviderVisibleBytes: sameBytes, ProviderVisibleDigest: sha256HexBytes(sameBytes), ProviderVisibleByteCount: len(sameBytes),

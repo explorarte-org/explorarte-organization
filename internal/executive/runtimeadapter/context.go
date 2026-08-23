@@ -40,6 +40,8 @@ func (a Context) Build(ctx context.Context, request executive.ContextRequest) (e
 		TaskClass:              request.TaskClass,
 		ExecutionPurpose:       request.ExecutionPurpose,
 		ActorUnitID:            request.ActorUnitID,
+		RepositoryBaseSHA:      request.RepositoryBaseSHA,
+		RepositoryQuery:        request.RepositoryQuery,
 		IdempotencyKey:         request.IdempotencyKey,
 		CorrelationID:          request.CorrelationID,
 		CausationID:            request.CausationID,

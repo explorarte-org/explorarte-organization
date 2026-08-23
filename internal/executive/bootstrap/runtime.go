@@ -75,7 +75,13 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create executive task context provider: %w", err)
 	}
-	contextRuntime, err := contextbootstrap.Open(cfg, store, taskContextProvider)
+	// The sensor is built here and handed down, so the context runtime never
+	// has to resolve a repository of its own.
+	repositoryOptions, err := repositoryEvidenceOption(cfg, store)
+	if err != nil {
+		return nil, fmt.Errorf("configure repository evidence: %w", err)
+	}
+	contextRuntime, err := contextbootstrap.Open(cfg, store, taskContextProvider, repositoryOptions...)
 	if err != nil {
 		return nil, fmt.Errorf("open executive context runtime: %w", err)
 	}
@@ -217,6 +223,11 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 		return nil, err
 	}
 	options = append(options, missionOptions...)
+	// Without this the host verifies no citation and the review bundle
+	// authorizes none, so every repository claim reaches the reviewer
+	// ungrounded. That is the safe direction to fail, and it is also a
+	// circuit that never closes -- so it is wired.
+	options = append(options, executive.WithSnapshotSources(snapshotSourceReader{service: contextRuntime.Service}))
 	orchestrator, err = executive.NewOrchestrator(dependencies, options...)
 	if err != nil {
 		return nil, fmt.Errorf("create executive orchestrator: %w", err)

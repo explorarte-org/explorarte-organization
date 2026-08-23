@@ -29,9 +29,9 @@ func (a *DeterministicAssembler) Assemble(ctx context.Context, input AssemblyInp
 		if err := ValidateSourceMetadata(sources[index]); err != nil {
 			return Assembly{}, err
 		}
-		if sources[index].Kind == SourceApprovedMemory || sources[index].Kind == SourceRAGEvidence || sources[index].Kind == SourceWebEvidence {
+		if untrustedDataSource(sources[index].Kind) {
 			if sources[index].InstructionClass != InstructionData || sources[index].TrustClass != TrustUntrusted || sources[index].MayGrantCapabilities {
-				return Assembly{}, Reject(ReasonUnsafeInstructionSource, sources[index].Reference, "memory, RAG, and web evidence must remain untrusted data without capability authority")
+				return Assembly{}, Reject(ReasonUnsafeInstructionSource, sources[index].Reference, "memory, RAG, web and repository evidence must remain untrusted data without capability authority")
 			}
 		}
 	}
@@ -167,7 +167,21 @@ func lessOmittable(left, right SourceRecord) bool {
 }
 
 func optionalSource(source SourceRecord) bool {
-	return source.Kind == SourceApprovedMemory || source.Kind == SourceRAGEvidence || source.Kind == SourceWebEvidence
+	return untrustedDataSource(source.Kind)
+}
+
+// untrustedDataSource names the kinds that are things the organization READ,
+// never things it was told. One list, used by the gate that enforces it and by
+// the omission rule that treats them as droppable -- two lists would drift,
+// and the drift would appear as a source that may be dropped for size but not
+// checked for authority, or the reverse.
+func untrustedDataSource(kind SourceKind) bool {
+	switch kind {
+	case SourceApprovedMemory, SourceRAGEvidence, SourceWebEvidence, SourceRepositoryEvidence:
+		return true
+	default:
+		return false
+	}
 }
 
 func includedBytes(sources []SourceRecord, omitted map[int]string) int {

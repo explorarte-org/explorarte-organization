@@ -64,6 +64,7 @@ func mapInvocation(value modelruntime.Invocation) executive.InvocationRecord {
 		ErrorCode:                       value.ErrorCode,
 		CorrelationID:                   value.CorrelationID,
 		CausationID:                     value.CausationID,
+		ContextSnapshotID:               value.ContextSnapshotID,
 	}
 }
 

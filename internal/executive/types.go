@@ -268,6 +268,15 @@ type InvocationRecord struct {
 	ErrorCode     string
 	CorrelationID string
 	CausationID   string
+	// ContextSnapshotID is the exact context this invocation was made with.
+	//
+	// It is not a new association: model_invocations already carries it, and
+	// the immutable inputs table keys on (invocation_id, context_snapshot_id).
+	// Exposing it here is what lets a claim be checked against what the model
+	// was actually given, rather than against what a later build of "the same"
+	// context would produce -- which is a different question and would answer
+	// it wrongly whenever anything had changed in between.
+	ContextSnapshotID int64
 	// ProviderExecutionMayHaveStarted is Model Runtime's own answer to "may
 	// this request already have reached the provider, without a resolved
 	// outcome yet". The Executive stores the answer rather than the rule: the
