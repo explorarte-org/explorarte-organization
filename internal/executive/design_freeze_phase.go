@@ -644,7 +644,7 @@ func (o *Orchestrator) candidateBody(ctx context.Context, artifact designArtifac
 // different excerpts -- the selection reads each task's own instructions -- so
 // checking one design's citations against another's context would verify
 // claims their author never had grounds for.
-func (o *Orchestrator) verifiedDesignCitations(ctx context.Context, root TaskRecord, artifact designArtifact) ([]designreview.DeliverableCitations, []string, error) {
+func (o *Orchestrator) verifiedDesignCitations(ctx context.Context, root TaskRecord, artifact designArtifact) ([]designreview.DeliverableCitations, []OrganizationalSource, error) {
 	if o.programTarget == nil && o.snapshotSources == nil {
 		// Nothing was grounded and nothing can be read back: there are no
 		// repository claims to verify and no source that could have been
@@ -672,7 +672,7 @@ func (o *Orchestrator) verifiedDesignCitations(ctx context.Context, root TaskRec
 	if o.programTarget != nil && o.snapshotSources == nil {
 		return nil, nil, fmt.Errorf("%w: design cites a pinned world but no snapshot reader is wired", ErrContractRejected)
 	}
-	organizational := make([]string, 0, 8)
+	organizational := make([]OrganizationalSource, 0, 8)
 	deliverables := make([]designreview.DeliverableCitations, 0, len(artifact.Units))
 	for _, unit := range artifact.Units {
 		invocation, readErr := o.models.GetInvocation(ctx, unit.InvocationID)
@@ -722,7 +722,7 @@ func (o *Orchestrator) verifiedDesignCitations(ctx context.Context, root TaskRec
 		}
 		for _, source := range shown {
 			if source.Kind == "repository_evidence" && source.Included && source.Content != "" {
-				organizational = append(organizational, source.Content)
+				organizational = append(organizational, OrganizationalSource{Reference: source.Reference, Content: source.Content})
 			}
 		}
 		verified, verifyErr := o.VerifyRepositoryCitations(ctx, o.snapshotSources,
