@@ -16,8 +16,13 @@ import (
 // arriving from the other side.
 type Provider struct {
 	Repository string
-	Source     Source
-	Limits     Limits
+	// BaseSHA is the world this provider is currently answering about, set
+	// per build. ValidateVersion needs it: a staleness gate that only
+	// checked for a non-empty version was a gate that opened for every
+	// world, which is the opposite of what reuse protection is for.
+	BaseSHA string
+	Source  Source
+	Limits  Limits
 	// Window is how many lines around a match are read.
 	Window int
 }
@@ -46,6 +51,7 @@ func (p *Provider) ListRepositoryEvidence(ctx context.Context, request contexten
 	if request.RepositoryBaseSHA == "" {
 		return nil, nil
 	}
+	p.BaseSHA = request.RepositoryBaseSHA
 	explorer, err := NewExplorer(p.Repository, request.RepositoryBaseSHA, p.Source, p.Limits)
 	if err != nil {
 		return nil, err
@@ -71,6 +77,14 @@ func (p *Provider) ValidateVersion(_ context.Context, _ string, source contexten
 	}
 	if source.Version == "" {
 		return fmt.Errorf("%w: repository evidence with no commit", ErrStaleEvidence)
+	}
+	// Equality, not presence. A reused snapshot whose evidence cites another
+	// commit is not slightly out of date -- it describes a different
+	// repository, and validating it would let snapshot reuse carry a design
+	// into a world nobody decided on.
+	if p.BaseSHA != "" && source.Version != p.BaseSHA {
+		return fmt.Errorf("%w: reused evidence cites %s but this execution is about %s",
+			ErrStaleEvidence, source.Version, p.BaseSHA)
 	}
 	return nil
 }

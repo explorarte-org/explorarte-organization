@@ -17,6 +17,11 @@ const (
 )
 
 type fakeSource struct {
+	// byCommit is what each commit contains. A fake that ignored the SHA
+	// made every "reads the right commit" test prove only that the Explorer
+	// stamps a label it was handed -- it would have passed just as well with
+	// a backend returning another world's bytes.
+	byCommit map[string]map[string]string
 	lines    map[string]int
 	content  map[string]string
 	found    []Match
@@ -28,12 +33,31 @@ func (f *fakeSource) Search(_ context.Context, _, _ string, _ int) ([]Match, err
 	f.searches++
 	return f.found, nil
 }
-func (f *fakeSource) Lines(_ context.Context, _, path string) (int, error) {
-	return f.lines[path], nil
+func (f *fakeSource) Lines(_ context.Context, baseSHA, path string) (int, error) {
+	body, ok := f.at(baseSHA, path)
+	if !ok {
+		return 0, nil
+	}
+	return len(strings.Split(body, "\n")), nil
 }
-func (f *fakeSource) ReadRange(_ context.Context, _, path string, start, end int) (string, error) {
+
+// at answers only about the commit asked for. A path absent at that commit is
+// absent, whatever another commit contains.
+func (f *fakeSource) at(baseSHA, path string) (string, bool) {
+	if perCommit, ok := f.byCommit[baseSHA]; ok {
+		body, present := perCommit[path]
+		return body, present
+	}
+	body, present := f.content[path]
+	return body, present
+}
+func (f *fakeSource) ReadRange(_ context.Context, baseSHA, path string, start, end int) (string, error) {
 	f.reads++
-	all := strings.Split(f.content[path], "\n")
+	body, ok := f.at(baseSHA, path)
+	if !ok {
+		return "", nil
+	}
+	all := strings.Split(body, "\n")
 	if start > len(all) {
 		return "", nil
 	}
@@ -206,5 +230,66 @@ func TestAReferenceNamesTheExactWorld(t *testing.T) {
 		if !strings.Contains(reference, needed) {
 			t.Fatalf("reference %q does not name %q", reference, needed)
 		}
+	}
+}
+
+// B5: the excerpt must come from the commit asked for, not merely be labelled
+// with it. Before the fake honoured the SHA, a backend returning another
+// world's bytes would have satisfied every test in this file.
+func TestTheExcerptComesFromTheCommitAskedFor(t *testing.T) {
+	const path = "internal/executive/orchestrator.go"
+	source := newSource()
+	source.byCommit = map[string]map[string]string{
+		shaA: {path: "package executive\n\nfunc driveDepartments() {}\n"},
+		shaB: {path: "package executive\n\nfunc driveDepartmentsRenamed() {}\n"},
+	}
+
+	older, err := NewExplorer("explorarte-organization", shaA, source, DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fragmentA, err := older.Read(context.Background(), path, 1, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newer, _ := NewExplorer("explorarte-organization", shaB, source, DefaultLimits())
+	fragmentB, err := newer.Read(context.Background(), path, 1, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(fragmentA.Content, "driveDepartments()") {
+		t.Fatalf("the excerpt of %s does not contain that commit's code: %q", shaA, fragmentA.Content)
+	}
+	if !strings.Contains(fragmentB.Content, "driveDepartmentsRenamed") {
+		t.Fatalf("the excerpt of %s does not contain that commit's code: %q", shaB, fragmentB.Content)
+	}
+	if fragmentA.Content == fragmentB.Content {
+		t.Fatal("two commits produced identical content: the read is not following the commit")
+	}
+	if fragmentA.Digest == fragmentB.Digest {
+		t.Fatal("digests must differ when the content differs")
+	}
+}
+
+// B6: ValidateVersion is the staleness gate for a reused snapshot. Accepting
+// any non-empty version made it a gate that opens for every world.
+func TestValidateVersionRefusesAnotherWorld(t *testing.T) {
+	provider, err := NewProvider("explorarte-organization", newSource(), DefaultLimits(), 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider.BaseSHA = shaA
+	stale := contextengine.SourceRecord{Kind: contextengine.SourceRepositoryEvidence, Version: shaB}
+	if err := provider.ValidateVersion(context.Background(), "role", stale); !errors.Is(err, ErrStaleEvidence) {
+		t.Fatalf("a reused snapshot describing %s must not validate for %s, got %v", shaB, shaA, err)
+	}
+	fresh := contextengine.SourceRecord{Kind: contextengine.SourceRepositoryEvidence, Version: shaA}
+	if err := provider.ValidateVersion(context.Background(), "role", fresh); err != nil {
+		t.Fatalf("evidence of the current world must validate: %v", err)
+	}
+	// Other kinds are not this provider's business.
+	other := contextengine.SourceRecord{Kind: contextengine.SourceRAGEvidence, Version: "whatever"}
+	if err := provider.ValidateVersion(context.Background(), "role", other); err != nil {
+		t.Fatalf("a non-repository source must pass through: %v", err)
 	}
 }

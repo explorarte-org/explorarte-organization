@@ -1046,21 +1046,39 @@ func repositoryGroundedPurpose(purpose ExecutionPurpose) bool {
 // target again. Resolving here would let two rounds of the same design read
 // two different repositories, which is the whole failure the pin exists to
 // prevent, reintroduced at the point where it would be least visible.
-func (o *Orchestrator) repositoryGrounding(ctx context.Context, root, task TaskRecord, purpose ExecutionPurpose) (string, string) {
+func (o *Orchestrator) repositoryGrounding(ctx context.Context, root, task TaskRecord, purpose ExecutionPurpose) (string, string, error) {
 	if !repositoryGroundedPurpose(purpose) {
-		return "", ""
+		return "", "", nil
 	}
 	if _, governed := findRequirementByKey(root.Requirements, designfreeze.RequirementKey); !governed {
-		return "", ""
+		return "", "", nil
+	}
+	// A deployment with no promotion target has no repository for a design
+	// to be about. That is a supported shape, and an execution there is
+	// legitimately ungrounded rather than broken.
+	if o.programTarget == nil {
+		return "", "", nil
 	}
 	pinned, err := o.frozenDesignBaseSHA(ctx, root)
 	if err != nil || pinned == "" {
-		return "", ""
+		// But where a repository DOES exist, an execution that is supposed
+		// to observe code and whose pin cannot be read must NOT quietly
+		// become an execution that observes none.
+		//
+		// Returning empty degraded a governed design into an ungrounded
+		// one: the context built, the worker ran, every local component
+		// reported success, and the design went back to guessing. That is
+		// AUTONOMY-SMOKE-016 with the sensor unplugged, and it is the exact
+		// failure this subsystem exists to make impossible.
+		if err == nil {
+			err = fmt.Errorf("%w: the campaign is governed by a design but carries no pinned world", ErrContractRejected)
+		}
+		return "", "", err
 	}
 	// The goal says what the campaign is about; the task says what this
 	// execution is about. Both, because a worker task naming a symbol needs
 	// that symbol found, and the goal alone would not mention it.
-	return pinned, strings.TrimSpace(root.Instructions + "\n" + task.Instructions)
+	return pinned, strings.TrimSpace(root.Instructions + "\n" + task.Instructions), nil
 }
 
 func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task TaskRecord, schema json.RawMessage, purpose ExecutionPurpose, validate func(InvocationResult) error) (TaskRecord, error) {
@@ -1229,7 +1247,10 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 	if len(invocations) > 1 {
 		return task, fmt.Errorf("%w: multiple invocations for one task attempt", ErrContractRejected)
 	}
-	repositoryBaseSHA, repositoryQuery := o.repositoryGrounding(ctx, root, task, purpose)
+	repositoryBaseSHA, repositoryQuery, groundingErr := o.repositoryGrounding(ctx, root, task, purpose)
+	if groundingErr != nil {
+		return task, groundingErr
+	}
 	snapshot, err := o.contexts.Build(ctx, ContextRequest{
 		OrganizationRevisionID: task.OrganizationRevisionID, ActorRoleID: task.AssignedRoleID,
 		Purpose: purpose.LegacyPurpose(), TaskRef: "task:" + strconv.FormatInt(task.ID, 10),
