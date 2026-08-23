@@ -88,24 +88,43 @@ func ParseWorkerResult(body []byte, limits Limits) (WorkerResult, error) {
 			return WorkerResult{}, fmt.Errorf("%w: evidence[%d].relation", ErrContractRejected, index)
 		}
 	}
-	// Downstream verification reads evidence_refs, and a v2 artifact must
-	// not have to state every citation twice. The structured items are the
-	// authority; the flat list is derived from them so nothing that grounds
-	// a claim can be missing from what gets verified.
-	out.EvidenceRefs = mergeEvidenceRefs(out.EvidenceRefs, out.Evidence)
+	if out.SchemaVersion == WorkerResultSchemaVersionV2 {
+		// One authority, not two.
+		//
+		// Deriving the flat list from the structured items while still
+		// accepting whatever the model put in evidence_refs left the old
+		// bag of untyped citations reachable through a side door: an
+		// artifact could ground one claim structurally and hand four more
+		// references to downstream verification with no relation, no
+		// subject and no claim attached. Every citation a v2 artifact
+		// offers must be one that some claim rests on, or the topology
+		// this version exists to preserve is optional in practice.
+		if err := refsAreAllStructured(out.EvidenceRefs, out.Evidence); err != nil {
+			return WorkerResult{}, err
+		}
+		out.EvidenceRefs = structuredRefs(out.Evidence)
+	}
 	return out, nil
 }
 
-func mergeEvidenceRefs(refs []string, evidence []EvidenceItem) []string {
-	seen := make(map[string]struct{}, len(refs)+len(evidence))
-	merged := make([]string, 0, len(refs)+len(evidence))
-	for _, ref := range refs {
-		if _, already := seen[ref]; already {
-			continue
-		}
-		seen[ref] = struct{}{}
-		merged = append(merged, ref)
+func refsAreAllStructured(refs []string, evidence []EvidenceItem) error {
+	structured := make(map[string]struct{}, len(evidence))
+	for _, item := range evidence {
+		structured[strings.TrimSpace(item.Ref)] = struct{}{}
 	}
+	for _, ref := range refs {
+		if _, grounded := structured[strings.TrimSpace(ref)]; !grounded {
+			return fmt.Errorf("%w: evidence_refs carries %s, which grounds no claim", ErrContractRejected, ref)
+		}
+	}
+	return nil
+}
+
+// structuredRefs is what downstream verification sees: exactly the citations
+// some claim rests on, in the order they were offered.
+func structuredRefs(evidence []EvidenceItem) []string {
+	seen := make(map[string]struct{}, len(evidence))
+	refs := make([]string, 0, len(evidence))
 	for _, item := range evidence {
 		ref := strings.TrimSpace(item.Ref)
 		if ref == "" {
@@ -115,7 +134,7 @@ func mergeEvidenceRefs(refs []string, evidence []EvidenceItem) []string {
 			continue
 		}
 		seen[ref] = struct{}{}
-		merged = append(merged, ref)
+		refs = append(refs, ref)
 	}
-	return merged
+	return refs
 }

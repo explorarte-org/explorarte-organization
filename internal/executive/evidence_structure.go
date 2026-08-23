@@ -104,6 +104,21 @@ func AdoptEvidenceRequirements(proposals []EvidenceRequirementProposal, source E
 	return adopted
 }
 
+// EvidenceSlot is one obligation: a subject and the role a citation must play
+// for it. Supply is tracked per SLOT, not per subject.
+//
+// Asking only "is there anything for MaxDesignRounds?" passes as soon as one
+// application site is in the snapshot, and then a design that cannot produce a
+// definition -- because none was supplied -- is judged as if it had failed to
+// write one down. That is the partial-supply version of exactly the
+// misattribution this whole mechanism exists to prevent, and it is the shape
+// AUTONOMY-SMOKE-017-R5 actually had: applications of both limits were in
+// context, the declarations were not.
+type EvidenceSlot struct {
+	Subject  string
+	Relation string
+}
+
 // ValidateEvidenceSupply asks, BEFORE a worker runs, whether the host holds
 // material that could satisfy what it is about to demand.
 //
@@ -111,11 +126,14 @@ func AdoptEvidenceRequirements(proposals []EvidenceRequirementProposal, source E
 // arrives at the moment the artifact is being judged -- which is where the
 // temptation to blame the artifact lives. Asked first, the question has only
 // one honest answer available.
-func ValidateEvidenceSupply(required []EvidenceRequirement, available map[string][]string) error {
+func ValidateEvidenceSupply(required []EvidenceRequirement, available map[EvidenceSlot][]string) error {
 	var unsupplied []string
 	for _, requirement := range required {
-		if len(available[requirement.Subject]) == 0 {
-			unsupplied = append(unsupplied, requirement.Subject)
+		for _, relation := range requirement.Relations {
+			slot := EvidenceSlot{Subject: requirement.Subject, Relation: relation}
+			if len(available[slot]) == 0 {
+				unsupplied = append(unsupplied, requirement.Subject+"/"+relation)
+			}
 		}
 	}
 	if len(unsupplied) == 0 {
@@ -138,10 +156,10 @@ type EvidenceRequirement struct {
 // an artifact that structurally cannot answer the question.
 //
 // available is what the host actually put in front of the worker, indexed by
-// the subject its search was for. When a subject has no citations there at
-// all, its slots were unfillable and the failure is the host's, reported as
+// SLOT: which citations could play which role. When a slot has no citations at
+// all it was unfillable, and the failure is the host's -- reported as
 // ErrEvidenceInsufficient rather than blamed on the design.
-func ValidateEvidenceStructure(result WorkerResult, required []EvidenceRequirement, available map[string][]string) error {
+func ValidateEvidenceStructure(result WorkerResult, required []EvidenceRequirement, available map[EvidenceSlot][]string) error {
 	if len(required) == 0 {
 		return nil
 	}
@@ -162,8 +180,8 @@ func ValidateEvidenceStructure(result WorkerResult, required []EvidenceRequireme
 	var unfilled, unsupplied []string
 	for _, requirement := range required {
 		relations := bySubject[requirement.Subject]
-		supplied := available[requirement.Subject]
 		for _, relation := range requirement.Relations {
+			supplied := available[EvidenceSlot{Subject: requirement.Subject, Relation: relation}]
 			refs := relations[relation]
 			filled := len(refs) > 0 && anyAvailable(refs, supplied)
 			if filled {

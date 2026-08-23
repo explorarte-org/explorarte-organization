@@ -16,8 +16,11 @@ func rounds() []EvidenceRequirement {
 	return []EvidenceRequirement{{Subject: "MaxDesignRounds", Relations: []string{EvidenceDefinition, EvidenceApplication}}}
 }
 
-func supplied() map[string][]string {
-	return map[string][]string{"MaxDesignRounds": {typesRef, orchestratorRef, budgetRef}}
+func supplied() map[EvidenceSlot][]string {
+	return map[EvidenceSlot][]string{
+		{Subject: "MaxDesignRounds", Relation: EvidenceDefinition}:  {typesRef},
+		{Subject: "MaxDesignRounds", Relation: EvidenceApplication}: {orchestratorRef, budgetRef},
+	}
 }
 
 // The form the artifact could not express before.
@@ -61,7 +64,7 @@ func TestASlotTheHostNeverSuppliedIsNotTheWorkersFailure(t *testing.T) {
 		{Subject: "MaxDepartmentReplans", Relation: EvidenceApplication, Claim: "applied", Ref: budgetRef},
 	}}
 	required := []EvidenceRequirement{{Subject: "MaxDesignRounds", Relations: []string{EvidenceDefinition}}}
-	err := ValidateEvidenceStructure(result, required, map[string][]string{})
+	err := ValidateEvidenceStructure(result, required, map[EvidenceSlot][]string{})
 	if !errors.Is(err, ErrEvidenceInsufficient) {
 		t.Fatalf("an unfillable slot was charged to the worker: %v", err)
 	}

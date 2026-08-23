@@ -19,8 +19,15 @@ func TestRemovingEvidenceDoesNotRemoveTheObligation(t *testing.T) {
 		{Subject: "MaxDesignRounds", Relations: []string{"definition", "application"}},
 	}, EvidenceFromAdjudication)
 
-	withTypes := map[string][]string{"MaxDesignRounds": {typesRef, orchestratorRef}}
-	withoutTypes := map[string][]string{}
+	withTypes := map[EvidenceSlot][]string{
+		{Subject: "MaxDesignRounds", Relation: "definition"}:  {typesRef},
+		{Subject: "MaxDesignRounds", Relation: "application"}: {orchestratorRef},
+	}
+	// The same world with types.go gone: the application site is still
+	// there, so this is the PARTIAL supply case, not total absence.
+	withoutTypes := map[EvidenceSlot][]string{
+		{Subject: "MaxDesignRounds", Relation: "application"}: {orchestratorRef},
+	}
 
 	// The obligation is the same object in both worlds.
 	if err := ValidateEvidenceSupply(required, withTypes); err != nil {
@@ -30,8 +37,11 @@ func TestRemovingEvidenceDoesNotRemoveTheObligation(t *testing.T) {
 	if !errors.Is(err, ErrEvidenceInsufficient) {
 		t.Fatalf("removing the evidence removed the obligation instead of failing: %v", err)
 	}
-	if !strings.Contains(err.Error(), "MaxDesignRounds") {
-		t.Fatalf("the failure does not name what could not be grounded: %v", err)
+	if !strings.Contains(err.Error(), "MaxDesignRounds/definition") {
+		t.Fatalf("the failure does not name the slot that could not be grounded: %v", err)
+	}
+	if strings.Contains(err.Error(), "MaxDesignRounds/application") {
+		t.Fatalf("a slot that WAS supplied was reported as missing: %v", err)
 	}
 	// And it is still demanded, not quietly dropped.
 	if len(required) != 1 || len(required[0].Relations) != 2 {
@@ -46,7 +56,9 @@ func TestSupplyIsCheckedBeforeAnyWorkerRuns(t *testing.T) {
 	required := AdoptEvidenceRequirements([]EvidenceRequirementProposal{
 		{Subject: "MaxDepartmentReplans", Relations: []string{"definition"}},
 	}, EvidenceFromOwnerAcceptance)
-	if err := ValidateEvidenceSupply(required, map[string][]string{"MaxDesignRounds": {typesRef}}); !errors.Is(err, ErrEvidenceInsufficient) {
+	if err := ValidateEvidenceSupply(required, map[EvidenceSlot][]string{
+		{Subject: "MaxDesignRounds", Relation: "definition"}: {typesRef},
+	}); !errors.Is(err, ErrEvidenceInsufficient) {
 		t.Fatalf("a subject with no citations passed preflight: %v", err)
 	}
 }
