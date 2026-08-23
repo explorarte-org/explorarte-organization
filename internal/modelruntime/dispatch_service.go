@@ -896,7 +896,22 @@ func recoveredUsage(invocationID, dispatchAttemptID int64, rawResponse RawRespon
 // bytes per token overestimates token count for most real text, which
 // overestimates the reservation, which can only reject a call the wallet
 // or budget couldn't truly afford, never let one through it couldn't.
+// estimateTokenCount sizes the pre-call reservation. It must never come in
+// UNDER what the provider will report, because the reservation is what admits
+// the call against a ceiling.
+//
+// Three bytes per token was not conservative for what this system actually
+// sends. Measured across AUTONOMY-SMOKE-017-R4's seven DeepSeek calls, the
+// prompts ran at 1.58-1.61 bytes per reported token -- dense JSON envelopes
+// carrying code excerpts, which tokenize far worse than prose. The estimate
+// came in at 53% of the truth on every single call.
+//
+// Under-estimating is the dangerous direction, so the divisor is now below the
+// worst ratio observed rather than near the average. Over-estimating costs
+// nothing once the call is settled against reported usage; before settlement
+// existed it would have been a permanent overcharge.
 func estimateTokenCount(renderedContext []byte) int64 {
 	const conservativeBytesPerToken = 3
-	return int64(len(renderedContext))/conservativeBytesPerToken + 1
+	const conservativeDivisorScale = 2 // bytes/1.5, in integer arithmetic
+	return int64(len(renderedContext))*conservativeDivisorScale/conservativeBytesPerToken + 1
 }

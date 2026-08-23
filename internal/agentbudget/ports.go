@@ -31,4 +31,23 @@ type Ledger interface {
 	// invocationID is the idempotency key: a retried call for the same
 	// invocation must not be consumed twice.
 	ConsumeModelCall(ctx context.Context, budgetID int64, invocationID int64, delta Usage, now time.Time) error
+	// SettleModelCall replaces what a call was CHARGED with what it
+	// actually COST, once the provider has reported usage.
+	//
+	// Reserve charges before the call, and it must charge the maximum the
+	// call is allowed to spend -- anything less could let a call exceed a
+	// ceiling it was admitted under. That is a sound reservation and a
+	// false account: AUTONOMY-SMOKE-017-R4 reserved 1,024,000 output
+	// tokens across eight calls, emitted 36,753, and died of exhaustion
+	// with 69% of its ceiling spent on space it never used.
+	//
+	// So the reservation stands only until the truth is known. actual is
+	// what the provider reported; the store computes the correction
+	// against the recorded charge, which is normally a refund.
+	//
+	// invocationID is the idempotency key, as for ConsumeModelCall: a
+	// settlement applied twice must move the account once. Settling a call
+	// that was never charged is a no-op, not an error, because a call can
+	// fail before it is ever admitted.
+	SettleModelCall(ctx context.Context, budgetID int64, invocationID int64, actual Usage, now time.Time) error
 }

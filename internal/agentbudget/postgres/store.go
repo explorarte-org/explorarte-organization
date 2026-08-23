@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/Mireuz13/explorarte-organization/internal/modelpricing"
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/agentbudget"
@@ -253,6 +254,84 @@ WHERE id=$8`,
 		return agentbudget.Budget{}, err
 	}
 	return child, tx.Commit(ctx)
+}
+
+// SettleModelCall corrects a charge to what the call actually cost.
+//
+// The correction is computed against the recorded 'consumed' event rather than
+// against a number the caller carries, so a settlement cannot invent a refund
+// for a charge that was never made, and a retried dispatch that re-derives its
+// own estimate cannot change what is given back.
+//
+// A settlement that would push usage ABOVE a ceiling is still applied and
+// still reported as exceeded: the call already happened and the spend is real.
+// Refusing to record it would leave the account describing a cheaper campaign
+// than the one that ran, which is the failure this whole change exists to end.
+func (s *Store) SettleModelCall(ctx context.Context, budgetID int64, invocationID int64, actual agentbudget.Usage, now time.Time) error {
+	now = now.UTC()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin settle model call: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	current, err := scanBudget(tx.QueryRow(ctx, `SELECT `+budgetColumns+` FROM agent_budgets WHERE id=$1 FOR UPDATE`, budgetID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return agentbudget.ErrBudgetNotFound
+		}
+		return err
+	}
+
+	var chargedUSD, chargedTokens, chargedCalls int64
+	if err = tx.QueryRow(ctx, `
+SELECT usd_nanos_delta, tokens_delta, model_calls_delta
+FROM agent_budget_events
+WHERE budget_id=$1 AND kind='consumed' AND idempotency_ref=$2`, budgetID, invocationID).
+		Scan(&chargedUSD, &chargedTokens, &chargedCalls); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Never admitted, so there is nothing to settle.
+			return tx.Commit(ctx)
+		}
+		return err
+	}
+
+	// The call itself is not refunded: one admitted call is one call,
+	// whatever it produced.
+	usdDelta := int64(actual.UsedUSD) - chargedUSD
+	tokensDelta := actual.UsedTokens - chargedTokens
+
+	tag, err := tx.Exec(ctx, `
+INSERT INTO agent_budget_events (budget_id, kind, idempotency_ref, usd_nanos_delta, tokens_delta, model_calls_delta, wall_time_ms_delta, depth_delta, retries_delta, subagents_delta, created_at)
+VALUES ($1,'reconciled',$2,$3,$4,0,0,0,0,0,$5)
+ON CONFLICT (budget_id, kind, idempotency_ref) DO NOTHING`,
+		budgetID, invocationID, usdDelta, tokensDelta, now)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return tx.Commit(ctx)
+	}
+
+	settled := current.Usage
+	settled.UsedUSD = modelpricing.USDNanos(clampNonNegative(int64(settled.UsedUSD) + usdDelta))
+	settled.UsedTokens = clampNonNegative(settled.UsedTokens + tokensDelta)
+
+	if _, err := tx.Exec(ctx, `
+UPDATE agent_budgets SET used_usd_nanos=$1, used_tokens=$2, version=version+1, updated_at=$3
+WHERE id=$4`, int64(settled.UsedUSD), settled.UsedTokens, now, budgetID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// clampNonNegative keeps a settlement from driving an account below zero,
+// which the schema forbids and which no sequence of real calls can mean.
+func clampNonNegative(value int64) int64 {
+	if value < 0 {
+		return 0
+	}
+	return value
 }
 
 func (s *Store) ConsumeModelCall(ctx context.Context, budgetID int64, invocationID int64, delta agentbudget.Usage, now time.Time) error {
