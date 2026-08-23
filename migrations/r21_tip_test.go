@@ -24,7 +24,7 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const wantCount = 59
+	const wantCount = 60
 	if len(loaded) != wantCount {
 		t.Fatalf("migration count=%d want %d", len(loaded), wantCount)
 	}
@@ -75,6 +75,10 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		// the ambiguity that most needs to be durable -- could not be
 		// written down at all.
 		59: "align_ambiguous_transport_with_domain",
+		// AUTONOMY-SMOKE-017-R4: a reservation that is never settled is
+		// not a budget. 69%% of a campaign ceiling went to output space
+		// that was never used.
+		60: "settle_agent_budget_after_the_call",
 	}
 	byVersion := make(map[int64]string, len(loaded))
 	for _, migration := range loaded {

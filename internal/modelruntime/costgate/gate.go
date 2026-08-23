@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/agentbudget"
@@ -191,7 +192,32 @@ func (g *Gate) Reconcile(ctx context.Context, reservation modelruntime.CostReser
 	if err != nil {
 		return fmt.Errorf("estimate actual call cost: %w", err)
 	}
-	return g.ledger.Reconcile(ctx, reservation.ProviderID, reservation.InvocationID, actualUSD, now)
+	if err := g.ledger.Reconcile(ctx, reservation.ProviderID, reservation.InvocationID, actualUSD, now); err != nil {
+		return err
+	}
+	return g.settleBudget(ctx, reservation, actualUSD, inputTokens+outputTokens, now)
+}
+
+// settleBudget trues up the agent budget the way the wallet above is trued up.
+//
+// Reconcile has always corrected the USD ledger and never touched the agent
+// budget, so the token account kept the pre-call reservation forever: the
+// maximum output the call was ALLOWED to emit, not what it emitted.
+// AUTONOMY-SMOKE-017-R4 died of a ceiling that was 69% unused output space.
+//
+// A settlement failure must not fail the dispatch. The call succeeded and its
+// result is durable; refusing it here would discard real work over an
+// accounting correction, and the correction is a refund in the ordinary case.
+func (g *Gate) settleBudget(ctx context.Context, reservation modelruntime.CostReservation, actualUSD modelpricing.USDNanos, actualTokens int64, now time.Time) error {
+	if !reservation.BudgetApplied || g.budgets == nil {
+		return nil
+	}
+	actual := agentbudget.Usage{UsedUSD: actualUSD, UsedTokens: actualTokens, UsedModelCalls: 1}
+	if err := g.budgets.SettleModelCall(ctx, reservation.BudgetID, reservation.InvocationID, actual, now); err != nil {
+		slog.Default().Warn("agent budget settlement failed; the account still holds the reservation",
+			"invocation_id", reservation.InvocationID, "budget_id", reservation.BudgetID, "error", err)
+	}
+	return nil
 }
 
 func (g *Gate) Release(ctx context.Context, reservation modelruntime.CostReservation, now time.Time) error {
