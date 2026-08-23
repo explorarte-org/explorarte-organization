@@ -24,7 +24,7 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const wantCount = 57
+	const wantCount = 58
 	if len(loaded) != wantCount {
 		t.Fatalf("migration count=%d want %d", len(loaded), wantCount)
 	}
@@ -65,6 +65,11 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		55: "create_model_invocation_reasoning",
 		56: "create_composition_lifecycle",
 		57: "create_executive_goal_acceptance",
+		// AUTONOMY-SMOKE-017 found this one: PR #107 made
+		// repository_evidence a productive source kind without extending
+		// the persistence contract, so the first design that observed its
+		// own repository failed at the first durable write.
+		58: "allow_repository_evidence_source",
 	}
 	byVersion := make(map[int64]string, len(loaded))
 	for _, migration := range loaded {
@@ -76,8 +81,8 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		}
 	}
 
-	if tip := loaded[len(loaded)-1]; tip.Version != 57 {
-		t.Fatalf("migration tip=%06d want 000057", tip.Version)
+	if tip := loaded[len(loaded)-1]; tip.Version != wantCount {
+		t.Fatalf("migration tip=%06d want %06d", tip.Version, wantCount)
 	}
 }
 
