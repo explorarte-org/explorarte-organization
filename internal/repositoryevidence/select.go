@@ -66,8 +66,66 @@ func SelectionFromText(text string, window int) Selection {
 		selection.Terms = append(selection.Terms, candidate)
 	}
 	sort.Strings(selection.Paths)
-	sort.Strings(selection.Terms)
+	rankTerms(selection.Terms)
 	return selection
+}
+
+// rankTerms decides which searches get the budget when not all of them fit.
+//
+// The order used to be alphabetical, which is stable and explainable and
+// spends the budget on whatever happens to sort first. AUTONOMY-SMOKE-017-R5
+// measured what that costs: fourteen terms were derived from the goal, and the
+// two identifiers the goal actually named -- MaxDesignRounds and
+// MaxDepartmentReplans -- sorted ninth and tenth, behind eight incidental
+// capitalised words (ALCANCE, AUTONOMY, EVIDENCE, PERMITIDO, PROHIBIDO...).
+// The eight-file budget was exhausted before either symbol could claim
+// internal/executive/types.go, where both are declared. The design was then
+// asked to cite a definition site it had never been shown, and cited a test
+// fixture instead.
+//
+// So terms are ordered by how much they look like something a goal MEANT
+// rather than something its prose happened to contain. A mixed-case
+// identifier (MaxDesignRounds, ValidateSourceMetadata) is how Go names a
+// declaration; a word in all capitals, or one that is merely capitalised
+// because it began a sentence, is prose. Ordering is stable within each rank,
+// so the reading a goal produces is still reproducible from the goal alone.
+func rankTerms(terms []string) {
+	sort.SliceStable(terms, func(first, second int) bool {
+		return termRank(terms[first]) < termRank(terms[second])
+	})
+}
+
+// termRank is lower for terms more likely to name real code.
+func termRank(term string) int {
+	switch {
+	case looksLikeIdentifier(term):
+		return 0
+	case term == strings.ToUpper(term):
+		// Shouting is prose: ALLOWED, FORBIDDEN, PROHIBIDO.
+		return 2
+	default:
+		return 1
+	}
+}
+
+// looksLikeIdentifier reports whether a term is shaped like a Go declaration:
+// it starts upper, and it changes case at least once afterwards. "Document"
+// and "Investigate" do not; "MaxDesignRounds" and "TestSomething" do.
+func looksLikeIdentifier(term string) bool {
+	if len(term) < 2 || term[0] < 'A' || term[0] > 'Z' {
+		return false
+	}
+	sawLower := false
+	for index := 1; index < len(term); index++ {
+		character := term[index]
+		switch {
+		case character >= 'a' && character <= 'z':
+			sawLower = true
+		case character >= 'A' && character <= 'Z' && sawLower:
+			return true
+		}
+	}
+	return false
 }
 
 // Gather reads the selection into citable excerpts, within the explorer's

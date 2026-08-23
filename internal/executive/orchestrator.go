@@ -1130,7 +1130,23 @@ func (o *Orchestrator) repositoryGrounding(ctx context.Context, root, task TaskR
 	// The goal says what the campaign is about; the task says what this
 	// execution is about. Both, because a worker task naming a symbol needs
 	// that symbol found, and the goal alone would not mention it.
-	return pinned, strings.TrimSpace(root.Instructions + "\n" + task.Instructions), nil
+	//
+	// Host guidance is excluded. It is the same text in every campaign, so
+	// it says nothing about what THIS design should look at, and the
+	// selector derives its searches from whatever capitalised words the
+	// query contains. AUTONOMY-SMOKE-017-R5 measured the damage: five of
+	// the eight incidental terms that exhausted the file budget --
+	// Describing, EVIDENCE, Encoding, PERMITIDO, PROHIBIDO -- came from the
+	// egress rule the host itself appends, and they crowded out the symbols
+	// the goal actually named. Telling a worker the rules must not change
+	// what it is allowed to see.
+	return pinned, strings.TrimSpace(root.Instructions + "\n" + withoutHostGuidance(task.Instructions)), nil
+}
+
+// withoutHostGuidance strips text the host appended from a worker's
+// instructions, leaving what the plan actually asked for.
+func withoutHostGuidance(instructions string) string {
+	return strings.TrimSpace(strings.ReplaceAll(instructions, repositoryEvidenceUsageRule, ""))
 }
 
 func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task TaskRecord, schema json.RawMessage, purpose ExecutionPurpose, validate func(InvocationResult) error) (TaskRecord, error) {

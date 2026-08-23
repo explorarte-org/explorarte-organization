@@ -189,12 +189,26 @@ var (
 	  "properties":{
 	    "schema_version":{
 	      "type":"string",
-	      "enum":["worker-result/v1"]
+	      "enum":["worker-result/v1","worker-result/v2"]
 	    },
 	    "summary":{"type":"string"},
 	    "evidence_refs":{
 	      "type":"array",
 	      "items":{"type":"string"}
+	    },
+	    "evidence":{
+	      "type":"array",
+	      "items":{
+	        "type":"object",
+	        "additionalProperties":false,
+	        "required":["claim","subject","relation","ref"],
+	        "properties":{
+	          "claim":{"type":"string"},
+	          "subject":{"type":"string"},
+	          "relation":{"type":"string","enum":["definition","application","test","context"]},
+	          "ref":{"type":"string"}
+	        }
+	      }
 	    }
 	  }
 	}`)
