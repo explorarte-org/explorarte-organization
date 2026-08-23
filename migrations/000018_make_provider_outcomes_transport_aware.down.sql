@@ -69,10 +69,17 @@ ALTER TABLE model_provider_outcomes
         outcome_classification <> 'request_not_sent'
         OR (http_status IS NULL AND response_hash IS NULL AND provider_request_id IS NULL AND error_code IS NOT NULL AND cancellation_confirmed = FALSE)
     ),
+    -- NOT VALID since 000059: this rule describes an ambiguous outcome as
+    -- one that learned nothing, which is the meaning of request_not_sent.
+    -- An incomplete read keeps the status and the hash of the partial body,
+    -- and by the time this rollback can run such rows legitimately exist.
+    -- Validating would fail on exactly the observations that most need to
+    -- survive -- a call that may already have been billed -- so the old rule
+    -- governs new writes again and the record is kept.
     ADD CONSTRAINT model_provider_outcomes_ambiguous_check CHECK (
         outcome_classification <> 'ambiguous_transport'
         OR (http_status IS NULL AND response_hash IS NULL AND error_code IS NOT NULL AND cancellation_confirmed = FALSE)
-    ),
+    ) NOT VALID,
     ADD CONSTRAINT model_provider_outcomes_cancelled_check CHECK (
         outcome_classification <> 'cancelled_confirmed'
         OR (cancellation_confirmed AND retryable = FALSE)
