@@ -172,6 +172,17 @@ type OwnerGoal struct {
 	// classifier this type exists to avoid.
 	AcceptanceCriteria []AcceptanceCriterion `json:"acceptance_criteria"`
 	Requirements       []RequirementProposal `json:"requirements,omitempty"`
+	// EvidenceRequirements is the topology of evidence that must exist
+	// before certain claims can be considered grounded. It is deliberately
+	// separate from AcceptanceCriteria: one says what the work must
+	// achieve, the other says what must be citable, and neither is derived
+	// from the other. Nothing here is ever inferred from criteria prose --
+	// that is the classifier AcceptanceCriterion already exists to avoid.
+	//
+	// Optional on purpose. A goal that names none imposes none, and a
+	// campaign that is not an investigation of the repository should not be
+	// turned into one by default.
+	EvidenceRequirements []EvidenceRequirementProposal `json:"evidence_requirements,omitempty"`
 }
 
 type SubmitRequest struct {

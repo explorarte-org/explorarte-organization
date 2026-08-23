@@ -38,6 +38,45 @@ var symbolPattern2 = regexp.MustCompile(`\b(?:Test[A-Za-z0-9_]{3,}|[A-Z][A-Za-z0
 // Deterministic and explainable on purpose: the same goal always produces the
 // same reading, so a design can be reproduced, and anyone asking "why did it
 // see this?" gets an answer that does not require replaying a model.
+// SelectionForRequirements is the same reading, with obligations first.
+//
+// A subject the host is already obliged to ground is a typed fact, not
+// something to rediscover from prose. Re-deriving it would put a known
+// requirement back in competition with incidental words for the same budget --
+// which is how AUTONOMY-SMOKE-017-R5 lost the file declaring both limits --
+// and would quietly make the extractor a second source of normative truth.
+//
+// Seeds are prepended and never dropped: what must be grounded is searched
+// before anything discovered.
+func SelectionForRequirements(text string, subjects []string, window int) Selection {
+	selection := SelectionFromText(text, window)
+	if len(subjects) == 0 {
+		return selection
+	}
+	seeded := make([]string, 0, len(subjects)+len(selection.Terms))
+	seen := map[string]struct{}{}
+	for _, subject := range subjects {
+		subject = strings.TrimSpace(subject)
+		if subject == "" {
+			continue
+		}
+		if _, already := seen[subject]; already {
+			continue
+		}
+		seen[subject] = struct{}{}
+		seeded = append(seeded, subject)
+	}
+	for _, term := range selection.Terms {
+		if _, already := seen[term]; already {
+			continue
+		}
+		seen[term] = struct{}{}
+		seeded = append(seeded, term)
+	}
+	selection.Terms = seeded
+	return selection
+}
+
 func SelectionFromText(text string, window int) Selection {
 	if window < 1 {
 		window = 24
@@ -66,8 +105,66 @@ func SelectionFromText(text string, window int) Selection {
 		selection.Terms = append(selection.Terms, candidate)
 	}
 	sort.Strings(selection.Paths)
-	sort.Strings(selection.Terms)
+	rankTerms(selection.Terms)
 	return selection
+}
+
+// rankTerms decides which searches get the budget when not all of them fit.
+//
+// The order used to be alphabetical, which is stable and explainable and
+// spends the budget on whatever happens to sort first. AUTONOMY-SMOKE-017-R5
+// measured what that costs: fourteen terms were derived from the goal, and the
+// two identifiers the goal actually named -- MaxDesignRounds and
+// MaxDepartmentReplans -- sorted ninth and tenth, behind eight incidental
+// capitalised words (ALCANCE, AUTONOMY, EVIDENCE, PERMITIDO, PROHIBIDO...).
+// The eight-file budget was exhausted before either symbol could claim
+// internal/executive/types.go, where both are declared. The design was then
+// asked to cite a definition site it had never been shown, and cited a test
+// fixture instead.
+//
+// So terms are ordered by how much they look like something a goal MEANT
+// rather than something its prose happened to contain. A mixed-case
+// identifier (MaxDesignRounds, ValidateSourceMetadata) is how Go names a
+// declaration; a word in all capitals, or one that is merely capitalised
+// because it began a sentence, is prose. Ordering is stable within each rank,
+// so the reading a goal produces is still reproducible from the goal alone.
+func rankTerms(terms []string) {
+	sort.SliceStable(terms, func(first, second int) bool {
+		return termRank(terms[first]) < termRank(terms[second])
+	})
+}
+
+// termRank is lower for terms more likely to name real code.
+func termRank(term string) int {
+	switch {
+	case looksLikeIdentifier(term):
+		return 0
+	case term == strings.ToUpper(term):
+		// Shouting is prose: ALLOWED, FORBIDDEN, PROHIBIDO.
+		return 2
+	default:
+		return 1
+	}
+}
+
+// looksLikeIdentifier reports whether a term is shaped like a Go declaration:
+// it starts upper, and it changes case at least once afterwards. "Document"
+// and "Investigate" do not; "MaxDesignRounds" and "TestSomething" do.
+func looksLikeIdentifier(term string) bool {
+	if len(term) < 2 || term[0] < 'A' || term[0] > 'Z' {
+		return false
+	}
+	sawLower := false
+	for index := 1; index < len(term); index++ {
+		character := term[index]
+		switch {
+		case character >= 'a' && character <= 'z':
+			sawLower = true
+		case character >= 'A' && character <= 'Z' && sawLower:
+			return true
+		}
+	}
+	return false
 }
 
 // Gather reads the selection into citable excerpts, within the explorer's
