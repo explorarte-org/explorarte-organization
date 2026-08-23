@@ -24,7 +24,7 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const wantCount = 58
+	const wantCount = 59
 	if len(loaded) != wantCount {
 		t.Fatalf("migration count=%d want %d", len(loaded), wantCount)
 	}
@@ -70,6 +70,11 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		// the persistence contract, so the first design that observed its
 		// own repository failed at the first durable write.
 		58: "allow_repository_evidence_source",
+		// AUTONOMY-SMOKE-017-R1: the schema still described an ambiguous
+		// transport as one that learned nothing, so an incomplete read --
+		// the ambiguity that most needs to be durable -- could not be
+		// written down at all.
+		59: "align_ambiguous_transport_with_domain",
 	}
 	byVersion := make(map[int64]string, len(loaded))
 	for _, migration := range loaded {

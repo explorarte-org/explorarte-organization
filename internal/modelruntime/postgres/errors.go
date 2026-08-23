@@ -31,6 +31,21 @@ func mapError(err error) error {
 		case "23505":
 			return fmt.Errorf("%w: PostgreSQL unique constraint", modelruntime.ErrConflict)
 		case "23503", "23514", "22P02":
+			// Naming the constraint is the difference between an
+			// operator reading which rule was broken and inferring it
+			// from the schema. AUTONOMY-SMOKE-017-R1 lost a campaign to
+			// a check violation whose identity had to be reconstructed
+			// by hand from the table definition and the adapter, when
+			// the driver had carried the name all along. A constraint
+			// name is a schema identifier, not data, so it discloses
+			// nothing the error did not already imply.
+			//
+			// 22P02 is an invalid text representation and often has no
+			// constraint at all, so the name is added only when the
+			// driver actually reports one rather than invented.
+			if name := strings.TrimSpace(pgErr.ConstraintName); name != "" {
+				return fmt.Errorf("%w: PostgreSQL constraint %s (%s)", modelruntime.ErrInvalidRequest, pgErr.Code, name)
+			}
 			return fmt.Errorf("%w: PostgreSQL constraint %s", modelruntime.ErrInvalidRequest, pgErr.Code)
 		case "40001", "40P01":
 			return fmt.Errorf("%w: PostgreSQL %s", modelruntime.ErrConflict, pgErr.Code)
