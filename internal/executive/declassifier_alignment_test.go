@@ -17,7 +17,7 @@ func TestAShortExcerptIsNotCarriedByItsHeader(t *testing.T) {
 	if len(normalizeForDeclassify(body)) <= declassifyMinimumRun {
 		t.Fatalf("fixture is below the threshold, so it would prove nothing: %d", len(normalizeForDeclassify(body)))
 	}
-	err := DeclassifyCandidate("The design should keep this exactly:\n"+body, []string{header + "\n" + body})
+	err := DeclassifyCandidate("The design should keep this exactly:\n"+body, evidenceOf(header+"\n"+body))
 	if !errors.Is(err, ErrCandidateContaminated) {
 		t.Fatalf("a verbatim body above the threshold crossed because its payload was headed: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestACopyIsFoundAtEveryOffsetOfTheSource(t *testing.T) {
 
 	for _, offset := range []int{0, 1, 7, 23, 25, 49, 113} {
 		run := text[offset : offset+declassifyMinimumRun+2]
-		if err := DeclassifyCandidate("as decided: "+run, []string{text}); !errors.Is(err, ErrCandidateContaminated) {
+		if err := DeclassifyCandidate("as decided: "+run, evidenceOf(text)); !errors.Is(err, ErrCandidateContaminated) {
 			t.Fatalf("a copy of %d characters starting at offset %d was not detected: %v",
 				len(run), offset, err)
 		}
@@ -65,7 +65,7 @@ func TestACopyIsFoundAtEveryOffsetOfTheSource(t *testing.T) {
 // resemblance, and a stricter version would block ordinary grounded claims.
 func TestAFragmentBelowTheThresholdStillCrosses(t *testing.T) {
 	source := "internal/x/doc.go lines 1-2 at " + strings.Repeat("b", 40) + "\nfunc Enabled() bool {\n"
-	if err := DeclassifyCandidate("Enabled() should stay a bool", []string{source}); err != nil {
+	if err := DeclassifyCandidate("Enabled() should stay a bool", evidenceOf(source)); err != nil {
 		t.Fatalf("a short reference was refused: %v", err)
 	}
 }

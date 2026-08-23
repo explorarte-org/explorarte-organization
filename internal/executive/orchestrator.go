@@ -881,7 +881,7 @@ func (o *Orchestrator) materializeWorkerTasks(ctx context.Context, root, source 
 		if replan > 0 {
 			suffix += "-replan:" + strconv.Itoa(replan)
 		}
-		t, _, err := o.coordinatedChildren().Materialize(ctx, childRequest{Root: root, Sender: source, Depth: 3, Command: CreateTaskCommand{RequestedByRoleID: source.AssignedRoleID, AssignedRoleID: p.AssignedRoleID, TaskClass: p.TaskClass, IdempotencyKey: childKey(root.ID, suffix), Title: p.Title, Instructions: p.Instructions, AcceptanceCriteria: p.AcceptanceCriteria, Dependencies: dependencies, Priority: p.Priority, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(source.ID), Requirements: appendResultRequirement(p.Requirements)}})
+		t, _, err := o.coordinatedChildren().Materialize(ctx, childRequest{Root: root, Sender: source, Depth: 3, Command: CreateTaskCommand{RequestedByRoleID: source.AssignedRoleID, AssignedRoleID: p.AssignedRoleID, TaskClass: p.TaskClass, IdempotencyKey: childKey(root.ID, suffix), Title: p.Title, Instructions: o.workerInstructions(root, p.Instructions), AcceptanceCriteria: p.AcceptanceCriteria, Dependencies: dependencies, Priority: p.Priority, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(source.ID), Requirements: appendResultRequirement(p.Requirements)}})
 		if err != nil {
 			return err
 		}
@@ -1036,6 +1036,58 @@ func repositoryGroundedPurpose(purpose ExecutionPurpose) bool {
 	default:
 		return false
 	}
+}
+
+// repositoryEvidenceUsageRule is what a worker must know once it can see the
+// repository, and it is host-owned text rather than plan text because the
+// boundary it describes is not the planner's to relax.
+//
+// AUTONOMY-SMOKE-017-R2 reached adversarial review and was refused: the
+// designer had copied a line of budget.go verbatim into its deliverable, and
+// the candidate could not be sent to a reviewer that may not receive
+// organizational source. The refusal was correct. What was missing is that
+// nothing had ever told the designer the rule. A model handed code and asked
+// to diagnose it will quote the code -- that is the natural thing to do, and
+// every repository-grounded campaign would have hit the same wall.
+//
+// Enforcing a boundary without stating it to the party that must respect it
+// is not a safety property, it is a trap. The mechanism is unchanged; this
+// only says out loud what it already requires.
+const repositoryEvidenceUsageRule = `Repository evidence in your context is READ-ONLY EVIDENCE, and it is
+organizational source. Your deliverable is read by an external adversarial
+reviewer that is not allowed to receive that source.
+
+So: cite it, do not reproduce it.
+
+ALLOWED    a repository:// reference, a path, a line range, a commit, a symbol
+           name, and any claim you make in your own words about what the code
+           does -- "driveDepartments decides replan capacity inline".
+FORBIDDEN  copying source text out of the evidence: a pasted line, a pasted
+           expression, a pasted block, or that text lightly reworded to look
+           different. Encoding it changes nothing.
+
+A deliverable that reproduces source is refused as a whole, and the campaign
+stops there. Describing the code precisely and citing where it lives is
+always sufficient -- the reviewer can read the citation itself.`
+
+// repositoryGroundedCampaign reports whether this campaign's workers can see
+// the repository at all. It mirrors repositoryGrounding's own gate on purpose:
+// the rule must reach exactly the workers the evidence reaches, and a campaign
+// that observes nothing needs no rule about what it observed.
+func (o *Orchestrator) repositoryGroundedCampaign(root TaskRecord) bool {
+	if _, governed := findRequirementByKey(root.Requirements, designfreeze.RequirementKey); !governed {
+		return false
+	}
+	return o.programTarget != nil
+}
+
+// workerInstructions is the plan's instruction plus whatever the host owes the
+// worker for this campaign shape.
+func (o *Orchestrator) workerInstructions(root TaskRecord, planned string) string {
+	if !o.repositoryGroundedCampaign(root) {
+		return planned
+	}
+	return planned + "\n\n" + repositoryEvidenceUsageRule
 }
 
 // repositoryGrounding returns the pinned commit and the selection text for an
