@@ -126,16 +126,32 @@ const (
 // different digest than the one it was handed is not a disagreement to
 // reconcile, it is a result about something else.
 type DesignAdjudication struct {
-	SchemaVersion            string              `json:"schema_version"`
-	Verdict                  AdjudicationVerdict `json:"verdict"`
-	AcceptedFindings         []string            `json:"accepted_findings"`
-	RejectedFindings         []string            `json:"rejected_findings"`
-	RequiredChanges          []string            `json:"required_changes"`
-	UnresolvedOwnerDecisions []string            `json:"unresolved_owner_decisions"`
-	DesignID                 string              `json:"design_id"`
-	DesignVersion            string              `json:"design_version"`
-	DesignDigest             string              `json:"design_digest"`
-	EvidenceRefs             []string            `json:"evidence_refs"`
+	SchemaVersion    string              `json:"schema_version"`
+	Verdict          AdjudicationVerdict `json:"verdict"`
+	AcceptedFindings []string            `json:"accepted_findings"`
+	RejectedFindings []string            `json:"rejected_findings"`
+	RequiredChanges  []string            `json:"required_changes"`
+	// EvidenceRequirements is what the next round must GROUND, as data.
+	//
+	// AUTONOMY-SMOKE-017-R5 spent both of its rounds on the same rejection:
+	// the adjudicator asked for separate citations for where each limit is
+	// defined and where it is applied, and could only say so in
+	// required_changes prose. The next round received an English sentence
+	// where it needed a contract, and nothing downstream could check
+	// whether the sentence had been honoured. This is the same loss that
+	// worker-result/v2 fixed one leg later, and it is repaired here for the
+	// same reason: a normative obligation carried as prose is an obligation
+	// nobody can enforce.
+	//
+	// The model PROPOSES. The host validates, attributes and persists --
+	// see EvidenceRequirement.Source. A reviewer cannot be the sole author
+	// of what it will later be satisfied by.
+	EvidenceRequirements     []EvidenceRequirementProposal `json:"evidence_requirements"`
+	UnresolvedOwnerDecisions []string                      `json:"unresolved_owner_decisions"`
+	DesignID                 string                        `json:"design_id"`
+	DesignVersion            string                        `json:"design_version"`
+	DesignDigest             string                        `json:"design_digest"`
+	EvidenceRefs             []string                      `json:"evidence_refs"`
 }
 
 func (a DesignAdjudication) Identity() DesignIdentity {
@@ -303,6 +319,15 @@ func ParseDesignAdjudication(body []byte, expected DesignIdentity, limits Limits
 	if out.Verdict == AdjudicationRevise && len(out.RequiredChanges) == 0 {
 		return DesignAdjudication{}, fmt.Errorf("%w: revise requires at least one required change", ErrContractRejected)
 	}
+	// Only a revise opens another round, so only a revise can bind what
+	// that round must ground. A freeze or a reject carrying requirements
+	// would be stating obligations for a round that will never happen.
+	if out.Verdict != AdjudicationRevise && len(out.EvidenceRequirements) > 0 {
+		return DesignAdjudication{}, fmt.Errorf("%w: only revise can carry evidence_requirements", ErrContractRejected)
+	}
+	if err := validateEvidenceRequirementProposals(out.EvidenceRequirements, limits); err != nil {
+		return DesignAdjudication{}, err
+	}
 	return out, nil
 }
 
@@ -388,6 +413,7 @@ var designAdjudicationOutputSchema = json.RawMessage(`{
     "accepted_findings",
     "rejected_findings",
     "required_changes",
+    "evidence_requirements",
     "unresolved_owner_decisions",
     "evidence_refs"
   ],
@@ -404,6 +430,19 @@ var designAdjudicationOutputSchema = json.RawMessage(`{
     "accepted_findings":{"type":"array","items":` + findingRefSchemaJSON + `},
     "rejected_findings":{"type":"array","items":` + findingRefSchemaJSON + `},
     "required_changes":{"type":"array","items":{"type":"string"}},
+    "evidence_requirements":{
+      "type":"array",
+      "description":"What the next round must ground, as data. Only meaningful with verdict=revise. subject is what the claim is about, usually a symbol; relations are the roles a citation must play for it.",
+      "items":{
+        "type":"object",
+        "additionalProperties":false,
+        "required":["subject","relations"],
+        "properties":{
+          "subject":{"type":"string"},
+          "relations":{"type":"array","items":{"type":"string","enum":["definition","application","test","context"]}}
+        }
+      }
+    },
     "unresolved_owner_decisions":{"type":"array","items":{"type":"string"}},
     "evidence_refs":{"type":"array","items":{"type":"string"}}
   }

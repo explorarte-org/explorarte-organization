@@ -38,6 +38,45 @@ var symbolPattern2 = regexp.MustCompile(`\b(?:Test[A-Za-z0-9_]{3,}|[A-Z][A-Za-z0
 // Deterministic and explainable on purpose: the same goal always produces the
 // same reading, so a design can be reproduced, and anyone asking "why did it
 // see this?" gets an answer that does not require replaying a model.
+// SelectionForRequirements is the same reading, with obligations first.
+//
+// A subject the host is already obliged to ground is a typed fact, not
+// something to rediscover from prose. Re-deriving it would put a known
+// requirement back in competition with incidental words for the same budget --
+// which is how AUTONOMY-SMOKE-017-R5 lost the file declaring both limits --
+// and would quietly make the extractor a second source of normative truth.
+//
+// Seeds are prepended and never dropped: what must be grounded is searched
+// before anything discovered.
+func SelectionForRequirements(text string, subjects []string, window int) Selection {
+	selection := SelectionFromText(text, window)
+	if len(subjects) == 0 {
+		return selection
+	}
+	seeded := make([]string, 0, len(subjects)+len(selection.Terms))
+	seen := map[string]struct{}{}
+	for _, subject := range subjects {
+		subject = strings.TrimSpace(subject)
+		if subject == "" {
+			continue
+		}
+		if _, already := seen[subject]; already {
+			continue
+		}
+		seen[subject] = struct{}{}
+		seeded = append(seeded, subject)
+	}
+	for _, term := range selection.Terms {
+		if _, already := seen[term]; already {
+			continue
+		}
+		seen[term] = struct{}{}
+		seeded = append(seeded, term)
+	}
+	selection.Terms = seeded
+	return selection
+}
+
 func SelectionFromText(text string, window int) Selection {
 	if window < 1 {
 		window = 24

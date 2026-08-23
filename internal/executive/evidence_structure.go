@@ -23,11 +23,114 @@ import (
 // only one of them is the worker's.
 var ErrEvidenceInsufficient = errors.New("supplied evidence cannot satisfy the required slots")
 
+// EvidenceRequirementSource records WHY an obligation exists, because the
+// answer determines who may change it.
+//
+// The selector is deliberately absent from this list. If retrieval could
+// create requirements, the sensor would decide which facts it is obliged to
+// sense: in AUTONOMY-SMOKE-017-R5 the file declaring both limits never reached
+// the worker, so a retrieval-derived contract would simply have stopped
+// requiring a definition and reported success. Repository blindness would
+// have become undetectable by construction.
+type EvidenceRequirementSource string
+
+const (
+	// The owner's acceptance of the design states what must be grounded.
+	EvidenceFromOwnerAcceptance EvidenceRequirementSource = "owner_acceptance"
+	// A revise verdict discovered an insufficiency the goal had not stated.
+	EvidenceFromAdjudication EvidenceRequirementSource = "adjudication"
+	// The host imposes it as policy, independent of any model.
+	EvidenceFromHostPolicy EvidenceRequirementSource = "host_policy"
+)
+
+// EvidenceRequirementProposal is what a MODEL may ask for. It is deliberately
+// a different type from EvidenceRequirement: a proposal carries no authority
+// and no provenance, and only the host can turn one into an obligation.
+type EvidenceRequirementProposal struct {
+	Subject   string   `json:"subject"`
+	Relations []string `json:"relations"`
+}
+
+// validateEvidenceRequirementProposals rejects malformed proposals before they
+// can become obligations. The host is the only place this can happen: a model
+// that could bind itself to a vocabulary of its own choosing would be writing
+// the exam as well as sitting it.
+func validateEvidenceRequirementProposals(proposals []EvidenceRequirementProposal, limits Limits) error {
+	if len(proposals) > limits.MaxArrayItems {
+		return fmt.Errorf("%w: evidence_requirements", ErrContractRejected)
+	}
+	seen := map[string]struct{}{}
+	for index, proposal := range proposals {
+		subject := strings.TrimSpace(proposal.Subject)
+		if err := validateRequiredString(subject, limits.MaxStringBytes, "evidence_requirements.subject"); err != nil {
+			return err
+		}
+		if _, duplicate := seen[subject]; duplicate {
+			return fmt.Errorf("%w: evidence_requirements names %s twice", ErrContractRejected, subject)
+		}
+		seen[subject] = struct{}{}
+		if len(proposal.Relations) == 0 {
+			return fmt.Errorf("%w: evidence_requirements[%d] demands no relation", ErrContractRejected, index)
+		}
+		relations := map[string]struct{}{}
+		for _, relation := range proposal.Relations {
+			if !validEvidenceRelation(relation) {
+				return fmt.Errorf("%w: evidence_requirements[%d].relations", ErrContractRejected, index)
+			}
+			if _, repeated := relations[relation]; repeated {
+				return fmt.Errorf("%w: evidence_requirements[%d] repeats %s", ErrContractRejected, index, relation)
+			}
+			relations[relation] = struct{}{}
+		}
+	}
+	return nil
+}
+
+// AdoptEvidenceRequirements turns proposals into obligations, stamping where
+// each came from. Canonical order makes the resulting contract reproducible
+// and comparable across rounds.
+func AdoptEvidenceRequirements(proposals []EvidenceRequirementProposal, source EvidenceRequirementSource) []EvidenceRequirement {
+	adopted := make([]EvidenceRequirement, 0, len(proposals))
+	for _, proposal := range proposals {
+		relations := append([]string(nil), proposal.Relations...)
+		sort.Strings(relations)
+		adopted = append(adopted, EvidenceRequirement{
+			Subject: strings.TrimSpace(proposal.Subject), Relations: relations, Source: source,
+		})
+	}
+	sort.SliceStable(adopted, func(first, second int) bool {
+		return adopted[first].Subject < adopted[second].Subject
+	})
+	return adopted
+}
+
+// ValidateEvidenceSupply asks, BEFORE a worker runs, whether the host holds
+// material that could satisfy what it is about to demand.
+//
+// Discovering insufficiency after the call wastes an invocation and, worse,
+// arrives at the moment the artifact is being judged -- which is where the
+// temptation to blame the artifact lives. Asked first, the question has only
+// one honest answer available.
+func ValidateEvidenceSupply(required []EvidenceRequirement, available map[string][]string) error {
+	var unsupplied []string
+	for _, requirement := range required {
+		if len(available[requirement.Subject]) == 0 {
+			unsupplied = append(unsupplied, requirement.Subject)
+		}
+	}
+	if len(unsupplied) == 0 {
+		return nil
+	}
+	sort.Strings(unsupplied)
+	return fmt.Errorf("%w: no citation was found for %s", ErrEvidenceInsufficient, strings.Join(unsupplied, ", "))
+}
+
 // EvidenceRequirement is one slot the host demands before a design is worth
 // adjudicating: a subject, and the relations that must be cited for it.
 type EvidenceRequirement struct {
 	Subject   string
 	Relations []string
+	Source    EvidenceRequirementSource
 }
 
 // ValidateEvidenceStructure checks form, not correctness. It answers "can this
