@@ -82,7 +82,7 @@ func DeclassifyCandidate(candidate string, organizational []OrganizationalSource
 
 	for _, source := range organizational {
 		for _, haystack := range haystacks {
-			if run, shared := sharedRun(source.Content, haystack); shared {
+			if run, shared := sharedRun(excerptBody(source.Content), haystack); shared {
 				if reference := strings.TrimSpace(source.Reference); reference != "" {
 					return fmt.Errorf("%w: it reproduces %d characters of %s",
 						ErrCandidateContaminated, len(run), reference)
@@ -147,6 +147,35 @@ func reversibleDecodings(candidate string) []string {
 		}
 	}
 	return decoded
+}
+
+// provenanceHeader matches the one line repositoryevidence.Render puts in
+// front of every excerpt: "path lines 12-40 at <40 hex>", optionally followed
+// by a symbol in parentheses.
+var provenanceHeader = regexp.MustCompile(`^\S+ lines \d+-\d+ at [0-9a-f]{40}(?: \(.*\))?$`)
+
+// excerptBody is the part of a rendered payload that is actually source.
+//
+// The header is a path, a line range and a commit -- exactly the provenance
+// metadata a grounded claim is MADE of, and exactly what a design is told to
+// cite. Scanning it as if it were source turns following the rule into a
+// refusal: AUTONOMY-SMOKE-017-R3 reproduced no code at all, cited the files it
+// had read, and was refused because a path in its citation matched the same
+// path in an excerpt's header. Every one of the seven matched windows lay in a
+// header; the bodies shared nothing.
+//
+// This is the mirror of the alignment defect. There the header made the
+// detector MISS a real copy; here it makes it INVENT one. Both come from
+// treating the label as part of the labelled thing.
+//
+// The line is dropped only when it has the header's exact shape, so an excerpt
+// that happens to start with ordinary source keeps its first line.
+func excerptBody(payload string) string {
+	head, rest, found := strings.Cut(payload, "\n")
+	if !found || !provenanceHeader.MatchString(head) {
+		return payload
+	}
+	return rest
 }
 
 // sharedRun reports the first contiguous span of at least declassifyMinimumRun
