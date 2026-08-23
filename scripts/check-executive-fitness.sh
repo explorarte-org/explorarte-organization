@@ -55,7 +55,7 @@ if ! rg -n 'o\.completion\.Verify\(' internal/executive/orchestrator.go >/dev/nu
   fail "completion verifier call missing"
 fi
 
-if ! rg -n '"ambiguous"' internal/executive/orchestrator.go >/dev/null || \
+if ! rg -n 'invocation\.Status (!=|==) "ambiguous"' internal/executive/orchestrator.go >/dev/null || \
    ! rg -n 'ErrModelOutcomeAmbiguous' internal/executive/orchestrator.go >/dev/null; then
   fail "ambiguous model outcome is not explicitly fail-closed"
 fi

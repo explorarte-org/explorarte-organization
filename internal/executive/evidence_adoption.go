@@ -4,7 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"strconv"
+	"strings"
 )
+
+// adoptOpenRoundRequirements binds the open round's obligations, whenever a
+// resume finds one already open. It runs at the top of Resume, before every
+// phase driver: by the time departments plan or workers execute for this
+// round, what the round must ground is durable state, not a pending decision.
+func (o *Orchestrator) adoptOpenRoundRequirements(ctx context.Context, root TaskRecord, all []TaskRecord) error {
+	round := o.activeDesignRound(ctx, all, root.ID)
+	if round <= 1 {
+		return nil
+	}
+	return o.adoptAdjudicationRequirements(ctx, root, all, round)
+}
 
 // adoptAdjudicationRequirements turns the previous round's revise into the
 // obligations of the round it opened.
@@ -54,6 +67,12 @@ func (o *Orchestrator) adoptAdjudicationRequirements(ctx context.Context, root T
 
 // withoutSlotsAlreadyInForce drops (subject, relation) pairs that are already
 // obligations, so no slot can end up attributed to two sources at once.
+//
+// The comparison happens on CANONICAL subjects. Validation accepts a proposal
+// with outer whitespace and adoption trims it, so comparing the raw string
+// would let " MaxDesignRounds " re-propose a slot the owner already holds and
+// slip a second authority past this very guard. What is emitted is canonical
+// too: durable state never stores the padded form.
 func withoutSlotsAlreadyInForce(proposals []EvidenceRequirementProposal, inForce []EvidenceRequirement) []EvidenceRequirementProposal {
 	held := map[EvidenceSlot]struct{}{}
 	for _, requirement := range inForce {
@@ -63,9 +82,13 @@ func withoutSlotsAlreadyInForce(proposals []EvidenceRequirementProposal, inForce
 	}
 	novel := make([]EvidenceRequirementProposal, 0, len(proposals))
 	for _, proposal := range proposals {
+		subject := strings.TrimSpace(proposal.Subject)
+		if subject == "" {
+			continue
+		}
 		relations := make([]string, 0, len(proposal.Relations))
 		for _, relation := range proposal.Relations {
-			if _, already := held[EvidenceSlot{Subject: proposal.Subject, Relation: relation}]; already {
+			if _, already := held[EvidenceSlot{Subject: subject, Relation: relation}]; already {
 				continue
 			}
 			relations = append(relations, relation)
@@ -73,7 +96,7 @@ func withoutSlotsAlreadyInForce(proposals []EvidenceRequirementProposal, inForce
 		if len(relations) == 0 {
 			continue
 		}
-		novel = append(novel, EvidenceRequirementProposal{Subject: proposal.Subject, Relations: relations})
+		novel = append(novel, EvidenceRequirementProposal{Subject: subject, Relations: relations})
 	}
 	return novel
 }

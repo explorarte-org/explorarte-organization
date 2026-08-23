@@ -32,11 +32,28 @@ type scriptedHarness struct {
 	// adjudicator proposes alongside a revise. Empty means the body carries
 	// none, which is what every pre-existing test exercises.
 	adjudicationEvidence string
+
+	// contexts, when set, lets the harness answer what retrieval was seeded
+	// with for each executed command.
+	contexts *fakeContexts
+
+	// Round-2 worker observation: what the world looked like AT THE MOMENT
+	// the round's first worker executed -- not after the round advanced.
+	r2WorkerRan        bool
+	r2DurableBeforeRun bool
+	r2SeededSubjects   []string
 }
 
 func (h *scriptedHarness) Execute(_ context.Context, command HarnessRunCommand) (HarnessRunOutcome, error) {
 	h.mu.Lock()
 	h.commands = append(h.commands, command)
+	if h.observeRoundTwo(command) {
+		h.r2WorkerRan = true
+		h.r2DurableBeforeRun = h.roundTwoObligationsRecorded()
+		if h.contexts != nil {
+			h.r2SeededSubjects = h.contexts.subjectsFor(command.Context.ID)
+		}
+	}
 	h.mu.Unlock()
 
 	body := h.bodies[command.Purpose]
@@ -48,6 +65,31 @@ func (h *scriptedHarness) Execute(_ context.Context, command HarnessRunCommand) 
 	}
 	invocation := h.models.recordDurableInvocation(command, "succeeded", json.RawMessage(body), 0)
 	return HarnessRunOutcome{Status: HarnessRunSucceeded, FinalOutput: body, InvocationID: invocation.ID}, nil
+}
+
+// observeRoundTwo reports whether this command is a round-2 department worker
+// execution, which is exactly the moment an obligation adopted "too late"
+// would still be missing.
+func (h *scriptedHarness) observeRoundTwo(command HarnessRunCommand) bool {
+	if command.Purpose != PurposeDepartmentWorker || h.contexts == nil {
+		return false
+	}
+	task, err := h.tasks.GetTask(context.Background(), command.TaskID)
+	if err != nil {
+		return false
+	}
+	return designRoundOf(task.IdempotencyKey) == 2 && !h.r2WorkerRan
+}
+
+// roundTwoObligationsRecorded reads durable evidence as it stands RIGHT NOW:
+// has any row been recorded under a round-2 obligations reference?
+func (h *scriptedHarness) roundTwoObligationsRecorded() bool {
+	for _, row := range h.tasks.evidence {
+		if strings.HasPrefix(row.Reference, EvidenceRequirementsReference) && strings.HasSuffix(row.Reference, "/round/2") {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *scriptedHarness) adjudicationBody(taskID int64) string {

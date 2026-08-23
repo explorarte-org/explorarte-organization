@@ -353,6 +353,20 @@ func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error
 	}
 	children := withoutRoot(all, root.ID)
 
+	// A revise that opened a round binds its obligations HERE, before any
+	// phase driver runs -- not inside the freeze phase. activeDesignRound
+	// counts the successor as open the moment the previous adjudication
+	// completed with revise, and Resume drives departments BEFORE the freeze:
+	// adopting any later would let round N+1 be planned and worked against a
+	// contract that was still unwritten, then judged against the one that
+	// finally appeared. Adoption is write-once, so an earlier pass that
+	// already recorded it makes this pass a read.
+	if _, governed := findRequirementByKey(root.Requirements, designfreeze.RequirementKey); governed {
+		if adoptErr := o.adoptOpenRoundRequirements(ctx, root, all); adoptErr != nil {
+			return Run{}, adoptErr
+		}
+	}
+
 	// The world this campaign is about is fixed HERE, before the first
 	// cognitive call of any kind.
 	//
@@ -1382,6 +1396,18 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		// The host could not put up what it was about to demand. That is
 		// not the worker's failure, so it costs no model call -- and it is
 		// not a design that needs revising, so it costs no round.
+		//
+		// The attempt was already claimed and started by the time the
+		// preflight could see the snapshot, so leaving it as-is would strand
+		// a RUNNING attempt behind a blocked root until its lease expired.
+		// The host closes what the host opened: one explicit durable
+		// transition ends the attempt and releases its lease. It is recorded
+		// as a host finding with its own code -- never a provider or contract
+		// failure, because no provider was asked anything.
+		if _, failErr := o.tasks.RecordAttemptFailed(ctx, lease, actorID,
+			"host_evidence_insufficient", truncate(supplyErr.Error(), 480), false); failErr != nil {
+			return task, failErr
+		}
 		o.forgetLease(task.ID)
 		if _, blockErr := o.tasks.BlockTask(ctx, root.ID, ReasonEvidenceInsufficient,
 			truncate(supplyErr.Error(), 480), "service", orchestratorWorkerID); blockErr != nil {
