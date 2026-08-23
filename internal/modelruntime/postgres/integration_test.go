@@ -739,6 +739,14 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 	})
 
 	t.Run("classified provider outcomes are immutable and terminal", func(t *testing.T) {
+		// This table is the parity check between what the domain calls a
+		// valid ProviderOutcome and what PostgreSQL will actually store.
+		//
+		// It already covered ambiguous_transport before AUTONOMY-SMOKE-017-R1,
+		// and still missed the incident, because its only ambiguous case
+		// carried no status and no response hash -- the one shape the old
+		// CHECK happened to allow. A classification is not covered by an
+		// example of it; it is covered by the shapes the domain admits.
 		cases := []struct {
 			name       string
 			phase      modelruntime.AdapterFailurePhase
@@ -749,6 +757,14 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 			{name: "not sent after commit", phase: modelruntime.AdapterFailureBeforeRequest, outcome: modelruntime.ProviderOutcome{OutcomeClassification: modelruntime.ProviderOutcomeNotSent, ErrorClass: "credential", ErrorCode: "credential_unavailable", ResponseSchemaVersion: "test.fake.response.v1"}, wantStatus: modelruntime.InvocationFailed, wantClass: modelruntime.ProviderOutcomeNotSent},
 			{name: "provider rejected", phase: modelruntime.AdapterFailureResponseReceived, outcome: modelruntime.ProviderOutcome{OutcomeClassification: modelruntime.ProviderOutcomeRejected, ProviderRequestID: "provider-rejected", HTTPStatus: 429, ErrorClass: "rate_limit", ErrorCode: "rate_limited", Retryable: true, ResponseHash: modelruntime.SHA256Bytes([]byte("provider rejection")), ResponseSchemaVersion: "test.fake.response.v1"}, wantStatus: modelruntime.InvocationFailed, wantClass: modelruntime.ProviderOutcomeRejected},
 			{name: "transport ambiguous", phase: modelruntime.AdapterFailureAmbiguous, outcome: modelruntime.ProviderOutcome{OutcomeClassification: modelruntime.ProviderOutcomeAmbiguous, ErrorClass: "transport", ErrorCode: "transport_timeout", Retryable: true, ResponseSchemaVersion: "test.fake.response.v1"}, wantStatus: modelruntime.InvocationAmbiguous, wantClass: modelruntime.ProviderOutcomeAmbiguous},
+			// AUTONOMY-SMOKE-017-R1: the provider began answering and the
+			// body stopped arriving. modelruntime.IncompleteReadOutcome
+			// keeps what was observed -- the status, the request ID and a
+			// hash of the partial body -- because the call may already have
+			// been billed. The schema used to refuse exactly this, so a
+			// recoverable transport failure became a hard invalid request
+			// and ended the campaign.
+			{name: "transport ambiguous with a partial response", phase: modelruntime.AdapterFailureAmbiguous, outcome: modelruntime.IncompleteReadOutcome(200, "provider-partial-body", modelruntime.SHA256Bytes([]byte("partial body that stopped arriving")), "test.fake.response.v1"), wantStatus: modelruntime.InvocationAmbiguous, wantClass: modelruntime.ProviderOutcomeAmbiguous},
 		}
 		for _, test := range cases {
 			t.Run(test.name, func(t *testing.T) {
@@ -764,6 +780,37 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 				}
 				assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_provider_requests WHERE invocation_id=$1`, created.ID, 1)
 				assertModelCountTwo(t, ctx, platform, `SELECT count(*) FROM model_provider_outcomes WHERE invocation_id=$1 AND outcome_classification=$2`, created.ID, test.wantClass, 1)
+
+				// The outcome must come back as the domain described it.
+				// Counting rows only proves something was written; the
+				// defect this guards was about which observations survive.
+				if test.outcome.Validate() != nil {
+					t.Fatalf("the fixture is not a valid outcome, so persisting it would prove nothing: %v", test.outcome.Validate())
+				}
+				var gotStatus *int
+				var gotHash, gotRequestID, gotErrorCode *string
+				var gotRetryable bool
+				if queryErr := platform.Pool().QueryRow(ctx, `
+					SELECT http_status, response_hash, provider_request_id, error_code, retryable
+					FROM model_provider_outcomes WHERE invocation_id=$1`, created.ID).
+					Scan(&gotStatus, &gotHash, &gotRequestID, &gotErrorCode, &gotRetryable); queryErr != nil {
+					t.Fatalf("the outcome did not come back: %v", queryErr)
+				}
+				if (gotStatus == nil) != (test.outcome.HTTPStatus == 0) ||
+					(gotStatus != nil && *gotStatus != test.outcome.HTTPStatus) {
+					t.Fatalf("http status changed in the store: got %v want %d", gotStatus, test.outcome.HTTPStatus)
+				}
+				if (gotHash == nil) != (test.outcome.ResponseHash == "") ||
+					(gotHash != nil && *gotHash != test.outcome.ResponseHash) {
+					t.Fatalf("response hash changed in the store: got %v want %q", gotHash, test.outcome.ResponseHash)
+				}
+				if (gotRequestID == nil) != (test.outcome.ProviderRequestID == "") ||
+					(gotRequestID != nil && *gotRequestID != test.outcome.ProviderRequestID) {
+					t.Fatalf("provider request id changed in the store: got %v want %q", gotRequestID, test.outcome.ProviderRequestID)
+				}
+				if gotErrorCode == nil || *gotErrorCode != test.outcome.ErrorCode || gotRetryable != test.outcome.Retryable {
+					t.Fatalf("error code or retryability changed in the store: code=%v retryable=%v", gotErrorCode, gotRetryable)
+				}
 			})
 		}
 	})
