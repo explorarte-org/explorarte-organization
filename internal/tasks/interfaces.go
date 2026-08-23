@@ -65,6 +65,7 @@ type Persistence interface {
 	Finalize(context.Context, FinalizeCommand, int) (Task, error)
 	Block(context.Context, BlockCommand, int) (Task, error)
 	Unblock(context.Context, UnblockCommand, AssigneeCheck, int) (Task, error)
+	ReleaseCoordinationHold(context.Context, ReleaseCoordinationHoldCommand, AssigneeCheck, int) (Task, error)
 	Cancel(context.Context, CancelCommand, int) (Task, error)
 	Claim(context.Context, ClaimRequest, AssigneeValidator, int) ([]ClaimedTask, error)
 	StartAttempt(context.Context, LeaseCommand, int) (Task, error)

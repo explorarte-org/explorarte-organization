@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/config"
+	egressbootstrap "github.com/Mireuz13/explorarte-organization/internal/modelegress/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
+	"github.com/Mireuz13/explorarte-organization/internal/organization/canonicalsync"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	"github.com/Mireuz13/explorarte-organization/internal/platform/buildinfo"
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
@@ -115,6 +117,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runCuration(args[1:], stdout, stderr)
 	case "objectstorage":
 		return runObjectStorage(args[1:], stdout, stderr)
+	case "composition":
+		return runComposition(args[1:], stdout, stderr)
 	case "corpus":
 		return runCorpus(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
@@ -229,7 +233,15 @@ func runRegistry(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "create registry service: %v\n", e)
 			return exitInternal
 		}
-		return executeRegistryCommand(ctx, service, args, stdout, stderr)
+		// Applying the canonical registry and binding the canonical egress
+		// policy to the revision it produces are one operation, so the
+		// command that performs one is given the means to perform both.
+		egressRuntime, e := egressbootstrap.Open(cfg, store)
+		if e != nil {
+			fmt.Fprintf(stderr, "create model egress runtime: %v\n", e)
+			return exitInternal
+		}
+		return executeRegistryCommand(ctx, service, canonicalsync.Applier{Registry: service, Egress: egressRuntime.Service}, args, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown registry command %q\n", args[0])
 		printRegistryUsage(stderr)
@@ -266,7 +278,7 @@ func registryValidate(loader *registry.Loader, args []string, stdout, stderr io.
 	return exitOK
 }
 
-func executeRegistryCommand(ctx context.Context, service *registry.Service, args []string, stdout, stderr io.Writer) int {
+func executeRegistryCommand(ctx context.Context, service *registry.Service, applier canonicalsync.Applier, args []string, stdout, stderr io.Writer) int {
 	command := args[0]
 	switch command {
 	case "diff":
@@ -297,12 +309,21 @@ func executeRegistryCommand(ctx context.Context, service *registry.Service, args
 		if flags.NArg() != 0 {
 			return exitUsage
 		}
-		result, err := service.SynchronizeCanonical(ctx, *apply)
+		result, err := applier.Apply(ctx, *apply)
 		if err != nil {
+			// An unbound revision is a repairable deployment state, not an
+			// invalid request: the registry revision is durable and correct
+			// and re-running completes it. exitDrift says "the database is
+			// not where it should be", which is exactly true.
+			if errors.Is(err, canonicalsync.ErrRevisionUnbound) {
+				fmt.Fprintf(stderr, "%v\n", err)
+				writeValue(stdout, *jsonOutput, result)
+				return exitDrift
+			}
 			return registryError(stderr, err)
 		}
 		writeValue(stdout, *jsonOutput, result)
-		if result.NoOp || result.Applied {
+		if result.Registry.NoOp || result.Registry.Applied {
 			return exitOK
 		}
 		return exitDrift

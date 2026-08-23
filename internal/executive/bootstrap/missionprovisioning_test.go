@@ -131,18 +131,20 @@ func (f fakeCatalog) Validate(context.Context, string) error { return nil }
 // adapter is correct exactly when it passes the policy through untouched.
 type recordingCreator struct {
 	calls    []engineeringmission.MissionPolicy
+	origins  []engineeringmission.MissionOrigin
 	plans    []string
 	byDigest map[string]int64
 	nextID   int64
 	err      error
 }
 
-func (r *recordingCreator) Create(_ context.Context, policy engineeringmission.MissionPolicy, plan string,
-	_, _, _, _ string) (tasks.Task, error) {
+func (r *recordingCreator) CreateIn(_ context.Context, policy engineeringmission.MissionPolicy, plan string,
+	origin engineeringmission.MissionOrigin, _, _ string) (tasks.Task, error) {
 	if r.err != nil {
 		return tasks.Task{}, r.err
 	}
 	r.calls = append(r.calls, policy)
+	r.origins = append(r.origins, origin)
 	r.plans = append(r.plans, plan)
 	_, digest, err := policy.MarshalEvidence()
 	if err != nil {

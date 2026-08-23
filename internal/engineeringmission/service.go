@@ -207,7 +207,32 @@ func (s Service) ReviewMission(ctx context.Context, promotionID, approvalRequire
 // RequiredGates) Guard/WorkspaceResolver/VerifyRequiredGates enforce against
 // whatever plan is submitted; the plan itself is the ordinary CodeRunner
 // task payload every other CodeRunner caller already uses.
+// MissionOrigin carries the durable identity of whatever provisioned a
+// mission: which organization it belongs to, which role asked for it, and --
+// when it was provisioned by a campaign -- that campaign's correlation.
+//
+// The correlation is what binds a mission to the budget that authorised its
+// existence, because the program ceiling is enforced by correlation at
+// reservation time. It travels at creation and is never reconstructed later:
+// a mission that had to be re-associated with "the probable campaign" would be
+// spending against a ceiling nobody durably granted it.
+type MissionOrigin struct {
+	OrganizationID    string
+	RequestedByRoleID string
+	// CorrelationID is empty for a mission created outside any campaign.
+	// Empty stays empty: absence is a real state, and inventing one here
+	// would be exactly the reconstruction this type exists to avoid.
+	CorrelationID string
+	CausationID   string
+}
+
+// Create provisions a mission with no campaign of its own.
 func (s Service) Create(ctx context.Context, policy MissionPolicy, plan string, organization, requestedBy, actorType, actorID string) (tasks.Task, error) {
+	return s.CreateIn(ctx, policy, plan, MissionOrigin{OrganizationID: organization, RequestedByRoleID: requestedBy}, actorType, actorID)
+}
+
+// CreateIn provisions a mission that belongs to whatever provisioned it.
+func (s Service) CreateIn(ctx context.Context, policy MissionPolicy, plan string, origin MissionOrigin, actorType, actorID string) (tasks.Task, error) {
 	if s.Tasks == nil {
 		return tasks.Task{}, fmt.Errorf("task service required")
 	}
@@ -224,7 +249,7 @@ func (s Service) Create(ctx context.Context, policy MissionPolicy, plan string, 
 		return tasks.Task{}, err
 	}
 	reqs := []tasks.RequirementSpec{{Key: "candidate-artifact", Type: tasks.RequirementArtifact, Description: "sealed engineering candidate", Required: boolPtr(true)}, {Key: "engineering-required-gates", Type: tasks.RequirementCheck, Description: "all declared engineering gates pass", Required: boolPtr(true)}, {Key: "review", Type: tasks.RequirementApproval, Description: "independent engineering review", Required: boolPtr(true)}}
-	task, inserted, err := s.Tasks.CreateTask(ctx, tasks.CreateRequest{OrganizationID: organization, RequestedByRoleID: requestedBy, AssignedRoleID: CodeRunnerRole, Title: policy.Objective, Instructions: plan, AcceptanceCriteria: policy.AcceptanceCriteria, IdempotencyKey: "engineering-mission/" + digest, Requirements: reqs}, actorType, actorID)
+	task, inserted, err := s.Tasks.CreateTask(ctx, tasks.CreateRequest{OrganizationID: origin.OrganizationID, RequestedByRoleID: origin.RequestedByRoleID, CorrelationID: origin.CorrelationID, CausationID: origin.CausationID, AssignedRoleID: CodeRunnerRole, Title: missionTitle(policy.Objective), Instructions: plan, AcceptanceCriteria: policy.AcceptanceCriteria, IdempotencyKey: "engineering-mission/" + digest, Requirements: reqs}, actorType, actorID)
 	if err != nil {
 		return tasks.Task{}, err
 	}
@@ -396,3 +421,49 @@ func samePackageSet(a, b []string) bool {
 }
 
 func boolPtr(v bool) *bool { return &v }
+
+// maxMissionTitleBytes is the task engine's own limit on a title. It is
+// restated rather than imported because the engine owns it and this package
+// only has to fit inside it; a mismatch surfaces immediately as a rejected
+// mission rather than silently.
+const maxMissionTitleBytes = 240
+
+// missionTitle turns an objective into something a task title can hold.
+//
+// The objective is free-form text a model wrote. The title is a bounded
+// label. Using one directly as the other worked only while objectives
+// happened to be short, and it failed the first time one was not: a real
+// campaign froze its design, produced a valid implementation plan, and never
+// started its runner because the objective was 248 bytes against a limit of
+// 240. Eight bytes, and no code ran.
+//
+// Nothing is lost by shortening it. The full objective stays in the policy,
+// which is what the governance envelope is built from and what the evidence
+// digest covers; the title only has to name the mission in a list.
+//
+// Truncation is on a rune boundary, because cutting a multi-byte character in
+// half produces a title that is short enough and no longer valid UTF-8 -- and
+// these objectives are routinely written in Spanish.
+func missionTitle(objective string) string {
+	title := strings.TrimSpace(objective)
+	if title == "" {
+		// An objective is required upstream, so this is defence rather
+		// than a case that should occur. A mission with no title at all
+		// cannot be created, and failing with "title must contain 1 to
+		// 240 bytes" would say nothing about which mission it was.
+		return "Engineering mission"
+	}
+	if len(title) <= maxMissionTitleBytes {
+		return title
+	}
+	const ellipsis = "..."
+	limit := maxMissionTitleBytes - len(ellipsis)
+	cut := 0
+	for index := range title {
+		if index > limit {
+			break
+		}
+		cut = index
+	}
+	return strings.TrimSpace(title[:cut]) + ellipsis
+}

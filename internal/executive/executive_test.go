@@ -138,15 +138,31 @@ func TestDependencyCycleRejected(t *testing.T) {
 }
 
 func TestBudgetNormalFormulaAndBounds(t *testing.T) {
-	if got := NormalExpectedCalls(3, 8); got != 16 {
+	// Plan, adjudicate and close, plus two calls per department and the
+	// worker attempts the plan asked for.
+	if got := NormalExpectedCalls(3, 8); got != 17 {
 		t.Fatalf("got=%d", got)
 	}
 	l := DefaultLimits()
-	b := InvocationBudget{CEOCalls: 2, LeaderCalls: 6, WorkerAttempts: 8}
+	b := InvocationBudget{CEOCalls: ceoPhases, LeaderCalls: 6, WorkerAttempts: 8}
 	if err := b.Validate(l, 3); err != nil {
 		t.Fatal(err)
 	}
-	if err := (InvocationBudget{CEOCalls: 3}).Validate(l, 1); !errors.Is(err, ErrBudgetExceeded) {
+
+	// The happy path of a design-frozen run is three CEO calls. It used to be
+	// rejected, which is what killed AUTONOMY-SMOKE-001's root 294 with the
+	// adversarial review already complete and the adjudication under way.
+	if err := (InvocationBudget{CEOCalls: ceoPhases}).Validate(l, 1); err != nil {
+		t.Fatalf("a design-frozen campaign must fit its own happy path: %v", err)
+	}
+	// And each of those phases may be retried, because every governed task is
+	// created with attempts to spend. A ceiling that forbids the engine's own
+	// recovery fails the run for recovering.
+	if err := (InvocationBudget{CEOCalls: ceoPhases + 1}).Validate(l, 1); err != nil {
+		t.Fatalf("one retry of one CEO phase must fit: %v", err)
+	}
+	// Past that, a campaign is looping rather than working.
+	if err := (InvocationBudget{CEOCalls: ceoPhases*governedTaskAttempts + 1}).Validate(l, 1); !errors.Is(err, ErrBudgetExceeded) {
 		t.Fatalf("err=%v", err)
 	}
 }

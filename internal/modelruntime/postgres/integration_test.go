@@ -1164,6 +1164,13 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 			// Found only once cmd/orgctl (RunnerKind: "costledger", fixture
 			// r30-09) started inserting operation='memory_backfill' rows through
 			// the official harness for the first time.
+			// model_invocation_reasoning references model_dispatch_attempts,
+			// so it has to come down before 000007 can drop that table. This
+			// list is the same omission class the comment above describes:
+			// a migration that adds a table and forgets to say how it goes
+			// away is only found here, by a rollback that suddenly cannot
+			// complete.
+			{55, "000055_create_model_invocation_reasoning.down.sql"},
 			{34, "000034_add_memory_backfill_embedding_operation.down.sql"},
 			{30, "000030_extend_wallet_for_embedding_invocations.down.sql"},
 			{25, "000025_enforce_wallet_single_terminal.down.sql"},

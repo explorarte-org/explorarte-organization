@@ -172,6 +172,14 @@ func (s *Service) GetDeadLetter(ctx context.Context, id int64) (DeadLetter, erro
 }
 
 func (s *Service) CreateTask(ctx context.Context, request CreateRequest, actorType, actorID string) (Task, bool, error) {
+	prepared, err := s.prepareCreate(ctx, request, actorType, actorID)
+	if err != nil {
+		return Task{}, false, err
+	}
+	return s.persistence.Create(ctx, prepared)
+}
+
+func (s *Service) prepareCreate(ctx context.Context, request CreateRequest, actorType, actorID string) (PreparedCreate, error) {
 	request = NormalizeCreateRequest(request)
 	if request.OrganizationID == "" {
 		request.OrganizationID = s.cfg.OrganizationID
@@ -181,7 +189,7 @@ func (s *Service) CreateTask(ctx context.Context, request CreateRequest, actorTy
 		request.MaxAttempts = s.cfg.DefaultMaxAttempts
 	}
 	if err := ValidateCreateRequest(request); err != nil {
-		return Task{}, false, err
+		return PreparedCreate{}, err
 	}
 	// A newly persisted task always gets an explicit, non-empty TaskClass
 	// -- an empty request.TaskClass just means the caller didn't propose
@@ -204,42 +212,85 @@ func (s *Service) CreateTask(ctx context.Context, request CreateRequest, actorTy
 	}
 	actorType, actorID = normalizeActor(actorType, actorID)
 	if err := validateActor(actorType, actorID); err != nil {
-		return Task{}, false, err
+		return PreparedCreate{}, err
 	}
 	revision, err := s.catalog.CurrentRevision(ctx, request.OrganizationID)
 	if err != nil {
-		return Task{}, false, mapCatalogError(err)
+		return PreparedCreate{}, mapCatalogError(err)
 	}
 	assigned, err := s.catalog.GetRole(ctx, request.OrganizationID, request.AssignedRoleID)
 	if err != nil {
-		return Task{}, false, mapCatalogError(err)
+		return PreparedCreate{}, mapCatalogError(err)
 	}
 	if !roleAssignable(assigned) {
-		return Task{}, false, fmt.Errorf("%w: %s", ErrAssigneeUnavailable, request.AssignedRoleID)
+		return PreparedCreate{}, fmt.Errorf("%w: %s", ErrAssigneeUnavailable, request.AssignedRoleID)
 	}
 	if request.RequestedByRoleID != "" {
 		requester, roleErr := s.catalog.GetRole(ctx, request.OrganizationID, request.RequestedByRoleID)
 		if roleErr != nil {
-			return Task{}, false, mapCatalogError(roleErr)
+			return PreparedCreate{}, mapCatalogError(roleErr)
 		}
 		if requester.Retired {
-			return Task{}, false, fmt.Errorf("%w: requester %s is retired", ErrInvalidInput, requester.ID)
+			return PreparedCreate{}, fmt.Errorf("%w: requester %s is retired", ErrInvalidInput, requester.ID)
 		}
 	}
 	hash, err := HashCreateRequest(request)
 	if err != nil {
-		return Task{}, false, err
+		return PreparedCreate{}, err
 	}
 	initial := StatusReady
 	if len(request.Dependencies) > 0 || request.AvailableAt != nil {
 		initial = StatusPending
 	}
-	return s.persistence.Create(ctx, PreparedCreate{
+	// A held task is born blocked. Creating it ready and blocking it
+	// afterwards would leave it claimable in the window between the two
+	// writes, which is precisely the defect the hold exists to remove, so
+	// the hold is decided here and persisted by the same INSERT.
+	//
+	// The hold outranks the dependency-derived status because they answer
+	// different questions and the answer to this one is "not yet, at all".
+	// Dependencies are re-evaluated on release, so a held task with
+	// unsatisfied dependencies still lands in pending, never ready.
+	reasonCode, reason := "", ""
+	if request.HoldForCoordination {
+		initial = StatusBlocked
+		reasonCode = ReasonCodeCoordinationHold
+		reason = "task is not published until its creator's coordination is durable"
+	}
+	return PreparedCreate{
 		Request: request, OrganizationRevisionID: revision.ID, AssignedUnitID: assigned.UnitID,
 		TaskClass: request.TaskClass, TaskClassExplicit: taskClassExplicit,
-		RequestHash: hash, InitialStatus: initial, DefaultMaxAttempts: s.cfg.DefaultMaxAttempts,
-		OutboxMaxAttempts: s.cfg.OutboxMaxAttempts, ActorType: actorType, ActorID: actorID,
-	})
+		RequestHash: hash, InitialStatus: initial,
+		InitialStatusReasonCode: reasonCode, InitialStatusReason: reason,
+		DefaultMaxAttempts: s.cfg.DefaultMaxAttempts,
+		OutboxMaxAttempts:  s.cfg.OutboxMaxAttempts, ActorType: actorType, ActorID: actorID,
+	}, nil
+}
+
+// ReleaseCoordinationHold publishes a task created under a coordination hold.
+//
+// It is deliberately NOT UnblockTask. An operator unblocking a dependency or
+// assignee problem has no way to know whether a child's budget and delegation
+// exist, so allowing that path to publish a held child would put the
+// invariant back in the hands of whoever happens to call the generic tool.
+// The store enforces the distinction; this method only carries it.
+func (s *Service) ReleaseCoordinationHold(ctx context.Context, command ReleaseCoordinationHoldCommand) (Task, error) {
+	if command.TaskID <= 0 {
+		return Task{}, fmt.Errorf("%w: task ID must be positive", ErrInvalidInput)
+	}
+	command.ActorType, command.ActorID = normalizeActor(command.ActorType, command.ActorID)
+	if err := validateActor(command.ActorType, command.ActorID); err != nil {
+		return Task{}, err
+	}
+	detail, err := s.persistence.GetTask(ctx, command.TaskID)
+	if err != nil {
+		return Task{}, err
+	}
+	check, err := s.validateAssignee(ctx, detail.Task)
+	if err != nil {
+		return Task{}, err
+	}
+	return s.persistence.ReleaseCoordinationHold(ctx, command, check, s.cfg.OutboxMaxAttempts)
 }
 
 func (s *Service) AddDependency(ctx context.Context, command AddDependencyCommand) error {

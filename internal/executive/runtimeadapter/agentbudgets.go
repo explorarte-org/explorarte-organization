@@ -10,15 +10,21 @@ import (
 )
 
 // AgentBudgets adapts internal/agentbudget.Ledger to executive.AgentBudgetProvider.
+//
+// It deliberately holds no Limits of its own. It used to, read from the
+// process environment, and that field was the second representation of what a
+// campaign may spend: whichever process reached CreateRootBudget first decided
+// the campaign's ceilings for good, because the durable row is
+// ON CONFLICT DO NOTHING. The ceilings now arrive from the submission that
+// resolved them, so this adapter has nothing left to disagree about.
 type AgentBudgets struct {
 	Ledger agentbudget.Ledger
-	Limits agentbudget.Limits
 }
 
 var _ executive.AgentBudgetProvider = AgentBudgets{}
 
-func (a AgentBudgets) CreateRootBudget(ctx context.Context, root executive.TaskRecord, now time.Time) error {
-	_, err := a.Ledger.CreateRootBudget(ctx, root.OrganizationID, root.ID, root.AssignedRoleID, a.Limits, now)
+func (a AgentBudgets) CreateRootBudget(ctx context.Context, root executive.TaskRecord, limits executive.CampaignBudget, now time.Time) error {
+	_, err := a.Ledger.CreateRootBudget(ctx, root.OrganizationID, root.ID, root.AssignedRoleID, limits, now)
 	return err
 }
 

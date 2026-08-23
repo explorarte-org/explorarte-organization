@@ -163,3 +163,15 @@ type Service interface {
 	Validate(context.Context, int64) (SnapshotValidation, error)
 	Invalidate(context.Context, InvalidateCommand) (Snapshot, error)
 }
+
+// RepositoryEvidenceProvider supplies bounded excerpts of the repository an
+// execution is allowed to observe, at one exact commit.
+//
+// It is asked only when a BuildRequest carries a pinned commit, and it is
+// given that commit rather than choosing one: a provider free to decide which
+// version to read could hand a design a repository nobody decided to reason
+// about.
+type RepositoryEvidenceProvider interface {
+	ListRepositoryEvidence(ctx context.Context, request BuildRequest) ([]SourceRecord, error)
+	ValidateVersion(ctx context.Context, actorRoleID string, source SourceRecord) error
+}

@@ -33,6 +33,12 @@ type TaskCoordinator interface {
 	FinalizeFailed(context.Context, int64, string, string, string, string) (TaskRecord, error)
 	BlockTask(context.Context, int64, string, string, string, string) (TaskRecord, error)
 	UnblockTask(context.Context, int64, string, string) (TaskRecord, error)
+	// ReleaseCoordinationHold publishes a task created with
+	// HoldForCoordination once its creator's obligations are durable. It is
+	// separate from UnblockTask because only the creator can truthfully
+	// assert that coordination happened, and it is idempotent: releasing an
+	// already-published task reports it unchanged.
+	ReleaseCoordinationHold(context.Context, int64) (TaskRecord, error)
 	Reconcile(context.Context, int) error
 }
 
@@ -97,6 +103,11 @@ type CreateTaskCommand struct {
 	CausationID        string
 	Dependencies       []int64
 	Requirements       []RequirementProposal
+	// HoldForCoordination creates the task under a durable publication
+	// barrier instead of ready. It is set by coordinatedChildren and by
+	// nothing else: a caller free to omit it would be a caller free to
+	// recreate the race it closes.
+	HoldForCoordination bool
 }
 
 type EvidenceCommand struct {
@@ -172,9 +183,17 @@ type ContextRequest struct {
 	TaskClass        string
 	ExecutionPurpose string
 	ActorUnitID      string
-	IdempotencyKey   string
-	CorrelationID    string
-	CausationID      string
+	// RepositoryBaseSHA is the campaign's pinned commit, set only for
+	// executions that are allowed to observe code. It comes from the durable
+	// pin and never from resolving the promotion target again: a context
+	// assembled against a freshly resolved head would show one round a
+	// different repository than the last.
+	RepositoryBaseSHA string
+	// RepositoryQuery is what the selection reads to decide where to look.
+	RepositoryQuery string
+	IdempotencyKey  string
+	CorrelationID   string
+	CausationID     string
 }
 
 type DispatchProvisioner interface {
@@ -219,7 +238,12 @@ type AuthorizationRequest struct {
 // WithAgentBudgets) — a nil provider means no budget tracking, existing
 // behavior is unaffected.
 type AgentBudgetProvider interface {
-	CreateRootBudget(ctx context.Context, root TaskRecord, now time.Time) error
+	// CreateRootBudget starts the campaign's budget tree at the ceilings the
+	// submission resolved. The limits are a parameter, not provider state:
+	// a provider that carried its own would be a second answer to what a
+	// campaign may spend, and the durable row keeps whichever answer arrived
+	// first.
+	CreateRootBudget(ctx context.Context, root TaskRecord, limits CampaignBudget, now time.Time) error
 	// InheritForChild attaches child to root's budget tree at depth. It
 	// shares root's remaining budget outright — it never carves out a
 	// separate sub-allocation, since the orchestrator has no per-child

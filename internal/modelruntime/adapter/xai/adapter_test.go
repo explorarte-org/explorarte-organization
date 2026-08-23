@@ -158,8 +158,14 @@ func TestRequestUsesMaxCompletionTokensAndNeverMaxTokens(t *testing.T) {
 	if payload["max_completion_tokens"] != float64(4096) {
 		t.Fatalf("max_completion_tokens=%v", payload["max_completion_tokens"])
 	}
-	if payload["stream"] != false {
-		t.Fatalf("stream=%v", payload["stream"])
+	// Streaming is required, not optional. Without it the transport's
+	// ResponseHeaderTimeout waits for the first byte of a completion that
+	// sends none until it is finished, so it races the model's thinking time
+	// -- which is exactly how AUTONOMY-SMOKE-001's adversarial review was cut
+	// at 90 seconds with nothing billed and no way to tell whether the
+	// provider had processed it.
+	if payload["stream"] != true {
+		t.Fatalf("stream=%v: a reasoning model must be streamed or its thinking time races the header timeout", payload["stream"])
 	}
 }
 

@@ -271,7 +271,7 @@ func (f fakeExecutive) Start(ctx context.Context, request workflowruntime.GoalRe
 	root, reused, err := f.tasks.Initiate(ctx, workflowruntime.WorkRequest{
 		OrganizationID: request.Actor.OrganizationID, RequestedByRoleID: request.Actor.RoleID,
 		AssignedRoleID: topologyfixture.RoleCEO, IdempotencyKey: request.IdempotencyKey,
-		Title: "Owner goal", Instructions: request.Goal, AcceptanceCriteria: request.AcceptanceCriteria,
+		Title: "Owner goal", Instructions: request.Goal, AcceptanceCriteria: goalCriterionTexts(request.AcceptanceCriteria),
 		MaxAttempts: 3, CorrelationID: correlation, Requirements: request.Requirements,
 	}, request.Actor)
 	return workflowruntime.ExecutiveStart{RootTaskID: root.TaskID, CorrelationID: correlation, LegacyState: "accepted", Reused: reused}, err
@@ -495,7 +495,7 @@ func TestWorkflowRuntimeComposesDurableMultiHopFlow(t *testing.T) {
 
 	started, err := runtime.StartGoal(context.Background(), workflowruntime.GoalRequest{
 		Actor: actor(topologyfixture.RoleOwner, "p-owner"), Goal: "Ship a verified result",
-		AcceptanceCriteria: []string{"evidence exists"}, IdempotencyKey: "goal-1",
+		AcceptanceCriteria: []workflowruntime.GoalAcceptanceCriterion{{Text: "evidence exists", Phase: "design"}}, IdempotencyKey: "goal-1",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -788,4 +788,15 @@ func TestSameRoleProgressionNeverUsesCoordinationPort(t *testing.T) {
 	}); !errors.Is(err, workflowruntime.ErrSameRoleCoordination) {
 		t.Fatalf("same-role message err=%v", err)
 	}
+}
+
+// goalCriterionTexts drops the phase for the fake task store, which records
+// requirements as prose. The phase is the Executive's concern; this fake
+// stands in for the task layer, which never had it.
+func goalCriterionTexts(criteria []workflowruntime.GoalAcceptanceCriterion) []string {
+	out := make([]string, 0, len(criteria))
+	for _, criterion := range criteria {
+		out = append(out, criterion.Text)
+	}
+	return out
 }

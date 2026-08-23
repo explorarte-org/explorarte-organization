@@ -206,6 +206,14 @@ func (f *fakeModelRuntime) Execute(_ context.Context, command executive.HarnessR
 	}, nil
 }
 
+// ProviderFailureRetryable answers false: this fixture's model runtime never
+// records a transient provider outcome, so nothing it produces is worth
+// retrying. Returning true would make failure paths retry against a fake that
+// always fails the same way.
+func (f *fakeModelRuntime) ProviderFailureRetryable(context.Context, int64) (bool, error) {
+	return false, nil
+}
+
 func (f *fakeModelRuntime) GetInvocation(_ context.Context, id int64) (executive.InvocationRecord, error) {
 	for _, values := range f.byAttempt {
 		for _, value := range values {

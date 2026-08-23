@@ -69,16 +69,26 @@ func TestDAGTasksAddsSourceDependencyAtCreate(t *testing.T) {
 // MaxModelCalls after the Harness migration: the gate is consulted before the
 // run, from durable state, and refuses the call that would exceed the budget.
 func TestModelCallBudgetRejectsProspectiveThirdCEOCall(t *testing.T) {
+	// Ten attempts of one CEO phase is a loop, not work: three phases with
+	// three attempts each is everything a campaign can legitimately spend.
+	// The seeded invocations are what already happened; the call under test
+	// is the one that would exceed it.
+	attempts := make([]executive.AttemptRecord, 0, 10)
+	invocations := map[[2]int64][]executive.InvocationRecord{}
+	for i := 0; i < 10; i++ {
+		attemptID := int64(11 + i)
+		attempts = append(attempts, executive.AttemptRecord{ID: attemptID})
+		if i < 9 {
+			invocations[[2]int64{1, attemptID}] = []executive.InvocationRecord{{ID: 100 + attemptID}}
+		}
+	}
 	tasks := &captureTasks{listed: []executive.TaskRecord{{
 		ID: 1, AssignedRoleID: executive.CEORoleID, IdempotencyKey: "executive:1:ceo-plan", CorrelationID: "executive:x",
-		Attempts: []executive.AttemptRecord{{ID: 11}, {ID: 12}, {ID: 13}},
+		Attempts: attempts,
 	}}}
-	models := &fakeBudgetModels{byAttempt: map[[2]int64][]executive.InvocationRecord{
-		{1, 11}: []executive.InvocationRecord{{ID: 101}},
-		{1, 12}: []executive.InvocationRecord{{ID: 102}},
-	}}
+	models := &fakeBudgetModels{byAttempt: invocations}
 	guard := ModelCallBudget{Models: models, Tasks: tasks, Limits: executive.DefaultLimits()}
-	err := guard.AuthorizeModelCall(context.Background(), executive.ModelCallBudgetRequest{TaskID: 1, AttemptID: 13, CorrelationID: "executive:x"})
+	err := guard.AuthorizeModelCall(context.Background(), executive.ModelCallBudgetRequest{TaskID: 1, AttemptID: 20, CorrelationID: "executive:x"})
 	if !errors.Is(err, executive.ErrBudgetExceeded) {
 		t.Fatalf("err=%v", err)
 	}

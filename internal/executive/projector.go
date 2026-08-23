@@ -16,7 +16,7 @@ func ProjectRun(root TaskRecord, children []TaskRecord) Run {
 		run.State = StateCompleted
 		return run
 	}
-	if root.Status == "failed" || root.Status == "rejected" || root.Status == "dead_letter" {
+	if isFailedTask(root.Status) {
 		run.State = StateFailed
 		return run
 	}
@@ -68,7 +68,7 @@ func ProjectRun(root TaskRecord, children []TaskRecord) Run {
 			run.Reason = t.Reason
 			return run
 		}
-		if t.Status == "failed" || t.Status == "rejected" || t.Status == "dead_letter" {
+		if isFailedTask(t.Status) {
 			run.State = StateFailed
 			run.ReasonCode = t.ReasonCode
 			run.Reason = t.Reason
@@ -93,4 +93,25 @@ func ProjectRun(root TaskRecord, children []TaskRecord) Run {
 		run.State = StateDepartmentPlanning
 	}
 	return run
+}
+
+// isFailedTask reports a task that ended without producing its result and
+// cannot produce one later.
+//
+// It is one function, used by the projector that REPORTS a run as failed and
+// by the orchestrator that has to ACT on it. Those were two different pieces
+// of knowledge until AUTONOMY-SMOKE-013: the projector correctly reported the
+// run as failed the moment a review task dead-lettered, and nothing anywhere
+// read that projection, so the root sat ready forever while every pass of the
+// worker returned no error and no progress.
+//
+// "blocked" is deliberately absent. A blocked task is waiting for someone, and
+// waiting is not failing.
+func isFailedTask(status string) bool {
+	switch status {
+	case "failed", "rejected", "dead_letter":
+		return true
+	default:
+		return false
+	}
 }

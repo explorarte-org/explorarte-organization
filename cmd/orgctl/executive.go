@@ -17,6 +17,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/executive"
 	executivebootstrap "github.com/Mireuz13/explorarte-organization/internal/executive/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/executive/runtimeadapter"
+	"github.com/Mireuz13/explorarte-organization/internal/modelpricing"
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
@@ -57,8 +58,23 @@ func runExecutiveSubmit(args []string, stdout, stderr io.Writer) int {
 	actorRole := flags.String("actor-role", "", "requesting owner role")
 	idempotencyKey := flags.String("idempotency-key", "", "stable owner request key")
 	jsonOutput := flags.Bool("json", false, "emit JSON")
+	// The campaign's ceilings are stated here, at the moment the campaign is
+	// created, and are recorded durably with its root. They are flags rather
+	// than environment because the environment is what made the effective
+	// budget depend on which process submitted: two processes, two
+	// configurations, and a durable row that keeps whichever arrived first.
+	defaults := executive.DefaultCampaignBudget()
+	maxUSD := flags.Float64("max-usd", defaults.MaxUSD.USD(), "campaign USD ceiling, recorded durably at submission")
+	maxTokens := flags.Int64("max-tokens", defaults.MaxTokens, "campaign token ceiling, recorded durably at submission")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *file == "" || *actorRole == "" || *idempotencyKey == "" {
-		fmt.Fprintln(stderr, "usage: orgctl executive submit --file goal.json --actor-role empresa/human --idempotency-key KEY [--json]")
+		fmt.Fprintln(stderr, "usage: orgctl executive submit --file goal.json --actor-role empresa/human --idempotency-key KEY [--max-usd 5] [--max-tokens 500000] [--json]")
+		return exitUsage
+	}
+	budget := defaults
+	budget.MaxUSD = modelpricing.USDFromDollars(*maxUSD)
+	budget.MaxTokens = *maxTokens
+	if err := budget.Validate(); err != nil {
+		fmt.Fprintf(stderr, "invalid campaign budget: %v\n", err)
 		return exitUsage
 	}
 	goal, err := readExecutiveGoal(*file)
@@ -73,7 +89,7 @@ func runExecutiveSubmit(args []string, stdout, stderr io.Writer) int {
 	defer cancel()
 	defer store.Close()
 	_ = cfg
-	run, reused, err := runtime.Orchestrator.Submit(ctx, executive.SubmitRequest{Goal: goal, ActorRoleID: *actorRole, IdempotencyKey: *idempotencyKey})
+	run, reused, err := runtime.Orchestrator.Submit(ctx, executive.SubmitRequest{Goal: goal, ActorRoleID: *actorRole, IdempotencyKey: *idempotencyKey, Budget: &budget})
 	if err != nil {
 		fmt.Fprintf(stderr, "submit executive run: %v\n", err)
 		return executiveExitCode(err)
@@ -169,7 +185,18 @@ func runExecutiveWorker(args []string, stdout, stderr io.Writer) int {
 		return exitInternal
 	}
 	rootSource := runtimeadapter.Tasks{Service: runtime.Tasks, OrganizationID: cfg.Tasks.OrganizationID}
-	worker, err := executive.NewWorker(runtime.Orchestrator, rootSource, executive.WorkerConfig{PollInterval: *poll, ErrorBackoff: *errorBackoff, BatchSize: *batch})
+	// The worker's own error handling assumes model executions get
+	// reconciled -- it skips unresolved provider-side executions expecting
+	// them to settle. Nothing ran that sweep: it existed only as
+	// `orgctl model invocation reconcile`, so a stranded invocation stayed
+	// stranded and every pass skipped it again. Wiring it here is what makes
+	// the assumption true in the deployment, not just in the code.
+	worker, err := executive.NewWorker(runtime.Orchestrator, rootSource,
+		executive.WorkerConfig{PollInterval: *poll, ErrorBackoff: *errorBackoff, BatchSize: *batch},
+		executive.WithExecutionReconciler(runtimeadapter.ExecutionReconciler{Invocations: runtime.Models.Invocations}),
+		executive.WithFailureObserver(func(rootTaskID int64, err error) {
+			fmt.Fprintf(stderr, "executive worker: root %d: %v\n", rootTaskID, err)
+		}))
 	if err != nil {
 		fmt.Fprintf(stderr, "create executive worker: %v\n", err)
 		return exitInternal

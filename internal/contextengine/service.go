@@ -21,20 +21,21 @@ type ServiceConfig struct {
 }
 
 type contextService struct {
-	config    ServiceConfig
-	registry  RegistryReader
-	documents DocumentLoader
-	canonical CanonicalPolicyProvider
-	owner     OwnerConstraintProvider
-	memory    MemoryProvider
-	skills    SkillProvider
-	projects  ProjectContextProvider
-	tasks     TaskContextProvider
-	rag       RAGEvidenceProvider
-	assembler Assembler
-	renderer  Renderer
-	store     SnapshotStore
-	clock     Clock
+	config     ServiceConfig
+	registry   RegistryReader
+	documents  DocumentLoader
+	canonical  CanonicalPolicyProvider
+	owner      OwnerConstraintProvider
+	memory     MemoryProvider
+	skills     SkillProvider
+	projects   ProjectContextProvider
+	tasks      TaskContextProvider
+	rag        RAGEvidenceProvider
+	repository RepositoryEvidenceProvider
+	assembler  Assembler
+	renderer   Renderer
+	store      SnapshotStore
+	clock      Clock
 }
 
 func NewService(
@@ -52,6 +53,7 @@ func NewService(
 	renderer Renderer,
 	store SnapshotStore,
 	clock Clock,
+	options ...ServiceOption,
 ) (Service, error) {
 	if strings.TrimSpace(config.OrganizationAgentPath) == "" {
 		return nil, errors.New("organization agent path is required")
@@ -65,7 +67,50 @@ func NewService(
 	if clock == nil {
 		clock = systemClock{}
 	}
-	return &contextService{config: config, registry: registryReader, documents: documents, canonical: canonical, owner: owner, memory: memory, skills: skills, projects: projects, tasks: tasks, rag: rag, assembler: assembler, renderer: renderer, store: store, clock: clock}, nil
+	service := &contextService{config: config, registry: registryReader, documents: documents, canonical: canonical, owner: owner, memory: memory, skills: skills, projects: projects, tasks: tasks, rag: rag, assembler: assembler, renderer: renderer, store: store, clock: clock}
+	for _, option := range options {
+		option(service)
+	}
+	return service, nil
+}
+
+// ServiceOption configures an optional capability.
+//
+// A named option rather than a fourteenth positional argument. The constructor
+// already takes thirteen, and every call site would have had to change to say
+// "no repository" -- which is both noise and an invitation to pass the wrong
+// nil. Converting the whole signature to a Dependencies struct is the right
+// end state and is deliberately not done here: it is an orthogonal
+// maintainability change and this branch is already large.
+type ServiceOption func(*contextService)
+
+// WithRepositoryEvidence lets a deployment give executions eyes on the code
+// they are authorized to change.
+//
+// Absent, every BuildRequest carrying a pinned commit fails closed rather than
+// silently producing a context with no code in it. A deployment that has not
+// configured a repository must not be able to look like one whose repository
+// happened to be empty.
+func WithRepositoryEvidence(provider RepositoryEvidenceProvider) ServiceOption {
+	return func(s *contextService) { s.repository = provider }
+}
+
+// includedKindCount reports how many segments of a kind actually survived
+// assembly, which is the only number that says what the model will see.
+//
+// Included is the whole point. An omitted segment REMAINS in Segments,
+// carrying its reference and its omission reason, so counting segments of a
+// kind counts the ones that were dropped as though the model had read them --
+// which is precisely the silent blindness this check exists to catch, and the
+// first version of this function had exactly that bug.
+func includedKindCount(assembly Assembly, kind SourceKind) int {
+	total := 0
+	for _, segment := range assembly.Segments {
+		if segment.SourceKind == kind && segment.Included {
+			total++
+		}
+	}
+	return total
 }
 
 func (s *contextService) Build(ctx context.Context, request BuildRequest) (BuildResult, error) {
@@ -86,6 +131,21 @@ func (s *contextService) Build(ctx context.Context, request BuildRequest) (Build
 	})
 	if err != nil {
 		return s.rejectBuild(ctx, request, err)
+	}
+	// Repository evidence is untrusted data, and untrusted data is droppable
+	// under context pressure -- correctly, in general. But an execution that
+	// was given a commit precisely so it could look at code cannot be allowed
+	// to proceed having looked at none.
+	//
+	// Losing excerpts nine through sixteen to the budget is fine: it saw
+	// eight. Losing all of them and calling the model anyway is the original
+	// blindness with a healthy sensor attached, and it would be invisible --
+	// every component reports success and the design simply starts guessing
+	// again.
+	if request.RepositoryBaseSHA != "" && includedKindCount(assembly, SourceRepositoryEvidence) == 0 {
+		return s.rejectBuild(ctx, request, fmt.Errorf(
+			"%w: every excerpt of %s was dropped before the model could see it",
+			ErrRepositoryEvidenceUnavailable, request.RepositoryBaseSHA))
 	}
 	canonicalRequest := CanonicalBuildRequest{
 		Request: request, PrecedenceHash: bundle.PrecedenceHash, CanonicalBundleHash: bundle.BundleHash, Sources: sources,
@@ -310,6 +370,21 @@ func (s *contextService) resolve(ctx context.Context, request BuildRequest) (reg
 	if err != nil {
 		return registry.Organization{}, nil, registry.Role{}, registry.Unit{}, CanonicalBundle{}, nil, nil, err
 	}
+	// Adversarial review resolves an enumerated source set instead of the
+	// assembled one. The canonical bundle is still loaded above because the
+	// Snapshot's own identity is bound to it, but none of its records enter
+	// this context: the reviewer's provider may not receive organizational
+	// data, and the ordinary assembly is organizational by construction.
+	if adversarialReviewRequested(request) {
+		if err = validateAdversarialSelector(request); err != nil {
+			return registry.Organization{}, nil, registry.Role{}, registry.Unit{}, CanonicalBundle{}, nil, nil, err
+		}
+		restricted, restrictedErr := s.adversarialReviewSources().Build(ctx, request, role)
+		if restrictedErr != nil {
+			return registry.Organization{}, nil, registry.Role{}, registry.Unit{}, CanonicalBundle{}, nil, nil, restrictedErr
+		}
+		return organization, revision, role, unit, bundle, restricted, nil, nil
+	}
 	sources := canonicalRecords(bundle)
 	ownerSources, err := s.owner.ListApplicable(ctx, request)
 	if err != nil {
@@ -415,6 +490,35 @@ func (s *contextService) resolve(ctx context.Context, request BuildRequest) (reg
 	for _, source := range evidence {
 		sources = append(sources, normalizeSource(source, TierRAGEvidence, SourceRAGEvidence, InstructionData, TrustUntrusted, false))
 	}
+	// Repository evidence is gathered only for an execution that carries a
+	// pinned commit, and a failure to gather it is NOT absorbed the way an
+	// unavailable optional provider is.
+	//
+	// An execution asked to reason about code, whose sensor could not answer,
+	// must not proceed as though the repository were empty: that is the
+	// silent blindness this whole capability exists to remove, and it would
+	// look identical to a healthy run from every other angle.
+	if request.RepositoryBaseSHA != "" {
+		if s.repository == nil {
+			return registry.Organization{}, nil, registry.Role{}, registry.Unit{}, CanonicalBundle{}, nil, nil,
+				fmt.Errorf("%w: this deployment has no repository to observe", ErrRepositoryEvidenceUnavailable)
+		}
+		excerpts, repoErr := s.repository.ListRepositoryEvidence(ctx, request)
+		if repoErr != nil {
+			return registry.Organization{}, nil, registry.Role{}, registry.Unit{}, CanonicalBundle{}, nil, nil,
+				fmt.Errorf("%w: %v", ErrRepositoryEvidenceUnavailable, repoErr)
+		}
+		for _, source := range excerpts {
+			// The version must be the commit that was asked for. A provider
+			// returning excerpts of some other commit is answering a
+			// different question than the one the design is about.
+			if source.Version != request.RepositoryBaseSHA {
+				return registry.Organization{}, nil, registry.Role{}, registry.Unit{}, CanonicalBundle{}, nil, nil,
+					fmt.Errorf("%w: evidence cites %s but this execution is about %s", ErrRepositoryEvidenceUnavailable, source.Version, request.RepositoryBaseSHA)
+			}
+			sources = append(sources, source)
+		}
+	}
 	return organization, revision, role, unit, bundle, sources, resolvedSkills, nil
 }
 
@@ -471,6 +575,22 @@ func (s *contextService) revalidateResolved(ctx context.Context, request BuildRe
 	}
 	if err = s.canonical.Validate(ctx, bundle.PrecedenceHash, bundle.BundleHash); err != nil {
 		return err
+	}
+	// The adversarial source set is a different representation of the same
+	// kinds, so it cannot be revalidated by the generic providers below. Its
+	// SourceTaskContext is a review bundle re-encoded from a closed field
+	// list; TaskContextProvider.ValidateVersion would rebuild the full
+	// organizational task record and report drift on every review, because
+	// those two hashes are never meant to match. Build and Validate live on
+	// one collaborator precisely so they cannot disagree about what the
+	// representation is.
+	if adversarialReviewRequested(request) {
+		if len(skills) > 0 {
+			// Build resolves no skills for this mode. If that ever changes,
+			// this branch would skip their validation silently.
+			return Reject(ReasonSkillNotFound, request.ActorRoleID, "adversarial review context must not carry skills")
+		}
+		return s.adversarialReviewSources().Validate(ctx, request, role, sources)
 	}
 	for _, source := range sources {
 		switch source.Kind {
@@ -573,6 +693,27 @@ func (s *contextService) Validate(ctx context.Context, id int64) (SnapshotValida
 		}
 		drift = append(drift, DriftFinding{ReasonCode: string(code), Reference: "docs/canonical"})
 	}
+	// An adversarial snapshot is a different representation of the same
+	// SourceKinds, so the generic per-kind validation below cannot judge it:
+	// its SourceTaskContext is a review bundle re-encoded from a closed field
+	// list, and the Tasks provider would compare that against a freshly
+	// rebuilt organizational task record. Those hashes never match by design,
+	// which reported drift on every single adversarial review.
+	if selectorOfSnapshot(snapshot).requested() {
+		if validateErr := s.adversarialReviewSources().ValidateSnapshot(ctx, snapshot, role); validateErr != nil {
+			if IsOperational(validateErr) {
+				return SnapshotValidation{}, fmt.Errorf("validate adversarial snapshot %d: %w", snapshot.ID, validateErr)
+			}
+			drift = append(drift, DriftFinding{ReasonCode: string(ReasonOf(validateErr)), Reference: snapshot.TaskRef})
+		}
+		if err = s.verifySnapshotIntegrity(ctx, snapshot); err != nil {
+			drift = append(drift, DriftFinding{ReasonCode: string(ReasonRenderedHashMismatch), Expected: snapshot.RenderedHash})
+		}
+		if len(drift) > 0 {
+			return s.recordStale(ctx, snapshot, drift)
+		}
+		return SnapshotValidation{Valid: true}, nil
+	}
 	for _, segment := range snapshot.Segments {
 		switch segment.SourceKind {
 		case SourceOrganizationAgent, SourceDepartmentAgent, SourceRoleProfile:
@@ -638,15 +779,22 @@ func (s *contextService) Validate(ctx context.Context, id int64) (SnapshotValida
 		drift = append(drift, DriftFinding{ReasonCode: string(ReasonRenderedHashMismatch), Expected: snapshot.RenderedHash})
 	}
 	if len(drift) > 0 {
-		validation := SnapshotValidation{Valid: false, ReasonCode: string(ReasonSnapshotStale), Drift: drift}
-		if recorder, ok := s.store.(ValidationEventRecorder); ok {
-			if recordErr := recorder.RecordValidationFailure(ctx, snapshot, validation, s.clock.Now().UTC()); recordErr != nil {
-				return SnapshotValidation{}, fmt.Errorf("record snapshot validation failure: %w", recordErr)
-			}
-		}
-		return validation, nil
+		return s.recordStale(ctx, snapshot, drift)
 	}
 	return SnapshotValidation{Valid: true}, nil
+}
+
+// recordStale is the one place a stale verdict is shaped and durably recorded,
+// so the adversarial path and the ordinary one cannot report the same finding
+// two different ways.
+func (s *contextService) recordStale(ctx context.Context, snapshot Snapshot, drift []DriftFinding) (SnapshotValidation, error) {
+	validation := SnapshotValidation{Valid: false, ReasonCode: string(ReasonSnapshotStale), Drift: drift}
+	if recorder, ok := s.store.(ValidationEventRecorder); ok {
+		if recordErr := recorder.RecordValidationFailure(ctx, snapshot, validation, s.clock.Now().UTC()); recordErr != nil {
+			return SnapshotValidation{}, fmt.Errorf("record snapshot validation failure: %w", recordErr)
+		}
+	}
+	return validation, nil
 }
 
 func (s *contextService) Invalidate(ctx context.Context, command InvalidateCommand) (Snapshot, error) {

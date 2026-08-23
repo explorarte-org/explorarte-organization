@@ -105,14 +105,15 @@ func TestRestartResumesTheSameRoundWithoutRepeatingTheReview(t *testing.T) {
 	// A brand new Orchestrator over the SAME durable store: new process, new
 	// in-memory lease map, nothing carried over but the tasks themselves.
 	leader := RoleRef{ID: "ingenieria_ia/orquestador", UnitID: "ingenieria_ia", Enabled: true, Executable: true, CanonicalLeader: true}
+	workerRole := RoleRef{ID: "ingenieria_ia/qa", UnitID: "ingenieria_ia", Enabled: true, Executable: true}
 	reviewer := RoleRef{ID: AdversarialReviewerRoleID, UnitID: "investigacion", Enabled: true, Executable: true}
 	ceo := RoleRef{ID: CEORoleID, UnitID: "empresa", Enabled: true, Executable: true}
-	restarted, err := NewOrchestrator(Dependencies{
+	restarted, err := NewOrchestrator(Dependencies{Acceptance: fixture.acceptance,
 		OrganizationID: "explorarte",
 		Registry: fakeRegistry{
 			rev:     RevisionRef{ID: 7},
 			units:   map[string]UnitRef{"ingenieria_ia": {ID: "ingenieria_ia", Operational: true, LeaderRoleID: leader.ID}},
-			roles:   map[string]RoleRef{leader.ID: leader, reviewer.ID: reviewer, ceo.ID: ceo},
+			roles:   map[string]RoleRef{leader.ID: leader, workerRole.ID: workerRole, reviewer.ID: reviewer, ceo.ID: ceo},
 			leaders: map[string]RoleRef{"ingenieria_ia": leader},
 		},
 		Tasks: fixture.tasks, Contexts: &fakeContexts{}, Assignments: fakeAssignments{},

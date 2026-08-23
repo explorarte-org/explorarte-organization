@@ -1,6 +1,10 @@
 package executionharness
 
-import "context"
+import (
+	"context"
+	"errors"
+	"strings"
+)
 
 type AuthorityRequest struct {
 	Identity   RunIdentity
@@ -36,4 +40,43 @@ type jsonRaw = []byte
 type ExecutionHistoryStore interface {
 	Append(context.Context, string, uint64, Event) (Event, error)
 	Read(context.Context, string) ([]Event, error)
+}
+
+// InvocationFailure reports a model call that failed AFTER a durable
+// invocation existed, and names it.
+//
+// Without it the reference dies at the only place that ever held it. The
+// adapter creates the invocation, dispatches it, and on failure returns an
+// empty result and a bare error -- so the Harness records a failed run with
+// nothing to point at, and the Executive, which decides retryability by
+// asking Model Runtime about a specific invocation, has nothing to ask
+// about. Model Runtime had already recorded the answer; the question could
+// not be formed.
+type InvocationFailure struct {
+	// Ref is the durable invocation reference, in the same form a recorded
+	// response carries.
+	Ref string
+	Err error
+}
+
+func (e *InvocationFailure) Error() string { return e.Err.Error() }
+func (e *InvocationFailure) Unwrap() error { return e.Err }
+
+// WithInvocationRef attaches an invocation reference to a failure, when one
+// exists. A failure that never reached an invocation is returned unchanged:
+// naming an invocation that does not exist would be worse than naming none.
+func WithInvocationRef(ref string, err error) error {
+	if err == nil || strings.TrimSpace(ref) == "" {
+		return err
+	}
+	return &InvocationFailure{Ref: strings.TrimSpace(ref), Err: err}
+}
+
+// InvocationRefOf recovers the reference a failure carries, or "".
+func InvocationRefOf(err error) string {
+	var failure *InvocationFailure
+	if errors.As(err, &failure) {
+		return failure.Ref
+	}
+	return ""
 }

@@ -143,9 +143,15 @@ type Limits struct {
 	MaxAcceptanceCriteria  int
 	MaxRequirementsPerTask int
 	MaxDepartmentReplans   int
-	MaxModelCalls          int
-	MaxOutputTokens        int
-	InvocationDeadline     time.Duration
+	// MaxDesignRounds bounds how many times a design may be sent back for
+	// revision before the run stops and waits for a human. Separate from
+	// MaxDepartmentReplans because they bound different loops: a replan is a
+	// leader reworking its own department's tasks, a design round is the
+	// adjudicator refusing the whole design.
+	MaxDesignRounds    int
+	MaxModelCalls      int
+	MaxOutputTokens    int
+	InvocationDeadline time.Duration
 }
 
 func DefaultLimits() Limits {
@@ -153,14 +159,18 @@ func DefaultLimits() Limits {
 		MaxInputBytes: 256 << 10, MaxDepartments: 7, MaxWorkerTasksPerPlan: 24,
 		MaxFollowupTasks: 12, MaxArrayItems: 64, MaxStringBytes: 4000,
 		MaxInstructionsBytes: 16000, MaxAcceptanceCriteria: 32, MaxRequirementsPerTask: 32,
-		MaxDepartmentReplans: 1, MaxModelCalls: 128, MaxOutputTokens: 128000,
+		MaxDepartmentReplans: 1, MaxDesignRounds: 2, MaxModelCalls: 128, MaxOutputTokens: 128000,
 		InvocationDeadline: 10 * time.Minute,
 	}
 }
 
 type OwnerGoal struct {
-	Goal               string                `json:"goal"`
-	AcceptanceCriteria []string              `json:"acceptance_criteria"`
+	Goal string `json:"goal"`
+	// AcceptanceCriteria carries each requirement with the phase that owns
+	// it. A bare string is refused at decode: a criterion with no phase
+	// has no safe default, and guessing one from its words is the
+	// classifier this type exists to avoid.
+	AcceptanceCriteria []AcceptanceCriterion `json:"acceptance_criteria"`
 	Requirements       []RequirementProposal `json:"requirements,omitempty"`
 }
 
@@ -168,6 +178,14 @@ type SubmitRequest struct {
 	Goal           OwnerGoal
 	ActorRoleID    string
 	IdempotencyKey string
+	// Budget is what this campaign may spend, stated once at submission and
+	// recorded durably with its root. Leaving it nil means
+	// DefaultCampaignBudget, identically in every process.
+	//
+	// It belongs to the request rather than to the runtime because the
+	// alternative is what this replaced: ceilings read from whichever
+	// process's environment reached the ledger first.
+	Budget *CampaignBudget
 }
 
 type Run struct {
@@ -250,6 +268,15 @@ type InvocationRecord struct {
 	ErrorCode     string
 	CorrelationID string
 	CausationID   string
+	// ContextSnapshotID is the exact context this invocation was made with.
+	//
+	// It is not a new association: model_invocations already carries it, and
+	// the immutable inputs table keys on (invocation_id, context_snapshot_id).
+	// Exposing it here is what lets a claim be checked against what the model
+	// was actually given, rather than against what a later build of "the same"
+	// context would produce -- which is a different question and would answer
+	// it wrongly whenever anything had changed in between.
+	ContextSnapshotID int64
 	// ProviderExecutionMayHaveStarted is Model Runtime's own answer to "may
 	// this request already have reached the provider, without a resolved
 	// outcome yet". The Executive stores the answer rather than the rule: the

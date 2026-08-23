@@ -77,7 +77,7 @@ func leasedChildTask(t *testing.T, h *integrationHarness, models *integrationMod
 	orchestrator := newOrchestrator(t, h, models, integrationAssignments{}, &countingCompletion{delegate: h.completion})
 	run, _, err := orchestrator.Submit(h.ctx, executive.SubmitRequest{
 		ActorRoleID: executive.OwnerRoleID, IdempotencyKey: "m0-recovery-" + t.Name(),
-		Goal: executive.OwnerGoal{Goal: "Analyze one area.", AcceptanceCriteria: []string{"verified"}},
+		Goal: executive.OwnerGoal{Goal: "Analyze one area.", AcceptanceCriteria: []AcceptanceCriterion{{Text: "verified", Phase: AcceptanceDesign}}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -313,7 +313,7 @@ func TestM0PostgresExecutiveHarnessRunsCarryNoTools(t *testing.T) {
 	orchestrator := newOrchestrator(t, h, models, integrationAssignments{}, &countingCompletion{delegate: h.completion})
 	run, _, err := orchestrator.Submit(h.ctx, executive.SubmitRequest{
 		ActorRoleID: executive.OwnerRoleID, IdempotencyKey: "m0-no-tools",
-		Goal: executive.OwnerGoal{Goal: "Analyze one area.", AcceptanceCriteria: []string{"verified"}},
+		Goal: executive.OwnerGoal{Goal: "Analyze one area.", AcceptanceCriteria: []AcceptanceCriterion{{Text: "verified", Phase: AcceptanceDesign}}},
 	})
 	if err != nil {
 		t.Fatal(err)

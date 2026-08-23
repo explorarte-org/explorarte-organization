@@ -241,7 +241,12 @@ func (a *Adapter) Invoke(ctx context.Context, identity executionharness.RunIdent
 	}
 	dispatched, err := a.dispatch.Dispatch(ctx, created.Invocation.ID)
 	if err != nil {
-		return executionharness.ModelResult{}, err
+		// The invocation exists and Model Runtime has already recorded
+		// whether its failure was transient. Returning a bare error here
+		// threw away the only reference by which that answer can be
+		// retrieved.
+		return executionharness.ModelResult{}, executionharness.WithInvocationRef(
+			strconv.FormatInt(created.Invocation.ID, 10), err)
 	}
 	return mapDispatchResult(created.Invocation, dispatched)
 }
@@ -260,7 +265,8 @@ func (a *Adapter) resume(ctx context.Context, invocation modelruntime.Invocation
 		return executionharness.ModelResult{}, fmt.Errorf("%w: existing invocation is not safely resumable", ErrInvalidResult)
 	}
 	if err != nil {
-		return executionharness.ModelResult{}, err
+		return executionharness.ModelResult{}, executionharness.WithInvocationRef(
+			strconv.FormatInt(invocation.ID, 10), err)
 	}
 	return mapDispatchResult(invocation, dispatched)
 }

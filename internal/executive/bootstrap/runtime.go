@@ -19,6 +19,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/executionharness/modelruntimeadapter"
 	executionharnesspostgres "github.com/Mireuz13/explorarte-organization/internal/executionharness/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/executive"
+	executivepostgres "github.com/Mireuz13/explorarte-organization/internal/executive/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/executive/runtimeadapter"
 	modelbootstrap "github.com/Mireuz13/explorarte-organization/internal/modelruntime/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
@@ -74,7 +75,13 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create executive task context provider: %w", err)
 	}
-	contextRuntime, err := contextbootstrap.Open(cfg, store, taskContextProvider)
+	// The sensor is built here and handed down, so the context runtime never
+	// has to resolve a repository of its own.
+	repositoryOptions, err := repositoryEvidenceOption(cfg, store)
+	if err != nil {
+		return nil, fmt.Errorf("configure repository evidence: %w", err)
+	}
+	contextRuntime, err := contextbootstrap.Open(cfg, store, taskContextProvider, repositoryOptions...)
 	if err != nil {
 		return nil, fmt.Errorf("open executive context runtime: %w", err)
 	}
@@ -175,9 +182,14 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 		Clock: executive.ClockFunc(time.Now),
 	}
 
-	budgetLimits, err := agentBudgetLimits()
+	// The runtime resolves no campaign ceilings of its own; it only refuses to
+	// start pretending it still does.
+	if err := rejectDeprecatedAgentBudgetEnv(); err != nil {
+		return nil, err
+	}
+	acceptanceStore, err := executivepostgres.NewAcceptanceStore(store.Pool())
 	if err != nil {
-		return nil, fmt.Errorf("resolve executive agent budget limits: %w", err)
+		return nil, fmt.Errorf("create executive acceptance store: %w", err)
 	}
 	var orchestrator *executive.Orchestrator
 	dependencies := executive.Dependencies{
@@ -189,6 +201,7 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 		Principals:     runtimeadapter.RoleBoundPrincipals{Resolver: roleBoundResolver},
 		Models:         baseModels,
 		Harness:        harness,
+		Acceptance:     acceptanceStore,
 		Budget:         modelBudget,
 		Completion:     completionGate,
 		Decisions:      decisionRecorder,
@@ -197,7 +210,7 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 		Clock:          executive.ClockFunc(time.Now),
 	}
 	options := []executive.OrchestratorOption{
-		executive.WithAgentBudgets(runtimeadapter.AgentBudgets{Ledger: agentBudgetLedger, Limits: budgetLimits}),
+		executive.WithAgentBudgets(runtimeadapter.AgentBudgets{Ledger: agentBudgetLedger}),
 		executive.WithAgentMessaging(runtimeadapter.AgentMessages{
 			Ledger:         agentMessageLedger,
 			MaxAttempts:    agentMessageMaxAttempts,
@@ -210,6 +223,11 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 		return nil, err
 	}
 	options = append(options, missionOptions...)
+	// Without this the host verifies no citation and the review bundle
+	// authorizes none, so every repository claim reaches the reviewer
+	// ungrounded. That is the safe direction to fail, and it is also a
+	// circuit that never closes -- so it is wired.
+	options = append(options, executive.WithSnapshotSources(snapshotSourceReader{service: contextRuntime.Service}))
 	orchestrator, err = executive.NewOrchestrator(dependencies, options...)
 	if err != nil {
 		return nil, fmt.Errorf("create executive orchestrator: %w", err)

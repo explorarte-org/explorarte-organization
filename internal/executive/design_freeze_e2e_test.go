@@ -92,8 +92,19 @@ func freezeBodies() map[ExecutionPurpose]string {
 		PurposeCEOPlan: `{"schema_version":"executive-plan/v1","objective":"Design M2.1",` +
 			`"department_requests":[{"unit_id":"ingenieria_ia","objective":"design","deliverable":"candidate design","priority":1,"constraints":[]}],` +
 			`"global_constraints":[],"success_criteria":["design reviewed"],"owner_decisions_required":[]}`,
+		// The department must actually produce something. A plan with no
+		// tasks models a department that delivers nothing, and for a long
+		// time that was why nobody noticed the candidate design was the
+		// leader's review verdict: with no deliverable, the verdict was
+		// the only durable text there was.
 		PurposeDepartmentPlan: `{"schema_version":"department-plan/v1","department_id":"ingenieria_ia",` +
-			`"tasks":[],"review_criteria":["design is complete"],"unresolved":[]}`,
+			`"tasks":[{"client_key":"design-1","assigned_role_id":"ingenieria_ia/qa","task_class":"engineering.design",` +
+			`"title":"Draft the candidate design","instructions":"Write the design for M2.1.",` +
+			`"acceptance_criteria":["names what changes"],"dependencies":[],"requirements":[],"priority":50}],` +
+			`"review_criteria":["design is complete"],"unresolved":[]}`,
+		PurposeDepartmentWorker: `{"schema_version":"worker-result/v1",` +
+			`"summary":"M2.1 seals the design before implementation and names every file it will touch.",` +
+			`"evidence_refs":[]}`,
 		PurposeDepartmentReview: `{"schema_version":"department-review/v1","verdict":"accept","findings":["design drafted"],` +
 			`"unsatisfied_criteria":[],"evidence_refs":["task:1:context"],"proposed_followup_tasks":[]}`,
 		PurposeAdversarialReview: `{"schema_version":"adversarial-review/v1","verdict":"revise",` +
@@ -111,24 +122,34 @@ type freezeFixture struct {
 	tasks        *memoryTasks
 	harness      *scriptedHarness
 	root         int64
+	// acceptance belongs to the fixture, not the orchestrator, because the
+	// real one is a table. A restart test that gave the new process its own
+	// empty recorder would be modelling a store that forgets, which is the
+	// opposite of the property under test.
+	acceptance *memoryAcceptance
 }
 
 func newFreezeFixture(t *testing.T, adjudicationVerdict string, reviewerEnabled bool) *freezeFixture {
 	t.Helper()
 	tasksPort := newMemoryTasks()
+	acceptance := newMemoryAcceptance()
 	models := newFakeModels()
 	harness := &scriptedHarness{models: models, tasks: tasksPort, bodies: freezeBodies(), adjudicationVerdict: adjudicationVerdict}
 
 	leader := RoleRef{ID: "ingenieria_ia/orquestador", UnitID: "ingenieria_ia", Enabled: true, Executable: true, CanonicalLeader: true}
+	// A worker distinct from the leader, because the deliverable and the
+	// verdict about it come from different roles. Collapsing them is how
+	// the two got confused for as long as they did.
+	worker := RoleRef{ID: "ingenieria_ia/qa", UnitID: "ingenieria_ia", Enabled: true, Executable: true}
 	reviewer := RoleRef{ID: AdversarialReviewerRoleID, UnitID: "investigacion", Enabled: reviewerEnabled, Executable: reviewerEnabled}
 	ceo := RoleRef{ID: CEORoleID, UnitID: "empresa", Enabled: true, Executable: true}
 	registry := fakeRegistry{
 		rev:     RevisionRef{ID: 7},
 		units:   map[string]UnitRef{"ingenieria_ia": {ID: "ingenieria_ia", Operational: true, LeaderRoleID: leader.ID}},
-		roles:   map[string]RoleRef{leader.ID: leader, reviewer.ID: reviewer, ceo.ID: ceo},
+		roles:   map[string]RoleRef{leader.ID: leader, worker.ID: worker, reviewer.ID: reviewer, ceo.ID: ceo},
 		leaders: map[string]RoleRef{"ingenieria_ia": leader},
 	}
-	orchestrator, err := NewOrchestrator(Dependencies{
+	orchestrator, err := NewOrchestrator(Dependencies{Acceptance: acceptance,
 		OrganizationID: "explorarte", Registry: registry, Tasks: tasksPort, Contexts: &fakeContexts{},
 		Assignments: fakeAssignments{}, Principals: newFakePrincipals(), Models: models, Harness: harness,
 		Budget: &countingBudget{}, Completion: &fakeCompletion{verdict: CompletionPass},
@@ -142,7 +163,7 @@ func newFreezeFixture(t *testing.T, adjudicationVerdict string, reviewerEnabled 
 		ActorRoleID: OwnerRoleID, IdempotencyKey: "m2-1-design-freeze",
 		Goal: OwnerGoal{
 			Goal:               "M2.1 -- design first, review adversarially, then freeze.",
-			AcceptanceCriteria: []string{"Design before implementation"},
+			AcceptanceCriteria: []AcceptanceCriterion{{Text: "Design before implementation", Phase: AcceptanceDesign}},
 			Requirements: []RequirementProposal{{
 				Key: designfreeze.RequirementKey, Type: "approval",
 				Description: "Design frozen by executive adjudication", Required: true,
@@ -152,7 +173,7 @@ func newFreezeFixture(t *testing.T, adjudicationVerdict string, reviewerEnabled 
 	if err != nil {
 		t.Fatalf("submit: %v", err)
 	}
-	return &freezeFixture{orchestrator: orchestrator, tasks: tasksPort, harness: harness, root: run.RootTaskID}
+	return &freezeFixture{orchestrator: orchestrator, tasks: tasksPort, harness: harness, root: run.RootTaskID, acceptance: acceptance}
 }
 
 // drive resumes until the run stops changing, exactly as a worker loop would.
@@ -290,22 +311,105 @@ func TestExecutiveRunReachesDesignFreezeThroughTheRealOrchestrator(t *testing.T)
 }
 
 // REVISE: the design is not frozen, the run stops, and it stays stopped.
-func TestReviseBlocksTheRunAndDoesNotAutoRetry(t *testing.T) {
+// REVISE opens the next design round instead of stopping the run.
+//
+// A design sent back for changes used to block and wait for a human, which
+// made a correct judgement the end of the work: the adjudicator could say
+// "this must change" and nothing changed. The round that follows is a
+// successor, not a revision -- round N keeps its keys, its deliverables and
+// its verdict exactly as they were judged.
+func TestReviseOpensTheNextRoundAndNeverReopensTheLast(t *testing.T) {
 	fixture := newFreezeFixture(t, "revise", true)
-	run := fixture.drive(t)
-	if run.State != StateBlocked || run.ReasonCode != ReasonDesignRevisionRequired {
-		t.Fatalf("run=%+v", run)
-	}
-	root := fixture.rootRecord(t)
-	if status := requirementStatus(root, designfreeze.RequirementKey); status == "satisfied" {
-		t.Fatal("a revise verdict satisfied the design freeze")
-	}
-	if _, closed := fixture.commandFor(PurposeCEOClosure); closed {
-		t.Fatal("the CEO closed a run whose design was sent back for revision")
+	fixture.drive(t)
+	all, err := fixture.tasks.ListByCorrelation(context.Background(), fixture.rootRecord(t).CorrelationID)
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	// Resuming again must not silently re-run the reviewer: that would spend
-	// the adversarial budget re-deciding a decision the executive made.
+	// Round 1 ran and was judged.
+	for _, key := range []string{"design-review:round:1", "design-adjudication:round:1"} {
+		task, ok := findTaskByKey(all, childKey(fixture.root, key))
+		if !ok || task.Status != "completed" {
+			t.Fatalf("round 1 is incomplete: %s", key)
+		}
+	}
+	// Round 2 exists, with its own department work and its own review.
+	for _, key := range []string{
+		"leader-plan:ingenieria_ia:design-round:2",
+		"leader-review:ingenieria_ia:design-round:2",
+		"design-review:round:2",
+		"design-adjudication:round:2",
+	} {
+		if _, ok := findTaskByKey(all, childKey(fixture.root, key)); !ok {
+			t.Fatalf("the revision round did not produce %s", key)
+		}
+	}
+	// And exactly one successor: a revise opens round N+1, never N+2.
+	if _, ok := findTaskByKey(all, childKey(fixture.root, "design-review:round:3")); ok {
+		t.Fatal("a single revise opened more than one round")
+	}
+	// Round 1's own tasks were never re-keyed or reused for round 2's work.
+	if reviewOne, ok := findTaskByKey(all, childKey(fixture.root, "leader-review:ingenieria_ia")); !ok || reviewOne.Status != "completed" {
+		t.Fatal("round 1's department review was disturbed by the revision")
+	}
+}
+
+// What the adjudicator demanded is what the next round is planned against.
+// Planning it from the original goal would produce the same design again and
+// spend the reviewer's budget re-deciding something already decided.
+func TestTheRequiredChangesReachTheNextRound(t *testing.T) {
+	fixture := newFreezeFixture(t, "revise", true)
+	fixture.drive(t)
+	all, err := fixture.tasks.ListByCorrelation(context.Background(), fixture.rootRecord(t).CorrelationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, ok := findTaskByKey(all, childKey(fixture.root, "leader-plan:ingenieria_ia:design-round:2"))
+	if !ok {
+		t.Fatal("round 2 has no planning task")
+	}
+	if !strings.Contains(plan.Instructions, "Prove the seal protocol under concurrency.") {
+		t.Fatalf("the required change never reached the planner: %q", plan.Instructions)
+	}
+	if !strings.Contains(plan.Instructions, "REQUIRED CHANGES") {
+		t.Error("the planner must be told these are the required changes, not fresh objectives")
+	}
+}
+
+// The loop is bounded. A design sent back the allowed number of times and
+// still unsettled is waiting on a human, not on another round.
+func TestTheRevisionLoopStopsAtItsBound(t *testing.T) {
+	fixture := newFreezeFixture(t, "revise", true)
+	run := fixture.drive(t)
+	if run.State != StateBlocked || run.ReasonCode != ReasonDesignRoundsExhausted {
+		t.Fatalf("the loop must stop at its bound, got %+v", run)
+	}
+	all, err := fixture.tasks.ListByCorrelation(context.Background(), fixture.rootRecord(t).CorrelationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rounds := 0
+	for _, task := range all {
+		if strings.Contains(task.IdempotencyKey, ":design-review:round:") {
+			rounds++
+		}
+	}
+	if rounds > DefaultLimits().MaxDesignRounds {
+		t.Fatalf("ran %d rounds against a bound of %d", rounds, DefaultLimits().MaxDesignRounds)
+	}
+	if status := requirementStatus(fixture.rootRecord(t), designfreeze.RequirementKey); status == "satisfied" {
+		t.Fatal("an exhausted revision loop satisfied the design freeze")
+	}
+	if _, closed := fixture.commandFor(PurposeCEOClosure); closed {
+		t.Fatal("the CEO closed a run whose design never settled")
+	}
+}
+
+// A blocked run still stays blocked: the bound stops the loop, and after it
+// nothing re-runs the reviewer.
+func TestAnExhaustedRunDoesNotAutoUnblock(t *testing.T) {
+	fixture := newFreezeFixture(t, "revise", true)
+	fixture.drive(t)
 	before := len(fixture.purposes())
 	_, err := fixture.orchestrator.Resume(context.Background(), fixture.root)
 	if !errors.Is(err, ErrRunBlocked) {
@@ -333,13 +437,10 @@ func TestRejectBlocksTheRunWithItsOwnReason(t *testing.T) {
 
 // An adjudication naming another digest cannot freeze this design, through the
 // real orchestrator and not only through the parser.
-func TestAdjudicationOverAForeignDigestCannotFreezeTheRun(t *testing.T) {
+func TestAForeignDigestFromTheModelCannotMisTargetTheFreeze(t *testing.T) {
+	const foreignDigest = "dd11111111111111111111111111111111111111111111111111111111111111"
 	fixture := newFreezeFixture(t, "freeze", true)
-	fixture.harness.corruptDigest = "dd11111111111111111111111111111111111111111111111111111111111111"
-
-	// The mismatch surfaces as a rejected model result rather than being
-	// absorbed: the provider succeeded, so the failure belongs to the
-	// contract, and the run must not advance on it.
+	fixture.harness.corruptDigest = foreignDigest
 	var lastErr error
 	var run Run
 	for i := 0; i < 24; i++ {
@@ -353,29 +454,29 @@ func TestAdjudicationOverAForeignDigestCannotFreezeTheRun(t *testing.T) {
 			break
 		}
 	}
-	if lastErr == nil {
-		t.Fatalf("a freeze over a foreign digest was accepted silently: %+v", run)
+	// What the model claims about identity is no longer part of the contract,
+	// so a foreign digest in its output cannot mis-target the freeze: the host
+	// binds its own design and the run proceeds on that.
+	//
+	// The property this test protects is unchanged -- a freeze applies only to
+	// the design the host handed over -- but it is now guaranteed by binding
+	// rather than by asking an untrusted party to repeat a 64-character hash
+	// and refusing the whole verdict when it miscopies one character.
+	if lastErr != nil {
+		t.Fatalf("a verdict must not be refused for what it claims about identity: %v", lastErr)
 	}
-	// recordHarnessSuccess flattens the validator's error with %v rather than
-	// %w (orchestrator.go), so the sentinel does not survive the wrap. That
-	// flattening is pre-existing and not changed here; the assertion matches
-	// what the code actually guarantees.
-	if !errors.Is(lastErr, ErrModelResultContractRejected) {
-		t.Fatalf("err=%v", lastErr)
-	}
-	if !strings.Contains(lastErr.Error(), "design identity mismatch") {
-		t.Fatalf("the rejection did not name the identity mismatch: %v", lastErr)
-	}
-	if status := requirementStatus(fixture.rootRecord(t), designfreeze.RequirementKey); status == "satisfied" {
-		t.Fatal("a freeze over a foreign digest satisfied the requirement")
+	if status := requirementStatus(fixture.rootRecord(t), designfreeze.RequirementKey); status != "satisfied" {
+		t.Fatalf("the freeze did not satisfy the requirement: status=%q", status)
 	}
 	for _, evidence := range fixture.tasks.evidence {
-		if evidence.Type == "approval" && evidence.Satisfies {
-			t.Fatal("approval evidence was recorded for a mismatched adjudication")
+		if strings.Contains(evidence.Reference, foreignDigest) || strings.Contains(evidence.Digest, foreignDigest) {
+			t.Fatalf("the model's foreign digest reached durable evidence: %+v", evidence)
 		}
 	}
-	if _, closed := fixture.commandFor(PurposeCEOClosure); closed {
-		t.Fatal("the CEO closed a run whose adjudication named another design")
+	// Closure is now the correct outcome: the design that was frozen is the
+	// host's, so there is nothing left to refuse.
+	if _, closed := fixture.commandFor(PurposeCEOClosure); !closed {
+		t.Fatal("the run never closed, so the freeze did not carry it forward")
 	}
 }
 
@@ -407,10 +508,10 @@ func TestRunsWithoutADesignFreezeRequirementAreUnaffected(t *testing.T) {
 	registry := fakeRegistry{
 		rev:     RevisionRef{ID: 7},
 		units:   map[string]UnitRef{"ingenieria_ia": {ID: "ingenieria_ia", Operational: true, LeaderRoleID: leader.ID}},
-		roles:   map[string]RoleRef{leader.ID: leader},
+		roles:   map[string]RoleRef{leader.ID: leader, RoleRef{ID: "ingenieria_ia/qa"}.ID: {ID: "ingenieria_ia/qa", UnitID: "ingenieria_ia", Enabled: true, Executable: true}},
 		leaders: map[string]RoleRef{"ingenieria_ia": leader},
 	}
-	orchestrator, err := NewOrchestrator(Dependencies{
+	orchestrator, err := NewOrchestrator(Dependencies{Acceptance: newMemoryAcceptance(),
 		OrganizationID: "explorarte", Registry: registry, Tasks: tasksPort, Contexts: &fakeContexts{},
 		Assignments: fakeAssignments{}, Principals: newFakePrincipals(), Models: models, Harness: harness,
 		Budget: &countingBudget{}, Completion: &fakeCompletion{verdict: CompletionPass},
@@ -422,7 +523,7 @@ func TestRunsWithoutADesignFreezeRequirementAreUnaffected(t *testing.T) {
 	}
 	run, _, err := orchestrator.Submit(context.Background(), SubmitRequest{
 		ActorRoleID: OwnerRoleID, IdempotencyKey: "ungoverned",
-		Goal: OwnerGoal{Goal: "Analyze one area.", AcceptanceCriteria: []string{"done"}},
+		Goal: OwnerGoal{Goal: "Analyze one area.", AcceptanceCriteria: []AcceptanceCriterion{{Text: "done", Phase: AcceptanceDesign}}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -455,6 +556,12 @@ func TestFreezeCreatesNoImplementationEligibility(t *testing.T) {
 		TaskClassCoordinationDeptReview: {}, TaskClassCoordinationCEOClosure: {},
 		TaskClassCoordinationAdversarialReview: {}, TaskClassCoordinationDesignAdjudication: {},
 		TaskClassGeneralWork: {}, "": {},
+		// A department producing a design is what this phase is FOR. The
+		// guard is about implementation work leaking in early -- missions,
+		// promotions, staging -- and the needle check below is what
+		// actually enforces that. A design deliverable is the opposite of
+		// the thing being guarded against.
+		"engineering.design": {},
 	}
 	tasks, err := fixture.tasks.ListByCorrelation(context.Background(), fixture.rootRecord(t).CorrelationID)
 	if err != nil {

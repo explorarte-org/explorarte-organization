@@ -66,8 +66,28 @@ const (
 	SeverityLow      FindingSeverity = "low"
 )
 
+// FindingKind separates a judgement about the design from a judgement about
+// whether the design was entitled to make a claim at all.
+type FindingKind string
+
+const (
+	// FindingDesign is an ordinary finding about the design's substance.
+	FindingDesign FindingKind = "design"
+	// FindingUnverifiableRepositoryClaim is the design asserting something
+	// concrete about the repository -- a file, a symbol, existing behaviour,
+	// current structure -- with no authorized citation behind it.
+	//
+	// It exists as its own kind because it is a different failure. An
+	// ordinary finding says the design is wrong; this one says nobody can
+	// tell, because the thing it rests on was never shown to have existed.
+	// AUTONOMY-SMOKE-016 produced these by the dozen while every component
+	// reported success.
+	FindingUnverifiableRepositoryClaim FindingKind = "unverifiable_repository_claim"
+)
+
 type AdversarialFinding struct {
 	ID                  string          `json:"id"`
+	Kind                FindingKind     `json:"kind"`
 	Severity            FindingSeverity `json:"severity"`
 	Claim               string          `json:"claim"`
 	AffectedRequirement string          `json:"affected_requirement"`
@@ -222,12 +242,25 @@ func ParseDesignAdjudication(body []byte, expected DesignIdentity, limits Limits
 	default:
 		return DesignAdjudication{}, fmt.Errorf("%w: invalid adjudication verdict", ErrContractRejected)
 	}
-	if !out.Identity().Valid() {
-		return DesignAdjudication{}, fmt.Errorf("%w: adjudication design identity is invalid", ErrContractRejected)
-	}
-	if out.DesignDigest != expected.DesignDigest || out.DesignID != expected.DesignID || out.DesignVersion != expected.DesignVersion {
-		return DesignAdjudication{}, fmt.Errorf("%w: adjudication identity does not match the design under adjudication", ErrDesignIdentityMismatch)
-	}
+	// The HOST binds the design identity. It is not asked of the model and
+	// not read back from it.
+	//
+	// It used to be an echo, checked field by field against this same
+	// expected value. That never verified anything: a model repeating a
+	// 64-character hex digest proves only that it can copy, and the host
+	// generated the digest in the first place. What actually ties a verdict
+	// to the exact bytes reviewed is that the host hands over one design and
+	// binds that design's identity to whatever verdict comes back -- which is
+	// what happens here, unconditionally.
+	//
+	// The echo was not merely useless, it was a check that could only fail.
+	// AUTONOMY-SMOKE-001's adjudication produced a complete, well-formed
+	// verdict three times and was rejected all three, dead-lettering the
+	// task, because the model transcribed 63 of the digest's 64 characters.
+	// Nothing about the design or the verdict was wrong.
+	out.DesignID = expected.DesignID
+	out.DesignVersion = expected.DesignVersion
+	out.DesignDigest = expected.DesignDigest
 	for name, values := range map[string][]string{
 		"accepted_findings":          out.AcceptedFindings,
 		"rejected_findings":          out.RejectedFindings,
@@ -307,9 +340,14 @@ var adversarialReviewOutputSchema = json.RawMessage(`{
       "items":{
         "type":"object",
         "additionalProperties":false,
-        "required":["id","severity","claim","affected_requirement","required_correction","evidence_refs"],
+        "required":["id","kind","severity","claim","affected_requirement","required_correction","evidence_refs"],
         "properties":{
           "id":{"type":"string","description":"Stable identifier such as AR-001. Uppercase prefix, hyphen, digits."},
+          "kind":{
+            "type":"string",
+            "enum":["design","unverifiable_repository_claim"],
+            "description":"unverifiable_repository_claim: the design asserts something concrete about the repository -- a file, a symbol, existing behavior, current structure -- without citing an authorized repository:// reference from this bundle. Use design for everything else."
+          },
           "severity":{"type":"string","enum":["critical","high","medium","low"]},
           "claim":{"type":"string","description":"What is wrong, stated as a falsifiable claim."},
           "affected_requirement":{"type":"string"},
@@ -328,6 +366,19 @@ var adversarialReviewOutputSchema = json.RawMessage(`{
   }
 }`)
 
+// designAdjudicationOutputSchema deliberately has no design_id,
+// design_version or design_digest.
+//
+// The host binds the design identity onto the verdict from its own record, so
+// the model has no business supplying it -- an echo it cannot get wrong is not
+// evidence, and one it can get wrong is a way to lose a well-formed
+// adjudication to a transcription slip, which is exactly how one was
+// dead-lettered over a single hex character.
+//
+// Leaving them in properties while dropping them from required was the
+// half-measure between those two positions, and it made the schema invalid:
+// under strict structured outputs every property must be required, so the
+// provider rejected the request before any model saw it.
 var designAdjudicationOutputSchema = json.RawMessage(`{
   "type":"object",
   "additionalProperties":false,
@@ -338,9 +389,6 @@ var designAdjudicationOutputSchema = json.RawMessage(`{
     "rejected_findings",
     "required_changes",
     "unresolved_owner_decisions",
-    "design_id",
-    "design_version",
-    "design_digest",
     "evidence_refs"
   ],
   "properties":{
@@ -357,9 +405,6 @@ var designAdjudicationOutputSchema = json.RawMessage(`{
     "rejected_findings":{"type":"array","items":` + findingRefSchemaJSON + `},
     "required_changes":{"type":"array","items":{"type":"string"}},
     "unresolved_owner_decisions":{"type":"array","items":{"type":"string"}},
-    "design_id":{"type":"string"},
-    "design_version":{"type":"string"},
-    "design_digest":{"type":"string","description":"Lowercase SHA-256 hex digest of the design under adjudication. Echo it exactly as supplied."},
     "evidence_refs":{"type":"array","items":{"type":"string"}}
   }
 }`)
@@ -372,5 +417,77 @@ func AdversarialReviewOutputSchema() json.RawMessage {
 }
 
 func DesignAdjudicationOutputSchema() json.RawMessage {
-	return append(json.RawMessage(nil), designAdjudicationOutputSchema...)
+	return DesignAdjudicationOutputSchemaFor(nil)
+}
+
+// DesignAdjudicationOutputSchemaFor builds the adjudication contract for one
+// specific review, enumerating the finding identifiers that actually exist in
+// it.
+//
+// The static schema typed accepted_findings and rejected_findings as plain
+// strings while the host held them to an identifier pattern. The contract the
+// model was shown was looser than the one it was judged by, so a sentence --
+// a perfectly valid string -- passed the schema and failed the parse. A
+// campaign died at adjudication with an explanatory clause recorded as a
+// finding reference.
+//
+// An enum closes that at the only place that can refuse it before a model
+// speaks: the provider. With no findings there is nothing to enumerate and
+// the subset forbids maxItems, so the field falls back to a described string
+// and AssertFindingsExist carries the invariant alone. That fallback is why
+// the host check exists in the first place rather than being left to the
+// schema: the schema can only help when there is something to enumerate.
+func DesignAdjudicationOutputSchemaFor(findingIDs []string) json.RawMessage {
+	unique := make(map[string]struct{}, len(findingIDs))
+	ordered := make([]string, 0, len(findingIDs))
+	for _, id := range findingIDs {
+		if !findingIDPattern.MatchString(id) {
+			continue
+		}
+		if _, seen := unique[id]; seen {
+			continue
+		}
+		unique[id] = struct{}{}
+		ordered = append(ordered, id)
+	}
+	const describedString = `{"type":"string","description":"Identifier of a finding raised by the adversarial review, such as AR-001. Never prose."}`
+	refItems := describedString
+	if len(ordered) > 0 {
+		if encoded, err := json.Marshal(ordered); err == nil {
+			refItems = `{"type":"string","enum":` + string(encoded) + `}`
+		}
+	}
+	schema := string(designAdjudicationOutputSchema)
+	for _, field := range []string{"accepted_findings", "rejected_findings"} {
+		schema = strings.ReplaceAll(schema,
+			`"`+field+`":{"type":"array","items":`+findingRefSchemaJSON+`}`,
+			`"`+field+`":{"type":"array","items":`+refItems+`}`)
+	}
+	return json.RawMessage(schema)
+}
+
+// AssertFindingsExist refuses an adjudication that cites a finding the review
+// never raised.
+//
+// This is the invariant the identifier pattern was standing in for. A
+// well-formed identifier is not the same as a real one: "AR-009" satisfies
+// every syntactic rule and still refers to nothing, and an adjudication that
+// accepts findings nobody made is a verdict about a review that does not
+// exist.
+func AssertFindingsExist(adjudication DesignAdjudication, reviewFindingIDs []string) error {
+	known := make(map[string]struct{}, len(reviewFindingIDs))
+	for _, id := range reviewFindingIDs {
+		known[id] = struct{}{}
+	}
+	for label, cited := range map[string][]string{
+		"accepted": adjudication.AcceptedFindings,
+		"rejected": adjudication.RejectedFindings,
+	} {
+		for _, id := range cited {
+			if _, exists := known[id]; !exists {
+				return fmt.Errorf("%w: %s finding %q was never raised by the review", ErrContractRejected, label, id)
+			}
+		}
+	}
+	return nil
 }

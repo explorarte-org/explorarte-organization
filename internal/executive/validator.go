@@ -69,6 +69,46 @@ func (v *Validator) ValidateExecutivePlan(ctx context.Context, revisionID int64,
 	return leaders, nil
 }
 
+// ValidatePlanDependencies enforces that every declared dependency names a
+// task being created by the same plan, by its client_key.
+//
+// It is exported and standalone so the rule can be exercised directly. It used
+// to be four lines inside ValidateDepartmentPlan, reachable only through an
+// authorization check and a role catalog, which meant the cheapest way to test
+// it was to restate it -- and a test that restates a rule only ever proves the
+// restatement.
+//
+// The rule itself is not arbitrary: a dependency is a scheduling relationship,
+// and a task that has already run cannot be waited for. References to work
+// that already exists belong in evidence_refs. The schema says so now; see
+// taskOutputSchemaJSON.
+func ValidatePlanDependencies(tasks []WorkerTaskProposal) error {
+	keys := make(map[string]struct{}, len(tasks))
+	for _, task := range tasks {
+		keys[task.ClientKey] = struct{}{}
+	}
+	declared := make([]string, 0, len(keys))
+	for key := range keys {
+		declared = append(declared, key)
+	}
+	sort.Strings(declared)
+	for _, task := range tasks {
+		for _, dependency := range task.Dependencies {
+			if _, ok := keys[dependency]; !ok {
+				// The message is read by the model on its next attempt:
+				// a failed attempt's summary travels in the task's
+				// history. "missing dependency task:106594" told it that
+				// a task it had just seen complete did not exist, which
+				// is both false and unactionable. Naming the rule and
+				// the legal values is what gives a retry somewhere to go.
+				return fmt.Errorf("%w: dependency %q is not a client_key declared in this response (declared: %s); a task that already exists cannot be waited for, and references to existing work belong in evidence_refs",
+					ErrContractRejected, dependency, strings.Join(declared, ", "))
+			}
+		}
+	}
+	return nil
+}
+
 func (v *Validator) ValidateDepartmentPlan(ctx context.Context, revisionID int64, departmentID, leaderRoleID string, plan DepartmentPlan) error {
 	if plan.DepartmentID != departmentID {
 		return fmt.Errorf("%w: department plan mismatch", ErrRegistryMismatch)
@@ -189,12 +229,8 @@ func (v *Validator) ValidateDepartmentPlan(ctx context.Context, revisionID int64
 			return fmt.Errorf("%w: worker assignment denied: %s", ErrRoleNotAssignable, decision.ReasonCode)
 		}
 	}
-	for _, t := range plan.Tasks {
-		for _, dep := range t.Dependencies {
-			if _, ok := keys[dep]; !ok {
-				return fmt.Errorf("%w: missing dependency %s", ErrContractRejected, dep)
-			}
-		}
+	if err := ValidatePlanDependencies(plan.Tasks); err != nil {
+		return err
 	}
 	if dependencyCycle(plan.Tasks) {
 		return ErrDependencyCycle

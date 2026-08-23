@@ -25,7 +25,7 @@ func testOrchestratorWithHarness(t *testing.T, tasksPort *memoryTasks, models *f
 		roles:   map[string]RoleRef{leader.ID: leader},
 		leaders: map[string]RoleRef{"ingenieria_ia": leader},
 	}
-	value, err := NewOrchestrator(Dependencies{
+	value, err := NewOrchestrator(Dependencies{Acceptance: newMemoryAcceptance(),
 		OrganizationID: "explorarte", Registry: registry, Tasks: tasksPort, Contexts: &fakeContexts{},
 		Assignments: fakeAssignments{}, Principals: newFakePrincipals(), Models: models, Harness: harness,
 		Budget: budget, Completion: completion,
@@ -43,7 +43,7 @@ func TestSubmitIdempotencyAndCorrelation(t *testing.T) {
 	orchestrator := testOrchestratorForPorts(t, tasksPort, newFakeModels(), &fakeCompletion{verdict: CompletionPass})
 	request := SubmitRequest{
 		ActorRoleID: OwnerRoleID, IdempotencyKey: "owner-goal-001",
-		Goal: OwnerGoal{Goal: "Analyze one area", AcceptanceCriteria: []string{"produce a plan"}},
+		Goal: OwnerGoal{Goal: "Analyze one area", AcceptanceCriteria: []AcceptanceCriterion{{Text: "produce a plan", Phase: AcceptanceDesign}}},
 	}
 	first, reused, err := orchestrator.Submit(context.Background(), request)
 	if err != nil || reused {

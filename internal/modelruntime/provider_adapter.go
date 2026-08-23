@@ -218,8 +218,30 @@ func (o ProviderOutcome) Validate() error {
 			return fmt.Errorf("%w: not-sent provider outcome is inconsistent", ErrInvalidRequest)
 		}
 	case ProviderOutcomeAmbiguous:
-		if o.HTTPStatus != 0 || o.ResponseHash != "" || strings.TrimSpace(o.ErrorCode) == "" || o.CancellationConfirmed {
+		// Ambiguous means the caller does not know whether the provider
+		// did the work. It does NOT mean the caller learned nothing.
+		//
+		// The stricter rule this replaces required HTTPStatus and
+		// ResponseHash to be empty, which described only one ambiguity:
+		// the request went out and nothing at all came back. A response
+		// that arrived and stopped mid-body is the other one, and it is
+		// the more common of the two. There the status is known and a
+		// hash of the partial body exists, and the older rule rejected
+		// exactly that -- so an incomplete read could not be recorded at
+		// all, and a transient transport failure became a hard invalid
+		// request. The outcome that most needs to be durable, because
+		// the call may already have been billed, was the one that could
+		// not be written down.
+		//
+		// What still may not be true of an ambiguous outcome: it must
+		// name why it is ambiguous, and it must not claim a confirmed
+		// cancellation. A confirmed cancellation is knowledge, and
+		// knowing is the opposite of this classification.
+		if strings.TrimSpace(o.ErrorCode) == "" || o.CancellationConfirmed {
 			return fmt.Errorf("%w: ambiguous provider outcome is inconsistent", ErrInvalidRequest)
+		}
+		if transport == TransportHTTP && o.HTTPStatus != 0 && o.HTTPStatus < 100 {
+			return fmt.Errorf("%w: ambiguous HTTP provider outcome carries an impossible status", ErrInvalidRequest)
 		}
 	case ProviderOutcomeCancelled:
 		if !o.CancellationConfirmed || o.Retryable {

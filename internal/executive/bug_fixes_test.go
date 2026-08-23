@@ -599,7 +599,7 @@ func TestBugA_InstructionsContainTaskClassGuidance(t *testing.T) {
 
 	// Create a review task and verify its instructions contain the guidance
 	all := []TaskRecord{task}
-	reviewTask, _, err := orchestrator.createReviewTask(context.Background(), root, req, leader, all, 0)
+	reviewTask, _, err := orchestrator.createReviewTask(context.Background(), root, req, leader, all, 0, 1)
 	if err != nil {
 		t.Fatalf("createReviewTask failed: %v", err)
 	}

@@ -197,3 +197,13 @@ func (s *InvocationService) Reconcile(ctx context.Context, batch int) (Reconcile
 	}
 	return s.store.Reconcile(ctx, s.organizationID, batch, s.outboxMaxAttempts)
 }
+
+// ProviderFailureRetryable reports whether this invocation's recorded provider
+// outcome was transient. It is the read a caller makes when deciding whether a
+// failed attempt is worth another one.
+func (s *InvocationService) ProviderFailureRetryable(ctx context.Context, invocationID int64) (bool, error) {
+	if invocationID <= 0 {
+		return false, fmt.Errorf("%w: invocation ID must be positive", ErrInvalidRequest)
+	}
+	return s.store.ProviderFailureRetryable(ctx, invocationID)
+}

@@ -127,43 +127,110 @@ func (r Resolver) Policy(ctx context.Context, root int64) (Policy, error) {
 	return *found, nil
 }
 
+// Program returns the program root task, the correlation that binds the
+// program together, and the budget policy governing taskID.
+//
+// An empty correlation, or a zero-value Policy, means this task belongs to no
+// program: not an error for an ordinary task, but callers admitting autonomous
+// spend must treat it as fail-closed. There is no such thing as an unbounded
+// budget here, only a missing one.
+//
+// It is exported and used by Resolve itself so that "which program governs
+// this task" has exactly one implementation. A second answer to that question
+// would eventually disagree with the ceiling actually enforced at reservation
+// time, and the disagreement would show up as spend admitted against a
+// program that never authorised it.
+// campaignRoot finds the owner goal that opened a correlation.
+//
+// The task class is a durable, explicit declaration: exactly one task in a
+// campaign is the owner goal, and it says so about itself. Everything else was
+// a heuristic. The one this replaces -- "the root is the task with no
+// causation edge" -- never matched a single campaign in practice, because an
+// Executive root does carry a causation edge naming the owner request that
+// created it. Every lookup therefore fell through to "lowest id in the
+// correlation", which is a statement about insertion order rather than about
+// authority, and it is authority that a budget ceiling rests on.
+//
+// The heuristics are kept, unchanged, for correlations recorded before the
+// class existed. New work must not depend on them.
+func campaignRoot(items []tasks.Task, fallback int64) (int64, bool) {
+	var root int64
+	found := false
+	for _, item := range items {
+		if item.TaskClass != TaskClassOwnerGoal {
+			continue
+		}
+		if found {
+			// Two owner goals in one correlation is not something to
+			// pick a winner from: the campaign's identity would be
+			// whichever the query happened to return first.
+			return 0, false
+		}
+		root, found = item.ID, true
+	}
+	return root, found
+}
+
+// TaskClassOwnerGoal is the executive's own owner-goal class. It is restated
+// here rather than imported so that programbudget stays free of a dependency
+// on the executive package; the guard below keeps the two from drifting.
+const TaskClassOwnerGoal = "owner.goal"
+
+func (r Resolver) Program(ctx context.Context, taskID int64) (int64, string, Policy, error) {
+	if r.Tasks == nil {
+		return 0, "", Policy{}, fmt.Errorf("program budget task reader required")
+	}
+	d, err := r.Tasks.GetTask(ctx, taskID)
+	if err != nil {
+		return 0, "", Policy{}, err
+	}
+	if d.Task.CorrelationID == nil || strings.TrimSpace(*d.Task.CorrelationID) == "" {
+		return 0, "", Policy{}, nil
+	}
+	correlation := *d.Task.CorrelationID
+	items, err := r.Tasks.ListTasks(ctx, tasks.TaskFilter{OrganizationID: d.Task.OrganizationID, CorrelationID: correlation, Limit: 1000})
+	if err != nil {
+		return 0, "", Policy{}, err
+	}
+	root, rooted := campaignRoot(items, d.Task.ID)
+	if !rooted {
+		// Nothing in this correlation declares itself the campaign root.
+		// Fall back only for correlations that predate the owner.goal
+		// class, and never for a task that already found a real root.
+		root = d.Task.ID
+		for _, t := range items {
+			if t.CausationID == nil || strings.TrimSpace(*t.CausationID) == "" {
+				root = t.ID
+				break
+			}
+			if t.ID < root {
+				root = t.ID
+			}
+		}
+	}
+	found, err := r.Policy(ctx, root)
+	if err != nil {
+		return 0, "", Policy{}, err
+	}
+	if found.SchemaVersion == "" {
+		return root, correlation, Policy{}, nil
+	}
+	if found.ProgramRootTaskID != root {
+		return 0, "", Policy{}, fmt.Errorf("program budget policy root mismatch")
+	}
+	return root, correlation, found, nil
+}
+
 func (r Resolver) Resolve(ctx context.Context, taskID int64, provider, model string) (Scope, error) {
 	if r.Tasks == nil {
 		return Scope{}, fmt.Errorf("program budget task reader required")
 	}
-	d, e := r.Tasks.GetTask(ctx, taskID)
+	root, correlation, found, e := r.Program(ctx, taskID)
 	if e != nil {
 		return Scope{}, e
 	}
-	if d.Task.CorrelationID == nil || strings.TrimSpace(*d.Task.CorrelationID) == "" {
+	if correlation == "" || found.SchemaVersion == "" {
 		return Scope{}, nil
-	}
-	items, e := r.Tasks.ListTasks(ctx, tasks.TaskFilter{OrganizationID: d.Task.OrganizationID, CorrelationID: *d.Task.CorrelationID, Limit: 1000})
-	if e != nil {
-		return Scope{}, e
-	}
-	root := d.Task.ID
-	for _, t := range items {
-		// The executive root is the task in this correlation without a
-		// causation edge. Prefer that durable relationship over creation-order
-		// heuristics; retain the lowest-id fallback for historical rows.
-		if t.CausationID == nil || strings.TrimSpace(*t.CausationID) == "" {
-			root = t.ID
-			break
-		}
-		if t.ID < root {
-			root = t.ID
-		}
-	}
-	found, e := r.Policy(ctx, root)
-	if e != nil {
-		return Scope{}, e
-	}
-	if found.SchemaVersion == "" {
-		return Scope{}, nil
-	}
-	if found.ProgramRootTaskID != root {
-		return Scope{}, fmt.Errorf("program budget policy root mismatch")
 	}
 	for _, f := range found.Families {
 		if f.Unavailable {
@@ -172,10 +239,10 @@ func (r Resolver) Resolve(ctx context.Context, taskID int64, provider, model str
 		for _, pr := range f.ProviderIDs {
 			for _, mo := range f.ModelIDs {
 				if pr == provider && mo == model {
-					return Scope{ProgramRootTaskID: root, CorrelationID: *d.Task.CorrelationID, Family: f}, nil
+					return Scope{ProgramRootTaskID: root, CorrelationID: correlation, Family: f}, nil
 				}
 			}
 		}
 	}
-	return Scope{ProgramRootTaskID: root, CorrelationID: *d.Task.CorrelationID}, fmt.Errorf("provider/model outside program policy")
+	return Scope{ProgramRootTaskID: root, CorrelationID: correlation}, fmt.Errorf("provider/model outside program policy")
 }

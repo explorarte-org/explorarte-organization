@@ -20,7 +20,7 @@ func TestAdapterCarriesOwnerGoalThroughV2Seam(t *testing.T) {
 	adapter := Adapter{Orchestrator: legacy}
 	result, err := adapter.Start(context.Background(), workflowruntime.GoalRequest{
 		Actor: workflowruntime.Actor{OrganizationID: "explorarte", RoleID: executive.OwnerRoleID, ActorID: "owner"},
-		Goal:  "deliver a verified result", AcceptanceCriteria: []string{"evidence exists"},
+		Goal:  "deliver a verified result", AcceptanceCriteria: []workflowruntime.GoalAcceptanceCriterion{{Text: "evidence exists", Phase: "design"}},
 		Requirements:   []workflowruntime.RequirementSpec{{Key: "artifact", Type: "artifact", Description: "deliverable", Required: true}},
 		IdempotencyKey: "goal-42",
 	})

@@ -24,7 +24,7 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const wantCount = 54
+	const wantCount = 57
 	if len(loaded) != wantCount {
 		t.Fatalf("migration count=%d want %d", len(loaded), wantCount)
 	}
@@ -58,6 +58,13 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		// GROK-ADVERSARIAL-REVIEW-001: pricing is a precondition of
 		// activation -- without it costgate refuses every review.
 		54: "add_xai_grok_pricing",
+		// ROLE-REASONING-TRACEABILITY-001: reasoning stops being discarded
+		// and gets one governed destination, so a role's decision can be
+		// explained later without that explanation entering any path built
+		// for material that carries no secrets.
+		55: "create_model_invocation_reasoning",
+		56: "create_composition_lifecycle",
+		57: "create_executive_goal_acceptance",
 	}
 	byVersion := make(map[int64]string, len(loaded))
 	for _, migration := range loaded {
@@ -69,8 +76,8 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		}
 	}
 
-	if tip := loaded[len(loaded)-1]; tip.Version != 54 {
-		t.Fatalf("migration tip=%06d want 000054", tip.Version)
+	if tip := loaded[len(loaded)-1]; tip.Version != 57 {
+		t.Fatalf("migration tip=%06d want 000057", tip.Version)
 	}
 }
 

@@ -2,7 +2,9 @@ package executive
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/Mireuz13/explorarte-organization/internal/designfreeze"
 	"github.com/Mireuz13/explorarte-organization/internal/engineeringmission"
@@ -31,6 +33,7 @@ const (
 	ReasonImplementationPlanUnavailable  = "implementation_plan_unavailable"
 	ReasonMissionProvisioningUnavailable = "mission_provisioning_unavailable"
 	ReasonMissionPolicyRejected          = "mission_policy_rejected"
+	ReasonMissionRejected                = "mission_rejected"
 )
 
 // ProgramTargetResolver reports the exact commit the program's promotion
@@ -58,6 +61,18 @@ type MissionProvisionCommand struct {
 	RequestedByRoleID string
 	ActorType         string
 	ActorID           string
+	// CorrelationID and CausationID bind the mission to the campaign that
+	// provisioned it. The program budget ceiling is enforced by
+	// correlation at reservation time, so a mission created without one
+	// spends outside the budget that authorised its existence -- and any
+	// later attempt to recover it has no ceiling to admit it against.
+	//
+	// They are carried here, at creation, rather than reconstructed
+	// afterwards from "the probable root": a budget association derived by
+	// search is a guess about authority, and authority is not something to
+	// guess at.
+	CorrelationID string
+	CausationID   string
 }
 
 type MissionRecord struct {
@@ -68,6 +83,17 @@ type MissionRecord struct {
 // mission requirement while this is unset blocks rather than proceeding: the
 // alternative is a run that silently ends at a freeze while claiming it would
 // implement something.
+// WithSnapshotSources lets the host verify that a repository citation was
+// really in front of the model that made it.
+//
+// Without it, citations are never verified and the review bundle authorizes
+// none: a design may still claim things about code, and the reviewer correctly
+// treats every such claim as ungrounded. Failing that way round is deliberate
+// -- the alternative is authorizing citations nobody checked.
+func WithSnapshotSources(reader SnapshotSourceReader) OrchestratorOption {
+	return func(o *Orchestrator) { o.snapshotSources = reader }
+}
+
 func WithMissionProvisioning(target ProgramTargetResolver, provisioner MissionProvisioner) OrchestratorOption {
 	return func(o *Orchestrator) {
 		o.programTarget = target
@@ -148,12 +174,36 @@ func (o *Orchestrator) driveImplementationMission(ctx context.Context, root Task
 		return run, true, blockErr
 	}
 
-	// The base is the promotion target's exact commit, read now and carried
-	// durably into the policy. A mission based on a symbolic ref would be
-	// based on whatever the repository became while it waited.
-	baseSHA, err := o.programTarget.ResolveProgramTargetSHA(ctx)
+	// The base is the commit the DESIGN was decided about, not whatever the
+	// target points at now.
+	//
+	// Reading the current head here was the silent retarget: a design whose
+	// evidence cited S0, whose reviewer read S0 and whose adjudicator ruled on
+	// S0 would be implemented against S1, and the substitution left no trace
+	// anywhere. It would have been right often enough to be trusted.
+	baseSHA, err := o.frozenDesignBaseSHA(ctx, root)
 	if err != nil {
 		return Run{}, true, err
+	}
+
+	// The target moving between freeze and provisioning is a concurrency
+	// event about the world, not a defect in the design. During bootstrap it
+	// fails closed: the alternative is either implementing a decision against
+	// a repository nobody reviewed, or quietly re-deciding it, and both are
+	// worse than stopping with the fact recorded.
+	//
+	// Making this cheap -- revalidating only the surface the design actually
+	// relied on, and recovering by successor when that surface is untouched --
+	// is deliberately left to the organization.
+	current, err := o.programTarget.ResolveProgramTargetSHA(ctx)
+	if err != nil {
+		return Run{}, true, err
+	}
+	if strings.TrimSpace(current) != baseSHA {
+		run, blockErr := o.blockRoot(ctx, root, ReasonWorldChangedSinceFreeze,
+			fmt.Sprintf("the design was decided about %s and the promotion target is now %s; a decision about one repository is not a decision about another",
+				baseSHA, strings.TrimSpace(current)))
+		return run, true, blockErr
 	}
 
 	changes := make([]missionplan.Change, 0, len(plan.Changes))
@@ -185,8 +235,18 @@ func (o *Orchestrator) driveImplementationMission(ctx context.Context, root Task
 	mission, err := o.missions.ProvisionMission(ctx, MissionProvisionCommand{
 		Policy: derived.Policy, PlanJSON: planJSON,
 		RequestedByRoleID: CEORoleID, ActorType: "service", ActorID: principal.ID,
+		CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID),
 	})
 	if err != nil {
+		// A refused mission is a refusal, not a retry -- the same reason the
+		// policy rejection above blocks rather than returning. Re-submitting
+		// the identical policy and plan is refused identically, so returning
+		// the error would leave the root executable and the worker would
+		// resume it forever.
+		if errors.Is(err, ErrMissionRejected) {
+			run, blockErr := o.blockRoot(ctx, root, ReasonMissionRejected, err.Error())
+			return run, true, blockErr
+		}
 		return Run{}, true, err
 	}
 

@@ -295,6 +295,15 @@ type CancelPromotionCommand struct {
 
 type WorkspaceFilter struct {
 	Status WorkspaceStatus
+	// TaskID restricts the listing to one task's workspaces. Zero means
+	// every task, preserving the previous behaviour.
+	//
+	// It exists so a consumer can ask what repository, target ref and base
+	// commit a given task ACTUALLY worked against, rather than assuming
+	// its own current configuration was also that task's. Those three
+	// facts are recorded per workspace at provisioning time and are the
+	// only durable record of the world an attempt inhabited.
+	TaskID int64
 	Limit  int
 }
 

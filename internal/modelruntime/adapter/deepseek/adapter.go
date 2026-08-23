@@ -68,8 +68,14 @@ type chatChoice struct {
 }
 
 type chatResponseMessage struct {
-	Content   json.RawMessage `json:"content"`
-	ToolCalls []chatToolCall  `json:"tool_calls"`
+	Content json.RawMessage `json:"content"`
+	// ReasoningContent is DeepSeek's account of how it reached the answer.
+	// It is routed onto RawResponse.HiddenReasoning and NEVER onto Content:
+	// Content is the result and is hashed, projected and acted on, while this
+	// explains the result and is kept separately for traceability. Mixing
+	// them would put reasoning into every path the result travels.
+	ReasoningContent string         `json:"reasoning_content"`
+	ToolCalls        []chatToolCall `json:"tool_calls"`
 }
 
 type chatToolCall struct {
@@ -237,7 +243,7 @@ func newAdapter(config Config, client *http.Client, now func() time.Time) (*Adap
 	endpoint.RawQuery = ""
 	endpoint.Fragment = ""
 	if client == nil {
-		client = defaultHTTPClient()
+		client = defaultHTTPClient(config.RequestTimeout)
 	} else {
 		clone := *client
 		client = &clone
@@ -338,6 +344,18 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 	providerRequestID := strings.TrimSpace(response.Header.Get("x-request-id"))
 	telemetry := baseTelemetry.withDuration(a.now().Sub(sendStart)).withResponseBytes(len(responseBody))
 	if readErr != nil {
+		// A deadline or cancellation while the body is still arriving leaves
+		// the call AMBIGUOUS, not rejected: the provider accepted the request
+		// and may finish and bill it. The rule is shared rather than restated
+		// here -- it was restated in six adapters and two of those copies
+		// ended a campaign for a transient failure.
+		if modelruntime.IsIncompleteRead(readErr) {
+			if !modelruntime.IsCallerCancellation(readErr) {
+				a.breaker.failure(a.now())
+			}
+			outcome := modelruntime.IncompleteReadOutcome(response.StatusCode, providerRequestID, responseHash, ResponseSchemaVersion)
+			return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureAmbiguous, Outcome: outcome, Cause: readErr}
+		}
 		a.breaker.failure(a.now())
 		outcome := responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", "response_read_failed", response.StatusCode >= 500, telemetry)
 		return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureResponseReceived, Outcome: outcome, Cause: readErr}
@@ -426,6 +444,7 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 		Content: content, ToolIntents: tools, ProviderRequestID: providerRequestID,
 		InputTokens: decoded.Usage.PromptTokens, OutputTokens: decoded.Usage.CompletionTokens,
 		ProviderReported: true, ProviderOutcome: outcome,
+		HiddenReasoning:      []byte(decoded.Choices[0].Message.ReasoningContent),
 		PromptCacheHitTokens: decoded.Usage.PromptCacheHitTokens, PromptCacheMissTokens: decoded.Usage.PromptCacheMissTokens,
 	}, nil
 }

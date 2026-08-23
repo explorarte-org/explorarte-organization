@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -283,6 +284,28 @@ RETURNING id,created_at`,
 		).Scan(&resultID, &createdAt); err != nil {
 			return modelruntime.DispatchResult{}, mapError(err)
 		}
+		// Reasoning is written here, in the same transaction as the result it
+		// explains, so a result can never exist without its justification or
+		// a justification without its result.
+		//
+		// It goes to its own table and nowhere else. It is not part of the
+		// result row, so it cannot reach response hashing; it is not in the
+		// outbox payload, so it cannot leave the system; and no context
+		// projection reads this table, so it cannot travel back into a model
+		// prompt. Those three exclusions are what let ORGANIZATIONAL data be
+		// kept at all.
+		if reasoning := command.Response.RoleReasoning; len(reasoning) > 0 {
+			if _, err = tx.Exec(ctx, `
+INSERT INTO model_invocation_reasoning(
+    invocation_id,dispatch_attempt_id,content,content_hash,content_bytes
+) VALUES($1,$2,$3,$4,$5)
+ON CONFLICT (invocation_id) DO NOTHING`,
+				invocation.ID, attempt.ID, reasoning,
+				modelruntime.SHA256Bytes(reasoning), len(reasoning),
+			); err != nil {
+				return modelruntime.DispatchResult{}, mapError(err)
+			}
+		}
 		// prompt_cache_hit_tokens/prompt_cache_miss_tokens: fixed R9.1 --
 		// normalizer.go's Normalize now copies
 		// RawResponse.PromptCacheHitTokens/PromptCacheMissTokens onto the
@@ -517,4 +540,36 @@ RETURNING `+invocationColumns, command.InvocationID, command.ErrorCode))
 		}
 		return invocation, nil
 	})
+}
+
+// ProviderFailureRetryable answers whether the durable provider outcome for an
+// invocation described a TRANSIENT failure.
+//
+// It reads the answer Model Runtime already recorded rather than re-deriving
+// it from an error code. Deriving it elsewhere would put a second copy of
+// "which failures are worth repeating" outside the package that decides it,
+// and the two would drift the first time a provider added a code.
+//
+// Absent means false: an invocation with no recorded outcome has not failed in
+// a way anyone can call transient, and guessing otherwise would repeat calls
+// that may already have been billed.
+func (s *Store) ProviderFailureRetryable(ctx context.Context, invocationID int64) (bool, error) {
+	var retryable bool
+	err := s.pool.QueryRow(ctx, `
+SELECT o.retryable
+FROM model_provider_outcomes o
+JOIN model_provider_requests r ON r.id = o.provider_request_record_id
+WHERE r.invocation_id = $1
+ORDER BY o.id DESC
+LIMIT 1`, invocationID).Scan(&retryable)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Not "false". Nothing was recorded, and reporting that as a
+			// definite no makes an unasked question indistinguishable from
+			// an answered one.
+			return false, modelruntime.ErrProviderOutcomeUnknown
+		}
+		return false, mapError(err)
+	}
+	return retryable, nil
 }

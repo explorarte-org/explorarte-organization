@@ -65,7 +65,10 @@ const taskOutputSchemaJSON = `{
     "priority"
   ],
   "properties":{
-    "client_key":{"type":"string"},
+    "client_key":{
+      "type":"string",
+      "description":"A name you invent for this task, unique within this response. Other tasks in this same response refer to it by this exact value."
+    },
     "assigned_role_id":{"type":"string"},
     "task_class":{"type":"string"},
     "title":{"type":"string"},
@@ -76,6 +79,7 @@ const taskOutputSchemaJSON = `{
     },
     "dependencies":{
       "type":"array",
+      "description":"Tasks in THIS response that must finish before this one starts, named by their client_key. Only client_key values from this same response are valid here. Do not put identifiers of tasks that already exist, such as task:12345 -- a task that already ran cannot be waited for, and references to existing work belong in evidence_refs instead. Use an empty array when this task can start immediately.",
       "items":{"type":"string"}
     },
     "requirements":{

@@ -95,6 +95,21 @@ VALUES ($1,'created',$2,0,0,0,0,1,0,0,$3)`, budgetID, rootTaskID, now); err != n
 	if err != nil {
 		return agentbudget.Budget{}, err
 	}
+	// The INSERT above is ON CONFLICT DO NOTHING, so reaching here with
+	// RowsAffected==0 means a row already existed. Returning it unexamined
+	// reported success for a request the database had refused: a caller
+	// stating $5 against a durable $17 was told it had succeeded, and the
+	// campaign kept spending $17. Idempotent means asking twice for the same
+	// thing changes nothing, not that asking twice always succeeds.
+	//
+	// The check runs on both paths, not only the conflict path. On the
+	// inserting path it is trivially true, and making it unconditional means
+	// there is no branch where the invariant is merely assumed.
+	if !b.SameRootBudget(organizationID, rootTaskID, roleID, limits) {
+		return agentbudget.Budget{}, fmt.Errorf(
+			"%w: task %d already owns a root budget with different terms; a durable budget is never rewritten by a retry",
+			agentbudget.ErrBudgetConflict, rootTaskID)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return agentbudget.Budget{}, err
 	}

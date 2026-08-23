@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Mireuz13/explorarte-organization/internal/designfreeze"
 )
 
 // orchestratorWorkerID is operational provenance only: it names the process
@@ -32,6 +34,7 @@ type Orchestrator struct {
 	assignments    DispatchProvisioner
 	principals     RoleBoundPrincipalResolver
 	models         ModelInvocationReader
+	acceptance     AcceptanceRecorder
 	harness        HarnessExecutor
 	budget         ModelBudgetGate
 	completion     CompletionGate
@@ -44,7 +47,12 @@ type Orchestrator struct {
 	leaseKeeper    LeaseKeeperConfig
 
 	programTarget ProgramTargetResolver
-	missions      MissionProvisioner
+	// snapshotSources reads back what a context snapshot actually carried.
+	// Optional: without it no repository citation can be verified, and the
+	// review bundle carries none -- which is the correct behaviour for a
+	// deployment whose designs never observe code.
+	snapshotSources SnapshotSourceReader
+	missions        MissionProvisioner
 
 	mu     sync.Mutex
 	leases map[int64]LeaseRecord
@@ -70,6 +78,10 @@ type Dependencies struct {
 	Harness HarnessExecutor
 	// Budget is the Executive's correlation-wide model-call limit, enforced
 	// before the Harness is entered.
+	// Acceptance records which phase owns each owner criterion, so the
+	// design reviewer is never handed a requirement only the built change
+	// could satisfy.
+	Acceptance    AcceptanceRecorder
 	Budget        ModelBudgetGate
 	Completion    CompletionGate
 	Decisions     DecisionRecorder
@@ -99,7 +111,8 @@ func WithAgentMessaging(messages AgentMessagingProvider) OrchestratorOption {
 func NewOrchestrator(deps Dependencies, opts ...OrchestratorOption) (*Orchestrator, error) {
 	if strings.TrimSpace(deps.OrganizationID) == "" || deps.Registry == nil || deps.Tasks == nil || deps.Contexts == nil ||
 		deps.Assignments == nil || deps.Principals == nil || deps.Models == nil || deps.Harness == nil ||
-		deps.Budget == nil || deps.Completion == nil || deps.Decisions == nil || deps.Authorization == nil {
+		deps.Budget == nil || deps.Completion == nil || deps.Decisions == nil || deps.Authorization == nil ||
+		deps.Acceptance == nil {
 		return nil, errors.New("executive orchestrator dependencies are incomplete")
 	}
 	limits := deps.Limits
@@ -117,7 +130,8 @@ func NewOrchestrator(deps Dependencies, opts ...OrchestratorOption) (*Orchestrat
 	orchestrator := &Orchestrator{
 		organizationID: strings.TrimSpace(deps.OrganizationID), registry: deps.Registry, tasks: deps.Tasks,
 		contexts: deps.Contexts, assignments: deps.Assignments, principals: deps.Principals, models: deps.Models,
-		harness: deps.Harness, budget: deps.Budget, completion: deps.Completion, decisions: deps.Decisions, validator: validator, limits: limits,
+		acceptance: deps.Acceptance,
+		harness:    deps.Harness, budget: deps.Budget, completion: deps.Completion, decisions: deps.Decisions, validator: validator, limits: limits,
 		clock: clock, leases: map[int64]LeaseRecord{}, leaseKeeper: DefaultLeaseKeeperConfig(),
 	}
 	for _, opt := range opts {
@@ -141,8 +155,16 @@ func (o *Orchestrator) Submit(ctx context.Context, request SubmitRequest) (Run, 
 	if len(request.Goal.AcceptanceCriteria) == 0 || len(request.Goal.AcceptanceCriteria) > o.limits.MaxAcceptanceCriteria {
 		return Run{}, false, fmt.Errorf("%w: acceptance criteria", ErrInvalidInput)
 	}
-	if err := validateStrings(request.Goal.AcceptanceCriteria, o.limits, "acceptance_criteria"); err != nil {
+	criteriaTexts := AcceptanceTexts(request.Goal.AcceptanceCriteria)
+	if err := validateStrings(criteriaTexts, o.limits, "acceptance_criteria"); err != nil {
 		return Run{}, false, err
+	}
+	// A goal whose criteria are all deferred leaves the design reviewer
+	// nothing to judge the design against, which is the mirror image of
+	// the bug that motivated phases: a review with no applicable
+	// requirement is as useless as one with unsatisfiable requirements.
+	if len(AcceptanceForPhase(request.Goal.AcceptanceCriteria, AcceptanceDesign)) == 0 {
+		return Run{}, false, fmt.Errorf("%w: at least one acceptance criterion must belong to the design phase", ErrInvalidInput)
 	}
 	if len(request.Goal.Requirements) > o.limits.MaxRequirementsPerTask {
 		return Run{}, false, ErrPlanTooLarge
@@ -162,6 +184,12 @@ func (o *Orchestrator) Submit(ctx context.Context, request SubmitRequest) (Run, 
 		return Run{}, false, fmt.Errorf("%w: reserved requirement key", ErrInvalidInput)
 	}
 	requirements = append(requirements, RequirementProposal{Key: "executive_closure_verified", Type: "result", Description: "CEO closure is materialized from verified departmental results", Required: true})
+	// Resolved BEFORE the root exists, so a campaign is never created with a
+	// budget the system then fails to record.
+	budget, err := resolveCampaignBudget(request.Budget)
+	if err != nil {
+		return Run{}, false, err
+	}
 	correlation := correlationID(request)
 	root, reused, err := o.tasks.CreateTask(ctx, CreateTaskCommand{
 		RequestedByRoleID:  OwnerRoleID,
@@ -170,7 +198,7 @@ func (o *Orchestrator) Submit(ctx context.Context, request SubmitRequest) (Run, 
 		IdempotencyKey:     request.IdempotencyKey,
 		Title:              "Executive owner goal",
 		Instructions:       request.Goal.Goal,
-		AcceptanceCriteria: append([]string(nil), request.Goal.AcceptanceCriteria...),
+		AcceptanceCriteria: criteriaTexts,
 		Priority:           100,
 		MaxAttempts:        2,
 		CorrelationID:      correlation,
@@ -180,8 +208,14 @@ func (o *Orchestrator) Submit(ctx context.Context, request SubmitRequest) (Run, 
 	if err != nil {
 		return Run{}, false, err
 	}
+	// The phase assignment is written before anything can read it, and it
+	// is idempotent, so a resumed submit finds what the first one stored
+	// rather than a second opinion about the same goal.
+	if err := o.acceptance.RecordAcceptance(ctx, root.ID, request.Goal.AcceptanceCriteria); err != nil {
+		return Run{}, false, fmt.Errorf("record acceptance phases for task %d: %w", root.ID, err)
+	}
 	if o.budgets != nil {
-		if err := o.budgets.CreateRootBudget(ctx, root, o.clock.Now()); err != nil {
+		if err := o.budgets.CreateRootBudget(ctx, root, budget, o.clock.Now()); err != nil {
 			return Run{}, false, fmt.Errorf("create root agent budget for task %d: %w", root.ID, err)
 		}
 	}
@@ -242,6 +276,28 @@ func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error
 			return ProjectRun(root, nil), ErrRunBlocked
 		case ReasonDesignRejected:
 			return ProjectRun(root, nil), ErrRunBlocked
+		case ReasonDesignRoundsExhausted:
+			// The bound was reached. Unblocking would restart the very loop
+			// the bound exists to stop, and it would restart it at full
+			// price: a fresh department plan, fresh worker calls, a fresh
+			// adversarial review and a fresh adjudication, to be told again
+			// what was already said twice.
+			return ProjectRun(root, nil), ErrRunBlocked
+		case ReasonDepartmentReviewBlocked:
+			// The department said the work cannot proceed. Re-driving it
+			// would ask the same reviewer to re-decide what it already
+			// decided, at its price.
+			return ProjectRun(root, nil), ErrRunBlocked
+		case ReasonDepartmentReplansExhausted:
+			// The bound was reached on a valid review. Unblocking would
+			// re-drive the department and arrive at the same refusal,
+			// having paid for the whole phase again.
+			return ProjectRun(root, nil), ErrRunBlocked
+		case ReasonRunChildFailed:
+			// Unblocking would walk straight back into the pass that
+			// found the dead child and block again, one model call
+			// poorer each time it re-drove whatever came before it.
+			return ProjectRun(root, nil), ErrRunBlocked
 		case ReasonAdversarialReviewUnavailable:
 			// Fails closed and stays closed: there is no second provider to
 			// fall back to, so retrying on its own would only spin.
@@ -276,6 +332,29 @@ func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error
 		return Run{}, err
 	}
 	children := withoutRoot(all, root.ID)
+
+	// The world this campaign is about is fixed HERE, before the first
+	// cognitive call of any kind.
+	//
+	// Pinning it later -- at the freeze, once the reviewer and the
+	// adjudicator had already finished -- proved only that the mission would
+	// inherit a commit. It proved nothing about what the designers had been
+	// reasoning over, which is the whole point: a design is evidence about a
+	// repository only if the repository was decided before anyone looked at
+	// it. Every model that can see code must see the same code.
+	//
+	// Only for campaigns governed by a design freeze, though. "A design about
+	// code must fix its world before reasoning" is a rule about designs; it
+	// must not become "every cognitive act in the organization depends on
+	// resolving git". A campaign that has nothing to do with the repository
+	// keeps working when the promotion target does not, which is the opt-in
+	// shape driveDesignFreeze already declares.
+	if _, governed := findRequirementByKey(root.Requirements, designfreeze.RequirementKey); governed {
+		if _, err = o.designBaseSHA(ctx, root); err != nil {
+			return Run{}, err
+		}
+	}
+
 	planTask, ok := findTaskByMarker(children, keyCEOPlanMarker)
 	if !ok {
 		planTask, _, err = o.createCEOPlanTask(ctx, root)
@@ -462,7 +541,7 @@ func (o *Orchestrator) createCEOPlanTask(ctx context.Context, root TaskRecord) (
 		return TaskRecord{}, false, err
 	}
 
-	task, reused, err := o.tasks.CreateTask(ctx, CreateTaskCommand{
+	task, reused, err := o.coordinatedChildren().Materialize(ctx, childRequest{Root: root, Sender: root, Depth: 1, Command: CreateTaskCommand{
 		RequestedByRoleID: OwnerRoleID, AssignedRoleID: CEORoleID,
 		TaskClass:      TaskClassCoordinationCEOPlan,
 		IdempotencyKey: childKey(root.ID, "ceo-plan"),
@@ -484,11 +563,8 @@ func (o *Orchestrator) createCEOPlanTask(ctx context.Context, root TaskRecord) (
 			Description: "Validated ExecutivePlan invocation result",
 			Required:    true,
 		}},
-	})
+	}})
 	if err != nil {
-		return TaskRecord{}, false, err
-	}
-	if err := o.attachChildCoordination(ctx, root, root, task, 1); err != nil {
 		return TaskRecord{}, false, err
 	}
 	return task, reused, nil
@@ -496,7 +572,7 @@ func (o *Orchestrator) createCEOPlanTask(ctx context.Context, root TaskRecord) (
 
 func (o *Orchestrator) createLeaderPlanTask(ctx context.Context, root TaskRecord, req DepartmentRequest, leader RoleRef) (TaskRecord, bool, error) {
 	instructions := boundedJSON(map[string]any{"department_id": req.UnitID, "objective": req.Objective, "deliverable": req.Deliverable, "constraints": req.Constraints, "priority": req.Priority}, o.limits.MaxInstructionsBytes)
-	task, reused, err := o.tasks.CreateTask(ctx, CreateTaskCommand{
+	task, reused, err := o.coordinatedChildren().Materialize(ctx, childRequest{Root: root, Sender: root, Depth: 2, Command: CreateTaskCommand{
 		RequestedByRoleID: CEORoleID, AssignedRoleID: leader.ID,
 		TaskClass:      TaskClassCoordinationDeptPlan,
 		IdempotencyKey: childKey(root.ID, "leader-plan:"+req.UnitID), Title: "Department planning: " + req.UnitID,
@@ -504,51 +580,11 @@ func (o *Orchestrator) createLeaderPlanTask(ctx context.Context, root TaskRecord
 		AcceptanceCriteria: []string{"Return one strict DepartmentPlan JSON value", "Delegate only to active assignable roles in this department", "Use only existing requirement types"},
 		Priority:           req.Priority, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID),
 		Requirements: []RequirementProposal{{Key: "typed_plan", Type: "result", Description: "Validated DepartmentPlan invocation result", Required: true}},
-	})
+	}})
 	if err != nil {
 		return TaskRecord{}, false, err
 	}
-	if err := o.attachChildCoordination(ctx, root, root, task, 2); err != nil {
-		return TaskRecord{}, false, err
-	}
 	return task, reused, nil
-}
-
-// attachChildCoordination inherits child's budget from root's tree and
-// sends a durable delegation message from sender to child, when the
-// orchestrator has those optional providers configured. Both are
-// independently optional and independently best-effort against
-// already-created tasks: a budget/messaging failure here must not undo a
-// task creation that already durably happened, so it is surfaced as a
-// wrapped error for the caller to decide on, not silently swallowed.
-func (o *Orchestrator) attachChildCoordination(ctx context.Context, root, sender, child TaskRecord, depth int64) error {
-	now := o.clock.Now()
-	if o.budgets != nil {
-		if err := o.budgets.InheritForChild(ctx, root, child, depth, now); err != nil {
-			return fmt.Errorf("inherit agent budget for task %d: %w", child.ID, err)
-		}
-	}
-	// A role creating its own sub-task (e.g. the CEO's root task spawning its
-	// own "CEO planning" task -- both AssignedRoleID==CEORoleID) crosses no
-	// organizational trust boundary: nothing is being delegated to a
-	// different actor, so there is nothing for agent-messaging to
-	// authenticate. agentmessaging's own topology validator enforces this as
-	// a hard invariant (ValidateEdge denies senderRole==recipientRole
-	// unconditionally, see internal/agentmessaging/topology.go) -- this is
-	// not a gap to route around, it is the reason a same-role hop must never
-	// reach SendDelegation in the first place.
-	if o.messages != nil && sender.AssignedRoleID != child.AssignedRoleID {
-		// FIX 6 (EXEC-PRINCIPAL-001): no principal is configured on the
-		// Orchestrator itself anymore -- AgentMessagingProvider resolves the
-		// correct, role-bound principal internally from sender.AssignedRoleID.
-		// A single static principal here could not authenticate more than one
-		// sender role across a multi-hop flow (CEO->leader, leader->worker,
-		// worker->leader, leader->CEO); see runtimeadapter.AgentMessages.
-		if err := o.messages.SendDelegation(ctx, sender, child, now); err != nil {
-			return fmt.Errorf("send delegation message for task %d: %w", child.ID, err)
-		}
-	}
-	return nil
 }
 
 // driveInProgress signals that driveDepartments made partial progress this
@@ -569,8 +605,28 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 		if err != nil {
 			return Run{}, false, err
 		}
-		planTask, ok := findTaskByKey(all, childKey(root.ID, "leader-plan:"+req.UnitID))
+		// Every department key is scoped to the design round it belongs to.
+		// Round 1 carries no suffix, so a run that never gets a revise keys
+		// exactly as it always did; a later round is separate tasks, which is
+		// what keeps the earlier round immutable rather than reopened.
+		round := o.activeDesignRound(ctx, all, root.ID)
+		suffix := designRoundSuffix(round)
+		planTask, ok := findTaskByKey(all, childKey(root.ID, "leader-plan:"+req.UnitID+suffix))
 		if !ok {
+			if round > o.limits.MaxDesignRounds {
+				// Out of rounds. Opening another would be the loop this
+				// bound exists to prevent; the freeze phase blocks the run
+				// and says so, which is where that decision belongs.
+				return Run{}, false, nil
+			}
+			if round > 1 {
+				// The round exists because a revise asked for it. Opening its
+				// planning task is what turns that decision into work.
+				if _, err = o.openDesignRoundPlan(ctx, root, all, req, leader, round); err != nil {
+					return Run{}, false, err
+				}
+				return o.driveInProgress(ctx, root)
+			}
 			return Run{}, false, fmt.Errorf("%w: department planning task missing", ErrRegistryMismatch)
 		}
 		if planTask.Status != "completed" {
@@ -582,7 +638,7 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 				if e = o.validator.ValidateDepartmentPlan(ctx, revision.ID, req.UnitID, leader.ID, parsed); e != nil {
 					return e
 				}
-				return o.materializeWorkerTasks(ctx, root, planTask, req.UnitID, parsed.Tasks, 0)
+				return o.materializeWorkerTasks(ctx, root, planTask, req.UnitID, parsed.Tasks, 0, round)
 			})
 			if err != nil {
 				return Run{}, false, err
@@ -600,7 +656,7 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 		if e = o.validator.ValidateDepartmentPlan(ctx, revision.ID, req.UnitID, leader.ID, deptPlan); e != nil {
 			return Run{}, false, e
 		}
-		if e = o.materializeWorkerTasks(ctx, root, planTask, req.UnitID, deptPlan.Tasks, 0); e != nil {
+		if e = o.materializeWorkerTasks(ctx, root, planTask, req.UnitID, deptPlan.Tasks, 0, round); e != nil {
 			return Run{}, false, e
 		}
 
@@ -628,12 +684,12 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 		if e != nil {
 			return Run{}, false, e
 		}
-		if !allDepartmentWorkersTerminal(all, root.ID, req.UnitID) {
+		if !allDepartmentWorkersTerminal(all, root.ID, req.UnitID+suffix) {
 			return o.driveInProgress(ctx, root)
 		}
-		reviewTask, ok := latestReviewTask(all, root.ID, req.UnitID)
+		reviewTask, ok := latestReviewTask(all, root.ID, req.UnitID+suffix)
 		if !ok {
-			reviewTask, _, e = o.createReviewTask(ctx, root, req, leader, all, 0)
+			reviewTask, _, e = o.createReviewTask(ctx, root, req, leader, all, 0, round)
 			if e != nil {
 				return Run{}, false, e
 			}
@@ -644,23 +700,59 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 				if pErr != nil {
 					return pErr
 				}
-				if review.Verdict == ReviewNeedsReplan {
-					if reviewReplanOrdinal(reviewTask.IdempotencyKey) >= o.limits.MaxDepartmentReplans {
-						return fmt.Errorf("%w: department replan budget exhausted", ErrBudgetExceeded)
-					}
+				// This callback answers exactly one question: did the
+				// MODEL produce a valid result? Everything it returns is
+				// recorded against the attempt as
+				// model_result_contract_rejected and retried, so anything
+				// decided here is attributed to the provider and paid for
+				// again on the next attempt.
+				//
+				// Host lifecycle therefore does not belong here. Whether
+				// the department may have another replan, whether the
+				// follow-ups may be materialized, and what a blocked or
+				// failed verdict does to the run are decisions the HOST
+				// makes about a valid answer -- and the path that makes
+				// them already exists below, on the completed review.
+				// Keeping copies here meant a governed budget refusal was
+				// written down as the model breaking its contract, and
+				// then re-purchased twice.
+				//
+				// What stays is a genuine contract violation: follow-up
+				// tasks only mean something under needs_replan, so
+				// proposing them under any other verdict is the model's
+				// own output contradicting itself.
+				if review.Verdict != ReviewNeedsReplan && len(review.ProposedFollowupTasks) > 0 {
+					return fmt.Errorf("%w: followup tasks require needs_replan verdict", ErrContractRejected)
+				}
+				// The follow-ups ARE the model's output, so whether they
+				// are well formed is a question about that output and
+				// belongs here, where a rejection still leaves the task
+				// able to try again.
+				//
+				// Moving this out was a regression the bound fix nearly
+				// shipped: a review proposing invalid follow-ups would
+				// complete successfully, validation would fail on the path
+				// below, and every later pass would re-read the same
+				// completed result and fail identically -- with no attempt
+				// left for the model to correct anything. The exact
+				// opposite of the convergence this branch series proved.
+				//
+				// Only while a replan can still be granted, though. Once
+				// the bound is reached those follow-ups will never be
+				// materialized by anyone, so whether they are well formed
+				// has stopped being an actionable question -- and letting
+				// it block the review from completing would buy attempt
+				// after attempt to rediscover a decision the host had
+				// already made. That is the same waste the bound fix
+				// removed, arriving through the other door.
+				//
+				// This is not forgiving the model a bad contract. It is
+				// declining to validate the part of a proposal the host
+				// has no budget to execute.
+				if review.Verdict == ReviewNeedsReplan && replanCapacityRemains(reviewTask.IdempotencyKey, o.limits.MaxDepartmentReplans) {
 					if pErr = o.validator.ValidateFollowups(ctx, revision.ID, req.UnitID, leader.ID, review.ProposedFollowupTasks); pErr != nil {
 						return pErr
 					}
-					return o.materializeWorkerTasks(ctx, root, reviewTask, req.UnitID, review.ProposedFollowupTasks, reviewReplanOrdinal(reviewTask.IdempotencyKey)+1)
-				}
-				if len(review.ProposedFollowupTasks) > 0 {
-					return fmt.Errorf("%w: followup tasks require needs_replan verdict", ErrContractRejected)
-				}
-				if review.Verdict == ReviewBlocked {
-					return ErrRunBlocked
-				}
-				if review.Verdict == ReviewFail {
-					return fmt.Errorf("%w: department review failed", ErrCompletionFailed)
 				}
 				return nil
 			})
@@ -679,28 +771,59 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 		}
 		if review.Verdict == ReviewNeedsReplan {
 			ordinal := reviewReplanOrdinal(reviewTask.IdempotencyKey) + 1
-			if ordinal > o.limits.MaxDepartmentReplans {
-				return Run{}, false, ErrBudgetExceeded
+			if !replanCapacityRemains(reviewTask.IdempotencyKey, o.limits.MaxDepartmentReplans) {
+				// Nothing failed. The department produced a valid review
+				// and the host declined to grant another iteration, which
+				// is the bound doing its job. It is recorded as the host's
+				// decision, against the root, and the review it decided on
+				// stays completed.
+				run, blockErr := o.blockRoot(ctx, root, ReasonDepartmentReplansExhausted,
+					fmt.Sprintf("the host declined replan %d of at most %d for department %s; its review is valid and complete, and nothing about it failed",
+						ordinal, o.limits.MaxDepartmentReplans, req.UnitID))
+				return run, true, blockErr
 			}
 			if e = o.validator.ValidateFollowups(ctx, revision.ID, req.UnitID, leader.ID, review.ProposedFollowupTasks); e != nil {
 				return Run{}, false, e
 			}
-			if e = o.materializeWorkerTasks(ctx, root, reviewTask, req.UnitID, review.ProposedFollowupTasks, ordinal); e != nil {
+			if e = o.materializeWorkerTasks(ctx, root, reviewTask, req.UnitID, review.ProposedFollowupTasks, ordinal, round); e != nil {
 				return Run{}, false, e
 			}
 			all, e = o.tasks.ListByCorrelation(ctx, root.CorrelationID)
 			if e != nil {
 				return Run{}, false, e
 			}
-			if !allDepartmentWorkersTerminal(all, root.ID, req.UnitID) {
+			if !allDepartmentWorkersTerminal(all, root.ID, req.UnitID+suffix) {
 				return o.driveInProgress(ctx, root)
 			}
-			if _, exists := findTaskByKey(all, childKey(root.ID, "leader-review:"+req.UnitID+":replan:"+strconv.Itoa(ordinal))); !exists {
-				if _, _, e = o.createReviewTask(ctx, root, req, leader, all, ordinal); e != nil {
+			if _, exists := findTaskByKey(all, childKey(root.ID, "leader-review:"+req.UnitID+suffix+":replan:"+strconv.Itoa(ordinal))); !exists {
+				if _, _, e = o.createReviewTask(ctx, root, req, leader, all, ordinal, round); e != nil {
 					return Run{}, false, e
 				}
 			}
 			return o.driveInProgress(ctx, root)
+		}
+		// A verdict that ends the run has to END it, durably.
+		//
+		// This used to return an error and nothing else, so a blocked or
+		// failed review produced the same error on every pass forever: the
+		// root stayed executable, the completed review kept being re-read,
+		// and the run never reached a state anyone could act on. It cost no
+		// provider calls, which is precisely what made it easy to miss --
+		// and it is why the claim that these were "already implemented
+		// below" was wrong.
+		if review.Verdict == ReviewBlocked {
+			run, blockErr := o.blockRoot(ctx, root, ReasonDepartmentReviewBlocked,
+				fmt.Sprintf("department %s blocked its own review: %s", req.UnitID, strings.Join(review.UnsatisfiedCriteria, "; ")))
+			return run, true, blockErr
+		}
+		if review.Verdict == ReviewFail {
+			if _, finErr := o.tasks.FinalizeFailed(ctx, root.ID, ReasonDepartmentReviewFailed,
+				truncate(fmt.Sprintf("department %s failed its own review: %s", req.UnitID, strings.Join(review.UnsatisfiedCriteria, "; ")), 2000),
+				"service", orchestratorWorkerID); finErr != nil {
+				return Run{}, false, finErr
+			}
+			run, statusErr := o.Status(ctx, root.ID)
+			return run, true, statusErr
 		}
 		if review.Verdict != ReviewAccept {
 			return Run{}, false, fmt.Errorf("%w: department review %s", ErrCompletionFailed, review.Verdict)
@@ -734,7 +857,8 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 // same time, the DepartmentPlan's own order is preserved, so this introduces no
 // new semantic ordering of its own and the same plan always materializes the
 // same way.
-func (o *Orchestrator) materializeWorkerTasks(ctx context.Context, root, source TaskRecord, departmentID string, proposals []WorkerTaskProposal, replan int) error {
+func (o *Orchestrator) materializeWorkerTasks(ctx context.Context, root, source TaskRecord, departmentID string, proposals []WorkerTaskProposal, replan, round int) error {
+	departmentID += designRoundSuffix(round)
 	ordered, err := topologicalProposals(proposals)
 	if err != nil {
 		return err
@@ -757,11 +881,8 @@ func (o *Orchestrator) materializeWorkerTasks(ctx context.Context, root, source 
 		if replan > 0 {
 			suffix += "-replan:" + strconv.Itoa(replan)
 		}
-		t, _, err := o.tasks.CreateTask(ctx, CreateTaskCommand{RequestedByRoleID: source.AssignedRoleID, AssignedRoleID: p.AssignedRoleID, TaskClass: p.TaskClass, IdempotencyKey: childKey(root.ID, suffix), Title: p.Title, Instructions: p.Instructions, AcceptanceCriteria: p.AcceptanceCriteria, Dependencies: dependencies, Priority: p.Priority, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(source.ID), Requirements: appendResultRequirement(p.Requirements)})
+		t, _, err := o.coordinatedChildren().Materialize(ctx, childRequest{Root: root, Sender: source, Depth: 3, Command: CreateTaskCommand{RequestedByRoleID: source.AssignedRoleID, AssignedRoleID: p.AssignedRoleID, TaskClass: p.TaskClass, IdempotencyKey: childKey(root.ID, suffix), Title: p.Title, Instructions: p.Instructions, AcceptanceCriteria: p.AcceptanceCriteria, Dependencies: dependencies, Priority: p.Priority, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(source.ID), Requirements: appendResultRequirement(p.Requirements)}})
 		if err != nil {
-			return err
-		}
-		if err := o.attachChildCoordination(ctx, root, source, t, 3); err != nil {
 			return err
 		}
 		created[p.ClientKey] = t
@@ -855,17 +976,14 @@ func appendResultRequirement(in []RequirementProposal) []RequirementProposal {
 	return append(out, RequirementProposal{Key: hostOwnedResultRequirementKey, Type: "result", Description: "Validated durable model invocation result", Required: true})
 }
 
-func (o *Orchestrator) createReviewTask(ctx context.Context, root TaskRecord, req DepartmentRequest, leader RoleRef, all []TaskRecord, replan int) (TaskRecord, bool, error) {
-	summary := boundedDepartmentSummary(all, root.ID, req.UnitID, o.limits.MaxInstructionsBytes)
-	suffix := "leader-review:" + req.UnitID
+func (o *Orchestrator) createReviewTask(ctx context.Context, root TaskRecord, req DepartmentRequest, leader RoleRef, all []TaskRecord, replan, round int) (TaskRecord, bool, error) {
+	summary := boundedDepartmentSummary(all, root.ID, req.UnitID+designRoundSuffix(round), o.limits.MaxInstructionsBytes)
+	suffix := "leader-review:" + req.UnitID + designRoundSuffix(round)
 	if replan > 0 {
 		suffix += ":replan:" + strconv.Itoa(replan)
 	}
-	task, reused, err := o.tasks.CreateTask(ctx, CreateTaskCommand{RequestedByRoleID: CEORoleID, AssignedRoleID: leader.ID, TaskClass: TaskClassCoordinationDeptReview, IdempotencyKey: childKey(root.ID, suffix), Title: "Department review: " + req.UnitID, Instructions: "Review only this bounded durable task/evidence summary and return DepartmentReview JSON: " + summary + "\n\n" + taskClassGuidance, AcceptanceCriteria: []string{"Use only durable task states and evidence refs", "Return strict DepartmentReview JSON", "Do not execute tool intents"}, Priority: req.Priority, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID), Requirements: []RequirementProposal{{Key: "typed_review", Type: "result", Description: "Validated DepartmentReview invocation result", Required: true}}})
+	task, reused, err := o.coordinatedChildren().Materialize(ctx, childRequest{Root: root, Sender: root, Depth: 2, Command: CreateTaskCommand{RequestedByRoleID: CEORoleID, AssignedRoleID: leader.ID, TaskClass: TaskClassCoordinationDeptReview, IdempotencyKey: childKey(root.ID, suffix), Title: "Department review: " + req.UnitID, Instructions: "Review only this bounded durable task/evidence summary and return DepartmentReview JSON: " + summary + "\n\n" + taskClassGuidance, AcceptanceCriteria: []string{"Use only durable task states and evidence refs", "Return strict DepartmentReview JSON", "Do not execute tool intents"}, Priority: req.Priority, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID), Requirements: []RequirementProposal{{Key: "typed_review", Type: "result", Description: "Validated DepartmentReview invocation result", Required: true}}}})
 	if err != nil {
-		return TaskRecord{}, false, err
-	}
-	if err := o.attachChildCoordination(ctx, root, root, task, 2); err != nil {
 		return TaskRecord{}, false, err
 	}
 	return task, reused, nil
@@ -873,11 +991,8 @@ func (o *Orchestrator) createReviewTask(ctx context.Context, root TaskRecord, re
 
 func (o *Orchestrator) createClosureTask(ctx context.Context, root TaskRecord, plan ExecutivePlan, all []TaskRecord) (TaskRecord, bool, error) {
 	summary := boundedClosureSummary(plan, all, root.ID, o.limits.MaxInstructionsBytes)
-	task, reused, err := o.tasks.CreateTask(ctx, CreateTaskCommand{RequestedByRoleID: OwnerRoleID, AssignedRoleID: CEORoleID, TaskClass: TaskClassCoordinationCEOClosure, IdempotencyKey: childKey(root.ID, "ceo-closure"), Title: "CEO executive closure", Instructions: "Synthesize only from this bounded durable summary and return ExecutiveClosure JSON. A completed claim cannot override backend verification: " + summary, AcceptanceCriteria: []string{"Return strict ExecutiveClosure JSON", "Cite only supplied evidence refs", "Report blockers and unresolved owner decisions explicitly"}, Priority: 100, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID), Requirements: []RequirementProposal{{Key: "typed_closure", Type: "result", Description: "Validated ExecutiveClosure invocation result", Required: true}}})
+	task, reused, err := o.coordinatedChildren().Materialize(ctx, childRequest{Root: root, Sender: root, Depth: 1, Command: CreateTaskCommand{RequestedByRoleID: OwnerRoleID, AssignedRoleID: CEORoleID, TaskClass: TaskClassCoordinationCEOClosure, IdempotencyKey: childKey(root.ID, "ceo-closure"), Title: "CEO executive closure", Instructions: "Synthesize only from this bounded durable summary and return ExecutiveClosure JSON. A completed claim cannot override backend verification: " + summary, AcceptanceCriteria: []string{"Return strict ExecutiveClosure JSON", "Cite only supplied evidence refs", "Report blockers and unresolved owner decisions explicitly"}, Priority: 100, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID), Requirements: []RequirementProposal{{Key: "typed_closure", Type: "result", Description: "Validated ExecutiveClosure invocation result", Required: true}}}})
 	if err != nil {
-		return TaskRecord{}, false, err
-	}
-	if err := o.attachChildCoordination(ctx, root, root, task, 1); err != nil {
 		return TaskRecord{}, false, err
 	}
 	return task, reused, nil
@@ -893,6 +1008,79 @@ func (o *Orchestrator) createClosureTask(ctx context.Context, root TaskRecord, p
 // a provider result: the answer itself is read back from the durable Model
 // Runtime row, so evidence keeps pointing at exactly the bytes that were
 // persisted and hashed.
+// repositoryGroundedPurposes are the executions allowed to observe code.
+//
+// The list is short on purpose. Every excerpt costs tokens on every attempt,
+// so an execution gets eyes only where a repository-specific claim is part of
+// what it has to produce.
+//
+// implementation-plan is on it for a reason worth stating: that model has to
+// deliver exact paths and real diffs. Giving the designers sight while leaving
+// the author of the patch blind would move the same failure one phase later,
+// where it is more expensive to discover.
+//
+// adversarial-review is deliberately ABSENT, and not for cost. Its context is
+// restricted to public and sanitized data, and repository evidence is
+// organizational. Reclassifying it so the reviewer could see source would
+// widen an egress boundary as a side effect of a convenience -- the reviewer
+// judges claims against verified citations instead, which is a decision about
+// evidence rather than about egress.
+//
+// ceo-plan and ceo-closure are absent because neither makes claims about the
+// code: one decides what to attempt, the other reports what happened.
+func repositoryGroundedPurpose(purpose ExecutionPurpose) bool {
+	switch purpose {
+	case PurposeDepartmentPlan, PurposeDepartmentWorker, PurposeDepartmentReview,
+		PurposeDesignAdjudication, PurposeImplementationPlan:
+		return true
+	default:
+		return false
+	}
+}
+
+// repositoryGrounding returns the pinned commit and the selection text for an
+// execution that is allowed to observe code, and empty strings for one that is
+// not.
+//
+// The commit comes from the durable pin, never from resolving the promotion
+// target again. Resolving here would let two rounds of the same design read
+// two different repositories, which is the whole failure the pin exists to
+// prevent, reintroduced at the point where it would be least visible.
+func (o *Orchestrator) repositoryGrounding(ctx context.Context, root, task TaskRecord, purpose ExecutionPurpose) (string, string, error) {
+	if !repositoryGroundedPurpose(purpose) {
+		return "", "", nil
+	}
+	if _, governed := findRequirementByKey(root.Requirements, designfreeze.RequirementKey); !governed {
+		return "", "", nil
+	}
+	// A deployment with no promotion target has no repository for a design
+	// to be about. That is a supported shape, and an execution there is
+	// legitimately ungrounded rather than broken.
+	if o.programTarget == nil {
+		return "", "", nil
+	}
+	pinned, err := o.frozenDesignBaseSHA(ctx, root)
+	if err != nil || pinned == "" {
+		// But where a repository DOES exist, an execution that is supposed
+		// to observe code and whose pin cannot be read must NOT quietly
+		// become an execution that observes none.
+		//
+		// Returning empty degraded a governed design into an ungrounded
+		// one: the context built, the worker ran, every local component
+		// reported success, and the design went back to guessing. That is
+		// AUTONOMY-SMOKE-016 with the sensor unplugged, and it is the exact
+		// failure this subsystem exists to make impossible.
+		if err == nil {
+			err = fmt.Errorf("%w: the campaign is governed by a design but carries no pinned world", ErrContractRejected)
+		}
+		return "", "", err
+	}
+	// The goal says what the campaign is about; the task says what this
+	// execution is about. Both, because a worker task naming a symbol needs
+	// that symbol found, and the goal alone would not mention it.
+	return pinned, strings.TrimSpace(root.Instructions + "\n" + task.Instructions), nil
+}
+
 func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task TaskRecord, schema json.RawMessage, purpose ExecutionPurpose, validate func(InvocationResult) error) (TaskRecord, error) {
 	if !purpose.Valid() {
 		return task, fmt.Errorf("%w: unknown execution purpose %q", ErrContractRejected, purpose)
@@ -902,6 +1090,44 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 	}
 	if task.Status == "awaiting_verification" {
 		return o.gatedComplete(ctx, task)
+	}
+	// A dead-lettered task has exhausted its attempts: the task engine will
+	// never bring it back, and no later pass can make it produce the result
+	// it owed. Whether that ends the RUN depends on whose result it was.
+	//
+	// The condition is dead_letter alone, not every terminal status.
+	// "failed" looks terminal and is not the end of the story here: a model
+	// that answers perfectly while its output fails the typed contract is
+	// recorded failed-but-retryable precisely so the task can try again, and
+	// an authority outage schedules its own re-entry. Treating those as the
+	// end of the run would stop campaigns that the system is already
+	// designed to resume.
+	//
+	// A department worker's failure belongs to the worker that had it
+	// (6eaa74e): its phase still closes, and department_review weighs the
+	// failed sibling as evidence and answers with needs_replan, blocked or
+	// fail. Propagating it here would make failures contagious again and
+	// replace that judgement with a stall -- the exact defect 6eaa74e
+	// removed.
+	//
+	// Every other purpose here is a host-driven step whose typed result the
+	// orchestrator itself consumes and which no governed semantics can
+	// substitute: nothing reviews a dead CEO plan or a dead adjudication,
+	// and no later pass can conjure one. Those end the run, durably and out
+	// loud, instead of leaving the root ready with nothing recorded.
+	//
+	// Engineering missions never reach this function at all, so a
+	// dead-lettered mission cannot stop its campaign here -- which is what
+	// leaves recovery free to open a successor for it.
+	if task.Status == "dead_letter" && purpose != PurposeDepartmentWorker {
+		reason := fmt.Sprintf("%s task %d exhausted its attempts without producing its result", purpose, task.ID)
+		if task.ReasonCode != "" {
+			reason += ": " + task.ReasonCode
+		}
+		if _, blockErr := o.tasks.BlockTask(ctx, root.ID, ReasonRunChildFailed, truncate(reason, 480), "service", orchestratorWorkerID); blockErr != nil {
+			return task, blockErr
+		}
+		return task, fmt.Errorf("%w: %s", ErrRunBlocked, reason)
 	}
 	// Before anything else -- before a claim, before a budget charge, before
 	// the Harness -- ask whether an earlier execution of this task is still
@@ -1021,6 +1247,10 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 	if len(invocations) > 1 {
 		return task, fmt.Errorf("%w: multiple invocations for one task attempt", ErrContractRejected)
 	}
+	repositoryBaseSHA, repositoryQuery, groundingErr := o.repositoryGrounding(ctx, root, task, purpose)
+	if groundingErr != nil {
+		return task, groundingErr
+	}
 	snapshot, err := o.contexts.Build(ctx, ContextRequest{
 		OrganizationRevisionID: task.OrganizationRevisionID, ActorRoleID: task.AssignedRoleID,
 		Purpose: purpose.LegacyPurpose(), TaskRef: "task:" + strconv.FormatInt(task.ID, 10),
@@ -1032,6 +1262,7 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		// value (purpose.Valid() was already checked above), never
 		// model/instruction text.
 		TaskClass: task.TaskClass, ExecutionPurpose: string(purpose), ActorUnitID: task.AssignedUnitID,
+		RepositoryBaseSHA: repositoryBaseSHA, RepositoryQuery: repositoryQuery,
 		IdempotencyKey: childKey(root.ID, fmt.Sprintf("context:%d:%d", task.ID, lease.AttemptID)),
 		CorrelationID:  root.CorrelationID, CausationID: attemptCausation(task.ID, lease.AttemptID),
 	})
@@ -1095,7 +1326,9 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		if handled, blocked, ambiguityErr := o.ambiguityGuard(ctx, root, task, lease.AttemptID); handled {
 			return blocked, ambiguityErr
 		}
-		return o.failAttempt(ctx, task, lease, actorID, "harness_execution_failed", execErr.Error(), ErrCompletionFailed)
+		// The Harness itself failed to run, which says nothing about the
+		// provider. Repeating it would meet the same broken execution.
+		return o.failAttempt(ctx, task, lease, actorID, "harness_execution_failed", execErr.Error(), ErrCompletionFailed, false)
 	}
 	if err = outcome.Validate(); err != nil {
 		return task, err
@@ -1219,8 +1452,16 @@ func (o *Orchestrator) ambiguityGuard(ctx context.Context, root, task TaskRecord
 	return false, task, nil
 }
 
-func (o *Orchestrator) failAttempt(ctx context.Context, task TaskRecord, lease LeaseRecord, actorID, code, detail string, sentinel error) (TaskRecord, error) {
-	failed, recErr := o.tasks.RecordAttemptFailed(ctx, lease, actorID, code, truncate(detail, 2000), false)
+// failAttempt records a terminal failure for THIS attempt. retryable decides
+// whether the task may spend another one of its attempts or is finished.
+//
+// It is a parameter because the answer differs by failure. Identity drift and
+// a broken run history describe something structural that a second attempt
+// would meet again; a provider that was momentarily at capacity does not. A
+// task carrying max_attempts=3 that died on attempt 1 of a transient failure
+// is a task whose retry budget was never real.
+func (o *Orchestrator) failAttempt(ctx context.Context, task TaskRecord, lease LeaseRecord, actorID, code, detail string, sentinel error, retryable bool) (TaskRecord, error) {
+	failed, recErr := o.tasks.RecordAttemptFailed(ctx, lease, actorID, code, truncate(detail, 2000), retryable)
 	o.forgetLease(task.ID)
 	if recErr != nil {
 		return task, recErr
@@ -1319,9 +1560,11 @@ func (o *Orchestrator) rescheduleAfterAuthorityOutage(ctx context.Context, root,
 		return task, err
 	}
 	if len(invocations) > 0 {
+		// A run that claimed unavailable authority while durable invocations
+		// already existed is contradictory, not transient.
 		return o.failAttempt(ctx, task, lease, actorID, "authority_unavailable_with_durable_invocation",
 			fmt.Sprintf("authority was reported unavailable while attempt %d already had %d durable invocation(s)", lease.AttemptID, len(invocations)),
-			ErrExecutionAuthorityUnavailable)
+			ErrExecutionAuthorityUnavailable, false)
 	}
 	failed, recErr := o.tasks.RecordAttemptFailed(ctx, lease, actorID, "execution_authority_unavailable",
 		truncate(outcome.TerminationReason, 2000), true)
@@ -1340,7 +1583,8 @@ func (o *Orchestrator) handleHarnessFailure(ctx context.Context, root, task Task
 	case HarnessFailureAuthorityUnavailable:
 		return o.rescheduleAfterAuthorityOutage(ctx, root, task, lease, actorID, outcome)
 	case HarnessFailureAuthorizationDenied:
-		return o.failAttempt(ctx, task, lease, actorID, "execution_authority_denied", outcome.TerminationReason, ErrExecutionAuthorityDenied)
+		// Authority said no. It will say no again.
+		return o.failAttempt(ctx, task, lease, actorID, "execution_authority_denied", outcome.TerminationReason, ErrExecutionAuthorityDenied, false)
 	case HarnessFailureIndeterminateTool:
 		// A tool may already have reached outside the system. This is the one
 		// outcome that must never be retried automatically, so the attempt
@@ -1357,9 +1601,11 @@ func (o *Orchestrator) handleHarnessFailure(ctx context.Context, root, task Task
 		// and never a completion.
 		return task, ErrToolIntentRejected
 	case HarnessFailureLimitReached:
-		return o.failAttempt(ctx, task, lease, actorID, "harness_limit_reached", outcome.TerminationReason, ErrBudgetExceeded)
+		// A budget that is spent stays spent; retrying would only spend the
+		// task's remaining attempts against the same exhausted ceiling.
+		return o.failAttempt(ctx, task, lease, actorID, "harness_limit_reached", outcome.TerminationReason, ErrBudgetExceeded, false)
 	case HarnessFailureIdentityDrift:
-		return o.failAttempt(ctx, task, lease, actorID, "harness_identity_drift", outcome.TerminationReason, ErrRunIdentityDrift)
+		return o.failAttempt(ctx, task, lease, actorID, "harness_identity_drift", outcome.TerminationReason, ErrRunIdentityDrift, false)
 	case HarnessFailureCancelled:
 		if handled, blocked, err := o.ambiguityGuard(ctx, root, task, lease.AttemptID); handled {
 			return blocked, err
@@ -1369,12 +1615,30 @@ func (o *Orchestrator) handleHarnessFailure(ctx context.Context, root, task Task
 		if handled, blocked, err := o.ambiguityGuard(ctx, root, task, lease.AttemptID); handled {
 			return blocked, err
 		}
-		return o.failAttempt(ctx, task, lease, actorID, "harness_history_error", outcome.TerminationReason, ErrHarnessHistoryFailed)
+		return o.failAttempt(ctx, task, lease, actorID, "harness_history_error", outcome.TerminationReason, ErrHarnessHistoryFailed, false)
 	case HarnessFailureModelError:
 		if handled, blocked, err := o.ambiguityGuard(ctx, root, task, lease.AttemptID); handled {
 			return blocked, err
 		}
-		return o.failAttempt(ctx, task, lease, actorID, "model_invocation_failed", outcome.TerminationReason, ErrCompletionFailed)
+		// Model Runtime already decided whether this failure was transient
+		// and recorded the answer; the Executive reads it rather than
+		// re-deriving it. An unreadable answer means no retry: spending an
+		// attempt on a guess can repeat a call the provider may already have
+		// billed.
+		// A failure with no invocation to ask about, and an invocation with
+		// no recorded outcome, are both "unknown" -- and unknown means no
+		// retry, because spending an attempt on a guess can repeat a call
+		// the provider may already have billed. What changed is that the
+		// two are no longer indistinguishable from a recorded "no": the
+		// reader now says which case it is, so a future decision can act on
+		// the difference instead of inheriting it.
+		retryable := false
+		if outcome.InvocationID > 0 {
+			if value, readErr := o.models.ProviderFailureRetryable(ctx, outcome.InvocationID); readErr == nil {
+				retryable = value
+			}
+		}
+		return o.failAttempt(ctx, task, lease, actorID, "model_invocation_failed", outcome.TerminationReason, ErrCompletionFailed, retryable)
 	default:
 		return task, fmt.Errorf("%w: unknown harness failure %q", ErrContractRejected, outcome.Failure)
 	}
@@ -1596,6 +1860,19 @@ func isNonBlockingPhaseError(err error) bool {
 	return false
 }
 
+// replanCapacityRemains reports whether the host can still grant this
+// department another round of rework.
+//
+// One function, used by both sides of the same decision: the callback asks it
+// to decide whether validating the proposed follow-ups is still an actionable
+// question, and the completed-review path asks it to decide whether to grant
+// the replan or stop the run. Two copies of this predicate would eventually
+// disagree, and the disagreement would appear as a review that can never
+// complete and a bound that can never be reached.
+func replanCapacityRemains(reviewKey string, limit int) bool {
+	return reviewReplanOrdinal(reviewKey) < limit
+}
+
 func (o *Orchestrator) blockRoot(ctx context.Context, root TaskRecord, code, reason string) (Run, error) {
 	_, err := o.tasks.BlockTask(ctx, root.ID, code, truncate(reason, 2000), "service", orchestratorWorkerID)
 	if err != nil {
@@ -1674,6 +1951,48 @@ func findTaskByKey(all []TaskRecord, key string) (TaskRecord, bool) {
 	}
 	return TaskRecord{}, false
 }
+
+// ReasonDepartmentReviewBlocked and ReasonDepartmentReviewFailed carry a
+// department's own terminal verdict onto the root.
+//
+// The review said the work cannot proceed, or that it failed. Those are
+// answers, not malfunctions, and each needs a durable transition of its own:
+// without one the orchestrator re-read the same completed verdict on every
+// pass and returned the same error forever.
+const (
+	ReasonDepartmentReviewBlocked = "department_review_blocked"
+	ReasonDepartmentReviewFailed  = "department_review_failed"
+)
+
+// ReasonDepartmentReplansExhausted stops a run whose department asked for one
+// more round of rework than its bound allows.
+//
+// It is deliberately not ReasonRunChildFailed: nothing failed. The department
+// produced a valid review, the host read it and declined to grant another
+// iteration. Recording that as a failure -- of the review, or of the model
+// that wrote it -- would put a host policy decision on the provider's record,
+// which is what it used to do.
+const ReasonDepartmentReplansExhausted = "department_replans_exhausted"
+
+// ReasonRunChildFailed blocks a root whose run cannot advance because a
+// host-driven step ended terminally without producing the result the
+// orchestrator itself needed from it.
+//
+// Deliberately NOT every terminal child: a department worker that fails is
+// judged by its department's review, and stopping the run on its behalf would
+// make failures contagious again (see 6eaa74e). A dead-lettered engineering
+// mission does not stop its campaign either -- recovery may open a successor
+// for it, and a stop here would outlive that successor.
+//
+// Nothing used to happen here at all. driveTypedTask has branches for
+// completed, awaiting_verification, ready, leased and running, and a
+// dead-lettered task matches none of them, so it fell through to
+// "return task, nil" -- no progress, no error, and therefore no entry in the
+// worker's failure observer, which only logs errors. The campaign stopped and
+// said nothing. A bootstrap that halts silently is worse than one that fails
+// loudly, because the absence of a signal reads exactly like progress.
+const ReasonRunChildFailed = "run_child_failed"
+
 func isTerminalTask(s string) bool {
 	switch s {
 	case "completed", "no_action", "failed", "dead_letter", "rejected", "cancelled":
@@ -1725,13 +2044,33 @@ func departmentWorkerTasks(all []TaskRecord, rootID int64, dept string) []TaskRe
 	}
 	return out
 }
+
+// allDepartmentWorkersTerminal reports whether the department's workers have
+// FINISHED, which is not the same as whether they succeeded.
+//
+// It used to require every worker to be completed or no_action, so a single
+// failed or dead-lettered worker held the department open forever: the review
+// that would have judged the department never ran, and the run waited on a
+// task that was never coming back. One worker's failure took down its
+// siblings' whole phase.
+//
+// A failure belongs to the worker that had it. What the department does about
+// it is the reviewer's judgement, and the reviewer is equipped to make it --
+// the summary it receives carries each worker's status, so a failed sibling
+// is evidence it can weigh, and its verdict already has the vocabulary to
+// respond: needs_replan to try again, blocked or fail to stop. Holding the
+// phase open instead denies the review the chance to say any of that.
+//
+// Only terminal states count. A worker in retry_wait has not finished and
+// still holds the phase open, which is correct: it is coming back. A blocked
+// worker holds it open too, blocked being the state that asks for a human.
 func allDepartmentWorkersTerminal(all []TaskRecord, rootID int64, dept string) bool {
 	tasks := departmentWorkerTasks(all, rootID, dept)
 	if len(tasks) == 0 {
 		return true
 	}
 	for _, t := range tasks {
-		if t.Status != "completed" && t.Status != "no_action" {
+		if !isTerminalTask(t.Status) {
 			return false
 		}
 	}
@@ -1800,4 +2139,72 @@ func boundedClosureSummary(plan ExecutivePlan, all []TaskRecord, rootID int64, m
 		}
 	}
 	return boundedJSON(map[string]any{"objective": plan.Objective, "success_criteria": plan.SuccessCriteria, "departments": items, "owner_decisions_required": plan.OwnerDecisionsRequired}, max)
+}
+
+// openDesignRoundPlan creates the planning task for a design round that a
+// revise asked for.
+//
+// The leader is given what the adjudicator required, not a fresh copy of the
+// original goal: the round exists because specific changes were demanded, and
+// planning it without them would produce the same design again and spend the
+// reviewer's budget re-deciding something already decided.
+//
+// The previous round is untouched. Its plan, its work, its review and its
+// adjudication keep their keys and their content -- this is a successor, not
+// a revision of what happened.
+func (o *Orchestrator) openDesignRoundPlan(ctx context.Context, root TaskRecord, all []TaskRecord, req DepartmentRequest, leader RoleRef, round int) (TaskRecord, error) {
+	if round > o.limits.MaxDesignRounds {
+		return TaskRecord{}, fmt.Errorf("%w: design rounds", ErrBudgetExceeded)
+	}
+	changes, err := o.requiredChangesOf(ctx, all, root.ID, round-1)
+	if err != nil {
+		return TaskRecord{}, err
+	}
+	if len(changes) == 0 {
+		// A revise with nothing to change cannot be planned against. The
+		// contract already refuses that adjudication, so reaching here means
+		// the decision could not be read -- and inventing an empty round
+		// would burn a round and a department plan on no instruction at all.
+		return TaskRecord{}, fmt.Errorf("%w: design round %d has no required changes to plan against", ErrContractRejected, round)
+	}
+	task, _, err := o.coordinatedChildren().Materialize(ctx, childRequest{
+		Root: root, Sender: root, Depth: 2,
+		Command: CreateTaskCommand{
+			RequestedByRoleID: CEORoleID, AssignedRoleID: leader.ID,
+			TaskClass:      TaskClassCoordinationDeptPlan,
+			IdempotencyKey: childKey(root.ID, "leader-plan:"+req.UnitID+designRoundSuffix(round)),
+			Title:          "Department planning: " + req.UnitID + " (design round " + strconv.Itoa(round) + ")",
+			Instructions: "The previous design was sent back for revision. Plan the work that addresses " +
+				"exactly these required changes and return DepartmentPlan JSON.\n\nREQUIRED CHANGES:\n" +
+				joinLines(changes) + "\n\nORIGINAL OBJECTIVE:\n" + req.Objective,
+			AcceptanceCriteria: []string{
+				"Return strict DepartmentPlan JSON",
+				"Every proposed task addresses a required change",
+				"Do not restate work the previous round already delivered",
+			},
+			Priority: req.Priority, MaxAttempts: 3,
+			CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID),
+			Requirements: []RequirementProposal{{Key: "typed_plan", Type: "result", Description: "Validated DepartmentPlan invocation result", Required: true}},
+		},
+	})
+	return task, err
+}
+
+// requiredChangesOf reads what the adjudicator demanded of a round.
+func (o *Orchestrator) requiredChangesOf(ctx context.Context, all []TaskRecord, rootID int64, round int) ([]string, error) {
+	adjudication, ok := findTaskByKey(all, childKey(rootID, "design-adjudication:round:"+strconv.Itoa(round)))
+	if !ok || adjudication.Status != "completed" {
+		return nil, fmt.Errorf("%w: design round %d has no completed adjudication", ErrContractRejected, round)
+	}
+	result, ok := o.resultForCompletedTask(ctx, adjudication)
+	if !ok {
+		return nil, fmt.Errorf("%w: design round %d adjudication has no durable result", ErrContractRejected, round)
+	}
+	var envelope struct {
+		RequiredChanges []string `json:"required_changes"`
+	}
+	if err := json.Unmarshal(result.JSONOutput, &envelope); err != nil {
+		return nil, err
+	}
+	return envelope.RequiredChanges, nil
 }

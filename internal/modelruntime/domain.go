@@ -335,6 +335,14 @@ type NormalizedResponse struct {
 	Usage                 Usage
 	ProviderRequestID     string
 	CancellationConfirmed bool
+	// RoleReasoning is the provider's own account of how it reached this
+	// result, on its way to model_invocation_reasoning.
+	//
+	// It is ORGANIZATIONAL: a leader reasoning about a plan restates the
+	// bundle it was given. It is deliberately not part of Result, so it
+	// cannot reach result hashing, audit events or the outbox, and nothing
+	// that projects a result into context can carry it.
+	RoleReasoning []byte
 }
 
 type CreateInvocationResult struct {

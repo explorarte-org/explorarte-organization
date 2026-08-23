@@ -134,6 +134,7 @@ type memoryTasks struct {
 	failed             []string
 	heartbeats         int
 	evidence           []EvidenceCommand
+	publications       []int64
 }
 
 func newMemoryTasks() *memoryTasks {
@@ -206,8 +207,15 @@ func (m *memoryTasks) CreateTask(_ context.Context, command CreateTaskCommand) (
 		// born pending rather than ready. Modelling only "ready" made this
 		// fake unable to represent the gate at all, which is the property the
 		// dependency fix exists to restore.
-		Status: initialStatusFor(command.Dependencies), Priority: command.Priority, MaxAttempts: defaultedMaxAttempts(command.MaxAttempts),
+		Status: initialStatusFor(command), Priority: command.Priority, MaxAttempts: defaultedMaxAttempts(command.MaxAttempts),
 		CorrelationID: command.CorrelationID, CausationID: command.CausationID, Requirements: requirements,
+	}
+	if command.HoldForCoordination {
+		// The real store writes the hold in the same INSERT, which is the
+		// whole point: there is no instant at which the row exists and is
+		// claimable without its coordination.
+		record.ReasonCode = coordinationHoldReasonCode
+		record.Reason = "task is not published until its creator's coordination is durable"
 	}
 	m.tasks[id] = record
 	if m.deps == nil {
@@ -236,11 +244,28 @@ func defaultedMaxAttempts(requested int) int {
 	return requested
 }
 
-func initialStatusFor(dependencies []int64) string {
-	if len(dependencies) > 0 {
+// coordinationHoldReasonCode mirrors tasks.ReasonCodeCoordinationHold. The
+// executive package does not import internal/tasks -- the adapter is the
+// boundary -- so the constant is restated here and pinned against the real one
+// by a test in runtimeadapter, rather than left to drift silently.
+const coordinationHoldReasonCode = "awaiting_child_coordination"
+
+func initialStatusFor(command CreateTaskCommand) string {
+	// A held task is born blocked regardless of its dependencies. The two
+	// barriers are independent: the hold says "its creator has not finished",
+	// dependencies say "its prerequisites have not finished", and releasing
+	// the hold re-evaluates the second one rather than bypassing it.
+	if command.HoldForCoordination {
+		return "blocked"
+	}
+	if len(command.Dependencies) > 0 {
 		return "pending"
 	}
 	return "ready"
+}
+
+func heldForCoordination(task TaskRecord) bool {
+	return task.Status == "blocked" && task.ReasonCode == coordinationHoldReasonCode
 }
 
 func (m *memoryTasks) AddDependency(_ context.Context, taskID, dependsOn int64) error {
@@ -307,6 +332,14 @@ func (m *memoryTasks) ClaimTask(_ context.Context, command ClaimTaskCommand) (Ta
 		return TaskRecord{}, AttemptRecord{}, LeaseRecord{}, errors.New("claim without a holder principal")
 	}
 	task := m.tasks[command.TaskID]
+	// Production claims only status='ready' and nothing else (see
+	// internal/tasks/postgres/queue.go and specific_claim.go). A fake that
+	// claimed any status would substitute away the exact property the
+	// publication barrier provides, so it would report success against a task
+	// no real worker could ever have leased.
+	if task.Status != "ready" {
+		return TaskRecord{}, AttemptRecord{}, LeaseRecord{}, fmt.Errorf("task %d is not claimable in status %q", command.TaskID, task.Status)
+	}
 	m.nextAttempt++
 	attempt := AttemptRecord{ID: m.nextAttempt, Ordinal: task.AttemptCount + 1, State: "leased"}
 	task.AttemptCount++
@@ -433,6 +466,19 @@ func (m *memoryTasks) RecordEvidence(_ context.Context, command EvidenceCommand)
 			task.Requirements[i].Status = "satisfied"
 		}
 	}
+	// Evidence a caller records must be visible to the next GetTask, the way
+	// task_evidence is in the real store -- Mission.Resolve and the design
+	// base-SHA pin both read their own writes back that way. Keeping it only
+	// in m.evidence made this fake silently lossy: production code that
+	// re-read its own evidence looked broken here and worked in the store.
+	task.Evidence = append(task.Evidence, EvidenceRecord{
+		RequirementID: command.RequirementID,
+		Type:          command.Type,
+		Reference:     command.Reference,
+		Digest:        command.Digest,
+		RecordedBy:    command.RecordedBy,
+		Metadata:      command.Metadata,
+	})
 	m.tasks[task.ID] = task
 	m.evidence = append(m.evidence, command)
 	return nil
@@ -475,9 +521,38 @@ func (m *memoryTasks) UnblockTask(_ context.Context, id int64, _, _ string) (Tas
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	task := m.tasks[id]
+	if heldForCoordination(task) {
+		return TaskRecord{}, fmt.Errorf("task %d is under a coordination hold and is published by its creator, not by an unblock", id)
+	}
 	task.Status = "ready"
 	task.ReasonCode = ""
 	task.Reason = ""
+	m.tasks[id] = task
+	return task, nil
+}
+
+// ReleaseCoordinationHold publishes a held task and then lets its dependencies
+// decide, exactly as the store does: releasing the publication barrier is not
+// the same as satisfying the dependency barrier.
+func (m *memoryTasks) ReleaseCoordinationHold(_ context.Context, id int64) (TaskRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	task := m.tasks[id]
+	if !heldForCoordination(task) {
+		// Already published, or never held. Reporting it unchanged is what
+		// makes a resumed run idempotent.
+		return task, nil
+	}
+	m.publications = append(m.publications, id)
+	task.ReasonCode = ""
+	task.Reason = ""
+	task.Status = "ready"
+	for _, dependency := range m.deps[id] {
+		if m.tasks[dependency].Status != "completed" {
+			task.Status = "pending"
+			break
+		}
+	}
 	m.tasks[id] = task
 	return task, nil
 }
@@ -531,10 +606,23 @@ type fakeModels struct {
 	nextID      int64
 	invocations map[string][]InvocationRecord
 	results     map[int64]InvocationResult
+	// retryableFailures mirrors what Model Runtime records about a provider
+	// outcome. It defaults to false, which is what most fixtures mean: a
+	// failure the run should not repeat.
+	retryableFailures map[int64]bool
+}
+
+// ProviderFailureRetryable answers what Model Runtime recorded, exactly as the
+// real reader does. The Executive must not infer retryability from anything
+// else, so this fake gives it nothing else to infer from.
+func (f *fakeModels) ProviderFailureRetryable(_ context.Context, invocationID int64) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.retryableFailures[invocationID], nil
 }
 
 func newFakeModels() *fakeModels {
-	return &fakeModels{nextID: 500, invocations: map[string][]InvocationRecord{}, results: map[int64]InvocationResult{}}
+	return &fakeModels{nextID: 500, invocations: map[string][]InvocationRecord{}, results: map[int64]InvocationResult{}, retryableFailures: map[int64]bool{}}
 }
 
 func invocationKey(taskID, attemptID int64) string { return fmt.Sprintf("%d/%d", taskID, attemptID) }
@@ -553,6 +641,11 @@ func (f *fakeModels) recordDurableInvocation(command HarnessRunCommand, status s
 	invocation := InvocationRecord{
 		ID: f.nextID, TaskID: command.TaskID, AttemptID: command.AttemptID, SubjectRoleID: command.RoleID,
 		Status: status, CorrelationID: command.CorrelationID, CausationID: command.CausationID,
+		// Every real invocation is made with a context snapshot and records
+		// which one. A fake that left this at zero made code which reads its
+		// own invocation's context look broken here and work in production --
+		// the same lossiness the evidence recorder had.
+		ContextSnapshotID: command.Context.ID,
 	}
 	f.invocations[key] = []InvocationRecord{invocation}
 	if len(body) > 0 {

@@ -17,14 +17,30 @@ import (
 const targetSHA = "14a0611b8cf670ccd32b1c9ca662261b0fdbd7c9"
 
 type fakeProgramTarget struct {
-	sha  string
-	err  error
-	hits int
+	sha    string
+	err    error
+	hits   int
+	moveAt int
+	moved  string
 }
 
 func (f *fakeProgramTarget) ResolveProgramTargetSHA(context.Context) (string, error) {
 	f.hits++
+	if f.moveAt > 0 && f.hits > f.moveAt {
+		return f.moved, f.err
+	}
 	return f.sha, f.err
+}
+
+// calls reports how many times the promotion target was consulted, which is
+// what distinguishes a design episode observing ONE world from one that
+// re-resolves it and lets the ground move between rounds.
+func (f *fakeProgramTarget) calls() int { return f.hits }
+
+// moveAfter makes the repository advance once the design has been pinned,
+// modelling somebody else promoting while a campaign is still deciding.
+func (f *fakeProgramTarget) moveAfter(hits int, sha string) {
+	f.moveAt, f.moved = hits, sha
 }
 
 type fakeMissionProvisioner struct {
@@ -98,17 +114,18 @@ func newMissionFixture(t *testing.T, planPath string, widenScope bool) *missionF
 	harness := &scriptedHarness{models: models, tasks: tasksPort, bodies: bodies, adjudicationVerdict: "freeze"}
 
 	leader := RoleRef{ID: "ingenieria_ia/orquestador", UnitID: "ingenieria_ia", Enabled: true, Executable: true, CanonicalLeader: true}
+	workerRole := RoleRef{ID: "ingenieria_ia/qa", UnitID: "ingenieria_ia", Enabled: true, Executable: true}
 	reviewer := RoleRef{ID: AdversarialReviewerRoleID, UnitID: "investigacion", Enabled: true, Executable: true}
 	ceo := RoleRef{ID: CEORoleID, UnitID: "empresa", Enabled: true, Executable: true}
 	target := &fakeProgramTarget{sha: targetSHA}
 	provisioner := newFakeMissionProvisioner()
 
-	orchestrator, err := NewOrchestrator(Dependencies{
+	orchestrator, err := NewOrchestrator(Dependencies{Acceptance: newMemoryAcceptance(),
 		OrganizationID: "explorarte",
 		Registry: fakeRegistry{
 			rev:     RevisionRef{ID: 7},
 			units:   map[string]UnitRef{"ingenieria_ia": {ID: "ingenieria_ia", Operational: true, LeaderRoleID: leader.ID}},
-			roles:   map[string]RoleRef{leader.ID: leader, reviewer.ID: reviewer, ceo.ID: ceo},
+			roles:   map[string]RoleRef{leader.ID: leader, workerRole.ID: workerRole, reviewer.ID: reviewer, ceo.ID: ceo},
 			leaders: map[string]RoleRef{"ingenieria_ia": leader},
 		},
 		Tasks: tasksPort, Contexts: &fakeContexts{}, Assignments: fakeAssignments{},
@@ -116,7 +133,8 @@ func newMissionFixture(t *testing.T, planPath string, widenScope bool) *missionF
 		Budget: &countingBudget{}, Completion: &fakeCompletion{verdict: CompletionPass},
 		Decisions: &fakeDecisionRecorder{}, Authorization: allowAuthz{}, Limits: DefaultLimits(),
 		Clock: ClockFunc(func() time.Time { return time.Unix(1000, 0) }),
-	}, WithMissionProvisioning(target, provisioner))
+	}, WithMissionProvisioning(target, provisioner),
+		WithSnapshotSources(stubSnapshotSources{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +153,7 @@ func newMissionFixture(t *testing.T, planPath string, widenScope bool) *missionF
 		ActorRoleID: OwnerRoleID, IdempotencyKey: "autonomy-smoke-001",
 		Goal: OwnerGoal{
 			Goal:               "AUTONOMY-SMOKE-001: record the autonomous cycle evidence.",
-			AcceptanceCriteria: []string{"Exactly one allowed file changes"},
+			AcceptanceCriteria: []AcceptanceCriterion{{Text: "Exactly one allowed file changes", Phase: AcceptanceDesign}},
 			Requirements:       requirements,
 		},
 	})
@@ -224,7 +242,11 @@ func TestMissionRequiresASatisfiedFreeze(t *testing.T) {
 	fixture := newMissionFixture(t, smokePath, false)
 	fixture.harness.adjudicationVerdict = "revise"
 	run := fixture.drive(t)
-	if run.State != StateBlocked || run.ReasonCode != ReasonDesignRevisionRequired {
+	// A revise now opens a bounded revision round rather than stopping at
+	// once, so the run ends when the rounds run out. What this test guards is
+	// unchanged and stronger for it: through every round, and at the end of
+	// them, no mission exists.
+	if run.State != StateBlocked || run.ReasonCode != ReasonDesignRoundsExhausted {
 		t.Fatalf("run=%+v", run)
 	}
 	if fixture.provisioner.count() != 0 {
@@ -302,14 +324,15 @@ func TestMissionProvisioningIsIdempotentAcrossResumeAndRestart(t *testing.T) {
 	// engineeringmission.Service.Create faces, where idempotency comes from
 	// the policy digest rather than from process memory.
 	leader := RoleRef{ID: "ingenieria_ia/orquestador", UnitID: "ingenieria_ia", Enabled: true, Executable: true, CanonicalLeader: true}
+	workerRole := RoleRef{ID: "ingenieria_ia/qa", UnitID: "ingenieria_ia", Enabled: true, Executable: true}
 	reviewer := RoleRef{ID: AdversarialReviewerRoleID, UnitID: "investigacion", Enabled: true, Executable: true}
 	ceo := RoleRef{ID: CEORoleID, UnitID: "empresa", Enabled: true, Executable: true}
-	restarted, err := NewOrchestrator(Dependencies{
+	restarted, err := NewOrchestrator(Dependencies{Acceptance: newMemoryAcceptance(),
 		OrganizationID: "explorarte",
 		Registry: fakeRegistry{
 			rev:     RevisionRef{ID: 7},
 			units:   map[string]UnitRef{"ingenieria_ia": {ID: "ingenieria_ia", Operational: true, LeaderRoleID: leader.ID}},
-			roles:   map[string]RoleRef{leader.ID: leader, reviewer.ID: reviewer, ceo.ID: ceo},
+			roles:   map[string]RoleRef{leader.ID: leader, workerRole.ID: workerRole, reviewer.ID: reviewer, ceo.ID: ceo},
 			leaders: map[string]RoleRef{"ingenieria_ia": leader},
 		},
 		Tasks: fixture.tasks, Contexts: &fakeContexts{}, Assignments: fakeAssignments{},
@@ -317,7 +340,8 @@ func TestMissionProvisioningIsIdempotentAcrossResumeAndRestart(t *testing.T) {
 		Budget: &countingBudget{}, Completion: &fakeCompletion{verdict: CompletionPass},
 		Decisions: &fakeDecisionRecorder{}, Authorization: allowAuthz{}, Limits: DefaultLimits(),
 		Clock: ClockFunc(func() time.Time { return time.Unix(1000, 0) }),
-	}, WithMissionProvisioning(fixture.target, fixture.provisioner))
+	}, WithMissionProvisioning(fixture.target, fixture.provisioner),
+		WithSnapshotSources(stubSnapshotSources{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,5 +422,37 @@ func TestMissionProvisionerSurfaceIsCreateOnly(t *testing.T) {
 	}
 	if _, ok := provisioner.(interface{ ApplyPromotion() }); ok {
 		t.Fatal("the provisioner exposes promotion")
+	}
+}
+
+// The budget that authorises a mission's existence is enforced by
+// correlation at reservation time, so the campaign's identity has to be part
+// of provisioning itself. Before this, Executive missions were created with no
+// correlation at all: they spent outside the ceiling that had approved them,
+// and nothing that later tried to recover one had a budget to admit it
+// against.
+//
+// This asserts the seam rather than either side of it: that the campaign root's
+// own correlation is what reaches the provisioner, not a value the phase
+// reconstructed or a plausible-looking substitute.
+func TestAProvisionedMissionBelongsToItsCampaign(t *testing.T) {
+	fixture := newMissionFixture(t, smokePath, false)
+	fixture.drive(t)
+
+	root := fixture.rootRecord(t)
+	command, ok := fixture.provisioner.last()
+	if !ok {
+		t.Fatal("no mission was provisioned")
+	}
+	if root.CorrelationID == "" {
+		t.Fatal("the fixture root carries no correlation, so this test would prove nothing")
+	}
+	if command.CorrelationID != root.CorrelationID {
+		t.Fatalf("mission correlation=%q, want the campaign's own %q", command.CorrelationID, root.CorrelationID)
+	}
+	// The mission is caused by the campaign root, which is also what keeps
+	// it from ever being mistaken for a campaign root itself.
+	if command.CausationID != taskCausation(root.ID) {
+		t.Fatalf("mission causation=%q, want %q", command.CausationID, taskCausation(root.ID))
 	}
 }

@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -61,9 +62,13 @@ func (r programTargetResolver) ResolveProgramTargetSHA(ctx context.Context) (str
 }
 
 // missionCreator is the one operation the provisioner may perform.
+//
+// It is CreateIn rather than Create because a mission provisioned by the
+// Executive always belongs to a campaign, and the campaign's identity has to
+// be part of the creation itself rather than something attached afterwards.
 type missionCreator interface {
-	Create(ctx context.Context, policy engineeringmission.MissionPolicy, plan string,
-		organization, requestedBy, actorType, actorID string) (tasks.Task, error)
+	CreateIn(ctx context.Context, policy engineeringmission.MissionPolicy, plan string,
+		origin engineeringmission.MissionOrigin, actorType, actorID string) (tasks.Task, error)
 }
 
 // missionProvisioner translates the Executive's command into a mission and
@@ -81,9 +86,24 @@ type missionProvisioner struct {
 }
 
 func (p missionProvisioner) ProvisionMission(ctx context.Context, command executive.MissionProvisionCommand) (executive.MissionRecord, error) {
-	task, err := p.missions.Create(ctx, command.Policy, string(command.PlanJSON),
-		p.organizationID, command.RequestedByRoleID, command.ActorType, command.ActorID)
+	task, err := p.missions.CreateIn(ctx, command.Policy, string(command.PlanJSON),
+		engineeringmission.MissionOrigin{
+			OrganizationID:    p.organizationID,
+			RequestedByRoleID: command.RequestedByRoleID,
+			CorrelationID:     command.CorrelationID,
+			CausationID:       command.CausationID,
+		}, command.ActorType, command.ActorID)
 	if err != nil {
+		// Classified here because this is where the two vocabularies meet.
+		// The task engine says "invalid input"; the Executive needs to know
+		// whether coming back later could possibly help. For a malformed
+		// request it cannot: the same policy and the same plan produce the
+		// same refusal every time. Deciding that upstream would mean the
+		// Executive re-deriving the task engine's own rule, and deciding it
+		// downstream means never deciding it at all.
+		if errors.Is(err, tasks.ErrInvalidInput) {
+			return executive.MissionRecord{}, fmt.Errorf("%w: %w", executive.ErrMissionRejected, err)
+		}
 		return executive.MissionRecord{}, fmt.Errorf("provision engineering mission: %w", err)
 	}
 	return executive.MissionRecord{TaskID: task.ID}, nil
