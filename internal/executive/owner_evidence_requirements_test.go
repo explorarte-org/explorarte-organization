@@ -3,7 +3,6 @@ package executive
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 )
 
@@ -94,8 +93,12 @@ func TestReloadingObligationsDoesNotDuplicateThem(t *testing.T) {
 	}
 }
 
-// Obligations accumulate across rounds, and an owner's does not become the
-// adjudicator's because a later round restated it.
+// Obligations accumulate across rounds, and authority stays at the SLOT.
+//
+// If the owner demanded MaxDesignRounds/definition and a later adjudication
+// demanded MaxDesignRounds/application, unioning the relations under one
+// source would make the adjudicator's obligation look like the owner's -- and
+// "who may change this" is decided by exactly that answer.
 func TestALaterRoundInheritsEarlierObligations(t *testing.T) {
 	fixture := newSubmitFixture(t)
 	goal := fixture.goal()
@@ -116,26 +119,39 @@ func TestALaterRoundInheritsEarlierObligations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bySubject := map[string]EvidenceRequirement{}
+
+	// Every slot in force, with the authority that created it.
+	sourceOf := map[string]EvidenceRequirementSource{}
 	for _, requirement := range loaded {
-		bySubject[requirement.Subject] = requirement
+		for _, relation := range requirement.Relations {
+			slot := requirement.Subject + "/" + relation
+			if existing, duplicated := sourceOf[slot]; duplicated {
+				t.Fatalf("%s is claimed by both %q and %q", slot, existing, requirement.Source)
+			}
+			sourceOf[slot] = requirement.Source
+		}
 	}
-	rounds := bySubject["MaxDesignRounds"]
-	if len(rounds.Relations) != 2 {
-		t.Fatalf("round 2 lost or duplicated an inherited relation: %v", rounds.Relations)
+	for slot, want := range map[string]EvidenceRequirementSource{
+		"MaxDesignRounds/definition":      EvidenceFromOwnerAcceptance,
+		"MaxDesignRounds/application":     EvidenceFromAdjudication,
+		"MaxDepartmentReplans/definition": EvidenceFromAdjudication,
+	} {
+		got, present := sourceOf[slot]
+		if !present {
+			t.Fatalf("%s is not in force in round 2", slot)
+		}
+		if got != want {
+			t.Fatalf("%s is attributed to %q, want %q", slot, got, want)
+		}
 	}
-	if rounds.Source != EvidenceFromOwnerAcceptance {
-		t.Fatalf("the owner's obligation was re-attributed to %q", rounds.Source)
-	}
-	if bySubject["MaxDepartmentReplans"].Source != EvidenceFromAdjudication {
-		t.Fatalf("a new obligation lost its provenance: %+v", bySubject["MaxDepartmentReplans"])
-	}
+
 	// Round 1 still sees only what round 1 was bound by.
 	first, err := fixture.orchestrator.evidenceRequirementsForRound(ctx, run.RootTaskID, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(first) != 1 || !strings.Contains(first[0].Subject, "MaxDesignRounds") {
+	if len(first) != 1 || first[0].Subject != "MaxDesignRounds" ||
+		len(first[0].Relations) != 1 || first[0].Relations[0] != "definition" {
 		t.Fatalf("a later obligation reached back into an earlier round: %+v", first)
 	}
 }

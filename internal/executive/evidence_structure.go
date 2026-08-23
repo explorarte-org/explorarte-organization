@@ -197,13 +197,19 @@ func ValidateEvidenceStructure(result WorkerResult, required []EvidenceRequireme
 			}
 			unfilled = append(unfilled, slot)
 		}
-		// The whole point of separating the slots is that one range cannot
-		// stand for both. R5's design offered budget.go#L31-L65 as evidence
-		// for two different limits and for two different roles.
-		if err := relationsAreDistinct(requirement, relations); err != nil {
+
+	}
+	// One range cannot stand for two roles. R5's design offered
+	// budget.go#L31-L65 as evidence for two different limits and two
+	// different roles. This is checked per SUBJECT rather than per
+	// requirement, because one subject can now carry obligations from
+	// several sources and a clash between them is still a clash.
+	for subject, relations := range bySubject {
+		if err := relationsAreDistinct(subject, relations); err != nil {
 			return err
 		}
 	}
+
 	// Host insufficiency is reported first and on its own: a design must
 	// never be told it failed to cite what it was never shown.
 	if len(unsupplied) > 0 {
@@ -217,13 +223,18 @@ func ValidateEvidenceStructure(result WorkerResult, required []EvidenceRequireme
 	return fmt.Errorf("%w: evidence is missing for %s", ErrContractRejected, strings.Join(unfilled, ", "))
 }
 
-func relationsAreDistinct(requirement EvidenceRequirement, relations map[string][]string) error {
+func relationsAreDistinct(subject string, relations map[string][]string) error {
+	ordered := make([]string, 0, len(relations))
+	for relation := range relations {
+		ordered = append(ordered, relation)
+	}
+	sort.Strings(ordered)
 	seen := map[string]string{}
-	for _, relation := range requirement.Relations {
+	for _, relation := range ordered {
 		for _, ref := range relations[relation] {
 			if other, clash := seen[ref]; clash && other != relation {
 				return fmt.Errorf("%w: %s cites the same range for %s and %s (%s)",
-					ErrContractRejected, requirement.Subject, other, relation, ref)
+					ErrContractRejected, subject, other, relation, ref)
 			}
 			seen[ref] = relation
 		}

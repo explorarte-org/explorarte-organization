@@ -55,12 +55,22 @@ func (o *Orchestrator) recordEvidenceRequirements(ctx context.Context, rootID in
 // Obligations are cumulative: a round inherits everything in force before it,
 // because an insufficiency the owner named does not stop mattering because an
 // adjudicator later named another one.
+//
+// They are merged per (subject, source), never across sources. Authority lives
+// at the slot: if the owner demanded MaxDesignRounds/definition and a later
+// adjudication demanded MaxDesignRounds/application, unioning the relations
+// under one source would make the adjudicator's obligation look like the
+// owner's -- and "who may change this" is decided by exactly that answer.
 func (o *Orchestrator) evidenceRequirementsForRound(ctx context.Context, rootID int64, round int) ([]EvidenceRequirement, error) {
 	detail, err := o.tasks.GetTask(ctx, rootID)
 	if err != nil {
 		return nil, err
 	}
-	bySubject := map[string]EvidenceRequirement{}
+	type obligationKey struct {
+		subject string
+		source  EvidenceRequirementSource
+	}
+	byOrigin := map[obligationKey]EvidenceRequirement{}
 	for candidate := 1; candidate <= round; candidate++ {
 		reference := evidenceRequirementsReference(rootID, candidate)
 		for _, evidence := range detail.Evidence {
@@ -76,12 +86,13 @@ func (o *Orchestrator) evidenceRequirementsForRound(ctx context.Context, rootID 
 				return nil, fmt.Errorf("%w: recorded evidence requirements are unreadable", ErrContractRejected)
 			}
 			for _, requirement := range stored {
-				bySubject[requirement.Subject] = mergeRequirement(bySubject[requirement.Subject], requirement)
+				key := obligationKey{subject: requirement.Subject, source: requirement.Source}
+				byOrigin[key] = mergeRequirement(byOrigin[key], requirement)
 			}
 		}
 	}
-	merged := make([]EvidenceRequirement, 0, len(bySubject))
-	for _, requirement := range bySubject {
+	merged := make([]EvidenceRequirement, 0, len(byOrigin))
+	for _, requirement := range byOrigin {
 		// Canonical order per requirement, and canonical order overall,
 		// so the contract a round is judged against is identical however
 		// the evidence rows happen to come back. Provenance is carried
@@ -92,14 +103,17 @@ func (o *Orchestrator) evidenceRequirementsForRound(ctx context.Context, rootID 
 		merged = append(merged, requirement)
 	}
 	sort.SliceStable(merged, func(first, second int) bool {
-		return merged[first].Subject < merged[second].Subject
+		if merged[first].Subject != merged[second].Subject {
+			return merged[first].Subject < merged[second].Subject
+		}
+		return merged[first].Source < merged[second].Source
 	})
 	return merged, nil
 }
 
-// mergeRequirement unions the relations demanded of one subject. The earliest
-// source is kept: an obligation the owner imposed does not become the
-// adjudicator's because the adjudicator restated it.
+// mergeRequirement unions the relations one source demanded of one subject.
+// It is never called across sources: doing so is what would let an
+// adjudicator's obligation inherit the owner's authority.
 func mergeRequirement(existing, incoming EvidenceRequirement) EvidenceRequirement {
 	if existing.Subject == "" {
 		return incoming

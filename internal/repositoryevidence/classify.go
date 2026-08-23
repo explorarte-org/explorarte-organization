@@ -20,6 +20,19 @@ const (
 // "o.limits.MaxDesignRounds" and "round > o.limits.MaxDesignRounds" carry the
 // symbol mid-line, behind whatever holds it.
 //
+// Opening a line is not enough on its own. A composite literal written across
+// several lines puts its keys there too:
+//
+//	return Limits{
+//	        MaxDepartmentReplans: 1,
+//	}
+//
+// That is the DEFAULT VALUE of a field, not the field's declaration, and an
+// excerpt carrying only the default would otherwise let the host claim it had
+// supplied a definition it never saw. A trailing colon separates the two:
+// a key is followed by one, a declaration never is -- except ":=", which
+// really does introduce a name.
+//
 // This is deliberately a narrow, auditable rule rather than a parse. The point
 // is not to be clever about Go; it is that the host can say WHY it believes an
 // excerpt is a definition, and anyone can check the answer by reading the
@@ -28,7 +41,11 @@ const (
 // the host really does not know one was supplied.
 func declarationLine(symbol string) *regexp.Regexp {
 	quoted := regexp.QuoteMeta(symbol)
-	return regexp.MustCompile(`(?m)^[ \t]*(?:(?:func|type|var|const)[ \t]+(?:\([^)]*\)[ \t]*)?)?` + quoted + `\b`)
+	// (?:[^:=]|$) after the name rejects a composite-literal key while
+	// keeping a short variable declaration: "MaxDepartmentReplans: 1" is a
+	// value being set, "MaxDesignRounds := 2" is a name being introduced.
+	return regexp.MustCompile(`(?m)^[ \t]*(?:(?:func|type|var|const)[ \t]+(?:\([^)]*\)[ \t]*)?)?` +
+		quoted + `\b[ \t]*(?::=|[^:\n]|$)`)
 }
 
 // ClassifyExcerpt reports what role an excerpt can play for a symbol, and
