@@ -239,7 +239,23 @@ func validateSchemaDefinition(schema map[string]any, depth int) error {
 			return fmt.Errorf("additionalProperties must be boolean")
 		}
 	}
-	allowed := map[string]struct{}{"type": {}, "required": {}, "properties": {}, "items": {}, "additionalProperties": {}, "enum": {}, "description": {}}
+	// maxLength is accepted as a declared constraint and is rendered to the
+	// model with the rest of the schema. It is deliberately NOT enforced by
+	// validateAgainstSchema: JSON-Schema maxLength counts characters/code
+	// points, while the host contracts that declare it enforce UTF-8 bytes
+	// (executive Limits.MaxStringBytes measured with len(string)). Enforcing
+	// the character reading here would diverge from the byte rule the host
+	// actually applies and would reclassify a host-side contract rejection
+	// as a provider normalization failure. The keyword is communication;
+	// the byte limit stays host-owned.
+	if raw, ok := schema["maxLength"]; ok {
+		n, isNum := raw.(json.Number)
+		value, err := n.Int64()
+		if !isNum || err != nil || value <= 0 || value != int64(float64(value)) {
+			return fmt.Errorf("maxLength must be a positive integer")
+		}
+	}
+	allowed := map[string]struct{}{"type": {}, "required": {}, "properties": {}, "items": {}, "additionalProperties": {}, "enum": {}, "description": {}, "maxLength": {}}
 	for k := range schema {
 		if _, ok := allowed[k]; !ok {
 			return fmt.Errorf("unsupported schema keyword %q", k)

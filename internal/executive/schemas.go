@@ -1,6 +1,9 @@
 package executive
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // These schemas deliberately use only the JSON-Schema subset enforced by
 // Model Runtime:
@@ -12,6 +15,7 @@ import "encoding/json"
 //   additionalProperties
 //   enum
 //   description
+//   maxLength
 //
 // Keep them inside that subset. In particular:
 //   - single-value enum is used instead of const;
@@ -19,6 +23,14 @@ import "encoding/json"
 //
 // Model Runtime is the provider-boundary schema authority; Executive must not
 // maintain a richer incompatible schema dialect above it.
+//
+// maxLength is declared-and-rendered only: JSON-Schema maxLength counts code
+// points, while the host limit these schemas communicate is UTF-8 bytes
+// measured with len(string) by validateRequiredString. The authoritative
+// enforcement stays there, and every maxLength below is accompanied by a
+// description that states the byte rule in words, because maxLength alone
+// does not express the byte contract. Both are built from the same Limits
+// value the validator uses, so they cannot drift apart.
 //
 // NOTE (Bug A): task_class in WorkerTaskProposal is declared as {"type":"string"}
 // here because Model Runtime does not support the "pattern" keyword. The actual
@@ -177,8 +189,31 @@ var (
 	    }
 	  }
 	}`)
+)
 
-	workerResultOutputSchema = json.RawMessage(`{
+// byteLimitedStringSchema renders the property schema for every
+// worker-result/v2 field whose value passes through
+// validateRequiredString(value, limits.MaxStringBytes, ...). It states the
+// limit twice on purpose: maxLength is the standard keyword a model may
+// treat as a character bound, and the description carries the rule the host
+// actually enforces -- non-empty, UTF-8 encoded length in bytes. The number
+// comes from the same Limits the validator reads, never from a second
+// literal.
+func byteLimitedStringSchema(limits Limits) string {
+	return fmt.Sprintf(`{
+	          "type":"string",
+	          "maxLength":%d,
+	          "description":"Must be non-empty and its UTF-8 encoded representation must not exceed %d bytes."
+	        }`, limits.MaxStringBytes, limits.MaxStringBytes)
+}
+
+// WorkerResultOutputSchemaFor builds the provider-facing contract for
+// PurposeDepartmentWorker results. It was a const literal until R7: the host
+// rejected an artifact whose summary exceeded MaxStringBytes while the model
+// had never been told any limit existed. The schema now carries the limit,
+// derived from the same Limits instance ParseWorkerResult enforces.
+func WorkerResultOutputSchemaFor(limits Limits) json.RawMessage {
+	return json.RawMessage(`{
 	  "type":"object",
 	  "additionalProperties":false,
 	  "required":[
@@ -191,7 +226,7 @@ var (
 	      "type":"string",
 	      "enum":["worker-result/v1","worker-result/v2"]
 	    },
-	    "summary":{"type":"string"},
+	    "summary":` + byteLimitedStringSchema(limits) + `,
 	    "evidence_refs":{
 	      "type":"array",
 	      "items":{"type":"string"}
@@ -203,16 +238,18 @@ var (
 	        "additionalProperties":false,
 	        "required":["claim","subject","relation","ref"],
 	        "properties":{
-	          "claim":{"type":"string"},
-	          "subject":{"type":"string"},
+	          "claim":` + byteLimitedStringSchema(limits) + `,
+	          "subject":` + byteLimitedStringSchema(limits) + `,
 	          "relation":{"type":"string","enum":["definition","application","test","context"]},
-	          "ref":{"type":"string"}
+	          "ref":` + byteLimitedStringSchema(limits) + `
 	        }
 	      }
 	    }
 	  }
 	}`)
+}
 
+var (
 	departmentReviewOutputSchema = json.RawMessage(`{
 	  "type":"object",
 	  "additionalProperties":false,
