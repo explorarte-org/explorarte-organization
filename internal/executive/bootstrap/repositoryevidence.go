@@ -28,18 +28,18 @@ import (
 // producing a context with no code in it. That is why this wiring is worth
 // having a guard: a deployment that forgot it would not degrade quietly, it
 // would refuse every grounded design and say why.
-func repositoryEvidenceOption(cfg config.Config, store *platformpostgres.Store) ([]contextengine.ServiceOption, error) {
+func repositoryEvidenceOption(cfg config.Config, store *platformpostgres.Store) ([]contextengine.ServiceOption, repositoryevidence.Source, string, error) {
 	repositoryID := strings.TrimSpace(os.Getenv(missionRepositoryEnv))
 	if repositoryID == "" || !cfg.Staging.Enabled {
-		return nil, nil
+		return nil, nil, "", nil
 	}
 	stagingRuntime, err := stagingbootstrap.Open(cfg, store)
 	if err != nil {
-		return nil, fmt.Errorf("open staging runtime for repository evidence: %w", err)
+		return nil, nil, "", fmt.Errorf("open staging runtime for repository evidence: %w", err)
 	}
 	repository, _, err := stagingRuntime.Catalog.Get(context.Background(), repositoryID)
 	if err != nil {
-		return nil, fmt.Errorf("resolve repository %q for evidence: %w", repositoryID, err)
+		return nil, nil, "", fmt.Errorf("resolve repository %q for evidence: %w", repositoryID, err)
 	}
 	binary := strings.TrimSpace(cfg.Staging.GitBinary)
 	if binary == "" {
@@ -47,13 +47,13 @@ func repositoryEvidenceOption(cfg config.Config, store *platformpostgres.Store) 
 	}
 	source, err := gitsource.New(repository.Path, binary, 2<<20)
 	if err != nil {
-		return nil, err
+		return nil, nil, "", err
 	}
 	provider, err := repositoryevidence.NewProvider(repositoryID, source, repositoryevidence.DefaultLimits(), 24)
 	if err != nil {
-		return nil, err
+		return nil, nil, "", err
 	}
-	return []contextengine.ServiceOption{contextengine.WithRepositoryEvidence(provider)}, nil
+	return []contextengine.ServiceOption{contextengine.WithRepositoryEvidence(provider)}, source, repositoryID, nil
 }
 
 // snapshotSourceReader lets the host confirm that a repository citation was

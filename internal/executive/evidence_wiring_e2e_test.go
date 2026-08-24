@@ -60,7 +60,7 @@ type wiringFixture struct {
 // newWiringFixture builds the freeze campaign WITH the two things the evidence
 // contract needs to be live: a program target (so workers can see the
 // repository at all) and a snapshot reader that answers what was shown.
-func newWiringFixture(t *testing.T, verdict string, sources []SnapshotSource, goalReqs []EvidenceRequirementProposal) *wiringFixture {
+func newWiringFixture(t *testing.T, verdict string, sources []SnapshotSource, goalReqs []EvidenceRequirementProposal, opts ...OrchestratorOption) *wiringFixture {
 	t.Helper()
 	tasksPort := newMemoryTasks()
 	acceptance := newMemoryAcceptance()
@@ -79,14 +79,17 @@ func newWiringFixture(t *testing.T, verdict string, sources []SnapshotSource, go
 		roles:   map[string]RoleRef{leader.ID: leader, worker.ID: worker, reviewer.ID: reviewer, ceo.ID: ceo},
 		leaders: map[string]RoleRef{"ingenieria_ia": leader},
 	}
+	options := append([]OrchestratorOption{
+		WithMissionProvisioning(&fakeProgramTarget{sha: targetSHA}, newFakeMissionProvisioner()),
+		WithSnapshotSources(stubSnapshotSources{sources: sources}),
+	}, opts...)
 	orchestrator, err := NewOrchestrator(Dependencies{Acceptance: acceptance,
 		OrganizationID: "explorarte", Registry: registry, Tasks: tasksPort, Contexts: ctxPort,
 		Assignments: fakeAssignments{}, Principals: newFakePrincipals(), Models: models, Harness: harness,
 		Budget: &countingBudget{}, Completion: &fakeCompletion{verdict: CompletionPass},
 		Decisions: &fakeDecisionRecorder{}, Authorization: allowAuthz{}, Limits: DefaultLimits(),
 		Clock: ClockFunc(func() time.Time { return time.Unix(1000, 0) }),
-	}, WithMissionProvisioning(&fakeProgramTarget{sha: targetSHA}, newFakeMissionProvisioner()),
-		WithSnapshotSources(stubSnapshotSources{sources: sources}))
+	}, options...)
 	if err != nil {
 		t.Fatal(err)
 	}

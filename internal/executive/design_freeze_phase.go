@@ -348,7 +348,15 @@ func (o *Orchestrator) driveDesignFreeze(ctx context.Context, root TaskRecord, a
 			if parseErr != nil {
 				return parseErr
 			}
-			return AssertFindingsExist(parsed, reviewIDs)
+			if err := AssertFindingsExist(parsed, reviewIDs); err != nil {
+				return err
+			}
+			// A revise binds the NEXT round to whatever it demands, so the
+			// demand is probed against the pinned world while there is still
+			// an attempt to correct: an unsupplyable slot is a contract
+			// rejection with measured feedback, and a broken sensor is
+			// infrastructure -- never Luna's fault.
+			return o.probeAdjudicationRequirements(ctx, root, parsed.EvidenceRequirements)
 		}); err != nil {
 			run, phaseErr := o.handlePhaseError(ctx, root, adjudicationTask, err)
 			return run, true, phaseErr
