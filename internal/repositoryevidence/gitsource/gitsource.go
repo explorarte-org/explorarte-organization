@@ -108,11 +108,14 @@ func filterIneligibleHits(baseSHA, raw string) string {
 
 // rankHits turns raw git grep output into candidate locations for one query.
 //
-// One location per file: a term appearing twenty times in one file is one
-// place to look, not twenty. When a file mentions the symbol on several
-// lines, the location reported is a line that DECLARES the symbol if the
-// file has one -- the struct field, the func, the const -- and the earliest
-// mention otherwise.
+// At most ONE CANDIDATE PER ROLE PER FILE: a term appearing twenty times in
+// one file is still one place to look per role, not twenty. When a file both
+// declares the symbol and applies it, it contributes up to two candidates --
+// its earliest declaring line and its earliest applying line -- because those
+// are two epistemic roles, not two mentions. AUTONOMY-SMOKE-017-R12 measured
+// what collapsing them costs: a single best[path] let a declaration replace
+// an earlier use, leaving the file represented by its declaration alone and
+// the application invisible to every downstream classifier.
 //
 // A name can be DECLARED legitimately in many places -- several structs,
 // several packages. So all-declarations-first would be the mirror of the R6
@@ -123,11 +126,13 @@ func filterIneligibleHits(baseSHA, raw string) string {
 // sat just outside a truncated list.
 //
 // The order therefore reserves one seat for each role before filling the
-// rest: the first declaring candidate, then the first non-declaring
-// candidate, then the remaining candidates in deterministic order --
-// declarations in git order, then uses in git order. Only then is the list
-// cut to the limit. With only declarations, or only applications, nothing
-// changes; with both present and room for two, at least one of each
+// rest: the first declaring candidate, then the first applying candidate --
+// preferring one from a DIFFERENT file than the declaration's, so truncation
+// cannot spend both reserved seats on a single file while another file's
+// application waits outside -- then the remaining candidates in deterministic
+// order: declarations in git order, then uses in git order. Only then is the
+// list cut to the limit. With only declarations, or only applications,
+// nothing changes; with both present and room for two, at least one of each
 // survives any truncation.
 //
 // The original wound this ordering treats is AUTONOMY-SMOKE-017-R6: git
@@ -149,8 +154,11 @@ func rankHits(out, baseSHA, query string, limit int) []repositoryevidence.Match 
 		line int
 		text string
 	}
+	key := func(c candidate) string { return c.path + ":" + strconv.Itoa(c.line) }
 	var order []string
-	best := map[string]candidate{}
+	seenFile := map[string]bool{}
+	declaration := map[string]candidate{}
+	application := map[string]candidate{}
 	for _, raw := range strings.Split(strings.TrimSpace(out), "\n") {
 		// Each hit is "<commit>:<path>:<line>:<content>".
 		rest := strings.TrimPrefix(strings.TrimSpace(raw), baseSHA+":")
@@ -166,43 +174,77 @@ func rankHits(out, baseSHA, query string, limit int) []repositoryevidence.Match 
 		if convErr != nil || at < 1 {
 			continue
 		}
-		if existing, already := best[path]; already {
-			// Keep the earliest mention unless a later one introduces the
-			// name; once a declaring line is held, keep it.
-			if !repositoryevidence.LineDeclares(existing.text, query) &&
-				repositoryevidence.LineDeclares(text, query) {
-				best[path] = candidate{path: path, line: at, text: text}
+		if !seenFile[path] {
+			seenFile[path] = true
+			order = append(order, path)
+		}
+		// The earliest hit of each role is kept; later hits of the same role
+		// in the same file add no new place to look.
+		if repositoryevidence.LineDeclares(text, query) {
+			if _, held := declaration[path]; !held {
+				declaration[path] = candidate{path: path, line: at, text: text}
 			}
 			continue
 		}
-		best[path] = candidate{path: path, line: at, text: text}
-		order = append(order, path)
+		if _, held := application[path]; !held {
+			application[path] = candidate{path: path, line: at, text: text}
+		}
 	}
 
-	declaring := make([]repositoryevidence.Match, 0, len(order))
-	others := make([]repositoryevidence.Match, 0)
+	ranked := make([]repositoryevidence.Match, 0, len(order))
+	used := map[string]bool{}
+	seat := func(c candidate) {
+		ranked = append(ranked, repositoryevidence.Match{Path: c.path, Line: c.line})
+		used[key(c)] = true
+	}
+
+	firstDeclaration, haveFirst := candidate{}, false
 	for _, path := range order {
-		chosen := best[path]
-		match := repositoryevidence.Match{Path: chosen.path, Line: chosen.line}
-		if repositoryevidence.LineDeclares(chosen.text, query) {
-			declaring = append(declaring, match)
-			continue
+		if c, ok := declaration[path]; ok {
+			firstDeclaration, haveFirst = c, true
+			break
 		}
-		others = append(others, match)
+	}
+	if haveFirst {
+		seat(firstDeclaration)
 	}
 	// One seat per role first -- see the comment above for why neither role
-	// may be allowed to expel the other under truncation.
-	ranked := make([]repositoryevidence.Match, 0, len(order))
-	if len(declaring) > 0 {
-		ranked = append(ranked, declaring[0])
-		declaring = declaring[1:]
+	// may be allowed to expel the other under truncation. When a declaring
+	// file also applies the symbol, an application from any OTHER file takes
+	// this seat ahead of it: two seats on one file would leave the rest of
+	// the tree unrepresented exactly when truncation bites.
+	firstApplication, found := candidate{}, false
+	fallback, haveFallback := candidate{}, false
+	for _, path := range order {
+		c, ok := application[path]
+		if !ok {
+			continue
+		}
+		if !haveFallback {
+			fallback, haveFallback = c, true
+		}
+		if haveFirst && path == firstDeclaration.path {
+			continue
+		}
+		firstApplication, found = c, true
+		break
 	}
-	if len(others) > 0 {
-		ranked = append(ranked, others[0])
-		others = others[1:]
+	if !found && haveFallback {
+		firstApplication, found = fallback, true
 	}
-	ranked = append(ranked, declaring...)
-	ranked = append(ranked, others...)
+	if found {
+		seat(firstApplication)
+	}
+	for _, path := range order {
+		if c, ok := declaration[path]; ok && !used[key(c)] {
+			seat(c)
+		}
+	}
+	for _, path := range order {
+		if c, ok := application[path]; ok && !used[key(c)] {
+			seat(c)
+		}
+	}
 	if len(ranked) > limit {
 		ranked = ranked[:limit]
 	}
