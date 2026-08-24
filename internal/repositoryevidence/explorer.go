@@ -77,7 +77,7 @@ func (e *Explorer) Search(ctx context.Context, query string) ([]Match, error) {
 	}
 	kept := make([]Match, 0, len(matches))
 	for _, candidate := range matches {
-		if ValidatePath(candidate.Path) == nil && candidate.Line > 0 {
+		if EligibleEvidencePath(candidate.Path) && candidate.Line > 0 {
 			kept = append(kept, candidate)
 		}
 	}
@@ -107,8 +107,13 @@ func (e *Explorer) ReadAround(ctx context.Context, match Match, window int) (Fra
 // agent asking for lines 1-100000 is asking to see a file, and the useful
 // answer is the beginning of it, not an error.
 func (e *Explorer) Read(ctx context.Context, filePath string, start, end int) (Fragment, error) {
-	if err := ValidatePath(filePath); err != nil {
-		return Fragment{}, err
+	// The authoritative boundary of the evidence diet: no path outside the
+	// eligible corpus can become a Fragment through ANY entry point --
+	// discovery results, explicitly named paths, probes. A test file named
+	// outright by a goal or a query is refused here exactly like one found
+	// by search.
+	if !EligibleEvidencePath(filePath) {
+		return Fragment{}, fmt.Errorf("%w: %s is not eligible evidence", ErrInvalidFragment, filePath)
 	}
 	if start < 1 {
 		start = 1

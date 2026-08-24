@@ -127,6 +127,25 @@ func ValidatePath(candidate string) error {
 	return nil
 }
 
+// EligibleEvidencePath is the single authority on which repository paths may
+// become citable worker-facing evidence: plain repository-relative paths,
+// excluding the test corpus.
+//
+// *_test.go files are excluded because their value is TESTING the code, not
+// declaring or applying it, and their long explanatory comments are prose a
+// designer will echo. AUTONOMY-SMOKE-017-R11 lost a campaign to exactly that:
+// a candidate design reproduced a test file's commentary nearly verbatim and
+// the egress gate refused the bundle. Keeping tests out of the diet starves
+// that channel at the source instead of tuning the detector downstream.
+//
+// Every consumer must go through this one predicate -- discovery, direct
+// reads and the git backend's own pre-filter -- so the three cannot disagree
+// about what counts as evidence. A slot satisfiable only through a test file
+// answers "not supplyable": the honest fail-closed outcome, not a softer one.
+func EligibleEvidencePath(candidate string) bool {
+	return ValidatePath(candidate) == nil && !strings.HasSuffix(candidate, "_test.go")
+}
+
 // ValidFor reports whether this excerpt is evidence about the given commit.
 //
 // Equality, not recency. An excerpt of the same file taken one commit earlier

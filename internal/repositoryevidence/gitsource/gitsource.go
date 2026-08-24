@@ -71,8 +71,39 @@ func (s *Source) Search(ctx context.Context, baseSHA, query string, limit int) (
 		}
 		return nil, nil
 	}
-	matches := rankHits(out, baseSHA, query, limit)
+	matches := rankHits(filterIneligibleHits(baseSHA, out), baseSHA, query, limit)
 	return matches, nil
+}
+
+// filterIneligibleHits drops raw grep lines whose path is outside the
+// eligible evidence corpus BEFORE ranking and truncation.
+//
+// The ordering matters: the candidate limit exists to bound discovery, not to
+// decide the diet. If test-file hits were dropped after the limit was applied,
+// a flood of them could evict a production application that ranked below --
+// spending the world's real evidence on files the host would refuse anyway.
+// The policy itself lives in one place: repositoryevidence.EligibleEvidencePath.
+func filterIneligibleHits(baseSHA, raw string) string {
+	lines := strings.Split(raw, "\n")
+	kept := make([]string, 0, len(lines))
+	prefix := baseSHA + ":"
+	for _, line := range lines {
+		rest, hasCommit := strings.CutPrefix(line, prefix)
+		if !hasCommit {
+			kept = append(kept, line)
+			continue
+		}
+		pathPart, _, found := strings.Cut(rest, ":")
+		if !found {
+			kept = append(kept, line)
+			continue
+		}
+		if !repositoryevidence.EligibleEvidencePath(pathPart) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
 }
 
 // rankHits turns raw git grep output into candidate locations for one query.
