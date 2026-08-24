@@ -51,6 +51,31 @@ type EvidenceRequirementProposal struct {
 	Relations []string `json:"relations"`
 }
 
+// supportedEvidenceRequirementRelations is the exact set of relations an
+// obligation may name -- by construction the same set the repository sensor
+// can actually supply. ClassifyExcerpt answers only definition or application,
+// so an obligation naming anything else is not merely hard to fill: no
+// snapshot could ever fill it, and a round carrying such an obligation was
+// doomed at adoption time. AUTONOMY-SMOKE-017-R9 reached exactly that wall --
+// a revise whose adjudicated demands included relations the world cannot
+// prove -- and the campaign died in the preflight instead of anywhere honest.
+var supportedEvidenceRequirementRelations = []string{EvidenceDefinition, EvidenceApplication}
+
+// validEvidenceRequirementRelation decides what an obligation MAY DEMAND.
+// It is deliberately narrower than validEvidenceRelation, which decides what a
+// worker artifact may SAY: evidence[] items legitimately use test and context
+// to describe citations, but no sensor exists that can classify an excerpt as
+// one, so demanding them would mint obligations outside the host's capability
+// set. Splitting the vocabularies keeps both statements true.
+func validEvidenceRequirementRelation(relation string) bool {
+	for _, supported := range supportedEvidenceRequirementRelations {
+		if relation == supported {
+			return true
+		}
+	}
+	return false
+}
+
 // validateEvidenceRequirementProposals rejects malformed proposals before they
 // can become obligations. The host is the only place this can happen: a model
 // that could bind itself to a vocabulary of its own choosing would be writing
@@ -73,9 +98,13 @@ func validateEvidenceRequirementProposals(proposals []EvidenceRequirementProposa
 			return fmt.Errorf("%w: evidence_requirements[%d] demands no relation", ErrContractRejected, index)
 		}
 		relations := map[string]struct{}{}
-		for _, relation := range proposal.Relations {
+		for relationIndex, relation := range proposal.Relations {
 			if !validEvidenceRelation(relation) {
-				return fmt.Errorf("%w: evidence_requirements[%d].relations", ErrContractRejected, index)
+				return fmt.Errorf("%w: evidence_requirements[%d].relations[%d]: %q is not an evidence relation", ErrContractRejected, index, relationIndex, relation)
+			}
+			if !validEvidenceRequirementRelation(relation) {
+				return fmt.Errorf("%w: evidence_requirements[%d].relations[%d]: relation %q cannot be required; supported requirement relations: %s",
+					ErrContractRejected, index, relationIndex, relation, strings.Join(supportedEvidenceRequirementRelations, ", "))
 			}
 			if _, repeated := relations[relation]; repeated {
 				return fmt.Errorf("%w: evidence_requirements[%d] repeats %s", ErrContractRejected, index, relation)

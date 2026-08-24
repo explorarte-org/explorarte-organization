@@ -432,14 +432,14 @@ var designAdjudicationOutputSchema = json.RawMessage(`{
     "required_changes":{"type":"array","items":{"type":"string"}},
     "evidence_requirements":{
       "type":"array",
-      "description":"What the next round must ground, as data. Only meaningful with verdict=revise. subject is what the claim is about, usually a symbol; relations are the roles a citation must play for it.",
+      "description":"What the next round must ground, as data. Only meaningful with verdict=revise. subject is what the claim is about, usually a symbol; relations are the roles a citation must play for it. The host can only ever supply definition (where the symbol is declared) or application (where it is used): demanding any other relation creates an obligation no snapshot could fill.",
       "items":{
         "type":"object",
         "additionalProperties":false,
         "required":["subject","relations"],
         "properties":{
           "subject":{"type":"string"},
-          "relations":{"type":"array","items":{"type":"string","enum":["definition","application","test","context"]}}
+          "relations":{"type":"array","items":{"type":"string","enum":["definition","application"]}}
         }
       }
     },
