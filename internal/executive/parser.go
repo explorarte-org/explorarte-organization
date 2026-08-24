@@ -292,9 +292,27 @@ func validateStrings(values []string, limits Limits, name string) error {
 	}
 	return nil
 }
+
+// validateRequiredString is the host's byte-level string authority. The
+// limit is measured with len(v), i.e. the UTF-8 ENCODED length in bytes --
+// never the character count. A value can be short in characters and still
+// exceed the limit in bytes, and it must still be rejected.
+//
+// The rejection reason names the field, the cause and -- for a length
+// violation -- the observed byte count against the limit, because a bare
+// "invalid <field>" gave the model nothing to correct: R7 burned every
+// retry attempt of a campaign on summaries that stayed over-long while the
+// feedback never said by how much. The reason is classification, not
+// leakage: it carries measurements only, never the offending content.
 func validateRequiredString(v string, max int, name string) error {
-	if strings.TrimSpace(v) == "" || len(v) > max || strings.ContainsRune(v, 0) {
-		return fmt.Errorf("%w: invalid %s", ErrContractRejected, name)
+	if strings.TrimSpace(v) == "" {
+		return fmt.Errorf("%w: invalid %s: required string is empty after trimming", ErrContractRejected, name)
+	}
+	if strings.ContainsRune(v, 0) {
+		return fmt.Errorf("%w: invalid %s: contains NUL byte", ErrContractRejected, name)
+	}
+	if len(v) > max {
+		return fmt.Errorf("%w: invalid %s: %d UTF-8 bytes exceeds maximum %d", ErrContractRejected, name, len(v), max)
 	}
 	return nil
 }

@@ -104,7 +104,7 @@ func TestAFailedWorkerDoesNotStopTheRun(t *testing.T) {
 		t.Run(status, func(t *testing.T) {
 			orchestrator, tasksPort, root, worker := newTypedTaskFixture(t, status)
 			returned, err := orchestrator.driveTypedTask(context.Background(), root, worker,
-				workerResultOutputSchema, PurposeDepartmentWorker, nil)
+				WorkerResultOutputSchemaFor(DefaultLimits()), PurposeDepartmentWorker, nil)
 			if err != nil {
 				t.Fatalf("a failed worker must not surface as a run failure: %v", err)
 			}
@@ -167,7 +167,7 @@ func TestADeadLetteredMissionDoesNotBlockItsCampaign(t *testing.T) {
 	// -- is likewise not a run failure.
 	mission := tasksPort.tasks[missionID]
 	if _, err := orchestrator.driveTypedTask(context.Background(), tasksPort.tasks[rootID], mission,
-		workerResultOutputSchema, PurposeDepartmentWorker, nil); err != nil {
+		WorkerResultOutputSchemaFor(DefaultLimits()), PurposeDepartmentWorker, nil); err != nil {
 		t.Fatalf("a terminal mission must not surface as a run failure: %v", err)
 	}
 }

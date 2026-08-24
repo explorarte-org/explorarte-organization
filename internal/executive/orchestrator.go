@@ -704,7 +704,7 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 			if wt.Status == "completed" || wt.Status == "no_action" {
 				continue
 			}
-			_, e = o.driveTypedTask(ctx, root, wt, workerResultOutputSchema, PurposeDepartmentWorker, func(result InvocationResult) error {
+			_, e = o.driveTypedTask(ctx, root, wt, WorkerResultOutputSchemaFor(o.limits), PurposeDepartmentWorker, func(result InvocationResult) error {
 				_, pErr := ParseWorkerResult(result.JSONOutput, o.limits)
 				return pErr
 			})

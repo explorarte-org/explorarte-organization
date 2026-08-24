@@ -28,7 +28,7 @@ func TestTypedOutputSchemasAreModelRuntimeCompatible(t *testing.T) {
 		},
 		{
 			name:   "worker-result",
-			schema: workerResultOutputSchema,
+			schema: WorkerResultOutputSchemaFor(DefaultLimits()),
 		},
 		{
 			name:   "department-review",
