@@ -23,8 +23,10 @@ const maxProbeReads = 4
 //
 // The explorer is built per subject from the delivered baseSHA, so answers are
 // about exactly the commit under test and never about HEAD. An error returns
-// only when the SENSOR could not answer (git broken, path unreadable); "not
-// found" is an answer, reported through the returned map as false.
+// only when the SENSOR could not answer -- search failed, a candidate excerpt
+// could not be read; "not found" is an answer, reported through the returned
+// map as false. Callers must treat an error as infrastructure, never as a
+// supply verdict.
 func ProbeSubjectSupply(ctx context.Context, repositoryID, baseSHA string, source Source, limits Limits, subject string, relations []string, window int) (map[string]bool, error) {
 	subject = strings.TrimSpace(subject)
 	wanted := make(map[string]bool, len(relations))
@@ -51,7 +53,12 @@ func ProbeSubjectSupply(ctx context.Context, repositoryID, baseSHA string, sourc
 		}
 		fragment, readErr := explorer.ReadAround(ctx, match, window)
 		if readErr != nil {
-			continue
+			// A candidate that cannot be READ is not a candidate that says
+			// "no". Skipping it here would turn an observer's silence into a
+			// verdict against the obligation -- exactly the misattribution
+			// the supply split exists to prevent. Report the outage and let
+			// the caller classify it as infrastructure.
+			return nil, readErr
 		}
 		read++
 		relation, mentions := ClassifyExcerpt(fragment.Content, subject)

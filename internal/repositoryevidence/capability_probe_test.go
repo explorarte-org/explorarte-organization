@@ -3,6 +3,7 @@ package repositoryevidence
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"testing"
@@ -14,8 +15,11 @@ import (
 // pinning tests prove nothing. Every SHA it is asked about is recorded.
 type literalSource struct {
 	worlds     map[string]map[string]string
-	seenSHAs   []string
 	failSearch error
+	// failReadFor makes ReadRange fail for the named paths, the way a broken
+	// worktree or a vanished object does.
+	failReadFor map[string]bool
+	seenSHAs    []string
 }
 
 func (s *literalSource) at(baseSHA string) map[string]string {
@@ -56,6 +60,9 @@ func (s *literalSource) Lines(_ context.Context, baseSHA, path string) (int, err
 }
 
 func (s *literalSource) ReadRange(_ context.Context, baseSHA, path string, start, end int) (string, error) {
+	if s.failReadFor[path] {
+		return "", fmt.Errorf("read failed for %s at %s", path, baseSHA)
+	}
 	body, ok := s.at(baseSHA)[path]
 	if !ok {
 		return "", nil
@@ -185,5 +192,25 @@ func TestProbeSensorFailureIsReportedNotInterpreted(t *testing.T) {
 		source, DefaultLimits(), "driveDesignFreeze", []string{"definition"}, 24)
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("sensor failure lost on the way back: %v", err)
+	}
+}
+
+// A candidate that cannot be READ must not silently become evidence of
+// absence. Here the first excerpt proves only the definition; the only
+// excerpt that could prove the application is unreadable. Skipping it would
+// answer "application: false" -- a verdict against an obligation on the word
+// of an observer that never looked.
+func TestProbeReadFailureIsASensorOutageNotANegativeVerdict(t *testing.T) {
+	source := r10PinnedWorld()
+	source.failReadFor = map[string]bool{"internal/executive/orchestrator.go": true}
+
+	_, err := ProbeSubjectSupply(context.Background(), "explorarte-organization", probeSHA,
+		source, DefaultLimits(), "driveDesignFreeze",
+		[]string{"definition", "application"}, 24)
+	if err == nil {
+		t.Fatal("an unreadable candidate was skipped into a negative supply verdict")
+	}
+	if strings.Contains(err.Error(), "cannot be required") {
+		t.Fatalf("the outage was dressed up as a vocabulary rejection: %v", err)
 	}
 }
