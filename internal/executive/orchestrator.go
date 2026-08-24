@@ -1457,7 +1457,7 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		Context:              snapshot,
 		Purpose:              purpose,
 		OutputSchema:         schema,
-		ExecutionContract:    executionContractFor(purpose),
+		ExecutionContract:    executionContractFor(purpose, required),
 		MaxOutputTokens:      o.limits.MaxOutputTokens,
 		CorrelationID:        root.CorrelationID,
 		CausationID:          attemptCausation(task.ID, lease.AttemptID),
@@ -1514,13 +1514,28 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 // ValidTaskClass in the host-side parser remains the final acceptance boundary.
 // A single definition (taskClassGuidance) is reused so the create-time and
 // run-time paths cannot diverge.
-func executionContractFor(purpose ExecutionPurpose) string {
+//
+// required is the round's authoritative evidence obligation list -- the same
+// slice ValidateEvidenceSupply and ValidateEvidenceStructure judge the result
+// with. Rendering it into the contract is what tells the worker the slots it
+// will be measured against BEFORE it answers: AUTONOMY-SMOKE-017-R8 spent
+// three attempts discovering obligations that existed only host-side. Because
+// this rides ExecutionContract, it never enters the durable instructions nor
+// the repository selection text, so retrieval stays exactly what it would have
+// been without it.
+func executionContractFor(purpose ExecutionPurpose, required []EvidenceRequirement) string {
+	contract := ""
 	switch purpose {
 	case PurposeDepartmentPlan, PurposeDepartmentReview:
-		return taskClassGuidance
-	default:
-		return ""
+		contract = taskClassGuidance
 	}
+	if guidance := evidenceContractGuidance(required); guidance != "" {
+		if contract != "" {
+			contract += "\n\n"
+		}
+		contract += guidance
+	}
+	return contract
 }
 
 // harnessRunID is the durable identity of one cognitive execution. It is a

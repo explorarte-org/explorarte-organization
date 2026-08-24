@@ -864,17 +864,20 @@ func TestBugA_PreexistingTaskGetsGuidanceAtExecutionTime(t *testing.T) {
 
 // TestBugA_NoContractForPurposesWithoutTaskClass proves purposes that do not
 // produce task_class proposals (CEO plan, worker result, closure) carry no
-// execution contract, so the guidance is never injected where it does not apply.
+// task-class guidance, so it is never injected where it does not apply. A
+// worker with NO evidence obligations still carries no contract; one WITH
+// obligations gets exactly the evidenceContractGuidance for those slots (the
+// evidence_contract_guidance_test.go file covers that side).
 func TestBugA_NoContractForPurposesWithoutTaskClass(t *testing.T) {
 	for _, purpose := range []ExecutionPurpose{PurposeCEOPlan, PurposeDepartmentWorker, PurposeCEOClosure} {
-		if got := executionContractFor(purpose); got != "" {
+		if got := executionContractFor(purpose, nil); got != "" {
 			t.Errorf("executionContractFor(%q) = %q, want empty", purpose, got)
 		}
 	}
-	if got := executionContractFor(PurposeDepartmentPlan); got != taskClassGuidance {
+	if got := executionContractFor(PurposeDepartmentPlan, nil); got != taskClassGuidance {
 		t.Errorf("executionContractFor(department-plan) must return taskClassGuidance")
 	}
-	if got := executionContractFor(PurposeDepartmentReview); got != taskClassGuidance {
+	if got := executionContractFor(PurposeDepartmentReview, nil); got != taskClassGuidance {
 		t.Errorf("executionContractFor(department-review) must return taskClassGuidance")
 	}
 }
