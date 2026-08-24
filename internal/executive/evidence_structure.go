@@ -252,3 +252,50 @@ func anyAvailable(refs []string, available []string) bool {
 	}
 	return false
 }
+
+// evidenceContractGuidance renders the authoritative evidence obligations as
+// execution-time guidance for the worker that will be judged against them.
+//
+// It exists because a contract can only bind what it was shown to.
+// ValidateEvidenceStructure rejects an artifact that leaves a required slot
+// unfilled, but until AUTONOMY-SMOKE-017-R8 nothing told the worker those
+// slots existed: the instructions asked for prose citations, the schema gave
+// evidence[] its shape but not its obligations, and every rejection arrived
+// only after the first failure. Three attempts died measuring a contract they
+// had never been handed. The requirements list this function renders is THE
+// SAME LIST the validator enforces -- one source of truth for both ends, so
+// prompt and host cannot drift.
+//
+// Deliberately NOT claimed: that evidence_refs must equal evidence[].ref. The
+// host (refsAreAllStructured) requires only that no evidence_refs entry falls
+// outside the structured evidence; stating more would make the prompt stricter
+// than the validator and build the next PROMPT_CONTRACT_MISMATCH.
+func evidenceContractGuidance(required []EvidenceRequirement) string {
+	if len(required) == 0 {
+		return ""
+	}
+	ordered := append([]EvidenceRequirement(nil), required...)
+	sort.SliceStable(ordered, func(first, second int) bool {
+		return ordered[first].Subject < ordered[second].Subject
+	})
+	var guidance strings.Builder
+	guidance.WriteString("Required structured evidence slots for this result:\n\n")
+	for _, requirement := range ordered {
+		relations := append([]string(nil), requirement.Relations...)
+		sort.Strings(relations)
+		for _, relation := range relations {
+			fmt.Fprintf(&guidance, "- subject=%q, relation=%q\n", requirement.Subject, relation)
+		}
+	}
+	guidance.WriteString(`
+For every required slot:
+- emit at least one evidence[] item with exactly that subject and relation;
+- its ref must identify repository evidence supplied in this execution;
+- do not invent repository refs.
+
+For worker-result/v2:
+- evidence[] is the structured authority;
+- every ref you put in evidence_refs must also occur in evidence[].ref;
+- do not put unstructured additional refs in evidence_refs.`)
+	return guidance.String()
+}
