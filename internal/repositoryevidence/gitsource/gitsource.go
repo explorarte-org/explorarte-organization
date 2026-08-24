@@ -71,16 +71,63 @@ func (s *Source) Search(ctx context.Context, baseSHA, query string, limit int) (
 		}
 		return nil, nil
 	}
-	matches := make([]repositoryevidence.Match, 0, limit)
-	seen := map[string]struct{}{}
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+	matches := rankHits(out, baseSHA, query, limit)
+	return matches, nil
+}
+
+// rankHits turns raw git grep output into candidate locations for one query.
+//
+// One location per file: a term appearing twenty times in one file is one
+// place to look, not twenty. When a file mentions the symbol on several
+// lines, the location reported is a line that DECLARES the symbol if the
+// file has one -- the struct field, the func, the const -- and the earliest
+// mention otherwise.
+//
+// A name can be DECLARED legitimately in many places -- several structs,
+// several packages. So all-declarations-first would be the mirror of the R6
+// failure: with more declaring files than the limit, every application of
+// the same subject would be expelled, and a contract asking for
+// subject/definition AND subject/application could end supplied on one slot
+// and evidence_insufficient on the other while perfectly good applications
+// sat just outside a truncated list.
+//
+// The order therefore reserves one seat for each role before filling the
+// rest: the first declaring candidate, then the first non-declaring
+// candidate, then the remaining candidates in deterministic order --
+// declarations in git order, then uses in git order. Only then is the list
+// cut to the limit. With only declarations, or only applications, nothing
+// changes; with both present and room for two, at least one of each
+// survives any truncation.
+//
+// The original wound this ordering treats is AUTONOMY-SMOKE-017-R6: git
+// walks the tree alphabetically, so every evidence_*_test.go fixture sorted
+// ahead of types.go, the eight-match budget was spent before the declaration
+// site was ever seen, and a required definition went unsupplied while
+// fourteen fixtures stood ready to mislead. Ordering by how a line uses the
+// name costs nothing extra -- the text of every hit is already in hand --
+// and it puts what an obligation must ground ahead of incidental mentions
+// without letting either role crowd the other out entirely.
+//
+// This is still DISCOVERY, not authority: nothing here is quoted until it is
+// read back at the pinned commit, and whether a read excerpt really is a
+// definition is decided afterwards by ClassifyExcerpt, under exactly the rule
+// this preordering borrows.
+func rankHits(out, baseSHA, query string, limit int) []repositoryevidence.Match {
+	type candidate struct {
+		path string
+		line int
+		text string
+	}
+	var order []string
+	best := map[string]candidate{}
+	for _, raw := range strings.Split(strings.TrimSpace(out), "\n") {
 		// Each hit is "<commit>:<path>:<line>:<content>".
-		rest := strings.TrimPrefix(strings.TrimSpace(line), baseSHA+":")
+		rest := strings.TrimPrefix(strings.TrimSpace(raw), baseSHA+":")
 		path, after, ok := strings.Cut(rest, ":")
 		if !ok || repositoryevidence.ValidatePath(path) != nil {
 			continue
 		}
-		number, _, ok := strings.Cut(after, ":")
+		number, text, ok := strings.Cut(after, ":")
 		if !ok {
 			continue
 		}
@@ -88,19 +135,47 @@ func (s *Source) Search(ctx context.Context, baseSHA, query string, limit int) (
 		if convErr != nil || at < 1 {
 			continue
 		}
-		// One location per file: a term appearing twenty times in one file
-		// is one place to look, not twenty, and spending the range budget
-		// on repetitions of the same neighbourhood buys nothing.
-		if _, already := seen[path]; already {
+		if existing, already := best[path]; already {
+			// Keep the earliest mention unless a later one introduces the
+			// name; once a declaring line is held, keep it.
+			if !repositoryevidence.LineDeclares(existing.text, query) &&
+				repositoryevidence.LineDeclares(text, query) {
+				best[path] = candidate{path: path, line: at, text: text}
+			}
 			continue
 		}
-		seen[path] = struct{}{}
-		matches = append(matches, repositoryevidence.Match{Path: path, Line: at})
-		if len(matches) >= limit {
-			break
-		}
+		best[path] = candidate{path: path, line: at, text: text}
+		order = append(order, path)
 	}
-	return matches, nil
+
+	declaring := make([]repositoryevidence.Match, 0, len(order))
+	others := make([]repositoryevidence.Match, 0)
+	for _, path := range order {
+		chosen := best[path]
+		match := repositoryevidence.Match{Path: chosen.path, Line: chosen.line}
+		if repositoryevidence.LineDeclares(chosen.text, query) {
+			declaring = append(declaring, match)
+			continue
+		}
+		others = append(others, match)
+	}
+	// One seat per role first -- see the comment above for why neither role
+	// may be allowed to expel the other under truncation.
+	ranked := make([]repositoryevidence.Match, 0, len(order))
+	if len(declaring) > 0 {
+		ranked = append(ranked, declaring[0])
+		declaring = declaring[1:]
+	}
+	if len(others) > 0 {
+		ranked = append(ranked, others[0])
+		others = others[1:]
+	}
+	ranked = append(ranked, declaring...)
+	ranked = append(ranked, others...)
+	if len(ranked) > limit {
+		ranked = ranked[:limit]
+	}
+	return ranked
 }
 
 // Lines reports a file's length at a commit.

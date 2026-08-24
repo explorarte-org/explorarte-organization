@@ -60,3 +60,18 @@ func ClassifyExcerpt(content, symbol string) (relation string, mentions bool) {
 	}
 	return RelationApplication, true
 }
+
+// LineDeclares reports whether ONE line of source declares symbol rather
+// than using it, under the same auditable rule ClassifyExcerpt applies to a
+// whole excerpt. It exists for discovery: git grep already returns the text
+// of every hit, and a search that knows which hit introduces the name can
+// put that hit first instead of spending its budget on fixtures. It grants
+// nothing -- an excerpt still has to earn "definition" from ClassifyExcerpt
+// after it is actually read.
+func LineDeclares(line, symbol string) bool {
+	symbol = strings.TrimSpace(symbol)
+	if symbol == "" || !strings.Contains(line, symbol) {
+		return false
+	}
+	return declarationLine(symbol).MatchString(line)
+}
