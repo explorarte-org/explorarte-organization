@@ -102,3 +102,66 @@ func TestMalformedLinesAreDropped(t *testing.T) {
 		t.Fatalf("only the well-formed hit should survive: %+v", matches)
 	}
 }
+
+// A name can be declared in many places legitimately. When declaring files
+// outnumber the limit, prioritising declarations must not expel every
+// application of the same subject: a contract asking for definition AND
+// application would otherwise go evidence_insufficient on the second slot
+// while perfectly good applications sat just outside the truncated list.
+func TestApplicationsSurviveADeclarationFlood(t *testing.T) {
+	const limit = 8
+	var lines []string
+	// Ten files declare MaxRetries; all sort before any application.
+	for index := 1; index <= limit+2; index++ {
+		path := "internal/executive/decl_" + itoa(index) + ".go"
+		lines = append(lines, hit(path, 4, "\tMaxRetries int"))
+	}
+	// Two real applications, reachable in the same world.
+	lines = append(lines,
+		hit("internal/executive/orchestrator.go", 9, "\tif attempt > o.limits.MaxRetries {"),
+		hit("internal/executive/dispatch.go", 17, "\treturn limits.MaxRetries"),
+	)
+
+	matches := rankHits(strings.Join(lines, "\n"), sha, "MaxRetries", limit)
+
+	if len(matches) != limit {
+		t.Fatalf("the limit must still bind: got %d matches", len(matches))
+	}
+	declarations, applications := 0, 0
+	for _, match := range matches {
+		switch match.Path {
+		case "internal/executive/orchestrator.go", "internal/executive/dispatch.go":
+			applications++
+		default:
+			declarations++
+		}
+	}
+	if matches[0].Path != "internal/executive/decl_1.go" || matches[0].Line != 4 {
+		t.Fatalf("the first declaration should lead: %+v", matches[0])
+	}
+	if declarations < 1 || applications < 1 {
+		t.Fatalf("at least one candidate per role must survive truncation: %d declarations, %d applications", declarations, applications)
+	}
+}
+
+// With only one role present the ordering is a no-op: declarations alone or
+// applications alone are returned exactly as git produced them.
+func TestSingleRoleWorldsAreUntouched(t *testing.T) {
+	var declarationOnly []string
+	for index := 1; index <= 3; index++ {
+		declarationOnly = append(declarationOnly, hit("pkg/struct_"+itoa(index)+".go", 2, "\tMaxRetries int"))
+	}
+	matches := rankHits(strings.Join(declarationOnly, "\n"), sha, "MaxRetries", 8)
+	if len(matches) != 3 || matches[0].Path != "pkg/struct_1.go" {
+		t.Fatalf("declarations-only world must keep git order: %+v", matches)
+	}
+
+	applicationsOnly := strings.Join([]string{
+		hit("pkg/use_b.go", 5, "\treturn limits.MaxRetries"),
+		hit("pkg/use_a.go", 6, "\tif n > limits.MaxRetries {"),
+	}, "\n")
+	matches = rankHits(applicationsOnly, sha, "MaxRetries", 8)
+	if len(matches) != 2 || matches[0].Path != "pkg/use_b.go" {
+		t.Fatalf("applications-only world must keep git order: %+v", matches)
+	}
+}

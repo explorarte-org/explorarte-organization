@@ -83,16 +83,30 @@ func (s *Source) Search(ctx context.Context, baseSHA, query string, limit int) (
 // file has one -- the struct field, the func, the const -- and the earliest
 // mention otherwise.
 //
-// Files whose chosen line declares the symbol are ordered BEFORE files that
-// merely use it, each group in git's own order. Only then is the list cut to
-// the limit. The order matters because discovery is truncated: git walks the
-// tree alphabetically, so in AUTONOMY-SMOKE-017-R6 every evidence_*_test.go
-// fixture sorted ahead of types.go, the eight-match budget was spent before
-// the declaration site was ever seen, and a required definition went
-// unsupplied while fourteen fixtures stood ready to mislead. Ordering by how
-// a line uses the name costs nothing extra -- the text of every hit is
-// already in hand -- and it puts what an obligation must ground ahead of
-// incidental mentions.
+// A name can be DECLARED legitimately in many places -- several structs,
+// several packages. So all-declarations-first would be the mirror of the R6
+// failure: with more declaring files than the limit, every application of
+// the same subject would be expelled, and a contract asking for
+// subject/definition AND subject/application could end supplied on one slot
+// and evidence_insufficient on the other while perfectly good applications
+// sat just outside a truncated list.
+//
+// The order therefore reserves one seat for each role before filling the
+// rest: the first declaring candidate, then the first non-declaring
+// candidate, then the remaining candidates in deterministic order --
+// declarations in git order, then uses in git order. Only then is the list
+// cut to the limit. With only declarations, or only applications, nothing
+// changes; with both present and room for two, at least one of each
+// survives any truncation.
+//
+// The original wound this ordering treats is AUTONOMY-SMOKE-017-R6: git
+// walks the tree alphabetically, so every evidence_*_test.go fixture sorted
+// ahead of types.go, the eight-match budget was spent before the declaration
+// site was ever seen, and a required definition went unsupplied while
+// fourteen fixtures stood ready to mislead. Ordering by how a line uses the
+// name costs nothing extra -- the text of every hit is already in hand --
+// and it puts what an obligation must ground ahead of incidental mentions
+// without letting either role crowd the other out entirely.
 //
 // This is still DISCOVERY, not authority: nothing here is quoted until it is
 // read back at the pinned commit, and whether a read excerpt really is a
@@ -145,7 +159,19 @@ func rankHits(out, baseSHA, query string, limit int) []repositoryevidence.Match 
 		}
 		others = append(others, match)
 	}
-	ranked := append(declaring, others...)
+	// One seat per role first -- see the comment above for why neither role
+	// may be allowed to expel the other under truncation.
+	ranked := make([]repositoryevidence.Match, 0, len(order))
+	if len(declaring) > 0 {
+		ranked = append(ranked, declaring[0])
+		declaring = declaring[1:]
+	}
+	if len(others) > 0 {
+		ranked = append(ranked, others[0])
+		others = others[1:]
+	}
+	ranked = append(ranked, declaring...)
+	ranked = append(ranked, others...)
 	if len(ranked) > limit {
 		ranked = ranked[:limit]
 	}
