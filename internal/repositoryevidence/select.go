@@ -223,41 +223,29 @@ func Gather(ctx context.Context, explorer *Explorer, selection Selection) ([]Fra
 		required[term] = struct{}{}
 	}
 
-	// Searches are cached: the two passes must not spend the search budget
-	// twice on the same term.
-	matchesFor := func(term string) []Match {
-		matches, err := explorer.Search(ctx, term)
-		if err != nil {
-			return nil
-		}
-		return matches
-	}
+	// Searches are cached: the passes must not spend the search budget twice
+	// on the same term.
 	cache := map[string][]Match{}
 	search := func(term string) []Match {
 		if cached, ok := cache[term]; ok {
 			return cached
 		}
-		matches := matchesFor(term)
+		matches, err := explorer.Search(ctx, term)
+		if err != nil {
+			matches = nil
+		}
 		cache[term] = matches
 		return matches
 	}
 
-	// Files named outright are read from the top: the head of a Go file is
-	// its package, its imports and its first declarations, which is what
-	// orients a reader who has never seen it.
-	for _, candidate := range selection.Paths {
-		if !strings.Contains(candidate, ".") {
-			continue
-		}
-		fragment, err := explorer.Read(ctx, candidate, 1, window*2)
-		if err != nil {
-			continue
-		}
-		add(fragment)
-	}
-
-	// PASS 1 -- required coverage, round-robin: every obligation names at
-	// least its best candidates before anything optional is read.
+	// PASS 1 -- required coverage, ROUND-ROBIN: A's first candidates, then
+	// B's first, then C's first; only then A's second, B's second... Under a
+	// starving budget every obligation keeps its BEST candidate rather than
+	// the earliest subject keeping all of its candidates. rankHits already
+	// ordered each subject's hits definition-first, application-second, so
+	// the interleaved heads are exactly the roles slots demand.
+	heads := make(map[string][]Match, len(selection.RequiredTerms))
+	order := make([]string, 0, len(selection.RequiredTerms))
 	for _, term := range selection.Terms {
 		if _, isRequired := required[term]; !isRequired {
 			continue
@@ -266,7 +254,18 @@ func Gather(ctx context.Context, explorer *Explorer, selection Selection) ([]Fra
 		if len(head) > requiredHeadSize {
 			head = head[:requiredHeadSize]
 		}
-		for _, match := range head {
+		if len(head) == 0 {
+			continue
+		}
+		heads[term] = head
+		order = append(order, term)
+	}
+	for index := 0; index < requiredHeadSize; index++ {
+		for _, term := range order {
+			if index >= len(heads[term]) {
+				continue
+			}
+			match := heads[term][index]
 			if !underAnyPrefix(match.Path, selection.Paths) {
 				continue
 			}
@@ -278,8 +277,20 @@ func Gather(ctx context.Context, explorer *Explorer, selection Selection) ([]Fra
 		}
 	}
 
-	// PASS 2 -- remaining capacity: everything else, in the seeded order,
-	// extras of the required subjects included.
+	// PASS 2 -- remaining capacity: named files orient a reader first (the
+	// head of a Go file is its package, imports and first declarations),
+	// then everything else in seeded order, extras of the required subjects
+	// included.
+	for _, candidate := range selection.Paths {
+		if !strings.Contains(candidate, ".") {
+			continue
+		}
+		fragment, err := explorer.Read(ctx, candidate, 1, window*2)
+		if err != nil {
+			continue
+		}
+		add(fragment)
+	}
 	for _, term := range selection.Terms {
 		for _, match := range search(term) {
 			if !underAnyPrefix(match.Path, selection.Paths) {

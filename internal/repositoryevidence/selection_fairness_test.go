@@ -102,3 +102,87 @@ func TestExtrasReturnWhenCapacityAllows(t *testing.T) {
 		t.Fatalf("generous budget lost a required subject: %v", counts)
 	}
 }
+
+// A starving budget must interleave, not queue: with room for exactly one
+// candidate each, every required subject keeps its FIRST candidate and nobody
+// keeps a second. Sequential head-reading would have handed the first two
+// slots to the earliest subject's pair and left the last subject empty.
+func TestCoverageIsRoundRobinUnderStarvation(t *testing.T) {
+	files := map[string]string{}
+	for _, spec := range []struct{ subject, prefix string }{
+		{"AlphaChannel", "alpha"},
+		{"BetaLimit", "beta"},
+		{"GammaThing", "gamma"},
+	} {
+		files["internal/executive/"+spec.prefix+"_first.go"] =
+			"package executive\n\n" + spec.subject + " declared here\n"
+		files["internal/executive/"+spec.prefix+"_second.go"] =
+			"package executive\n\nvar extra = " + spec.subject + "\n"
+	}
+	source := &literalSource{worlds: map[string]map[string]string{probeSHA: files}}
+
+	explorer, err := NewExplorer("explorarte-organization", probeSHA, source,
+		Limits{MaxFiles: 3, MaxRanges: 3, MaxBytes: 96 * 1024, MaxSearches: 24, MaxLines: 400})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection := SelectionForRequirements("Ground all three.",
+		[]string{"AlphaChannel", "BetaLimit", "GammaThing"}, 4)
+	fragments, err := Gather(context.Background(), explorer, selection)
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+
+	seen := map[string]bool{}
+	for _, fragment := range fragments {
+		seen[fragment.Path] = true
+	}
+	for _, prefix := range []string{"alpha", "beta", "gamma"} {
+		if !seen["internal/executive/"+prefix+"_first.go"] {
+			t.Fatalf("%s lost its first candidate under starvation: %v", prefix, seen)
+		}
+		if seen["internal/executive/"+prefix+"_second.go"] {
+			t.Fatalf("%s's second candidate was read before another subject had its first", prefix)
+		}
+	}
+}
+
+// A path named outright is orientation, not an obligation: it yields to
+// required coverage when the budget cannot hold both.
+func TestNamedPathsYieldToRequiredCoverage(t *testing.T) {
+	world := map[string]string{
+		"docs/readme.md":                     "about this repository",
+		"internal/executive/alpha_first.go":  "package executive\n\nAlphaChannel declared here\n",
+		"internal/executive/alpha_second.go": "package executive\n\nvar extra = AlphaChannel\n",
+		"internal/executive/beta_first.go":   "package executive\n\nBetaLimit declared here\n",
+		"internal/executive/beta_second.go":  "package executive\n\nvar extra2 = BetaLimit\n",
+	}
+	source := &literalSource{worlds: map[string]map[string]string{probeSHA: world}}
+
+	explorer, err := NewExplorer("explorarte-organization", probeSHA, source,
+		Limits{MaxFiles: 2, MaxRanges: 2, MaxBytes: 96 * 1024, MaxSearches: 24, MaxLines: 400})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection := Selection{
+		Terms:         []string{"AlphaChannel", "BetaLimit"},
+		RequiredTerms: []string{"AlphaChannel", "BetaLimit"},
+		Paths:         []string{"internal/executive", "docs/readme.md"},
+		Window:        4,
+	}
+	fragments, err := Gather(context.Background(), explorer, selection)
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+
+	seen := map[string]bool{}
+	for _, fragment := range fragments {
+		seen[fragment.Path] = true
+	}
+	if !seen["internal/executive/alpha_first.go"] || !seen["internal/executive/beta_first.go"] {
+		t.Fatalf("required coverage yielded to a named path: %v", seen)
+	}
+	if seen["docs/readme.md"] {
+		t.Fatalf("an optional path was read while obligations went unsupplied: %v", seen)
+	}
+}
