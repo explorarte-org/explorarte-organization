@@ -21,6 +21,13 @@ type Selection struct {
 	Paths []string
 	// Terms are literal strings to look for. Identifiers, mostly.
 	Terms []string
+	// RequiredTerms is the subset of Terms that carry an obligation: the
+	// subjects a round MUST ground. AUTONOMY-SMOKE-017-R10 showed what
+	// treating them as merely first-in-line costs -- one subject's matches
+	// consumed the whole file budget before the next required subject was
+	// ever searched, so a slot supplied in an earlier round vanished in the
+	// next. Required subjects get a reserved pass before anything else reads.
+	RequiredTerms []string
 	// Window is how many lines around a match make it understandable.
 	Window int
 }
@@ -54,6 +61,7 @@ func SelectionForRequirements(text string, subjects []string, window int) Select
 		return selection
 	}
 	seeded := make([]string, 0, len(subjects)+len(selection.Terms))
+	required := make([]string, 0, len(subjects))
 	seen := map[string]struct{}{}
 	for _, subject := range subjects {
 		subject = strings.TrimSpace(subject)
@@ -65,6 +73,7 @@ func SelectionForRequirements(text string, subjects []string, window int) Select
 		}
 		seen[subject] = struct{}{}
 		seeded = append(seeded, subject)
+		required = append(required, subject)
 	}
 	for _, term := range selection.Terms {
 		if _, already := seen[term]; already {
@@ -74,6 +83,7 @@ func SelectionForRequirements(text string, subjects []string, window int) Select
 		seeded = append(seeded, term)
 	}
 	selection.Terms = seeded
+	selection.RequiredTerms = required
 	return selection
 }
 
@@ -167,6 +177,12 @@ func looksLikeIdentifier(term string) bool {
 	return false
 }
 
+// requiredHeadSize is how many ranked candidates each required subject
+// reserves in the coverage pass. rankHits already orders one subject's hits
+// declaration-first, application-second when both exist, so the head of a
+// search is exactly the pair of roles an evidence slot can demand.
+const requiredHeadSize = 2
+
 // Gather reads the selection into citable excerpts, within the explorer's
 // budget.
 //
@@ -174,6 +190,14 @@ func looksLikeIdentifier(term string) bool {
 // twelve places it wanted to is still eight places the design can cite, and
 // refusing the lot because the ninth did not fit would trade partial sight for
 // none.
+//
+// Reading happens in two passes. The first reserves, for every REQUIRED
+// subject in turn, its ranked head -- definition and application when both
+// exist. The second spends whatever capacity remains on everything else,
+// including further matches of the required subjects themselves. One subject's
+// abundance must never starve another subject's obligation: R10 lost a slot it
+// had supplied the round before because a different subject's extras read
+// first.
 func Gather(ctx context.Context, explorer *Explorer, selection Selection) ([]Fragment, error) {
 	if explorer == nil {
 		return nil, ErrInvalidFragment
@@ -194,6 +218,30 @@ func Gather(ctx context.Context, explorer *Explorer, selection Selection) ([]Fra
 		fragments = append(fragments, fragment)
 	}
 
+	required := make(map[string]struct{}, len(selection.RequiredTerms))
+	for _, term := range selection.RequiredTerms {
+		required[term] = struct{}{}
+	}
+
+	// Searches are cached: the two passes must not spend the search budget
+	// twice on the same term.
+	matchesFor := func(term string) []Match {
+		matches, err := explorer.Search(ctx, term)
+		if err != nil {
+			return nil
+		}
+		return matches
+	}
+	cache := map[string][]Match{}
+	search := func(term string) []Match {
+		if cached, ok := cache[term]; ok {
+			return cached
+		}
+		matches := matchesFor(term)
+		cache[term] = matches
+		return matches
+	}
+
 	// Files named outright are read from the top: the head of a Go file is
 	// its package, its imports and its first declarations, which is what
 	// orients a reader who has never seen it.
@@ -208,13 +256,32 @@ func Gather(ctx context.Context, explorer *Explorer, selection Selection) ([]Fra
 		add(fragment)
 	}
 
-	// Then the terms, read where they actually occur.
+	// PASS 1 -- required coverage, round-robin: every obligation names at
+	// least its best candidates before anything optional is read.
 	for _, term := range selection.Terms {
-		matches, err := explorer.Search(ctx, term)
-		if err != nil {
-			break
+		if _, isRequired := required[term]; !isRequired {
+			continue
 		}
-		for _, match := range matches {
+		head := search(term)
+		if len(head) > requiredHeadSize {
+			head = head[:requiredHeadSize]
+		}
+		for _, match := range head {
+			if !underAnyPrefix(match.Path, selection.Paths) {
+				continue
+			}
+			fragment, readErr := explorer.ReadAround(ctx, match, window)
+			if readErr != nil {
+				continue
+			}
+			add(fragment)
+		}
+	}
+
+	// PASS 2 -- remaining capacity: everything else, in the seeded order,
+	// extras of the required subjects included.
+	for _, term := range selection.Terms {
+		for _, match := range search(term) {
 			if !underAnyPrefix(match.Path, selection.Paths) {
 				continue
 			}
