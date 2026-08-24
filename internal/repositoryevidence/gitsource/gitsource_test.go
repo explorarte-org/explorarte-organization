@@ -48,9 +48,16 @@ func TestDeclarationSitesSurviveTheLimit(t *testing.T) {
 	}
 }
 
-// Within one file, a later introducing line outranks an earlier use; across
-// files that merely use the symbol, git's own order stands so the reading
-// stays reproducible.
+// Within one file, at most ONE CANDIDATE PER ROLE survives: the earliest
+// declaring line and the earliest applying line are different epistemic
+// roles and both deserve representation, while twenty mentions of either
+// role stay one candidate. AUTONOMY-SMOKE-017-R12 measured the collapse of
+// these roles into a single best[path]: the declaration replaced the use and
+// the file reached downstream classifiers as its declaration alone.
+//
+// Across files, git's own order stands so reading stays reproducible, with
+// the reserved application seat preferring a file other than the declaring
+// file when one exists.
 func TestPerFileBestLineAndStableOrdering(t *testing.T) {
 	out := strings.Join([]string{
 		hit("internal/executive/beta.go", 3, "\tuse(MaxDesignRounds)"),
@@ -61,14 +68,56 @@ func TestPerFileBestLineAndStableOrdering(t *testing.T) {
 
 	matches := rankHits(out, sha, "MaxDesignRounds", 8)
 
-	if len(matches) != 2 {
-		t.Fatalf("one location per file: got %d", len(matches))
+	if len(matches) != 3 {
+		t.Fatalf("one candidate per role per file: got %d", len(matches))
 	}
 	if matches[0].Path != "internal/executive/beta.go" || matches[0].Line != 11 {
-		t.Fatalf("the declaring line should represent its file first: %+v", matches[0])
+		t.Fatalf("the declaring line should lead: %+v", matches[0])
 	}
-	if matches[1].Path != "internal/executive/alpha.go" || matches[1].Line != 5 {
-		t.Fatalf("git order should stand among non-declaring files: %+v", matches[1])
+	if matches[1].Path != "internal/executive/alpha.go" {
+		t.Fatalf("the reserved application seat prefers another file: %+v", matches[1])
+	}
+	if matches[2].Path != "internal/executive/beta.go" || matches[2].Line != 3 {
+		t.Fatalf("beta's earliest use should be its second candidate: %+v", matches[2])
+	}
+}
+
+// A file that both declares and applies the symbol contributes two
+// candidates -- never more -- even when the uses vastly outnumber them.
+func TestSameFileKeepsOneSeatPerRole(t *testing.T) {
+	out := strings.Join([]string{
+		hit("internal/executive/service.go", 20, "\tuseAgain(MaxRetries)"),
+		hit("internal/executive/service.go", 24, "\tyetMore(MaxRetries)"),
+		hit("internal/executive/service.go", 10, "\tMaxRetries int"),
+		hit("internal/executive/service.go", 31, "\tlater(MaxRetries)"),
+	}, "\n")
+
+	matches := rankHits(out, sha, "MaxRetries", 8)
+
+	if len(matches) != 2 {
+		t.Fatalf("declaration plus first use, nothing else: got %d (%+v)", len(matches), matches)
+	}
+	if matches[0].Path != "internal/executive/service.go" || matches[0].Line != 10 {
+		t.Fatalf("the declaration should be the file's first seat: %+v", matches[0])
+	}
+	if matches[1].Path != "internal/executive/service.go" || matches[1].Line != 20 {
+		t.Fatalf("the earliest use should be the file's second seat: %+v", matches[1])
+	}
+}
+
+// Twenty applications inside ONE file are one place to look, not twenty:
+// the per-role cap exists so discovery cannot be flooded from a single path.
+func TestTwentyUsesYieldOneApplicationCandidate(t *testing.T) {
+	var lines []string
+	for line := 1; line <= 20; line++ {
+		lines = append(lines, hit("internal/executive/hot.go", line,
+			"\tif n > limits.MaxRetries {"))
+	}
+
+	matches := rankHits(strings.Join(lines, "\n"), sha, "MaxRetries", 8)
+
+	if len(matches) != 1 || matches[0].Path != "internal/executive/hot.go" || matches[0].Line != 1 {
+		t.Fatalf("a single-file flood must collapse to its earliest use: %+v", matches)
 	}
 }
 

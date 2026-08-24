@@ -61,6 +61,38 @@ func ClassifyExcerpt(content, symbol string) (relation string, mentions bool) {
 	return RelationApplication, true
 }
 
+// ExcerptRelations reports EVERY role an excerpt can honestly play for a
+// symbol. An excerpt that physically contains both a declaration and a use
+// demonstrates both roles; collapsing it to one is how a co-located
+// application stayed invisible even after discovery stopped discarding it.
+// The keys are exactly RelationDefinition and RelationApplication, an entry
+// is present only when true, and an empty map means the symbol is not
+// mentioned at all -- so len(relations) > 0 corresponds to ClassifyExcerpt's
+// mentions, and relations[RelationDefinition] to its returning definition.
+//
+// This is the HOST AUTHORITY half of the role question -- what does the read
+// content actually contain -- while rankHits answers only where discovery
+// suggests looking. No model, no ranking confidence: every answer traces to a
+// line anyone can read at the pinned commit.
+func ExcerptRelations(content, symbol string) map[string]bool {
+	relations := map[string]bool{}
+	symbol = strings.TrimSpace(symbol)
+	if symbol == "" {
+		return relations
+	}
+	for _, line := range strings.Split(content, "\n") {
+		if !strings.Contains(line, symbol) {
+			continue
+		}
+		if declarationLine(symbol).MatchString(line) {
+			relations[RelationDefinition] = true
+			continue
+		}
+		relations[RelationApplication] = true
+	}
+	return relations
+}
+
 // LineDeclares reports whether ONE line of source declares symbol rather
 // than using it, under the same auditable rule ClassifyExcerpt applies to a
 // whole excerpt. It exists for discovery: git grep already returns the text

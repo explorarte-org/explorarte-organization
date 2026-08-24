@@ -61,12 +61,14 @@ func ProbeSubjectSupply(ctx context.Context, repositoryID, baseSHA string, sourc
 			return nil, readErr
 		}
 		read++
-		relation, mentions := ClassifyExcerpt(fragment.Content, subject)
-		if !mentions {
-			continue
-		}
-		if _, demanded := wanted[relation]; demanded && !wanted[relation] {
-			wanted[relation] = true
+		// One excerpt can prove several roles at once when it physically
+		// contains a declaration and a use closer than one window apart.
+		// Asking the monovalued classifier here would let the definition
+		// answer shadow the application the same fragment demonstrates.
+		for relation := range ExcerptRelations(fragment.Content, subject) {
+			if _, demanded := wanted[relation]; demanded && !wanted[relation] {
+				wanted[relation] = true
+			}
 		}
 		allFound := true
 		for _, found := range wanted {

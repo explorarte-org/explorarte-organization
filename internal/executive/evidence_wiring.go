@@ -47,10 +47,12 @@ func evidenceSubjects(required []EvidenceRequirement) []string {
 // suppliedEvidence reads what the snapshot actually put in front of the worker
 // and says which slot each excerpt could fill.
 //
-// The classification is the host's own and deterministic: an excerpt is a
-// definition when it declares the symbol, and an application otherwise. Where
-// the host cannot tell, the slot stays unsupplied -- which is the honest
-// answer, because it really does not know one was supplied.
+// The classification is the host's own and deterministic: an excerpt fills
+// every slot whose role it physically contains -- a fragment carrying both a
+// declaration and a use supplies definition AND application, because both
+// claims are checkable against the same pinned lines. Where the host cannot
+// tell, the slot stays unsupplied -- which is the honest answer, because it
+// really does not know one was supplied.
 func (o *Orchestrator) suppliedEvidence(ctx context.Context, snapshotID int64, required []EvidenceRequirement) (map[EvidenceSlot][]string, error) {
 	if len(required) == 0 {
 		return nil, nil
@@ -70,12 +72,10 @@ func (o *Orchestrator) suppliedEvidence(ctx context.Context, snapshotID int64, r
 			continue
 		}
 		for _, requirement := range required {
-			relation, mentions := repositoryevidence.ClassifyExcerpt(source.Content, requirement.Subject)
-			if !mentions {
-				continue
+			for relation := range repositoryevidence.ExcerptRelations(source.Content, requirement.Subject) {
+				slot := EvidenceSlot{Subject: requirement.Subject, Relation: relation}
+				available[slot] = append(available[slot], source.Reference)
 			}
-			slot := EvidenceSlot{Subject: requirement.Subject, Relation: relation}
-			available[slot] = append(available[slot], source.Reference)
 		}
 	}
 	return available, nil
