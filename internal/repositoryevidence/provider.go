@@ -56,7 +56,7 @@ func (p *Provider) ListRepositoryEvidence(ctx context.Context, request contexten
 	if err != nil {
 		return nil, err
 	}
-	fragments, err := Gather(ctx, explorer, SelectionFromText(request.RepositoryQuery, p.Window))
+	fragments, err := Gather(ctx, explorer, SelectionForRequirements(request.RepositoryQuery, request.RepositorySubjects, p.Window))
 	if err != nil {
 		return nil, err
 	}

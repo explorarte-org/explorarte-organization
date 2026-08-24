@@ -29,7 +29,7 @@ func TestR23PostgreSQLProjectsWorkerEvidenceAndClosesDAGRace(t *testing.T) {
 	dagTasks := runtimeadapter.DAGTasks{TaskCoordinator: evidenceTasks}
 	modelBudget := runtimeadapter.ModelCallBudget{Models: models, Tasks: dagTasks, Limits: limits}
 
-	orchestrator, err := executive.NewOrchestrator(executive.Dependencies{Acceptance: newMemoryAcceptance(),
+	orchestrator, err := executive.NewOrchestrator(executive.Dependencies{Acceptance: newIntegrationAcceptance(),
 		OrganizationID: "explorarte",
 		Registry:       runtimeadapter.Registry{Reader: h.registry, OrganizationID: "explorarte"},
 		Tasks:          dagTasks,
@@ -50,7 +50,7 @@ func TestR23PostgreSQLProjectsWorkerEvidenceAndClosesDAGRace(t *testing.T) {
 	}
 	run, reused, err := orchestrator.Submit(h.ctx, executive.SubmitRequest{
 		ActorRoleID: executive.OwnerRoleID, IdempotencyKey: "r23-postgres-evidence",
-		Goal: executive.OwnerGoal{Goal: "Analyze one engineering area without external actions.", AcceptanceCriteria: []AcceptanceCriterion{{Text: "review real worker evidence", Phase: AcceptanceDesign}, {Text: "verified closure", Phase: AcceptanceImplementation}}},
+		Goal: executive.OwnerGoal{Goal: "Analyze one engineering area without external actions.", AcceptanceCriteria: []executive.AcceptanceCriterion{{Text: "review real worker evidence", Phase: executive.AcceptanceDesign}, {Text: "verified closure", Phase: executive.AcceptanceImplementation}}},
 	})
 	if err != nil || reused {
 		t.Fatalf("submit: run=%+v reused=%v err=%v", run, reused, err)

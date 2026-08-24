@@ -189,6 +189,12 @@ type ContextRequest struct {
 	// assembled against a freshly resolved head would show one round a
 	// different repository than the last.
 	RepositoryBaseSHA string
+	// RepositorySubjects are the symbols this execution is OBLIGED to
+	// ground. They are searched before anything derived from prose: an
+	// obligation is a typed fact, and re-discovering it from the goal's
+	// wording would put it back in competition for the same budget it
+	// already lost once.
+	RepositorySubjects []string
 	// RepositoryQuery is what the selection reads to decide where to look.
 	RepositoryQuery string
 	IdempotencyKey  string

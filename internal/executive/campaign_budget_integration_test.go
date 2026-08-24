@@ -42,7 +42,7 @@ func TestCampaignBudgetIsDurableFromBirthPostgreSQL(t *testing.T) {
 		IdempotencyKey: "integration-campaign-budget",
 		Goal: executive.OwnerGoal{
 			Goal:               "Analyze one area.",
-			AcceptanceCriteria: []AcceptanceCriterion{{Text: "verified", Phase: AcceptanceDesign}},
+			AcceptanceCriteria: []executive.AcceptanceCriterion{{Text: "verified", Phase: executive.AcceptanceDesign}},
 		},
 		Budget: &stated,
 	})
@@ -96,7 +96,7 @@ func TestResubmittingCannotRestateACampaignBudgetPostgreSQL(t *testing.T) {
 			IdempotencyKey: "integration-campaign-budget-restate",
 			Goal: executive.OwnerGoal{
 				Goal:               "Analyze one area.",
-				AcceptanceCriteria: []AcceptanceCriterion{{Text: "verified", Phase: AcceptanceDesign}},
+				AcceptanceCriteria: []executive.AcceptanceCriterion{{Text: "verified", Phase: executive.AcceptanceDesign}},
 			},
 			Budget: &budget,
 		})

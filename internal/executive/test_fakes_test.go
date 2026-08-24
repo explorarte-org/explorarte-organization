@@ -574,15 +574,32 @@ func (m *memoryTasks) Reconcile(context.Context, int) error {
 type fakeContexts struct {
 	mu    sync.Mutex
 	calls int
+	// requests records every Build by the snapshot ID it produced, so a test
+	// can ask what retrieval was seeded with for the execution that actually
+	// ran against that snapshot.
+	requests map[int64]ContextRequest
 }
 
-func (f *fakeContexts) Build(context.Context, ContextRequest) (ContextSnapshot, error) {
+func (f *fakeContexts) Build(_ context.Context, request ContextRequest) (ContextSnapshot, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
+	if f.requests == nil {
+		f.requests = map[int64]ContextRequest{}
+	}
+	f.requests[int64(f.calls)] = request
 	content := fmt.Sprintf("context snapshot %d", f.calls)
 	digest := sha256.Sum256([]byte(content))
 	return ContextSnapshot{ID: int64(f.calls), Version: "1", Digest: hex.EncodeToString(digest[:]), Content: content}, nil
+}
+
+func (f *fakeContexts) subjectsFor(snapshotID int64) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.requests == nil {
+		return nil
+	}
+	return append([]string(nil), f.requests[snapshotID].RepositorySubjects...)
 }
 
 type fakeAssignments struct{ err error }

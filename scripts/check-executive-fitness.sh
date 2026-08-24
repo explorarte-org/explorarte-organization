@@ -55,7 +55,7 @@ if ! rg -n 'o\.completion\.Verify\(' internal/executive/orchestrator.go >/dev/nu
   fail "completion verifier call missing"
 fi
 
-if ! rg -n 'case "ambiguous"' internal/executive/orchestrator.go >/dev/null || \
+if ! rg -n 'invocation\.Status (!=|==) "ambiguous"' internal/executive/orchestrator.go >/dev/null || \
    ! rg -n 'ErrModelOutcomeAmbiguous' internal/executive/orchestrator.go >/dev/null; then
   fail "ambiguous model outcome is not explicitly fail-closed"
 fi
@@ -67,8 +67,8 @@ if ! rg -n 'orphaned_model_result' internal/executive/recovery.go >/dev/null || 
    ! rg -n 'findOrphanedSucceededInvocation' internal/executive/recovery.go >/dev/null; then
   fail "orphaned succeeded invocation recovery guard missing"
 fi
-if ! rg -n 'BudgetModels' internal/executive/bootstrap/runtime.go >/dev/null || \
-   ! rg -n 'incrementInvocationBudget' internal/executive/runtimeadapter/budget_models.go >/dev/null; then
+if ! rg -n 'ModelCallBudget' internal/executive/bootstrap/runtime.go >/dev/null || \
+   ! rg -n 'incrementInvocationBudget' internal/executive/runtimeadapter/model_budget.go >/dev/null; then
   fail "durable prospective invocation budget guard missing"
 fi
 if ! rg -n 'DAGTasks' internal/executive/bootstrap/runtime.go >/dev/null || \

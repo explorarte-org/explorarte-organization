@@ -136,12 +136,17 @@ type BuildRequest struct {
 	// RepositoryQuery is the text the selection is derived from -- the goal
 	// and the task's own instructions. Deterministic input to a
 	// deterministic rule, so the same execution always sees the same code.
-	RepositoryQuery   string   `json:"repository_query,omitempty"`
-	ActorUnitID       string   `json:"actor_unit_id,omitempty"`
-	RequestedSkillIDs []string `json:"requested_skill_ids,omitempty"`
-	IdempotencyKey    string   `json:"idempotency_key"`
-	CorrelationID     string   `json:"correlation_id,omitempty"`
-	CausationID       string   `json:"causation_id,omitempty"`
+	RepositoryQuery string `json:"repository_query,omitempty"`
+	// RepositorySubjects are searched before anything derived from
+	// RepositoryQuery: an obligation is a typed fact, and re-discovering it
+	// from prose would put it back in competition for a budget it has
+	// already lost once.
+	RepositorySubjects []string `json:"repository_subjects,omitempty"`
+	ActorUnitID        string   `json:"actor_unit_id,omitempty"`
+	RequestedSkillIDs  []string `json:"requested_skill_ids,omitempty"`
+	IdempotencyKey     string   `json:"idempotency_key"`
+	CorrelationID      string   `json:"correlation_id,omitempty"`
+	CausationID        string   `json:"causation_id,omitempty"`
 }
 
 type SourceRecord struct {

@@ -129,8 +129,10 @@ func TestAdversarialReviewRejectsUnknownAndForbiddenFields(t *testing.T) {
 		t.Fatalf("unknown field accepted: %v", err)
 	}
 	// A reviewer trying to select its own model, or to assert an approval, is
-	// caught by the existing forbidden-key scan before any field is read.
-	for _, injected := range []string{`"provider":"deepseek"`, `"model":"grok-4.6"`, `"approval_decision":"approved"`, `"authority":"owner"`} {
+	// caught by the existing forbidden-key scan before any field is read. The
+	// values are deliberately generic: what is forbidden is the KEY, and the
+	// fitness gate forbids naming concrete providers anywhere in this package.
+	for _, injected := range []string{`"provider":"concrete-provider"`, `"model":"concrete-model"`, `"approval_decision":"approved"`, `"authority":"owner"`} {
 		body := strings.Replace(validReviewJSON(), `"verdict":"revise"`, `"verdict":"revise",`+injected, 1)
 		if _, err := ParseAdversarialReview([]byte(body), DefaultLimits()); !errors.Is(err, ErrForbiddenField) {
 			t.Fatalf("%s was not rejected as forbidden: %v", injected, err)
