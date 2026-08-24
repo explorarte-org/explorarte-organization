@@ -15,16 +15,20 @@ import (
 // the contract must state the byte limit before the attempt, and the
 // rejection must measure the violation after it.
 
-// byteLimitedFields are the worker-result/v2 fields the host actually runs
+// byteLimitedProperties are the worker-result fields the host actually runs
 // through validateRequiredString(value, limits.MaxStringBytes, ...):
 // ParseWorkerResult validates summary, evidence.claim, evidence.subject and
-// evidence.ref with exactly that limit. If a field starts or stops using
-// MaxStringBytes, this list must follow.
+// evidence.ref with exactly that limit, and validateStrings wraps every
+// evidence_refs element in the same check -- hence "evidence_refs[]" here.
+// If a field starts or stops using MaxStringBytes, this list must follow.
 func byteLimitedProperties(t *testing.T, schema json.RawMessage) map[string]json.RawMessage {
 	t.Helper()
 	var doc struct {
 		Properties struct {
-			Summary  json.RawMessage `json:"summary"`
+			Summary      json.RawMessage `json:"summary"`
+			EvidenceRefs struct {
+				Items json.RawMessage `json:"items"`
+			} `json:"evidence_refs"`
 			Evidence struct {
 				Items struct {
 					Properties struct {
@@ -41,6 +45,7 @@ func byteLimitedProperties(t *testing.T, schema json.RawMessage) map[string]json
 	}
 	return map[string]json.RawMessage{
 		"summary":          doc.Properties.Summary,
+		"evidence_refs[]":  doc.Properties.EvidenceRefs.Items,
 		"evidence.claim":   doc.Properties.Evidence.Items.Properties.Claim,
 		"evidence.subject": doc.Properties.Evidence.Items.Properties.Subject,
 		"evidence.ref":     doc.Properties.Evidence.Items.Properties.Ref,
@@ -94,6 +99,44 @@ func TestWorkerResultSchemaLimitIsDerivedFromLimitsNotALiteral(t *testing.T) {
 		if !strings.Contains(body, `"maxLength":777`) || strings.Contains(body, `"maxLength":4000`) {
 			t.Fatalf("%s: schema did not follow Limits.MaxStringBytes=777: %s", field, body)
 		}
+	}
+}
+
+// HOST/SCHEMA SYMMETRY FOR ARRAY ELEMENTS.
+//
+// evidence_refs[] shares MaxStringBytes host-side: validateStrings runs every
+// element through validateRequiredString(value, limits.MaxStringBytes, ...)
+// exactly like summary. A schema that let any string through would recreate
+// PROMPT_CONTRACT_MISMATCH for elements -- the host rejecting a ref over a
+// bound the model was never told about. Both halves must agree in one place:
+// the host rejects the 4200-byte element AND the schema declares that bound.
+func TestEvidenceRefElementOverByteLimitIsRejectedAndItsSchemaDeclaresTheSameBound(t *testing.T) {
+	limits := DefaultLimits()
+
+	long := strings.Repeat("a", limits.MaxStringBytes+200)
+	if len(long) != 4200 {
+		t.Fatalf("fixture lost its point: element is %d bytes", len(long))
+	}
+	artifact := []byte(`{"schema_version":"worker-result/v1","summary":"ok","evidence_refs":["` + long + `"],"evidence":[]}`)
+	_, err := ParseWorkerResult(artifact, limits)
+	if !errors.Is(err, ErrContractRejected) {
+		t.Fatalf("an over-long evidence_refs element must stay a contract rejection: %v", err)
+	}
+	for _, want := range []string{"evidence_refs[0]", "4200", "4000", "bytes"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("rejection feedback must contain %q for the retry to act on, got: %v", want, err)
+		}
+	}
+
+	property := byteLimitedProperties(t, WorkerResultOutputSchemaFor(limits))["evidence_refs[]"]
+	var declared struct {
+		MaxLength int `json:"maxLength"`
+	}
+	if err := json.Unmarshal(property, &declared); err != nil {
+		t.Fatalf("malformed items schema for evidence_refs[]: %v", err)
+	}
+	if declared.MaxLength != limits.MaxStringBytes {
+		t.Fatalf("schema told maxLength=%d while the host rejects elements above %d", declared.MaxLength, limits.MaxStringBytes)
 	}
 }
 

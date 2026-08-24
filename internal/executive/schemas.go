@@ -193,7 +193,9 @@ var (
 
 // byteLimitedStringSchema renders the property schema for every
 // worker-result/v2 field whose value passes through
-// validateRequiredString(value, limits.MaxStringBytes, ...). It states the
+// validateRequiredString(value, limits.MaxStringBytes, ...) -- including
+// each evidence_refs[] element, which validateStrings wraps in that same
+// check. It states the
 // limit twice on purpose: maxLength is the standard keyword a model may
 // treat as a character bound, and the description carries the rule the host
 // actually enforces -- non-empty, UTF-8 encoded length in bytes. The number
@@ -229,7 +231,7 @@ func WorkerResultOutputSchemaFor(limits Limits) json.RawMessage {
 	    "summary":` + byteLimitedStringSchema(limits) + `,
 	    "evidence_refs":{
 	      "type":"array",
-	      "items":{"type":"string"}
+	      "items":` + byteLimitedStringSchema(limits) + `
 	    },
 	    "evidence":{
 	      "type":"array",
