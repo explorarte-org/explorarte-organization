@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/designfreeze"
+	"github.com/Mireuz13/explorarte-organization/internal/repositoryevidence"
 )
 
 // orchestratorWorkerID is operational provenance only: it names the process
@@ -52,7 +53,13 @@ type Orchestrator struct {
 	// review bundle carries none -- which is the correct behaviour for a
 	// deployment whose designs never observe code.
 	snapshotSources SnapshotSourceReader
-	missions        MissionProvisioner
+	// repositorySource reads the pinned tree directly, so an adjudication's
+	// proposed obligations can be probed for supplyability before they bind a
+	// round. Optional: without it proposals are adopted unprobed, and the
+	// round's own preflight remains the last line of defence.
+	repositorySource repositoryevidence.Source
+	repositoryID     string
+	missions         MissionProvisioner
 
 	mu     sync.Mutex
 	leases map[int64]LeaseRecord
@@ -1673,6 +1680,14 @@ func (o *Orchestrator) recordHarnessSuccess(ctx context.Context, task TaskRecord
 		return task, fmt.Errorf("%w: harness final output does not match the durable model result", ErrContractRejected)
 	}
 	if err = validate(result); err != nil {
+		// A sensor that could not answer is not a verdict about the artifact.
+		// Recording this as Luna's contract rejection would blame a model for
+		// the observer's silence -- the exact misattribution the supply
+		// preflight exists to prevent. The attempt closes as infrastructure,
+		// retryable, so it runs again when the observer can answer.
+		if errors.Is(err, ErrEvidenceSensorUnavailable) {
+			return o.failAttempt(ctx, task, lease, actorID, "evidence_sensor_unavailable", truncate(err.Error(), 2000), ErrCompletionFailed, true)
+		}
 		// Provider succeeded but host-side semantic validation rejected the
 		// result. The invocation stays succeeded (it was executed and charged).
 		// The attempt must NOT stay running — close it durably as a contract

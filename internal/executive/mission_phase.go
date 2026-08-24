@@ -9,6 +9,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/designfreeze"
 	"github.com/Mireuz13/explorarte-organization/internal/engineeringmission"
 	"github.com/Mireuz13/explorarte-organization/internal/missionplan"
+	"github.com/Mireuz13/explorarte-organization/internal/repositoryevidence"
 )
 
 // The implementation-mission phase is the last step the Executive performs
@@ -92,6 +93,20 @@ type MissionRecord struct {
 // -- the alternative is authorizing citations nobody checked.
 func WithSnapshotSources(reader SnapshotSourceReader) OrchestratorOption {
 	return func(o *Orchestrator) { o.snapshotSources = reader }
+}
+
+// WithRepositoryEvidenceSource hands the orchestrator the same repository
+// sensor the context builder uses, so adjudicated obligations can be probed
+// for supplyability against the pinned tree before they bind a round.
+//
+// Optional: without it proposals are adopted unprobed, and the round's own
+// preflight stays the last line of defence -- later and more expensive, but
+// equally fail-closed.
+func WithRepositoryEvidenceSource(repositoryID string, source repositoryevidence.Source) OrchestratorOption {
+	return func(o *Orchestrator) {
+		o.repositoryID = repositoryID
+		o.repositorySource = source
+	}
 }
 
 func WithMissionProvisioning(target ProgramTargetResolver, provisioner MissionProvisioner) OrchestratorOption {
