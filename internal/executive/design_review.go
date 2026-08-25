@@ -404,6 +404,31 @@ var adversarialReviewOutputSchema = json.RawMessage(`{
 // half-measure between those two positions, and it made the schema invalid:
 // under strict structured outputs every property must be required, so the
 // provider rejected the request before any model saw it.
+// adjudicationExistingWorldRule is THE single textual authority on what an
+// adjudication's evidence_requirements may bind the next round to. It is
+// rendered in TWO places that must never drift apart -- the run-time
+// ExecutionContract for PurposeDesignAdjudication and this output schema's
+// field description -- because R14 died twice at exactly this gap: Luna
+// proposed creating "MaxModelCalls" and then demanded definition/application
+// evidence FOR it, a symbol her own design had not yet created and which no
+// snapshot at the frozen pin could ever supply. The host's
+// probeAdjudicationRequirements refused correctly both times; nothing had
+// told her the boundary existed before she answered.
+//
+// Deliberately NOT redefining what "supplyable" means: that concept lives in
+// repositoryevidence's probe and its wording here ("the host probes every
+// proposal against that pin") points at it rather than restating it.
+const adjudicationExistingWorldRule = `Evidence requirements bind the next round to the world AS IT IS at the frozen DesignBaseSHA pin: name only literal repository symbols that already exist there -- the host probes every proposal against that pinned repository and refuses obligations it cannot supply. required_changes MAY prescribe creating, renaming or removing symbols; NEVER create an evidence requirement for a symbol this design proposes to introduce -- it does not exist yet and cannot ground anything. Ground a proposed new symbol through the existing code and behavior it is meant to change.`
+
+// adjudicationEvidenceContractGuidance renders that authority as the
+// execution-time contract for the one purpose that authors
+// evidence_requirements. Like every ExecutionContract rider, it reaches the
+// model before it answers without entering durable instructions or the
+// repository selection text.
+func adjudicationEvidenceContractGuidance() string {
+	return "Existing-world rule for evidence_requirements in this adjudication:\n\n" + adjudicationExistingWorldRule
+}
+
 var designAdjudicationOutputSchema = json.RawMessage(`{
   "type":"object",
   "additionalProperties":false,
@@ -476,6 +501,11 @@ func DesignAdjudicationOutputSchema() json.RawMessage {
 // and AssertFindingsExist carries the invariant alone. That fallback is why
 // the host check exists in the first place rather than being left to the
 // schema: the schema can only help when there is something to enumerate.
+// legacyAdjudicationEvidenceDescription is the pre-C description text that
+// DesignAdjudicationOutputSchemaFor replaces with the shared authority. It is
+// kept as a named constant so the replacement target cannot silently rot.
+const legacyAdjudicationEvidenceDescription = `What the next round must ground, as data. Only meaningful with verdict=revise. subject must be a code identifier that exists verbatim in the pinned repository -- a type, function, constant or field name the host can literally find and cite. Conceptual labels or invented shapes such as Type.Method cannot be grounded: the host rejects obligations it cannot supply. relations are the roles a citation must play for it. The host can only ever supply definition (where the symbol is declared) or application (where it is used): demanding any other relation creates an obligation no snapshot could fill.`
+
 func DesignAdjudicationOutputSchemaFor(findingIDs []string) json.RawMessage {
 	unique := make(map[string]struct{}, len(findingIDs))
 	ordered := make([]string, 0, len(findingIDs))
@@ -502,6 +532,13 @@ func DesignAdjudicationOutputSchemaFor(findingIDs []string) json.RawMessage {
 			`"`+field+`":{"type":"array","items":`+findingRefSchemaJSON+`}`,
 			`"`+field+`":{"type":"array","items":`+refItems+`}`)
 	}
+	// The evidence_requirements description is BUILT from the shared
+	// authority, not hand-written beside it: schema and ExecutionContract are
+	// two renderings of one rule, so neither can silently diverge from what
+	// probeAdjudicationRequirements enforces.
+	schema = strings.ReplaceAll(schema, legacyAdjudicationEvidenceDescription,
+		`Only meaningful with verdict=revise. `+adjudicationExistingWorldRule+
+			` relations are the roles a citation must play for a symbol: the host can only ever supply definition (where the symbol is declared) or application (where it is used); demanding any other relation creates an obligation no snapshot could fill.`)
 	return json.RawMessage(schema)
 }
 

@@ -32,6 +32,10 @@ type scriptedHarness struct {
 	// adjudicator proposes alongside a revise. Empty means the body carries
 	// none, which is what every pre-existing test exercises.
 	adjudicationEvidence string
+	// adjudicationRequiredChanges overrides the revise body's
+	// required_changes when non-empty, so tests can pin how free-form change
+	// prescriptions interact with the evidence-requirements contract.
+	adjudicationRequiredChanges []string
 
 	// contexts, when set, lets the harness answer what retrieval was seeded
 	// with for each executed command.
@@ -108,7 +112,15 @@ func (h *scriptedHarness) adjudicationBody(taskID int64) string {
 	verdict := h.adjudicationVerdict
 	required := "[]"
 	if verdict == "revise" {
-		required = `["Prove the seal protocol under concurrency."]`
+		if len(h.adjudicationRequiredChanges) > 0 {
+			encoded, err := json.Marshal(h.adjudicationRequiredChanges)
+			if err != nil {
+				return ""
+			}
+			required = string(encoded)
+		} else {
+			required = `["Prove the seal protocol under concurrency."]`
+		}
 	}
 	evidence := ""
 	if h.adjudicationEvidence != "" && verdict == "revise" {
