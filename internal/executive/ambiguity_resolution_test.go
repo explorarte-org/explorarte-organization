@@ -131,7 +131,9 @@ func TestEffectClassificationFollowsThePurposeNeverTheTaskClass(t *testing.T) {
 	}
 
 	// Free-form worker classes on a department-worker invocation: the exact
-	// world that would have been locked out under a TaskClass frontier.
+	// world that would have been locked out under a TaskClass frontier. The
+	// class is written onto the task so the guard proves the classifier never
+	// reads it.
 	for _, taskClass := range []string{"memory.discovery", "engineering.review", "general.work", "anything.valid_syntax"} {
 		fixture := newWiringFixture(t, "freeze", fullSupply(), nil)
 		task, _ := ambiguousAdjudication(t, fixture)
@@ -139,13 +141,14 @@ func TestEffectClassificationFollowsThePurposeNeverTheTaskClass(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		detail.TaskClass = taskClass
+		fixture.tasks.tasks[task.ID] = detail
 		invocation := InvocationRecord{
 			ID: 341, TaskID: task.ID, AttemptID: 384, Status: "ambiguous",
 			CorrelationID: detail.CorrelationID,
 			Purpose:       PurposeDepartmentWorker.LegacyPurpose(),
 		}
 		fixture.harness.models.setInvocations(task.ID, 384, invocation)
-		_ = taskClass
 		handled, _, err := fixture.orchestrator.priorExecutionBarrier(context.Background(), fixture.rootRecord(t), detail)
 		if err != nil || handled {
 			t.Fatalf("task class %q with a cognitive purpose must not block: handled=%v err=%v", taskClass, handled, err)
@@ -206,6 +209,97 @@ func TestLegacyHarnessTurnPurposesArePureModel(t *testing.T) {
 			t.Errorf("purpose %q must be unknown, got %q", almost, class)
 		}
 	}
+}
+
+// Two ambiguities are two decisions: each pure-model invocation gets its own
+// ambiguity-resolution://<id> row, and the barrier only stands down once BOTH
+// are reconciled. One resolution must never stand down for the next one.
+func TestTwoPureModelAmbiguitiesGetTwoResolutionsAndStandDown(t *testing.T) {
+	fixture := newWiringFixture(t, "freeze", fullSupply(), nil)
+	task, _ := ambiguousAdjudication(t, fixture)
+	detail, _ := fixture.tasks.GetTask(context.Background(), task.ID)
+	second := InvocationRecord{
+		ID: 341, TaskID: task.ID, AttemptID: 385, Status: "ambiguous",
+		CorrelationID: detail.CorrelationID,
+		Purpose:       PurposeDepartmentWorker.LegacyPurpose(),
+	}
+	detail.Attempts = append(detail.Attempts, AttemptRecord{ID: 385, State: "lease_expired"})
+	fixture.tasks.tasks[task.ID] = detail
+	fixture.harness.models.setInvocations(task.ID, 385, second)
+
+	handled, _, err := fixture.orchestrator.priorExecutionBarrier(context.Background(), fixture.rootRecord(t), detail)
+	if err != nil || handled {
+		t.Fatalf("both reconciled ambiguities must let the drive proceed: handled=%v err=%v", handled, err)
+	}
+
+	first := resolutionRowsFor(t, fixture, task.ID, 340)
+	if len(first) != 1 {
+		t.Fatalf("invocation 340 has %d resolutions, want exactly its own", len(first))
+	}
+	rows := resolutionRows(t, fixture, task.ID)
+	if len(rows) != 2 {
+		t.Fatalf("two ambiguities produced %d resolutions, want two", len(rows))
+	}
+}
+
+// The race the reviewer called out: an OLD already-authorized ambiguity must
+// never stand the barrier down in front of a NEWER unreconciled one. The
+// unknown-purpose invocation keeps the wall up, no claim may be created, and
+// the old resolution is left as the only fact on file.
+func TestResolvedOldAmbiguityCannotHideANewUnknownOne(t *testing.T) {
+	fixture := newWiringFixture(t, "freeze", fullSupply(), nil)
+	task, invocation := ambiguousAdjudication(t, fixture)
+	detail, _ := fixture.tasks.GetTask(context.Background(), task.ID)
+
+	// The old ambiguity was inspected and authorized in an earlier pass.
+	resolved, err := fixture.orchestrator.reconcileAmbiguousInvocation(context.Background(), detail, invocation)
+	if err != nil || !resolved {
+		t.Fatalf("fixture precondition: old ambiguity must authorize cleanly (resolved=%v err=%v)", resolved, err)
+	}
+
+	// Time passes; a fresh attempt produces a NEW ambiguity the policy
+	// cannot resolve.
+	newer := InvocationRecord{
+		ID: 341, TaskID: task.ID, AttemptID: 385, Status: "ambiguous",
+		CorrelationID: detail.CorrelationID,
+		Purpose:       "some.future.externally_effectful_purpose",
+	}
+	detail.Attempts = append(detail.Attempts, AttemptRecord{ID: 385, State: "lease_expired"})
+	fixture.tasks.tasks[task.ID] = detail
+	fixture.harness.models.setInvocations(task.ID, 385, newer)
+
+	before := len(fixture.tasks.claims)
+	handled, blocked, err := fixture.orchestrator.priorExecutionBarrier(
+		context.Background(), fixture.rootRecord(t), detail)
+	if !handled || !errors.Is(err, ErrModelOutcomeAmbiguous) {
+		t.Fatalf("the new ambiguity must keep the wall up: handled=%v err=%v", handled, err)
+	}
+	if blocked.Status == "" {
+		t.Fatal("barrier returned no blocked task record")
+	}
+	if len(fixture.tasks.claims) != before {
+		t.Fatal("a claim was created beside an unreconciled ambiguity")
+	}
+	rows := resolutionRows(t, fixture, task.ID)
+	if len(rows) != 1 {
+		t.Fatalf("the unknown new ambiguity must not gain a resolution, rows=%d", len(rows))
+	}
+}
+
+func resolutionRowsFor(t *testing.T, fixture *wiringFixture, taskID, invocationID int64) []EvidenceRecord {
+	t.Helper()
+	want := ambiguityResolutionReference(invocationID)
+	detail, err := fixture.tasks.GetTask(context.Background(), taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := []EvidenceRecord{}
+	for _, evidence := range detail.Evidence {
+		if evidence.Reference == want {
+			rows = append(rows, evidence)
+		}
+	}
+	return rows
 }
 
 // An execution whose purpose is unknown still blocks forever, whatever its

@@ -1607,37 +1607,37 @@ func harnessRunID(organizationID string, taskID, attemptID int64, purpose Execut
 // invocation belongs to the attempt that died, and the whole point is that a
 // NEW attempt must not execute beside it.
 func (o *Orchestrator) priorExecutionBarrier(ctx context.Context, root, task TaskRecord) (bool, TaskRecord, error) {
-	var ambiguous, unresolved InvocationRecord
+	var ambiguous []InvocationRecord
+	var unresolved InvocationRecord
 	for _, attempt := range task.Attempts {
 		invocations, err := o.models.FindTaskAttemptInvocations(ctx, task.ID, attempt.ID)
 		if err != nil {
 			return true, task, err
 		}
 		for _, invocation := range invocations {
-			if invocation.Status == "ambiguous" && ambiguous.ID == 0 {
-				ambiguous = invocation
+			if invocation.Status == "ambiguous" {
+				ambiguous = append(ambiguous, invocation)
+				continue
 			}
 			if invocation.ProviderExecutionMayHaveStarted && unresolved.ID == 0 {
 				unresolved = invocation
 			}
 		}
 	}
-	// A resolved ambiguous verdict wins: it is durable, terminal, and requires
-	// explicit reconciliation rather than waiting -- UNLESS the reconciliation
-	// already exists. reconcileAmbiguousInvocation is that reconciliation: for
-	// a pure-model execution the host policy durably authorizes one retry
-	// (idempotently, write-once per invocation) and the barrier stands down
-	// for THIS invocation only. An ambiguity the policy cannot resolve still
-	// blocks exactly as before, and a SECOND ambiguous invocation would need
-	// its own resolution -- there is no ack-all.
-	if ambiguous.ID != 0 {
-		reconciled, reconcileErr := o.reconcileAmbiguousInvocation(ctx, task, ambiguous)
+	// EVERY ambiguous invocation must be reconciled before this barrier stands
+	// down -- not just the first one found. An older ambiguity whose retry was
+	// already authorized must never hide a NEWER unresolved ambiguity behind
+	// it: standing down then would let a fresh attempt run beside an execution
+	// whose outcome nobody knows, which is the exact race this barrier exists
+	// to close. Each ambiguity gets its own resolution or its own refusal.
+	for _, invocation := range ambiguous {
+		reconciled, reconcileErr := o.reconcileAmbiguousInvocation(ctx, task, invocation)
 		if reconcileErr != nil {
 			return true, task, reconcileErr
 		}
 		if !reconciled {
 			_, _ = o.tasks.BlockTask(ctx, root.ID, "model_outcome_ambiguous",
-				fmt.Sprintf("task=%d attempt=%d invocation=%d requires explicit inspection", task.ID, ambiguous.AttemptID, ambiguous.ID),
+				fmt.Sprintf("task=%d attempt=%d invocation=%d requires explicit inspection", task.ID, invocation.AttemptID, invocation.ID),
 				"service", orchestratorWorkerID)
 			return true, task, ErrModelOutcomeAmbiguous
 		}
