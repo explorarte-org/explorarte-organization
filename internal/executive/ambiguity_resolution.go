@@ -177,8 +177,15 @@ func (o *Orchestrator) reconcileAmbiguousInvocation(ctx context.Context, owningT
 		return false, err
 	}
 	digest := sha256.Sum256(append([]byte("ambiguity_resolution\x00"), fact...))
+	// Type is "result", not a bespoke string: EvidenceCommand.Type crosses
+	// runtimeadapter into tasks.Service.ValidateEvidence, whose enum admits
+	// only artifact/check/approval/condition/result. The resolution's identity
+	// lives entirely in its namespaced reference and metadata -- the same way
+	// evidence-requirements:// facts ride Type "result". A bespoke type here
+	// passes every in-package fake and dies at the production boundary with
+	// "evidence type is invalid".
 	if err := o.tasks.RecordEvidence(ctx, EvidenceCommand{
-		TaskID: owningTask.ID, Type: "ambiguity_resolution",
+		TaskID: owningTask.ID, Type: "result",
 		Reference: ambiguityResolutionReference(invocation.ID),
 		Digest:    hex.EncodeToString(digest[:]), RecordedBy: orchestratorWorkerID,
 		Metadata: map[string]any{
