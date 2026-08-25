@@ -1564,6 +1564,15 @@ func executionContractFor(purpose ExecutionPurpose, required []EvidenceRequireme
 		// property of the author, and neither is knowing the rule. R11 and
 		// R13 died at that gate having never been shown it existed.
 		contract = candidateDeclassificationGuidance()
+	case PurposeDesignAdjudication:
+		// The adjudicator AUTHORS evidence_requirements for the next round,
+		// and the host refuses any proposal the frozen pin cannot supply.
+		// R14 spent its last two attempts rediscovering exactly that: a
+		// revise prescribing "MaxModelCalls" -- a symbol her own design would
+		// create -- plus an evidence demand for it. The existing-world rule
+		// is the same repair shape as the worker egress guidance above: state
+		// the host's own boundary to its producer, before the answer.
+		contract = adjudicationEvidenceContractGuidance()
 	}
 	if guidance := evidenceContractGuidance(required); guidance != "" {
 		if contract != "" {
