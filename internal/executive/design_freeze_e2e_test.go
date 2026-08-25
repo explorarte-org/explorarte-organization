@@ -38,10 +38,17 @@ type scriptedHarness struct {
 	adjudicationRequiredChanges []string
 
 	// Round-aware contract hooks (checkpoint E): when set, they replace the
-	// static body for that purpose, receiving the design round of the task
-	// being driven. Returning an empty string falls back to the static body.
-	departmentPlanBody   func(round int) string
-	departmentReviewBody func(round int) string
+	// static body for that purpose, receiving the task being driven -- its
+	// key carries the design round, the department and the replan ordinal,
+	// which is everything a body needs to vary per scenario. Returning an
+	// empty string falls back to the static body.
+	departmentPlanBody   func(task TaskRecord) string
+	departmentReviewBody func(task TaskRecord) string
+
+	// adjudicationVerdictByRound overrides adjudicationVerdict for specific
+	// design rounds (round 1 revises, round 2 freezes, ...). Absent rounds
+	// keep the static verdict.
+	adjudicationVerdictByRound map[int]string
 
 	// contexts, when set, lets the harness answer what retrieval was seeded
 	// with for each executed command.
@@ -71,7 +78,7 @@ func (h *scriptedHarness) Execute(_ context.Context, command HarnessRunCommand) 
 	case PurposeDepartmentPlan:
 		if h.departmentPlanBody != nil {
 			if task, taskErr := h.tasks.GetTask(context.Background(), command.TaskID); taskErr == nil {
-				if dynamic := h.departmentPlanBody(designRoundOf(task.IdempotencyKey)); dynamic != "" {
+				if dynamic := h.departmentPlanBody(task); dynamic != "" {
 					body = dynamic
 				}
 			}
@@ -79,7 +86,7 @@ func (h *scriptedHarness) Execute(_ context.Context, command HarnessRunCommand) 
 	case PurposeDepartmentReview:
 		if h.departmentReviewBody != nil {
 			if task, taskErr := h.tasks.GetTask(context.Background(), command.TaskID); taskErr == nil {
-				if dynamic := h.departmentReviewBody(designRoundOf(task.IdempotencyKey)); dynamic != "" {
+				if dynamic := h.departmentReviewBody(task); dynamic != "" {
 					body = dynamic
 				}
 			}
@@ -134,6 +141,9 @@ func (h *scriptedHarness) adjudicationBody(taskID int64) string {
 		digest = h.corruptDigest
 	}
 	verdict := h.adjudicationVerdict
+	if v, ok := h.adjudicationVerdictByRound[eAdjudicationRoundOf(task)]; ok {
+		verdict = v
+	}
 	required := "[]"
 	if verdict == "revise" {
 		if len(h.adjudicationRequiredChanges) > 0 {
@@ -155,6 +165,31 @@ func (h *scriptedHarness) adjudicationBody(taskID int64) string {
 		evidence +
 		`"unresolved_owner_decisions":[],"design_id":"` + design.ID + `","design_version":"` + design.Version + `",` +
 		`"design_digest":"` + digest + `","evidence_refs":[]}`
+}
+
+// eAdjudicationRoundOf recovers the design round an adjudication task was
+// opened for, from its key (design-adjudication:round:N).
+func eAdjudicationRoundOf(task TaskRecord) int {
+	marker := "design-adjudication:round:"
+	index := strings.LastIndex(task.IdempotencyKey, marker)
+	if index < 0 {
+		return 1
+	}
+	rest := task.IdempotencyKey[index+len(marker):]
+	if end := strings.Index(rest, ":"); end >= 0 {
+		rest = rest[:end]
+	}
+	n := 0
+	for _, r := range rest {
+		if r < '0' || r > '9' {
+			return 1
+		}
+		n = n*10 + int(r-'0')
+	}
+	if n < 1 {
+		return 1
+	}
+	return n
 }
 
 // designFromInstructions pulls the bundle's design identity out of the task

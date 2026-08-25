@@ -684,6 +684,24 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 			return Run{}, false, err
 		}
 		assigned := revisionScopes[req.UnitID]
+		if currentRound > 1 && len(assigned) == 0 {
+			// Checkpoint E2's zero-scope rule. The partition covers every
+			// required change exactly once across departments, so whenever
+			// there are more departments than demanded changes, some
+			// department receives an EMPTY scope. That is a host decision,
+			// not a failure: this round asks nothing of the department, so
+			// the governed meaning is carry-forward -- no round plan, no
+			// work, no review is created for it, its previous deliverable
+			// stands untouched, and candidateDesign simply does not count it
+			// among the round's contributors. The departments that DO own
+			// demanded changes drive the round, and the union of their scopes
+			// is still the complete set. Opening a plan against an empty
+			// roster would be refused by openDesignRoundPlan, so skipping is
+			// what makes the partition legal for every shape of N
+			// departments x M changes; the host that produced the empty scope
+			// must not also declare it impossible.
+			continue
+		}
 		// Every department key is scoped to the design round it belongs to.
 		// Round 1 carries no suffix, so a run that never gets a revise keys
 		// exactly as it always did; a later round is separate tasks, which is
@@ -908,13 +926,11 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 			// still-open required change must be bound to exactly one
 			// follow-up before any of them materializes -- otherwise the
 			// contradiction this replan exists to fix would simply be handed
-			// to two workers again, inside :replan:N itself.
-			outstandingRedo, outErr := o.outstandingChangesForReview(ctx, all, root.ID, round)
-			if outErr != nil {
-				return Run{}, false, outErr
-			}
+			// to two workers again, inside :replan:N itself. The same
+			// assigned subset the attempt-time gate validated against: this
+			// is its safety net, not a second opinion over a wider universe.
 			if review.SchemaVersion == DepartmentReviewSchemaVersionV2 {
-				if ownErr := validateFollowupOwnership(outstandingRedo, review); ownErr != nil {
+				if ownErr := validateFollowupOwnership(assigned, review); ownErr != nil {
 					return Run{}, false, ownErr
 				}
 			}
@@ -1121,18 +1137,45 @@ func (o *Orchestrator) createReviewTask(ctx context.Context, root TaskRecord, re
 	// compare deliverables AGAINST EACH OTHER per required change. A roster
 	// of bare ids would not let the reviewer know whose answer was
 	// authoritative; R16's contradiction hid in exactly that gap.
-	outstanding, err := o.outstandingRevisionChanges(ctx, all, root.ID, round)
-	if err != nil {
-		return TaskRecord{}, false, err
-	}
+	//
+	// The table is built from THIS department's assigned subset and from
+	// nothing else. Re-deriving the round's full required-change universe
+	// here would render another department's changes as UNASSIGNED rows --
+	// instructing this reviewer to state outcomes the closed-world gate then
+	// refuses, one authority for the prompt and the opposite for the gate.
+	// The host partitioned the scopes once, in driveDepartments; every
+	// consumer downstream reads its slice of that same partition.
+	outstanding := assigned
 	if len(outstanding) > 0 {
 		owners := map[string]string{}
-		planTask, found := findTaskByKey(all, childKey(root.ID, "leader-plan:"+req.UnitID+designRoundSuffix(round)))
-		if found && planTask.Status == "completed" {
+		if planTask, found := findTaskByKey(all, childKey(root.ID, "leader-plan:"+req.UnitID+designRoundSuffix(round))); found && planTask.Status == "completed" {
 			if result, ok := o.resultForCompletedTask(ctx, planTask); ok {
 				if plan, perr := ParseDepartmentPlan(result.JSONOutput, o.limits); perr == nil {
 					for _, ownership := range plan.RevisionOwnership {
 						owners[ownership.RequiredChangeID] = ownership.OwnerClientKey
+					}
+				}
+			}
+		}
+		if replan > 0 {
+			// After a replan, authority over the redone changes MOVED: they
+			// were executed by the follow-ups the previous review proposed
+			// and bound via followup_ownership, so those bindings -- not the
+			// original plan's roster -- say whose answer is authoritative.
+			// Rendering the original owner for a redone change would show
+			// this reviewer stale authority at exactly the moment it decides
+			// whether the redo settled anything. Resolved-in-round changes
+			// keep the plan's owner: nobody re-executed them.
+			prevKey := "leader-review:" + req.UnitID + designRoundSuffix(round)
+			if replan > 1 {
+				prevKey += ":replan:" + strconv.Itoa(replan-1)
+			}
+			if prevTask, found := findTaskByKey(all, childKey(root.ID, prevKey)); found && prevTask.Status == "completed" {
+				if result, ok := o.resultForCompletedTask(ctx, prevTask); ok {
+					if prevReview, perr := ParseDepartmentReview(result.JSONOutput, o.limits); perr == nil {
+						for _, ownership := range prevReview.FollowupOwnership {
+							owners[ownership.RequiredChangeID] = ownership.OwnerClientKey
+						}
 					}
 				}
 			}

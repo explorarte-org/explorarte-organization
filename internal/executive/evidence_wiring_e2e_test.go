@@ -71,6 +71,15 @@ type wiringFixture struct {
 // contract needs to be live: a program target (so workers can see the
 // repository at all) and a snapshot reader that answers what was shown.
 func newWiringFixture(t *testing.T, verdict string, sources []SnapshotSource, goalReqs []EvidenceRequirementProposal, opts ...OrchestratorOption) *wiringFixture {
+	return newMultiUnitWiringFixture(t, verdict, sources, goalReqs, nil, opts...)
+}
+
+// newMultiUnitWiringFixture is newWiringFixture with additional operational
+// departments beside ingenieria_ia: each extra unit gets its own canonical
+// leader and worker role, and the CEO plan requests every unit. Used by the
+// checkpoint-E guards that pin how ownership scopes partition across
+// departments.
+func newMultiUnitWiringFixture(t *testing.T, verdict string, sources []SnapshotSource, goalReqs []EvidenceRequirementProposal, extraUnits []string, opts ...OrchestratorOption) *wiringFixture {
 	t.Helper()
 	tasksPort := newMemoryTasks()
 	acceptance := newMemoryAcceptance()
@@ -83,12 +92,25 @@ func newWiringFixture(t *testing.T, verdict string, sources []SnapshotSource, go
 	worker := RoleRef{ID: "ingenieria_ia/qa", UnitID: "ingenieria_ia", Enabled: true, Executable: true}
 	reviewer := RoleRef{ID: AdversarialReviewerRoleID, UnitID: "investigacion", Enabled: true, Executable: true}
 	ceo := RoleRef{ID: CEORoleID, UnitID: "empresa", Enabled: true, Executable: true}
-	registry := fakeRegistry{
-		rev:     RevisionRef{ID: 7},
-		units:   map[string]UnitRef{"ingenieria_ia": {ID: "ingenieria_ia", Operational: true, LeaderRoleID: leader.ID}},
-		roles:   map[string]RoleRef{leader.ID: leader, worker.ID: worker, reviewer.ID: reviewer, ceo.ID: ceo},
-		leaders: map[string]RoleRef{"ingenieria_ia": leader},
+	units := map[string]UnitRef{"ingenieria_ia": {ID: "ingenieria_ia", Operational: true, LeaderRoleID: leader.ID}}
+	roles := map[string]RoleRef{leader.ID: leader, worker.ID: worker, reviewer.ID: reviewer, ceo.ID: ceo}
+	leaders := map[string]RoleRef{"ingenieria_ia": leader}
+	requests := `{"unit_id":"ingenieria_ia","objective":"design","deliverable":"candidate design","priority":1,"constraints":[]}`
+	for _, unit := range extraUnits {
+		unitLeader := RoleRef{ID: unit + "/orquestador", UnitID: unit, Enabled: true, Executable: true, CanonicalLeader: true}
+		unitWorker := RoleRef{ID: unit + "/qa", UnitID: unit, Enabled: true, Executable: true}
+		units[unit] = UnitRef{ID: unit, Operational: true, LeaderRoleID: unitLeader.ID}
+		roles[unitLeader.ID] = unitLeader
+		roles[unitWorker.ID] = unitWorker
+		leaders[unit] = unitLeader
+		requests += `,{"unit_id":"` + unit + `","objective":"design","deliverable":"candidate design","priority":1,"constraints":[]}`
 	}
+	if len(extraUnits) > 0 {
+		harness.bodies[PurposeCEOPlan] = `{"schema_version":"executive-plan/v1","objective":"Design M2.1",` +
+			`"department_requests":[` + requests + `],` +
+			`"global_constraints":[],"success_criteria":["design reviewed"],"owner_decisions_required":[]}`
+	}
+	registry := fakeRegistry{rev: RevisionRef{ID: 7}, units: units, roles: roles, leaders: leaders}
 	options := append([]OrchestratorOption{
 		WithMissionProvisioning(&fakeProgramTarget{sha: targetSHA}, newFakeMissionProvisioner()),
 		WithSnapshotSources(stubSnapshotSources{sources: sources}),

@@ -162,10 +162,11 @@ func renderOwnershipTable(changes []RequiredChange, owners map[string]string) st
 }
 
 // validateRevisionOutcomes gates the COMPLETED review: per outstanding
-// required change there must be exactly one well-formed outcome, and an
-// accept verdict is only consistent when every outcome says resolved. This
-// runs inside the attempt callback, so a refusal is retryable feedback the
-// reviewer can act on -- not a permanent wall.
+// required change there must be exactly one well-formed outcome; conflicted
+// or unresolved outcomes are OPEN answers, representable only under a
+// needs_replan verdict; accept is only consistent when every outcome says
+// resolved. This runs inside the attempt callback, so a refusal is retryable
+// feedback the reviewer can act on -- not a permanent wall.
 func validateRevisionOutcomes(outstanding []RequiredChange, review DepartmentReview) error {
 	outcomes := make(map[string]RevisionOutcome, len(review.RevisionOutcomes))
 	var problems []string
@@ -203,8 +204,15 @@ func validateRevisionOutcomes(outstanding []RequiredChange, review DepartmentRev
 				open++
 			}
 		case RevisionUnresolved:
-			statusProblem = "is unresolved under this verdict (" +
-				truncate(outcome.CanonicalResolution, 100) + ")"
+			// Unresolved is structurally well-formed and OPEN. Under
+			// needs_replan it is the honest answer -- exactly what routes the
+			// redo; only an accept verdict contradicts it. Making the status
+			// itself a problem would reject the very answer the consistency
+			// rule tells the reviewer to give when deliverables leave a
+			// change unanswered.
+			if review.Verdict == ReviewAccept {
+				statusProblem = "is unresolved under an accept verdict"
+			}
 			open++
 		default:
 			statusProblem = "has an unknown status " + outcome.Status
@@ -299,12 +307,6 @@ func validateFollowupOwnership(outstanding []RequiredChange, review DepartmentRe
 // accept. Phrased conditionally because reviews of plans without ownership
 // have nothing to reconcile.
 const departmentConsistencyGuidance = `Consistency rule for this review: if the plan instructions listed required-change ids, you MUST state a revision_outcomes entry for each one, comparing the deliverables against each other on that change -- not merely checking each deliverable against its own criteria. Where two deliverables assert incompatible resolutions, status is conflicted and you must name both tasks; accept is only available when every required change says resolved with one canonical resolution. When deliverables leave a change unanswered, say unresolved and return needs_replan so the department redoes the work within its own replan bound.`
-
-// outstandingChangesForReview computes the outstanding table for a review of
-// the given design round, tolerating rounds without a prior adjudication.
-func (o *Orchestrator) outstandingChangesForReview(ctx context.Context, all []TaskRecord, rootID int64, round int) ([]RequiredChange, error) {
-	return o.outstandingRevisionChanges(ctx, all, rootID, round)
-}
 
 // assignOwnershipScopes partitions the round's required changes across
 // departments deterministically (sorted units, round-robin). The union of the

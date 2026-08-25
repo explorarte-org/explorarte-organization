@@ -101,17 +101,17 @@ func eFixture(t *testing.T) *wiringFixture {
 			`"title":"Verify claims","instructions":"Verify.","acceptance_criteria":["Check"],"dependencies":[]}` +
 			`],"review_criteria":["Consistent"],"unresolved":[],"revision_ownership":[` + ownership + `]}`
 	}
-	fixture.harness.departmentPlanBody = func(round int) string {
-		if round < 2 {
+	fixture.harness.departmentPlanBody = func(task TaskRecord) string {
+		if designRoundOf(task.IdempotencyKey) < 2 {
 			return v2Plan("")
 		}
 		return v2Plan(fixture.eOwnership)
 	}
-	fixture.harness.departmentReviewBody = func(round int) string {
+	fixture.harness.departmentReviewBody = func(task TaskRecord) string {
 		// Round 1 has no ownership table to answer: fall back to the plain
 		// accept body. The needs_replan/consistency variations belong to the
 		// round whose adjudication created required changes.
-		if round < 2 {
+		if designRoundOf(task.IdempotencyKey) < 2 {
 			return ""
 		}
 		outcomes := "[]"
@@ -151,6 +151,101 @@ func eDepartmentReviewTask(t *testing.T, f *wiringFixture) (TaskRecord, bool) {
 
 func ownerEntry(id, key string) string {
 	return `{"required_change_id":"` + id + `","owner_client_key":"` + key + `"}`
+}
+
+// eTaskUnit recovers the department a plan or review task belongs to, from
+// its key (leader-plan:<unit>... or leader-review:<unit>...).
+func eTaskUnit(task TaskRecord) string {
+	for _, marker := range []string{"leader-plan:", "leader-review:"} {
+		if index := strings.Index(task.IdempotencyKey, marker); index >= 0 {
+			rest := task.IdempotencyKey[index+len(marker):]
+			if end := strings.Index(rest, ":"); end >= 0 {
+				rest = rest[:end]
+			}
+			return rest
+		}
+	}
+	return ""
+}
+
+// eReplanReviewBody is the accept body a replan review returns once the redo
+// settled everything: every assigned change resolved, nothing to redo.
+func eReplanReviewBody(ids []string) string {
+	outcomes := ""
+	for _, id := range ids {
+		if outcomes != "" {
+			outcomes += ","
+		}
+		outcomes += `{"required_change_id":"` + id + `","status":"resolved","canonical_resolution":"settled by the redo","conflicting_task_refs":[]}`
+	}
+	return `{"schema_version":"department-review/v2","verdict":"accept",` +
+		`"findings":["redo verified"],"unsatisfied_criteria":[],"evidence_refs":[],` +
+		`"proposed_followup_tasks":[],"followup_ownership":[],"revision_outcomes":[` + outcomes + `]}`
+}
+
+// newTwoUnitEFixture drives eFixture's campaign across TWO departments
+// (diseno and ingenieria_ia). Both plan and work round 1; the round-1
+// adjudication demands exactly the given changes; the round-2 adjudication
+// freezes. The host's own partitioner decides each unit's round-2 scope and
+// the scripted bodies answer within it.
+func newTwoUnitEFixture(t *testing.T, requiredChanges []string) (*wiringFixture, map[string][]RequiredChange) {
+	t.Helper()
+	fixture := newMultiUnitWiringFixture(t, "revise", eSources(), []EvidenceRequirementProposal{
+		{Subject: "MaxDesignRounds", Relations: []string{"definition"}},
+	}, []string{"diseno"}, WithRepositoryEvidenceSource("explorarte-organization", eWorld()))
+	h := fixture.harness
+	h.bodies[PurposeDepartmentWorker] = eWorkerBody()
+	h.adjudicationRequiredChanges = requiredChanges
+	h.adjudicationEvidence = `[{"subject":"driveDesignFreeze","relations":["application"]}]`
+	h.adjudicationVerdictByRound = map[int]string{2: "freeze"}
+
+	unitIDs := []string{"diseno", "ingenieria_ia"}
+	changes := make([]RequiredChange, 0, len(requiredChanges))
+	for index, text := range requiredChanges {
+		changes = append(changes, RequiredChange{ID: requiredChangeID(1, index+1), Text: text})
+	}
+	scopes := assignOwnershipScopes(changes, unitIDs)
+
+	v2Plan := func(unit, ownership string) string {
+		return `{"schema_version":"department-plan/v2","department_id":"` + unit + `",` +
+			`"tasks":[` +
+			`{"client_key":"` + unit + `_owner","assigned_role_id":"` + unit + `/qa","task_class":"engineering.review",` +
+			`"title":"Resolve required changes","instructions":"Address the assigned required changes.","acceptance_criteria":["Cite the pin"],"dependencies":[]},` +
+			`{"client_key":"` + unit + `_support","assigned_role_id":"` + unit + `/qa","task_class":"qa.testing",` +
+			`"title":"Verify claims","instructions":"Verify.","acceptance_criteria":["Check"],"dependencies":[]}` +
+			`],"review_criteria":["Consistent"],"unresolved":[],"revision_ownership":[` + ownership + `]}`
+	}
+	h.departmentPlanBody = func(task TaskRecord) string {
+		unit := eTaskUnit(task)
+		if designRoundOf(task.IdempotencyKey) < 2 || unit == "" {
+			return v2Plan(unit, "")
+		}
+		ownership := ""
+		for _, change := range scopes[unit] {
+			if ownership != "" {
+				ownership += ","
+			}
+			ownership += ownerEntry(change.ID, unit+"_owner")
+		}
+		return v2Plan(unit, ownership)
+	}
+	h.departmentReviewBody = func(task TaskRecord) string {
+		unit := eTaskUnit(task)
+		if designRoundOf(task.IdempotencyKey) < 2 || unit == "" {
+			return ""
+		}
+		outcomes := ""
+		for _, change := range scopes[unit] {
+			if outcomes != "" {
+				outcomes += ","
+			}
+			outcomes += `{"required_change_id":"` + change.ID + `","status":"resolved","canonical_resolution":"settled with citation","conflicting_task_refs":[]}`
+		}
+		return `{"schema_version":"department-review/v2","verdict":"accept",` +
+			`"findings":["reviewed"],"unsatisfied_criteria":[],"evidence_refs":[],` +
+			`"proposed_followup_tasks":[],"followup_ownership":[],"revision_outcomes":[` + outcomes + `]}`
+	}
+	return fixture, scopes
 }
 
 func eRoundTwoWorkersExist(t *testing.T, f *wiringFixture) bool {
@@ -306,9 +401,157 @@ func TestEReviewerSeesOwnershipTableAndConsistencyRule(t *testing.T) {
 	}
 }
 
+// GUARD: more departments than demanded changes is a LEGAL shape of the host
+// partition -- the department whose scope comes up empty is carried forward
+// untouched (no round plan, no work, no review), while the owning department
+// still drives the round to its adjudication. An empty roster must never look
+// like an impossibility.
+func TestEZeroScopeDepartmentIsCarriedForwardNotOpened(t *testing.T) {
+	fixture, scopes := newTwoUnitEFixture(t, []string{
+		"Clarify MaxDepartmentReplans granularity: aggregate ceiling or per-department cap.",
+	})
+	if len(scopes["diseno"]) != 1 || len(scopes["ingenieria_ia"]) != 0 {
+		t.Fatalf("fixture precondition broken: diseno=%d ingenieria_ia=%d",
+			len(scopes["diseno"]), len(scopes["ingenieria_ia"]))
+	}
+
+	driveCapability(t, fixture, 48)
+
+	root := fixture.rootRecord(t)
+	if root.ReasonCode == ReasonDesignRoundsExhausted {
+		t.Fatal("a legal N-departments-x-M-changes shape consumed every design round")
+	}
+	allTasks, err := fixture.tasks.ListByCorrelation(context.Background(), root.CorrelationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, task := range allTasks {
+		if strings.Contains(task.IdempotencyKey, "ingenieria_ia") &&
+			strings.Contains(task.IdempotencyKey, "design-round:2") {
+			t.Fatalf("the empty-scope department materialized %s (%s)",
+				task.IdempotencyKey, task.TaskClass)
+		}
+	}
+	disenoDroveRoundTwo := false
+	for _, task := range allTasks {
+		if strings.Contains(task.IdempotencyKey, "leader-review:diseno:design-round:2") &&
+			task.Status == "completed" {
+			disenoDroveRoundTwo = true
+		}
+	}
+	if !disenoDroveRoundTwo {
+		t.Fatal("the owning department never drove its round-2 review")
+	}
+	adjudication, ok := findTaskByKey(allTasks, childKey(root.ID, "design-adjudication:round:2"))
+	if !ok || adjudication.Status != "completed" {
+		t.Fatal("the owning department's round never reached its adjudication")
+	}
+}
+
+// GUARD: each department's reviewer reads an ownership table built from ITS
+// assigned subset and nothing else -- another department's change must not
+// appear as an UNASSIGNED row instructing this reviewer to state an outcome
+// the closed-world gate then refuses.
+func TestEReviewerSeesOnlyItsAssignedSubset(t *testing.T) {
+	fixture, scopes := newTwoUnitEFixture(t, []string{
+		"Clarify MaxDepartmentReplans granularity: aggregate ceiling or per-department cap.",
+		"Ground the revise-to-next-round transition in activeDesignRound citations.",
+	})
+	disenoChange, ingenieriaChange := scopes["diseno"][0], scopes["ingenieria_ia"][0]
+
+	driveCapability(t, fixture, 48)
+
+	tableOf := func(unit string) string {
+		allTasks, err := fixture.tasks.ListByCorrelation(context.Background(), fixture.rootRecord(t).CorrelationID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, task := range allTasks {
+			if task.TaskClass == TaskClassCoordinationDeptReview &&
+				strings.HasPrefix(task.IdempotencyKey,
+					"executive:"+itoa64(fixture.rootRecord(t).ID)+":leader-review:"+unit+":design-round:2") {
+				index := strings.Index(task.Instructions, "REVISION OWNERSHIP TABLE")
+				if index < 0 {
+					t.Fatalf("%s review missing the ownership table:\n%s", unit, task.Instructions)
+				}
+				return task.Instructions[index:]
+			}
+		}
+		t.Fatalf("no round-2 review exists for %s", unit)
+		return ""
+	}
+	disenoTable, ingenieriaTable := tableOf("diseno"), tableOf("ingenieria_ia")
+	if !strings.Contains(disenoTable, disenoChange.ID+" [owner: diseno_owner]") {
+		t.Fatalf("diseno table missing its own row:\n%s", disenoTable)
+	}
+	if strings.Contains(disenoTable, ingenieriaChange.ID) {
+		t.Fatalf("another department's change leaked into diseno's table:\n%s", disenoTable)
+	}
+	if !strings.Contains(ingenieriaTable, ingenieriaChange.ID+" [owner: ingenieria_ia_owner]") {
+		t.Fatalf("ingenieria_ia table missing its own row:\n%s", ingenieriaTable)
+	}
+	if strings.Contains(ingenieriaTable, disenoChange.ID) {
+		t.Fatalf("another department's change leaked into ingenieria_ia's table:\n%s", ingenieriaTable)
+	}
+}
+
+// GUARD: after a replan, authority over the redone changes MOVED with the
+// previous review's followup_ownership bindings -- the :replan:1 reviewer
+// must see the redo owner as authoritative, while changes nobody re-executed
+// keep the plan's owner. Stale authority is exactly what made R16's replan
+// reviewer judge answers whose provenance it could not see.
+func TestEReplanReviewSeesTheRedoOwnerAsAuthoritative(t *testing.T) {
+	fixture := eFixture(t)
+	fixture.eOwnership = ownerEntry("RC:1:1", eOwnerKey) + "," + ownerEntry("RC:1:2", eOwnerKey)
+	fixture.eReviewVerdict = "needs_replan"
+	fixture.eOutcomes = `[` +
+		`{"required_change_id":"RC:1:1","status":"conflicted","canonical_resolution":"","conflicting_task_refs":["task:a","task:b"]},` +
+		`{"required_change_id":"RC:1:2","status":"resolved","canonical_resolution":"cited","conflicting_task_refs":[]}]`
+	fixture.eFollowups = `[{"client_key":"reconcile_mdr","assigned_role_id":"ingenieria_ia/qa","task_class":"engineering.review",` +
+		`"title":"Reconcile MDR granularity","instructions":"One falsifiable claim.","acceptance_criteria":["Cite"],"dependencies":[]}]`
+	fixture.eFollowupOwnership = `[{"required_change_id":"RC:1:1","owner_client_key":"reconcile_mdr"}]`
+
+	base := fixture.harness.departmentReviewBody
+	fixture.harness.departmentReviewBody = func(task TaskRecord) string {
+		if strings.Contains(task.IdempotencyKey, ":replan:") {
+			return eReplanReviewBody([]string{"RC:1:1", "RC:1:2"})
+		}
+		return base(task)
+	}
+
+	driveCapability(t, fixture, 30)
+
+	allTasks, err := fixture.tasks.ListByCorrelation(context.Background(), fixture.rootRecord(t).CorrelationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var replanReview TaskRecord
+	found := false
+	for _, task := range allTasks {
+		if task.TaskClass == TaskClassCoordinationDeptReview && strings.Contains(task.IdempotencyKey, ":replan:1") {
+			replanReview, found = task, true
+		}
+	}
+	if !found {
+		t.Fatal("the replan review was never created")
+	}
+	index := strings.Index(replanReview.Instructions, "REVISION OWNERSHIP TABLE")
+	if index < 0 {
+		t.Fatalf("replan review missing the ownership table:\n%s", replanReview.Instructions)
+	}
+	table := replanReview.Instructions[index:]
+	if !strings.Contains(table, "RC:1:1 [owner: reconcile_mdr]") {
+		t.Fatalf("the redone change does not show its redo owner:\n%s", table)
+	}
+	if !strings.Contains(table, "RC:1:2 [owner: "+eOwnerKey+"]") {
+		t.Fatalf("the change nobody re-executed lost its plan owner:\n%s", table)
+	}
+}
+
 // GUARDS: accept + conflicted, and accept + unresolved, are both contract
 // rejections; conflicted under needs_replan routes to the DEPARTMENT replan
-// bound without opening a third design round.
+// bound without opening a third design round; and so does the honest
+// unresolved answer -- the routing needs_replan exists to deliver.
 func TestEAcceptGateAndNeedsReplanRouting(t *testing.T) {
 	t.Run("accept with a conflicted outcome is refused", func(t *testing.T) {
 		fixture := eFixture(t)
@@ -362,6 +605,38 @@ func TestEAcceptGateAndNeedsReplanRouting(t *testing.T) {
 		root := fixture.rootRecord(t)
 		if root.ReasonCode == ReasonDesignRoundsExhausted {
 			t.Fatal("a department contradiction consumed a DESIGN round")
+		}
+		allTasks, _ := fixture.tasks.ListByCorrelation(context.Background(), root.CorrelationID)
+		replanReviewExists := false
+		for _, task := range allTasks {
+			if strings.Contains(task.IdempotencyKey, ":replan:1") {
+				replanReviewExists = true
+			}
+			if strings.Contains(task.IdempotencyKey, "design-round:3") {
+				t.Fatal("a third design round opened: MaxDesignRounds was touched by a department event")
+			}
+		}
+		if !replanReviewExists {
+			t.Fatal("needs_replan did not open the department replan iteration")
+		}
+	})
+
+	t.Run("unresolved routes to the department replan bound", func(t *testing.T) {
+		fixture := eFixture(t)
+		fixture.eOwnership = ownerEntry("RC:1:1", eOwnerKey) + "," + ownerEntry("RC:1:2", eOwnerKey)
+		fixture.eReviewVerdict = "needs_replan"
+		fixture.eOutcomes = `[` +
+			`{"required_change_id":"RC:1:1","status":"unresolved","canonical_resolution":"no deliverable addressed it","conflicting_task_refs":[]},` +
+			`{"required_change_id":"RC:1:2","status":"resolved","canonical_resolution":"cited","conflicting_task_refs":[]}]`
+		fixture.eFollowups = `[{"client_key":"redo_rc11","assigned_role_id":"ingenieria_ia/qa","task_class":"engineering.review",` +
+			`"title":"Redo the unanswered change","instructions":"Address it.","acceptance_criteria":["Cite"],"dependencies":[]}]`
+		fixture.eFollowupOwnership = `[{"required_change_id":"RC:1:1","owner_client_key":"redo_rc11"}]`
+
+		driveCapability(t, fixture, 30)
+
+		root := fixture.rootRecord(t)
+		if root.ReasonCode == ReasonDesignRoundsExhausted {
+			t.Fatal("an honest unresolved answer consumed a DESIGN round")
 		}
 		allTasks, _ := fixture.tasks.ListByCorrelation(context.Background(), root.CorrelationID)
 		replanReviewExists := false
