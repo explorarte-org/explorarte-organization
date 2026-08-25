@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strconv"
 )
 
@@ -87,23 +88,38 @@ const (
 	AmbiguityPolicyPureModelV1          = "pure_model_execution_v1"
 )
 
-// executivePureModelTaskClasses is the allowlist of TaskClass values whose
-// executions are, by construction of driveTypedTask + HarnessRunCommand,
-// tool-free text generation. Anything else classifies unknown.
-var executivePureModelTaskClasses = map[string]struct{}{
-	TaskClassCoordinationCEOPlan:            {},
-	TaskClassCoordinationDeptPlan:           {},
-	TaskClassCoordinationDeptReview:         {},
-	TaskClassCoordinationCEOClosure:         {},
-	TaskClassCoordinationAdversarialReview:  {},
-	TaskClassCoordinationDesignAdjudication: {},
-	TaskClassCoordinationImplementationPlan: {},
-	TaskClassGeneralWork:                    {},
-	"engineering.design":                    {},
+// executiveCognitivePurposes is the closed set of LegacyPurpose strings whose
+// executions are, by construction of the Executive's harness adapter
+// (RunSpec.Tools is nil and its tool catalog is empty), tool-free text
+// generation. The set is written out member by member on purpose: adding an
+// ExecutionPurpose does not silently become auto-authorizable -- this map is
+// where that decision is made.
+var executiveCognitivePurposes = map[string]struct{}{
+	PurposeCEOPlan.LegacyPurpose():            {},
+	PurposeDepartmentPlan.LegacyPurpose():     {},
+	PurposeDepartmentWorker.LegacyPurpose():   {},
+	PurposeDepartmentReview.LegacyPurpose():   {},
+	PurposeCEOClosure.LegacyPurpose():         {},
+	PurposeAdversarialReview.LegacyPurpose():  {},
+	PurposeDesignAdjudication.LegacyPurpose(): {},
+	PurposeImplementationPlan.LegacyPurpose(): {},
 }
 
-func executionEffectClass(task TaskRecord) ExecutionEffectClass {
-	if _, ok := executivePureModelTaskClasses[task.TaskClass]; ok {
+// legacyHarnessTurnPattern recognizes the ONE historical purpose format:
+// "execution harness turn <64 hex>", which every row created before the
+// driver's identity reached this column carries. Within this reconciler's
+// scan domain -- tasks of an Executive correlation -- such a row was by
+// construction produced by the same tool-free cognitive adapter, so it is
+// pure_model exactly like the enumerated purposes above. The format is
+// frozen history: no new row carries it once the driver states its purpose,
+// so this recognizer can never grow to cover a future tool-bearing class.
+var legacyHarnessTurnPattern = regexp.MustCompile(`^execution harness turn [0-9a-f]{64}$`)
+
+func executionEffectClass(invocation InvocationRecord) ExecutionEffectClass {
+	if _, ok := executiveCognitivePurposes[invocation.Purpose]; ok {
+		return EffectPureModel
+	}
+	if legacyHarnessTurnPattern.MatchString(invocation.Purpose) {
 		return EffectPureModel
 	}
 	return EffectUnknown
@@ -146,8 +162,14 @@ func (o *Orchestrator) findAmbiguityResolution(ctx context.Context, owningTaskID
 // just authorized one (autonomous first application). It returns false when
 // the caller must block exactly as the pre-B2 code did.
 //
-// Nothing about the invocation, its attempt, its accounting, or its budget
-// changes here. The only write is the resolution fact on the owning task.
+// The effect class comes from the invocation's OWN durable identity -- the
+// purpose its driver declared at creation -- never from TaskClass: worker
+// classes are deliberately free-form (memory.discovery, engineering.review,
+// ...), and every one of them runs through the same tool-free harness, so a
+// class-based frontier would lock out exactly the executions B2 exists to
+// recover. Nothing about the invocation, its attempt, its accounting, or its
+// budget changes here. The only write is the resolution fact on the owning
+// task.
 func (o *Orchestrator) reconcileAmbiguousInvocation(ctx context.Context, owningTask TaskRecord, invocation InvocationRecord) (bool, error) {
 	resolved, err := o.findAmbiguityResolution(ctx, owningTask.ID, invocation.ID)
 	if err != nil {
@@ -156,7 +178,7 @@ func (o *Orchestrator) reconcileAmbiguousInvocation(ctx context.Context, owningT
 	if resolved {
 		return true, nil
 	}
-	class := executionEffectClass(owningTask)
+	class := executionEffectClass(invocation)
 	if class != EffectPureModel {
 		// Unknown effect: the policy refuses, nothing is written, and the
 		// caller blocks. A human decision path for non-pure classes is a

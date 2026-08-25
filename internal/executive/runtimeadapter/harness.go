@@ -83,6 +83,11 @@ func (h Harness) Execute(ctx context.Context, command executive.HarnessRunComman
 		OutputMode:                    modelruntime.OutputJSON,
 		OutputSchema:                  append([]byte(nil), command.OutputSchema...),
 		ExecutionContractInstructions: command.ExecutionContract,
+		// The invocation's durable purpose states whose execution this was:
+		// the validated Executive enum value, not a projection digest. It is
+		// what the ambiguity reconciler later reads to classify the run's
+		// effect class. Identity validation never compares it.
+		Purpose: string(command.Purpose),
 	})
 	if err != nil {
 		return executive.HarnessRunOutcome{}, fmt.Errorf("build harness model executor: %w", err)

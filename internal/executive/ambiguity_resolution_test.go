@@ -20,10 +20,13 @@ import (
 // class), every writer blocks exactly as before.
 
 // ambiguousAdjudication seeds the R14 world: a design-adjudication task with
-// one terminal-ambiguous invocation on its expired attempt. The fabricated
-// task carries an idempotency key the freeze phase never looks up, so it
-// stays exactly what this checkpoint is about -- durable ambiguity state --
-// without disturbing the scripted pipeline around it.
+// one terminal-ambiguous invocation on its expired attempt. The invocation
+// carries the driver-declared purpose the real row will have once the
+// identity threads through; its TaskClass is deliberately an ordinary worker
+// class to prove classification never reads it. The fabricated task carries
+// an idempotency key the freeze phase never looks up, so it stays exactly
+// what this checkpoint is about -- durable ambiguity state -- without
+// disturbing the scripted pipeline around it.
 func ambiguousAdjudication(t *testing.T, fixture *wiringFixture) (TaskRecord, InvocationRecord) {
 	t.Helper()
 	root := fixture.rootRecord(t)
@@ -41,6 +44,7 @@ func ambiguousAdjudication(t *testing.T, fixture *wiringFixture) (TaskRecord, In
 	invocation := InvocationRecord{
 		ID: 340, TaskID: task.ID, AttemptID: 384, Status: "ambiguous",
 		CorrelationID: root.CorrelationID,
+		Purpose:       PurposeDesignAdjudication.LegacyPurpose(),
 	}
 	fixture.harness.models.setInvocations(task.ID, 384, invocation)
 	return task, invocation
@@ -108,14 +112,113 @@ func TestTheBarrierAuthorizesAPureModelAmbiguityAndStandsDown(t *testing.T) {
 	}
 }
 
-// The frontier: an execution the classifier cannot prove pure NEVER gets a
-// resolution written, and every barrier behaves exactly as before B2.
+// The frontier, stated exactly as reviewed: classification reads the
+// invocation's declared identity, never TaskClass. Every current Executive
+// purpose is pure_model -- worker classes are deliberately free-form
+// (memory.discovery, engineering.review, ...), so a class-based frontier
+// would lock out precisely the executions B2 exists to recover. A purpose
+// outside the closed set is fail-closed, whatever its task looks like.
+func TestEffectClassificationFollowsThePurposeNeverTheTaskClass(t *testing.T) {
+	for _, purpose := range []ExecutionPurpose{
+		PurposeCEOPlan, PurposeDepartmentPlan, PurposeDepartmentWorker,
+		PurposeDepartmentReview, PurposeCEOClosure, PurposeAdversarialReview,
+		PurposeDesignAdjudication, PurposeImplementationPlan,
+	} {
+		class := executionEffectClass(InvocationRecord{Purpose: purpose.LegacyPurpose()})
+		if class != EffectPureModel {
+			t.Errorf("purpose %q must classify pure_model, got %q", purpose.LegacyPurpose(), class)
+		}
+	}
+
+	// Free-form worker classes on a department-worker invocation: the exact
+	// world that would have been locked out under a TaskClass frontier.
+	for _, taskClass := range []string{"memory.discovery", "engineering.review", "general.work", "anything.valid_syntax"} {
+		fixture := newWiringFixture(t, "freeze", fullSupply(), nil)
+		task, _ := ambiguousAdjudication(t, fixture)
+		detail, err := fixture.tasks.GetTask(context.Background(), task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		invocation := InvocationRecord{
+			ID: 341, TaskID: task.ID, AttemptID: 384, Status: "ambiguous",
+			CorrelationID: detail.CorrelationID,
+			Purpose:       PurposeDepartmentWorker.LegacyPurpose(),
+		}
+		fixture.harness.models.setInvocations(task.ID, 384, invocation)
+		_ = taskClass
+		handled, _, err := fixture.orchestrator.priorExecutionBarrier(context.Background(), fixture.rootRecord(t), detail)
+		if err != nil || handled {
+			t.Fatalf("task class %q with a cognitive purpose must not block: handled=%v err=%v", taskClass, handled, err)
+		}
+		if rows := resolutionRows(t, fixture, task.ID); len(rows) != 1 {
+			t.Fatalf("task class %q: want exactly one resolution, got %d", taskClass, len(rows))
+		}
+	}
+
+	// An unrecognized purpose fails closed regardless of what the task says
+	// it is; nothing may be authorized or written.
+	for _, purpose := range []string{"", "future_tool_purpose", "execution harness turn not-a-digest"} {
+		fixture := newWiringFixture(t, "freeze", fullSupply(), nil)
+		task, _ := ambiguousAdjudication(t, fixture)
+		detail, err := fixture.tasks.GetTask(context.Background(), task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		detail.TaskClass = TaskClassGeneralWork
+		fixture.tasks.tasks[task.ID] = detail
+		invocation := InvocationRecord{
+			ID: 342, TaskID: task.ID, AttemptID: 384, Status: "ambiguous",
+			CorrelationID: detail.CorrelationID,
+			Purpose:       purpose,
+		}
+		fixture.harness.models.setInvocations(task.ID, 384, invocation)
+
+		handled, blocked, err := fixture.orchestrator.priorExecutionBarrier(
+			context.Background(), fixture.rootRecord(t), detail)
+		if !handled || !errors.Is(err, ErrModelOutcomeAmbiguous) {
+			t.Fatalf("purpose %q must block as before B2: handled=%v err=%v", purpose, handled, err)
+		}
+		if blocked.Status == "" {
+			t.Fatal("barrier returned no blocked task record")
+		}
+		if rows := resolutionRows(t, fixture, task.ID); len(rows) != 0 {
+			t.Fatalf("purpose %q: nothing may authorize an unclassified effect: %+v", purpose, rows[0].Metadata)
+		}
+	}
+}
+
+// The frozen legacy format: every ambiguity row created before the driver's
+// identity reached the purpose column carries it, including R14's real
+// invocation. It is recognized as pure_model because within this scan domain
+// it could only have been produced by the same tool-free adapter.
+func TestLegacyHarnessTurnPurposesArePureModel(t *testing.T) {
+	legacy := "execution harness turn b6a3f1e05d9c4728ba0fe61d3c5a2974e8b10c6df24937a58c0d41e92fb6730a"
+	if class := executionEffectClass(InvocationRecord{Purpose: legacy}); class != EffectPureModel {
+		t.Fatalf("the frozen legacy format must classify pure_model, got %q", class)
+	}
+	// Almost-right formats do not: the recognizer is exact.
+	for _, almost := range []string{
+		"execution harness turn B6A3F1E05D9C4728BA0FE61D3C5A2974E8B10C6DF24937A58C0D41E92FB6730A",
+		"execution harness turn b6a3f1e0",
+		"execution harness turn ",
+	} {
+		if class := executionEffectClass(InvocationRecord{Purpose: almost}); class != EffectUnknown {
+			t.Errorf("purpose %q must be unknown, got %q", almost, class)
+		}
+	}
+}
+
+// An execution whose purpose is unknown still blocks forever, whatever its
+// task claims to be -- the barrier behaves exactly as before B2 and writes
+// no resolution for an effect it cannot prove pure.
 func TestAnUnknownEffectClassStillBlocksForever(t *testing.T) {
 	fixture := newWiringFixture(t, "freeze", fullSupply(), nil)
-	task, _ := ambiguousAdjudication(t, fixture)
+	task, invocation := ambiguousAdjudication(t, fixture)
 	detail, _ := fixture.tasks.GetTask(context.Background(), task.ID)
-	detail.TaskClass = "some.future.externally_effectful_class"
-	fixture.tasks.tasks[task.ID] = detail
+	unclassified := invocation
+	unclassified.ID = 999
+	unclassified.Purpose = "some.future.externally_effectful_purpose"
+	fixture.harness.models.setInvocations(task.ID, 384, unclassified)
 	root := fixture.rootRecord(t)
 
 	handled, blocked, err := fixture.orchestrator.priorExecutionBarrier(context.Background(), root, detail)
@@ -189,10 +292,12 @@ func TestOneUnresolvableAmbiguityKeepsTheRunFailClosed(t *testing.T) {
 		`{"schema_version":"worker-result/v2","summary":"Grounded.",` +
 			`"evidence_refs":["` + wiringDefRef + `"],` +
 			`"evidence":[{"claim":"declared","subject":"MaxDesignRounds","relation":"definition","ref":"` + wiringDefRef + `"}]}`
-	task, _ := ambiguousAdjudication(t, fixture)
-	detail, _ := fixture.tasks.GetTask(context.Background(), task.ID)
-	detail.TaskClass = "coordination.some_future_tool_class"
-	fixture.tasks.tasks[task.ID] = detail
+	task, invocation := ambiguousAdjudication(t, fixture)
+	// The frontier is the invocation's declared identity: a purpose outside
+	// the closed set is unresolvable no matter what the task's class says.
+	unclassified := invocation
+	unclassified.Purpose = "some.future.externally_effectful_purpose"
+	fixture.harness.models.setInvocations(task.ID, 384, unclassified)
 	root := fixture.rootRecord(t)
 
 	if _, err := fixture.tasks.BlockTask(context.Background(), root.ID, "model_outcome_ambiguous",

@@ -658,6 +658,7 @@ func (f *fakeModels) recordDurableInvocation(command HarnessRunCommand, status s
 	invocation := InvocationRecord{
 		ID: f.nextID, TaskID: command.TaskID, AttemptID: command.AttemptID, SubjectRoleID: command.RoleID,
 		Status: status, CorrelationID: command.CorrelationID, CausationID: command.CausationID,
+		Purpose: string(command.Purpose),
 		// Every real invocation is made with a context snapshot and records
 		// which one. A fake that left this at zero made code which reads its
 		// own invocation's context look broken here and work in production --

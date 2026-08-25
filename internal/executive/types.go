@@ -279,6 +279,13 @@ type InvocationRecord struct {
 	ErrorCode     string
 	CorrelationID string
 	CausationID   string
+	// Purpose is Model Runtime's durable record of WHOSE execution this was,
+	// stated by the driver when it created the invocation. The ambiguity
+	// reconciler reads it to classify the execution's effect class: a known
+	// Executive cognitive purpose means the run was tool-free text
+	// generation by construction. Rows created before the purpose reached
+	// this column carry the legacy projection-digest format instead.
+	Purpose string
 	// ContextSnapshotID is the exact context this invocation was made with.
 	//
 	// It is not a new association: model_invocations already carries it, and
