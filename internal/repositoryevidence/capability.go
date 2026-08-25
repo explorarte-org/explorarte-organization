@@ -2,6 +2,7 @@ package repositoryevidence
 
 import (
 	"context"
+	"sort"
 	"strings"
 )
 
@@ -11,6 +12,90 @@ import (
 // both exist, so a handful of reads is enough to know what the pinned world
 // can answer for. The probe is a feasibility question, not an inventory.
 const maxProbeReads = 4
+
+// CoveragePlan is the outcome of joint admission: which slots the pinned
+// world can deliver TOGETHER under one shared budget, and which it cannot.
+type CoveragePlan struct {
+	// Covered lists every demanded slot the dry-run delivered.
+	Covered []EvidenceSlot
+	// Undelivered lists the slots that exist in no deliverable arrangement:
+	// either the subject is absent from the pin, or admitting the set as a
+	// whole would need more capacity than one snapshot has.
+	Undelivered []EvidenceSlot
+}
+
+// PlanSlots is joint admission (checkpoint D): it answers not "can each
+// subject be grounded on its own" but "can THIS SET of slots be delivered
+// together, by the same selection algorithm, under the SAME Limits the real
+// snapshot will run with".
+//
+// It is literally a dry-run of delivery -- GatherWithCoverage over one shared
+// explorer with one shared budget -- so admission and delivery are the same
+// code path and cannot disagree. The per-subject probe this replaces gave
+// every subject its own full DefaultLimits; R15 proved the gap: four
+// adjudicated subjects passed four independent probes, then round 2's real
+// snapshot starved driveDesignFreeze/application under the single shared
+// budget, and the preflight killed the worker before any model call.
+//
+// An error returns only when the SENSOR could not answer -- search failed, an
+// excerpt could not be read. "Cannot fit" is not an error; it is the honest
+// admission verdict, reported through Undelivered for the caller to turn into
+// a correctable contract rejection.
+func PlanSlots(ctx context.Context, repositoryID, baseSHA string, source Source, limits Limits, window int, slots []EvidenceSlot) (CoveragePlan, error) {
+	subjects := make([]string, 0, len(slots))
+	seen := map[string]struct{}{}
+	for _, slot := range slots {
+		subject := strings.TrimSpace(slot.Subject)
+		if subject == "" {
+			continue
+		}
+		if _, already := seen[subject]; already {
+			continue
+		}
+		seen[subject] = struct{}{}
+		subjects = append(subjects, subject)
+	}
+	if len(subjects) == 0 || len(slots) == 0 {
+		return CoveragePlan{Covered: []EvidenceSlot{}, Undelivered: []EvidenceSlot{}}, nil
+	}
+	explorer, err := NewExplorer(repositoryID, baseSHA, source, limits)
+	if err != nil {
+		return CoveragePlan{}, err
+	}
+	selection := Selection{
+		Terms:         subjects,
+		RequiredTerms: subjects,
+		Slots:         slots,
+		Window:        window,
+	}
+	fragments, uncovered, err := GatherWithCoverage(ctx, explorer, selection)
+	if err != nil {
+		return CoveragePlan{}, err
+	}
+	coveredSet := map[EvidenceSlot]bool{}
+	for _, slot := range slots {
+		coveredSet[slot] = true
+	}
+	for _, slot := range uncovered {
+		delete(coveredSet, slot)
+	}
+	plan := CoveragePlan{Covered: []EvidenceSlot{}, Undelivered: []EvidenceSlot{}}
+	for _, slot := range slots {
+		if coveredSet[slot] {
+			plan.Covered = append(plan.Covered, slot)
+			continue
+		}
+		plan.Undelivered = append(plan.Undelivered, slot)
+	}
+	sort.Slice(plan.Undelivered, func(first, second int) bool {
+		if plan.Undelivered[first].Subject != plan.Undelivered[second].Subject {
+			return plan.Undelivered[first].Subject < plan.Undelivered[second].Subject
+		}
+		return plan.Undelivered[first].Relation < plan.Undelivered[second].Relation
+	})
+	_ = fragments
+	return plan, nil
+}
 
 // ProbeSubjectSupply answers which of the demanded relations the PINNED world
 // can mechanically fill for one subject, using the same classifier the

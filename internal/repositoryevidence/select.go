@@ -2,6 +2,7 @@ package repositoryevidence
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"sort"
 	"strings"
@@ -28,6 +29,18 @@ type Selection struct {
 	// ever searched, so a slot supplied in an earlier round vanished in the
 	// next. Required subjects get a reserved pass before anything else reads.
 	RequiredTerms []string
+	// Slots are the normative (subject, relation) demands of this round, when
+	// the caller carries them. When present they drive PASS 0: for each slot
+	// the gatherer finds and reads an excerpt that the round's own classifier
+	// (ExcerptRelations) confirms satisfies THAT relation, before any other
+	// pass spends a byte of budget. Slots also invert the path-prefix rule:
+	// a mandatory candidate is never dropped for lying outside the query's
+	// incidental scope -- the obligation defines relevance, not the other way
+	// around. Checkpoint D (AUTONOMY-SMOKE-017-R15): without slots the
+	// selection delivered driveDesignFreeze's declaration while the round
+	// demanded its application, and the preflight killed the worker before a
+	// model call.
+	Slots []EvidenceSlot
 	// Window is how many lines around a match make it understandable.
 	Window int
 }
@@ -190,17 +203,29 @@ const requiredHeadSize = 2
 // twelve places it wanted to is still eight places the design can cite, and
 // refusing the lot because the ninth did not fit would trade partial sight for
 // none.
-//
-// Reading happens in two passes. The first reserves, for every REQUIRED
-// subject in turn, its ranked head -- definition and application when both
-// exist. The second spends whatever capacity remains on everything else,
-// including further matches of the required subjects themselves. One subject's
-// abundance must never starve another subject's obligation: R10 lost a slot it
-// had supplied the round before because a different subject's extras read
-// first.
 func Gather(ctx context.Context, explorer *Explorer, selection Selection) ([]Fragment, error) {
+	fragments, _, err := gather(ctx, explorer, selection, false)
+	return fragments, err
+}
+
+// GatherWithCoverage is Gather plus the answer admission needs: which
+// demanded slots the gathered excerpts actually satisfy. It is the delivery
+// half of checkpoint D -- the admission half (PlanSlots) runs this same code
+// path against the same limits, so what was proven deliverable at acceptance
+// time is what delivery reproduces.
+func GatherWithCoverage(ctx context.Context, explorer *Explorer, selection Selection) ([]Fragment, []EvidenceSlot, error) {
+	return gather(ctx, explorer, selection, true)
+}
+
+// gatherCore is the single reading algorithm both call. strict=true (the
+// admission dry-run) propagates sensor failures instead of absorbing them:
+// an admission verdict may never mistake a broken observer for an empty
+// world. Budget exhaustion is not a sensor failure in either mode -- running
+// out is how an over-demanded set says "not all of us fit", and it reports
+// through the uncovered-slot list.
+func gather(ctx context.Context, explorer *Explorer, selection Selection, strict bool) ([]Fragment, []EvidenceSlot, error) {
 	if explorer == nil {
-		return nil, ErrInvalidFragment
+		return nil, nil, ErrInvalidFragment
 	}
 	window := selection.Window
 	if window < 1 {
@@ -223,19 +248,101 @@ func Gather(ctx context.Context, explorer *Explorer, selection Selection) ([]Fra
 		required[term] = struct{}{}
 	}
 
-	// Searches are cached: the passes must not spend the search budget twice
-	// on the same term.
+	// Searches are cached and report their errors: strict mode (admission)
+	// must be able to tell a broken sensor from an empty world, while the
+	// delivery passes keep their historical tolerance.
 	cache := map[string][]Match{}
-	search := func(term string) []Match {
+	search := func(term string) ([]Match, error) {
 		if cached, ok := cache[term]; ok {
-			return cached
+			return cached, nil
 		}
 		matches, err := explorer.Search(ctx, term)
 		if err != nil {
-			matches = nil
+			cache[term] = nil
+			return nil, err
 		}
 		cache[term] = matches
+		return matches, nil
+	}
+	searchTolerant := func(term string) []Match {
+		matches, _ := search(term)
 		return matches
+	}
+
+	// PASS 0 -- MANDATORY SLOT COVERAGE (checkpoint D). The normative unit is
+	// the slot, not the subject: for every demanded (subject, relation) the
+	// pass reads candidates until ExcerptRelations confirms one satisfies THAT
+	// relation. Round-robin across slots keeps one hungry subject from eating
+	// another's evidence; the path-prefix rule is INVERTED here because an
+	// obligation defines relevance rather than competing with the query's
+	// incidental scope; and only ErrBudgetExhausted ends the pass early --
+	// capacity is exactly the thing joint admission already priced. Every
+	// other read failure moves to the next candidate; in strict mode it aborts,
+	// because admission may never mistake a broken observer for a verdict.
+	uncovered := make([]EvidenceSlot, 0)
+	if len(selection.Slots) > 0 {
+		pending := make([]EvidenceSlot, len(selection.Slots))
+		copy(pending, selection.Slots)
+		candidates := map[string][]Match{}
+		satisfied := map[EvidenceSlot]bool{}
+		outOfCapacity := false
+		for len(pending) > 0 && !outOfCapacity {
+			progressed := false
+			still := make([]EvidenceSlot, 0, len(pending))
+			for _, slot := range pending {
+				if satisfied[slot] {
+					continue
+				}
+				matches, err := search(slot.Subject)
+				if err != nil {
+					if errors.Is(err, ErrBudgetExhausted) {
+						outOfCapacity = true
+						still = append(still, slot)
+						break
+					}
+					if strict {
+						return nil, nil, err
+					}
+					still = append(still, slot)
+					continue
+				}
+				for len(matches) > 0 && !satisfied[slot] {
+					match := matches[0]
+					matches = matches[1:]
+					fragment, readErr := explorer.ReadAround(ctx, match, window)
+					if readErr != nil {
+						if errors.Is(readErr, ErrBudgetExhausted) {
+							outOfCapacity = true
+							break
+						}
+						if strict {
+							return nil, nil, readErr
+						}
+						continue
+					}
+					add(fragment)
+					if ExcerptRelations(fragment.Content, slot.Subject)[slot.Relation] {
+						satisfied[slot] = true
+						progressed = true
+					}
+				}
+				candidates[slot.Subject] = matches
+				if !satisfied[slot] {
+					still = append(still, slot)
+				}
+			}
+			pending = still
+			if !progressed && !outOfCapacity {
+				// A full round satisfied nothing new: no candidate list can
+				// advance further, so more rounds would only burn budget.
+				break
+			}
+		}
+		for _, slot := range selection.Slots {
+			if !satisfied[slot] {
+				uncovered = append(uncovered, slot)
+			}
+		}
 	}
 
 	// PASS 1 -- required coverage, ROUND-ROBIN: A's first candidates, then
@@ -243,14 +350,16 @@ func Gather(ctx context.Context, explorer *Explorer, selection Selection) ([]Fra
 	// starving budget every obligation keeps its BEST candidate rather than
 	// the earliest subject keeping all of its candidates. rankHits already
 	// ordered each subject's hits definition-first, application-second, so
-	// the interleaved heads are exactly the roles slots demand.
+	// the interleaved heads are exactly the roles slots demand. Slots that
+	// PASS 0 already satisfied made their subjects' best candidates count;
+	// this pass now tops up context for the subjects themselves.
 	heads := make(map[string][]Match, len(selection.RequiredTerms))
 	order := make([]string, 0, len(selection.RequiredTerms))
 	for _, term := range selection.Terms {
 		if _, isRequired := required[term]; !isRequired {
 			continue
 		}
-		head := search(term)
+		head := searchTolerant(term)
 		if len(head) > requiredHeadSize {
 			head = head[:requiredHeadSize]
 		}
@@ -292,7 +401,7 @@ func Gather(ctx context.Context, explorer *Explorer, selection Selection) ([]Fra
 		add(fragment)
 	}
 	for _, term := range selection.Terms {
-		for _, match := range search(term) {
+		for _, match := range searchTolerant(term) {
 			if !underAnyPrefix(match.Path, selection.Paths) {
 				continue
 			}
@@ -303,7 +412,7 @@ func Gather(ctx context.Context, explorer *Explorer, selection Selection) ([]Fra
 			add(fragment)
 		}
 	}
-	return fragments, nil
+	return fragments, uncovered, nil
 }
 
 // underAnyPrefix keeps a search inside the scope the goal named.

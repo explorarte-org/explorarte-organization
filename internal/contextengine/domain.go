@@ -107,6 +107,13 @@ const (
 	SkillRetired       SkillLifecycle = "retired"
 )
 
+// RepositorySlot is one normative evidence demand at full resolution: the
+// subject AND the relation a round's snapshot must contain material for.
+type RepositorySlot struct {
+	Subject  string `json:"subject"`
+	Relation string `json:"relation"`
+}
+
 type BuildRequest struct {
 	OrganizationID         string `json:"organization_id"`
 	OrganizationRevisionID int64  `json:"organization_revision_id"`
@@ -142,11 +149,17 @@ type BuildRequest struct {
 	// from prose would put it back in competition for a budget it has
 	// already lost once.
 	RepositorySubjects []string `json:"repository_subjects,omitempty"`
-	ActorUnitID        string   `json:"actor_unit_id,omitempty"`
-	RequestedSkillIDs  []string `json:"requested_skill_ids,omitempty"`
-	IdempotencyKey     string   `json:"idempotency_key"`
-	CorrelationID      string   `json:"correlation_id,omitempty"`
-	CausationID        string   `json:"causation_id,omitempty"`
+	// RepositorySlots are those obligations at full normative resolution --
+	// (subject, relation) pairs, checkpoint D. The repository-evidence
+	// provider satisfies every slot MANDATORILY before any incidental
+	// exploration spends the budget: an accepted round promise is delivered,
+	// or the whole build says why it could not.
+	RepositorySlots   []RepositorySlot `json:"repository_slots,omitempty"`
+	ActorUnitID       string           `json:"actor_unit_id,omitempty"`
+	RequestedSkillIDs []string         `json:"requested_skill_ids,omitempty"`
+	IdempotencyKey    string           `json:"idempotency_key"`
+	CorrelationID     string           `json:"correlation_id,omitempty"`
+	CausationID       string           `json:"causation_id,omitempty"`
 }
 
 type SourceRecord struct {

@@ -195,6 +195,13 @@ type ContextRequest struct {
 	// wording would put it back in competition for the same budget it
 	// already lost once.
 	RepositorySubjects []string
+	// RepositorySlots are those same obligations at their full normative
+	// resolution: (subject, relation) pairs, checkpoint D. Subjects alone
+	// lost the relation before selection ever ran -- R15's round 2 demanded
+	// driveDesignFreeze/application and received only its declaration -- so
+	// the slot list travels intact from the durable requirements through the
+	// context engine into mandatory-first selection.
+	RepositorySlots []EvidenceSlot
 	// RepositoryQuery is what the selection reads to decide where to look.
 	RepositoryQuery string
 	IdempotencyKey  string

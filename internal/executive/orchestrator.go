@@ -1396,6 +1396,7 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		TaskClass: task.TaskClass, ExecutionPurpose: string(purpose), ActorUnitID: task.AssignedUnitID,
 		RepositoryBaseSHA: repositoryBaseSHA, RepositoryQuery: repositoryQuery,
 		RepositorySubjects: evidenceSubjects(required),
+		RepositorySlots:    evidenceSlots(required),
 		IdempotencyKey:     childKey(root.ID, fmt.Sprintf("context:%d:%d", task.ID, lease.AttemptID)),
 		CorrelationID:      root.CorrelationID, CausationID: attemptCausation(task.ID, lease.AttemptID),
 	})
@@ -1419,6 +1420,12 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		// not the worker's failure, so it costs no model call -- and it is
 		// not a design that needs revising, so it costs no round.
 		//
+		// WHOSE promise broke decides the record: owner-goal obligations were
+		// never admitted against capacity, so their failure stays
+		// evidence_insufficient; adjudication-sourced obligations passed JOINT
+		// admission (checkpoint D) -- a delivery failure under those is the
+		// HOST breaking its own accepted plan, and the reason code says so.
+		//
 		// The attempt was already claimed and started by the time the
 		// preflight could see the snapshot, so leaving it as-is would strand
 		// a RUNNING attempt behind a blocked root until its lease expired.
@@ -1426,12 +1433,17 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		// transition ends the attempt and releases its lease. It is recorded
 		// as a host finding with its own code -- never a provider or contract
 		// failure, because no provider was asked anything.
+		reason := evidenceFailureReason(required)
+		attemptCode := "host_evidence_insufficient"
+		if reason == ReasonEvidenceDeliveryViolation {
+			attemptCode = "host_evidence_delivery_violation"
+		}
 		if _, failErr := o.tasks.RecordAttemptFailed(ctx, lease, actorID,
-			"host_evidence_insufficient", truncate(supplyErr.Error(), 480), false); failErr != nil {
+			attemptCode, truncate(supplyErr.Error(), 480), false); failErr != nil {
 			return task, failErr
 		}
 		o.forgetLease(task.ID)
-		if _, blockErr := o.tasks.BlockTask(ctx, root.ID, ReasonEvidenceInsufficient,
+		if _, blockErr := o.tasks.BlockTask(ctx, root.ID, reason,
 			truncate(supplyErr.Error(), 480), "service", orchestratorWorkerID); blockErr != nil {
 			return task, blockErr
 		}

@@ -43,6 +43,7 @@ func (a Context) Build(ctx context.Context, request executive.ContextRequest) (e
 		RepositoryBaseSHA:      request.RepositoryBaseSHA,
 		RepositoryQuery:        request.RepositoryQuery,
 		RepositorySubjects:     request.RepositorySubjects,
+		RepositorySlots:        mapSlots(request.RepositorySlots),
 		IdempotencyKey:         request.IdempotencyKey,
 		CorrelationID:          request.CorrelationID,
 		CausationID:            request.CausationID,
@@ -92,3 +93,17 @@ func (a Context) Build(ctx context.Context, request executive.ContextRequest) (e
 }
 
 var _ executive.ContextCoordinator = Context{}
+
+// mapSlots carries the normative (subject, relation) pairs across the port
+// boundary unchanged: checkpoint D's whole point is that the relation
+// survives the journey into selection.
+func mapSlots(slots []executive.EvidenceSlot) []contextengine.RepositorySlot {
+	if len(slots) == 0 {
+		return nil
+	}
+	out := make([]contextengine.RepositorySlot, 0, len(slots))
+	for _, slot := range slots {
+		out = append(out, contextengine.RepositorySlot{Subject: slot.Subject, Relation: slot.Relation})
+	}
+	return out
+}
