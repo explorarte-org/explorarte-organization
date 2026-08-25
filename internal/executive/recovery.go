@@ -33,14 +33,31 @@ func (o *Orchestrator) ResumeDurable(ctx context.Context, rootTaskID int64) (Run
 	}
 
 	// A durable blocked state is fail-closed. The only automatically reopenable
-	// reason is dispatch_assignment_required, because the owner/admin flow can
-	// provision a fresh bounded assignment and the Task Engine can then create a
-	// fresh attempt. Every other reason requires explicit intervention.
+	// reasons are dispatch_assignment_required -- the owner/admin flow can
+	// provision a fresh bounded assignment and the Task Engine can then create
+	// a fresh attempt -- and model_outcome_ambiguous whose every ambiguity now
+	// carries a valid host-policy resolution: unreconciledAmbiguities applies
+	// that policy autonomously on its way through, so a campaign of pure-model
+	// executions recovers itself here (R14) while one unresolvable execution
+	// keeps the run fail-closed exactly as before. Every other reason requires
+	// explicit intervention.
 	if root.Status == "blocked" {
 		switch root.ReasonCode {
 		case "model_outcome_ambiguous":
-			run, _ := o.Status(ctx, rootTaskID)
-			return run, ErrModelOutcomeAmbiguous
+			children, listErr := o.tasks.ListByCorrelation(ctx, root.CorrelationID)
+			if listErr != nil {
+				return Run{}, listErr
+			}
+			open, openErr := o.unreconciledAmbiguities(ctx, root, children)
+			if openErr != nil {
+				return Run{}, openErr
+			}
+			if open {
+				run, _ := o.Status(ctx, rootTaskID)
+				return run, ErrModelOutcomeAmbiguous
+			}
+			// handled below: with no unresolved ambiguity left, reopening is
+			// as safe as the dispatch_assignment_required case.
 		case "indeterminate_tool_execution":
 			run, _ := o.Status(ctx, rootTaskID)
 			return run, ErrIndeterminateToolExecution

@@ -67,6 +67,16 @@ type Config struct {
 	// stays byte-exact, and this instruction is a separate, provider-visible
 	// message. Empty means no additional instruction (legacy behavior).
 	ExecutionContractInstructions string
+	// Purpose is what the created invocation's durable purpose records say
+	// about WHOSE execution this is. It exists because the previous constant
+	// ("execution harness turn <digest>") identified the projection, not the
+	// driver: an ambiguity reconciler reading the row back could not tell a
+	// tool-free cognitive drive from anything else. The caller that owns the
+	// run states it here; empty keeps the legacy format for callers that do
+	// not care. This is persisted data about the execution's identity -- it
+	// plays no part in identity VALIDATION (validateCreatedInvocation never
+	// compares it), so pre-existing rows and new rows coexist safely.
+	Purpose string
 }
 
 // Adapter deliberately enters Model Runtime through its two application
@@ -202,6 +212,10 @@ func (a *Adapter) Invoke(ctx context.Context, identity executionharness.RunIdent
 		return executionharness.ModelResult{}, findErr
 	}
 	now := a.clock.Now().UTC()
+	purpose := a.config.Purpose
+	if purpose == "" {
+		purpose = "execution harness turn " + request.CanonicalDigest
+	}
 	created, err := a.invocations.Create(ctx, modelruntime.CreateInvocationCommand{
 		OrganizationID:       identity.OrganizationID,
 		TaskID:               identity.TaskID,
@@ -209,7 +223,7 @@ func (a *Adapter) Invoke(ctx context.Context, identity executionharness.RunIdent
 		SubjectRoleID:        identity.RoleID,
 		ContextSnapshotID:    contextSnapshotID,
 		ModelInput:           &envelope,
-		Purpose:              "execution harness turn " + request.CanonicalDigest,
+		Purpose:              purpose,
 		RequiredCapabilities: append([]modelruntime.ModelCapability(nil), a.config.RequiredCapabilities...),
 		OutputMode:           a.config.OutputMode,
 		OutputSchema:         append(json.RawMessage(nil), a.config.OutputSchema...),

@@ -65,6 +65,7 @@ func mapInvocation(value modelruntime.Invocation) executive.InvocationRecord {
 		CorrelationID:                   value.CorrelationID,
 		CausationID:                     value.CausationID,
 		ContextSnapshotID:               value.ContextSnapshotID,
+		Purpose:                         value.Purpose,
 	}
 }
 
