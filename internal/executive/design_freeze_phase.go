@@ -87,6 +87,13 @@ type designUnitRef struct {
 	TaskID       int64  `json:"task_id"`
 	InvocationID int64  `json:"invocation_id"`
 	ResultHash   string `json:"result_hash"`
+	// CarriedFromRound is nonzero when this unit did not produce new work
+	// in the artifact's round -- its sheet claimed no required change --
+	// and the deliverable named here is its last accepted one from that
+	// earlier round, standing in verbatim. A design round asks some
+	// departments for changes and nothing of the rest; dropping the
+	// un-asked ones would silently shrink the design under review.
+	CarriedFromRound int `json:"carried_from_round,omitempty"`
 }
 
 // driveDesignFreeze returns done=true when the run must stop at this phase --
@@ -232,7 +239,10 @@ func (o *Orchestrator) driveDesignFreeze(ctx context.Context, root TaskRecord, a
 			fmt.Sprintf("the design was sent back %d times and is still not settled", o.limits.MaxDesignRounds))
 		return run, true, blockErr
 	}
-	artifact, units, ok := o.candidateDesign(ctx, root, all, round)
+	artifact, units, ok, err := o.candidateDesign(ctx, root, all, round)
+	if err != nil {
+		return Run{}, true, err
+	}
 	if !ok {
 		if round > 1 {
 			// A later round exists because a revise asked for one, and its
@@ -437,9 +447,10 @@ func (o *Orchestrator) driveDesignFreeze(ctx context.Context, root TaskRecord, a
 // candidateDesign builds the artifact from completed department review
 // deliverables. It returns the contributing unit ids alongside it so the
 // independence rule can be evaluated against every author, not just the lead.
-func (o *Orchestrator) candidateDesign(ctx context.Context, root TaskRecord, all []TaskRecord, round int) (designArtifact, []string, bool) {
+func (o *Orchestrator) candidateDesign(ctx context.Context, root TaskRecord, all []TaskRecord, round int) (designArtifact, []string, bool, error) {
 	artifact := designArtifact{RootTaskID: root.ID, Round: round}
 	units := make([]string, 0, len(all))
+	seenContributors := make(map[string]bool)
 	for _, task := range all {
 		// A completed department review is what says this department has
 		// finished and been judged by its leader. It gates which units
@@ -455,34 +466,64 @@ func (o *Orchestrator) candidateDesign(ctx context.Context, root TaskRecord, all
 			continue
 		}
 		unit := task.AssignedUnitID
-		contributed := false
-		for _, worker := range departmentWorkerTasks(all, root.ID, unit) {
-			if designRoundOf(worker.IdempotencyKey) != round {
-				continue
-			}
-			// Only completed workers. A failed one produced no
-			// deliverable, and the leader review already weighed its
-			// failure; presenting nothing as part of the design would
-			// be worse than presenting less.
-			if worker.Status != "completed" {
-				continue
-			}
-			result, ok := o.resultForCompletedTask(ctx, worker)
-			if !ok {
-				continue
-			}
-			artifact.Units = append(artifact.Units, designUnitRef{
-				UnitID: unit, TaskID: worker.ID,
-				InvocationID: result.InvocationID, ResultHash: result.ResponseHash,
-			})
-			contributed = true
+		if seenContributors[unit] {
+			continue
 		}
-		if contributed {
+		seenContributors[unit] = true
+		refs, err := o.unitRoundFrontier(ctx, all, root.ID, unit, round)
+		if err != nil {
+			return designArtifact{}, nil, false, err
+		}
+		artifact.Units = append(artifact.Units, refs...)
+		if len(refs) > 0 {
 			units = append(units, unit)
 		}
 	}
+	// Carry-forward pass. A department whose round sheet claimed NO
+	// required change was asked for nothing; its last accepted deliverable
+	// is still part of this design, and the candidate must say so instead
+	// of letting the component vanish because nobody redid it this round.
+	if round > 1 {
+		contributedUnits := make(map[string]bool, len(units))
+		for _, unit := range units {
+			contributedUnits[unit] = true
+		}
+		for _, task := range all {
+			if task.TaskClass != TaskClassCoordinationDeptPlan || task.Status != "completed" {
+				continue
+			}
+			if designRoundOf(task.IdempotencyKey) != round {
+				continue
+			}
+			unit := departmentOfPlanKey(task.IdempotencyKey)
+			if unit == "" || contributedUnits[unit] {
+				continue
+			}
+			result, ok := o.resultForCompletedTask(ctx, task)
+			if !ok {
+				continue
+			}
+			sheet, err := ParseDepartmentPlan(result.JSONOutput, o.limits)
+			if err != nil || len(sheet.RevisionOwnership) > 0 {
+				continue // claimed work, or unreadable -- never invent a carry
+			}
+			refs, fromRound, ok, err := o.carriedContribution(ctx, all, root.ID, unit, round)
+			if err != nil {
+				return designArtifact{}, nil, false, err
+			}
+			if !ok {
+				continue // nothing accepted earlier to carry
+			}
+			for _, ref := range refs {
+				ref.CarriedFromRound = fromRound
+				artifact.Units = append(artifact.Units, ref)
+			}
+			units = append(units, unit)
+			contributedUnits[unit] = true
+		}
+	}
 	if len(artifact.Units) == 0 {
-		return designArtifact{}, nil, false
+		return designArtifact{}, nil, false, nil
 	}
 	sort.Slice(artifact.Units, func(i, j int) bool {
 		if artifact.Units[i].UnitID != artifact.Units[j].UnitID {
@@ -490,7 +531,160 @@ func (o *Orchestrator) candidateDesign(ctx context.Context, root TaskRecord, all
 		}
 		return artifact.Units[i].TaskID < artifact.Units[j].TaskID
 	})
-	return artifact, units, true
+	return artifact, units, true, nil
+}
+
+// unitRoundFrontier is the ONE definition of a department's effective
+// deliverables for a round: its completed workers minus exactly those whose
+// authority a follow-up took over. The candidate for the round being judged
+// and the carry-forward of an earlier round both read through this function
+// -- two frontier implementations would drift, and the drift would be the
+// same contradiction re-injected one round later.
+func (o *Orchestrator) unitRoundFrontier(ctx context.Context, all []TaskRecord, rootID int64, unit string, round int) ([]designUnitRef, error) {
+	_, superseded, err := o.roundOwnershipReplay(ctx, all, rootID, unit, round)
+	if err != nil {
+		return nil, err
+	}
+	refs := make([]designUnitRef, 0)
+	for _, worker := range departmentWorkerTasks(all, rootID, unit) {
+		if designRoundOf(worker.IdempotencyKey) != round {
+			continue
+		}
+		// Only completed workers. A failed one produced no
+		// deliverable, and the leader review already weighed its
+		// failure; presenting nothing as part of the design would
+		// be worse than presenting less.
+		if worker.Status != "completed" {
+			continue
+		}
+		// The frontier rule (checkpoint E): a superseded worker was judged
+		// and redone inside the department loop. Re-presenting it -- in
+		// this round's candidate OR as a later carry-forward -- would hand
+		// the adversarial reviewer the very contradiction the replan just
+		// settled, next to the answer that settled it.
+		if superseded[workerBaseClientKey(worker.IdempotencyKey, rootID, unit, round)] {
+			continue
+		}
+		result, ok := o.resultForCompletedTask(ctx, worker)
+		if !ok {
+			continue
+		}
+		refs = append(refs, designUnitRef{
+			UnitID: unit, TaskID: worker.ID,
+			InvocationID: result.InvocationID, ResultHash: result.ResponseHash,
+		})
+	}
+	return refs, nil
+}
+
+// roundOwnershipReplay reconstructs a department's ownership state for this
+// round by replaying history ONCE: the round sheet's claims, then every
+// completed review's followup_ownership in replan order, each re-binding
+// superseding exactly the previous holder of that change. Everything that
+// needs to know WHO governs what -- the candidate frontier below, and the
+// atomic-rebind gate on a new redo proposal -- reads this one replay.
+func (o *Orchestrator) roundOwnershipReplay(ctx context.Context, all []TaskRecord, rootID int64, unit string, round int) (authority map[string]string, superseded map[string]bool, err error) {
+	authority = make(map[string]string)
+	superseded = make(map[string]bool)
+	if planTask, found := findTaskByKey(all, childKey(rootID, "leader-plan:"+unit+designRoundSuffix(round))); found && planTask.Status == "completed" {
+		if result, ok := o.resultForCompletedTask(ctx, planTask); ok {
+			if sheet, err := ParseDepartmentPlan(result.JSONOutput, o.limits); err == nil {
+				for _, ownership := range sheet.RevisionOwnership {
+					authority[ownership.RequiredChangeID] = ownership.OwnerClientKey
+				}
+			}
+		}
+	}
+	type replayedReview struct {
+		ordinal int
+		task    TaskRecord
+	}
+	var reviews []replayedReview
+	reviewPrefix := childKey(rootID, "leader-review:"+unit+designRoundSuffix(round))
+	for _, task := range all {
+		if task.TaskClass != TaskClassCoordinationDeptReview || task.Status != "completed" {
+			continue
+		}
+		if !strings.HasPrefix(task.IdempotencyKey, reviewPrefix) {
+			continue
+		}
+		reviews = append(reviews, replayedReview{ordinal: reviewReplanOrdinal(task.IdempotencyKey), task: task})
+	}
+	sort.Slice(reviews, func(i, j int) bool { return reviews[i].ordinal < reviews[j].ordinal })
+	for _, r := range reviews {
+		result, ok := o.resultForCompletedTask(ctx, r.task)
+		if !ok {
+			continue
+		}
+		review, err := ParseDepartmentReview(result.JSONOutput, o.limits)
+		if err != nil {
+			// An unreadable body carries no bindings to replay. Results are
+			// schema-validated when they complete, so this is tolerance for
+			// legacy fixtures, not a door for live corruption.
+			continue
+		}
+		if review.Verdict != ReviewNeedsReplan {
+			continue
+		}
+		for _, binding := range review.FollowupOwnership {
+			if previous, taken := authority[binding.RequiredChangeID]; taken && previous != "" {
+				superseded[previous] = true
+			}
+			authority[binding.RequiredChangeID] = binding.OwnerClientKey
+		}
+	}
+	return authority, superseded, nil
+}
+
+// workerBaseClientKey recovers the proposing client_key from a worker task's
+// durable key, stripping the replan suffix a materialized follow-up carries:
+// executive:<root>:worker:<unit>[:design-round:N]:<key>[-replan:M] -> <key>.
+func workerBaseClientKey(key string, rootID int64, unit string, round int) string {
+	rest := strings.TrimPrefix(key, childKey(rootID, "worker:"+unit+designRoundSuffix(round)+":"))
+	if index := strings.LastIndex(rest, "-replan:"); index >= 0 {
+		tail := rest[index+len("-replan:"):]
+		numeric := tail != ""
+		for _, r := range tail {
+			if r < '0' || r > '9' {
+				numeric = false
+				break
+			}
+		}
+		if numeric {
+			rest = rest[:index]
+		}
+	}
+	return rest
+}
+
+// carriedContribution returns a department's last ACCEPTED deliverable from
+// rounds before `round`: its most recent earlier round whose review completed
+// and whose EFFECTIVE frontier -- the same post-replan frontier
+// unitRoundFrontier applies everywhere else -- is non-empty. That is what an
+// un-asked department contributes verbatim: accepted work, never a draft,
+// and never a superseded resolution the department loop already redid.
+func (o *Orchestrator) carriedContribution(ctx context.Context, all []TaskRecord, rootID int64, unit string, round int) ([]designUnitRef, int, bool, error) {
+	for from := round - 1; from >= 1; from-- {
+		accepted := false
+		for _, task := range all {
+			if task.TaskClass == TaskClassCoordinationDeptReview && task.Status == "completed" &&
+				designRoundOf(task.IdempotencyKey) == from && task.AssignedUnitID == unit {
+				accepted = true
+				break
+			}
+		}
+		if !accepted {
+			continue
+		}
+		refs, err := o.unitRoundFrontier(ctx, all, rootID, unit, from)
+		if err != nil {
+			return nil, 0, false, err
+		}
+		if len(refs) > 0 {
+			return refs, from, true, nil
+		}
+	}
+	return nil, 0, false, nil
 }
 
 // designRound resolves the round this phase is currently working on: the
@@ -638,8 +832,12 @@ func (o *Orchestrator) candidateBody(ctx context.Context, artifact designArtifac
 		if limit := o.limits.MaxStringBytes; limit > 0 && len(body) > limit {
 			body = body[:limit]
 		}
-		sections = append(sections, fmt.Sprintf("%s (task:%d model-invocation:%d result:%s)\n%s",
-			unit.UnitID, unit.TaskID, unit.InvocationID, unit.ResultHash, body))
+		carried := ""
+		if unit.CarriedFromRound > 0 {
+			carried = fmt.Sprintf(" [carried forward unchanged from design round %d; this round asked this department for no changes]", unit.CarriedFromRound)
+		}
+		sections = append(sections, fmt.Sprintf("%s%s (task:%d model-invocation:%d result:%s)\n%s",
+			unit.UnitID, carried, unit.TaskID, unit.InvocationID, unit.ResultHash, body))
 	}
 	return joinLines(sections), nil
 }

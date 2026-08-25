@@ -6,9 +6,16 @@ import (
 )
 
 const (
-	ExecutivePlanSchemaVersion      = "executive-plan/v1"
-	DepartmentPlanSchemaVersion     = "department-plan/v1"
-	DepartmentReviewSchemaVersion   = "department-review/v1"
+	ExecutivePlanSchemaVersion    = "executive-plan/v1"
+	DepartmentPlanSchemaVersion   = "department-plan/v1"
+	DepartmentReviewSchemaVersion = "department-review/v1"
+	// The v2 department contracts carry checkpoint E's revision-ownership
+	// surfaces: a plan must state which worker owns each required change,
+	// and a review must state, per required change, whether the
+	// deliverables resolved it. v1 durable results keep parsing (the new
+	// fields read as absent); only the provider-facing schemas demand v2.
+	DepartmentPlanSchemaVersionV2   = "department-plan/v2"
+	DepartmentReviewSchemaVersionV2 = "department-review/v2"
 	ExecutiveClosureSchemaVersion   = "executive-closure/v1"
 	AdversarialReviewSchemaVersion  = "adversarial-review/v1"
 	DesignAdjudicationSchemaVersion = "design-adjudication/v1"
@@ -68,6 +75,19 @@ type DepartmentPlan struct {
 	Tasks          []WorkerTaskProposal `json:"tasks"`
 	ReviewCriteria []string             `json:"review_criteria"`
 	Unresolved     []string             `json:"unresolved"`
+	// RevisionOwnership is checkpoint E's exclusive-ownership map: every
+	// outstanding required change of this design round is owned by EXACTLY
+	// ONE proposed task. R16 died because two parallel workers were both
+	// left to resolve the same granularity question and answered it with
+	// opposite claims -- ownership makes that arrangement unrepresentable.
+	RevisionOwnership []RevisionOwnership `json:"revision_ownership"`
+}
+
+// RevisionOwnership binds one host-identified required change
+// (RC:<round>:<ordinal>) to the one proposed task that may resolve it.
+type RevisionOwnership struct {
+	RequiredChangeID string `json:"required_change_id"`
+	OwnerClientKey   string `json:"owner_client_key"`
 }
 
 type WorkerTaskProposal struct {
@@ -102,6 +122,36 @@ type DepartmentReview struct {
 	UnsatisfiedCriteria   []string             `json:"unsatisfied_criteria"`
 	EvidenceRefs          []string             `json:"evidence_refs"`
 	ProposedFollowupTasks []WorkerTaskProposal `json:"proposed_followup_tasks"`
+	// FollowupOwnership is checkpoint E1: when the verdict is
+	// needs_replan, every required change still open (conflicted or
+	// unresolved) must be bound here to EXACTLY ONE proposed follow-up
+	// task -- the departmental redo inherits the same exclusive-ownership
+	// rule the original plan had, or R16's parallel-authority pattern
+	// simply recreates itself inside :replan:N.
+	FollowupOwnership []RevisionOwnership `json:"followup_ownership"`
+	// RevisionOutcomes is checkpoint E's consistency gate: per required
+	// change, what the deliverables collectively concluded. accept is only
+	// representable when every outcome says resolved -- a contradiction the
+	// reviewer saw must leave as needs_replan, routed to the department's
+	// own replan bound instead of onward to the design loop.
+	RevisionOutcomes []RevisionOutcome `json:"revision_outcomes"`
+}
+
+// RevisionOutcome statuses, in the order of severity for the gate.
+const (
+	RevisionResolved   = "resolved"
+	RevisionUnresolved = "unresolved"
+	RevisionConflicted = "conflicted"
+)
+
+// RevisionOutcome is the reviewer's structured answer for ONE required
+// change: which task owns it, whether the deliverables agree on a single
+// resolution, and where the conflict lives when they do not.
+type RevisionOutcome struct {
+	RequiredChangeID    string   `json:"required_change_id"`
+	Status              string   `json:"status"`
+	CanonicalResolution string   `json:"canonical_resolution"`
+	ConflictingTaskRefs []string `json:"conflicting_task_refs"`
 }
 
 type ReviewVerdict string

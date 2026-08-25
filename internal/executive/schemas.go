@@ -167,12 +167,13 @@ var (
 	    "department_id",
 	    "tasks",
 	    "review_criteria",
-	    "unresolved"
+	    "unresolved",
+	    "revision_ownership"
 	  ],
 	  "properties":{
 	    "schema_version":{
 	      "type":"string",
-	      "enum":["department-plan/v1"]
+	      "enum":["department-plan/v2"]
 	    },
 	    "department_id":{"type":"string"},
 	    "tasks":{
@@ -186,6 +187,19 @@ var (
 	    "unresolved":{
 	      "type":"array",
 	      "items":{"type":"string"}
+	    },
+	    "revision_ownership":{
+	      "type":"array",
+	      "description":"Checkpoint E: claim YOUR department's share of the required changes listed in the instructions. Each entry binds one id to the ONE proposed task (by its client_key) that will redo it. Claim only what your department will redo: ids you do not claim belong to other departments, and across ALL departments every id must end up bound exactly once -- an id claimed by two departments, or by none once every department has planned, is refused by the host before any worker exists. One task may own several ids; tasks that own nothing are allowed. An EMPTY list is legal and means your department redoes nothing -- but then propose no tasks at all, and the previous deliverable stands carried forward.",
+	      "items":{
+	        "type":"object",
+	        "additionalProperties":false,
+	        "required":["required_change_id","owner_client_key"],
+	        "properties":{
+	          "required_change_id":{"type":"string","description":"The exact id from the instructions, e.g. RC:2:1."},
+	          "owner_client_key":{"type":"string","description":"The client_key of exactly one task proposed in this same plan."}
+	        }
+	      }
 	    }
 	  }
 	}`)
@@ -261,12 +275,14 @@ var (
 	    "findings",
 	    "unsatisfied_criteria",
 	    "evidence_refs",
-	    "proposed_followup_tasks"
+	    "proposed_followup_tasks",
+	    "revision_outcomes",
+	    "followup_ownership"
 	  ],
 	  "properties":{
 	    "schema_version":{
 	      "type":"string",
-	      "enum":["department-review/v1"]
+	      "enum":["department-review/v2"]
 	    },
 	    "verdict":{
 	      "type":"string",
@@ -287,9 +303,42 @@ var (
 	    "proposed_followup_tasks":{
 	      "type":"array",
 	      "items":` + taskOutputSchemaJSON + `
+	    },
+	    "followup_ownership":{
+	      "type":"array",
+	      "description":"Checkpoint E1: when verdict=needs_replan, every required change whose outcome is conflicted or unresolved MUST be bound here to EXACTLY ONE proposed follow-up task (by its client_key). The redo replaces a WHOLE deliverable: once a follow-up takes over one change owned by a task, it (or another proposed follow-up) must take over EVERY other change that same task still owns -- a partial takeover leaving part of the replaced artifact in authority is refused. Two follow-ups owning one change and unknown ids are also refused.",
+	      "items":{
+	        "type":"object",
+	        "additionalProperties":false,
+	        "required":["required_change_id","owner_client_key"],
+	        "properties":{
+	          "required_change_id":{"type":"string","description":"The exact id from the ownership table, e.g. RC:2:1."},
+	          "owner_client_key":{"type":"string","description":"The client_key of exactly one task proposed in proposed_followup_tasks."}
+	        }
+	      }
+	    },
+	    "revision_outcomes":{
+	      "type":"array",
+	      "description":"Checkpoint E: per required change in the ownership table, what the deliverables COLLECTIVELY concluded after comparing them against each other. status=resolved means one canonical resolution exists and no deliverable contradicts it; conflicted means two or more deliverables assert incompatible resolutions; unresolved means no deliverable addressed the change. verdict=accept is refused by the host unless every listed change is resolved. Empty only when the plan carried no revision ownership.",
+	      "items":{
+	        "type":"object",
+	        "additionalProperties":false,
+	        "required":["required_change_id","status","canonical_resolution","conflicting_task_refs"],
+	        "properties":{
+	          "required_change_id":{"type":"string","description":"The exact id from the ownership table, e.g. RC:2:1."},
+	          "status":{"type":"string","enum":["resolved","unresolved","conflicted"]},
+	          "canonical_resolution":{"type":"string","description":"The single agreed resolution, or the empty string when status is not resolved."},
+	          "conflicting_task_refs":{
+	            "type":"array",
+	            "description":"Task references whose assertions conflict, required non-empty exactly when status is conflicted.",
+	            "items":{"type":"string"}
+	          }
+	        }
+	      }
 	    }
 	  }
-	}`)
+	
+  }`)
 
 	executiveClosureOutputSchema = json.RawMessage(`{
 	  "type":"object",
