@@ -44,6 +44,37 @@ func evidenceSubjects(required []EvidenceRequirement) []string {
 	return subjects
 }
 
+// evidenceSlots is the same obligation list at its full normative resolution:
+// one (subject, relation) pair per demanded slot, deduplicated and ordered,
+// so the relation survives the journey into selection. evidenceSubjects alone
+// is what let R15's round 2 lose driveDesignFreeze/application before any
+// excerpt was chosen -- the subject arrived, the relation did not.
+func evidenceSlots(required []EvidenceRequirement) []EvidenceSlot {
+	seen := map[EvidenceSlot]struct{}{}
+	slots := make([]EvidenceSlot, 0, len(required)*2)
+	for _, requirement := range required {
+		subject := strings.TrimSpace(requirement.Subject)
+		if subject == "" {
+			continue
+		}
+		for _, relation := range requirement.Relations {
+			slot := EvidenceSlot{Subject: subject, Relation: relation}
+			if _, already := seen[slot]; already {
+				continue
+			}
+			seen[slot] = struct{}{}
+			slots = append(slots, slot)
+		}
+	}
+	sort.Slice(slots, func(first, second int) bool {
+		if slots[first].Subject != slots[second].Subject {
+			return slots[first].Subject < slots[second].Subject
+		}
+		return slots[first].Relation < slots[second].Relation
+	})
+	return slots
+}
+
 // suppliedEvidence reads what the snapshot actually put in front of the worker
 // and says which slot each excerpt could fill.
 //
@@ -85,3 +116,24 @@ func (o *Orchestrator) suppliedEvidence(ctx context.Context, snapshotID int64, r
 // what its own contract demands. It is distinct from every model-facing
 // reason on purpose: nothing about it is the design's fault.
 const ReasonEvidenceInsufficient = "evidence_insufficient"
+
+// ReasonEvidenceDeliveryViolation is the same stop, one level more specific:
+// the failed slots belonged to an ADMITTED adjudication plan, which promised
+// delivery under the very limits the snapshot ran with. When that promise
+// breaks, the fault is host-side by construction -- never the worker's, and
+// never the world's -- and the record says so (checkpoint D).
+const ReasonEvidenceDeliveryViolation = "evidence_delivery_violation"
+
+// evidenceFailureReason classifies a supply-preflight failure by WHOSE
+// promise broke. Owner-goal obligations were never admitted against capacity,
+// so their failure stays the honest "the world cannot supply this";
+// adjudication-sourced obligations passed joint admission, so their failure
+// means the host did not deliver what it accepted.
+func evidenceFailureReason(required []EvidenceRequirement) string {
+	for _, requirement := range required {
+		if requirement.Source == EvidenceFromAdjudication {
+			return ReasonEvidenceDeliveryViolation
+		}
+	}
+	return ReasonEvidenceInsufficient
+}

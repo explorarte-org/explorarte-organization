@@ -209,7 +209,7 @@ func TestAnEvidenceRequirementForAProposedSymbolIsStillRefused(t *testing.T) {
 	if task.ReasonCode != "model_result_contract_rejected" {
 		t.Fatalf("adjudication closed as %q", task.ReasonCode)
 	}
-	for _, want := range []string{"MaxModelCalls/definition", "cannot supply"} {
+	for _, want := range []string{"MaxModelCalls/definition", "joint evidence capacity cannot deliver"} {
 		if !strings.Contains(task.Reason, want) {
 			t.Fatalf("rejection feedback missing %q, got: %q", want, task.Reason)
 		}

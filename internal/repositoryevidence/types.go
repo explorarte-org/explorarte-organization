@@ -171,6 +171,19 @@ func ValidateBundle(fragments []Fragment, baseSHA string) error {
 	return nil
 }
 
+// EvidenceSlot is one normative demand: a subject and ONE relation that must
+// be grounded in a worker's snapshot. It is the unit the whole evidence
+// contract speaks in -- adjudication proposes them, admission plans them,
+// delivery pins them into snapshots, and the preflight verifies them -- so it
+// travels through every layer intact. Collapsing slots back into bare
+// subjects is what let R15's round 2 demand driveDesignFreeze/application and
+// then receive only its declaration: the relation was lost before selection
+// ever ran.
+type EvidenceSlot struct {
+	Subject  string `json:"subject"`
+	Relation string `json:"relation"`
+}
+
 // Limits bound what one exploration may read.
 //
 // The point of giving the design phase eyes was never to hand it the whole

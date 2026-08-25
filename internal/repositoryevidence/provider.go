@@ -56,7 +56,13 @@ func (p *Provider) ListRepositoryEvidence(ctx context.Context, request contexten
 	if err != nil {
 		return nil, err
 	}
-	fragments, err := Gather(ctx, explorer, SelectionForRequirements(request.RepositoryQuery, request.RepositorySubjects, p.Window))
+	selection := SelectionForRequirements(request.RepositoryQuery, request.RepositorySubjects, p.Window)
+	// The normative slots ride into selection: PASS 0 satisfies each
+	// (subject, relation) before any incidental exploration spends budget.
+	for _, slot := range request.RepositorySlots {
+		selection.Slots = append(selection.Slots, EvidenceSlot{Subject: slot.Subject, Relation: slot.Relation})
+	}
+	fragments, err := Gather(ctx, explorer, selection)
 	if err != nil {
 		return nil, err
 	}

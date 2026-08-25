@@ -17,12 +17,19 @@ import (
 // for a plan. The probe moves that discovery to the adjudicator's own
 // contract boundary, where the measured rejection reaches its retry.
 
-// The R10 pinned tree, reduced to what matters to the probe: DesignBaseSHA is
-// nowhere a literal; InvocationBudget.Validate never appears qualified;
-// driveDesignFreeze is declared in one file and used mid-line in another.
+// The R10 pinned tree, reduced to what matters to the probe -- and, since
+// checkpoint D made admission CUMULATIVE, also carrying the owner-goal
+// symbols a real campaign's contract would already have in force. The two
+// sensors (this admission source and the snapshot stubs) describe the same
+// world, exactly as production does.
 func capabilityWorld() *probeWorldSource {
 	return &probeWorldSource{worlds: map[string]map[string]string{targetSHA: {
 		"internal/executive/types.go": `package executive
+
+type Limits struct {
+	MaxDesignRounds int
+	MaxDepartmentReplans int
+}
 
 type FrozenDesign struct {
 	BaseSHA string
@@ -31,7 +38,14 @@ type FrozenDesign struct {
 		"internal/executive/budget.go": `package executive
 
 func (b InvocationBudget) Validate(l Limits) error {
+	if l.MaxDesignRounds < 1 || l.MaxDepartmentReplans < 1 {
+		return nil
+	}
 	return nil
+}
+
+func DefaultLimits() Limits {
+	return Limits{}
 }
 `,
 		"internal/executive/design_freeze_phase.go": `package executive
@@ -42,9 +56,12 @@ func (o *Orchestrator) driveDesignFreeze(ctx context.Context) (bool, error) {
 `,
 		"internal/executive/orchestrator.go": `package executive
 
-func step(o *Orchestrator) {
+func step(o *Orchestrator, limits Limits) bool {
 	done, err := o.driveDesignFreeze(context.Background())
-	o.record(done, err)
+	if err != nil {
+		return false
+	}
+	return done && limits.MaxDesignRounds > 0 && limits.MaxDepartmentReplans >= 0
 }
 `,
 	}}}
@@ -184,7 +201,7 @@ func TestAnAdjudicationCannotBindUnsupplyableSlots(t *testing.T) {
 	if task.ReasonCode != "model_result_contract_rejected" {
 		t.Fatalf("adjudication closed as %q", task.ReasonCode)
 	}
-	for _, want := range []string{"DesignBaseSHA/definition", "cannot supply"} {
+	for _, want := range []string{"DesignBaseSHA/definition", "joint evidence capacity cannot deliver"} {
 		if !strings.Contains(task.Reason, want) {
 			t.Fatalf("rejection feedback missing %q, got: %q", want, task.Reason)
 		}
