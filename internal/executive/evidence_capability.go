@@ -17,15 +17,35 @@ import (
 // AUTONOMY-SMOKE-017-R10's rule holds here too -- whose failure is it?
 var ErrEvidenceSensorUnavailable = errors.New("repository sensor could not answer")
 
-// probeAdjudicationRequirements verifies every proposed slot against the
-// PINNED tree before it can become a durable obligation of the next round.
+// jointAdmissionLimits is the capacity one snapshot's joint admission prices
+// against: the same DefaultLimits the real context build will run with. A
+// variable only so tests can shrink the world's budget and watch the union
+// fail without building a repository big enough to starve the defaults.
+var jointAdmissionLimits = repositoryevidence.DefaultLimits
+
+// probeAdjudicationRequirements verifies the NEXT ROUND'S FULL CONTRACT
+// against the PINNED tree before any of it becomes durable.
 //
 // R9 fixed what relations may be demanded; R10 exposed the subject axis:
 // "DesignBaseSHA" and "InvocationBudget.Validate" are concepts and composite
-// shapes that exist nowhere in the frozen tree as literals, so no excerpt can
-// ever classify as their definition or application. Probing here, at the
-// adjudicator's own contract boundary, turns that late dead end into a
+// shapes that exist nowhere in the frozen tree as literals. Probing here, at
+// the adjudicator's own contract boundary, turns that late dead end into a
 // measured rejection the adjudicator can correct on its next attempt.
+//
+// probeAdjudicationRequirements is JOINT admission over the CUMULATIVE
+// contract (checkpoint D): a round-2 worker is judged against everything in
+// force PLUS this revise's novel demands -- evidenceRequirementsForRound is
+// explicitly cumulative -- so admitting Luna's proposals in isolation would
+// still let owner + adjudication jointly exceed what one snapshot can
+// deliver, and round 2 would die at its own preflight. The admitted set is
+// therefore exactly what the next round will carry:
+//
+//	inForce = obligations already recorded through the current round
+//	novel   = proposals minus slots already in force (withoutSlotsAlreadyInForce)
+//	contract = inForce + Adopt(novel, adjudication)
+//	PlanSlots(evidenceSlots(contract))
+//
+// and only an empty Undelivered list accepts the revise.
 //
 // probeAdjudicationRequirements is JOINT admission (checkpoint D): it asks
 // not "can each proposed slot be grounded on its own" but "can this SET be
@@ -53,18 +73,30 @@ func (o *Orchestrator) probeAdjudicationRequirements(ctx context.Context, root T
 	if err != nil {
 		return err
 	}
-	slots := make([]repositoryevidence.EvidenceSlot, 0, len(proposals)*2)
-	for _, proposal := range proposals {
-		subject := strings.TrimSpace(proposal.Subject)
-		if subject == "" {
-			continue
-		}
-		for _, relation := range proposal.Relations {
-			slots = append(slots, repositoryevidence.EvidenceSlot{Subject: subject, Relation: relation})
-		}
+	// The contract under test is CUMULATIVE: everything already in force
+	// through the current round, plus this revise's novel demands. Restating
+	// an in-force slot is free; only genuinely new slots join.
+	all, err := o.tasks.ListByCorrelation(ctx, root.CorrelationID)
+	if err != nil {
+		return err
 	}
+	currentRound := o.activeDesignRound(ctx, all, root.ID)
+	inForce, err := o.evidenceRequirementsForRound(ctx, root.ID, currentRound)
+	if err != nil {
+		return err
+	}
+	novel := withoutSlotsAlreadyInForce(proposals, inForce)
+	candidate := make([]EvidenceRequirement, 0, len(inForce)+len(novel))
+	candidate = append(candidate, inForce...)
+	candidate = append(candidate, AdoptEvidenceRequirements(novel, EvidenceFromAdjudication)...)
+	slots := evidenceSlots(candidate)
+	probeSlots := make([]repositoryevidence.EvidenceSlot, 0, len(slots))
+	for _, slot := range slots {
+		probeSlots = append(probeSlots, repositoryevidence.EvidenceSlot{Subject: slot.Subject, Relation: slot.Relation})
+	}
+
 	plan, planErr := repositoryevidence.PlanSlots(ctx, o.repositoryID, baseSHA,
-		o.repositorySource, repositoryevidence.DefaultLimits(), 24, slots)
+		o.repositorySource, jointAdmissionLimits(), 24, probeSlots)
 	if planErr != nil {
 		return fmt.Errorf("%w: joint evidence admission at %s: %v", ErrEvidenceSensorUnavailable, baseSHA, planErr)
 	}

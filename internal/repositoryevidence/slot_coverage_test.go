@@ -58,6 +58,112 @@ func TestSlotsAreSatisfiedAcrossFilesUnderOneBudget(t *testing.T) {
 	}
 }
 
+// GUARD: the same slot set in two PERMUTATIONS must produce an identical
+// verdict, identical coverage, and identical spend. Admission and delivery
+// canonicalize once, so arrival order is never a variable.
+func TestSlotOrderCannotChangeTheVerdictOrTheSpend(t *testing.T) {
+	run := func(order func([]EvidenceSlot) []EvidenceSlot) ([]Fragment, []EvidenceSlot, Explorer, error) {
+		source := &literalSource{worlds: map[string]map[string]string{"14a0611b8cf670ccd32b1c9ca662261b0fdbd7c9": slotWorld()}}
+		explorer, err := NewExplorer("explorarte", "14a0611b8cf670ccd32b1c9ca662261b0fdbd7c9", source, DefaultLimits())
+		if err != nil {
+			t.Fatal(err)
+		}
+		slots := order(slotSet())
+		selection := Selection{
+			Terms:         []string{"MaxDesignRounds", "DefaultLimits"},
+			RequiredTerms: []string{"MaxDesignRounds", "DefaultLimits"},
+			Slots:         slots,
+			Window:        24,
+		}
+		fragments, uncovered, err := GatherWithCoverage(context.Background(), explorer, selection)
+		return fragments, uncovered, *explorer, err
+	}
+	reverse := func(slots []EvidenceSlot) []EvidenceSlot {
+		out := make([]EvidenceSlot, len(slots))
+		copy(out, slots)
+		for first, last := 0, len(out)-1; first < last; first, last = first+1, last-1 {
+			out[first], out[last] = out[last], out[first]
+		}
+		return out
+	}
+
+	firstFragments, firstUncovered, firstExplorer, firstErr := run(func(s []EvidenceSlot) []EvidenceSlot { return s })
+	secondFragments, secondUncovered, secondExplorer, secondErr := run(reverse)
+	if firstErr != nil || secondErr != nil {
+		t.Fatalf("both runs must succeed: %v / %v", firstErr, secondErr)
+	}
+	if len(firstUncovered) != 0 || len(secondUncovered) != 0 {
+		t.Fatalf("permutations disagree on coverage: %+v / %+v", firstUncovered, secondUncovered)
+	}
+	refs := func(fragments []Fragment) map[string]bool {
+		set := map[string]bool{}
+		for _, fragment := range fragments {
+			set[fragment.Reference()] = true
+		}
+		return set
+	}
+	firstRefs, secondRefs := refs(firstFragments), refs(secondFragments)
+	for ref := range firstRefs {
+		if !secondRefs[ref] {
+			t.Fatalf("permutations disagree on delivered fragments: %q only in the first", ref)
+		}
+	}
+	for ref := range secondRefs {
+		if !firstRefs[ref] {
+			t.Fatalf("permutations disagree on delivered fragments: %q only in the second", ref)
+		}
+	}
+	firstSearches, firstFiles, firstRanges, firstBytes := firstExplorer.Spent()
+	secondSearches, secondFiles, secondRanges, secondBytes := secondExplorer.Spent()
+	if [4]int{firstSearches, firstFiles, firstRanges, firstBytes} != [4]int{secondSearches, secondFiles, secondRanges, secondBytes} {
+		t.Fatalf("permutations spent differently: %+v vs %+v",
+			[4]int{firstSearches, firstFiles, firstRanges, firstBytes},
+			[4]int{secondSearches, secondFiles, secondRanges, secondBytes})
+	}
+}
+
+// GUARD: X/definition + X/application across two unique excerpts must cost
+// EXACTLY two ranges. The cursor makes each candidate be read at most once
+// per subject, and one read satisfies every relation of that subject its
+// content proves -- the double-charge that used to turn a fitting pair into
+// three reads against a two-range budget is gone.
+func TestTwoSlotsOfOneSubjectCostExactlyTheirUniqueExcerpts(t *testing.T) {
+	world := map[string]string{
+		"internal/x/a_decl.go": "package x\n\nvar X = 1\n",
+		"internal/x/b_use.go":  "package x\n\nfunc use() bool { return X > 0 }\n",
+	}
+	source := &literalSource{worlds: map[string]map[string]string{"14a0611b8cf670ccd32b1c9ca662261b0fdbd7c9": world}}
+	explorer, err := NewExplorer("explorarte", "14a0611b8cf670ccd32b1c9ca662261b0fdbd7c9", source, Limits{MaxFiles: 8, MaxRanges: 2, MaxBytes: 96 * 1024, MaxSearches: 12, MaxLines: 400})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection := Selection{
+		Terms: []string{"X"},
+		Slots: []EvidenceSlot{
+			{Subject: "X", Relation: RelationDefinition},
+			{Subject: "X", Relation: RelationApplication},
+		},
+		Window: 4,
+	}
+	_, uncovered, err := GatherWithCoverage(context.Background(), explorer, selection)
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	if len(uncovered) != 0 {
+		t.Fatalf("a fitting pair reported uncovered under its own two ranges: %+v", uncovered)
+	}
+	searches, files, ranges, _ := explorer.Spent()
+	if ranges != 2 {
+		t.Fatalf("ranges spent = %d, want exactly 2", ranges)
+	}
+	if searches != 1 {
+		t.Fatalf("searches spent = %d, want exactly 1 (one subject, cached)", searches)
+	}
+	if files != 2 {
+		t.Fatalf("files touched = %d, want exactly the two unique excerpts' files", files)
+	}
+}
+
 // The joint-admission verdict on a set the world cannot deliver together:
 // every undelivered slot is named, nothing else is invented.
 func TestPlanSlotsNamesUndeliveredSlots(t *testing.T) {

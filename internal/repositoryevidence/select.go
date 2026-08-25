@@ -281,11 +281,15 @@ func gather(ctx context.Context, explorer *Explorer, selection Selection, strict
 	// because admission may never mistake a broken observer for a verdict.
 	uncovered := make([]EvidenceSlot, 0)
 	if len(selection.Slots) > 0 {
-		pending := make([]EvidenceSlot, len(selection.Slots))
-		copy(pending, selection.Slots)
-		candidates := map[string][]Match{}
+		// One canonical traversal order for EVERY caller -- admission and
+		// delivery walk the same slots in the same sequence, so a set's
+		// verdict and its cost cannot depend on the order it arrived in.
+		slots := canonicalSlots(selection.Slots)
+		remaining := map[string][]Match{}
+		searched := map[string]bool{}
 		satisfied := map[EvidenceSlot]bool{}
 		outOfCapacity := false
+		pending := slots
 		for len(pending) > 0 && !outOfCapacity {
 			progressed := false
 			still := make([]EvidenceSlot, 0, len(pending))
@@ -293,22 +297,31 @@ func gather(ctx context.Context, explorer *Explorer, selection Selection, strict
 				if satisfied[slot] {
 					continue
 				}
-				matches, err := search(slot.Subject)
-				if err != nil {
-					if errors.Is(err, ErrBudgetExhausted) {
-						outOfCapacity = true
-						still = append(still, slot)
-						break
+				if !searched[slot.Subject] {
+					searched[slot.Subject] = true
+					matches, err := search(slot.Subject)
+					if err != nil {
+						if errors.Is(err, ErrBudgetExhausted) {
+							outOfCapacity = true
+							break
+						}
+						if strict {
+							return nil, nil, err
+						}
+						continue // this subject can never offer candidates
 					}
-					if strict {
-						return nil, nil, err
-					}
-					still = append(still, slot)
-					continue
+					remaining[slot.Subject] = matches
 				}
-				for len(matches) > 0 && !satisfied[slot] {
-					match := matches[0]
-					matches = matches[1:]
+				// Cursor semantics: each candidate is READ AT MOST ONCE per
+				// subject, no matter how many slots of that subject are
+				// pending -- and one read satisfies EVERY slot of the subject
+				// its content proves. Re-reading the same declaration for a
+				// second relation used to double-charge ranges until a set
+				// of two unique excerpts reported three reads' worth of
+				// capacity gone.
+				for len(remaining[slot.Subject]) > 0 && !satisfied[slot] && !outOfCapacity {
+					match := remaining[slot.Subject][0]
+					remaining[slot.Subject] = remaining[slot.Subject][1:]
 					fragment, readErr := explorer.ReadAround(ctx, match, window)
 					if readErr != nil {
 						if errors.Is(readErr, ErrBudgetExhausted) {
@@ -321,24 +334,29 @@ func gather(ctx context.Context, explorer *Explorer, selection Selection, strict
 						continue
 					}
 					add(fragment)
-					if ExcerptRelations(fragment.Content, slot.Subject)[slot.Relation] {
-						satisfied[slot] = true
-						progressed = true
+					relations := ExcerptRelations(fragment.Content, slot.Subject)
+					for _, other := range pending {
+						if satisfied[other] || other.Subject != slot.Subject {
+							continue
+						}
+						if relations[other.Relation] {
+							satisfied[other] = true
+							progressed = true
+						}
 					}
 				}
-				candidates[slot.Subject] = matches
 				if !satisfied[slot] {
 					still = append(still, slot)
 				}
 			}
 			pending = still
 			if !progressed && !outOfCapacity {
-				// A full round satisfied nothing new: no candidate list can
-				// advance further, so more rounds would only burn budget.
+				// A full round satisfied nothing new: every remaining slot
+				// has exhausted its subject's candidates.
 				break
 			}
 		}
-		for _, slot := range selection.Slots {
+		for _, slot := range slots {
 			if !satisfied[slot] {
 				uncovered = append(uncovered, slot)
 			}
@@ -413,6 +431,32 @@ func gather(ctx context.Context, explorer *Explorer, selection Selection, strict
 		}
 	}
 	return fragments, uncovered, nil
+}
+
+// canonicalSlots is the ONE traversal order slots are processed in: sorted by
+// subject then relation, duplicates collapsed. Admission and delivery both
+// arrive here, so a set's verdict and its cost cannot depend on the order the
+// caller happened to produce.
+func canonicalSlots(slots []EvidenceSlot) []EvidenceSlot {
+	out := make([]EvidenceSlot, 0, len(slots))
+	seen := map[EvidenceSlot]struct{}{}
+	for _, slot := range slots {
+		if slot.Subject == "" || slot.Relation == "" {
+			continue
+		}
+		if _, already := seen[slot]; already {
+			continue
+		}
+		seen[slot] = struct{}{}
+		out = append(out, slot)
+	}
+	sort.Slice(out, func(first, second int) bool {
+		if out[first].Subject != out[second].Subject {
+			return out[first].Subject < out[second].Subject
+		}
+		return out[first].Relation < out[second].Relation
+	})
+	return out
 }
 
 // underAnyPrefix keeps a search inside the scope the goal named.

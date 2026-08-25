@@ -4,7 +4,13 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/Mireuz13/explorarte-organization/internal/repositoryevidence"
 )
+
+// RelationDefinitionConst aliases the classifier's definition relation so
+// these guards never hand-type the string twice.
+const RelationDefinitionConst = repositoryevidence.RelationDefinition
 
 // FRONTIER #4 -- joint evidence admission + mandatory slot delivery,
 // validated against R15's exact death: four adjudicated subjects passed four
@@ -185,5 +191,92 @@ func TestDeliveryShortfallClassificationFollowsThePromise(t *testing.T) {
 	}
 	if got := evidenceFailureReason(mixed); got != ReasonEvidenceDeliveryViolation {
 		t.Fatalf("admitted-plan shortfall classified %q, want evidence_delivery_violation", got)
+	}
+}
+
+// GUARD 1 -- the union is what is admitted, not the novel slice. Owner and
+// adjudication obligations each fit alone under a shrunken budget; their
+// union needs one subject more than the budget can search. Admission must
+// refuse the revise BEFORE round 2 exists -- per-subject acceptance would
+// have let it be born straight into its own preflight wall.
+func TestJointAdmissionRefusesWhenOwnerPlusAdjudicationExceedCapacity(t *testing.T) {
+	world := &probeWorldSource{worlds: map[string]map[string]string{targetSHA: {
+		"internal/executive/alpha.go": `package executive
+
+func Alpha() bool { return true }
+`,
+		"internal/executive/beta.go": `package executive
+
+func Beta() int { return 1 }
+`,
+		"internal/executive/gamma.go": `package executive
+
+func Gamma() string { return "" }
+`,
+		"internal/executive/zeta.go": `package executive
+
+func Zeta() byte { return 0 }
+`,
+	}}}
+	fixture := newWiringFixture(t, "revise", func() []SnapshotSource {
+		alphaRef := "repository://explorarte-organization@" + targetSHA + "/internal/executive/alpha.go#L1-L6"
+		betaRef := "repository://explorarte-organization@" + targetSHA + "/internal/executive/beta.go#L1-L6"
+		return append(fullSupply(),
+			SnapshotSource{Kind: "repository_evidence", Reference: alphaRef, Version: targetSHA, Included: true,
+				Content: "\nfunc Alpha() bool { return true }\n"},
+			SnapshotSource{Kind: "repository_evidence", Reference: betaRef, Version: targetSHA, Included: true,
+				Content: "\nfunc Beta() int { return 1 }\n"},
+		)
+	}(), []EvidenceRequirementProposal{
+		{Subject: "Alpha", Relations: []string{"definition"}},
+		{Subject: "Beta", Relations: []string{"definition"}},
+	}, WithRepositoryEvidenceSource("explorarte-organization", world))
+	alphaRef := "repository://explorarte-organization@" + targetSHA + "/internal/executive/alpha.go#L1-L6"
+	betaRef := "repository://explorarte-organization@" + targetSHA + "/internal/executive/beta.go#L1-L6"
+	fixture.harness.bodies[PurposeDepartmentWorker] =
+		`{"schema_version":"worker-result/v2","summary":"Grounded.",` +
+			`"evidence_refs":["` + alphaRef + `","` + betaRef + `"],` +
+			`"evidence":[` +
+			`{"claim":"declared","subject":"Alpha","relation":"definition","ref":"` + alphaRef + `"},` +
+			`{"claim":"declared","subject":"Beta","relation":"definition","ref":"` + betaRef + `"}]}`
+	fixture.harness.adjudicationEvidence =
+		`[{"subject":"Gamma","relations":["definition"]},` +
+			`{"subject":"Zeta","relations":["definition"]}]`
+	// Every symbol exists and grounds fine in isolation: only the UNION
+	// exceeds the shrunken search capacity (three searches for four
+	// subjects).
+	original := jointAdmissionLimits
+	jointAdmissionLimits = func() repositoryevidence.Limits {
+		return repositoryevidence.Limits{MaxFiles: 8, MaxRanges: 16, MaxBytes: 96 * 1024, MaxSearches: 3, MaxLines: 400}
+	}
+	defer func() { jointAdmissionLimits = original }()
+	lunaOnly := []repositoryevidence.EvidenceSlot{
+		{Subject: "Gamma", Relation: RelationDefinitionConst},
+		{Subject: "Zeta", Relation: RelationDefinitionConst},
+	}
+	if plan, err := repositoryevidence.PlanSlots(context.Background(), "explorarte-organization", targetSHA,
+		world, jointAdmissionLimits(), 24, lunaOnly); err != nil || len(plan.Undelivered) != 0 {
+		t.Fatalf("fixture precondition: luna's slots fit alone (plan=%+v err=%v)", plan, err)
+	}
+
+	driveCapability(t, fixture, 24)
+
+	task := adjudicationTaskOf(t, fixture)
+	if task.ReasonCode != "model_result_contract_rejected" {
+		t.Fatalf("the union was admitted: %q (%s)", task.ReasonCode, task.Reason)
+	}
+	for _, want := range []string{"joint evidence capacity cannot deliver", "Zeta/definition"} {
+		if !strings.Contains(task.Reason, want) {
+			t.Fatalf("rejection missing %q, got: %q", want, task.Reason)
+		}
+	}
+	all, err := fixture.tasks.ListByCorrelation(context.Background(), fixture.rootRecord(t).CorrelationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, other := range all {
+		if strings.Contains(other.IdempotencyKey, "design-round:2") {
+			t.Fatalf("round 2 was born beside an unadmitted union: %s", other.IdempotencyKey)
+		}
 	}
 }
