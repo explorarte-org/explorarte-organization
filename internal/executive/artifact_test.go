@@ -53,7 +53,10 @@ func TestTheArtifactIsTheDeliverablesAndNotTheVerdictAboutThem(t *testing.T) {
 		30: {InvocationID: 30, TextOutput: "verdict: accept", ResponseHash: "h30"},
 	}}}
 
-	artifact, units, ok := o.candidateDesign(context.Background(), root, all, 1)
+	artifact, units, ok, err := o.candidateDesign(context.Background(), root, all, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !ok {
 		t.Fatal("a department with completed deliverables must produce an artifact")
 	}
@@ -86,7 +89,7 @@ func TestADepartmentWithoutACompletedReviewDoesNotContribute(t *testing.T) {
 	o := &Orchestrator{models: artifactModels{results: map[int64]InvocationResult{
 		20: {InvocationID: 20, TextOutput: "the design", ResponseHash: "h20"},
 	}}}
-	if _, _, ok := o.candidateDesign(context.Background(), root, all, 1); ok {
+	if _, _, ok, err := o.candidateDesign(context.Background(), root, all, 1); err == nil && ok {
 		t.Fatal("a department whose leader has not finished judging it must not contribute a design")
 	}
 }
@@ -109,7 +112,10 @@ func TestAFailedWorkerContributesNothingToTheDesign(t *testing.T) {
 		22: {InvocationID: 22, TextOutput: "should not appear", ResponseHash: "h22"},
 		30: {InvocationID: 30, TextOutput: "verdict", ResponseHash: "h30"},
 	}}}
-	artifact, _, ok := o.candidateDesign(context.Background(), root, all, 1)
+	artifact, _, ok, err := o.candidateDesign(context.Background(), root, all, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !ok {
 		t.Fatal("one completed deliverable is still a design")
 	}

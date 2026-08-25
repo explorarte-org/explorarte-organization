@@ -2630,6 +2630,16 @@ func boundedClosureSummary(plan ExecutivePlan, all []TaskRecord, rootID int64, m
 // The previous round is untouched. Its plan, its work, its review and its
 // adjudication keep their keys and their content -- this is a successor, not
 // a revision of what happened.
+// departmentRoundClaimRules is the planner-facing statement of checkpoint
+// E3's claim semantics. It is hoisted into one constant because TWO audiences
+// must hear the SAME rule: the plan instructions below, and the provider
+// schema whose revision_ownership description the model also reads. When
+// they drift apart, the schema teaches "claim everything you were shown"
+// while the host refuses anything but an exact cross-department partition --
+// an impossible contract that incentives exactly the duplicate claim the
+// host then rejects.
+const departmentRoundClaimRules = "CLAIM RULES (checkpoint): revision_ownership binds each id you will redo to exactly ONE of your own proposed tasks. Across ALL departments every id must end up bound exactly once -- the host refuses an id claimed by two departments or left unclaimed by all. Claim what is yours to redo; an id you do not claim belongs to another department. If you claim nothing, propose no tasks at all: your previous deliverable stands and is carried forward unchanged."
+
 func (o *Orchestrator) openDesignRoundPlan(ctx context.Context, root TaskRecord, all []TaskRecord, req DepartmentRequest, leader RoleRef, round int, roster []RequiredChange) (TaskRecord, error) {
 	if round > o.limits.MaxDesignRounds {
 		return TaskRecord{}, fmt.Errorf("%w: design rounds", ErrBudgetExceeded)
@@ -2649,7 +2659,7 @@ func (o *Orchestrator) openDesignRoundPlan(ctx context.Context, root TaskRecord,
 			IdempotencyKey: childKey(root.ID, "leader-plan:"+req.UnitID+designRoundSuffix(round)),
 			Title:          "Department planning: " + req.UnitID + " (design round " + strconv.Itoa(round) + ")",
 			Instructions: "The previous design was sent back for revision. Claim the work your department will redo and return DepartmentPlan JSON.\n\nREQUIRED CHANGES OF THIS ROUND (host-owned ids):\n" +
-				renderOwnershipRoster(roster) + "\n\nCLAIM RULES (checkpoint): revision_ownership binds each id you will redo to exactly ONE of your own proposed tasks. Across ALL departments every id must end up bound exactly once -- the host refuses a change with two departments or with none. Claim what is yours to redo; an id you do not claim belongs to another department. If you claim nothing, propose no tasks at all: your previous deliverable stands and is carried forward unchanged." +
+				renderOwnershipRoster(roster) + "\n\n" + departmentRoundClaimRules +
 				"\n\nORIGINAL OBJECTIVE:\n" + req.Objective,
 			AcceptanceCriteria: []string{
 				"Return strict DepartmentPlan JSON",

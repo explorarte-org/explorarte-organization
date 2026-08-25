@@ -239,7 +239,10 @@ func (o *Orchestrator) driveDesignFreeze(ctx context.Context, root TaskRecord, a
 			fmt.Sprintf("the design was sent back %d times and is still not settled", o.limits.MaxDesignRounds))
 		return run, true, blockErr
 	}
-	artifact, units, ok := o.candidateDesign(ctx, root, all, round)
+	artifact, units, ok, err := o.candidateDesign(ctx, root, all, round)
+	if err != nil {
+		return Run{}, true, err
+	}
 	if !ok {
 		if round > 1 {
 			// A later round exists because a revise asked for one, and its
@@ -444,9 +447,10 @@ func (o *Orchestrator) driveDesignFreeze(ctx context.Context, root TaskRecord, a
 // candidateDesign builds the artifact from completed department review
 // deliverables. It returns the contributing unit ids alongside it so the
 // independence rule can be evaluated against every author, not just the lead.
-func (o *Orchestrator) candidateDesign(ctx context.Context, root TaskRecord, all []TaskRecord, round int) (designArtifact, []string, bool) {
+func (o *Orchestrator) candidateDesign(ctx context.Context, root TaskRecord, all []TaskRecord, round int) (designArtifact, []string, bool, error) {
 	artifact := designArtifact{RootTaskID: root.ID, Round: round}
 	units := make([]string, 0, len(all))
+	seenContributors := make(map[string]bool)
 	for _, task := range all {
 		// A completed department review is what says this department has
 		// finished and been judged by its leader. It gates which units
@@ -462,6 +466,14 @@ func (o *Orchestrator) candidateDesign(ctx context.Context, root TaskRecord, all
 			continue
 		}
 		unit := task.AssignedUnitID
+		if seenContributors[unit] {
+			continue
+		}
+		seenContributors[unit] = true
+		superseded, err := o.supersededWorkerKeys(ctx, all, root.ID, unit, round)
+		if err != nil {
+			return designArtifact{}, nil, false, err
+		}
 		contributed := false
 		for _, worker := range departmentWorkerTasks(all, root.ID, unit) {
 			if designRoundOf(worker.IdempotencyKey) != round {
@@ -472,6 +484,14 @@ func (o *Orchestrator) candidateDesign(ctx context.Context, root TaskRecord, all
 			// failure; presenting nothing as part of the design would
 			// be worse than presenting less.
 			if worker.Status != "completed" {
+				continue
+			}
+			// The frontier rule (checkpoint E): a worker whose authority a
+			// follow-up took over is SUPERSEDED. Its resolution was judged
+			// and redone inside the department loop; re-presenting it here
+			// would hand the adversarial reviewer the very contradiction
+			// the replan just settled, next to the answer that settled it.
+			if superseded[workerBaseClientKey(worker.IdempotencyKey, root.ID, unit, round)] {
 				continue
 			}
 			result, ok := o.resultForCompletedTask(ctx, worker)
@@ -529,7 +549,7 @@ func (o *Orchestrator) candidateDesign(ctx context.Context, root TaskRecord, all
 		}
 	}
 	if len(artifact.Units) == 0 {
-		return designArtifact{}, nil, false
+		return designArtifact{}, nil, false, nil
 	}
 	sort.Slice(artifact.Units, func(i, j int) bool {
 		if artifact.Units[i].UnitID != artifact.Units[j].UnitID {
@@ -537,7 +557,89 @@ func (o *Orchestrator) candidateDesign(ctx context.Context, root TaskRecord, all
 		}
 		return artifact.Units[i].TaskID < artifact.Units[j].TaskID
 	})
-	return artifact, units, true
+	return artifact, units, true, nil
+}
+
+// supersededWorkerKeys replays a department's completed reviews of this
+// round in replan order and returns the client keys whose authority a
+// follow-up TOOK OVER. The authority map starts as the round sheet's own
+// claims; every needs_replan verdict re-binds its open changes to the
+// follow-ups it proposed, and each re-binding supersedes exactly one
+// previous holder -- that is what followup_ownership MEANS. Whoever ends up
+// in this set was judged and redone inside the department loop; their
+// deliverable is history, not part of the design's effective frontier.
+func (o *Orchestrator) supersededWorkerKeys(ctx context.Context, all []TaskRecord, rootID int64, unit string, round int) (map[string]bool, error) {
+	superseded := make(map[string]bool)
+	authority := make(map[string]string)
+	if planTask, found := findTaskByKey(all, childKey(rootID, "leader-plan:"+unit+designRoundSuffix(round))); found && planTask.Status == "completed" {
+		if result, ok := o.resultForCompletedTask(ctx, planTask); ok {
+			if sheet, err := ParseDepartmentPlan(result.JSONOutput, o.limits); err == nil {
+				for _, ownership := range sheet.RevisionOwnership {
+					authority[ownership.RequiredChangeID] = ownership.OwnerClientKey
+				}
+			}
+		}
+	}
+	type replayedReview struct {
+		ordinal int
+		task    TaskRecord
+	}
+	var reviews []replayedReview
+	reviewPrefix := childKey(rootID, "leader-review:"+unit+designRoundSuffix(round))
+	for _, task := range all {
+		if task.TaskClass != TaskClassCoordinationDeptReview || task.Status != "completed" {
+			continue
+		}
+		if !strings.HasPrefix(task.IdempotencyKey, reviewPrefix) {
+			continue
+		}
+		reviews = append(reviews, replayedReview{ordinal: reviewReplanOrdinal(task.IdempotencyKey), task: task})
+	}
+	sort.Slice(reviews, func(i, j int) bool { return reviews[i].ordinal < reviews[j].ordinal })
+	for _, r := range reviews {
+		result, ok := o.resultForCompletedTask(ctx, r.task)
+		if !ok {
+			continue
+		}
+		review, err := ParseDepartmentReview(result.JSONOutput, o.limits)
+		if err != nil {
+			// An unreadable body carries no bindings to replay. Results are
+			// schema-validated when they complete, so this is tolerance for
+			// legacy fixtures, not a door for live corruption.
+			continue
+		}
+		if review.Verdict != ReviewNeedsReplan {
+			continue
+		}
+		for _, binding := range review.FollowupOwnership {
+			if previous, taken := authority[binding.RequiredChangeID]; taken && previous != "" {
+				superseded[previous] = true
+			}
+			authority[binding.RequiredChangeID] = binding.OwnerClientKey
+		}
+	}
+	return superseded, nil
+}
+
+// workerBaseClientKey recovers the proposing client_key from a worker task's
+// durable key, stripping the replan suffix a materialized follow-up carries:
+// executive:<root>:worker:<unit>[:design-round:N]:<key>[-replan:M] -> <key>.
+func workerBaseClientKey(key string, rootID int64, unit string, round int) string {
+	rest := strings.TrimPrefix(key, childKey(rootID, "worker:"+unit+designRoundSuffix(round)+":"))
+	if index := strings.LastIndex(rest, "-replan:"); index >= 0 {
+		tail := rest[index+len("-replan:"):]
+		numeric := tail != ""
+		for _, r := range tail {
+			if r < '0' || r > '9' {
+				numeric = false
+				break
+			}
+		}
+		if numeric {
+			rest = rest[:index]
+		}
+	}
+	return rest
 }
 
 // carriedContribution returns a department's last ACCEPTED deliverable from

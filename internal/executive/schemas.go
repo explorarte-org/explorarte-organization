@@ -190,7 +190,7 @@ var (
 	    },
 	    "revision_ownership":{
 	      "type":"array",
-	      "description":"Checkpoint E: every required change listed in the plan instructions MUST appear here exactly once, naming the ONE proposed task (by its client_key) that owns resolving it. Unknown ids, missing ids, and two owners for one id are all refused by the host before any worker is created. Support tasks that resolve no required change own nothing and are still allowed. Empty only when the instructions list no required changes.",
+	      "description":"Checkpoint E: claim YOUR department's share of the required changes listed in the instructions. Each entry binds one id to the ONE proposed task (by its client_key) that will redo it. Claim only what your department will redo: ids you do not claim belong to other departments, and across ALL departments every id must end up bound exactly once -- an id claimed by two departments, or by none once every department has planned, is refused by the host before any worker exists. One task may own several ids; tasks that own nothing are allowed. An EMPTY list is legal and means your department redoes nothing -- but then propose no tasks at all, and the previous deliverable stands carried forward.",
 	      "items":{
 	        "type":"object",
 	        "additionalProperties":false,

@@ -2,6 +2,7 @@ package executive
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -465,6 +466,105 @@ func TestEOwnershipCoverageAndLegalShapes(t *testing.T) {
 			t.Fatal("the legal multi-ownership plan never materialized its workers")
 		}
 	})
+}
+
+// GUARD: the provider-facing plan schema and the planner-facing instructions
+// teach the SAME claim rule. When the schema still said "every required
+// change MUST appear here exactly once" while the instructions said "claim
+// only your share; empty is legal", the contract was impossible for two
+// departments -- and it incentivized exactly the duplicate claim the host
+// then refused. This guard fails when either side stops saying: subset
+// claims, empty legality with no tasks, and one-exact global union.
+func TestThePlanSchemaTeachesTheSameClaimRuleAsTheInstructions(t *testing.T) {
+	var envelope struct {
+		Properties struct {
+			RevisionOwnership struct {
+				Description string `json:"description"`
+			} `json:"revision_ownership"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(departmentPlanOutputSchema, &envelope); err != nil {
+		t.Fatalf("plan schema is not readable JSON: %v", err)
+	}
+	schema := envelope.Properties.RevisionOwnership.Description
+	if schema == "" {
+		t.Fatal("revision_ownership declares no description; the model reads nothing")
+	}
+	for _, shared := range []string{"exactly once", "propose no tasks"} {
+		if !strings.Contains(schema, shared) || !strings.Contains(departmentRoundClaimRules, shared) {
+			t.Fatalf("claim rule drift on %q:\nSCHEMA: %s\nINSTRUCTIONS: %s", shared, schema, departmentRoundClaimRules)
+		}
+	}
+	for _, forbidden := range []string{"MUST appear here exactly once", "Empty only when"} {
+		if strings.Contains(schema, forbidden) {
+			t.Fatalf("schema still teaches the old every-change-is-yours rule (%q):\n%s", forbidden, schema)
+		}
+	}
+}
+
+// GUARD: after a replan settles a contradiction, the candidate handed to the
+// adversarial reviewer is the POST-replan frontier. The superseded owner's
+// deliverable must not reappear beside the resolution that replaced it --
+// that would re-inject the contradiction checkpoint E just settled into the
+// design loop -- and everything still authoritative appears exactly once.
+func TestECandidateAfterReplanIsThePostReplanFrontier(t *testing.T) {
+	fixture := eFixture(t)
+	fixture.eOwnership = ownerEntry("RC:1:1", eOwnerKey) + "," + ownerEntry("RC:1:2", eSupportKey)
+	fixture.eReviewVerdict = "needs_replan"
+	fixture.eOutcomes = `[` +
+		`{"required_change_id":"RC:1:1","status":"conflicted","canonical_resolution":"","conflicting_task_refs":["task:a","task:b"]},` +
+		`{"required_change_id":"RC:1:2","status":"resolved","canonical_resolution":"cited","conflicting_task_refs":[]}]`
+	fixture.eFollowups = `[{"client_key":"reconcile_mdr","assigned_role_id":"ingenieria_ia/qa","task_class":"engineering.review",` +
+		`"title":"Reconcile MDR granularity","instructions":"One falsifiable claim.","acceptance_criteria":["Cite"],"dependencies":[]}]`
+	fixture.eFollowupOwnership = `[{"required_change_id":"RC:1:1","owner_client_key":"reconcile_mdr"}]`
+
+	base := fixture.harness.departmentReviewBody
+	fixture.harness.departmentReviewBody = func(task TaskRecord) string {
+		if strings.Contains(task.IdempotencyKey, ":replan:") {
+			return eReplanReviewBody([]string{"RC:1:1", "RC:1:2"})
+		}
+		return base(task)
+	}
+
+	driveCapability(t, fixture, 40)
+
+	root := fixture.rootRecord(t)
+	allTasks, err := fixture.tasks.ListByCorrelation(context.Background(), root.CorrelationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewTask, ok := findTaskByKey(allTasks, childKey(root.ID, "design-review:round:2"))
+	if !ok || reviewTask.Status != "completed" {
+		t.Fatal("the round-2 candidate was never reviewed")
+	}
+	var supersededWorker, keptWorker, followupWorker TaskRecord
+	for _, worker := range departmentWorkerTasks(allTasks, root.ID, "ingenieria_ia") {
+		if designRoundOf(worker.IdempotencyKey) != 2 || worker.Status != "completed" {
+			continue
+		}
+		switch {
+		case strings.Contains(worker.IdempotencyKey, ":"+eOwnerKey):
+			supersededWorker = worker
+		case strings.Contains(worker.IdempotencyKey, ":"+eSupportKey):
+			keptWorker = worker
+		case strings.Contains(worker.IdempotencyKey, ":reconcile_mdr"):
+			followupWorker = worker
+		}
+	}
+	if supersededWorker.ID == 0 || keptWorker.ID == 0 || followupWorker.ID == 0 {
+		t.Fatal("the replan chain never materialized its three workers")
+	}
+	instructions := reviewTask.Instructions
+	if !strings.Contains(instructions, fmt.Sprintf("(task:%d ", followupWorker.ID)) ||
+		!strings.Contains(instructions, fmt.Sprintf("(task:%d ", keptWorker.ID)) {
+		t.Fatalf("the post-replan frontier is incomplete in the candidate:\n%.500s", instructions)
+	}
+	if strings.Contains(instructions, fmt.Sprintf("(task:%d ", supersededWorker.ID)) {
+		t.Fatalf("the superseded deliverable reappeared in the candidate:\n%.500s", instructions)
+	}
+	if got := strings.Count(instructions, fmt.Sprintf("(task:%d ", keptWorker.ID)); got != 1 {
+		t.Fatalf("a kept deliverable appears %d times in the candidate, want once", got)
+	}
 }
 
 func eOwnerRef() string { return "900001" }
