@@ -864,15 +864,24 @@ func TestBugA_PreexistingTaskGetsGuidanceAtExecutionTime(t *testing.T) {
 
 // TestBugA_NoContractForPurposesWithoutTaskClass proves purposes that do not
 // produce task_class proposals (CEO plan, worker result, closure) carry no
-// task-class guidance, so it is never injected where it does not apply. A
-// worker with NO evidence obligations still carries no contract; one WITH
-// obligations gets exactly the evidenceContractGuidance for those slots (the
-// evidence_contract_guidance_test.go file covers that side).
+// task-class guidance, so it is never injected where it does not apply.
+//
+// A worker with NO evidence obligations still carries no evidence contract;
+// one WITH obligations gets exactly the evidenceContractGuidance for those
+// slots (the evidence_contract_guidance_test.go file covers that side). What a
+// worker DOES carry with nothing else attached is the candidate egress rule:
+// R11 and AUTONOMY-SMOKE-017-R13 died at the declassifier having never been
+// told it existed, so its guidance rides every worker run unconditionally --
+// and only worker runs. Reviewer, adjudicator and closure purposes name no
+// source they were never shown.
 func TestBugA_NoContractForPurposesWithoutTaskClass(t *testing.T) {
-	for _, purpose := range []ExecutionPurpose{PurposeCEOPlan, PurposeDepartmentWorker, PurposeCEOClosure} {
+	for _, purpose := range []ExecutionPurpose{PurposeCEOPlan, PurposeCEOClosure} {
 		if got := executionContractFor(purpose, nil); got != "" {
 			t.Errorf("executionContractFor(%q) = %q, want empty", purpose, got)
 		}
+	}
+	if got := executionContractFor(PurposeDepartmentWorker, nil); got != candidateDeclassificationGuidance() {
+		t.Errorf("executionContractFor(department-worker) must return exactly candidateDeclassificationGuidance")
 	}
 	if got := executionContractFor(PurposeDepartmentPlan, nil); got != taskClassGuidance {
 		t.Errorf("executionContractFor(department-plan) must return taskClassGuidance")

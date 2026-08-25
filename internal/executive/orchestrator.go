@@ -1530,11 +1530,25 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 // this rides ExecutionContract, it never enters the durable instructions nor
 // the repository selection text, so retrieval stays exactly what it would have
 // been without it.
+//
+// Department workers additionally carry candidateDeclassificationGuidance:
+// R11 and AUTONOMY-SMOKE-017-R13 were killed by the candidate egress gate --
+// a rule that existed only host-side and reached no producer. The guidance
+// lives in candidate_declassifier.go, beside the gate it describes, so one
+// definition serves both ends.
 func executionContractFor(purpose ExecutionPurpose, required []EvidenceRequirement) string {
 	contract := ""
 	switch purpose {
 	case PurposeDepartmentPlan, PurposeDepartmentReview:
 		contract = taskClassGuidance
+	case PurposeDepartmentWorker:
+		// Every department worker's deliverable can become candidate-design
+		// text, and the declassifier judges the CANDIDATE against the union
+		// of all contributors' evidence -- so every worker is told the egress
+		// rule unconditionally, obligation list or not: egress is not a
+		// property of the author, and neither is knowing the rule. R11 and
+		// R13 died at that gate having never been shown it existed.
+		contract = candidateDeclassificationGuidance()
 	}
 	if guidance := evidenceContractGuidance(required); guidance != "" {
 		if contract != "" {

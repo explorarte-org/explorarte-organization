@@ -38,6 +38,43 @@ var ErrCandidateContaminated = fmt.Errorf("%w: candidate design carries organiza
 // claiming more of it would be the same overreach that produced the bypass.
 const declassifyMinimumRun = 48
 
+// candidateDeclassificationGuidance states, to the producer of the text that
+// becomes a candidate design, exactly what DeclassifyCandidate will enforce.
+//
+// It exists because R11 and AUTONOMY-SMOKE-017-R13 died at this gate without
+// ever being told it was there: the goal demanded an explanation of a prose
+// comment, the architect answered by quoting eight of its words, and a rule
+// that lived only host-side killed the campaign before any reviewer saw the
+// work -- two campaigns spent on a contract they could not have known. A
+// contract that cannot be known cannot be followed; this is the same repair
+// shape b7cf98d applied to evidence obligations, applied to egress: render
+// the host's own rule into ExecutionContract BEFORE the model answers,
+// leaving durable instructions and retrieval untouched.
+//
+// The threshold is DERIVED from declassifyMinimumRun above, never restated:
+// its authority lives beside the gate it parameterizes, and a second copy
+// would let prompt and policy drift apart -- the next
+// PROMPT_CONTRACT_MISMATCH in embryo.
+//
+// Every clause mirrors what this file actually executes, no stricter:
+// paraphrase is the action and the run length is the condition sharedRun
+// tests; normalization and reversible encodings are named because that is
+// what normalizeForDeclassify strips and reversibleDecodings undoes -- telling
+// the model that reformatting or encoding hides anything would be coaching it
+// into failing three attempts later; and provenance metadata is named as
+// allowed because paths, symbols, commits and repository:// references are
+// exactly what sharedRun lets cross.
+func candidateDeclassificationGuidance() string {
+	return fmt.Sprintf(
+		`Egress rule for this result (the host enforces it before any reviewer sees your text):
+
+- Paraphrase repository content in your own words.
+- Do not reproduce any contiguous span of %d or more characters taken from repository text you were shown, including code comments. The host measures after normalization: letter case is folded, whitespace is collapsed, escape sequences are removed.
+- Reformatting does not make a reproduction permitted, and neither does encoding it: base64, hex and JSON/Unicode escapes are decoded before this rule is measured.
+- Always allowed: symbol names, file paths, line ranges, commit SHAs, and repository:// references.`,
+		declassifyMinimumRun)
+}
+
 var (
 	base64Blob = regexp.MustCompile(`[A-Za-z0-9+/]{40,}={0,2}`)
 	hexBlob    = regexp.MustCompile(`(?i)(?:[0-9a-f]{2}[\s,]*){24,}`)
