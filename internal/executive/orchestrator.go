@@ -655,17 +655,40 @@ func (o *Orchestrator) driveInProgress(ctx context.Context, root TaskRecord) (Ru
 }
 
 func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, revision RevisionRef, plan ExecutivePlan, leaders map[string]RoleRef) (Run, bool, error) {
+	// Checkpoint E2: exclusive ownership is GLOBAL per design round, so the
+	// host partitions the required changes across departments ONCE, here,
+	// deterministically (sorted units, round-robin). Each department's plan
+	// is validated against ITS subset -- two departments can therefore never
+	// both own the same decision, by construction rather than by hope.
+	allDepartments, listErr := o.tasks.ListByCorrelation(ctx, root.CorrelationID)
+	if listErr != nil {
+		return Run{}, false, listErr
+	}
+	currentRound := o.activeDesignRound(ctx, allDepartments, root.ID)
+	var revisionScopes map[string][]RequiredChange
+	if currentRound > 1 {
+		changes, changesErr := o.requiredChangesWithIDs(ctx, allDepartments, root.ID, currentRound-1)
+		if changesErr != nil {
+			return Run{}, false, changesErr
+		}
+		unitIDs := make([]string, 0, len(plan.DepartmentRequests))
+		for _, req := range plan.DepartmentRequests {
+			unitIDs = append(unitIDs, req.UnitID)
+		}
+		revisionScopes = assignOwnershipScopes(changes, unitIDs)
+	}
 	for _, req := range plan.DepartmentRequests {
 		leader := leaders[req.UnitID]
 		all, err := o.tasks.ListByCorrelation(ctx, root.CorrelationID)
 		if err != nil {
 			return Run{}, false, err
 		}
+		assigned := revisionScopes[req.UnitID]
 		// Every department key is scoped to the design round it belongs to.
 		// Round 1 carries no suffix, so a run that never gets a revise keys
 		// exactly as it always did; a later round is separate tasks, which is
 		// what keeps the earlier round immutable rather than reopened.
-		round := o.activeDesignRound(ctx, all, root.ID)
+		round := currentRound
 		suffix := designRoundSuffix(round)
 		planTask, ok := findTaskByKey(all, childKey(root.ID, "leader-plan:"+req.UnitID+suffix))
 		if !ok {
@@ -678,7 +701,7 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 			if round > 1 {
 				// The round exists because a revise asked for it. Opening its
 				// planning task is what turns that decision into work.
-				if _, err = o.openDesignRoundPlan(ctx, root, all, req, leader, round); err != nil {
+				if _, err = o.openDesignRoundPlan(ctx, root, all, req, leader, round, assigned); err != nil {
 					return Run{}, false, err
 				}
 				return o.driveInProgress(ctx, root)
@@ -694,25 +717,19 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 				if e = o.validator.ValidateDepartmentPlan(ctx, revision.ID, req.UnitID, leader.ID, parsed); e != nil {
 					return e
 				}
-				// Checkpoint E: exclusive revision ownership. Before any
-				// worker exists, every outstanding required change of this
-				// design round must be bound to exactly one proposed task.
-				// R16 let two parallel workers resolve the same central
-				// question and answer it with opposite claims; that
-				// arrangement is now refused at plan-contract time.
-				allForOwnership, listErr := o.tasks.ListByCorrelation(ctx, root.CorrelationID)
-				if listErr != nil {
-					return listErr
-				}
-				outstanding, outstandingErr := o.outstandingRevisionChanges(ctx, allForOwnership, root.ID, round)
-				if outstandingErr != nil {
-					return outstandingErr
-				}
+				// Checkpoint E: exclusive revision ownership, GLOBAL per
+				// design round. This department validates against ITS
+				// assigned subset -- the host partitioned the required
+				// changes across departments up front, so two departments
+				// can never both own the same decision. R16 let two
+				// parallel workers resolve the same central question and
+				// answer it with opposite claims; that arrangement is now
+				// refused at plan-contract time.
 				// Legacy tolerance: durable v1 plans predate ownership and
 				// stay parseable; only v2 plans -- what every provider call
 				// now demands -- are governed by the gate.
 				if parsed.SchemaVersion == DepartmentPlanSchemaVersionV2 {
-					if err := validateRevisionOwnership(outstanding, parsed); err != nil {
+					if err := validateRevisionOwnership(assigned, parsed); err != nil {
 						return err
 					}
 				}
@@ -767,7 +784,7 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 		}
 		reviewTask, ok := latestReviewTask(all, root.ID, req.UnitID+suffix)
 		if !ok {
-			reviewTask, _, e = o.createReviewTask(ctx, root, req, leader, all, 0, round)
+			reviewTask, _, e = o.createReviewTask(ctx, root, req, leader, all, 0, round, assigned)
 			if e != nil {
 				return Run{}, false, e
 			}
@@ -785,14 +802,7 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 				// an accept -- is refused HERE, as retryable feedback; the
 				// reviewer can then answer needs_replan and land the redo in
 				// the department's own replan bound.
-				allForGate, listErr := o.tasks.ListByCorrelation(ctx, root.CorrelationID)
-				if listErr != nil {
-					return listErr
-				}
-				outstanding, outstandingErr := o.outstandingChangesForReview(ctx, allForGate, root.ID, round)
-				if outstandingErr != nil {
-					return outstandingErr
-				}
+				outstanding := assigned
 				// Legacy tolerance mirrors the plan side: v1 reviews predate
 				// outcomes entirely, so the gate governs only v2 answers.
 				if review.SchemaVersion == DepartmentReviewSchemaVersionV2 {
@@ -885,6 +895,20 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 			if e = o.validator.ValidateFollowups(ctx, revision.ID, req.UnitID, leader.ID, review.ProposedFollowupTasks); e != nil {
 				return Run{}, false, e
 			}
+			// Checkpoint E1: the redo inherits exclusive ownership. Every
+			// still-open required change must be bound to exactly one
+			// follow-up before any of them materializes -- otherwise the
+			// contradiction this replan exists to fix would simply be handed
+			// to two workers again, inside :replan:N itself.
+			outstandingRedo, outErr := o.outstandingChangesForReview(ctx, all, root.ID, round)
+			if outErr != nil {
+				return Run{}, false, outErr
+			}
+			if review.SchemaVersion == DepartmentReviewSchemaVersionV2 {
+				if ownErr := validateFollowupOwnership(outstandingRedo, review); ownErr != nil {
+					return Run{}, false, ownErr
+				}
+			}
 			if e = o.materializeWorkerTasks(ctx, root, reviewTask, req.UnitID, review.ProposedFollowupTasks, ordinal, round); e != nil {
 				return Run{}, false, e
 			}
@@ -896,7 +920,7 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 				return o.driveInProgress(ctx, root)
 			}
 			if _, exists := findTaskByKey(all, childKey(root.ID, "leader-review:"+req.UnitID+suffix+":replan:"+strconv.Itoa(ordinal))); !exists {
-				if _, _, e = o.createReviewTask(ctx, root, req, leader, all, ordinal, round); e != nil {
+				if _, _, e = o.createReviewTask(ctx, root, req, leader, all, ordinal, round, assigned); e != nil {
 					return Run{}, false, e
 				}
 			}
@@ -1076,23 +1100,36 @@ func appendResultRequirement(in []RequirementProposal) []RequirementProposal {
 	return append(out, RequirementProposal{Key: hostOwnedResultRequirementKey, Type: "result", Description: "Validated durable model invocation result", Required: true})
 }
 
-func (o *Orchestrator) createReviewTask(ctx context.Context, root TaskRecord, req DepartmentRequest, leader RoleRef, all []TaskRecord, replan, round int) (TaskRecord, bool, error) {
+func (o *Orchestrator) createReviewTask(ctx context.Context, root TaskRecord, req DepartmentRequest, leader RoleRef, all []TaskRecord, replan, round int, assigned []RequiredChange) (TaskRecord, bool, error) {
 	summary := boundedDepartmentSummary(all, root.ID, req.UnitID+designRoundSuffix(round), o.limits.MaxInstructionsBytes)
 	suffix := "leader-review:" + req.UnitID + designRoundSuffix(round)
 	if replan > 0 {
 		suffix += ":replan:" + strconv.Itoa(replan)
 	}
 	instructions := "Review only this bounded durable task/evidence summary and return DepartmentReview JSON: " + summary + "\n\n" + taskClassGuidance
-	// Checkpoint E: hand the reviewer the ownership table so it can compare
-	// deliverables AGAINST EACH OTHER per required change -- the duty whose
-	// absence let R16's contradictory pair pass as accept.
-	outstanding, err := o.outstandingChangesForReview(ctx, all, root.ID, round)
+	// Checkpoint E: hand the reviewer the OWNERSHIP TABLE -- id, the one
+	// task that owned resolving it, and the demanded text -- so it can
+	// compare deliverables AGAINST EACH OTHER per required change. A roster
+	// of bare ids would not let the reviewer know whose answer was
+	// authoritative; R16's contradiction hid in exactly that gap.
+	outstanding, err := o.outstandingRevisionChanges(ctx, all, root.ID, round)
 	if err != nil {
 		return TaskRecord{}, false, err
 	}
 	if len(outstanding) > 0 {
+		owners := map[string]string{}
+		planTask, found := findTaskByKey(all, childKey(root.ID, "leader-plan:"+req.UnitID+designRoundSuffix(round)))
+		if found && planTask.Status == "completed" {
+			if result, ok := o.resultForCompletedTask(ctx, planTask); ok {
+				if plan, perr := ParseDepartmentPlan(result.JSONOutput, o.limits); perr == nil {
+					for _, ownership := range plan.RevisionOwnership {
+						owners[ownership.RequiredChangeID] = ownership.OwnerClientKey
+					}
+				}
+			}
+		}
 		instructions += "\n\nREVISION OWNERSHIP TABLE (state one revision_outcomes entry per id, comparing the deliverables against each other):\n" +
-			renderOwnershipRoster(outstanding)
+			renderOwnershipTable(outstanding, owners)
 	}
 	task, reused, err := o.coordinatedChildren().Materialize(ctx, childRequest{Root: root, Sender: root, Depth: 2, Command: CreateTaskCommand{RequestedByRoleID: CEORoleID, AssignedRoleID: leader.ID, TaskClass: TaskClassCoordinationDeptReview, IdempotencyKey: childKey(root.ID, suffix), Title: "Department review: " + req.UnitID, Instructions: instructions, AcceptanceCriteria: []string{"Use only durable task states and evidence refs", "Return strict DepartmentReview JSON", "Do not execute tool intents"}, Priority: req.Priority, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID), Requirements: []RequirementProposal{{Key: "typed_review", Type: "result", Description: "Validated DepartmentReview invocation result", Required: true}}}})
 	if err != nil {
@@ -2477,15 +2514,11 @@ func boundedClosureSummary(plan ExecutivePlan, all []TaskRecord, rootID int64, m
 // The previous round is untouched. Its plan, its work, its review and its
 // adjudication keep their keys and their content -- this is a successor, not
 // a revision of what happened.
-func (o *Orchestrator) openDesignRoundPlan(ctx context.Context, root TaskRecord, all []TaskRecord, req DepartmentRequest, leader RoleRef, round int) (TaskRecord, error) {
+func (o *Orchestrator) openDesignRoundPlan(ctx context.Context, root TaskRecord, all []TaskRecord, req DepartmentRequest, leader RoleRef, round int, assigned []RequiredChange) (TaskRecord, error) {
 	if round > o.limits.MaxDesignRounds {
 		return TaskRecord{}, fmt.Errorf("%w: design rounds", ErrBudgetExceeded)
 	}
-	changes, err := o.requiredChangesWithIDs(ctx, all, root.ID, round-1)
-	if err != nil {
-		return TaskRecord{}, err
-	}
-	if len(changes) == 0 {
+	if len(assigned) == 0 {
 		// A revise with nothing to change cannot be planned against. The
 		// contract already refuses that adjudication, so reaching here means
 		// the decision could not be read -- and inventing an empty round
@@ -2503,7 +2536,7 @@ func (o *Orchestrator) openDesignRoundPlan(ctx context.Context, root TaskRecord,
 				"exactly these required changes and return DepartmentPlan JSON.\n\nREQUIRED CHANGES " +
 				"(checkpoint rule: each id below MUST be assigned exactly ONE owner task via revision_ownership; " +
 				"two owners for one id, or an unowned id, are refused by the host):\n" +
-				renderOwnershipRoster(changes) + "\n\nORIGINAL OBJECTIVE:\n" + req.Objective,
+				renderOwnershipRoster(assigned) + "\n\nORIGINAL OBJECTIVE:\n" + req.Objective,
 			AcceptanceCriteria: []string{
 				"Return strict DepartmentPlan JSON",
 				"Every proposed task addresses a required change",

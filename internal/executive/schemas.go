@@ -276,7 +276,8 @@ var (
 	    "unsatisfied_criteria",
 	    "evidence_refs",
 	    "proposed_followup_tasks",
-	    "revision_outcomes"
+	    "revision_outcomes",
+	    "followup_ownership"
 	  ],
 	  "properties":{
 	    "schema_version":{
@@ -302,6 +303,19 @@ var (
 	    "proposed_followup_tasks":{
 	      "type":"array",
 	      "items":` + taskOutputSchemaJSON + `
+	    },
+	    "followup_ownership":{
+	      "type":"array",
+	      "description":"Checkpoint E1: when verdict=needs_replan, every required change whose outcome is conflicted or unresolved MUST be bound here to EXACTLY ONE proposed follow-up task (by its client_key). Two follow-ups owning one change, an unknown id, or a resolved change being re-owned are all refused by the host. Empty exactly when every revision_outcomes entry is resolved.",
+	      "items":{
+	        "type":"object",
+	        "additionalProperties":false,
+	        "required":["required_change_id","owner_client_key"],
+	        "properties":{
+	          "required_change_id":{"type":"string","description":"The exact id from the ownership table, e.g. RC:2:1."},
+	          "owner_client_key":{"type":"string","description":"The client_key of exactly one task proposed in proposed_followup_tasks."}
+	        }
+	      }
 	    },
 	    "revision_outcomes":{
 	      "type":"array",

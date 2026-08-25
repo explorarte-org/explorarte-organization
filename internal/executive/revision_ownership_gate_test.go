@@ -118,9 +118,14 @@ func eFixture(t *testing.T) *wiringFixture {
 		if fixture.eOutcomes != "" {
 			outcomes = fixture.eOutcomes
 		}
+		followupOwnership := "[]"
+		if fixture.eFollowupOwnership != "" {
+			followupOwnership = fixture.eFollowupOwnership
+		}
 		return `{"schema_version":"department-review/v2","verdict":"` + fixture.eReviewVerdict + `",` +
 			`"findings":["reviewed"],"unsatisfied_criteria":[],"evidence_refs":[],` +
 			`"proposed_followup_tasks":` + fixture.eFollowups + `,` +
+			`"followup_ownership":` + followupOwnership + `,` +
 			`"revision_outcomes":` + outcomes + `}`
 	}
 	fixture.eReviewVerdict = "accept"
@@ -255,6 +260,7 @@ func TestEOwnershipCoverageAndLegalShapes(t *testing.T) {
 			`{"required_change_id":"RC:1:2","status":"resolved","canonical_resolution":"cited","conflicting_task_refs":[]}]`
 		fixture.eFollowups = `[{"client_key":"fix_up","assigned_role_id":"ingenieria_ia/qa","task_class":"engineering.review",` +
 			`"title":"Redo","instructions":"Redo the resolution.","acceptance_criteria":["Cite"],"dependencies":[]}]`
+		fixture.eFollowupOwnership = `[{"required_change_id":"RC:1:1","owner_client_key":"fix_up"}]`
 		driveCapability(t, fixture, 30)
 		if !eRoundTwoWorkersExist(t, fixture) {
 			allTasks, _ := fixture.tasks.ListByCorrelation(context.Background(), fixture.rootRecord(t).CorrelationID)
@@ -349,6 +355,7 @@ func TestEAcceptGateAndNeedsReplanRouting(t *testing.T) {
 			`{"required_change_id":"RC:1:2","status":"resolved","canonical_resolution":"cited","conflicting_task_refs":[]}]`
 		fixture.eFollowups = `[{"client_key":"reconcile_mdr","assigned_role_id":"ingenieria_ia/qa","task_class":"engineering.review",` +
 			`"title":"Reconcile MDR granularity","instructions":"One falsifiable claim.","acceptance_criteria":["Cite"],"dependencies":[]}]`
+		fixture.eFollowupOwnership = `[{"required_change_id":"RC:1:1","owner_client_key":"reconcile_mdr"}]`
 
 		driveCapability(t, fixture, 30)
 

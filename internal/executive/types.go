@@ -122,6 +122,13 @@ type DepartmentReview struct {
 	UnsatisfiedCriteria   []string             `json:"unsatisfied_criteria"`
 	EvidenceRefs          []string             `json:"evidence_refs"`
 	ProposedFollowupTasks []WorkerTaskProposal `json:"proposed_followup_tasks"`
+	// FollowupOwnership is checkpoint E1: when the verdict is
+	// needs_replan, every required change still open (conflicted or
+	// unresolved) must be bound here to EXACTLY ONE proposed follow-up
+	// task -- the departmental redo inherits the same exclusive-ownership
+	// rule the original plan had, or R16's parallel-authority pattern
+	// simply recreates itself inside :replan:N.
+	FollowupOwnership []RevisionOwnership `json:"followup_ownership"`
 	// RevisionOutcomes is checkpoint E's consistency gate: per required
 	// change, what the deliverables collectively concluded. accept is only
 	// representable when every outcome says resolved -- a contradiction the

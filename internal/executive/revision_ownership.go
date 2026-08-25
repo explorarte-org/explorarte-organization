@@ -134,13 +134,29 @@ func validateRevisionOwnership(outstanding []RequiredChange, plan DepartmentPlan
 }
 
 // renderOwnershipRoster is the planner-facing rendering: id + demanded text,
-// with the exclusivity rule stated where the ids are stated. It is also the
-// table handed to the reviewer, so both sides of the round speak about the
-// same named decisions.
+// with the exclusivity rule stated where the ids are stated (the header in
+// the plan instructions carries it). Owners do not exist yet at planning
+// time -- the plan itself creates them.
 func renderOwnershipRoster(changes []RequiredChange) string {
 	lines := make([]string, 0, len(changes))
 	for _, change := range changes {
 		lines = append(lines, change.ID+" "+change.Text)
+	}
+	return joinLines(lines)
+}
+
+// renderOwnershipTable is the reviewer-facing rendering: id, the ONE owner
+// client key the accepted plan assigned, and the demanded text. A change with
+// no recorded owner renders as UNASSIGNED so the gap is visible instead of
+// silent.
+func renderOwnershipTable(changes []RequiredChange, owners map[string]string) string {
+	lines := make([]string, 0, len(changes))
+	for _, change := range changes {
+		owner, ok := owners[change.ID]
+		if !ok || strings.TrimSpace(owner) == "" {
+			owner = "UNASSIGNED"
+		}
+		lines = append(lines, change.ID+" [owner: "+owner+"] "+change.Text)
 	}
 	return joinLines(lines)
 }
@@ -151,23 +167,23 @@ func renderOwnershipRoster(changes []RequiredChange) string {
 // runs inside the attempt callback, so a refusal is retryable feedback the
 // reviewer can act on -- not a permanent wall.
 func validateRevisionOutcomes(outstanding []RequiredChange, review DepartmentReview) error {
-	if len(outstanding) == 0 {
-		return nil
-	}
 	outcomes := make(map[string]RevisionOutcome, len(review.RevisionOutcomes))
+	var problems []string
 	for _, outcome := range review.RevisionOutcomes {
 		if _, duplicate := outcomes[outcome.RequiredChangeID]; duplicate {
-			return fmt.Errorf("%w: revision_outcomes states %q twice", ErrContractRejected, outcome.RequiredChangeID)
+			problems = append(problems, outcome.RequiredChangeID+" stated more than once")
+			continue
 		}
 		outcomes[outcome.RequiredChangeID] = outcome
 	}
-	var problems []string
+	open := 0
 	for _, change := range outstanding {
 		outcome, stated := outcomes[change.ID]
 		if !stated {
 			problems = append(problems, change.ID+" not addressed by revision_outcomes")
 			continue
 		}
+		delete(outcomes, change.ID)
 		statusProblem := ""
 		switch outcome.Status {
 		case RevisionResolved:
@@ -183,20 +199,95 @@ func validateRevisionOutcomes(outstanding []RequiredChange, review DepartmentRev
 				// department review accepted exactly this shape.
 				statusProblem = "is conflicted (" +
 					strings.Join(outcome.ConflictingTaskRefs, ", ") + ") under an accept verdict"
+			} else {
+				open++
 			}
 		case RevisionUnresolved:
-			if review.Verdict == ReviewAccept {
-				statusProblem = "is unresolved under an accept verdict (" +
-					truncate(outcome.CanonicalResolution, 100) + ")"
-			}
+			statusProblem = "is unresolved under this verdict (" +
+				truncate(outcome.CanonicalResolution, 100) + ")"
+			open++
+		default:
+			statusProblem = "has an unknown status " + outcome.Status
 		}
 		if statusProblem != "" {
 			problems = append(problems, change.ID+" "+statusProblem)
 		}
 	}
-	if review.Verdict == ReviewAccept && len(problems) > 0 {
+	for id := range outcomes {
+		problems = append(problems, "revision_outcomes names "+id+", which is not a required change of this design round")
+	}
+	// CLOSED WORLD + verdict compatibility. accept is only representable when
+	// every required change says resolved; needs_replan is only honest when
+	// at least one of them is still open; blocked/fail end the run either
+	// way, so their statuses stay unconstrained beyond well-formedness.
+	switch review.Verdict {
+	case ReviewAccept:
+		if open > 0 {
+			problems = append(problems, "accept requires every required change resolved")
+		}
+	case ReviewNeedsReplan:
+		if outstanding != nil && open == 0 && len(problems) == 0 {
+			problems = append(problems, "needs_replan requires at least one conflicted or unresolved required change")
+		}
+	}
+	sort.Strings(problems)
+	if len(problems) > 0 {
+		return fmt.Errorf("%w: revision outcomes refused: %s",
+			ErrContractRejected, strings.Join(problems, "; "))
+	}
+	return nil
+}
+
+// validateFollowupOwnership is checkpoint E1 on the REDO side: when a
+// needs_replan review is about to materialize its follow-ups, every still-
+// open required change must be bound to EXACTLY ONE follow-up -- and only
+// open changes may be bound. Without this, the redo loop could recreate
+// R16's parallel-authority pattern inside :replan:N itself.
+func validateFollowupOwnership(outstanding []RequiredChange, review DepartmentReview) error {
+	outcomes := make(map[string]RevisionOutcome, len(review.RevisionOutcomes))
+	for _, outcome := range review.RevisionOutcomes {
+		outcomes[outcome.RequiredChangeID] = outcome
+	}
+	openIDs := make(map[string]bool)
+	for _, change := range outstanding {
+		if outcome, ok := outcomes[change.ID]; ok && outcome.Status == RevisionResolved {
+			continue // closed by the reviewer; nothing to own
+		}
+		openIDs[change.ID] = true
+	}
+	followupKeys := make(map[string]bool, len(review.ProposedFollowupTasks))
+	for _, task := range review.ProposedFollowupTasks {
+		followupKeys[task.ClientKey] = true
+	}
+	owners := make(map[string]string)
+	var problems []string
+	for _, ownership := range review.FollowupOwnership {
+		id := ownership.RequiredChangeID
+		if !openIDs[id] {
+			problems = append(problems, id+" does not need a replan owner (unknown, or already resolved)")
+			continue
+		}
+		if !followupKeys[ownership.OwnerClientKey] {
+			problems = append(problems, id+" names follow-up client_key "+ownership.OwnerClientKey+", which this review does not propose")
+			continue
+		}
+		if previous, taken := owners[id]; taken {
+			problems = append(problems, id+" has two follow-up owners ("+previous+" and "+ownership.OwnerClientKey+")")
+			continue
+		}
+		owners[id] = ownership.OwnerClientKey
+	}
+	for _, change := range outstanding {
+		if !openIDs[change.ID] {
+			continue
+		}
+		if _, owned := owners[change.ID]; !owned {
+			problems = append(problems, "open required change "+change.ID+" has no follow-up owner")
+		}
+	}
+	if len(problems) > 0 {
 		sort.Strings(problems)
-		return fmt.Errorf("%w: accept requires every required change resolved; %s",
+		return fmt.Errorf("%w: followup_ownership invalid: %s",
 			ErrContractRejected, strings.Join(problems, "; "))
 	}
 	return nil
@@ -213,6 +304,28 @@ const departmentConsistencyGuidance = `Consistency rule for this review: if the 
 // the given design round, tolerating rounds without a prior adjudication.
 func (o *Orchestrator) outstandingChangesForReview(ctx context.Context, all []TaskRecord, rootID int64, round int) ([]RequiredChange, error) {
 	return o.outstandingRevisionChanges(ctx, all, rootID, round)
+}
+
+// assignOwnershipScopes partitions the round's required changes across
+// departments deterministically (sorted units, round-robin). The union of the
+// scopes is exactly the full set, and the sets are pairwise disjoint -- which
+// is what makes "exactly one owner" a GLOBAL property per design round even
+// though each department validates only its own plan.
+func assignOwnershipScopes(changes []RequiredChange, unitIDs []string) map[string][]RequiredChange {
+	units := append([]string(nil), unitIDs...)
+	sort.Strings(units)
+	scopes := make(map[string][]RequiredChange, len(units))
+	for _, unit := range units {
+		scopes[unit] = nil
+	}
+	if len(units) == 0 {
+		return scopes
+	}
+	for index, change := range changes {
+		unit := units[index%len(units)]
+		scopes[unit] = append(scopes[unit], change)
+	}
+	return scopes
 }
 
 var _ = strconv.Itoa

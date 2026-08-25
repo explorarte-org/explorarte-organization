@@ -62,6 +62,9 @@ type wiringFixture struct {
 	eOutcomes      string
 	eReviewVerdict string
 	eFollowups     string
+	// eFollowupOwnership declares, per open required change, which proposed
+	// follow-up owns redoing it (checkpoint E1).
+	eFollowupOwnership string
 }
 
 // newWiringFixture builds the freeze campaign WITH the two things the evidence
