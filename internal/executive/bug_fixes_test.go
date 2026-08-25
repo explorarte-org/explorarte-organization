@@ -854,9 +854,15 @@ func TestBugA_PreexistingTaskGetsGuidanceAtExecutionTime(t *testing.T) {
 					t.Errorf("ExecutionContract missing %q; got:\n%s", want, command.ExecutionContract)
 				}
 			}
-			// It must be the single shared definition, not a copy that can drift.
-			if command.ExecutionContract != taskClassGuidance {
-				t.Error("ExecutionContract is not the shared taskClassGuidance definition")
+			// It must be the single shared definitions, not copies that can
+			// drift: task-class guidance for both purposes, plus checkpoint
+			// E's consistency rider on the review.
+			wantContract := taskClassGuidance
+			if tc.purpose == PurposeDepartmentReview {
+				wantContract += "\n\n" + departmentConsistencyGuidance
+			}
+			if command.ExecutionContract != wantContract {
+				t.Errorf("ExecutionContract drifted from the shared definitions")
 			}
 		})
 	}
@@ -886,7 +892,7 @@ func TestBugA_NoContractForPurposesWithoutTaskClass(t *testing.T) {
 	if got := executionContractFor(PurposeDepartmentPlan, nil); got != taskClassGuidance {
 		t.Errorf("executionContractFor(department-plan) must return taskClassGuidance")
 	}
-	if got := executionContractFor(PurposeDepartmentReview, nil); got != taskClassGuidance {
-		t.Errorf("executionContractFor(department-review) must return taskClassGuidance")
+	if got := executionContractFor(PurposeDepartmentReview, nil); got != taskClassGuidance+"\n\n"+departmentConsistencyGuidance {
+		t.Errorf("executionContractFor(department-review) must be taskClassGuidance plus the checkpoint-E consistency rider")
 	}
 }

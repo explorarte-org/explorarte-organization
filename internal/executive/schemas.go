@@ -167,12 +167,13 @@ var (
 	    "department_id",
 	    "tasks",
 	    "review_criteria",
-	    "unresolved"
+	    "unresolved",
+	    "revision_ownership"
 	  ],
 	  "properties":{
 	    "schema_version":{
 	      "type":"string",
-	      "enum":["department-plan/v1"]
+	      "enum":["department-plan/v2"]
 	    },
 	    "department_id":{"type":"string"},
 	    "tasks":{
@@ -186,6 +187,19 @@ var (
 	    "unresolved":{
 	      "type":"array",
 	      "items":{"type":"string"}
+	    },
+	    "revision_ownership":{
+	      "type":"array",
+	      "description":"Checkpoint E: every required change listed in the plan instructions MUST appear here exactly once, naming the ONE proposed task (by its client_key) that owns resolving it. Unknown ids, missing ids, and two owners for one id are all refused by the host before any worker is created. Support tasks that resolve no required change own nothing and are still allowed. Empty only when the instructions list no required changes.",
+	      "items":{
+	        "type":"object",
+	        "additionalProperties":false,
+	        "required":["required_change_id","owner_client_key"],
+	        "properties":{
+	          "required_change_id":{"type":"string","description":"The exact id from the instructions, e.g. RC:2:1."},
+	          "owner_client_key":{"type":"string","description":"The client_key of exactly one task proposed in this same plan."}
+	        }
+	      }
 	    }
 	  }
 	}`)
@@ -261,12 +275,13 @@ var (
 	    "findings",
 	    "unsatisfied_criteria",
 	    "evidence_refs",
-	    "proposed_followup_tasks"
+	    "proposed_followup_tasks",
+	    "revision_outcomes"
 	  ],
 	  "properties":{
 	    "schema_version":{
 	      "type":"string",
-	      "enum":["department-review/v1"]
+	      "enum":["department-review/v2"]
 	    },
 	    "verdict":{
 	      "type":"string",
@@ -287,9 +302,29 @@ var (
 	    "proposed_followup_tasks":{
 	      "type":"array",
 	      "items":` + taskOutputSchemaJSON + `
+	    },
+	    "revision_outcomes":{
+	      "type":"array",
+	      "description":"Checkpoint E: per required change in the ownership table, what the deliverables COLLECTIVELY concluded after comparing them against each other. status=resolved means one canonical resolution exists and no deliverable contradicts it; conflicted means two or more deliverables assert incompatible resolutions; unresolved means no deliverable addressed the change. verdict=accept is refused by the host unless every listed change is resolved. Empty only when the plan carried no revision ownership.",
+	      "items":{
+	        "type":"object",
+	        "additionalProperties":false,
+	        "required":["required_change_id","status","canonical_resolution","conflicting_task_refs"],
+	        "properties":{
+	          "required_change_id":{"type":"string","description":"The exact id from the ownership table, e.g. RC:2:1."},
+	          "status":{"type":"string","enum":["resolved","unresolved","conflicted"]},
+	          "canonical_resolution":{"type":"string","description":"The single agreed resolution, or the empty string when status is not resolved."},
+	          "conflicting_task_refs":{
+	            "type":"array",
+	            "description":"Task references whose assertions conflict, required non-empty exactly when status is conflicted.",
+	            "items":{"type":"string"}
+	          }
+	        }
+	      }
 	    }
 	  }
-	}`)
+	
+  }`)
 
 	executiveClosureOutputSchema = json.RawMessage(`{
 	  "type":"object",

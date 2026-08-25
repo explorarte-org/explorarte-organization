@@ -55,6 +55,13 @@ func partialSupply() []SnapshotSource {
 
 type wiringFixture struct {
 	*freezeFixture
+	// Checkpoint E variation knobs: the ownership table a round-2 plan
+	// states, the revision outcomes its review returns, that review's
+	// verdict, and its proposed follow-ups.
+	eOwnership     string
+	eOutcomes      string
+	eReviewVerdict string
+	eFollowups     string
 }
 
 // newWiringFixture builds the freeze campaign WITH the two things the evidence

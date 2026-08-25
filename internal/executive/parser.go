@@ -42,8 +42,13 @@ func ParseDepartmentPlan(body []byte, limits Limits) (DepartmentPlan, error) {
 	if err := decodeStrictModelJSON(body, &out, limits); err != nil {
 		return DepartmentPlan{}, err
 	}
-	if out.SchemaVersion != DepartmentPlanSchemaVersion {
+	if out.SchemaVersion != DepartmentPlanSchemaVersion && out.SchemaVersion != DepartmentPlanSchemaVersionV2 {
 		return DepartmentPlan{}, fmt.Errorf("%w: schema_version", ErrContractRejected)
+	}
+	for _, ownership := range out.RevisionOwnership {
+		if strings.TrimSpace(ownership.RequiredChangeID) == "" || strings.TrimSpace(ownership.OwnerClientKey) == "" {
+			return DepartmentPlan{}, fmt.Errorf("%w: revision_ownership entries need a required_change_id and an owner_client_key", ErrContractRejected)
+		}
 	}
 	if err := validateDepartmentPlanShape(out, limits); err != nil {
 		return DepartmentPlan{}, err
@@ -56,8 +61,21 @@ func ParseDepartmentReview(body []byte, limits Limits) (DepartmentReview, error)
 	if err := decodeStrictModelJSON(body, &out, limits); err != nil {
 		return DepartmentReview{}, err
 	}
-	if out.SchemaVersion != DepartmentReviewSchemaVersion {
+	if out.SchemaVersion != DepartmentReviewSchemaVersion && out.SchemaVersion != DepartmentReviewSchemaVersionV2 {
 		return DepartmentReview{}, fmt.Errorf("%w: schema_version", ErrContractRejected)
+	}
+	for _, outcome := range out.RevisionOutcomes {
+		switch strings.TrimSpace(outcome.Status) {
+		case RevisionResolved, RevisionUnresolved, RevisionConflicted:
+		default:
+			return DepartmentReview{}, fmt.Errorf("%w: revision_outcomes status %q is not one of resolved/unresolved/conflicted", ErrContractRejected, outcome.Status)
+		}
+		if strings.TrimSpace(outcome.RequiredChangeID) == "" {
+			return DepartmentReview{}, fmt.Errorf("%w: revision_outcomes entries need a required_change_id", ErrContractRejected)
+		}
+		if outcome.Status == RevisionConflicted && len(outcome.ConflictingTaskRefs) == 0 {
+			return DepartmentReview{}, fmt.Errorf("%w: a conflicted outcome must name the conflicting task refs", ErrContractRejected)
+		}
 	}
 	if out.Verdict != ReviewAccept && out.Verdict != ReviewNeedsReplan && out.Verdict != ReviewBlocked && out.Verdict != ReviewFail {
 		return DepartmentReview{}, fmt.Errorf("%w: invalid review verdict", ErrContractRejected)

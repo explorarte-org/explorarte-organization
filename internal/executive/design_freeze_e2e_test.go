@@ -37,6 +37,12 @@ type scriptedHarness struct {
 	// prescriptions interact with the evidence-requirements contract.
 	adjudicationRequiredChanges []string
 
+	// Round-aware contract hooks (checkpoint E): when set, they replace the
+	// static body for that purpose, receiving the design round of the task
+	// being driven. Returning an empty string falls back to the static body.
+	departmentPlanBody   func(round int) string
+	departmentReviewBody func(round int) string
+
 	// contexts, when set, lets the harness answer what retrieval was seeded
 	// with for each executed command.
 	contexts *fakeContexts
@@ -61,6 +67,24 @@ func (h *scriptedHarness) Execute(_ context.Context, command HarnessRunCommand) 
 	h.mu.Unlock()
 
 	body := h.bodies[command.Purpose]
+	switch command.Purpose {
+	case PurposeDepartmentPlan:
+		if h.departmentPlanBody != nil {
+			if task, taskErr := h.tasks.GetTask(context.Background(), command.TaskID); taskErr == nil {
+				if dynamic := h.departmentPlanBody(designRoundOf(task.IdempotencyKey)); dynamic != "" {
+					body = dynamic
+				}
+			}
+		}
+	case PurposeDepartmentReview:
+		if h.departmentReviewBody != nil {
+			if task, taskErr := h.tasks.GetTask(context.Background(), command.TaskID); taskErr == nil {
+				if dynamic := h.departmentReviewBody(designRoundOf(task.IdempotencyKey)); dynamic != "" {
+					body = dynamic
+				}
+			}
+		}
+	}
 	if command.Purpose == PurposeDesignAdjudication {
 		body = h.adjudicationBody(command.TaskID)
 	}
