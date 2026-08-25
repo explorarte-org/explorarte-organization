@@ -42,6 +42,7 @@ type Orchestrator struct {
 	decisions      DecisionRecorder
 	validator      *Validator
 	limits         Limits
+	authorization  AuthorizationGate
 	clock          Clock
 	budgets        AgentBudgetProvider
 	messages       AgentMessagingProvider
@@ -115,6 +116,26 @@ func WithAgentMessaging(messages AgentMessagingProvider) OrchestratorOption {
 	return func(o *Orchestrator) { o.messages = messages }
 }
 
+// WithLimits overrides the run's governance bounds after construction --
+// a scenario opens exactly the rounds it needs, while production callers
+// keep DefaultLimits untouched. The validator owns its own copy of the same
+// bounds, so overriding one means rebuilding the other: limits and their
+// enforcement must never disagree.
+func WithLimits(limits Limits) OrchestratorOption {
+	return func(o *Orchestrator) {
+		if limits.MaxDepartments <= 0 {
+			limits = DefaultLimits()
+		}
+		validator, err := NewValidator(o.registry, o.authorization, limits)
+		if err != nil {
+			// Unreachable once construction succeeded: the registry and the
+			// authorization gate are already wired and non-nil.
+			return
+		}
+		o.limits, o.validator = limits, validator
+	}
+}
+
 func NewOrchestrator(deps Dependencies, opts ...OrchestratorOption) (*Orchestrator, error) {
 	if strings.TrimSpace(deps.OrganizationID) == "" || deps.Registry == nil || deps.Tasks == nil || deps.Contexts == nil ||
 		deps.Assignments == nil || deps.Principals == nil || deps.Models == nil || deps.Harness == nil ||
@@ -139,7 +160,8 @@ func NewOrchestrator(deps Dependencies, opts ...OrchestratorOption) (*Orchestrat
 		contexts: deps.Contexts, assignments: deps.Assignments, principals: deps.Principals, models: deps.Models,
 		acceptance: deps.Acceptance,
 		harness:    deps.Harness, budget: deps.Budget, completion: deps.Completion, decisions: deps.Decisions, validator: validator, limits: limits,
-		clock: clock, leases: map[int64]LeaseRecord{}, leaseKeeper: DefaultLeaseKeeperConfig(),
+		authorization: deps.Authorization,
+		clock:         clock, leases: map[int64]LeaseRecord{}, leaseKeeper: DefaultLeaseKeeperConfig(),
 	}
 	for _, opt := range opts {
 		opt(orchestrator)

@@ -50,6 +50,12 @@ type scriptedHarness struct {
 	// keep the static verdict.
 	adjudicationVerdictByRound map[int]string
 
+	// adjudicationRequiredChangesByRound overrides the demanded changes for
+	// a specific round, so a campaign can revise twice with different
+	// demands (RC:1:x from round 1, RC:2:x from round 2, ...). Absent
+	// rounds keep the static list.
+	adjudicationRequiredChangesByRound map[int][]string
+
 	// contexts, when set, lets the harness answer what retrieval was seeded
 	// with for each executed command.
 	contexts *fakeContexts
@@ -141,13 +147,18 @@ func (h *scriptedHarness) adjudicationBody(taskID int64) string {
 		digest = h.corruptDigest
 	}
 	verdict := h.adjudicationVerdict
-	if v, ok := h.adjudicationVerdictByRound[eAdjudicationRoundOf(task)]; ok {
+	round := eAdjudicationRoundOf(task)
+	if v, ok := h.adjudicationVerdictByRound[round]; ok {
 		verdict = v
 	}
 	required := "[]"
 	if verdict == "revise" {
-		if len(h.adjudicationRequiredChanges) > 0 {
-			encoded, err := json.Marshal(h.adjudicationRequiredChanges)
+		changes := h.adjudicationRequiredChanges
+		if perRound, ok := h.adjudicationRequiredChangesByRound[round]; ok {
+			changes = perRound
+		}
+		if len(changes) > 0 {
+			encoded, err := json.Marshal(changes)
 			if err != nil {
 				return ""
 			}

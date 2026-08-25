@@ -567,6 +567,159 @@ func TestECandidateAfterReplanIsThePostReplanFrontier(t *testing.T) {
 	}
 }
 
+// GUARD: carry-forward rides the SAME post-replan frontier as everything
+// else. A department that redid a contradiction in round N -- initial owner
+// superseded, follow-up authoritative -- and is asked for NOTHING in round
+// N+1 must carry the settled frontier forward, never resurrect the
+// superseded resolution one round later.
+func TestECarryForwardUsesThePostReplanFrontier(t *testing.T) {
+	fixture := newMultiUnitWiringFixture(t, "revise", eSources(), []EvidenceRequirementProposal{
+		{Subject: "MaxDesignRounds", Relations: []string{"definition"}},
+	}, []string{"diseno"}, WithRepositoryEvidenceSource("explorarte-organization", eWorld()), WithLimits(func() Limits {
+		bounds := DefaultLimits()
+		bounds.MaxDesignRounds = 3
+		return bounds
+	}()))
+	h := fixture.harness
+	h.bodies[PurposeDepartmentWorker] = eWorkerBody()
+	h.adjudicationEvidence = `[{"subject":"driveDesignFreeze","relations":["application"]}]`
+	h.adjudicationVerdictByRound = map[int]string{3: "freeze"}
+	h.adjudicationRequiredChanges = []string{
+		"Clarify MaxDepartmentReplans granularity: aggregate ceiling or per-department cap.",
+		"Ground the revise-to-next-round transition in activeDesignRound citations.",
+	}
+	h.adjudicationRequiredChangesByRound = map[int][]string{
+		2: {"Tighten the freeze evidence contract."},
+	}
+
+	taskJSON := func(unit, key string) string {
+		return `{"client_key":"` + key + `","assigned_role_id":"` + unit + `/qa","task_class":"engineering.review",` +
+			`"title":"Resolve","instructions":"Address the assigned required changes.","acceptance_criteria":["Cite"],"dependencies":[]}`
+	}
+	h.departmentPlanBody = func(task TaskRecord) string {
+		unit := eTaskUnit(task)
+		round := designRoundOf(task.IdempotencyKey)
+		if unit == "" {
+			return ""
+		}
+		if round < 2 {
+			return `{"schema_version":"department-plan/v2","department_id":"` + unit + `","tasks":[` +
+				taskJSON(unit, unit+"_owner") + `,` +
+				`{"client_key":"` + unit + `_support","assigned_role_id":"` + unit + `/qa","task_class":"qa.testing",` +
+				`"title":"Verify","instructions":"Verify.","acceptance_criteria":["Check"],"dependencies":[]}],` +
+				`"review_criteria":["Consistent"],"unresolved":[],"revision_ownership":[]}`
+		}
+		var claims []string
+		switch {
+		case round == 2 && unit == "diseno":
+			claims = []string{"RC:1:1"}
+		case round == 2 && unit == "ingenieria_ia":
+			claims = []string{"RC:1:2"}
+		case round >= 3 && unit == "diseno":
+			claims = []string{fmt.Sprintf("RC:%d:1", round-1)}
+		default:
+			claims = nil // ingenieria_ia is asked for nothing from here on
+		}
+		ownership := ""
+		for _, id := range claims {
+			if ownership != "" {
+				ownership += ","
+			}
+			ownership += ownerEntry(id, unit+"_owner")
+		}
+		tasks := `"tasks":[]`
+		if len(claims) > 0 {
+			tasks = `"tasks":[` + taskJSON(unit, unit+"_owner") + `,` +
+				`{"client_key":"` + unit + `_support","assigned_role_id":"` + unit + `/qa","task_class":"qa.testing",` +
+				`"title":"Verify","instructions":"Verify.","acceptance_criteria":["Check"],"dependencies":[]}]`
+		}
+		return `{"schema_version":"department-plan/v2","department_id":"` + unit + `",` +
+			tasks + `,"review_criteria":["Consistent"],"unresolved":[],"revision_ownership":[` + ownership + `]}`
+	}
+	h.departmentReviewBody = func(task TaskRecord) string {
+		unit := eTaskUnit(task)
+		round := designRoundOf(task.IdempotencyKey)
+		ordinal := reviewReplanOrdinal(task.IdempotencyKey)
+		if unit == "" || round < 2 {
+			return ""
+		}
+		if unit == "ingenieria_ia" && round == 2 {
+			if ordinal == 0 {
+				return `{"schema_version":"department-review/v2","verdict":"needs_replan",` +
+					`"findings":["the deliverables contradict each other on RC:1:2"],"unsatisfied_criteria":[],"evidence_refs":[],` +
+					`"proposed_followup_tasks":[` + taskJSON("ingenieria_ia", "ingenieria_fix") + `],` +
+					`"followup_ownership":[` + ownerEntry("RC:1:2", "ingenieria_fix") + `],` +
+					`"revision_outcomes":[{"required_change_id":"RC:1:2","status":"conflicted","canonical_resolution":"","conflicting_task_refs":["task:a","task:b"]}]}`
+			}
+			return eReplanReviewBody([]string{"RC:1:2"})
+		}
+		var ids []string
+		switch {
+		case unit == "diseno" && round == 2:
+			ids = []string{"RC:1:1"}
+		case unit == "diseno":
+			ids = []string{fmt.Sprintf("RC:%d:1", round-1)}
+		}
+		outcomes := ""
+		for _, id := range ids {
+			if outcomes != "" {
+				outcomes += ","
+			}
+			outcomes += `{"required_change_id":"` + id + `","status":"resolved","canonical_resolution":"settled with citation","conflicting_task_refs":[]}`
+		}
+		return `{"schema_version":"department-review/v2","verdict":"accept",` +
+			`"findings":["reviewed"],"unsatisfied_criteria":[],"evidence_refs":[],` +
+			`"proposed_followup_tasks":[],"followup_ownership":[],"revision_outcomes":[` + outcomes + `]}`
+	}
+
+	driveCapability(t, fixture, 60)
+
+	root := fixture.rootRecord(t)
+	if root.ReasonCode == ReasonDesignRoundsExhausted {
+		t.Fatal("a legal carry-forward shape consumed every design round")
+	}
+	allTasks, err := fixture.tasks.ListByCorrelation(context.Background(), root.CorrelationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewTask, ok := findTaskByKey(allTasks, childKey(root.ID, "design-review:round:3"))
+	if !ok || reviewTask.Status != "completed" {
+		t.Fatal("the round-3 candidate was never reviewed")
+	}
+	prefix := "executive:" + itoa64(root.ID) + ":worker:ingenieria_ia:design-round:2:"
+	var supersededTask, keptTask, fixTask TaskRecord
+	for _, worker := range allTasks {
+		if !strings.HasPrefix(worker.IdempotencyKey, prefix) || worker.Status != "completed" {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(worker.IdempotencyKey[len(prefix):], "ingenieria_ia_owner"):
+			supersededTask = worker
+		case strings.HasPrefix(worker.IdempotencyKey[len(prefix):], "ingenieria_ia_support"):
+			keptTask = worker
+		case strings.HasPrefix(worker.IdempotencyKey[len(prefix):], "ingenieria_fix"):
+			fixTask = worker
+		}
+	}
+	if supersededTask.ID == 0 || keptTask.ID == 0 || fixTask.ID == 0 {
+		t.Fatal("the round-2 replan chain never materialized its three workers")
+	}
+	instructions := reviewTask.Instructions
+	if !strings.Contains(instructions, "[carried forward unchanged from design round 2") {
+		t.Fatalf("the carry-forward was not labeled in the round-3 candidate:\n%.500s", instructions)
+	}
+	for _, want := range []int64{keptTask.ID, fixTask.ID} {
+		if got := strings.Count(instructions, fmt.Sprintf("(task:%d ", want)); got != 1 {
+			t.Fatalf("effective carried deliverable task %d appears %d times, want once:\n%.500s",
+				want, got, instructions)
+		}
+	}
+	if strings.Contains(instructions, fmt.Sprintf("(task:%d ", supersededTask.ID)) {
+		t.Fatalf("carry-forward resurrected the superseded resolution (task %d):\n%.500s",
+			supersededTask.ID, instructions)
+	}
+}
+
 func eOwnerRef() string { return "900001" }
 
 // GUARD: the reviewer sees the ownership table and the consistency rider

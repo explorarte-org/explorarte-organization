@@ -470,41 +470,12 @@ func (o *Orchestrator) candidateDesign(ctx context.Context, root TaskRecord, all
 			continue
 		}
 		seenContributors[unit] = true
-		superseded, err := o.supersededWorkerKeys(ctx, all, root.ID, unit, round)
+		refs, err := o.unitRoundFrontier(ctx, all, root.ID, unit, round)
 		if err != nil {
 			return designArtifact{}, nil, false, err
 		}
-		contributed := false
-		for _, worker := range departmentWorkerTasks(all, root.ID, unit) {
-			if designRoundOf(worker.IdempotencyKey) != round {
-				continue
-			}
-			// Only completed workers. A failed one produced no
-			// deliverable, and the leader review already weighed its
-			// failure; presenting nothing as part of the design would
-			// be worse than presenting less.
-			if worker.Status != "completed" {
-				continue
-			}
-			// The frontier rule (checkpoint E): a worker whose authority a
-			// follow-up took over is SUPERSEDED. Its resolution was judged
-			// and redone inside the department loop; re-presenting it here
-			// would hand the adversarial reviewer the very contradiction
-			// the replan just settled, next to the answer that settled it.
-			if superseded[workerBaseClientKey(worker.IdempotencyKey, root.ID, unit, round)] {
-				continue
-			}
-			result, ok := o.resultForCompletedTask(ctx, worker)
-			if !ok {
-				continue
-			}
-			artifact.Units = append(artifact.Units, designUnitRef{
-				UnitID: unit, TaskID: worker.ID,
-				InvocationID: result.InvocationID, ResultHash: result.ResponseHash,
-			})
-			contributed = true
-		}
-		if contributed {
+		artifact.Units = append(artifact.Units, refs...)
+		if len(refs) > 0 {
 			units = append(units, unit)
 		}
 	}
@@ -536,7 +507,10 @@ func (o *Orchestrator) candidateDesign(ctx context.Context, root TaskRecord, all
 			if err != nil || len(sheet.RevisionOwnership) > 0 {
 				continue // claimed work, or unreadable -- never invent a carry
 			}
-			refs, fromRound, ok := o.carriedContribution(ctx, all, root.ID, unit, round)
+			refs, fromRound, ok, err := o.carriedContribution(ctx, all, root.ID, unit, round)
+			if err != nil {
+				return designArtifact{}, nil, false, err
+			}
 			if !ok {
 				continue // nothing accepted earlier to carry
 			}
@@ -558,6 +532,49 @@ func (o *Orchestrator) candidateDesign(ctx context.Context, root TaskRecord, all
 		return artifact.Units[i].TaskID < artifact.Units[j].TaskID
 	})
 	return artifact, units, true, nil
+}
+
+// unitRoundFrontier is the ONE definition of a department's effective
+// deliverables for a round: its completed workers minus exactly those whose
+// authority a follow-up took over. The candidate for the round being judged
+// and the carry-forward of an earlier round both read through this function
+// -- two frontier implementations would drift, and the drift would be the
+// same contradiction re-injected one round later.
+func (o *Orchestrator) unitRoundFrontier(ctx context.Context, all []TaskRecord, rootID int64, unit string, round int) ([]designUnitRef, error) {
+	superseded, err := o.supersededWorkerKeys(ctx, all, rootID, unit, round)
+	if err != nil {
+		return nil, err
+	}
+	refs := make([]designUnitRef, 0)
+	for _, worker := range departmentWorkerTasks(all, rootID, unit) {
+		if designRoundOf(worker.IdempotencyKey) != round {
+			continue
+		}
+		// Only completed workers. A failed one produced no
+		// deliverable, and the leader review already weighed its
+		// failure; presenting nothing as part of the design would
+		// be worse than presenting less.
+		if worker.Status != "completed" {
+			continue
+		}
+		// The frontier rule (checkpoint E): a superseded worker was judged
+		// and redone inside the department loop. Re-presenting it -- in
+		// this round's candidate OR as a later carry-forward -- would hand
+		// the adversarial reviewer the very contradiction the replan just
+		// settled, next to the answer that settled it.
+		if superseded[workerBaseClientKey(worker.IdempotencyKey, rootID, unit, round)] {
+			continue
+		}
+		result, ok := o.resultForCompletedTask(ctx, worker)
+		if !ok {
+			continue
+		}
+		refs = append(refs, designUnitRef{
+			UnitID: unit, TaskID: worker.ID,
+			InvocationID: result.InvocationID, ResultHash: result.ResponseHash,
+		})
+	}
+	return refs, nil
 }
 
 // supersededWorkerKeys replays a department's completed reviews of this
@@ -644,9 +661,11 @@ func workerBaseClientKey(key string, rootID int64, unit string, round int) strin
 
 // carriedContribution returns a department's last ACCEPTED deliverable from
 // rounds before `round`: its most recent earlier round whose review completed
-// and produced completed workers with durable results. That is what an
-// un-asked department contributes verbatim -- accepted work, never a draft.
-func (o *Orchestrator) carriedContribution(ctx context.Context, all []TaskRecord, rootID int64, unit string, round int) ([]designUnitRef, int, bool) {
+// and whose EFFECTIVE frontier -- the same post-replan frontier
+// unitRoundFrontier applies everywhere else -- is non-empty. That is what an
+// un-asked department contributes verbatim: accepted work, never a draft,
+// and never a superseded resolution the department loop already redid.
+func (o *Orchestrator) carriedContribution(ctx context.Context, all []TaskRecord, rootID int64, unit string, round int) ([]designUnitRef, int, bool, error) {
 	for from := round - 1; from >= 1; from-- {
 		accepted := false
 		for _, task := range all {
@@ -659,25 +678,15 @@ func (o *Orchestrator) carriedContribution(ctx context.Context, all []TaskRecord
 		if !accepted {
 			continue
 		}
-		var refs []designUnitRef
-		for _, worker := range departmentWorkerTasks(all, rootID, unit) {
-			if designRoundOf(worker.IdempotencyKey) != from || worker.Status != "completed" {
-				continue
-			}
-			result, ok := o.resultForCompletedTask(ctx, worker)
-			if !ok {
-				continue
-			}
-			refs = append(refs, designUnitRef{
-				UnitID: unit, TaskID: worker.ID,
-				InvocationID: result.InvocationID, ResultHash: result.ResponseHash,
-			})
+		refs, err := o.unitRoundFrontier(ctx, all, rootID, unit, from)
+		if err != nil {
+			return nil, 0, false, err
 		}
 		if len(refs) > 0 {
-			return refs, from, true
+			return refs, from, true, nil
 		}
 	}
-	return nil, 0, false
+	return nil, 0, false, nil
 }
 
 // designRound resolves the round this phase is currently working on: the
