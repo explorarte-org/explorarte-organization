@@ -863,6 +863,15 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 					if pErr = o.validator.ValidateFollowups(ctx, revision.ID, req.UnitID, leader.ID, review.ProposedFollowupTasks); pErr != nil {
 						return pErr
 					}
+					// Checkpoint E1 at attempt time: the redo inherits
+					// exclusive ownership, and a refusal HERE is retryable
+					// feedback -- the same reason shape validation lives in
+					// this callback rather than on the completed-review path.
+					if review.SchemaVersion == DepartmentReviewSchemaVersionV2 {
+						if ownErr := validateFollowupOwnership(outstanding, review); ownErr != nil {
+							return ownErr
+						}
+					}
 				}
 				return nil
 			})
