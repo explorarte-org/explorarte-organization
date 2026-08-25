@@ -456,7 +456,8 @@ func TestEOwnershipCoverageAndLegalShapes(t *testing.T) {
 			`{"required_change_id":"RC:1:2","status":"resolved","canonical_resolution":"cited","conflicting_task_refs":[]}]`
 		fixture.eFollowups = `[{"client_key":"fix_up","assigned_role_id":"ingenieria_ia/qa","task_class":"engineering.review",` +
 			`"title":"Redo","instructions":"Redo the resolution.","acceptance_criteria":["Cite"],"dependencies":[]}]`
-		fixture.eFollowupOwnership = `[{"required_change_id":"RC:1:1","owner_client_key":"fix_up"}]`
+		fixture.eFollowupOwnership =
+			"[" + ownerEntry("RC:1:1", "fix_up") + "," + ownerEntry("RC:1:2", "fix_up") + "]"
 		driveCapability(t, fixture, 30)
 		if !eRoundTwoWorkersExist(t, fixture) {
 			allTasks, _ := fixture.tasks.ListByCorrelation(context.Background(), fixture.rootRecord(t).CorrelationID)
@@ -509,14 +510,15 @@ func TestThePlanSchemaTeachesTheSameClaimRuleAsTheInstructions(t *testing.T) {
 // design loop -- and everything still authoritative appears exactly once.
 func TestECandidateAfterReplanIsThePostReplanFrontier(t *testing.T) {
 	fixture := eFixture(t)
-	fixture.eOwnership = ownerEntry("RC:1:1", eOwnerKey) + "," + ownerEntry("RC:1:2", eSupportKey)
+	fixture.eOwnership = ownerEntry("RC:1:1", eOwnerKey) + "," + ownerEntry("RC:1:2", eOwnerKey)
 	fixture.eReviewVerdict = "needs_replan"
 	fixture.eOutcomes = `[` +
 		`{"required_change_id":"RC:1:1","status":"conflicted","canonical_resolution":"","conflicting_task_refs":["task:a","task:b"]},` +
 		`{"required_change_id":"RC:1:2","status":"resolved","canonical_resolution":"cited","conflicting_task_refs":[]}]`
 	fixture.eFollowups = `[{"client_key":"reconcile_mdr","assigned_role_id":"ingenieria_ia/qa","task_class":"engineering.review",` +
 		`"title":"Reconcile MDR granularity","instructions":"One falsifiable claim.","acceptance_criteria":["Cite"],"dependencies":[]}]`
-	fixture.eFollowupOwnership = `[{"required_change_id":"RC:1:1","owner_client_key":"reconcile_mdr"}]`
+	fixture.eFollowupOwnership =
+		"[" + ownerEntry("RC:1:1", "reconcile_mdr") + "," + ownerEntry("RC:1:2", "reconcile_mdr") + "]"
 
 	base := fixture.harness.departmentReviewBody
 	fixture.harness.departmentReviewBody = func(task TaskRecord) string {
@@ -720,6 +722,118 @@ func TestECarryForwardUsesThePostReplanFrontier(t *testing.T) {
 	}
 }
 
+// GUARD: authority is tracked per required change, but a redo replaces a
+// WHOLE deliverable. A follow-up that takes over only PART of what an owner
+// still governs is refused -- the host demands an atomic redo instead of
+// silently dropping the still-valid resolutions of the replaced artifact.
+// When the redo IS atomic, every authority survives through the new owner
+// and the replaced artifact leaves the candidate whole.
+func TestERebindOfAMultiChangeOwnerIsWorkerAtomic(t *testing.T) {
+	planOwnership := ownerEntry("RC:1:1", eOwnerKey) + "," + ownerEntry("RC:1:2", eOwnerKey)
+	outcomes := `[` +
+		`{"required_change_id":"RC:1:1","status":"conflicted","canonical_resolution":"","conflicting_task_refs":["task:a","task:b"]},` +
+		`{"required_change_id":"RC:1:2","status":"resolved","canonical_resolution":"cited","conflicting_task_refs":[]}]`
+	followupsJSON := `[{"client_key":"reconcile_mdr","assigned_role_id":"ingenieria_ia/qa","task_class":"engineering.review",` +
+		`"title":"Reconcile MDR granularity","instructions":"One falsifiable claim.","acceptance_criteria":["Cite"],"dependencies":[]}]`
+
+	t.Run("partial rebind of a multi-change owner is refused", func(t *testing.T) {
+		fixture := eFixture(t)
+		fixture.eOwnership = planOwnership
+		fixture.eReviewVerdict = "needs_replan"
+		fixture.eOutcomes = outcomes
+		fixture.eFollowups = followupsJSON
+		fixture.eFollowupOwnership = "[" + ownerEntry("RC:1:1", "reconcile_mdr") + "]"
+
+		driveCapability(t, fixture, 30)
+
+		sawRefusal := false
+		for _, code := range fixture.tasks.failed {
+			if code == "model_result_contract_rejected" {
+				sawRefusal = true
+			}
+		}
+		if !sawRefusal {
+			t.Fatal("a partial worker supersession was never refused")
+		}
+		root := fixture.rootRecord(t)
+		allTasks, err := fixture.tasks.ListByCorrelation(context.Background(), root.CorrelationID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		namedOrphan := false
+		for _, task := range allTasks {
+			if strings.Contains(task.Reason, "whole deliverable this redo replaces") &&
+				strings.Contains(task.Reason, "RC:1:2") {
+				namedOrphan = true
+			}
+		}
+		if !namedOrphan {
+			t.Fatal("the refusal did not name the change left governing by a half-replaced artifact")
+		}
+		if _, ok := findTaskByKey(allTasks, childKey(root.ID, "design-review:round:2")); ok {
+			t.Fatal("a candidate was produced over a partially superseded artifact")
+		}
+	})
+
+	t.Run("atomic rebind preserves every authority", func(t *testing.T) {
+		fixture := eFixture(t)
+		fixture.eOwnership = planOwnership
+		fixture.eReviewVerdict = "needs_replan"
+		fixture.eOutcomes = outcomes
+		fixture.eFollowups = followupsJSON
+		fixture.eFollowupOwnership =
+			"[" + ownerEntry("RC:1:1", "reconcile_mdr") + "," + ownerEntry("RC:1:2", "reconcile_mdr") + "]"
+
+		base := fixture.harness.departmentReviewBody
+		fixture.harness.departmentReviewBody = func(task TaskRecord) string {
+			if strings.Contains(task.IdempotencyKey, ":replan:") {
+				return eReplanReviewBody([]string{"RC:1:1", "RC:1:2"})
+			}
+			return base(task)
+		}
+
+		driveCapability(t, fixture, 40)
+
+		root := fixture.rootRecord(t)
+		allTasks, err := fixture.tasks.ListByCorrelation(context.Background(), root.CorrelationID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reviewTask, ok := findTaskByKey(allTasks, childKey(root.ID, "design-review:round:2"))
+		if !ok || reviewTask.Status != "completed" {
+			t.Fatal("the atomic redo never reached its candidate")
+		}
+		var supersededWorker, keptSupportTask, fixWorker TaskRecord
+		prefix := "executive:" + itoa64(root.ID) + ":worker:ingenieria_ia:design-round:2:"
+		for _, worker := range allTasks {
+			if !strings.HasPrefix(worker.IdempotencyKey, prefix) || worker.Status != "completed" {
+				continue
+			}
+			switch {
+			case strings.HasPrefix(worker.IdempotencyKey[len(prefix):], eOwnerKey):
+				supersededWorker = worker
+			case strings.HasPrefix(worker.IdempotencyKey[len(prefix):], eSupportKey):
+				keptSupportTask = worker
+			case strings.HasPrefix(worker.IdempotencyKey[len(prefix):], "reconcile_mdr"):
+				fixWorker = worker
+			}
+		}
+		if supersededWorker.ID == 0 || keptSupportTask.ID == 0 || fixWorker.ID == 0 {
+			t.Fatal("the atomic chain never materialized its three workers")
+		}
+		instructions := reviewTask.Instructions
+		if strings.Contains(instructions, fmt.Sprintf("(task:%d ", supersededWorker.ID)) {
+			t.Fatalf("the replaced artifact reappeared in the candidate:\n%.500s", instructions)
+		}
+		for _, want := range []int64{fixWorker.ID, keptSupportTask.ID} {
+			if got := strings.Count(instructions, fmt.Sprintf("(task:%d ", want)); got != 1 {
+				t.Fatalf("authority-carrying deliverable task %d appears %d times, want once:\n%.500s",
+					want, got, instructions)
+			}
+		}
+	})
+}
+
 func eOwnerRef() string { return "900001" }
 
 // GUARD: the reviewer sees the ownership table and the consistency rider
@@ -894,7 +1008,8 @@ func TestEReplanReviewSeesTheRedoOwnerAsAuthoritative(t *testing.T) {
 		`{"required_change_id":"RC:1:2","status":"resolved","canonical_resolution":"cited","conflicting_task_refs":[]}]`
 	fixture.eFollowups = `[{"client_key":"reconcile_mdr","assigned_role_id":"ingenieria_ia/qa","task_class":"engineering.review",` +
 		`"title":"Reconcile MDR granularity","instructions":"One falsifiable claim.","acceptance_criteria":["Cite"],"dependencies":[]}]`
-	fixture.eFollowupOwnership = `[{"required_change_id":"RC:1:1","owner_client_key":"reconcile_mdr"}]`
+	fixture.eFollowupOwnership =
+		"[" + ownerEntry("RC:1:1", "reconcile_mdr") + "," + ownerEntry("RC:1:2", "reconcile_mdr") + "]"
 
 	base := fixture.harness.departmentReviewBody
 	fixture.harness.departmentReviewBody = func(task TaskRecord) string {
@@ -928,8 +1043,8 @@ func TestEReplanReviewSeesTheRedoOwnerAsAuthoritative(t *testing.T) {
 	if !strings.Contains(table, "RC:1:1 [owner: reconcile_mdr]") {
 		t.Fatalf("the redone change does not show its redo owner:\n%s", table)
 	}
-	if !strings.Contains(table, "RC:1:2 [owner: "+eOwnerKey+"]") {
-		t.Fatalf("the change nobody re-executed lost its plan owner:\n%s", table)
+	if !strings.Contains(table, "RC:1:2 [owner: reconcile_mdr]") {
+		t.Fatalf("the change whose artifact was wholly replaced does not show its redo owner:\n%s", table)
 	}
 }
 
@@ -983,7 +1098,8 @@ func TestEAcceptGateAndNeedsReplanRouting(t *testing.T) {
 			`{"required_change_id":"RC:1:2","status":"resolved","canonical_resolution":"cited","conflicting_task_refs":[]}]`
 		fixture.eFollowups = `[{"client_key":"reconcile_mdr","assigned_role_id":"ingenieria_ia/qa","task_class":"engineering.review",` +
 			`"title":"Reconcile MDR granularity","instructions":"One falsifiable claim.","acceptance_criteria":["Cite"],"dependencies":[]}]`
-		fixture.eFollowupOwnership = `[{"required_change_id":"RC:1:1","owner_client_key":"reconcile_mdr"}]`
+		fixture.eFollowupOwnership =
+			"[" + ownerEntry("RC:1:1", "reconcile_mdr") + "," + ownerEntry("RC:1:2", "reconcile_mdr") + "]"
 
 		driveCapability(t, fixture, 30)
 
@@ -1015,7 +1131,8 @@ func TestEAcceptGateAndNeedsReplanRouting(t *testing.T) {
 			`{"required_change_id":"RC:1:2","status":"resolved","canonical_resolution":"cited","conflicting_task_refs":[]}]`
 		fixture.eFollowups = `[{"client_key":"redo_rc11","assigned_role_id":"ingenieria_ia/qa","task_class":"engineering.review",` +
 			`"title":"Redo the unanswered change","instructions":"Address it.","acceptance_criteria":["Cite"],"dependencies":[]}]`
-		fixture.eFollowupOwnership = `[{"required_change_id":"RC:1:1","owner_client_key":"redo_rc11"}]`
+		fixture.eFollowupOwnership =
+			"[" + ownerEntry("RC:1:1", "redo_rc11") + "," + ownerEntry("RC:1:2", "redo_rc11") + "]"
 
 		driveCapability(t, fixture, 30)
 

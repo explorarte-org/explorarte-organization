@@ -541,7 +541,7 @@ func (o *Orchestrator) candidateDesign(ctx context.Context, root TaskRecord, all
 // -- two frontier implementations would drift, and the drift would be the
 // same contradiction re-injected one round later.
 func (o *Orchestrator) unitRoundFrontier(ctx context.Context, all []TaskRecord, rootID int64, unit string, round int) ([]designUnitRef, error) {
-	superseded, err := o.supersededWorkerKeys(ctx, all, rootID, unit, round)
+	_, superseded, err := o.roundOwnershipReplay(ctx, all, rootID, unit, round)
 	if err != nil {
 		return nil, err
 	}
@@ -577,17 +577,15 @@ func (o *Orchestrator) unitRoundFrontier(ctx context.Context, all []TaskRecord, 
 	return refs, nil
 }
 
-// supersededWorkerKeys replays a department's completed reviews of this
-// round in replan order and returns the client keys whose authority a
-// follow-up TOOK OVER. The authority map starts as the round sheet's own
-// claims; every needs_replan verdict re-binds its open changes to the
-// follow-ups it proposed, and each re-binding supersedes exactly one
-// previous holder -- that is what followup_ownership MEANS. Whoever ends up
-// in this set was judged and redone inside the department loop; their
-// deliverable is history, not part of the design's effective frontier.
-func (o *Orchestrator) supersededWorkerKeys(ctx context.Context, all []TaskRecord, rootID int64, unit string, round int) (map[string]bool, error) {
-	superseded := make(map[string]bool)
-	authority := make(map[string]string)
+// roundOwnershipReplay reconstructs a department's ownership state for this
+// round by replaying history ONCE: the round sheet's claims, then every
+// completed review's followup_ownership in replan order, each re-binding
+// superseding exactly the previous holder of that change. Everything that
+// needs to know WHO governs what -- the candidate frontier below, and the
+// atomic-rebind gate on a new redo proposal -- reads this one replay.
+func (o *Orchestrator) roundOwnershipReplay(ctx context.Context, all []TaskRecord, rootID int64, unit string, round int) (authority map[string]string, superseded map[string]bool, err error) {
+	authority = make(map[string]string)
+	superseded = make(map[string]bool)
 	if planTask, found := findTaskByKey(all, childKey(rootID, "leader-plan:"+unit+designRoundSuffix(round))); found && planTask.Status == "completed" {
 		if result, ok := o.resultForCompletedTask(ctx, planTask); ok {
 			if sheet, err := ParseDepartmentPlan(result.JSONOutput, o.limits); err == nil {
@@ -635,7 +633,7 @@ func (o *Orchestrator) supersededWorkerKeys(ctx context.Context, all []TaskRecor
 			authority[binding.RequiredChangeID] = binding.OwnerClientKey
 		}
 	}
-	return superseded, nil
+	return authority, superseded, nil
 }
 
 // workerBaseClientKey recovers the proposing client_key from a worker task's

@@ -967,11 +967,19 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 							return pErr
 						}
 						// Checkpoint E1 at attempt time: the redo inherits
-						// exclusive ownership, and a refusal HERE is retryable
-						// feedback -- the same reason shape validation lives in
-						// this callback rather than on the completed-review path.
+						// exclusive ownership, WORKER-ATOMICALLY. Authority is
+						// per required change, but a redo replaces a whole
+						// deliverable, so binding one change of an owner forces
+						// binding the rest of what that artifact still governs.
+						// A refusal HERE is retryable feedback -- the same reason
+						// shape validation lives in this callback rather than on
+						// the completed-review path.
 						if review.SchemaVersion == DepartmentReviewSchemaVersionV2 {
-							if ownErr := validateFollowupOwnership(outstanding, review); ownErr != nil {
+							authority, _, authErr := o.roundOwnershipReplay(ctx, all, root.ID, req.UnitID, round)
+							if authErr != nil {
+								return authErr
+							}
+							if ownErr := validateFollowupOwnership(outstanding, authority, review); ownErr != nil {
 								return ownErr
 							}
 						}
@@ -1015,7 +1023,11 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 				// assigned subset the attempt-time gate validated against: this
 				// is its safety net, not a second opinion over a wider universe.
 				if review.SchemaVersion == DepartmentReviewSchemaVersionV2 {
-					if ownErr := validateFollowupOwnership(assigned, review); ownErr != nil {
+					authority, _, authErr := o.roundOwnershipReplay(ctx, all, root.ID, req.UnitID, round)
+					if authErr != nil {
+						return Run{}, false, authErr
+					}
+					if ownErr := validateFollowupOwnership(assigned, authority, review); ownErr != nil {
 						return Run{}, false, ownErr
 					}
 				}

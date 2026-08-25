@@ -352,51 +352,105 @@ func validateRevisionOutcomes(outstanding []RequiredChange, review DepartmentRev
 	return nil
 }
 
-// validateFollowupOwnership is checkpoint E1 on the REDO side: when a
-// needs_replan review is about to materialize its follow-ups, every still-
-// open required change must be bound to EXACTLY ONE follow-up -- and only
-// open changes may be bound. Without this, the redo loop could recreate
-// R16's parallel-authority pattern inside :replan:N itself.
-func validateFollowupOwnership(outstanding []RequiredChange, review DepartmentReview) error {
-	outcomes := make(map[string]RevisionOutcome, len(review.RevisionOutcomes))
-	for _, outcome := range review.RevisionOutcomes {
-		outcomes[outcome.RequiredChangeID] = outcome
-	}
-	openIDs := make(map[string]bool)
-	for _, change := range outstanding {
-		if outcome, ok := outcomes[change.ID]; ok && outcome.Status == RevisionResolved {
-			continue // closed by the reviewer; nothing to own
-		}
-		openIDs[change.ID] = true
-	}
+// validateFollowupOwnership is checkpoint E1 on the REDO side, in its
+// worker-atomic form. Authority over required changes lives per change, but
+// a redo replaces a WHOLE deliverable: when a follow-up takes over one
+// change, it must take over every change the replaced artifact still
+// governs -- otherwise part of a judged-and-redone result would survive as
+// authority while the rest of that same result is being redone, and the
+// candidate frontier (which drops superseded workers whole) would silently
+// lose the still-valid resolutions.
+//
+// `authority` is the CURRENT change->owner map for this department and
+// round (roundOwnershipReplay). The rule set:
+//
+//   - every binding must name a proposed follow-up and a change this
+//     department owns; no change may be bound twice;
+//   - CLOSURE: binding any change of owner P forces binding ALL changes P
+//     currently owns (a resolved sibling cannot stay with a half-replaced
+//     artifact);
+//   - COVERAGE: every OPEN (conflicted/unresolved) change must be bound.
+func validateFollowupOwnership(universe []RequiredChange, authority map[string]string, review DepartmentReview) error {
 	followupKeys := make(map[string]bool, len(review.ProposedFollowupTasks))
 	for _, task := range review.ProposedFollowupTasks {
 		followupKeys[task.ClientKey] = true
 	}
-	owners := make(map[string]string)
+	universeIDs := make(map[string]bool, len(universe))
+	openIDs := make(map[string]bool, len(universe))
+	outcomes := make(map[string]RevisionOutcome, len(review.RevisionOutcomes))
+	for _, outcome := range review.RevisionOutcomes {
+		outcomes[outcome.RequiredChangeID] = outcome
+	}
+	for _, change := range universe {
+		universeIDs[change.ID] = true
+		if outcome, ok := outcomes[change.ID]; !ok || outcome.Status != RevisionResolved {
+			openIDs[change.ID] = true
+		}
+	}
+	bindings := make(map[string]string)
 	var problems []string
 	for _, ownership := range review.FollowupOwnership {
 		id := ownership.RequiredChangeID
-		if !openIDs[id] {
-			problems = append(problems, id+" does not need a replan owner (unknown, or already resolved)")
-			continue
-		}
 		if !followupKeys[ownership.OwnerClientKey] {
 			problems = append(problems, id+" names follow-up client_key "+ownership.OwnerClientKey+", which this review does not propose")
 			continue
 		}
-		if previous, taken := owners[id]; taken {
+		if previous, taken := bindings[id]; taken {
 			problems = append(problems, id+" has two follow-up owners ("+previous+" and "+ownership.OwnerClientKey+")")
 			continue
 		}
-		owners[id] = ownership.OwnerClientKey
-	}
-	for _, change := range outstanding {
-		if !openIDs[change.ID] {
+		if !universeIDs[id] {
+			problems = append(problems, id+" is not a required change this department owns")
 			continue
 		}
-		if _, owned := owners[change.ID]; !owned {
-			problems = append(problems, "open required change "+change.ID+" has no follow-up owner")
+		bindings[id] = ownership.OwnerClientKey
+	}
+	if len(problems) > 0 {
+		sort.Strings(problems)
+		return fmt.Errorf("%w: followup_ownership invalid: %s",
+			ErrContractRejected, strings.Join(problems, "; "))
+	}
+
+	// Atomic-takeover closure: from each bound change, walk to its current
+	// owner and demand bindings for everything else that owner governs.
+	texts := make(map[string]string, len(universe))
+	ownedBy := make(map[string][]string)
+	for _, change := range universe {
+		texts[change.ID] = truncate(change.Text, 80)
+		if owner := authority[change.ID]; owner != "" {
+			ownedBy[owner] = append(ownedBy[owner], change.ID)
+		}
+	}
+	required := make(map[string]bool)
+	queue := make([]string, 0, len(bindings))
+	for id := range bindings {
+		queue = append(queue, id)
+	}
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		if required[id] {
+			continue
+		}
+		required[id] = true
+		if owner := authority[id]; owner != "" {
+			queue = append(queue, ownedBy[owner]...)
+		}
+	}
+	bound := func(id string) bool { _, ok := bindings[id]; return ok }
+	problems = problems[:0]
+	for _, change := range universe {
+		if required[change.ID] && !bound(change.ID) {
+			problems = append(problems, change.ID+" ("+texts[change.ID]+") stays governed by "+
+				authority[change.ID]+", whose whole deliverable this redo replaces; "+
+				"bind every change that artifact still owns")
+		}
+	}
+	for _, change := range universe {
+		if openIDs[change.ID] {
+			if _, bound := bindings[change.ID]; !bound {
+				problems = append(problems, "open required change "+change.ID+" has no follow-up owner")
+			}
 		}
 	}
 	if len(problems) > 0 {

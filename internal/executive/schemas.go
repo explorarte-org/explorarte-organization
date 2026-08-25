@@ -306,7 +306,7 @@ var (
 	    },
 	    "followup_ownership":{
 	      "type":"array",
-	      "description":"Checkpoint E1: when verdict=needs_replan, every required change whose outcome is conflicted or unresolved MUST be bound here to EXACTLY ONE proposed follow-up task (by its client_key). Two follow-ups owning one change, an unknown id, or a resolved change being re-owned are all refused by the host. Empty exactly when every revision_outcomes entry is resolved.",
+	      "description":"Checkpoint E1: when verdict=needs_replan, every required change whose outcome is conflicted or unresolved MUST be bound here to EXACTLY ONE proposed follow-up task (by its client_key). The redo replaces a WHOLE deliverable: once a follow-up takes over one change owned by a task, it (or another proposed follow-up) must take over EVERY other change that same task still owns -- a partial takeover leaving part of the replaced artifact in authority is refused. Two follow-ups owning one change and unknown ids are also refused.",
 	      "items":{
 	        "type":"object",
 	        "additionalProperties":false,
