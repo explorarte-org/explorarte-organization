@@ -282,7 +282,22 @@ func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error
 	if root.Status == "blocked" {
 		switch root.ReasonCode {
 		case "model_outcome_ambiguous":
-			return ProjectRun(root, nil), ErrModelOutcomeAmbiguous
+			// The block stands only while some ambiguity lacks a resolution.
+			// unreconciledAmbiguities AUTO-APPLIES the host policy on its way
+			// through, so a campaign whose every ambiguity is pure-model
+			// reopens itself here -- R14's recovery -- while one unresolvable
+			// execution keeps the whole run fail-closed.
+			children, listErr := o.tasks.ListByCorrelation(ctx, root.CorrelationID)
+			if listErr != nil {
+				return ProjectRun(root, nil), listErr
+			}
+			open, openErr := o.unreconciledAmbiguities(ctx, root, children)
+			if openErr != nil {
+				return ProjectRun(root, nil), openErr
+			}
+			if open {
+				return ProjectRun(root, nil), ErrModelOutcomeAmbiguous
+			}
 		case "indeterminate_tool_execution":
 			// A tool may already have produced an external side effect.
 			// Reopening this automatically is the one thing that could
@@ -1608,12 +1623,24 @@ func (o *Orchestrator) priorExecutionBarrier(ctx context.Context, root, task Tas
 		}
 	}
 	// A resolved ambiguous verdict wins: it is durable, terminal, and requires
-	// explicit reconciliation rather than waiting.
+	// explicit reconciliation rather than waiting -- UNLESS the reconciliation
+	// already exists. reconcileAmbiguousInvocation is that reconciliation: for
+	// a pure-model execution the host policy durably authorizes one retry
+	// (idempotently, write-once per invocation) and the barrier stands down
+	// for THIS invocation only. An ambiguity the policy cannot resolve still
+	// blocks exactly as before, and a SECOND ambiguous invocation would need
+	// its own resolution -- there is no ack-all.
 	if ambiguous.ID != 0 {
-		_, _ = o.tasks.BlockTask(ctx, root.ID, "model_outcome_ambiguous",
-			fmt.Sprintf("task=%d attempt=%d invocation=%d requires explicit inspection", task.ID, ambiguous.AttemptID, ambiguous.ID),
-			"service", orchestratorWorkerID)
-		return true, task, ErrModelOutcomeAmbiguous
+		reconciled, reconcileErr := o.reconcileAmbiguousInvocation(ctx, task, ambiguous)
+		if reconcileErr != nil {
+			return true, task, reconcileErr
+		}
+		if !reconciled {
+			_, _ = o.tasks.BlockTask(ctx, root.ID, "model_outcome_ambiguous",
+				fmt.Sprintf("task=%d attempt=%d invocation=%d requires explicit inspection", task.ID, ambiguous.AttemptID, ambiguous.ID),
+				"service", orchestratorWorkerID)
+			return true, task, ErrModelOutcomeAmbiguous
+		}
 	}
 	if unresolved.ID != 0 {
 		// Fail closed and stay retryable: nothing durable changes, no attempt is
