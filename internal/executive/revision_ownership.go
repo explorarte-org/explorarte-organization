@@ -80,31 +80,60 @@ func (o *Orchestrator) outstandingRevisionChanges(ctx context.Context, all []Tas
 	return o.requiredChangesWithIDs(ctx, all, rootID, round-1)
 }
 
-// validateRevisionOwnership enforces exclusive ownership at plan-contract
-// time, before materializeWorkerTasks creates anyone. The refusals map one to
-// one to R16's failure shape and to the reviewer's guard list: unknown ids,
-// unowned changes, and two owners for one change are all contract
-// rejections; one worker owning SEVERAL changes is fine; support tasks that
-// own nothing are fine.
-func validateRevisionOwnership(outstanding []RequiredChange, plan DepartmentPlan) error {
-	if len(outstanding) == 0 {
+// departmentOfPlanKey recovers the unit a round plan task belongs to from
+// its key (leader-plan:<unit>[:design-round:N]).
+func departmentOfPlanKey(key string) string {
+	marker := "leader-plan:"
+	index := strings.Index(key, marker)
+	if index < 0 {
+		return ""
+	}
+	rest := key[index+len(marker):]
+	if end := strings.Index(rest, ":"); end >= 0 {
+		rest = rest[:end]
+	}
+	return rest
+}
+
+// validateOwnershipProposal checks ONE department's round claim sheet --
+// structurally, against the round's full roster and that sheet's own tasks:
+// every claimed id must be a required change of this round, every owner must
+// be a task this very plan proposes, and no id may be claimed twice inside
+// the same sheet. What it deliberately does NOT check is the CROSS-department
+// union -- whether some other department also claimed an id, or whether
+// between them the plans cover the roster at all. That judgment needs every
+// department's proposal in hand, so it lives where all of them are visible:
+// the last completing plan carries it (validateRoundPartition).
+//
+// A sheet claiming NOTHING is legal -- that is a department the round asks
+// nothing of -- but it then may not propose work either: its previous
+// deliverable stands, carried forward as-is into the candidate.
+func validateOwnershipProposal(roster []RequiredChange, plan DepartmentPlan) error {
+	if len(roster) == 0 {
 		if len(plan.RevisionOwnership) > 0 {
 			return fmt.Errorf("%w: revision_ownership lists %d entries but this round has no outstanding required changes",
 				ErrContractRejected, len(plan.RevisionOwnership))
 		}
 		return nil
 	}
-	outstandingIDs := make(map[string]RequiredChange, len(outstanding))
-	for _, change := range outstanding {
-		outstandingIDs[change.ID] = change
+	if len(plan.RevisionOwnership) == 0 {
+		if len(plan.Tasks) > 0 {
+			return fmt.Errorf("%w: this plan claims no required change, so it proposes no work; "+
+				"an unclaiming department is carried forward, not re-staffed", ErrContractRejected)
+		}
+		return nil
+	}
+	rosterIDs := make(map[string]RequiredChange, len(roster))
+	for _, change := range roster {
+		rosterIDs[change.ID] = change
 	}
 	knownKeys := make(map[string]bool, len(plan.Tasks))
 	for _, task := range plan.Tasks {
 		knownKeys[task.ClientKey] = true
 	}
-	owners := make(map[string]string, len(outstanding))
+	seen := make(map[string]string, len(plan.RevisionOwnership))
 	for _, ownership := range plan.RevisionOwnership {
-		change, known := outstandingIDs[ownership.RequiredChangeID]
+		change, known := rosterIDs[ownership.RequiredChangeID]
 		if !known {
 			return fmt.Errorf("%w: revision_ownership names %q, which is not a required change of this design round",
 				ErrContractRejected, ownership.RequiredChangeID)
@@ -113,22 +142,99 @@ func validateRevisionOwnership(outstanding []RequiredChange, plan DepartmentPlan
 			return fmt.Errorf("%w: revision_ownership assigns %q to client_key %q, which this plan does not propose",
 				ErrContractRejected, change.ID, ownership.OwnerClientKey)
 		}
-		if previous, taken := owners[ownership.RequiredChangeID]; taken {
+		if previous, taken := seen[ownership.RequiredChangeID]; taken {
 			return fmt.Errorf("%w: required change %q (%s) has two owners (%q and %q); one decision, one owner",
 				ErrContractRejected, ownership.RequiredChangeID, truncate(change.Text, 120), previous, ownership.OwnerClientKey)
 		}
-		owners[ownership.RequiredChangeID] = ownership.OwnerClientKey
+		seen[ownership.RequiredChangeID] = ownership.OwnerClientKey
 	}
-	unowned := make([]string, 0, len(outstanding))
-	for _, change := range outstanding {
-		if _, owned := owners[change.ID]; !owned {
-			unowned = append(unowned, change.ID+" ("+truncate(change.Text, 80)+")")
+	return nil
+}
+
+// planClaims narrows a department's claim sheet to the round's roster,
+// returned in roster order -- the assigned subset every downstream consumer
+// (review table, followup gate) reads for that department.
+func planClaims(plan DepartmentPlan, roster []RequiredChange) []RequiredChange {
+	claimed := make(map[string]bool, len(plan.RevisionOwnership))
+	for _, ownership := range plan.RevisionOwnership {
+		claimed[ownership.RequiredChangeID] = true
+	}
+	claims := make([]RequiredChange, 0, len(plan.RevisionOwnership))
+	for _, change := range roster {
+		if claimed[change.ID] {
+			claims = append(claims, change)
 		}
 	}
-	if len(unowned) > 0 {
-		sort.Strings(unowned)
-		return fmt.Errorf("%w: required changes without exactly one owner: %s",
-			ErrContractRejected, strings.Join(unowned, "; "))
+	if len(claims) == 0 {
+		return nil
+	}
+	return claims
+}
+
+// unitRoundPlan is one department's completed round plan beside its unit id.
+type unitRoundPlan struct {
+	unit string
+	plan DepartmentPlan
+}
+
+// completedRoundPlans parses every requested department's COMPLETED round-N
+// plan. Units whose plan has not finished are reported separately -- their
+// proposals do not exist yet, which is exactly what defers the coverage half
+// of the partition check until the last plan completes.
+func (o *Orchestrator) completedRoundPlans(ctx context.Context, all []TaskRecord, rootID int64, requests []DepartmentRequest, round int) ([]unitRoundPlan, []string, error) {
+	done := make([]unitRoundPlan, 0, len(requests))
+	pending := make([]string, 0, len(requests))
+	for _, req := range requests {
+		task, found := findTaskByKey(all, childKey(rootID, "leader-plan:"+req.UnitID+designRoundSuffix(round)))
+		if !found || task.Status != "completed" {
+			pending = append(pending, req.UnitID)
+			continue
+		}
+		result, ok := o.resultForCompletedTask(ctx, task)
+		if !ok {
+			return nil, nil, fmt.Errorf("%w: department %s round %d plan completed with no durable result",
+				ErrContractRejected, req.UnitID, round)
+		}
+		parsed, err := ParseDepartmentPlan(result.JSONOutput, o.limits)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%w: department %s round %d plan no longer parses: %v",
+				ErrContractRejected, req.UnitID, round, err)
+		}
+		done = append(done, unitRoundPlan{unit: req.UnitID, plan: parsed})
+	}
+	return done, pending, nil
+}
+
+// validateRoundPartition is the GLOBAL half of checkpoint E's ownership rule,
+// evaluated once every department's proposal is in hand: across ALL of them,
+// every required change of the round must be claimed EXACTLY once. The host
+// never decides WHO takes a change -- the departments' own sheets say that --
+// but it refuses any world where a decision has two departments or none,
+// before a single worker of the round exists.
+func validateRoundPartition(done []unitRoundPlan, roster []RequiredChange) error {
+	holders := make(map[string]string, len(roster))
+	texts := make(map[string]string, len(roster))
+	var problems []string
+	for _, up := range done {
+		for _, ownership := range up.plan.RevisionOwnership {
+			if previous, taken := holders[ownership.RequiredChangeID]; taken {
+				problems = append(problems, ownership.RequiredChangeID+
+					" is claimed by both "+previous+" and "+up.unit)
+				continue
+			}
+			holders[ownership.RequiredChangeID] = up.unit
+		}
+	}
+	for _, change := range roster {
+		texts[change.ID] = change.Text
+		if _, claimed := holders[change.ID]; !claimed {
+			problems = append(problems, change.ID+" ("+truncate(change.Text, 80)+") is claimed by no department")
+		}
+	}
+	if len(problems) > 0 {
+		sort.Strings(problems)
+		return fmt.Errorf("%w: the round's ownership partition is not exact: %s",
+			ErrContractRejected, strings.Join(problems, "; "))
 	}
 	return nil
 }
@@ -307,27 +413,5 @@ func validateFollowupOwnership(outstanding []RequiredChange, review DepartmentRe
 // accept. Phrased conditionally because reviews of plans without ownership
 // have nothing to reconcile.
 const departmentConsistencyGuidance = `Consistency rule for this review: if the plan instructions listed required-change ids, you MUST state a revision_outcomes entry for each one, comparing the deliverables against each other on that change -- not merely checking each deliverable against its own criteria. Where two deliverables assert incompatible resolutions, status is conflicted and you must name both tasks; accept is only available when every required change says resolved with one canonical resolution. When deliverables leave a change unanswered, say unresolved and return needs_replan so the department redoes the work within its own replan bound.`
-
-// assignOwnershipScopes partitions the round's required changes across
-// departments deterministically (sorted units, round-robin). The union of the
-// scopes is exactly the full set, and the sets are pairwise disjoint -- which
-// is what makes "exactly one owner" a GLOBAL property per design round even
-// though each department validates only its own plan.
-func assignOwnershipScopes(changes []RequiredChange, unitIDs []string) map[string][]RequiredChange {
-	units := append([]string(nil), unitIDs...)
-	sort.Strings(units)
-	scopes := make(map[string][]RequiredChange, len(units))
-	for _, unit := range units {
-		scopes[unit] = nil
-	}
-	if len(units) == 0 {
-		return scopes
-	}
-	for index, change := range changes {
-		unit := units[index%len(units)]
-		scopes[unit] = append(scopes[unit], change)
-	}
-	return scopes
-}
 
 var _ = strconv.Itoa

@@ -87,6 +87,13 @@ type designUnitRef struct {
 	TaskID       int64  `json:"task_id"`
 	InvocationID int64  `json:"invocation_id"`
 	ResultHash   string `json:"result_hash"`
+	// CarriedFromRound is nonzero when this unit did not produce new work
+	// in the artifact's round -- its sheet claimed no required change --
+	// and the deliverable named here is its last accepted one from that
+	// earlier round, standing in verbatim. A design round asks some
+	// departments for changes and nothing of the rest; dropping the
+	// un-asked ones would silently shrink the design under review.
+	CarriedFromRound int `json:"carried_from_round,omitempty"`
 }
 
 // driveDesignFreeze returns done=true when the run must stop at this phase --
@@ -481,6 +488,46 @@ func (o *Orchestrator) candidateDesign(ctx context.Context, root TaskRecord, all
 			units = append(units, unit)
 		}
 	}
+	// Carry-forward pass. A department whose round sheet claimed NO
+	// required change was asked for nothing; its last accepted deliverable
+	// is still part of this design, and the candidate must say so instead
+	// of letting the component vanish because nobody redid it this round.
+	if round > 1 {
+		contributedUnits := make(map[string]bool, len(units))
+		for _, unit := range units {
+			contributedUnits[unit] = true
+		}
+		for _, task := range all {
+			if task.TaskClass != TaskClassCoordinationDeptPlan || task.Status != "completed" {
+				continue
+			}
+			if designRoundOf(task.IdempotencyKey) != round {
+				continue
+			}
+			unit := departmentOfPlanKey(task.IdempotencyKey)
+			if unit == "" || contributedUnits[unit] {
+				continue
+			}
+			result, ok := o.resultForCompletedTask(ctx, task)
+			if !ok {
+				continue
+			}
+			sheet, err := ParseDepartmentPlan(result.JSONOutput, o.limits)
+			if err != nil || len(sheet.RevisionOwnership) > 0 {
+				continue // claimed work, or unreadable -- never invent a carry
+			}
+			refs, fromRound, ok := o.carriedContribution(ctx, all, root.ID, unit, round)
+			if !ok {
+				continue // nothing accepted earlier to carry
+			}
+			for _, ref := range refs {
+				ref.CarriedFromRound = fromRound
+				artifact.Units = append(artifact.Units, ref)
+			}
+			units = append(units, unit)
+			contributedUnits[unit] = true
+		}
+	}
 	if len(artifact.Units) == 0 {
 		return designArtifact{}, nil, false
 	}
@@ -491,6 +538,44 @@ func (o *Orchestrator) candidateDesign(ctx context.Context, root TaskRecord, all
 		return artifact.Units[i].TaskID < artifact.Units[j].TaskID
 	})
 	return artifact, units, true
+}
+
+// carriedContribution returns a department's last ACCEPTED deliverable from
+// rounds before `round`: its most recent earlier round whose review completed
+// and produced completed workers with durable results. That is what an
+// un-asked department contributes verbatim -- accepted work, never a draft.
+func (o *Orchestrator) carriedContribution(ctx context.Context, all []TaskRecord, rootID int64, unit string, round int) ([]designUnitRef, int, bool) {
+	for from := round - 1; from >= 1; from-- {
+		accepted := false
+		for _, task := range all {
+			if task.TaskClass == TaskClassCoordinationDeptReview && task.Status == "completed" &&
+				designRoundOf(task.IdempotencyKey) == from && task.AssignedUnitID == unit {
+				accepted = true
+				break
+			}
+		}
+		if !accepted {
+			continue
+		}
+		var refs []designUnitRef
+		for _, worker := range departmentWorkerTasks(all, rootID, unit) {
+			if designRoundOf(worker.IdempotencyKey) != from || worker.Status != "completed" {
+				continue
+			}
+			result, ok := o.resultForCompletedTask(ctx, worker)
+			if !ok {
+				continue
+			}
+			refs = append(refs, designUnitRef{
+				UnitID: unit, TaskID: worker.ID,
+				InvocationID: result.InvocationID, ResultHash: result.ResponseHash,
+			})
+		}
+		if len(refs) > 0 {
+			return refs, from, true
+		}
+	}
+	return nil, 0, false
 }
 
 // designRound resolves the round this phase is currently working on: the
@@ -638,8 +723,12 @@ func (o *Orchestrator) candidateBody(ctx context.Context, artifact designArtifac
 		if limit := o.limits.MaxStringBytes; limit > 0 && len(body) > limit {
 			body = body[:limit]
 		}
-		sections = append(sections, fmt.Sprintf("%s (task:%d model-invocation:%d result:%s)\n%s",
-			unit.UnitID, unit.TaskID, unit.InvocationID, unit.ResultHash, body))
+		carried := ""
+		if unit.CarriedFromRound > 0 {
+			carried = fmt.Sprintf(" [carried forward unchanged from design round %d; this round asked this department for no changes]", unit.CarriedFromRound)
+		}
+		sections = append(sections, fmt.Sprintf("%s%s (task:%d model-invocation:%d result:%s)\n%s",
+			unit.UnitID, carried, unit.TaskID, unit.InvocationID, unit.ResultHash, body))
 	}
 	return joinLines(sections), nil
 }

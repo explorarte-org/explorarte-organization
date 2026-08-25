@@ -2,6 +2,7 @@ package executive
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -186,9 +187,12 @@ func eReplanReviewBody(ids []string) string {
 // newTwoUnitEFixture drives eFixture's campaign across TWO departments
 // (diseno and ingenieria_ia). Both plan and work round 1; the round-1
 // adjudication demands exactly the given changes; the round-2 adjudication
-// freezes. The host's own partitioner decides each unit's round-2 scope and
-// the scripted bodies answer within it.
-func newTwoUnitEFixture(t *testing.T, requiredChanges []string) (*wiringFixture, map[string][]RequiredChange) {
+// freezes. claimsByUnit maps each unit to the 1-based ordinals of the
+// required changes its round-2 sheet CLAIMS -- the departments decide their
+// own share and the host only judges the union -- and the scripted bodies
+// answer within them. A unit absent from the map claims nothing, so its
+// round-2 plan proposes no tasks at all.
+func newTwoUnitEFixture(t *testing.T, requiredChanges []string, claimsByUnit map[string][]int) (*wiringFixture, map[string][]RequiredChange) {
 	t.Helper()
 	fixture := newMultiUnitWiringFixture(t, "revise", eSources(), []EvidenceRequirementProposal{
 		{Subject: "MaxDesignRounds", Relations: []string{"definition"}},
@@ -199,35 +203,47 @@ func newTwoUnitEFixture(t *testing.T, requiredChanges []string) (*wiringFixture,
 	h.adjudicationEvidence = `[{"subject":"driveDesignFreeze","relations":["application"]}]`
 	h.adjudicationVerdictByRound = map[int]string{2: "freeze"}
 
-	unitIDs := []string{"diseno", "ingenieria_ia"}
 	changes := make([]RequiredChange, 0, len(requiredChanges))
 	for index, text := range requiredChanges {
 		changes = append(changes, RequiredChange{ID: requiredChangeID(1, index+1), Text: text})
 	}
-	scopes := assignOwnershipScopes(changes, unitIDs)
-
-	v2Plan := func(unit, ownership string) string {
-		return `{"schema_version":"department-plan/v2","department_id":"` + unit + `",` +
-			`"tasks":[` +
-			`{"client_key":"` + unit + `_owner","assigned_role_id":"` + unit + `/qa","task_class":"engineering.review",` +
-			`"title":"Resolve required changes","instructions":"Address the assigned required changes.","acceptance_criteria":["Cite the pin"],"dependencies":[]},` +
-			`{"client_key":"` + unit + `_support","assigned_role_id":"` + unit + `/qa","task_class":"qa.testing",` +
-			`"title":"Verify claims","instructions":"Verify.","acceptance_criteria":["Check"],"dependencies":[]}` +
-			`],"review_criteria":["Consistent"],"unresolved":[],"revision_ownership":[` + ownership + `]}`
+	scopes := map[string][]RequiredChange{"diseno": nil, "ingenieria_ia": nil}
+	for unit, ordinals := range claimsByUnit {
+		for _, ordinal := range ordinals {
+			if ordinal < 1 || ordinal > len(changes) {
+				t.Fatalf("fixture misused: %s claims ordinal %d of %d changes", unit, ordinal, len(changes))
+			}
+			scopes[unit] = append(scopes[unit], changes[ordinal-1])
+		}
 	}
-	h.departmentPlanBody = func(task TaskRecord) string {
-		unit := eTaskUnit(task)
-		if designRoundOf(task.IdempotencyKey) < 2 || unit == "" {
-			return v2Plan(unit, "")
+
+	v2Plan := func(unit string, claims []RequiredChange, round int) string {
+		items := ""
+		if round < 2 || len(claims) > 0 {
+			items =
+				`{"client_key":"` + unit + `_owner","assigned_role_id":"` + unit + `/qa","task_class":"engineering.review",` +
+					`"title":"Resolve required changes","instructions":"Address the assigned required changes.","acceptance_criteria":["Cite the pin"],"dependencies":[]},` +
+					`{"client_key":"` + unit + `_support","assigned_role_id":"` + unit + `/qa","task_class":"qa.testing",` +
+					`"title":"Verify claims","instructions":"Verify.","acceptance_criteria":["Check"],"dependencies":[]}`
 		}
 		ownership := ""
-		for _, change := range scopes[unit] {
+		for _, change := range claims {
 			if ownership != "" {
 				ownership += ","
 			}
 			ownership += ownerEntry(change.ID, unit+"_owner")
 		}
-		return v2Plan(unit, ownership)
+		return `{"schema_version":"department-plan/v2","department_id":"` + unit + `",` +
+			`"tasks":[` + items + `],"review_criteria":["Consistent"],"unresolved":[],` +
+			`"revision_ownership":[` + ownership + `]}`
+	}
+	h.departmentPlanBody = func(task TaskRecord) string {
+		unit := eTaskUnit(task)
+		round := designRoundOf(task.IdempotencyKey)
+		if round < 2 || unit == "" {
+			return v2Plan(unit, nil, round)
+		}
+		return v2Plan(unit, scopes[unit], round)
 	}
 	h.departmentReviewBody = func(task TaskRecord) string {
 		unit := eTaskUnit(task)
@@ -246,6 +262,90 @@ func newTwoUnitEFixture(t *testing.T, requiredChanges []string) (*wiringFixture,
 			`"proposed_followup_tasks":[],"followup_ownership":[],"revision_outcomes":[` + outcomes + `]}`
 	}
 	return fixture, scopes
+}
+
+// GUARD: two departments claiming the SAME required change are refused at
+// the second completing sheet -- the refusal names the department that
+// already holds it -- and no worker of the round is ever born beside an
+// inexact partition.
+func TestECrossDepartmentDuplicateClaimIsRefusedBeforeWorkers(t *testing.T) {
+	fixture, _ := newTwoUnitEFixture(t, []string{
+		"Clarify MaxDepartmentReplans granularity: aggregate ceiling or per-department cap.",
+		"Ground the revise-to-next-round transition in activeDesignRound citations.",
+	}, map[string][]int{"diseno": {1}, "ingenieria_ia": {1}})
+
+	driveCapability(t, fixture, 48)
+
+	sawRefusal := false
+	for _, code := range fixture.tasks.failed {
+		if code == "model_result_contract_rejected" {
+			sawRefusal = true
+		}
+	}
+	if !sawRefusal {
+		t.Fatal("a duplicate cross-department claim was never refused")
+	}
+	root := fixture.rootRecord(t)
+	allTasks, err := fixture.tasks.ListByCorrelation(context.Background(), root.CorrelationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	namedHolder := false
+	for _, task := range allTasks {
+		if strings.Contains(task.Reason, "already claimed by") &&
+			(strings.Contains(task.Reason, "diseno") || strings.Contains(task.Reason, "ingenieria_ia")) {
+			namedHolder = true
+		}
+		prefix := "executive:" + itoa64(root.ID) + ":worker:"
+		if strings.HasPrefix(task.IdempotencyKey, prefix) && strings.Contains(task.IdempotencyKey, "design-round:2") {
+			t.Fatalf("round-2 workers were materialized beside a duplicated claim: %s", task.IdempotencyKey)
+		}
+	}
+	if !namedHolder {
+		t.Fatal("the duplicate refusal did not name the department already holding the change")
+	}
+}
+
+// GUARD: when every department has planned and required changes remain
+// claimed by NOBODY, the last completing sheet is refused with the measured
+// list -- and nothing of the round materializes over a hole.
+func TestECoverageGapIsRefusedAtTheLastPlan(t *testing.T) {
+	fixture, _ := newTwoUnitEFixture(t, []string{
+		"Clarify MaxDepartmentReplans granularity: aggregate ceiling or per-department cap.",
+		"Ground the revise-to-next-round transition in activeDesignRound citations.",
+	}, nil)
+
+	driveCapability(t, fixture, 48)
+
+	sawRefusal := false
+	for _, code := range fixture.tasks.failed {
+		if code == "model_result_contract_rejected" {
+			sawRefusal = true
+		}
+	}
+	if !sawRefusal {
+		t.Fatal("an uncovered round was never refused")
+	}
+	root := fixture.rootRecord(t)
+	allTasks, err := fixture.tasks.ListByCorrelation(context.Background(), root.CorrelationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gapNamed := false
+	for _, task := range allTasks {
+		if strings.Contains(task.Reason, "ownership partition is not exact") &&
+			strings.Contains(task.Reason, "claimed by no department") &&
+			strings.Contains(task.Reason, "RC:1:1") && strings.Contains(task.Reason, "RC:1:2") {
+			gapNamed = true
+		}
+		prefix := "executive:" + itoa64(root.ID) + ":worker:"
+		if strings.HasPrefix(task.IdempotencyKey, prefix) && strings.Contains(task.IdempotencyKey, "design-round:2") {
+			t.Fatalf("round-2 workers were materialized over an unclaimed change: %s", task.IdempotencyKey)
+		}
+	}
+	if !gapNamed {
+		t.Fatal("the coverage refusal did not name every unclaimed change")
+	}
 }
 
 func eRoundTwoWorkersExist(t *testing.T, f *wiringFixture) bool {
@@ -325,7 +425,7 @@ func TestEOwnershipCoverageAndLegalShapes(t *testing.T) {
 		driveCapability(t, fixture, 30)
 		allTasks, _ := fixture.tasks.ListByCorrelation(context.Background(), fixture.rootRecord(t).CorrelationID)
 		for _, task := range allTasks {
-			if strings.Contains(task.Reason, "without exactly one owner") &&
+			if strings.Contains(task.Reason, "claimed by no department") &&
 				strings.Contains(task.Reason, "RC:1:1") {
 				return
 			}
@@ -401,15 +501,15 @@ func TestEReviewerSeesOwnershipTableAndConsistencyRule(t *testing.T) {
 	}
 }
 
-// GUARD: more departments than demanded changes is a LEGAL shape of the host
-// partition -- the department whose scope comes up empty is carried forward
-// untouched (no round plan, no work, no review), while the owning department
-// still drives the round to its adjudication. An empty roster must never look
-// like an impossibility.
-func TestEZeroScopeDepartmentIsCarriedForwardNotOpened(t *testing.T) {
+// GUARD: a department whose round sheet claims NOTHING is asked for nothing
+// -- no work, no review -- and its accepted deliverable is CARRIED FORWARD
+// into the candidate, explicitly labeled, instead of being dropped from the
+// design under review. More departments than demanded changes is a legal
+// shape of the partition; losing a component nobody redid is not.
+func TestEZeroScopeDepartmentIsCarriedForwardNotDropped(t *testing.T) {
 	fixture, scopes := newTwoUnitEFixture(t, []string{
 		"Clarify MaxDepartmentReplans granularity: aggregate ceiling or per-department cap.",
-	})
+	}, map[string][]int{"diseno": {1}})
 	if len(scopes["diseno"]) != 1 || len(scopes["ingenieria_ia"]) != 0 {
 		t.Fatalf("fixture precondition broken: diseno=%d ingenieria_ia=%d",
 			len(scopes["diseno"]), len(scopes["ingenieria_ia"]))
@@ -425,12 +525,20 @@ func TestEZeroScopeDepartmentIsCarriedForwardNotOpened(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	prefix := "executive:" + itoa64(root.ID) + ":"
 	for _, task := range allTasks {
-		if strings.Contains(task.IdempotencyKey, "ingenieria_ia") &&
-			strings.Contains(task.IdempotencyKey, "design-round:2") {
-			t.Fatalf("the empty-scope department materialized %s (%s)",
+		key := task.IdempotencyKey
+		if strings.Contains(key, "design-round:2") &&
+			(strings.HasPrefix(key, prefix+"worker:ingenieria_ia:") ||
+				strings.HasPrefix(key, prefix+"leader-review:ingenieria_ia")) {
+			t.Fatalf("the unclaiming department materialized round-2 work %s (%s)",
 				task.IdempotencyKey, task.TaskClass)
 		}
+	}
+	// The claim sheet exists -- the department WAS asked -- and bound nothing.
+	sheet, ok := findTaskByKey(allTasks, childKey(root.ID, "leader-plan:ingenieria_ia:design-round:2"))
+	if !ok || sheet.Status != "completed" {
+		t.Fatal("the unclaiming department never got to state its empty claim")
 	}
 	disenoDroveRoundTwo := false
 	for _, task := range allTasks {
@@ -440,23 +548,47 @@ func TestEZeroScopeDepartmentIsCarriedForwardNotOpened(t *testing.T) {
 		}
 	}
 	if !disenoDroveRoundTwo {
-		t.Fatal("the owning department never drove its round-2 review")
+		t.Fatal("the claiming department never drove its round-2 review")
 	}
 	adjudication, ok := findTaskByKey(allTasks, childKey(root.ID, "design-adjudication:round:2"))
 	if !ok || adjudication.Status != "completed" {
-		t.Fatal("the owning department's round never reached its adjudication")
+		t.Fatal("the claiming department's round never reached its adjudication")
+	}
+	// And the round-2 candidate still contains ingenieria_ia's accepted
+	// round-1 deliverable, labeled as carried forward.
+	reviewTask, ok := findTaskByKey(allTasks, childKey(root.ID, "design-review:round:2"))
+	if !ok || reviewTask.Status != "completed" {
+		t.Fatal("the round-2 candidate was never reviewed")
+	}
+	var carriedWorker TaskRecord
+	foundWorker := false
+	for _, task := range allTasks {
+		if strings.HasPrefix(task.IdempotencyKey, prefix+"worker:ingenieria_ia:") &&
+			designRoundOf(task.IdempotencyKey) == 1 {
+			carriedWorker, foundWorker = task, true
+		}
+	}
+	if !foundWorker {
+		t.Fatal("no round-1 deliverable exists for the un-asked department")
+	}
+	if !strings.Contains(reviewTask.Instructions, "[carried forward unchanged from design round 1") {
+		t.Fatalf("the carry-forward was not labeled in the candidate:\n%.400s", reviewTask.Instructions)
+	}
+	if !strings.Contains(reviewTask.Instructions, fmt.Sprintf("task:%d", carriedWorker.ID)) {
+		t.Fatalf("the carried deliverable (task %d) vanished from the candidate:\n%.400s",
+			carriedWorker.ID, reviewTask.Instructions)
 	}
 }
 
 // GUARD: each department's reviewer reads an ownership table built from ITS
-// assigned subset and nothing else -- another department's change must not
-// appear as an UNASSIGNED row instructing this reviewer to state an outcome
-// the closed-world gate then refuses.
+// assigned subset -- what its own sheet claimed -- and nothing else. Another
+// department's change must not appear as an UNASSIGNED row instructing this
+// reviewer to state an outcome the closed-world gate then refuses.
 func TestEReviewerSeesOnlyItsAssignedSubset(t *testing.T) {
 	fixture, scopes := newTwoUnitEFixture(t, []string{
 		"Clarify MaxDepartmentReplans granularity: aggregate ceiling or per-department cap.",
 		"Ground the revise-to-next-round transition in activeDesignRound citations.",
-	})
+	}, map[string][]int{"diseno": {1}, "ingenieria_ia": {2}})
 	disenoChange, ingenieriaChange := scopes["diseno"][0], scopes["ingenieria_ia"][0]
 
 	driveCapability(t, fixture, 48)
