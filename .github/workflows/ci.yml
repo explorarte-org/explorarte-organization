@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [main, "feat/**"]
+    branches: [main, "feat/**", "fix/**"]
   pull_request:
 
 permissions:
@@ -22,22 +22,38 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Resolve change base
+        id: change_base
+        run: |
+          # ONLY a push to main audits against the event's previous commit;
+          # work branches (fix/**, feat/**, PRs) audit their own delta
+          # against the merge-base with the target line. The resolved base
+          # is EXPORTED so every downstream fitness check in this job
+          # audits exactly the same delta -- otherwise make verify would
+          # silently fall back to HEAD-on-main and see an empty diff.
+          if [[ "${{ github.event_name }}" == "push" &&
+                "${{ github.ref }}" == "refs/heads/main" ]]; then
+            before="${{ github.event.before }}"
+            if [[ -n "$before" && "$before" != "0000000000000000000000000000000000000000" ]] && git cat-file -e "$before^{commit}" 2>/dev/null; then
+              base="$before"
+            else
+              base="$(bash scripts/resolve-task-base.sh)"
+            fi
+          else
+            base="$(bash scripts/resolve-task-base.sh)"
+          fi
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "TASK_ENGINE_BASE_COMMIT=$base" >> "$GITHUB_ENV"
       - name: Install CI tooling
         run: |
           sudo apt-get update
           sudo apt-get install -y ripgrep
       - name: Download and verify modules
         run: go mod download && go mod verify
-      - name: Branch 14 canonical immutability
-        run: |
-          base=3584d9e7a2e44bbe9d953556704df5e84afd8cf3
-          mapfile -t changed < <(git diff --name-only "$base"...HEAD -- docs/canonical | sort -u)
-          if [[ ${#changed[@]} -gt 0 ]]; then
-            printf 'unauthorized canonical change: %s\n' "${changed[@]}" >&2
-            exit 1
-          fi
-      - name: Git whitespace validation
-        run: git diff --check 3584d9e7a2e44bbe9d953556704df5e84afd8cf3...HEAD
+      - name: Canonical immutability of this change
+        run: bash scripts/check-canonical-immutability.sh "${{ steps.change_base.outputs.base }}"
+      - name: Git whitespace validation of this change
+        run: git diff --check "${{ steps.change_base.outputs.base }}"...HEAD
       - name: Full non-integration verification
         run: make verify
       - name: Context engine race tests
@@ -85,20 +101,36 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Resolve change base
+        id: change_base
+        run: |
+          # ONLY a push to main audits against the event's previous commit;
+          # work branches (fix/**, feat/**, PRs) audit their own delta
+          # against the merge-base with the target line. The resolved base
+          # is EXPORTED so every downstream fitness check in this job
+          # audits exactly the same delta -- otherwise make verify would
+          # silently fall back to HEAD-on-main and see an empty diff.
+          if [[ "${{ github.event_name }}" == "push" &&
+                "${{ github.ref }}" == "refs/heads/main" ]]; then
+            before="${{ github.event.before }}"
+            if [[ -n "$before" && "$before" != "0000000000000000000000000000000000000000" ]] && git cat-file -e "$before^{commit}" 2>/dev/null; then
+              base="$before"
+            else
+              base="$(bash scripts/resolve-task-base.sh)"
+            fi
+          else
+            base="$(bash scripts/resolve-task-base.sh)"
+          fi
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "TASK_ENGINE_BASE_COMMIT=$base" >> "$GITHUB_ENV"
       - name: Install CI tooling
         run: |
           sudo apt-get update
           sudo apt-get install -y ripgrep
       - name: Download and verify modules
         run: go mod download && go mod verify
-      - name: Branch 14 canonical immutability
-        run: |
-          base=3584d9e7a2e44bbe9d953556704df5e84afd8cf3
-          mapfile -t changed < <(git diff --name-only "$base"...HEAD -- docs/canonical | sort -u)
-          if [[ ${#changed[@]} -gt 0 ]]; then
-            printf 'unauthorized canonical change: %s\n' "${changed[@]}" >&2
-            exit 1
-          fi
+      - name: Canonical immutability of this change
+        run: bash scripts/check-canonical-immutability.sh "${{ steps.change_base.outputs.base }}"
       - name: PostgreSQL 17 complete integration suite and CLI smoke tests
         run: make test-integration
       - name: Model egress PostgreSQL 17 integration

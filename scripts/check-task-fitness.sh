@@ -9,31 +9,23 @@ command -v rg >/dev/null 2>&1 || {
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 fail() { echo "ERROR: $*" >&2; exit 1; }
-BASE_COMMIT="${TASK_ENGINE_BASE_COMMIT:-a199d1eea1f4f28d1b9f346e9ccbd670d5e8b69a}"
 
-if git cat-file -e "${BASE_COMMIT}^{commit}" 2>/dev/null; then
-  mapfile -t canonical_changes < <({
-    git diff --name-only "${BASE_COMMIT}" -- docs/canonical
-    git ls-files --others --exclude-standard -- docs/canonical
-  } | sort -u)
-  for path in "${canonical_changes[@]}"; do
-    case "$path" in
-      docs/canonical/capability-matrix.yaml|docs/canonical/model-routing.yaml|docs/canonical/model-egress-policy.yaml|docs/canonical/model-execution-identity-policy.yaml) ;;
-      # R30 resolves D-007 (docs/canonical/decisions-required.yaml:resolved)
-      # with the owner's exact decision text and docs/adr/ADR-0006-hybrid-
-      # logic-ir-shadow.md — a deliberate, documented governance action,
-      # not an incidental edit. D-005 stays open/untouched in that same
-      # file.
-      docs/canonical/decisions-required.yaml) ;;
-      *) fail "unauthorized canonical change: $path" ;;
-    esac
-  done
-  git diff --exit-code "$BASE_COMMIT" -- \
-    migrations/000001_create_audit_events.up.sql \
-    migrations/000001_create_audit_events.down.sql \
-    migrations/000002_create_organization_registry.up.sql \
-    migrations/000002_create_organization_registry.down.sql
-fi
+# Base semantics live in ONE place (resolve-task-base.sh): explicit
+# TASK_ENGINE_BASE_COMMIT wins, otherwise the merge-base with the PR target
+# or origin/main, and running ON main audits the current state against
+# itself -- history is never re-audited as if it belonged to this task.
+BASE_COMMIT="$(bash "$ROOT/scripts/resolve-task-base.sh")"
+
+# The canonical allow-list and its rationale live in ONE place too
+# (check-canonical-immutability.sh), so this guard and the workflow step can
+# never drift apart.
+bash "$ROOT/scripts/check-canonical-immutability.sh" "$BASE_COMMIT"
+
+git diff --exit-code "$BASE_COMMIT" -- \
+  migrations/000001_create_audit_events.up.sql \
+  migrations/000001_create_audit_events.down.sql \
+  migrations/000002_create_organization_registry.up.sql \
+  migrations/000002_create_organization_registry.down.sql
 
 go test -count=1 ./internal/tasks
 

@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-BASE_COMMIT="07cc8eac1330816ee755366f61be15991f7de4b6"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+BASE_COMMIT="$(bash "$ROOT/scripts/resolve-task-base.sh")"
 fail() { printf 'model-runtime fitness: %s\n' "$*" >&2; exit 1; }
 
 command -v rg >/dev/null 2>&1 || fail "ripgrep is required"
@@ -17,13 +19,18 @@ test -f migrations/000007_create_model_runtime_gateway.down.sql || fail "migrati
 if rg -n --glob '*.go' --glob '!internal/modelruntime/adapter/openaicompat/**' --glob '!internal/modelruntime/adapter/deepseek/**' --glob '!internal/modelruntime/adapter/gemini/**' --glob '!internal/modelruntime/adapter/mimo/**' --glob '!internal/modelruntime/adapter/xai/**' --glob '!internal/modelruntime/adapter/openairesponses/**' '"net/http"' internal/modelruntime; then
   fail "network client found outside the approved openai-compatible, DeepSeek, Gemini, MiMo, xAI, or OpenAI Responses adapters"
 fi
-if rg -n --glob '*.go' --glob '!internal/modelruntime/adapter/alibabaclaude/**' '("os/exec"|exec\.Command|syscall\.|/bin/(ba)?sh|sh -c)' internal/modelruntime internal/secrets; then
+# *_test.go is excluded: the umask permission test legitimately uses
+# syscall.Umask to assert what it tests, exactly like every other check in
+# this script that distinguishes production code from its tests.
+if rg -n --glob '*.go' --glob '!**/*_test.go' --glob '!internal/modelruntime/adapter/alibabaclaude/**' '("os/exec"|exec\.Command|syscall\.|/bin/(ba)?sh|sh -c)' internal/modelruntime internal/secrets; then
   fail "subprocess or shell execution found in model runtime"
 fi
 if rg -n --glob '*.go' '(\bmodeld\b|pollModel|polling|ReconcileInterval|ORG_MODEL_RUNTIME_RECONCILE_INTERVAL)' internal/modelruntime cmd/orgctl/models.go; then
   fail "persistent worker or reconcile interval found"
 fi
-if find internal/modelruntime/adapter -maxdepth 1 -type f -name '*.go' ! -name 'fake.go' ! -name 'fake_test.go' ! -name 'registry.go' -print | grep -q .; then
+# *_test.go is excluded here for the same reason: guard tests merged beside
+# the adapter registry are tests, not provider implementations.
+if find internal/modelruntime/adapter -maxdepth 1 -type f -name '*.go' ! -name '*_test.go' ! -name 'fake.go' ! -name 'fake_test.go' ! -name 'registry.go' -print | grep -q .; then
   fail "unexpected top-level provider adapter implementation found"
 fi
 if find internal/modelruntime/adapter -mindepth 1 -maxdepth 1 -type d ! -name openaicompat ! -name alibabaclaude ! -name deepseek ! -name gemini ! -name mimo ! -name xai ! -name openairesponses -print | grep -q .; then
@@ -167,22 +174,9 @@ if missing:
     sys.exit(1)
 PY
 
-# Canonical changes are restricted by Branch 09 and all previous migrations are immutable.
 git cat-file -e "${BASE_COMMIT}^{commit}" 2>/dev/null || fail "required base commit is unavailable"
-mapfile -t canonical_changes < <({
-  git diff --name-only "$BASE_COMMIT" -- docs/canonical
-  git ls-files --others --exclude-standard -- docs/canonical
-} | sort -u)
-for path in "${canonical_changes[@]}"; do
-  case "$path" in
-    docs/canonical/capability-matrix.yaml|docs/canonical/model-routing.yaml|docs/canonical/model-egress-policy.yaml|docs/canonical/model-execution-identity-policy.yaml) ;;
-    # R30 resolves D-007 in docs/canonical/decisions-required.yaml:resolved
-    # (see docs/adr/ADR-0006-hybrid-logic-ir-shadow.md) — a deliberate,
-    # documented governance action, D-005 stays untouched.
-    docs/canonical/decisions-required.yaml) ;;
-    *) fail "unauthorized canonical change: $path" ;;
-  esac
-done
+# Canonical immutability is defined ONCE (delta vs the real change base).
+bash "$ROOT/scripts/check-canonical-immutability.sh" "$BASE_COMMIT"
 git diff --exit-code "$BASE_COMMIT" -- \
   migrations/000001_create_audit_events.up.sql \
   migrations/000001_create_audit_events.down.sql \
