@@ -197,6 +197,9 @@ test-mission-integration:
 test-executive-fitness:
 	./scripts/check-executive-fitness.sh
 
+test-cibase-fitness:
+	$(GO) test ./internal/cibase
+
 test-executive-integration:
 	./scripts/test-executive-integration.sh
 
@@ -215,7 +218,7 @@ build-cross:
 run:
 	$(GO) run ./cmd/orgd
 
-verify: fmt-check vet test-unit test-task-fitness test-staging-fitness test-authorization-fitness test-context-fitness test-memory-fitness test-skillregistry-fitness test-rag-fitness test-model-runtime-fitness test-model-egress-fitness test-model-dispatch-fitness test-model-identity-fitness test-model-provider-fitness test-alibaba-cli-fitness test-cellworker-fitness test-decisiongraph-fitness test-improvement-fitness test-completion-fitness test-executive-fitness test-embeddingruntime-fitness test-webevidence-fitness build
+verify: fmt-check vet test-unit test-cibase-fitness test-task-fitness test-staging-fitness test-authorization-fitness test-context-fitness test-memory-fitness test-skillregistry-fitness test-rag-fitness test-model-runtime-fitness test-model-egress-fitness test-model-dispatch-fitness test-model-identity-fitness test-model-provider-fitness test-alibaba-cli-fitness test-cellworker-fitness test-decisiongraph-fitness test-improvement-fitness test-completion-fitness test-executive-fitness test-embeddingruntime-fitness test-webevidence-fitness build
 
 verify-all: verify build-cross registry-validate test-integration test-context-integration test-memory-integration test-skillregistry-integration test-rag-integration test-model-runtime-integration test-model-egress-integration test-model-dispatch-integration test-model-identity-integration test-cellworker-integration test-decisiongraph-integration test-decisiongraphtrace-integration test-improvement-integration test-authorization-integration test-staging-integration test-completion-integration test-executive-integration
 

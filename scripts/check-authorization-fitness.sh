@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-BASE_SHA="fb30a4352697ed9cf1f7ef183285954450d1e71d"
+BASE_SHA="$(bash "$ROOT/scripts/resolve-task-base.sh")"
 
 command -v rg >/dev/null 2>&1 || {
   echo "ERROR: ripgrep (rg) is required" >&2
@@ -65,19 +65,7 @@ rg -q 'concurrent consumption creates exactly one use' internal/authorization/po
 rg -q 'revision and matrix policy drift' internal/authorization/postgres/integration_test.go || fail "missing policy drift integration test"
 rg -q 'rollback.*audit|audit.*roll back' internal/authorization/postgres/integration_test.go || fail "missing transactional rollback integration test"
 
-mapfile -t canonical_changes < <({
-  git diff --name-only "${BASE_SHA}" -- docs/canonical
-  git ls-files --others --exclude-standard -- docs/canonical
-} | sort -u)
-for path in "${canonical_changes[@]}"; do
-  case "$path" in
-    docs/canonical/capability-matrix.yaml|docs/canonical/model-routing.yaml|docs/canonical/model-egress-policy.yaml|docs/canonical/model-execution-identity-policy.yaml) ;;
-    # R30 resolves D-007 in docs/canonical/decisions-required.yaml:resolved
-    # (see docs/adr/ADR-0006-hybrid-logic-ir-shadow.md) — a deliberate,
-    # documented governance action, D-005 stays untouched.
-    docs/canonical/decisions-required.yaml) ;;
-    *) fail "unauthorized canonical change: $path" ;;
-  esac
-done
+# Canonical immutability is defined ONCE (delta vs the real change base).
+bash "$ROOT/scripts/check-canonical-immutability.sh" "$BASE_SHA"
 
 echo "authorization fitness checks passed"

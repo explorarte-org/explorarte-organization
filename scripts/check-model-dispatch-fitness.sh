@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-BASE_SHA="${MODEL_DISPATCH_BASE_SHA:-822010fa7426150e624beb0d10bfaf520b66ca8f}"
+BASE_SHA="${MODEL_DISPATCH_BASE_SHA:-$(bash "$ROOT/scripts/resolve-task-base.sh")}"
 
 fail() {
   echo "model-dispatch fitness: $*" >&2
@@ -16,20 +16,8 @@ git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null || fail "base commit ${BASE_S
 test -f migrations/000009_create_model_dispatcher_assignments.up.sql || fail "migration 000009 up is missing"
 test -f migrations/000009_create_model_dispatcher_assignments.down.sql || fail "migration 000009 down is missing"
 
-mapfile -t canonical_changes < <({
-  git diff --name-only "$BASE_SHA" -- docs/canonical
-  git ls-files --others --exclude-standard -- docs/canonical
-} | sort -u)
-for path in "${canonical_changes[@]}"; do
-  case "$path" in
-    docs/canonical/capability-matrix.yaml|docs/canonical/model-routing.yaml|docs/canonical/model-egress-policy.yaml|docs/canonical/model-execution-identity-policy.yaml) ;;
-    # R30 resolves D-007 in docs/canonical/decisions-required.yaml:resolved
-    # (see docs/adr/ADR-0006-hybrid-logic-ir-shadow.md) — a deliberate,
-    # documented governance action, D-005 stays untouched.
-    docs/canonical/decisions-required.yaml) ;;
-    *) fail "unauthorized canonical change: $path" ;;
-  esac
-done
+# Canonical immutability is defined ONCE (delta vs the real change base).
+bash "$ROOT/scripts/check-canonical-immutability.sh" "$BASE_SHA"
 
 git diff --exit-code "$BASE_SHA" -- \
   migrations/000001\* migrations/000002\* migrations/000003\* migrations/000004\* \

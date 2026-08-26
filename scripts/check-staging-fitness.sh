@@ -4,23 +4,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 fail() { echo "ERROR: $*" >&2; exit 1; }
-BASE_COMMIT="${STAGING_ENGINE_BASE_COMMIT:-de5ac792cb67489b9f35e3b52cbec9ca8f63c7c7}"
+BASE_COMMIT="${STAGING_ENGINE_BASE_COMMIT:-$(bash "$ROOT/scripts/resolve-task-base.sh")}"
 
-if git cat-file -e "${BASE_COMMIT}^{commit}" 2>/dev/null; then
-  mapfile -t canonical_changes < <({
-    git diff --name-only "${BASE_COMMIT}" -- docs/canonical
-    git ls-files --others --exclude-standard -- docs/canonical
-  } | sort -u)
-  for path in "${canonical_changes[@]}"; do
-    case "$path" in
-      docs/canonical/capability-matrix.yaml|docs/canonical/model-routing.yaml|docs/canonical/model-egress-policy.yaml|docs/canonical/model-execution-identity-policy.yaml) ;;
-      # R30 resolves D-007 in docs/canonical/decisions-required.yaml:resolved
-      # (see docs/adr/ADR-0006-hybrid-logic-ir-shadow.md) — a deliberate,
-      # documented governance action, D-005 stays untouched.
-      docs/canonical/decisions-required.yaml) ;;
-      *) fail "unauthorized canonical change: $path" ;;
-    esac
-  done
+if true; then # the resolved base always exists (resolve-task-base.sh)
+  # Canonical immutability is defined ONCE (delta vs the real change base).
+  bash "$ROOT/scripts/check-canonical-immutability.sh" "$BASE_COMMIT"
   git diff --exit-code "$BASE_COMMIT" -- \
     migrations/000001_create_audit_events.up.sql \
     migrations/000001_create_audit_events.down.sql \

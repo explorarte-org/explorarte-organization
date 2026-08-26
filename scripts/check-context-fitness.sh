@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 command -v rg >/dev/null || { echo 'ERROR: ripgrep (rg) is required' >&2; exit 1; }
-BASE_SHA="${CONTEXT_BASE_SHA:-bfe21f34d1da3f2d51eb520c4deef635c7f49cab}"
+BASE_SHA="${CONTEXT_BASE_SHA:-$(bash "$ROOT/scripts/resolve-task-base.sh")}"
 
 fail() { echo "ERROR: $*" >&2; exit 1; }
 require() { rg -q "$1" "$2" || fail "$3"; }
@@ -38,20 +38,8 @@ require 'TestServiceValidateDetectsProfileAndCanonicalDrift' internal/contexteng
 require 'source_kind NOT IN.*approved_memory' migrations/000006_create_context_engine.up.sql 'memory/RAG/task capability constraint missing'
 
 if git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
-  mapfile -t canonical_changes < <({
-    git diff --name-only "${BASE_SHA}" -- docs/canonical
-    git ls-files --others --exclude-standard -- docs/canonical
-  } | sort -u)
-  for path in "${canonical_changes[@]}"; do
-    case "$path" in
-      docs/canonical/capability-matrix.yaml|docs/canonical/model-routing.yaml|docs/canonical/model-egress-policy.yaml|docs/canonical/model-execution-identity-policy.yaml) ;;
-      # R30 resolves D-007 in docs/canonical/decisions-required.yaml:resolved
-      # (see docs/adr/ADR-0006-hybrid-logic-ir-shadow.md) — a deliberate,
-      # documented governance action, D-005 stays untouched.
-      docs/canonical/decisions-required.yaml) ;;
-      *) fail "unauthorized canonical change: $path" ;;
-    esac
-  done
+  # Canonical immutability is defined ONCE (delta vs the real change base).
+  bash "$ROOT/scripts/check-canonical-immutability.sh" "$BASE_SHA"
 elif [[ "${CONTEXT_ALLOW_MISSING_BASE:-0}" != "1" ]]; then
   fail "canonical base commit $BASE_SHA is unavailable"
 fi

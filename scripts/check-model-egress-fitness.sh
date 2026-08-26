@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-BASE_SHA="${MODEL_EGRESS_BASE_SHA:-07cc8eac1330816ee755366f61be15991f7de4b6}"
+BASE_SHA="${MODEL_EGRESS_BASE_SHA:-$(bash "$ROOT/scripts/resolve-task-base.sh")}"
 R23_TIP_SHA="${MODEL_EGRESS_R23_TIP_SHA:-f19c2b4bede1b255e05a71f9de62093eb078b68e}"
 R24_TIP_SHA="${MODEL_EGRESS_R24_TIP_SHA:-c1d15c09e065996b8b6e3a184a59276409a38b17}"
 
@@ -23,20 +23,8 @@ test -f docs/canonical/model-egress-policy.yaml || fail "canonical model egress 
 test -f migrations/000008_create_model_egress_authorization.up.sql || fail "migration 000008 up is missing"
 test -f migrations/000008_create_model_egress_authorization.down.sql || fail "migration 000008 down is missing"
 
-mapfile -t canonical_changes < <({
-  git diff --name-only "$BASE_SHA" -- docs/canonical
-  git ls-files --others --exclude-standard -- docs/canonical
-} | sort -u)
-for path in "${canonical_changes[@]}"; do
-  case "$path" in
-    docs/canonical/capability-matrix.yaml|docs/canonical/model-routing.yaml|docs/canonical/model-egress-policy.yaml|docs/canonical/model-execution-identity-policy.yaml) ;;
-    # R30 resolves D-007 in docs/canonical/decisions-required.yaml:resolved
-    # (see docs/adr/ADR-0006-hybrid-logic-ir-shadow.md) — a deliberate,
-    # documented governance action, D-005 stays untouched.
-    docs/canonical/decisions-required.yaml) ;;
-    *) fail "unauthorized canonical change: $path" ;;
-  esac
-done
+# Canonical immutability is defined ONCE (delta vs the real change base).
+bash "$ROOT/scripts/check-canonical-immutability.sh" "$BASE_SHA"
 for required in docs/canonical/capability-matrix.yaml docs/canonical/model-egress-policy.yaml; do
   printf '%s\n' "${canonical_changes[@]}" | grep -Fxq "$required" || fail "required canonical change missing: $required"
 done
