@@ -19,13 +19,18 @@ test -f migrations/000007_create_model_runtime_gateway.down.sql || fail "migrati
 if rg -n --glob '*.go' --glob '!internal/modelruntime/adapter/openaicompat/**' --glob '!internal/modelruntime/adapter/deepseek/**' --glob '!internal/modelruntime/adapter/gemini/**' --glob '!internal/modelruntime/adapter/mimo/**' --glob '!internal/modelruntime/adapter/xai/**' --glob '!internal/modelruntime/adapter/openairesponses/**' '"net/http"' internal/modelruntime; then
   fail "network client found outside the approved openai-compatible, DeepSeek, Gemini, MiMo, xAI, or OpenAI Responses adapters"
 fi
-if rg -n --glob '*.go' --glob '!internal/modelruntime/adapter/alibabaclaude/**' '("os/exec"|exec\.Command|syscall\.|/bin/(ba)?sh|sh -c)' internal/modelruntime internal/secrets; then
+# *_test.go is excluded: the umask permission test legitimately uses
+# syscall.Umask to assert what it tests, exactly like every other check in
+# this script that distinguishes production code from its tests.
+if rg -n --glob '*.go' --glob '!**/*_test.go' --glob '!internal/modelruntime/adapter/alibabaclaude/**' '("os/exec"|exec\.Command|syscall\.|/bin/(ba)?sh|sh -c)' internal/modelruntime internal/secrets; then
   fail "subprocess or shell execution found in model runtime"
 fi
 if rg -n --glob '*.go' '(\bmodeld\b|pollModel|polling|ReconcileInterval|ORG_MODEL_RUNTIME_RECONCILE_INTERVAL)' internal/modelruntime cmd/orgctl/models.go; then
   fail "persistent worker or reconcile interval found"
 fi
-if find internal/modelruntime/adapter -maxdepth 1 -type f -name '*.go' ! -name 'fake.go' ! -name 'fake_test.go' ! -name 'registry.go' -print | grep -q .; then
+# *_test.go is excluded here for the same reason: guard tests merged beside
+# the adapter registry are tests, not provider implementations.
+if find internal/modelruntime/adapter -maxdepth 1 -type f -name '*.go' ! -name '*_test.go' ! -name 'fake.go' ! -name 'fake_test.go' ! -name 'registry.go' -print | grep -q .; then
   fail "unexpected top-level provider adapter implementation found"
 fi
 if find internal/modelruntime/adapter -mindepth 1 -maxdepth 1 -type d ! -name openaicompat ! -name alibabaclaude ! -name deepseek ! -name gemini ! -name mimo ! -name xai ! -name openairesponses -print | grep -q .; then

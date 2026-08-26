@@ -25,20 +25,25 @@ jobs:
       - name: Resolve change base
         id: change_base
         run: |
-          # push to main audits the delta against the previous commit of the
-          # event; everything else resolves through the shared script
-          # (PR target merge-base, explicit env, or self when on main).
-          base=""
-          if [[ "${{ github.event_name }}" == "push" ]]; then
+          # ONLY a push to main audits against the event's previous commit;
+          # work branches (fix/**, feat/**, PRs) audit their own delta
+          # against the merge-base with the target line. The resolved base
+          # is EXPORTED so every downstream fitness check in this job
+          # audits exactly the same delta -- otherwise make verify would
+          # silently fall back to HEAD-on-main and see an empty diff.
+          if [[ "${{ github.event_name }}" == "push" &&
+                "${{ github.ref }}" == "refs/heads/main" ]]; then
             before="${{ github.event.before }}"
             if [[ -n "$before" && "$before" != "0000000000000000000000000000000000000000" ]] && git cat-file -e "$before^{commit}" 2>/dev/null; then
               base="$before"
+            else
+              base="$(bash scripts/resolve-task-base.sh)"
             fi
-          fi
-          if [[ -z "$base" ]]; then
+          else
             base="$(bash scripts/resolve-task-base.sh)"
           fi
           echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "TASK_ENGINE_BASE_COMMIT=$base" >> "$GITHUB_ENV"
       - name: Install CI tooling
         run: |
           sudo apt-get update
@@ -99,17 +104,25 @@ jobs:
       - name: Resolve change base
         id: change_base
         run: |
-          base=""
-          if [[ "${{ github.event_name }}" == "push" ]]; then
+          # ONLY a push to main audits against the event's previous commit;
+          # work branches (fix/**, feat/**, PRs) audit their own delta
+          # against the merge-base with the target line. The resolved base
+          # is EXPORTED so every downstream fitness check in this job
+          # audits exactly the same delta -- otherwise make verify would
+          # silently fall back to HEAD-on-main and see an empty diff.
+          if [[ "${{ github.event_name }}" == "push" &&
+                "${{ github.ref }}" == "refs/heads/main" ]]; then
             before="${{ github.event.before }}"
             if [[ -n "$before" && "$before" != "0000000000000000000000000000000000000000" ]] && git cat-file -e "$before^{commit}" 2>/dev/null; then
               base="$before"
+            else
+              base="$(bash scripts/resolve-task-base.sh)"
             fi
-          fi
-          if [[ -z "$base" ]]; then
+          else
             base="$(bash scripts/resolve-task-base.sh)"
           fi
           echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "TASK_ENGINE_BASE_COMMIT=$base" >> "$GITHUB_ENV"
       - name: Install CI tooling
         run: |
           sudo apt-get update

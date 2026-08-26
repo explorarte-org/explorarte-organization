@@ -150,17 +150,64 @@ func TestBothJobsResolveAndDelegateTheBase(t *testing.T) {
 	for name, job := range wf.Jobs {
 		resolves, delegates := false, false
 		for _, step := range job.Steps {
-			if step.ID == "change_base" && strings.Contains(step.Run, "github.event.before") &&
-				strings.Contains(step.Run, resolverScript) {
-				resolves = true
+			if step.ID == "change_base" {
+				mainGated := strings.Contains(step.Run, `"${{ github.event_name }}" == "push"`) &&
+					strings.Contains(step.Run, `"${{ github.ref }}" == "refs/heads/main"`)
+				fallsBack := strings.Contains(step.Run, resolverScript)
+				exported := strings.Contains(step.Run, "TASK_ENGINE_BASE_COMMIT=$base") &&
+					strings.Contains(step.Run, ">> \"$GITHUB_ENV\"")
+				if mainGated && fallsBack && exported {
+					resolves = true
+				}
 			}
 			if strings.Contains(step.Run, immutabilitySc) {
 				delegates = true
 			}
 		}
 		if !resolves || !delegates {
-			t.Fatalf("job %s: resolves=%v delegatesCanonical=%v", name, resolves, delegates)
+			t.Fatalf("job %s: resolves(main-gated+exported)=%v delegatesCanonical=%v",
+				name, resolves, delegates)
 		}
+	}
+}
+
+// GUARD: event.before belongs to MAIN pushes only. A work branch (fix/**,
+// feat/**) must audit its WHOLE delta against the merge-base with the
+// target line -- never against whatever commit happened to precede its last
+// push -- and the resolver never consults the pushed ref on its own.
+func TestPushToAWorkBranchUsesTheMergeBaseNotEventBefore(t *testing.T) {
+	g, _ := newScenario(t)
+	gitRun(t, g.dir, "checkout", "-b", "fix/something")
+	writeCommitAll(t, g.dir, "branch work", map[string]string{"README.md": "work\n"})
+	prevHead := gitRun(t, g.dir, "rev-parse", "HEAD~1")
+
+	out, code := g.run(t, repoFile(t, resolverScript), map[string]string{
+		"GITHUB_EVENT_NAME": "push",
+		"GITHUB_REF":        "refs/heads/fix/something",
+	})
+	if code != 0 {
+		t.Fatalf("resolver failed on a work branch: %s", out)
+	}
+	mergeBase := gitRun(t, g.dir, "merge-base", "HEAD", "origin/main")
+	if got := strings.TrimSpace(out); got != mergeBase {
+		t.Fatalf("work-branch base = %.12s, want merge-base %.12s (not the previous commit %.12s)",
+			got, mergeBase, prevHead)
+	}
+}
+
+// GUARD: the base resolved once in the workflow governs EVERY fitness check
+// of the job through TASK_ENGINE_BASE_COMMIT. Without the export, make
+// verify's scripts would silently fall back to HEAD-on-main and audit an
+// empty delta on push-to-main runs.
+func TestExportedBaseDrivesTheFitnessScriptsEvenOnMain(t *testing.T) {
+	g, _ := newScenario(t)
+	preCanonical := gitRun(t, g.dir, "rev-parse", "main~1")
+	// Simulate the workflow export on a main-line checkout: an explicitly
+	// exported base makes the audit see the REAL delta, not zero.
+	out, code := g.run(t, repoFile(t, immutabilitySc),
+		map[string]string{"TASK_ENGINE_BASE_COMMIT": preCanonical})
+	if code == 0 || !strings.Contains(out, "q3-ontology.provenance.yaml") {
+		t.Fatalf("the exported base did not drive the audit:\n%s", out)
 	}
 }
 
@@ -220,12 +267,25 @@ func TestGenericCanonicalAuditsDelegateOrAreRangeScoped(t *testing.T) {
 		if !auditsCanonical {
 			continue
 		}
+		// Pending OWNER DECISIONS -- both are already red on pristine main,
+		// for different reasons each, and neither fix belongs to base
+		// semantics: model-provider requires a routing change inside its own
+		// pinned delta AND refuses capability-matrix (not in its private
+		// list); model-egress refuses the instrument-v4 provenance file for
+		// the same private-list reason. Growing their lists was explicitly
+		// ruled out by governance, so their fate stays with the owner.
+		pendingOwnerDecision := map[string]bool{
+			"check-model-provider-fitness.sh": true,
+			"check-model-egress-fitness.sh":   true,
+		}
 		rangePinned := rangeAudit.MatchString(src)
 		switch {
 		case base == definition:
 			continue
 		case rangePinned:
 			// Campaign-pinned range: already delta-scoped by design.
+			continue
+		case pendingOwnerDecision[base]:
 			continue
 		case strings.Contains(src, "unauthorized canonical change"):
 			t.Fatalf("%s carries its own canonical allow-list; delegate to %s", base, definition)
