@@ -107,6 +107,34 @@ func ParseWorkerResult(body []byte, limits Limits) (WorkerResult, error) {
 	return out, nil
 }
 
+// workerResultV2StructureGuidance states worker-result/v2's document
+// topology to every producer asked for it, independent of whether this
+// round has any EvidenceRequirements at all.
+//
+// refsAreAllStructured (above) enforces this cross-field rule
+// unconditionally -- it never reads EvidenceRequirements, because
+// EvidenceRequirements decide WHAT evidence is owed, not whether a v2
+// document may contradict its own structured representation. Before
+// AUTONOMY-SMOKE-017-R17-V3, a zero-requirement worker was bound by that
+// rule without ever being told it existed: evidenceContractGuidance is
+// correctly silent when required is empty (AUTONOMY-SMOKE-017-R8), and
+// nothing else stated it. The worker guessed across three attempts: a
+// real canonical document with no evidence[] entry behind it, then a
+// self-citation to its own task, then a repository:// URI composed to
+// look like one it had never been shown.
+//
+// This is deliberately independent of evidenceContractGuidance, which
+// states evidence OBLIGATIONS (what must be grounded). This states
+// STRUCTURE (how a v2 document must be shaped), and is true whether or
+// not any obligation exists.
+func workerResultV2StructureGuidance() string {
+	return `worker-result/v2 document structure:
+- evidence[] is the structured authority: each item states a claim, a subject, a relation and a ref.
+- every non-empty evidence_refs entry must also occur as some evidence[].ref.
+- if you have no evidence to cite, return evidence_refs: [] and evidence: [].
+- never invent a reference (a task ID, a self-citation, a composed repository:// URI, a worker-result citation) merely to populate these arrays; report only evidence that actually grounds a claim.`
+}
+
 func refsAreAllStructured(refs []string, evidence []EvidenceItem) error {
 	structured := make(map[string]struct{}, len(evidence))
 	for _, item := range evidence {

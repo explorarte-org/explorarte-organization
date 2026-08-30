@@ -1832,7 +1832,13 @@ func executionContractFor(purpose ExecutionPurpose, required []EvidenceRequireme
 		// rule unconditionally, obligation list or not: egress is not a
 		// property of the author, and neither is knowing the rule. R11 and
 		// R13 died at that gate having never been shown it existed.
-		contract = candidateDeclassificationGuidance()
+		//
+		// WorkerResultOutputSchemaFor always offers worker-result/v2 as an
+		// output option for this purpose, so its structural rule is told to
+		// every department worker unconditionally too, obligation list or
+		// not -- see workerResultV2StructureGuidance for why: R17-v3's task
+		// 34 died at refsAreAllStructured having never been shown it either.
+		contract = candidateDeclassificationGuidance() + "\n\n" + workerResultV2StructureGuidance()
 	case PurposeDesignAdjudication:
 		// The adjudicator AUTHORS evidence_requirements for the next round,
 		// and the host refuses any proposal the frozen pin cannot supply.
