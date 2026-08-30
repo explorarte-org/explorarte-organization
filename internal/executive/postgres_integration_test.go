@@ -1099,3 +1099,77 @@ func TestExecutivePostgreSQL17RecoveryGateProvisionsRunningAttempt(t *testing.T)
 		t.Fatalf("automatic recovery failed: run=%+v ensure_calls=%d model_calls=%d", run, assignments.ensureCalls, models.ensureCalls)
 	}
 }
+
+// resumeAfterAssignmentCommitAssignments models Recovery B: the automatic
+// assignment write already committed durably before the crash, so every
+// Ensure call from here on must be an exact, idempotent replay of that same
+// assignment -- never a second one -- while Resolve is what was interrupted
+// (e.g. before invocation creation) and must be retried by the next Resume.
+type resumeAfterAssignmentCommitAssignments struct {
+	ensureCalls  int
+	resolveCalls int
+}
+
+func (f *resumeAfterAssignmentCommitAssignments) EnsureAuthorizedAssignmentForRunningAttempt(_ context.Context, taskID, attemptID int64) (executive.AssignmentRef, error) {
+	f.ensureCalls++
+	return executive.AssignmentRef{ID: 3000 + attemptID, TaskID: taskID, AttemptID: attemptID}, nil
+}
+
+func (f *resumeAfterAssignmentCommitAssignments) ResolveAssignment(_ context.Context, taskID, attemptID int64, role string) (executive.AssignmentRef, error) {
+	f.resolveCalls++
+	if f.resolveCalls == 1 {
+		return executive.AssignmentRef{}, errors.New("simulated crash after assignment commit, before resolve/invocation")
+	}
+	return executive.AssignmentRef{
+		ID: 3000 + attemptID, OrganizationRevisionID: 1, TaskID: taskID, AttemptID: attemptID,
+		SubjectRoleID: role, ExecutionPrincipalID: 77, DispatchActorRoleID: "ingenieria_ia/code-runner",
+		ValidUntil: time.Now().Add(time.Hour),
+	}, nil
+}
+
+// TestExecutivePostgreSQL17RecoveryGateReplaysCommittedAssignmentBeforeResolve
+// covers gap #16 from the REVIEW GATE: Recovery B (assignment already
+// durably persisted, crash strictly before Resolve/invocation), exercised
+// at the Executive/orchestrator level rather than only the domain-level
+// replay TestAuthorizedAttemptProvisionerReplayRequiresSameEffectiveBinding
+// already proves. Every Ensure call after the crash must return exactly the
+// SAME assignment (no second one, no new attempt, no retry inflation), and
+// no external model call may happen until Resolve actually succeeds.
+func TestExecutivePostgreSQL17RecoveryGateReplaysCommittedAssignmentBeforeResolve(t *testing.T) {
+	h := newIntegrationHarness(t)
+	defer h.close()
+	models := newIntegrationModelRuntime()
+	assignments := &resumeAfterAssignmentCommitAssignments{}
+	completionGate := &countingCompletion{delegate: h.completion}
+	orchestrator := newOrchestrator(t, h, models, assignments, completionGate)
+	run, _, err := orchestrator.Submit(h.ctx, executive.SubmitRequest{
+		ActorRoleID: executive.OwnerRoleID, IdempotencyKey: "integration-assignment-committed-crash-before-resolve",
+		Goal: executive.OwnerGoal{Goal: "Analyze the organization and return a one-area plan without external actions.", AcceptanceCriteria: []executive.AcceptanceCriterion{{Text: "one department reviewed", Phase: executive.AcceptanceDesign}, {Text: "closure verified", Phase: executive.AcceptanceImplementation}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		run, err = orchestrator.Resume(h.ctx, run.RootTaskID)
+		if errors.Is(err, executive.ErrDispatchAssignmentRequired) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !errors.Is(err, executive.ErrDispatchAssignmentRequired) || run.State != executive.StateBlocked || assignments.ensureCalls != 1 || assignments.resolveCalls != 1 {
+		t.Fatalf("expected the block strictly between a committed assignment and resolve: run=%+v ensure_calls=%d resolve_calls=%d err=%v", run, assignments.ensureCalls, assignments.resolveCalls, err)
+	}
+	if models.ensureCalls != 0 {
+		t.Fatalf("model invocation crossed the unresolved boundary: %d", models.ensureCalls)
+	}
+
+	run, err = runUntilTerminalOrError(t, h.ctx, orchestrator, run.RootTaskID, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.State != executive.StateCompleted || assignments.ensureCalls < 2 || assignments.resolveCalls < 2 || models.ensureCalls == 0 {
+		t.Fatalf("automatic recovery via idempotent replay failed: run=%+v ensure_calls=%d resolve_calls=%d model_calls=%d", run, assignments.ensureCalls, assignments.resolveCalls, models.ensureCalls)
+	}
+}

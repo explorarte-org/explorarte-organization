@@ -182,7 +182,7 @@ func (s *AuthorizedAttemptProvisioner) resolveTrustedRoot(ctx context.Context, c
 			return TaskLineageRef{}, fmt.Errorf("%w: task %d parent %d is unavailable: %v", ErrTaskAttemptRejected, current.TaskID, parentID, loadErr)
 		}
 		if parent.TaskID != parentID || parent.TaskID == current.TaskID || parent.OrganizationID != current.OrganizationID ||
-			parent.OrganizationRevisionID != current.OrganizationRevisionID || strings.TrimSpace(parent.CorrelationID) == "" ||
+			strings.TrimSpace(parent.CorrelationID) == "" ||
 			parent.CorrelationID != current.CorrelationID {
 			return TaskLineageRef{}, fmt.Errorf("%w: task %d parent provenance is incompatible", ErrTaskAttemptRejected, current.TaskID)
 		}

@@ -3,6 +3,7 @@ package modeldispatch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -203,5 +204,182 @@ func TestAuthorizedAttemptProvisionerReplayRequiresSameEffectiveBinding(t *testi
 	}
 	if len(fixture.store.created) != 1 {
 		t.Fatalf("divergent replay created another assignment: %d", len(fixture.store.created))
+	}
+}
+
+// TestAuthorizedAttemptProvisionerRejectsInactiveBinding covers gap #5 from
+// the REVIEW GATE: a role-model binding that the reader returns without
+// error but that is not itself active/effective must deny provisioning,
+// distinctly from a binding lookup that fails outright (already covered by
+// TestAuthorizedAttemptProvisionerRejectsMissingBinding).
+func TestAuthorizedAttemptProvisionerRejectsInactiveBinding(t *testing.T) {
+	fixture := newAuthorizedAttemptFixture(t)
+	fixture.binding.binding.Active = false
+	_, err := fixture.service.EnsureAuthorizedAssignmentForRunningAttempt(context.Background(), fixture.attempt.TaskID, fixture.attempt.AttemptID)
+	if !errors.Is(err, ErrTaskAttemptRejected) {
+		t.Fatalf("expected inactive binding rejection, got %v", err)
+	}
+	if len(fixture.store.created) != 0 {
+		t.Fatal("inactive binding reached assignment creation")
+	}
+}
+
+// TestAuthorizedAttemptProvisionerDeniesWhenRequesterLacksCurrentCapability
+// covers gap #6 (SECURITY-CRITICAL): a genuinely resolved, unforged root
+// provenance is not itself permission. Provisioning must still be denied the
+// instant the persisted root's requester role lacks the capability being
+// evaluated right now, proving provenance != permission.
+func TestAuthorizedAttemptProvisionerDeniesWhenRequesterLacksCurrentCapability(t *testing.T) {
+	fixture := newAuthorizedAttemptFixture(t)
+	fixture.authorizer.deny = map[string]bool{"empresa/human|" + capabilityAssignmentCreate: true}
+	_, err := fixture.service.EnsureAuthorizedAssignmentForRunningAttempt(context.Background(), fixture.attempt.TaskID, fixture.attempt.AttemptID)
+	if !errors.Is(err, ErrAuthorizationDenied) {
+		t.Fatalf("expected requester authorization denial despite genuine ancestry, got %v", err)
+	}
+	if len(fixture.store.created) != 0 {
+		t.Fatal("denied requester capability reached assignment creation")
+	}
+	found := false
+	for _, call := range fixture.authorizer.calls {
+		if call.role == "empresa/human" && call.capability == capabilityAssignmentCreate {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected provenance to resolve and the durable requester capability check to actually run before denial")
+	}
+}
+
+// buildSyntheticAncestryChain rewires the fixture's leaf task (task 12) to
+// walk through `hops` additional synthetic ancestor tasks (IDs 9000+) before
+// optionally reaching a genuine owner-root marker on the last one. It exists
+// to test the ancestry walk's hard depth bound precisely, independent of the
+// two real fixture tasks (12, 4) used everywhere else.
+//
+// Node count including the leaf = hops + 1. resolveTrustedRoot processes one
+// node per loop iteration (0-indexed, current<64), so the owner marker is
+// only ever reachable on the 64th processed node (hops=63, terminal node is
+// node #64) -- one hop more (hops=64, terminal candidate would be node #65)
+// is provably unreachable and must fail closed on the depth bound instead.
+func buildSyntheticAncestryChain(fixture *authorizedAttemptFixture, hops int, terminateWithOwner bool) {
+	const orgID = "explorarte"
+	const correlation = "executive:campaign"
+	leaf := fixture.lineage.tasks[fixture.attempt.TaskID]
+	leaf.CorrelationID = correlation
+	if hops == 0 {
+		if terminateWithOwner {
+			leaf.CausationID = "owner:campaign-r17"
+		}
+		fixture.lineage.tasks[fixture.attempt.TaskID] = leaf
+		return
+	}
+	leaf.CausationID = "task:9000"
+	fixture.lineage.tasks[fixture.attempt.TaskID] = leaf
+	for i := 0; i < hops; i++ {
+		id := int64(9000 + i)
+		node := TaskLineageRef{
+			TaskID: id, OrganizationID: orgID, OrganizationRevisionID: 5,
+			RequestedByRoleID: "empresa/human", AssignedRoleID: "empresa/ceo",
+			CorrelationID: correlation,
+		}
+		switch {
+		case i == hops-1 && terminateWithOwner:
+			node.CausationID = "owner:campaign-r17"
+		case i == hops-1:
+			// One synthetic node beyond the walk's reach. Its own
+			// causation is never inspected once the depth bound is
+			// hit -- deliberately non-nonsensical to make that
+			// explicit, not to encode any real behavior.
+			node.CausationID = "owner:unreachable-excess"
+		default:
+			node.CausationID = fmt.Sprintf("task:%d", 9000+i+1)
+		}
+		fixture.lineage.tasks[id] = node
+	}
+}
+
+// TestAuthorizedAttemptProvisionerAcceptsAncestryAtMaximumDepth covers the
+// accepted half of gap #10: a chain that reaches the owner root on exactly
+// the last node the walk is allowed to process must still succeed.
+func TestAuthorizedAttemptProvisionerAcceptsAncestryAtMaximumDepth(t *testing.T) {
+	fixture := newAuthorizedAttemptFixture(t)
+	buildSyntheticAncestryChain(fixture, maxAuthorizedAttemptAncestryDepth-1, true)
+	result, err := fixture.service.EnsureAuthorizedAssignmentForRunningAttempt(context.Background(), fixture.attempt.TaskID, fixture.attempt.AttemptID)
+	if err != nil || result.Assignment.ID == 0 {
+		t.Fatalf("ancestry at the exact depth bound was rejected: result=%+v err=%v", result, err)
+	}
+}
+
+// TestAuthorizedAttemptProvisionerRejectsAncestryBeyondMaximumDepth covers
+// the rejected half of gap #10: a chain one hop longer than the maximum,
+// with a real (never-consulted) node beyond the bound, must fail closed --
+// no panic, no partial assignment -- rather than silently succeeding or
+// crashing on the extra hop.
+func TestAuthorizedAttemptProvisionerRejectsAncestryBeyondMaximumDepth(t *testing.T) {
+	fixture := newAuthorizedAttemptFixture(t)
+	buildSyntheticAncestryChain(fixture, maxAuthorizedAttemptAncestryDepth, false)
+	_, err := fixture.service.EnsureAuthorizedAssignmentForRunningAttempt(context.Background(), fixture.attempt.TaskID, fixture.attempt.AttemptID)
+	if !errors.Is(err, ErrTaskAttemptRejected) {
+		t.Fatalf("expected fail-closed depth-limit rejection, got %v", err)
+	}
+	if len(fixture.store.created) != 0 {
+		t.Fatal("ancestry beyond the depth bound reached assignment creation")
+	}
+}
+
+// buildMixedRevisionAncestryChain inserts a genuine three-level lineage --
+// root (task 4) at one organization revision, an intermediate task (6) at a
+// second, and the running leaf (task 12, already revision-current per the
+// base fixture) at a third -- to prove the ancestry walk demonstrates
+// provenance without requiring the whole lineage to share one revision.
+func buildMixedRevisionAncestryChain(fixture *authorizedAttemptFixture) {
+	fixture.lineage.tasks[6] = TaskLineageRef{
+		TaskID: 6, OrganizationID: "explorarte", OrganizationRevisionID: 6,
+		RequestedByRoleID: "empresa/ceo", AssignedRoleID: "empresa/ceo",
+		CorrelationID: "executive:campaign", CausationID: "task:4",
+	}
+	root := fixture.lineage.tasks[4]
+	root.OrganizationRevisionID = 5
+	fixture.lineage.tasks[4] = root
+	leaf := fixture.lineage.tasks[12]
+	leaf.CausationID = "task:6"
+	fixture.lineage.tasks[12] = leaf
+}
+
+// TestAuthorizedAttemptProvisionerAllowsMixedRevisionAncestry covers gap #20
+// (REVISION SEMANTICS GATE): root R5 -> child R6 -> target R7, with valid
+// CURRENT authority and CURRENT binding, must provision successfully.
+// Ancestry demonstrates provenance; it does not require lineage-wide
+// revision uniformity, which the codebase never guaranteed in the first
+// place (every task, root or child, always stamps whatever revision is live
+// at its own creation instant).
+func TestAuthorizedAttemptProvisionerAllowsMixedRevisionAncestry(t *testing.T) {
+	fixture := newAuthorizedAttemptFixture(t)
+	buildMixedRevisionAncestryChain(fixture)
+	result, err := fixture.service.EnsureAuthorizedAssignmentForRunningAttempt(context.Background(), fixture.attempt.TaskID, fixture.attempt.AttemptID)
+	if err != nil || result.Reused || result.Assignment.ID == 0 {
+		t.Fatalf("mixed-revision ancestry rejected: result=%+v err=%v", result, err)
+	}
+	if result.Assignment.CreatedByRoleID != "empresa/human" {
+		t.Fatalf("created_by=%q, want persisted root requester", result.Assignment.CreatedByRoleID)
+	}
+}
+
+// TestAuthorizedAttemptProvisionerMixedRevisionDoesNotPreserveRevokedAuthority
+// covers gap #21: the exact security property motivating the fix. The root
+// requester's authority existed at revision 5, the lineage is structurally
+// genuine end to end, but the capability is evaluated at the CURRENT
+// revision -- if it was revoked by then, provisioning must deny. Removing
+// the per-hop revision-equality check must not let stale authority survive.
+func TestAuthorizedAttemptProvisionerMixedRevisionDoesNotPreserveRevokedAuthority(t *testing.T) {
+	fixture := newAuthorizedAttemptFixture(t)
+	buildMixedRevisionAncestryChain(fixture)
+	fixture.authorizer.deny = map[string]bool{"empresa/human|" + capabilityAssignmentCreate: true}
+	_, err := fixture.service.EnsureAuthorizedAssignmentForRunningAttempt(context.Background(), fixture.attempt.TaskID, fixture.attempt.AttemptID)
+	if !errors.Is(err, ErrAuthorizationDenied) {
+		t.Fatalf("expected current-revision authorization denial despite structurally valid mixed-revision ancestry, got %v", err)
+	}
+	if len(fixture.store.created) != 0 {
+		t.Fatal("revoked authority reached assignment creation despite mixed-revision ancestry")
 	}
 }
