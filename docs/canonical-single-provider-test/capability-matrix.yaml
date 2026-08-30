@@ -29,6 +29,8 @@ capabilities:
   risk: high
 - id: model.dispatch_assignment.create
   risk: high
+- id: model.dispatch_assignment.provision_authorized_attempt
+  risk: high
 - id: model.dispatch_assignment.revoke
   risk: high
 - id: model.execution_identity_key.register
@@ -106,6 +108,7 @@ grants:
   - rag.propose_candidate
   execution_service:
   - model.invoke
+  - model.dispatch_assignment.provision_authorized_attempt
   - code.stage_write
   - code.run_tests
   - code.commit

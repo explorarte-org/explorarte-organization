@@ -108,6 +108,32 @@ type ResolvedAssignment struct {
 	Principal  ExecutionPrincipal
 }
 
+// TaskLineageRef is persistence-derived provenance, not caller authority.
+// CausationID links to either another task (task:<id>) or a supported owner
+// root marker; RequestedByRoleID is re-authorized at the current revision.
+type TaskLineageRef struct {
+	TaskID                 int64
+	OrganizationID         string
+	OrganizationRevisionID int64
+	RequestedByRoleID      string
+	AssignedRoleID         string
+	CorrelationID          string
+	CausationID            string
+}
+
+// RoleModelBindingRef is the immutable identity of the effective binding used
+// in automatic-assignment replay semantics. No provider/model selection crosses
+// into modeldispatch; only the already-materialized binding pin does.
+type RoleModelBindingRef struct {
+	OrganizationID         string
+	OrganizationRevisionID int64
+	RoleID                 string
+	ProfileID              string
+	ModelProfileVersionID  int64
+	BindingHash            string
+	Active                 bool
+}
+
 type RegisterPrincipalCommand struct {
 	OrganizationID      string        `json:"organization_id"`
 	PrincipalKey        string        `json:"principal_key"`

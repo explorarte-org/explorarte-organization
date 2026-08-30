@@ -184,6 +184,30 @@ func (s *Store) GetByID(ctx context.Context, organizationID string, assignmentID
 	return s.withPrincipal(ctx, assignment)
 }
 
+func (s *Store) GetActiveRoleModelBinding(ctx context.Context, organizationID string, revisionID int64, roleID string) (modeldispatch.RoleModelBindingRef, error) {
+	var binding modeldispatch.RoleModelBindingRef
+	err := s.pool.QueryRow(ctx, `
+SELECT b.organization_id,b.organization_revision_id,b.role_id,b.profile_id,
+       b.model_profile_version_id,b.binding_hash,b.active
+FROM role_model_bindings b
+JOIN model_profile_versions v
+  ON v.id=b.model_profile_version_id
+ AND v.organization_id=b.organization_id
+ AND v.profile_id=b.profile_id
+ AND v.organization_revision_id=b.organization_revision_id
+WHERE b.organization_id=$1
+  AND b.organization_revision_id=$2
+  AND b.role_id=$3
+  AND b.active`, organizationID, revisionID, roleID).Scan(
+		&binding.OrganizationID, &binding.OrganizationRevisionID, &binding.RoleID,
+		&binding.ProfileID, &binding.ModelProfileVersionID, &binding.BindingHash, &binding.Active,
+	)
+	if err != nil {
+		return modeldispatch.RoleModelBindingRef{}, mapError(err)
+	}
+	return binding, nil
+}
+
 func (s *Store) withPrincipal(ctx context.Context, assignment modeldispatch.DispatcherAssignment) (modeldispatch.ResolvedAssignment, error) {
 	principal, err := s.GetPrincipal(ctx, assignment.ExecutionPrincipalID)
 	if err != nil {

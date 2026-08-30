@@ -147,8 +147,10 @@ func TestPrincipalServiceDisableRequiresAuthorization(t *testing.T) {
 }
 
 type fakeAssignmentStore struct {
-	createFn func(PreparedCreateAssignment) (CreateAssignmentResult, error)
-	created  []PreparedCreateAssignment
+	createFn   func(PreparedCreateAssignment) (CreateAssignmentResult, error)
+	created    []PreparedCreateAssignment
+	resolved   ResolvedAssignment
+	resolveErr error
 }
 
 func (f *fakeAssignmentStore) CreateAssignment(_ context.Context, p PreparedCreateAssignment) (CreateAssignmentResult, error) {
@@ -156,7 +158,16 @@ func (f *fakeAssignmentStore) CreateAssignment(_ context.Context, p PreparedCrea
 	if f.createFn != nil {
 		return f.createFn(p)
 	}
-	return CreateAssignmentResult{Assignment: DispatcherAssignment{ID: 1, Status: AssignmentActive}}, nil
+	assignment := DispatcherAssignment{
+		ID: 1, OrganizationID: p.Command.OrganizationID, OrganizationRevisionID: p.OrganizationRevisionID,
+		TaskID: p.Command.TaskID, AttemptID: p.Command.AttemptID, SubjectRoleID: p.Command.SubjectRoleID,
+		DispatchActorRoleID: p.Principal.DispatchActorRoleID, ExecutionPrincipalID: p.Principal.ID,
+		Status: AssignmentActive, ValidFrom: p.ValidFrom, ValidUntil: p.ValidUntil,
+		MaxInvocations: p.Command.MaxInvocations, AssignmentHash: p.AssignmentHash,
+		IdempotencyKey: p.Command.IdempotencyKey, RequestHash: p.RequestHash, CreatedByRoleID: p.CreatedByRoleID,
+	}
+	f.resolved = ResolvedAssignment{Assignment: assignment, Principal: p.Principal}
+	return CreateAssignmentResult{Assignment: assignment}, nil
 }
 func (f *fakeAssignmentStore) GetAssignment(context.Context, int64) (DispatcherAssignment, error) {
 	return DispatcherAssignment{}, nil
@@ -171,7 +182,13 @@ func (f *fakeAssignmentStore) ExpireAssignments(context.Context, string, int, ti
 	return ExpireResult{}, nil
 }
 func (f *fakeAssignmentStore) ResolveActive(context.Context, string, int64, int64, string) (ResolvedAssignment, error) {
-	return ResolvedAssignment{}, ErrNotFound
+	if f.resolveErr != nil {
+		return ResolvedAssignment{}, f.resolveErr
+	}
+	if f.resolved.Assignment.ID == 0 {
+		return ResolvedAssignment{}, ErrNotFound
+	}
+	return f.resolved, nil
 }
 func (f *fakeAssignmentStore) GetByID(context.Context, string, int64) (ResolvedAssignment, error) {
 	return ResolvedAssignment{}, ErrNotFound
