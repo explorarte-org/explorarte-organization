@@ -2399,7 +2399,7 @@ func (o *Orchestrator) anyProvisionedLeasedTask(ctx context.Context, correlation
 		return false
 	}
 	for _, t := range all {
-		if t.Status != "leased" || t.ActiveLease == nil {
+		if (t.Status != "leased" && t.Status != "running") || t.ActiveLease == nil {
 			continue
 		}
 		if _, err = o.assignments.ResolveAssignment(ctx, t.ID, t.ActiveLease.AttemptID, t.AssignedRoleID); err == nil {
