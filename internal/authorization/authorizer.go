@@ -267,6 +267,21 @@ func (a *Authorizer) Authorize(ctx context.Context, organizationID string, revis
 	return legacyEvaluationError(result)
 }
 
+// AuthorizeResource evaluates a capability without discarding the caller's
+// concrete resource identity and action digest. Automatic domain operations
+// use this seam instead of flattening a persisted requester into the legacy
+// role+capability check.
+func (a *Authorizer) AuthorizeResource(ctx context.Context, organizationID string, revisionID int64, roleID, capability, resourceType, resourceID, actionDigest string) error {
+	result, err := a.Evaluate(ctx, EvaluationRequest{
+		OrganizationID: organizationID, OrganizationRevisionID: revisionID, ActorRoleID: roleID,
+		CapabilityID: capability, ResourceType: resourceType, ResourceID: resourceID, ActionDigest: actionDigest,
+	})
+	if err != nil {
+		return err
+	}
+	return legacyEvaluationError(result)
+}
+
 func legacyEvaluationError(result Evaluation) error {
 	switch result.Effect {
 	case EffectAllow:

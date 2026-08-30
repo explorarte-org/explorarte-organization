@@ -15,6 +15,13 @@ type CapabilityAuthorizer interface {
 	Authorize(ctx context.Context, organizationID string, revisionID int64, roleID, capability string) error
 }
 
+// ResourceCapabilityAuthorizer preserves the concrete task/attempt scope at
+// the policy boundary. It is separate from the historical capability-only
+// method so existing administrative operations retain their contract.
+type ResourceCapabilityAuthorizer interface {
+	AuthorizeResource(ctx context.Context, organizationID string, revisionID int64, roleID, capability, resourceType, resourceID, actionDigest string) error
+}
+
 type RoleRef struct {
 	ID             string
 	Enabled        bool
@@ -43,6 +50,23 @@ type TaskAttemptRef struct {
 // TaskAttemptReader resolves task/attempt/lease state used to scope an assignment.
 type TaskAttemptReader interface {
 	GetTaskAttempt(ctx context.Context, taskID, attemptID int64) (TaskAttemptRef, error)
+}
+
+// TaskLineageReader resolves only the immutable task identity needed to prove
+// an attempt's durable provenance. The caller never supplies a requester role:
+// the authorized-attempt boundary derives it by walking persisted causation.
+type TaskLineageReader interface {
+	GetTaskLineage(ctx context.Context, taskID int64) (TaskLineageRef, error)
+}
+
+// RoleModelBindingReader is the provisioning-time binding gate. Invocation
+// creation deliberately revalidates the binding later as a TOCTOU boundary.
+type RoleModelBindingReader interface {
+	GetActiveRoleModelBinding(ctx context.Context, organizationID string, revisionID int64, roleID string) (RoleModelBindingRef, error)
+}
+
+type AuthorizedAssignmentProvisioner interface {
+	EnsureAuthorizedAssignmentForRunningAttempt(ctx context.Context, taskID, attemptID int64) (CreateAssignmentResult, error)
 }
 
 // AssignmentResolver is what modelruntime depends on to pin an invocation at

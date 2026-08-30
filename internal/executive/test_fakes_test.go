@@ -604,6 +604,10 @@ func (f *fakeContexts) subjectsFor(snapshotID int64) []string {
 
 type fakeAssignments struct{ err error }
 
+func (f fakeAssignments) EnsureAuthorizedAssignmentForRunningAttempt(_ context.Context, taskID, attemptID int64) (AssignmentRef, error) {
+	return AssignmentRef{ID: 1, TaskID: taskID, AttemptID: attemptID}, nil
+}
+
 func (f fakeAssignments) ResolveAssignment(_ context.Context, taskID, attemptID int64, role string) (AssignmentRef, error) {
 	if f.err != nil {
 		return AssignmentRef{}, f.err

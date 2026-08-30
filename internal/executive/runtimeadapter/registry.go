@@ -75,7 +75,19 @@ func mapRole(role registry.Role) executive.RoleRef {
 
 type Assignment struct {
 	Resolver       modeldispatch.AssignmentResolver
+	Provisioner    modeldispatch.AuthorizedAssignmentProvisioner
 	OrganizationID string
+}
+
+func (a Assignment) EnsureAuthorizedAssignmentForRunningAttempt(ctx context.Context, taskID, attemptID int64) (executive.AssignmentRef, error) {
+	if a.Provisioner == nil {
+		return executive.AssignmentRef{}, fmt.Errorf("authorized assignment provisioner is unavailable")
+	}
+	result, err := a.Provisioner.EnsureAuthorizedAssignmentForRunningAttempt(ctx, taskID, attemptID)
+	if err != nil {
+		return executive.AssignmentRef{}, err
+	}
+	return assignmentRef(result.Assignment), nil
 }
 
 func (a Assignment) ResolveAssignment(ctx context.Context, taskID, attemptID int64, role string) (executive.AssignmentRef, error) {
@@ -83,16 +95,16 @@ func (a Assignment) ResolveAssignment(ctx context.Context, taskID, attemptID int
 	if err != nil {
 		return executive.AssignmentRef{}, err
 	}
+	return assignmentRef(resolved.Assignment), nil
+}
+
+func assignmentRef(assignment modeldispatch.DispatcherAssignment) executive.AssignmentRef {
 	return executive.AssignmentRef{
-		ID:                     resolved.Assignment.ID,
-		OrganizationRevisionID: resolved.Assignment.OrganizationRevisionID,
-		TaskID:                 resolved.Assignment.TaskID,
-		AttemptID:              resolved.Assignment.AttemptID,
-		SubjectRoleID:          resolved.Assignment.SubjectRoleID,
-		ExecutionPrincipalID:   resolved.Principal.ID,
-		DispatchActorRoleID:    resolved.Principal.DispatchActorRoleID,
-		ValidUntil:             resolved.Assignment.ValidUntil,
-	}, nil
+		ID: assignment.ID, OrganizationRevisionID: assignment.OrganizationRevisionID,
+		TaskID: assignment.TaskID, AttemptID: assignment.AttemptID, SubjectRoleID: assignment.SubjectRoleID,
+		ExecutionPrincipalID: assignment.ExecutionPrincipalID, DispatchActorRoleID: assignment.DispatchActorRoleID,
+		ValidUntil: assignment.ValidUntil,
+	}
 }
 
 type Completion struct{ Service *completion.Service }

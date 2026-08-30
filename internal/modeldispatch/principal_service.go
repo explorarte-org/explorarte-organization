@@ -8,10 +8,11 @@ import (
 )
 
 const (
-	capabilityPrincipalRegister = "model.execution_principal.register"
-	capabilityPrincipalDisable  = "model.execution_principal.disable"
-	capabilityAssignmentCreate  = "model.dispatch_assignment.create"
-	capabilityAssignmentRevoke  = "model.dispatch_assignment.revoke"
+	capabilityPrincipalRegister          = "model.execution_principal.register"
+	capabilityPrincipalDisable           = "model.execution_principal.disable"
+	capabilityAssignmentCreate           = "model.dispatch_assignment.create"
+	capabilityAssignmentRevoke           = "model.dispatch_assignment.revoke"
+	capabilityProvisionAuthorizedAttempt = "model.dispatch_assignment.provision_authorized_attempt"
 )
 
 type PrincipalService struct {

@@ -9,16 +9,21 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/Mireuz13/explorarte-organization/internal/authorization"
 	"github.com/Mireuz13/explorarte-organization/internal/config"
 	"github.com/Mireuz13/explorarte-organization/internal/modeldispatch"
 	dispatchpostgres "github.com/Mireuz13/explorarte-organization/internal/modeldispatch/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/tasks"
+	taskpostgres "github.com/Mireuz13/explorarte-organization/internal/tasks/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/testdbguard"
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 )
@@ -229,6 +234,67 @@ func TestModelDispatcherAssignmentsPostgreSQL17(t *testing.T) {
 			t.Fatalf("byID=%+v err=%v", byID, err)
 		}
 	})
+
+	t.Run("authorized attempt boundary persists exact replay and rejects provenance or binding drift", func(t *testing.T) {
+		taskStore, taskErr := taskpostgres.New(platform)
+		if taskErr != nil {
+			t.Fatal(taskErr)
+		}
+		reader := dispatchTaskReader{reader: taskStore}
+		catalog := dispatchCatalog{reader: repo}
+		authorizer, authErr := authorization.New(repo, dispatchIntegrationOrganization, filepath.Join("..", "..", "..", "docs", "canonical"))
+		if authErr != nil {
+			t.Fatal(authErr)
+		}
+		principal := registerFixturePrincipal(t, ctx, store, "authorized-attempt")
+		insertBindingFixture(t, ctx, platform, revision.ID, revision.CanonicalHash, "empresa/ceo", "authorized-attempt")
+		rootID := insertLineageTaskFixture(t, ctx, platform, revision.ID, "authorized-root", "empresa/ceo", "executive:authorized-attempt", "owner:authorized-attempt", "ready")
+		attemptTaskID := insertLineageTaskFixture(t, ctx, platform, revision.ID, "authorized-child", "empresa/ceo", "executive:authorized-attempt", "task:"+strconv.FormatInt(rootID, 10), "running")
+		attempt := insertRunningAttemptFixture(t, ctx, platform, attemptTaskID, "authorized-attempt")
+
+		assignments, serviceErr := modeldispatch.NewAssignmentService(
+			dispatchIntegrationOrganization, authorizer, catalog, reader, store, store,
+			modeldispatch.ClockFunc(time.Now), 15*time.Minute, time.Hour,
+		)
+		if serviceErr != nil {
+			t.Fatal(serviceErr)
+		}
+		provisioner, provisionerErr := modeldispatch.NewAuthorizedAttemptProvisioner(assignments, reader, store, principal.PrincipalKey)
+		if provisionerErr != nil {
+			t.Fatal(provisionerErr)
+		}
+		first, ensureErr := provisioner.EnsureAuthorizedAssignmentForRunningAttempt(ctx, attemptTaskID, attempt.AttemptID)
+		if ensureErr != nil || first.Reused || first.Assignment.CreatedByRoleID != "empresa/human" {
+			t.Fatalf("first=%+v err=%v", first, ensureErr)
+		}
+		replayed, ensureErr := provisioner.EnsureAuthorizedAssignmentForRunningAttempt(ctx, attemptTaskID, attempt.AttemptID)
+		if ensureErr != nil || !replayed.Reused || replayed.Assignment.ID != first.Assignment.ID {
+			t.Fatalf("replay=%+v err=%v", replayed, ensureErr)
+		}
+
+		if _, updateErr := platform.Pool().Exec(ctx, `UPDATE role_model_bindings SET binding_hash=$1 WHERE organization_id=$2 AND organization_revision_id=$3 AND role_id='empresa/ceo'`, hexFixture("changed-effective-binding"), dispatchIntegrationOrganization, revision.ID); updateErr != nil {
+			t.Fatal(updateErr)
+		}
+		if _, ensureErr = provisioner.EnsureAuthorizedAssignmentForRunningAttempt(ctx, attemptTaskID, attempt.AttemptID); !errors.Is(ensureErr, modeldispatch.ErrConflict) {
+			t.Fatalf("expected binding replay conflict, got %v", ensureErr)
+		}
+
+		missingBindingTaskID := insertLineageTaskFixture(t, ctx, platform, revision.ID, "missing-binding-child", "ingenieria_ia/qa", "executive:authorized-attempt", "task:"+strconv.FormatInt(rootID, 10), "running")
+		missingBindingAttempt := insertRunningAttemptFixture(t, ctx, platform, missingBindingTaskID, "missing-binding")
+		if _, ensureErr = provisioner.EnsureAuthorizedAssignmentForRunningAttempt(ctx, missingBindingTaskID, missingBindingAttempt.AttemptID); !errors.Is(ensureErr, modeldispatch.ErrTaskAttemptRejected) {
+			t.Fatalf("expected missing binding rejection, got %v", ensureErr)
+		}
+
+		brokenTaskID := insertLineageTaskFixture(t, ctx, platform, revision.ID, "broken-ancestry-child", "empresa/ceo", "executive:authorized-attempt", "task:999999999", "running")
+		brokenAttempt := insertRunningAttemptFixture(t, ctx, platform, brokenTaskID, "broken-ancestry")
+		if _, ensureErr = provisioner.EnsureAuthorizedAssignmentForRunningAttempt(ctx, brokenTaskID, brokenAttempt.AttemptID); !errors.Is(ensureErr, modeldispatch.ErrTaskAttemptRejected) {
+			t.Fatalf("expected broken ancestry rejection, got %v", ensureErr)
+		}
+		var unexpected int
+		if countErr := platform.Pool().QueryRow(ctx, `SELECT COUNT(*) FROM model_dispatcher_assignments WHERE task_id=ANY($1::bigint[])`, []int64{missingBindingTaskID, brokenTaskID}).Scan(&unexpected); countErr != nil || unexpected != 0 {
+			t.Fatalf("rejected attempts wrote assignments: count=%d err=%v", unexpected, countErr)
+		}
+	})
 }
 
 func registerCommandFixture(suffix string) modeldispatch.RegisterPrincipalCommand {
@@ -237,6 +303,135 @@ func registerCommandFixture(suffix string) modeldispatch.RegisterPrincipalComman
 		DispatchActorRoleID: "ingenieria_ia/code-runner", PrincipalKind: modeldispatch.PrincipalLocalProcess,
 		IdempotencyKey: "principal-" + suffix,
 	}
+}
+
+type dispatchCatalog struct{ reader registry.Reader }
+
+func (a dispatchCatalog) CurrentRevision(ctx context.Context, organizationID string) (int64, error) {
+	revision, err := a.reader.GetCurrentRevision(ctx, organizationID)
+	if err != nil {
+		return 0, err
+	}
+	if revision == nil {
+		return 0, registry.ErrNotFound
+	}
+	return revision.ID, nil
+}
+
+func (a dispatchCatalog) GetRole(ctx context.Context, organizationID, roleID string) (modeldispatch.RoleRef, error) {
+	role, err := a.reader.GetRole(ctx, organizationID, roleID)
+	if err != nil {
+		return modeldispatch.RoleRef{}, err
+	}
+	return modeldispatch.RoleRef{ID: role.ID, Enabled: role.Enabled, Executable: role.Executable, AuthorityClass: role.AuthorityClass}, nil
+}
+
+type dispatchTaskReader struct{ reader tasks.TaskReader }
+
+func (a dispatchTaskReader) GetTaskAttempt(ctx context.Context, taskID, attemptID int64) (modeldispatch.TaskAttemptRef, error) {
+	detail, err := a.reader.GetTask(ctx, taskID)
+	if err != nil {
+		return modeldispatch.TaskAttemptRef{}, err
+	}
+	var attempt *tasks.Attempt
+	for i := range detail.Attempts {
+		if detail.Attempts[i].ID == attemptID {
+			attempt = &detail.Attempts[i]
+			break
+		}
+	}
+	if attempt == nil || detail.ActiveLease == nil || detail.ActiveLease.AttemptID != attemptID {
+		return modeldispatch.TaskAttemptRef{}, modeldispatch.ErrTaskAttemptRejected
+	}
+	return modeldispatch.TaskAttemptRef{
+		TaskID: detail.Task.ID, AttemptID: attempt.ID, OrganizationID: detail.Task.OrganizationID,
+		OrganizationRevisionID: detail.Task.OrganizationRevisionID, AssignedRoleID: detail.Task.AssignedRoleID,
+		TaskStatus: string(detail.Task.Status), AttemptStatus: string(attempt.State),
+		LeaseHolderID: detail.ActiveLease.HolderID, LeaseExpiresAt: detail.ActiveLease.ExpiresAt,
+	}, nil
+}
+
+func (a dispatchTaskReader) GetTaskLineage(ctx context.Context, taskID int64) (modeldispatch.TaskLineageRef, error) {
+	detail, err := a.reader.GetTask(ctx, taskID)
+	if err != nil {
+		return modeldispatch.TaskLineageRef{}, err
+	}
+	requester, correlation, causation := "", "", ""
+	if detail.Task.RequestedByRoleID != nil {
+		requester = *detail.Task.RequestedByRoleID
+	}
+	if detail.Task.CorrelationID != nil {
+		correlation = *detail.Task.CorrelationID
+	}
+	if detail.Task.CausationID != nil {
+		causation = *detail.Task.CausationID
+	}
+	return modeldispatch.TaskLineageRef{
+		TaskID: detail.Task.ID, OrganizationID: detail.Task.OrganizationID,
+		OrganizationRevisionID: detail.Task.OrganizationRevisionID, RequestedByRoleID: requester,
+		AssignedRoleID: detail.Task.AssignedRoleID, CorrelationID: correlation, CausationID: causation,
+	}, nil
+}
+
+func insertBindingFixture(t *testing.T, ctx context.Context, store *platformpostgres.Store, revisionID int64, canonicalHash, roleID, suffix string) {
+	t.Helper()
+	providerID := "provider-" + suffix
+	profileID := "profile-" + suffix
+	policyID := "policy-" + suffix
+	if _, err := store.Pool().Exec(ctx, `
+INSERT INTO model_providers(organization_id,id,transport,adapter_status,dispatch_enabled,direct_http_forbidden,canonical_hash,organization_revision_id)
+VALUES($1,$2,'fake_adapter','available',true,true,$3,$4)`, dispatchIntegrationOrganization, providerID, canonicalHash, revisionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Pool().Exec(ctx, `INSERT INTO model_profiles(organization_id,id,policy_id) VALUES($1,$2,$3)`, dispatchIntegrationOrganization, profileID, policyID); err != nil {
+		t.Fatal(err)
+	}
+	var versionID int64
+	if err := store.Pool().QueryRow(ctx, `
+INSERT INTO model_profile_versions(organization_id,profile_id,version_number,organization_revision_id,canonical_document_hash,version_hash,provider_id,provider_model_id,transport,adapter_status,dispatch_enabled)
+VALUES($1,$2,1,$3,$4,$5,$6,'fixture-v1','fake_adapter','available',true) RETURNING id`,
+		dispatchIntegrationOrganization, profileID, revisionID, canonicalHash, hexFixture("version-"+suffix), providerID).Scan(&versionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Pool().Exec(ctx, `INSERT INTO model_capability_snapshots(organization_id,model_profile_version_id,capabilities,capability_hash) VALUES($1,$2,'[]',$3)`, dispatchIntegrationOrganization, versionID, hexFixture("caps-"+suffix)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Pool().Exec(ctx, `
+INSERT INTO role_model_bindings(organization_id,organization_revision_id,role_id,policy_id,profile_id,model_profile_version_id,binding_hash,active)
+VALUES($1,$2,$3,$4,$5,$6,$7,true)`, dispatchIntegrationOrganization, revisionID, roleID, policyID, profileID, versionID, hexFixture("binding-"+suffix)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func insertLineageTaskFixture(t *testing.T, ctx context.Context, store *platformpostgres.Store, revisionID int64, suffix, assignedRoleID, correlationID, causationID, status string) int64 {
+	t.Helper()
+	attemptCount := 0
+	if status == "running" {
+		attemptCount = 1
+	}
+	assignedUnitID := strings.SplitN(assignedRoleID, "/", 2)[0]
+	var taskID int64
+	if err := store.Pool().QueryRow(ctx, `
+INSERT INTO tasks(organization_id,organization_revision_id,requested_by_role_id,assigned_role_id,assigned_unit_id,idempotency_key,request_hash,title,instructions,acceptance_criteria,status,priority,available_at,max_attempts,attempt_count,version,correlation_id,causation_id)
+VALUES($1,$2,'empresa/human',$3,$4,$5,$6,'Authorized dispatch integration','Exercise persisted provenance.','[]',$7,0,$8,5,$9,1,$10,$11) RETURNING id`,
+		dispatchIntegrationOrganization, revisionID, assignedRoleID, assignedUnitID, "dispatch-lineage-"+suffix, hexFixture("task-"+suffix), status, time.Now().UTC(), attemptCount, correlationID, causationID).Scan(&taskID); err != nil {
+		t.Fatal(err)
+	}
+	return taskID
+}
+
+func insertRunningAttemptFixture(t *testing.T, ctx context.Context, store *platformpostgres.Store, taskID int64, suffix string) taskFixtureRef {
+	t.Helper()
+	now := time.Now().UTC()
+	var attemptID int64
+	if err := store.Pool().QueryRow(ctx, `INSERT INTO task_attempts(task_id,ordinal,state,worker_id,leased_at,started_at,created_at,updated_at) VALUES($1,1,'running','integration-worker',$2,$2,$2,$2) RETURNING id`, taskID, now).Scan(&attemptID); err != nil {
+		t.Fatal(err)
+	}
+	leaseExpiry := now.Add(30 * time.Minute)
+	if _, err := store.Pool().Exec(ctx, `INSERT INTO task_leases(task_id,attempt_id,token_hash,holder_id,status,issued_at,heartbeat_at,expires_at) VALUES($1,$2,$3,'41','active',$4,$4,$5)`, taskID, attemptID, hexFixture("lineage-lease-"+suffix), now, leaseExpiry); err != nil {
+		t.Fatal(err)
+	}
+	return taskFixtureRef{TaskID: taskID, AttemptID: attemptID, LeaseExpiresAt: leaseExpiry}
 }
 
 func registerFixturePrincipal(t *testing.T, ctx context.Context, store *dispatchpostgres.Store, suffix string) modeldispatch.ExecutionPrincipal {

@@ -11,6 +11,7 @@ var (
 	roleIDPattern       = regexp.MustCompile(`^[a-z0-9]+(?:[._/-][a-z0-9]+)*$`)
 	principalKeyPattern = regexp.MustCompile(`^[a-zA-Z0-9]+(?:[._/-][a-zA-Z0-9]+)*$`)
 	reasonCodePattern   = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*$`)
+	sha256Pattern       = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
 
 const maxAssignmentQuota = 1000000

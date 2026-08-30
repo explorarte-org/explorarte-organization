@@ -210,6 +210,7 @@ type ContextRequest struct {
 }
 
 type DispatchProvisioner interface {
+	EnsureAuthorizedAssignmentForRunningAttempt(context.Context, int64, int64) (AssignmentRef, error)
 	ResolveAssignment(context.Context, int64, int64, string) (AssignmentRef, error)
 }
 

@@ -20,6 +20,7 @@ type Runtime struct {
 	Principals  *modeldispatch.PrincipalService
 	Assignments *modeldispatch.AssignmentService
 	Store       *dispatchpostgres.Store
+	lineage     modeldispatch.TaskLineageReader
 }
 
 func Open(cfg config.Config, platformStore *platformpostgres.Store, taskReader tasks.TaskReader) (*Runtime, error) {
@@ -52,7 +53,14 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store, taskReader t
 	if err != nil {
 		return nil, err
 	}
-	return &Runtime{Config: dispatchCfg, Principals: principals, Assignments: assignments, Store: store}, nil
+	return &Runtime{Config: dispatchCfg, Principals: principals, Assignments: assignments, Store: store, lineage: tasksAdapter}, nil
+}
+
+func (r *Runtime) NewAuthorizedAttemptProvisioner(executionPrincipalKey string) (*modeldispatch.AuthorizedAttemptProvisioner, error) {
+	if r == nil {
+		return nil, fmt.Errorf("model dispatch runtime is unavailable")
+	}
+	return modeldispatch.NewAuthorizedAttemptProvisioner(r.Assignments, r.lineage, r.Store, executionPrincipalKey)
 }
 
 type catalogAdapter struct{ reader registry.Reader }
@@ -101,5 +109,27 @@ func (a taskAdapter) GetTaskAttempt(ctx context.Context, taskID, attemptID int64
 		OrganizationRevisionID: detail.Task.OrganizationRevisionID, AssignedRoleID: detail.Task.AssignedRoleID,
 		TaskStatus: string(detail.Task.Status), AttemptStatus: string(attempt.State),
 		LeaseHolderID: detail.ActiveLease.HolderID, LeaseExpiresAt: detail.ActiveLease.ExpiresAt,
+	}, nil
+}
+
+func (a taskAdapter) GetTaskLineage(ctx context.Context, taskID int64) (modeldispatch.TaskLineageRef, error) {
+	detail, err := a.reader.GetTask(ctx, taskID)
+	if err != nil {
+		return modeldispatch.TaskLineageRef{}, err
+	}
+	requester, correlation, causation := "", "", ""
+	if detail.Task.RequestedByRoleID != nil {
+		requester = *detail.Task.RequestedByRoleID
+	}
+	if detail.Task.CorrelationID != nil {
+		correlation = *detail.Task.CorrelationID
+	}
+	if detail.Task.CausationID != nil {
+		causation = *detail.Task.CausationID
+	}
+	return modeldispatch.TaskLineageRef{
+		TaskID: detail.Task.ID, OrganizationID: detail.Task.OrganizationID,
+		OrganizationRevisionID: detail.Task.OrganizationRevisionID, RequestedByRoleID: requester,
+		AssignedRoleID: detail.Task.AssignedRoleID, CorrelationID: correlation, CausationID: causation,
 	}, nil
 }

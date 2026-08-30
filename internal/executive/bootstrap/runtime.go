@@ -157,6 +157,10 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create executive role-bound principal resolver: %w", err)
 	}
+	authorizedAssignments, err := modelRuntime.Dispatcher.NewAuthorizedAttemptProvisioner(modelRuntime.Config.ExecutionPrincipalKey)
+	if err != nil {
+		return nil, fmt.Errorf("create authorized attempt provisioner: %w", err)
+	}
 
 	// The Harness is composed from the Model Runtime bootstrap seams: the same
 	// invocation/dispatch services production already uses, plus the canonical
@@ -199,7 +203,7 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 		Registry:       runtimeadapter.Registry{Reader: registryRepository, OrganizationID: cfg.Tasks.OrganizationID},
 		Tasks:          dagTasks,
 		Contexts:       runtimeadapter.Context{Service: contextRuntime.Service, Assembly: contextcompiler.ContextAssemblyService{Store: executionContextViewStore}, OrganizationID: cfg.Tasks.OrganizationID},
-		Assignments:    runtimeadapter.Assignment{Resolver: modelRuntime.Dispatcher.Store, OrganizationID: cfg.Tasks.OrganizationID},
+		Assignments:    runtimeadapter.Assignment{Resolver: modelRuntime.Dispatcher.Store, Provisioner: authorizedAssignments, OrganizationID: cfg.Tasks.OrganizationID},
 		Principals:     runtimeadapter.RoleBoundPrincipals{Resolver: roleBoundResolver},
 		Models:         baseModels,
 		Harness:        harness,
