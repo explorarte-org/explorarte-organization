@@ -149,6 +149,10 @@ func (f *fakeContext) Build(context.Context, executive.ContextRequest) (executiv
 // that must never make a real, billed model call.
 type fakeAssignments struct{}
 
+func (fakeAssignments) EnsureAuthorizedAssignmentForRunningAttempt(_ context.Context, taskID, attemptID int64) (executive.AssignmentRef, error) {
+	return executive.AssignmentRef{ID: 1_000_000 + attemptID, TaskID: taskID, AttemptID: attemptID}, nil
+}
+
 func (fakeAssignments) ResolveAssignment(_ context.Context, taskID, attemptID int64, role string) (executive.AssignmentRef, error) {
 	return executive.AssignmentRef{
 		ID: 1_000_000 + attemptID, OrganizationRevisionID: 1, TaskID: taskID, AttemptID: attemptID,

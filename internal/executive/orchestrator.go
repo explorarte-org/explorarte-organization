@@ -1566,6 +1566,20 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 			return task, fmt.Errorf("%w: running task lease token unavailable after process restart", ErrRunBlocked)
 		}
 
+		// The automatic boundary receives no role assertion: ModelDispatch
+		// derives both technical and requester authority from persistence, then
+		// creates or exactly reuses the one assignment for this running attempt.
+		// ResolveAssignment remains a separate read immediately afterwards so
+		// the invocation path still consumes the same historical pinning seam.
+		if _, provisionErr := o.assignments.EnsureAuthorizedAssignmentForRunningAttempt(ctx, task.ID, lease.AttemptID); provisionErr != nil {
+			_, _ = o.tasks.BlockTask(
+				ctx, root.ID, "dispatch_assignment_required",
+				fmt.Sprintf("task=%d attempt=%d subject_role=%s lease_expires_at=%s provisioning_error=%s",
+					task.ID, lease.AttemptID, task.AssignedRoleID, lease.ExpiresAt.UTC().Format(time.RFC3339), truncate(provisionErr.Error(), 240)),
+				"service", orchestratorWorkerID,
+			)
+			return task, ErrDispatchAssignmentRequired
+		}
 		// Assignment authorization is checked only after the attempt is
 		// running, matching ModelDispatch's task-attempt invariant. Missing
 		// authorization blocks the root before context construction, budget
@@ -2400,6 +2414,9 @@ func (o *Orchestrator) anyProvisionedLeasedTask(ctx context.Context, correlation
 	}
 	for _, t := range all {
 		if (t.Status != "leased" && t.Status != "running") || t.ActiveLease == nil {
+			continue
+		}
+		if _, err = o.assignments.EnsureAuthorizedAssignmentForRunningAttempt(ctx, t.ID, t.ActiveLease.AttemptID); err != nil {
 			continue
 		}
 		if _, err = o.assignments.ResolveAssignment(ctx, t.ID, t.ActiveLease.AttemptID, t.AssignedRoleID); err == nil {

@@ -245,6 +245,10 @@ func (f *integrationContext) Build(context.Context, executive.ContextRequest) (e
 
 type integrationAssignments struct{ fail bool }
 
+func (f integrationAssignments) EnsureAuthorizedAssignmentForRunningAttempt(ctx context.Context, taskID, attemptID int64) (executive.AssignmentRef, error) {
+	return f.ResolveAssignment(ctx, taskID, attemptID, "")
+}
+
 func (f integrationAssignments) ResolveAssignment(_ context.Context, taskID, attemptID int64, role string) (executive.AssignmentRef, error) {
 	if f.fail {
 		return executive.AssignmentRef{}, errors.New("assignment unavailable")
@@ -953,6 +957,10 @@ func TestExecutivePostgreSQL17MissingDispatchAssignmentBlocks(t *testing.T) {
 // gate: blocked while the binding is missing, recovered once it appears.
 type flippableAssignments struct{ fail bool }
 
+func (f *flippableAssignments) EnsureAuthorizedAssignmentForRunningAttempt(ctx context.Context, taskID, attemptID int64) (executive.AssignmentRef, error) {
+	return f.ResolveAssignment(ctx, taskID, attemptID, "")
+}
+
 func (f *flippableAssignments) ResolveAssignment(_ context.Context, taskID, attemptID int64, role string) (executive.AssignmentRef, error) {
 	if f.fail {
 		return executive.AssignmentRef{}, errors.New("assignment unavailable")
@@ -1020,5 +1028,74 @@ func TestExecutivePostgreSQL17DispatchAssignmentRecoversOnceBindingAppears(t *te
 	}
 	if models.ensureCalls == 0 {
 		t.Fatalf("expected model invocations once the assignment was resolvable")
+	}
+}
+
+// recoveringAssignments models the crash window Commit 3 closes: the attempt
+// is already running and the root is already blocked before the automatic
+// assignment write completed. The first Ensure reports that interruption; the
+// recovery gate's next Ensure performs the write, after which Resolve observes
+// the durable result.
+type recoveringAssignments struct {
+	ensureCalls int
+	provisioned bool
+}
+
+func (f *recoveringAssignments) EnsureAuthorizedAssignmentForRunningAttempt(_ context.Context, taskID, attemptID int64) (executive.AssignmentRef, error) {
+	f.ensureCalls++
+	if f.ensureCalls == 1 {
+		return executive.AssignmentRef{}, errors.New("simulated crash before assignment commit")
+	}
+	f.provisioned = true
+	return executive.AssignmentRef{ID: 2000 + attemptID, TaskID: taskID, AttemptID: attemptID}, nil
+}
+
+func (f *recoveringAssignments) ResolveAssignment(_ context.Context, taskID, attemptID int64, role string) (executive.AssignmentRef, error) {
+	if !f.provisioned {
+		return executive.AssignmentRef{}, errors.New("assignment unavailable")
+	}
+	return executive.AssignmentRef{
+		ID: 2000 + attemptID, OrganizationRevisionID: 1, TaskID: taskID, AttemptID: attemptID,
+		SubjectRoleID: role, ExecutionPrincipalID: 77, DispatchActorRoleID: "ingenieria_ia/code-runner",
+		ValidUntil: time.Now().Add(time.Hour),
+	}, nil
+}
+
+func TestExecutivePostgreSQL17RecoveryGateProvisionsRunningAttempt(t *testing.T) {
+	h := newIntegrationHarness(t)
+	defer h.close()
+	models := newIntegrationModelRuntime()
+	assignments := &recoveringAssignments{}
+	completionGate := &countingCompletion{delegate: h.completion}
+	orchestrator := newOrchestrator(t, h, models, assignments, completionGate)
+	run, _, err := orchestrator.Submit(h.ctx, executive.SubmitRequest{
+		ActorRoleID: executive.OwnerRoleID, IdempotencyKey: "integration-assignment-auto-recovers",
+		Goal: executive.OwnerGoal{Goal: "Analyze the organization and return a one-area plan without external actions.", AcceptanceCriteria: []executive.AcceptanceCriterion{{Text: "one department reviewed", Phase: executive.AcceptanceDesign}, {Text: "closure verified", Phase: executive.AcceptanceImplementation}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		run, err = orchestrator.Resume(h.ctx, run.RootTaskID)
+		if errors.Is(err, executive.ErrDispatchAssignmentRequired) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !errors.Is(err, executive.ErrDispatchAssignmentRequired) || run.State != executive.StateBlocked || assignments.ensureCalls != 1 {
+		t.Fatalf("expected pre-commit crash block: run=%+v ensure_calls=%d err=%v", run, assignments.ensureCalls, err)
+	}
+	if models.ensureCalls != 0 {
+		t.Fatalf("model invocation crossed the unprovisioned boundary: %d", models.ensureCalls)
+	}
+
+	run, err = runUntilTerminalOrError(t, h.ctx, orchestrator, run.RootTaskID, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.State != executive.StateCompleted || assignments.ensureCalls < 2 || models.ensureCalls == 0 {
+		t.Fatalf("automatic recovery failed: run=%+v ensure_calls=%d model_calls=%d", run, assignments.ensureCalls, models.ensureCalls)
 	}
 }

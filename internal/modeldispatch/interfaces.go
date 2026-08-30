@@ -65,6 +65,10 @@ type RoleModelBindingReader interface {
 	GetActiveRoleModelBinding(ctx context.Context, organizationID string, revisionID int64, roleID string) (RoleModelBindingRef, error)
 }
 
+type AuthorizedAssignmentProvisioner interface {
+	EnsureAuthorizedAssignmentForRunningAttempt(ctx context.Context, taskID, attemptID int64) (CreateAssignmentResult, error)
+}
+
 // AssignmentResolver is what modelruntime depends on to pin an invocation at
 // creation time. It never selects a provider, model, or egress policy. It
 // resolves by task/attempt/subject only; the caller is responsible for
