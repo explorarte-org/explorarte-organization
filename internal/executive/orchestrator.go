@@ -1742,7 +1742,7 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 			if parsed.SchemaVersion != WorkerResultSchemaVersionV2 {
 				return nil
 			}
-			return o.verifyOfferedEvidenceProvenance(ctx, snapshot.ID, repositoryBaseSHA, parsed.EvidenceRefs)
+			return o.verifyOfferedEvidenceProvenance(ctx, snapshot.ID, repositoryBaseSHA, task.ID, task.Evidence, parsed.EvidenceRefs)
 		}
 	}
 	// A department review can convert a fabricated reference into apparent
@@ -1764,7 +1764,7 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 			if review.SchemaVersion != DepartmentReviewSchemaVersionV2 {
 				return nil
 			}
-			return o.verifyOfferedEvidenceProvenance(ctx, snapshot.ID, repositoryBaseSHA, review.EvidenceRefs)
+			return o.verifyOfferedEvidenceProvenance(ctx, snapshot.ID, repositoryBaseSHA, task.ID, task.Evidence, review.EvidenceRefs)
 		}
 	}
 
@@ -1909,6 +1909,12 @@ func executionContractFor(purpose ExecutionPurpose, required []EvidenceRequireme
 			contract += "\n\n"
 		}
 		contract += departmentConsistencyGuidance
+		// Told unconditionally, obligation list or not, for the same reason
+		// nonRepositoryEvidenceGuidance is told to every department worker:
+		// R17-v5's task 12512 died at VerifyEvidenceProvenance having never
+		// been told the executive-evidence bundle it was shown to judge
+		// prior work is not itself citable evidence.
+		contract += "\n\n" + nonRepositoryReviewEvidenceGuidance()
 	}
 	if guidance := evidenceContractGuidance(required); guidance != "" {
 		if contract != "" {
