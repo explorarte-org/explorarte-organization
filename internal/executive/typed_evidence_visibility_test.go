@@ -313,3 +313,60 @@ func TestTypedVisibility_EmbeddedRefRequiresItsOwnSegmentToHaveSurvivedAssembly(
 		t.Fatalf("a bundle whose own segment was dropped from assembly must not read as shown: %q", message)
 	}
 }
+
+// TEST -- P2 REVIEW FINDING: embeddedExecutiveEvidenceRefs must only trust a
+// bundle whose OWN Reference is what the real renderer
+// (contextprovider/provider.go sourceRecord) actually copies Metadata for.
+// sourceRecord only preserves e.Metadata when e.Reference has the
+// "executive-evidence:" prefix -- for any other reference, the model
+// receives metadata:{} regardless of what the DB row actually stores. A
+// bundle-shaped Metadata attached to an unrelated reference was therefore
+// NEVER shown to the model, even though it is sitting right there in
+// TaskRecord.Evidence.
+func TestTypedVisibility_RefMustNotBeVisibleWhenBundleIsAttachedToANonExecutiveEvidenceReference(t *testing.T) {
+	sources := snapshotWithTaskContext(currentReviewTaskID, "")
+	bundleRow := bundleEvidence("model-invocation:21")
+	// Same valid bundle shape and schema_version, but a reference the real
+	// renderer would NOT have preserved Metadata for.
+	bundleRow.Reference = "some-other-evidence:123"
+	evidence := []EvidenceRecord{bundleRow}
+
+	orchestrator := &Orchestrator{}
+	invalid, err := orchestrator.VerifyEvidenceProvenance(context.Background(), sources, 7, designSHA, []string{"model-invocation:21"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(invalid) != 1 {
+		t.Fatalf("the ref must still be rejected: %v", invalid)
+	}
+	message := describeInadmissibleReferences(context.Background(), sources, 7, currentReviewTaskID, evidence, invalid)
+	if !strings.Contains(message, "cannot verify was shown") {
+		t.Fatalf("a bundle attached to a non-executive-evidence reference was never rendered with its Metadata; the diagnostic must not claim it was shown: %q", message)
+	}
+}
+
+// TEST -- P2 REVIEW FINDING: a Reference with the right prefix but a bundle
+// whose schema_version does not match the one recordBundle actually writes
+// must not be trusted either. embeddedExecutiveEvidenceRefs claims to
+// interpret a specific typed schema (executive-evidence.v1); it must not
+// treat an arbitrary map that merely has workers/reviews-shaped fields as
+// that schema just because the field names happen to line up.
+func TestTypedVisibility_RefMustNotBeVisibleWhenBundleSchemaVersionIsUnrecognized(t *testing.T) {
+	sources := snapshotWithTaskContext(currentReviewTaskID, "")
+	bundleRow := bundleEvidence("model-invocation:21")
+	bundleRow.Metadata["bundle"].(map[string]any)["schema_version"] = "something-else"
+	evidence := []EvidenceRecord{bundleRow}
+
+	orchestrator := &Orchestrator{}
+	invalid, err := orchestrator.VerifyEvidenceProvenance(context.Background(), sources, 7, designSHA, []string{"model-invocation:21"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(invalid) != 1 {
+		t.Fatalf("the ref must still be rejected: %v", invalid)
+	}
+	message := describeInadmissibleReferences(context.Background(), sources, 7, currentReviewTaskID, evidence, invalid)
+	if !strings.Contains(message, "cannot verify was shown") {
+		t.Fatalf("a bundle with an unrecognized schema_version must not be trusted as a genuine executive-evidence bundle: %q", message)
+	}
+}
