@@ -264,6 +264,23 @@ func describeInadmissibleReferences(ctx context.Context, sources SnapshotSourceR
 	return strings.Join(parts, "; ")
 }
 
+// executiveEvidenceReferencePrefix mirrors the exact prefix
+// contextprovider/provider.go's sourceRecord checks before it will copy an
+// EvidenceRecord's Metadata into what the model actually sees -- for any
+// other reference, the renderer sends metadata:{} regardless of what the DB
+// row stores. A bundle-shaped Metadata attached to a differently-prefixed
+// reference was therefore never rendered to the model; this classifier must
+// not trust it either.
+const executiveEvidenceReferencePrefix = "executive-evidence:"
+
+// executiveEvidenceSchemaVersion mirrors the schema_version
+// EvidenceTasks.recordBundle (runtimeadapter/evidence_tasks.go) actually
+// writes. This guard grants no authority by itself -- it exists so this
+// reader does not treat an arbitrary map that happens to have
+// workers/reviews-shaped fields as the specific typed schema it claims to
+// interpret.
+const executiveEvidenceSchemaVersion = "executive-evidence.v1"
+
 // embeddedExecutiveEvidenceRefs extracts the reference identifiers an
 // executive-evidence bundle declares about the work it summarizes -- the
 // model-invocation:<id> and task-evidence identifiers each projected
@@ -271,10 +288,16 @@ func describeInadmissibleReferences(ctx context.Context, sources SnapshotSourceR
 // (runtimeadapter/evidence_tasks.go's projectedWorker.TaskEvidence/
 // EvidenceRefs and projectedReview's equivalents).
 //
-// This walks the bundle's known schema (a top-level "workers" or "reviews"
-// array, each entry carrying "evidence_refs"/"task_evidence_refs" string
-// arrays) inside evidence[].Metadata["bundle"] -- decoded JSON already
-// sitting in the row recordBundle wrote before this task was ever
+// A bundle only counts if its OWN Reference and schema_version are ones the
+// real renderer would have preserved Metadata for (see
+// executiveEvidenceReferencePrefix/executiveEvidenceSchemaVersion above) --
+// otherwise the model was shown metadata:{}, not this bundle, regardless of
+// what the DB row happens to store.
+//
+// This then walks the bundle's known schema (a top-level "workers" or
+// "reviews" array, each entry carrying "evidence_refs"/"task_evidence_refs"
+// string arrays) inside evidence[].Metadata["bundle"] -- decoded JSON
+// already sitting in the row recordBundle wrote before this task was ever
 // dispatched, read here as the map[string]any/[]any tree
 // encoding/json.Unmarshal produced, never as re-parsed prose. A mention
 // inside an unrelated field (a free-text summary, say) is not a
@@ -291,8 +314,14 @@ func describeInadmissibleReferences(ctx context.Context, sources SnapshotSourceR
 func embeddedExecutiveEvidenceRefs(evidence []EvidenceRecord) map[string]struct{} {
 	refs := map[string]struct{}{}
 	for _, item := range evidence {
+		if !strings.HasPrefix(item.Reference, executiveEvidenceReferencePrefix) {
+			continue
+		}
 		bundle, ok := item.Metadata["bundle"].(map[string]any)
 		if !ok {
+			continue
+		}
+		if version, ok := bundle["schema_version"].(string); !ok || version != executiveEvidenceSchemaVersion {
 			continue
 		}
 		for _, arrayKey := range [...]string{"workers", "reviews"} {
