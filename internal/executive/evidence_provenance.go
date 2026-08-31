@@ -109,6 +109,88 @@ func (o *Orchestrator) verifyOfferedEvidenceProvenance(ctx context.Context, snap
 	if len(invalid) == 0 {
 		return nil
 	}
-	return fmt.Errorf("%w: evidence_refs names %s, which the host cannot verify was shown to this execution",
-		ErrContractRejected, strings.Join(invalid, ", "))
+	return fmt.Errorf("%w: %s",
+		ErrContractRejected, describeInadmissibleReferences(ctx, o.snapshotSources, snapshotID, invalid))
+}
+
+// nonRepositoryEvidenceGuidance states, to every department worker asked for
+// worker-result/v2, that organizational context in its snapshot -- canonical
+// or policy documents, role and department profiles, and similar material --
+// is guidance to follow, not evidence to cite. Only repository_evidence (a
+// real repository:// citation actually shown to this execution) may appear
+// in evidence_refs/evidence[]; VerifyEvidenceProvenance already enforces
+// exactly this, unconditionally, whether or not any EvidenceRequirement
+// exists.
+//
+// Before this guidance, a worker was measured against that boundary without
+// ever being told where it runs. R17-v4's task 11992 cited real
+// canonical/policy documents across all three attempts -- accurate about
+// their content, wrong about their admissibility -- because nothing said
+// organizational context and repository evidence are different things. This
+// is the same repair shape as workerResultV2StructureGuidance (worker_result.go):
+// that states a v2 document's STRUCTURE; this states which CONTENT is
+// admissible within it.
+func nonRepositoryEvidenceGuidance() string {
+	return `Organizational context in your snapshot -- canonical or policy documents, role and department profiles, and similar material -- is guidance for you to follow, not evidence to cite: none of it belongs in evidence_refs or evidence[].
+Only material sourced from repository evidence (a real repository:// citation actually shown to you) may appear in evidence_refs/evidence[].
+If no repository evidence was shown to you, evidence_refs: [] and evidence: [] is a complete and correct answer -- it is not a failure to cite the organizational context instead.`
+}
+
+// nonRepositoryEvidenceKindLabel turns a SnapshotSource.Kind other than
+// "repository_evidence" into the phrase used in rejection feedback, so a
+// worker learns not just that a reference failed but what class of context
+// it actually was -- naming the mistake instead of merely repeating the
+// rule it already broke.
+func nonRepositoryEvidenceKindLabel(kind string) string {
+	switch kind {
+	case "canonical_document":
+		return "canonical/policy context"
+	case "role_profile":
+		return "role-profile context"
+	case "organization_agent", "department_agent":
+		return "organizational-agent context"
+	case "task_context":
+		return "task context"
+	case "owner_constraint":
+		return "an owner constraint"
+	default:
+		return kind + " context"
+	}
+}
+
+// describeInadmissibleReferences turns each reference VerifyEvidenceProvenance
+// rejected into feedback naming why. A reference that traces to a real,
+// included, non-repository_evidence source in THIS invocation's own snapshot
+// is named for what it actually is; R17-v4's task 11992 answered a bare
+// "cannot verify was shown" by citing MORE, not less, because that message
+// never told it the reference was real, only that it was inadmissible --
+// which reads exactly like "try a different citation" rather than "stop
+// citing this class of thing at all". A reference that traces to nothing in
+// context keeps the original, honest wording: this must never claim to know
+// what something is when it does not.
+//
+// This reads the snapshot a second time rather than threading Verify's
+// internal genuine-set outward, so VerifyEvidenceProvenance's own decision
+// logic -- and its signature -- is untouched by this fix.
+func describeInadmissibleReferences(ctx context.Context, sources SnapshotSourceReader, snapshotID int64, refs []string) string {
+	known := map[string]string{}
+	if sources != nil && snapshotID > 0 {
+		if shown, err := sources.SnapshotSources(ctx, snapshotID); err == nil {
+			for _, source := range shown {
+				if !source.Included || source.Kind == "repository_evidence" {
+					continue
+				}
+				known[source.Reference] = source.Kind
+			}
+		}
+	}
+	parts := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		if kind, ok := known[ref]; ok {
+			parts = append(parts, fmt.Sprintf("evidence_refs names %s, which is %s, not citable repository evidence", ref, nonRepositoryEvidenceKindLabel(kind)))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("evidence_refs names %s, which the host cannot verify was shown to this execution", ref))
+	}
+	return strings.Join(parts, "; ")
 }

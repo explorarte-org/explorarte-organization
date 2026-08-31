@@ -887,21 +887,24 @@ func TestBugA_PreexistingTaskGetsGuidanceAtExecutionTime(t *testing.T) {
 // exactly the evidenceContractGuidance for those slots (the
 // evidence_contract_guidance_test.go file covers that side). What a worker
 // DOES carry unconditionally, obligation list or not, is the candidate
-// egress rule and the worker-result/v2 STRUCTURAL rule: R11 and
-// AUTONOMY-SMOKE-017-R13 died at the declassifier having never been told the
-// egress rule existed, and R17-v3's task 34 died at refsAreAllStructured
-// having never been told the v2 structural rule existed either -- both ride
-// every worker run unconditionally, and only worker runs. Reviewer,
-// adjudicator and closure purposes name no source they were never shown.
+// egress rule, the worker-result/v2 STRUCTURAL rule, and which CONTENT is
+// admissible evidence at all: R11 and AUTONOMY-SMOKE-017-R13 died at the
+// declassifier having never been told the egress rule existed, R17-v3's
+// task 34 died at refsAreAllStructured having never been told the v2
+// structural rule existed either, and R17-v4's task 11992 died at
+// VerifyEvidenceProvenance having never been told organizational context is
+// not evidence -- all three ride every worker run unconditionally, and only
+// worker runs. Reviewer, adjudicator and closure purposes name no source
+// they were never shown.
 func TestBugA_NoContractForPurposesWithoutTaskClass(t *testing.T) {
 	for _, purpose := range []ExecutionPurpose{PurposeCEOPlan, PurposeCEOClosure} {
 		if got := executionContractFor(purpose, nil); got != "" {
 			t.Errorf("executionContractFor(%q) = %q, want empty", purpose, got)
 		}
 	}
-	wantWorkerContract := candidateDeclassificationGuidance() + "\n\n" + workerResultV2StructureGuidance()
+	wantWorkerContract := candidateDeclassificationGuidance() + "\n\n" + workerResultV2StructureGuidance() + "\n\n" + nonRepositoryEvidenceGuidance()
 	if got := executionContractFor(PurposeDepartmentWorker, nil); got != wantWorkerContract {
-		t.Errorf("executionContractFor(department-worker) must return exactly candidateDeclassificationGuidance plus workerResultV2StructureGuidance")
+		t.Errorf("executionContractFor(department-worker) must return exactly candidateDeclassificationGuidance plus workerResultV2StructureGuidance plus nonRepositoryEvidenceGuidance")
 	}
 	if got := executionContractFor(PurposeDepartmentPlan, nil); got != taskClassGuidance {
 		t.Errorf("executionContractFor(department-plan) must return taskClassGuidance")

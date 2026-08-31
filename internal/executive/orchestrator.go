@@ -1882,7 +1882,12 @@ func executionContractFor(purpose ExecutionPurpose, required []EvidenceRequireme
 		// every department worker unconditionally too, obligation list or
 		// not -- see workerResultV2StructureGuidance for why: R17-v3's task
 		// 34 died at refsAreAllStructured having never been shown it either.
-		contract = candidateDeclassificationGuidance() + "\n\n" + workerResultV2StructureGuidance()
+		//
+		// The same unconditional treatment applies to which CONTENT is
+		// admissible evidence at all -- see nonRepositoryEvidenceGuidance
+		// for why: R17-v4's task 11992 died at VerifyEvidenceProvenance
+		// having never been told organizational context is not evidence.
+		contract = candidateDeclassificationGuidance() + "\n\n" + workerResultV2StructureGuidance() + "\n\n" + nonRepositoryEvidenceGuidance()
 	case PurposeDesignAdjudication:
 		// The adjudicator AUTHORS evidence_requirements for the next round,
 		// and the host refuses any proposal the frozen pin cannot supply.
