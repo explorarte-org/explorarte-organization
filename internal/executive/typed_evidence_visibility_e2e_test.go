@@ -2,6 +2,7 @@ package executive
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -9,46 +10,65 @@ import (
 
 // TYPED-EVIDENCE-VISIBILITY-FIX-005, end to end.
 //
-// The wiring under test is the same driveTypedTask provenance boundary
-// SELF-EVIDENCE-PROVENANCE-002 already exercises live, this time with a
-// genuine executive-evidence bundle attached to the review task BEFORE it is
-// dispatched -- exactly what EvidenceTasks.attachDepartmentBundle does in
-// production (runtimeadapter/evidence_tasks.go), reproduced here via the same
-// RecordEvidence port the real decorator calls, so the fixture proves the
-// same fact production code proves: a bundle attached to task_evidence is
-// visible to that task's own future executions without any additional
-// plumbing.
+// The wiring under test is driveTypedTask's own PurposeDepartmentReview
+// provenance wrapper (orchestrator.go), which reads task.Evidence directly --
+// exactly the pattern TestBugA_PreexistingTaskGetsGuidanceAtExecutionTime
+// (bug_fixes_test.go) already established for exercising this function
+// against a hand-built task record instead of driving a whole campaign to
+// the review stage. A bundle attached via RecordEvidence before
+// driveTypedTask is called reproduces the exact durable shape
+// EvidenceTasks.attachDepartmentBundle (runtimeadapter/evidence_tasks.go)
+// leaves in production: evidence recorded on the task before its own attempt
+// ever starts.
+//
+// testOrchestratorWithHarness wires no SnapshotSourceReader by default, so
+// each test sets orchestrator.snapshotSources directly (an in-package test,
+// same as every other file here) to the task_context segment the model was
+// actually shown -- the fact describeInadmissibleReferences' execution
+// scoping depends on.
+
+func reviewRequirement() []RequirementProposal {
+	return []RequirementProposal{{Key: "typed_review", Type: "result", Description: "Validated DepartmentReview invocation result", Required: true}}
+}
 
 // TEST I -- THE INCIDENT, end to end: a department review offers
 // model-invocation:21 as evidence for an "accept" verdict, where the ONLY
 // reason that ref is real is a bundle the host itself attached to this exact
-// review task. Before this fix, VerifyEvidenceProvenance correctly rejects it
-// (repository_evidence remains the only citable class) but the rejection
-// falsely claims the host cannot verify it was shown -- it can, and did.
-// After this fix, the rejection is truthful, and accept never becomes
-// authoritative either way: CITABLE stays NO regardless of the diagnostic.
+// review task. VerifyEvidenceProvenance correctly rejects it either way
+// (repository_evidence remains the only citable class); what this proves is
+// that the rejection is now truthful instead of falsely claiming the host
+// never showed it.
 func TestTypedVisibility_I_DepartmentReviewEmbeddedRefIsRejectedTruthfully(t *testing.T) {
-	fixture := newWiringFixture(t, "freeze", fullSupply(), nil)
+	tasksPort := newMemoryTasks()
+	models := newFakeModels()
+	harness := newFakeHarness(models)
+	harness.body = json.RawMessage(
+		`{"schema_version":"department-review/v2","verdict":"accept",` +
+			`"findings":["design matches invocation 21"],"unsatisfied_criteria":[],` +
+			`"evidence_refs":["model-invocation:21"],` +
+			`"proposed_followup_tasks":[],"followup_ownership":[],"revision_outcomes":[]}`)
+	orchestrator := testOrchestratorWithHarness(t, tasksPort, models, harness, &countingBudget{}, &fakeCompletion{verdict: CompletionPass})
 
-	// Drive until the review task exists, then attach the bundle to it --
-	// the same durable fact EvidenceTasks writes in production, before the
-	// task's own attempt ever starts.
-	var reviewTask TaskRecord
-	for i := 0; i < 10; i++ {
-		if task, ok := departmentReviewTask(t, fixture); ok {
-			reviewTask = task
-			break
-		}
-		if _, err := fixture.orchestrator.Resume(context.Background(), fixture.root); err != nil &&
-			!errors.Is(err, ErrRunBlocked) && !errors.Is(err, ErrModelResultContractRejected) {
-			t.Fatalf("unexpected resume error while waiting for the review task: %v", err)
-		}
-	}
-	if reviewTask.ID == 0 {
-		t.Fatal("department review task never appeared")
-	}
-	if err := fixture.tasks.RecordEvidence(context.Background(), EvidenceCommand{
-		TaskID: reviewTask.ID, Type: "result",
+	root, _, _ := tasksPort.CreateTask(context.Background(), CreateTaskCommand{
+		RequestedByRoleID: OwnerRoleID, AssignedRoleID: CEORoleID, IdempotencyKey: "root-typed-visibility-i",
+		Title: "root", Instructions: "root", AcceptanceCriteria: []string{"x"},
+		CorrelationID: "executive:typed-visibility-i",
+	})
+	task, _, _ := tasksPort.CreateTask(context.Background(), CreateTaskCommand{
+		RequestedByRoleID: CEORoleID, AssignedRoleID: "ingenieria_ia/orquestador",
+		IdempotencyKey: "child-typed-visibility-i", Title: "Department review: ingenieria_ia",
+		Instructions:       "Review only this bounded durable task/evidence summary and return DepartmentReview JSON.",
+		AcceptanceCriteria: []string{"x"}, CorrelationID: root.CorrelationID,
+		Requirements: reviewRequirement(),
+	})
+
+	// The durable fact EvidenceTasks writes in production, before this
+	// task's own attempt ever starts: a bundle summarizing the deliverables
+	// under review, embedding the real invocation identifiers that produced
+	// them, recorded with Satisfies: false (requirement_id NULL) because the
+	// bundle itself is never authoritative for anything.
+	if err := tasksPort.RecordEvidence(context.Background(), EvidenceCommand{
+		TaskID: task.ID, Type: "result",
 		Reference: "executive-evidence:department:ingenieria_ia:74ae8f9df6b6d17e",
 		Metadata: map[string]any{"bundle": map[string]any{
 			"schema_version": "executive-evidence.v1",
@@ -61,34 +81,30 @@ func TestTypedVisibility_I_DepartmentReviewEmbeddedRefIsRejectedTruthfully(t *te
 	}); err != nil {
 		t.Fatalf("attaching the executive-evidence bundle: %v", err)
 	}
-
-	fixture.harness.bodies[PurposeDepartmentReview] =
-		`{"schema_version":"department-review/v2","verdict":"accept",` +
-			`"findings":["design matches invocation 21"],"unsatisfied_criteria":[],` +
-			`"evidence_refs":["model-invocation:21"],` +
-			`"proposed_followup_tasks":[],"followup_ownership":[],"revision_outcomes":[]}`
-
-	sawRejection := false
-	for i := 0; i < 10; i++ {
-		_, err := fixture.orchestrator.Resume(context.Background(), fixture.root)
-		if err != nil && errors.Is(err, ErrModelResultContractRejected) {
-			sawRejection = true
-			if strings.Contains(err.Error(), "cannot verify was shown") {
-				t.Fatalf("a genuinely attached bundle ref must not be told it was never shown: %v", err)
-			}
-			if !strings.Contains(err.Error(), "model-invocation:21") {
-				t.Fatalf("rejection does not name the offending ref: %v", err)
-			}
-		} else if err != nil && !errors.Is(err, ErrRunBlocked) {
-			t.Fatalf("unexpected resume error: %v", err)
-		}
-		task, ok := departmentReviewTask(t, fixture)
-		if ok && task.Status == "failed" {
-			break
-		}
+	task, err := tasksPort.GetTask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !sawRejection {
-		t.Fatal("a department review citing a bundle-embedded, non-repository reference was never rejected")
+
+	// The task_context segment this task's own attempt was actually shown --
+	// the fact execution scoping checks before trusting any embedded ref.
+	orchestrator.snapshotSources = stubSnapshotSources{sources: []SnapshotSource{
+		{Kind: "task_context", Reference: taskRef(task.ID), Version: "task.v1:1:x", Included: true},
+	}}
+
+	_, err = orchestrator.driveTypedTask(context.Background(), root, task, departmentReviewOutputSchema, PurposeDepartmentReview,
+		func(result InvocationResult) error {
+			_, pErr := ParseDepartmentReview(result.JSONOutput, orchestrator.limits)
+			return pErr
+		})
+	if err == nil || !errors.Is(err, ErrModelResultContractRejected) {
+		t.Fatalf("a department review citing a bundle-embedded, non-repository reference must be rejected, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "cannot verify was shown") {
+		t.Fatalf("a genuinely attached bundle ref must not be told it was never shown: %v", err)
+	}
+	if !strings.Contains(err.Error(), "model-invocation:21") {
+		t.Fatalf("rejection does not name the offending ref: %v", err)
 	}
 }
 
@@ -97,17 +113,33 @@ func TestTypedVisibility_I_DepartmentReviewEmbeddedRefIsRejectedTruthfully(t *te
 // fix changes no acceptance policy -- an empty offer needed no provenance
 // before and needs none now.
 func TestTypedVisibility_J_DepartmentReviewEmptyEvidenceStillPasses(t *testing.T) {
-	fixture := newWiringFixture(t, "freeze", fullSupply(), nil)
-	fixture.harness.bodies[PurposeDepartmentReview] =
+	tasksPort := newMemoryTasks()
+	models := newFakeModels()
+	harness := newFakeHarness(models)
+	harness.body = json.RawMessage(
 		`{"schema_version":"department-review/v2","verdict":"accept",` +
 			`"findings":["reviewed"],"unsatisfied_criteria":[],"evidence_refs":[],` +
-			`"proposed_followup_tasks":[],"followup_ownership":[],"revision_outcomes":[]}`
+			`"proposed_followup_tasks":[],"followup_ownership":[],"revision_outcomes":[]}`)
+	orchestrator := testOrchestratorWithHarness(t, tasksPort, models, harness, &countingBudget{}, &fakeCompletion{verdict: CompletionPass})
 
-	run, err := fixture.driveUntilStopped(t, 24)
-	if err != nil {
+	root, _, _ := tasksPort.CreateTask(context.Background(), CreateTaskCommand{
+		RequestedByRoleID: OwnerRoleID, AssignedRoleID: CEORoleID, IdempotencyKey: "root-typed-visibility-j",
+		Title: "root", Instructions: "root", AcceptanceCriteria: []string{"x"},
+		CorrelationID: "executive:typed-visibility-j",
+	})
+	task, _, _ := tasksPort.CreateTask(context.Background(), CreateTaskCommand{
+		RequestedByRoleID: CEORoleID, AssignedRoleID: "ingenieria_ia/orquestador",
+		IdempotencyKey: "child-typed-visibility-j", Title: "Department review: ingenieria_ia",
+		Instructions:       "Review only this bounded durable task/evidence summary and return DepartmentReview JSON.",
+		AcceptanceCriteria: []string{"x"}, CorrelationID: root.CorrelationID,
+		Requirements: reviewRequirement(),
+	})
+
+	if _, err := orchestrator.driveTypedTask(context.Background(), root, task, departmentReviewOutputSchema, PurposeDepartmentReview,
+		func(result InvocationResult) error {
+			_, pErr := ParseDepartmentReview(result.JSONOutput, orchestrator.limits)
+			return pErr
+		}); err != nil {
 		t.Fatalf("an honest empty-evidence department review was rejected: %v", err)
-	}
-	if run.State == StateBlocked {
-		t.Fatalf("an honest empty-evidence department review blocked the run: %+v", run)
 	}
 }

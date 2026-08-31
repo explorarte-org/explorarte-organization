@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -39,9 +40,18 @@ import (
 // incident's specific string and nothing else; this checks the property that
 // actually matters.
 //
+// TYPED-EVIDENCE-VISIBILITY-FIX-005 does not change this decision.
+// R17-v5's task 12512 cited model-invocation:21-24 -- genuinely shown to it,
+// embedded in an executive-evidence bundle the host itself attached, not
+// fabricated -- and this correctly rejects them anyway: VISIBLE and CITABLE
+// are different questions, and repository_evidence remains the only citable
+// class regardless of what else was genuinely shown. What that incident
+// exposed was a false DIAGNOSTIC, not a wrong decision -- see
+// describeInadmissibleReferences.
+//
 // refs may repeat; the returned list of invalid references is deduplicated
-// and sorted, matching describeUnverified's shape for the same reason: a
-// finding names what is wrong once, not once per occurrence.
+// and sorted, matching describeInadmissibleReferences' shape for the same
+// reason: a finding names what is wrong once, not once per occurrence.
 func (o *Orchestrator) VerifyEvidenceProvenance(ctx context.Context, sources SnapshotSourceReader, snapshotID int64, baseSHA string, refs []string) ([]string, error) {
 	if len(refs) == 0 {
 		return nil, nil
@@ -101,7 +111,14 @@ func genuineRepositoryCitations(ctx context.Context, sources SnapshotSourceReade
 // produces, so it is recorded, retried, and eventually dead-lettered exactly
 // like any other attempt failure -- never silently dropped, rewritten to
 // empty, or waved through with the rest of the document.
-func (o *Orchestrator) verifyOfferedEvidenceProvenance(ctx context.Context, snapshotID int64, baseSHA string, refs []string) error {
+//
+// taskID and evidence identify the CURRENT task's own attached evidence --
+// exactly the TaskRecord.Evidence already loaded on the task driveTypedTask
+// is executing, threaded through so describeInadmissibleReferences can tell
+// a reference that was genuinely shown (inside a bundle the host itself
+// attached to this task) from one that never was, without a second read of
+// anything: this is the same data driveTypedTask's caller already holds.
+func (o *Orchestrator) verifyOfferedEvidenceProvenance(ctx context.Context, snapshotID int64, baseSHA string, taskID int64, evidence []EvidenceRecord, refs []string) error {
 	invalid, err := o.VerifyEvidenceProvenance(ctx, o.snapshotSources, snapshotID, baseSHA, refs)
 	if err != nil {
 		return err
@@ -110,7 +127,7 @@ func (o *Orchestrator) verifyOfferedEvidenceProvenance(ctx context.Context, snap
 		return nil
 	}
 	return fmt.Errorf("%w: %s",
-		ErrContractRejected, describeInadmissibleReferences(ctx, o.snapshotSources, snapshotID, invalid))
+		ErrContractRejected, describeInadmissibleReferences(ctx, o.snapshotSources, snapshotID, taskID, evidence, invalid))
 }
 
 // nonRepositoryEvidenceGuidance states, to every department worker asked for
@@ -134,6 +151,26 @@ func nonRepositoryEvidenceGuidance() string {
 	return `Organizational context in your snapshot -- canonical or policy documents, role and department profiles, and similar material -- is guidance for you to follow, not evidence to cite: none of it belongs in evidence_refs or evidence[].
 Only material sourced from repository evidence (a real repository:// citation actually shown to you) may appear in evidence_refs/evidence[].
 If no repository evidence was shown to you, evidence_refs: [] and evidence: [] is a complete and correct answer -- it is not a failure to cite the organizational context instead.`
+}
+
+// nonRepositoryReviewEvidenceGuidance is nonRepositoryEvidenceGuidance's
+// analogue for PurposeDepartmentReview, which never received any evidence
+// guidance at all before TYPED-EVIDENCE-VISIBILITY-FIX-005 -- worker
+// guidance is not reused here because department-review/v2 carries a flat
+// evidence_refs []string with no structured evidence[] array to reference.
+//
+// R17-v5's task 12512 died citing model-invocation:21-24: real identifiers,
+// genuinely shown to it inside an executive-evidence bundle the host itself
+// attached before dispatch, summarizing the very deliverables the review was
+// asked to judge -- accurate content, wrong admissibility, the same failure
+// shape as R17-v4's task 11992, one purpose over. A review may read that
+// bookkeeping and let it inform findings/verdict; it may not cite it as
+// evidence_refs, because nothing about being real makes it repository
+// evidence.
+func nonRepositoryReviewEvidenceGuidance() string {
+	return `Your snapshot may include executive/task bookkeeping -- an evidence bundle summarizing the deliverables under review, task and model-invocation identifiers, and similar material. Read it; let it inform your findings and verdict. None of it belongs in evidence_refs: it is not repository evidence, however real the underlying task or invocation is.
+Only material sourced from repository evidence (a real repository:// citation actually shown to you) may appear in evidence_refs.
+If no repository evidence was shown to you, evidence_refs: [] is a complete and correct answer -- it is not a failure to cite the bookkeeping instead.`
 }
 
 // nonRepositoryEvidenceKindLabel turns a SnapshotSource.Kind other than
@@ -172,17 +209,45 @@ func nonRepositoryEvidenceKindLabel(kind string) string {
 // This reads the snapshot a second time rather than threading Verify's
 // internal genuine-set outward, so VerifyEvidenceProvenance's own decision
 // logic -- and its signature -- is untouched by this fix.
-func describeInadmissibleReferences(ctx context.Context, sources SnapshotSourceReader, snapshotID int64, refs []string) string {
+//
+// TYPED-EVIDENCE-VISIBILITY-FIX-005: a reference can also be genuinely shown
+// WITHOUT being a top-level segment Reference at all -- R17-v5's task 12512
+// cited model-invocation:21-24, real identifiers embedded inside the
+// executive-evidence bundle the host attached to that exact task and
+// rendered into its task_context segment's own content. taskID/evidence let
+// this recognize that case from the same structured TaskRecord.Evidence the
+// caller already loaded -- never by re-scanning the segment's rendered
+// Content, which would turn any incidental substring match into apparent
+// authority (see embeddedExecutiveEvidenceRefs). Recognizing a reference this
+// way changes only what this function SAYS about it: VerifyEvidenceProvenance
+// still rejected it, and still would with evidence==nil.
+func describeInadmissibleReferences(ctx context.Context, sources SnapshotSourceReader, snapshotID int64, taskID int64, evidence []EvidenceRecord, refs []string) string {
 	known := map[string]string{}
+	taskSegmentShown := false
 	if sources != nil && snapshotID > 0 {
 		if shown, err := sources.SnapshotSources(ctx, snapshotID); err == nil {
+			ownReference := "task:" + strconv.FormatInt(taskID, 10)
 			for _, source := range shown {
-				if !source.Included || source.Kind == "repository_evidence" {
+				if !source.Included {
+					continue
+				}
+				if source.Reference == ownReference && source.Kind == "task_context" {
+					taskSegmentShown = true
+				}
+				if source.Kind == "repository_evidence" {
 					continue
 				}
 				known[source.Reference] = source.Kind
 			}
 		}
+	}
+	// Embedded refs only count as shown if the segment they ride inside of
+	// (this task's own task_context) actually survived assembly. A bundle
+	// attached to task_evidence but dropped from the snapshot for budget was
+	// not read by the model any more than a dropped repository excerpt was.
+	var embedded map[string]struct{}
+	if taskSegmentShown {
+		embedded = embeddedExecutiveEvidenceRefs(evidence)
 	}
 	parts := make([]string, 0, len(refs))
 	for _, ref := range refs {
@@ -190,7 +255,78 @@ func describeInadmissibleReferences(ctx context.Context, sources SnapshotSourceR
 			parts = append(parts, fmt.Sprintf("evidence_refs names %s, which is %s, not citable repository evidence", ref, nonRepositoryEvidenceKindLabel(kind)))
 			continue
 		}
+		if _, ok := embedded[ref]; ok {
+			parts = append(parts, fmt.Sprintf("evidence_refs names %s, which was shown to this execution inside executive/task evidence context, not citable repository evidence", ref))
+			continue
+		}
 		parts = append(parts, fmt.Sprintf("evidence_refs names %s, which the host cannot verify was shown to this execution", ref))
 	}
 	return strings.Join(parts, "; ")
+}
+
+// embeddedExecutiveEvidenceRefs extracts the reference identifiers an
+// executive-evidence bundle declares about the work it summarizes -- the
+// model-invocation:<id> and task-evidence identifiers each projected
+// worker/review already carries in its own typed fields
+// (runtimeadapter/evidence_tasks.go's projectedWorker.TaskEvidence/
+// EvidenceRefs and projectedReview's equivalents).
+//
+// This walks the bundle's known schema (a top-level "workers" or "reviews"
+// array, each entry carrying "evidence_refs"/"task_evidence_refs" string
+// arrays) inside evidence[].Metadata["bundle"] -- decoded JSON already
+// sitting in the row recordBundle wrote before this task was ever
+// dispatched, read here as the map[string]any/[]any tree
+// encoding/json.Unmarshal produced, never as re-parsed prose. A mention
+// inside an unrelated field (a free-text summary, say) is not a
+// reference-bearing field in this schema and is deliberately not collected:
+// recognizing it would make an incidental substring match indistinguishable
+// from a real, typed citation, which is exactly the authority-from-Content
+// shortcut this fix does not take.
+//
+// evidence is scoped to the CURRENT task by construction: a bundle is only
+// ever attached to the review/closure task it summarizes
+// (EvidenceTasks.CreateTask), so every row in a TaskRecord's own Evidence
+// already proves that bundle belongs to this task -- no separate lookup, no
+// broader search.
+func embeddedExecutiveEvidenceRefs(evidence []EvidenceRecord) map[string]struct{} {
+	refs := map[string]struct{}{}
+	for _, item := range evidence {
+		bundle, ok := item.Metadata["bundle"].(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, arrayKey := range [...]string{"workers", "reviews"} {
+			entries, ok := bundle[arrayKey].([]any)
+			if !ok {
+				continue
+			}
+			for _, entry := range entries {
+				object, ok := entry.(map[string]any)
+				if !ok {
+					continue
+				}
+				for _, fieldKey := range [...]string{"evidence_refs", "task_evidence_refs"} {
+					collectStringRefs(object[fieldKey], refs)
+				}
+			}
+		}
+	}
+	return refs
+}
+
+// collectStringRefs adds every string element of a decoded JSON array
+// (value's runtime shape after encoding/json.Unmarshal into `any`) into into.
+// Anything not a []any of strings -- a missing field, a differently-shaped
+// value -- is silently skipped rather than guessed at: this is a narrow,
+// typed reader of a known schema, not a general-purpose extractor.
+func collectStringRefs(value any, into map[string]struct{}) {
+	items, ok := value.([]any)
+	if !ok {
+		return
+	}
+	for _, item := range items {
+		if s, ok := item.(string); ok && s != "" {
+			into[s] = struct{}{}
+		}
+	}
 }

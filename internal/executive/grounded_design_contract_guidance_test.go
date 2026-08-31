@@ -74,7 +74,7 @@ func TestProvenanceRejectionNamesCanonicalContextSpecifically(t *testing.T) {
 		{Kind: "canonical_document", Reference: "docs/canonical/capability-matrix.yaml", Version: "sha256:abc123", Included: true},
 	}}
 	orchestrator := &Orchestrator{snapshotSources: sources}
-	err := orchestrator.verifyOfferedEvidenceProvenance(context.Background(), 7, designSHA,
+	err := orchestrator.verifyOfferedEvidenceProvenance(context.Background(), 7, designSHA, 0, nil,
 		[]string{"docs/canonical/capability-matrix.yaml"})
 	if err == nil || !errors.Is(err, ErrContractRejected) {
 		t.Fatalf("a real but non-repository-evidence reference must still be rejected, got: %v", err)
@@ -95,7 +95,7 @@ func TestProvenanceRejectionNamesCanonicalContextSpecifically(t *testing.T) {
 // must never claim to know what a reference is when it traces to nothing.
 func TestProvenanceRejectionKeepsGenericWordingForTrueFabrications(t *testing.T) {
 	orchestrator := &Orchestrator{snapshotSources: snapshotWith()}
-	err := orchestrator.verifyOfferedEvidenceProvenance(context.Background(), 7, designSHA, []string{"task:34"})
+	err := orchestrator.verifyOfferedEvidenceProvenance(context.Background(), 7, designSHA, 0, nil, []string{"task:34"})
 	if err == nil || !errors.Is(err, ErrContractRejected) {
 		t.Fatalf("a bare self-citation must still be rejected, got: %v", err)
 	}
