@@ -66,29 +66,19 @@ type VerifiedCitation struct {
 //	did it actually reach the model, rather than being dropped
 //
 // Everything the reviewer then says rests on evidence nobody invented.
+//
+// The genuine set this checks candidates against is built by
+// genuineRepositoryCitations (evidence_provenance.go), shared with
+// VerifyEvidenceProvenance: "was this shown to the model" is one answer,
+// asked here of free prose and there of a structured reference list, not two
+// mechanisms that could drift apart.
 func (o *Orchestrator) VerifyRepositoryCitations(ctx context.Context, sources SnapshotSourceReader, snapshotID int64, baseSHA, text string, taskID, invocationID int64, resultDigest string) ([]VerifiedCitation, error) {
 	if sources == nil || snapshotID <= 0 || baseSHA == "" {
 		return nil, nil
 	}
-	available, err := sources.SnapshotSources(ctx, snapshotID)
+	genuine, err := genuineRepositoryCitations(ctx, sources, snapshotID, baseSHA)
 	if err != nil {
 		return nil, err
-	}
-	// Only sources that were repository evidence, about this commit, and
-	// actually included. Each condition removes a different way a citation
-	// could look real and not be.
-	genuine := map[string]struct{}{}
-	for _, source := range available {
-		if source.Kind != "repository_evidence" {
-			continue
-		}
-		if source.Version != baseSHA {
-			continue
-		}
-		if !source.Included {
-			continue
-		}
-		genuine[source.Reference] = struct{}{}
 	}
 
 	seen := map[string]struct{}{}

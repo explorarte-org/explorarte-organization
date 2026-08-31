@@ -1706,11 +1706,25 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		}
 		return task, supplyErr
 	}
-	// Structural validation runs on the way back, wrapped around the
-	// caller's own contract check so it shares the same rejection path: a
-	// worker that leaves a slot unfilled having been shown candidates has
-	// broken its contract, and that is an attempt failure like any other.
-	if len(required) > 0 {
+	// Structural validation, requirement coverage, and provenance all run
+	// on the way back, wrapped around the caller's own contract check so
+	// they share the same rejection path: a worker that leaves a slot
+	// unfilled having been shown candidates, or offers evidence the host
+	// cannot verify was ever shown to it, has broken its contract, and
+	// either is an attempt failure like any other.
+	//
+	// Provenance (verifyOfferedEvidenceProvenance) runs unconditionally,
+	// independent of len(required) -- see evidence_provenance.go's
+	// VerifyEvidenceProvenance doc comment. Requiredness decides what MUST
+	// be grounded; provenance decides whether a reference a worker chose to
+	// offer beyond that is real, and those are orthogonal questions.
+	// ValidateEvidenceStructure remains gated on required, unchanged.
+	//
+	// Scoped to worker-result/v2: v1 carries no structured evidence[] and
+	// no established provenance semantics to enforce, and the structural
+	// fix this rides alongside (fix/worker-result-v2-structural-contract)
+	// drew the same boundary for the same reason.
+	if purpose == PurposeDepartmentWorker {
 		callerValidate := validate
 		validate = func(result InvocationResult) error {
 			if err := callerValidate(result); err != nil {
@@ -1720,7 +1734,37 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 			if parseErr != nil {
 				return parseErr
 			}
-			return ValidateEvidenceStructure(parsed, required, available)
+			if len(required) > 0 {
+				if err := ValidateEvidenceStructure(parsed, required, available); err != nil {
+					return err
+				}
+			}
+			if parsed.SchemaVersion != WorkerResultSchemaVersionV2 {
+				return nil
+			}
+			return o.verifyOfferedEvidenceProvenance(ctx, snapshot.ID, repositoryBaseSHA, parsed.EvidenceRefs)
+		}
+	}
+	// A department review can convert a fabricated reference into apparent
+	// supporting evidence exactly the same way a worker can -- and its
+	// Verdict is what actually gates root completion
+	// (validateRunCompletionEvidence requires ReviewAccept). Scoped to
+	// department-review/v2 for the same reason as above: v1 predates this
+	// contract.
+	if purpose == PurposeDepartmentReview {
+		callerValidate := validate
+		validate = func(result InvocationResult) error {
+			if err := callerValidate(result); err != nil {
+				return err
+			}
+			review, parseErr := ParseDepartmentReview(result.JSONOutput, o.limits)
+			if parseErr != nil {
+				return parseErr
+			}
+			if review.SchemaVersion != DepartmentReviewSchemaVersionV2 {
+				return nil
+			}
+			return o.verifyOfferedEvidenceProvenance(ctx, snapshot.ID, repositoryBaseSHA, review.EvidenceRefs)
 		}
 	}
 

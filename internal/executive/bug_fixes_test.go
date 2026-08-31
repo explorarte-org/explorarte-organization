@@ -820,6 +820,16 @@ func TestBugA_PreexistingTaskGetsGuidanceAtExecutionTime(t *testing.T) {
 			tasksPort := newMemoryTasks()
 			models := newFakeModels()
 			harness := newFakeHarness(models)
+			if tc.purpose == PurposeDepartmentReview {
+				// defaultHarnessBody is a department-plan/v1 body, reused
+				// across many unrelated tests. This test's own validate is a
+				// no-op (it only inspects ExecutionContract), but
+				// driveTypedTask now also parses a real PurposeDepartmentReview
+				// result to check offered evidence's provenance -- see
+				// evidence_provenance.go -- so the fake body must at least be
+				// a schema-valid, v1 (provenance-exempt) DepartmentReview.
+				harness.body = json.RawMessage(`{"schema_version":"department-review/v1","verdict":"accept","findings":[],"unsatisfied_criteria":[],"evidence_refs":[],"proposed_followup_tasks":[]}`)
+			}
 			orchestrator := testOrchestratorWithHarness(t, tasksPort, models, harness, &countingBudget{}, &fakeCompletion{verdict: CompletionPass})
 
 			root, _, _ := tasksPort.CreateTask(context.Background(), CreateTaskCommand{
