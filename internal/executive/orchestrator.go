@@ -1915,6 +1915,11 @@ func executionContractFor(purpose ExecutionPurpose, required []EvidenceRequireme
 		// been told the executive-evidence bundle it was shown to judge
 		// prior work is not itself citable evidence.
 		contract += "\n\n" + nonRepositoryReviewEvidenceGuidance()
+		// Told unconditionally, obligation list or not, for the same reason:
+		// R17-v6's task 15763 died at ValidateFollowups having never been told
+		// its proposed_followup_tasks are department-scoped, or that adversarial
+		// review/design-freeze are host-orchestrated rather than review-requested.
+		contract += "\n\n" + departmentReviewDelegationScopeGuidance
 	}
 	if guidance := evidenceContractGuidance(required); guidance != "" {
 		if contract != "" {
