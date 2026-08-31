@@ -468,4 +468,15 @@ func validateFollowupOwnership(universe []RequiredChange, authority map[string]s
 // have nothing to reconcile.
 const departmentConsistencyGuidance = `Consistency rule for this review: if the plan instructions listed required-change ids, you MUST state a revision_outcomes entry for each one, comparing the deliverables against each other on that change -- not merely checking each deliverable against its own criteria. Where two deliverables assert incompatible resolutions, status is conflicted and you must name both tasks; accept is only available when every required change says resolved with one canonical resolution. When deliverables leave a change unanswered, say unresolved and return needs_replan so the department redoes the work within its own replan bound.`
 
+// departmentReviewDelegationScopeGuidance closes AUTONOMY-SMOKE-017-R17-V6's
+// task 15763: a review proposed a follow-up task for
+// investigacion/revisor_adversarial, a role in a different department.
+// ValidateFollowups (a thin wrapper over ValidateDepartmentPlan) rejected it
+// correctly -- the same-department rule has no carve-out for the
+// adversarial reviewer, and none is needed: that role is dispatched only by
+// the host's own driveDesignFreeze once the root carries the design-freeze
+// requirement. Nothing had ever told the reviewer proposed_followup_tasks
+// is department-scoped, or that this transition is automatic.
+const departmentReviewDelegationScopeGuidance = `Every proposed_followup_tasks entry must target a role within your own reviewing department. Adversarial review and design-freeze are transitions the host orchestrates automatically once your review completes -- do not request them, or any role outside your department, through proposed_followup_tasks.`
+
 var _ = strconv.Itoa
