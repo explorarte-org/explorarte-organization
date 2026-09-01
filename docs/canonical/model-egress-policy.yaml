@@ -1,7 +1,7 @@
 schema_version: 0.1.0
 document_status: api_only_candidate
 policy_id: model-egress
-policy_version: 7
+policy_version: 8
 default_action: deny
 hard_denies:
 - data_classification: clinical
@@ -65,3 +65,15 @@ rules:
   data_classification: sanitized
   effect: allow
   reason_code: sanitized_egress_approved_for_openai_responses_v4
+- provider_id: gemini
+  data_classification: organizational
+  effect: allow
+  reason_code: executive_scope_gate_required_v4
+- provider_id: gemini
+  data_classification: public
+  effect: allow
+  reason_code: public_egress_approved_for_gemini_v1
+- provider_id: gemini
+  data_classification: sanitized
+  effect: allow
+  reason_code: sanitized_egress_approved_for_gemini_v1
