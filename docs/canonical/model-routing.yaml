@@ -21,12 +21,12 @@ policies:
     legacy_conflicts:
     - alibaba_token_plan_via_claude_code/qwen3.6-flash retired by owner
   department.leader:
-    provider: deepseek
-    model: deepseek-v4-pro
-    reasoning_effort: xhigh
+    provider: gemini
+    model: gemini-3.1-flash-lite
     transport: http_adapter
-    source_of_decision: owner_conversation_r30
+    source_of_decision: owner_conversation_r17v8_gemini_worker_migration
     legacy_conflicts:
+    - deepseek/deepseek-v4-pro in prior routing revision (retired after repeated HTTP 402 insufficient balance failures blocked autonomy-smoke-017 r17-v6 and r17-v7 department planning)
     - gpt-5.6-luna/openai_compatible in prior routing revision
     - qwen3.8-max in individual leader profiles
   department.worker:
