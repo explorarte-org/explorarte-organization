@@ -30,10 +30,12 @@ policies:
     - gpt-5.6-luna/openai_compatible in prior routing revision
     - qwen3.8-max in individual leader profiles
   department.worker:
-    provider: deepseek
-    model: deepseek-v4-flash
+    provider: gemini
+    model: gemini-2.5-flash-lite
     transport: http_adapter
-    source_of_decision: global_agent_and_owner_description
+    source_of_decision: owner_conversation_r17v11_gemini_worker_migration
+    legacy_conflicts:
+    - deepseek/deepseek-v4-flash in prior routing revision (retired after repeated invalid_request_error failures blocked autonomy-smoke-017 r17-v11 engineering.design; same underlying deepseek account issue that already forced department.leader off deepseek)
   research.adversarial_review:
     provider: xai
     model: grok-4.6
