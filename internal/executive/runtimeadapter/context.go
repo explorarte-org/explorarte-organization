@@ -2,6 +2,7 @@ package runtimeadapter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -49,6 +50,17 @@ func (a Context) Build(ctx context.Context, request executive.ContextRequest) (e
 		CausationID:            request.CausationID,
 	})
 	if err != nil {
+		// G1-005: a content-rejection from context assembly (most commonly
+		// a role's PERFIL.md missing from the physical file tree despite
+		// the role being present and executable in the canonical/DB role
+		// catalog) is a host finding Executive must classify cleanly, never
+		// a raw filesystem error propagated as-is. This is the one seam
+		// where contextengine's own error space is translated into
+		// Executive's, exactly so internal/executive itself never needs to
+		// import internal/contextengine to recognize it.
+		if errors.Is(err, contextengine.ErrRejected) {
+			return executive.ContextSnapshot{}, fmt.Errorf("%w: %s", executive.ErrContextSourceRejected, err.Error())
+		}
 		return executive.ContextSnapshot{}, err
 	}
 	// Fetch and validate the canonical snapshot the same way

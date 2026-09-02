@@ -53,6 +53,9 @@ func (l *Loader) Load(ctx context.Context, relative string, maxBytes int64) (con
 	}
 	resolved, err := resolveWithinRoot(l.root, relative)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return contextengine.LoadedDocument{}, contextengine.Reject(contextengine.ReasonSourceNotFound, relative, "source file not found")
+		}
 		code := contextengine.ReasonSourcePathEscape
 		if strings.Contains(err.Error(), "symlink") || strings.Contains(err.Error(), "resolved") {
 			code = contextengine.ReasonSourceSymlinkEscape

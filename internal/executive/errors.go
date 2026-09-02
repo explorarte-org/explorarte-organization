@@ -85,4 +85,13 @@ var (
 	// what that earlier call was, and until it does, the correct behavior is to
 	// wait rather than to guess.
 	ErrPriorExecutionUnresolved = errors.New("executive prior model execution is unresolved at the provider boundary")
+	// ErrContextSourceRejected means ContextCoordinator.Build could not
+	// assemble a task's context because a source it depends on -- most
+	// commonly a role's PERFIL.md, registered and executable in the
+	// canonical/DB role catalog but never committed to the physical file
+	// tree baked into the image -- was rejected or missing (G1-005). It is
+	// a host finding, not a provider or worker failure: the root is
+	// blocked with a reason an operator can act on, never left to
+	// propagate as a raw, unclassified filesystem error.
+	ErrContextSourceRejected = errors.New("executive context source rejected")
 )

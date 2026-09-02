@@ -124,6 +124,12 @@ const ReasonEvidenceInsufficient = "evidence_insufficient"
 // never the world's -- and the record says so (checkpoint D).
 const ReasonEvidenceDeliveryViolation = "evidence_delivery_violation"
 
+// ReasonContextSourceMissing is the root-level Run.ReasonCode for G1-005:
+// a role's context source (most commonly PERFIL.md) was registered and
+// executable in the canonical/DB role catalog but missing from the
+// physical file tree. See ErrContextSourceRejected.
+const ReasonContextSourceMissing = "context_source_missing"
+
 // evidenceFailureReason classifies a supply-preflight failure by WHOSE
 // promise broke. Owner-goal obligations were never admitted against capacity,
 // so their failure stays the honest "the world cannot supply this";

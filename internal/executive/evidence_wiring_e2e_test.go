@@ -158,7 +158,7 @@ func (f *wiringFixture) driveUntilStopped(t *testing.T, maxPasses int) (Run, err
 		last, lastErr = run, err
 		switch {
 		case err == nil:
-		case errors.Is(err, ErrRunBlocked), errors.Is(err, ErrEvidenceInsufficient):
+		case errors.Is(err, ErrRunBlocked), errors.Is(err, ErrEvidenceInsufficient), errors.Is(err, ErrContextSourceRejected):
 			return last, err
 		case errors.Is(err, ErrModelResultContractRejected):
 			// Keep driving; the next pass retries the closed attempt.
