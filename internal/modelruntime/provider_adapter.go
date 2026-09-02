@@ -70,7 +70,8 @@ type ProviderOutcome struct {
 	CancellationConfirmed bool
 
 	// --- Gate F: Provider Failure Telemetry ---------------------------------
-	// Populated by adapters (currently only deepseek) at every point a
+	// Populated by adapters (deepseek, gemini, xai, openaicompat, openairesponses;
+	// mimo is excluded -- scheduled for removal) at every point a
 	// ProviderOutcome is constructed, so a failed invocation can be
 	// consultably diagnosed without ever persisting the prompt, completion,
 	// hidden reasoning, or any secret. Every field below is either a length,

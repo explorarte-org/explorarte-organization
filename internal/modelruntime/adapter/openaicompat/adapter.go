@@ -91,6 +91,109 @@ type providerErrorEnvelope struct {
 	} `json:"error"`
 }
 
+// failureTelemetry carries Gate F (Provider Failure Telemetry) facts known
+// at a given point during Dispatch, merged onto the modelruntime.ProviderOutcome
+// under construction by responseErrorOutcome/notSentOutcome. Every field is
+// optional and additive -- the zero value means "not yet known" -- and none
+// of it is ever prompt/completion content: byte counts, token counts,
+// provider-supplied enum-like tokens, and request-shaping facts (response
+// format, max output tokens) that are already public API surface. Mirrors
+// internal/modelruntime/adapter/deepseek's failureTelemetry; this endpoint's
+// usage object carries no prompt-cache split, so there is no cache-token
+// pair here.
+type failureTelemetry struct {
+	responseFormat       string
+	maxOutputTokens      *int
+	requestDuration      *time.Duration
+	responseContentBytes *int
+	finishReason         string
+	usageAvailable       bool
+	inputTokens          *int64
+	outputTokens         *int64
+	jsonErrorClass       string
+	jsonErrorOffset      *int64
+	startsWithJSONObject *bool
+	endsWithJSONObject   *bool
+}
+
+// requestTelemetry captures the request-shaping facts available before any
+// network call: response_format and max_output_tokens are both public API
+// surface, never response content.
+func requestTelemetry(request modelruntime.CanonicalRequest) failureTelemetry {
+	format := "text"
+	if request.OutputMode == modelruntime.OutputJSON {
+		format = "json_object"
+	}
+	maxOutputTokens := request.MaxOutputTokens
+	return failureTelemetry{responseFormat: format, maxOutputTokens: &maxOutputTokens}
+}
+
+func (t failureTelemetry) withDuration(d time.Duration) failureTelemetry {
+	t.requestDuration = &d
+	return t
+}
+
+func (t failureTelemetry) withResponseBytes(n int) failureTelemetry {
+	t.responseContentBytes = &n
+	return t
+}
+
+func (t failureTelemetry) withFinishReason(reason string) failureTelemetry {
+	t.finishReason = reason
+	return t
+}
+
+// withUsage restates the provider's usage object directly on the outcome
+// row so a failure row is self-sufficient without a join -- necessary for
+// every rejected outcome, since business-failure paths that never reach
+// CompleteInvocation still get a model_invocation_usage row via
+// insertRecoveredUsage, but earlier failures (pre-decode) never do.
+func (t failureTelemetry) withUsage(usage chatUsage) failureTelemetry {
+	input := usage.PromptTokens
+	output := usage.CompletionTokens
+	t.usageAvailable = true
+	t.inputTokens = &input
+	t.outputTokens = &output
+	return t
+}
+
+// withJSONDecodeFailure captures the Go encoding/json error's offset and
+// type name (never the JSON body itself), plus two cheap boundary checks on
+// the raw bytes that distinguish "provider sent something that isn't JSON
+// at all" from "provider sent JSON that was truncated mid-object".
+func (t failureTelemetry) withJSONDecodeFailure(err error, body []byte) failureTelemetry {
+	class, offset := classifyJSONError(err)
+	t.jsonErrorClass = class
+	t.jsonErrorOffset = offset
+	starts, ends := jsonBoundaryFlags(body)
+	t.startsWithJSONObject = &starts
+	t.endsWithJSONObject = &ends
+	return t
+}
+
+func classifyJSONError(err error) (class string, offset *int64) {
+	var syntaxErr *json.SyntaxError
+	var typeErr *json.UnmarshalTypeError
+	switch {
+	case errors.As(err, &syntaxErr):
+		value := syntaxErr.Offset
+		return "syntax_error", &value
+	case errors.As(err, &typeErr):
+		value := typeErr.Offset
+		return "unmarshal_type_error", &value
+	default:
+		return "unknown_error", nil
+	}
+}
+
+func jsonBoundaryFlags(body []byte) (startsWithObject, endsWithObject bool) {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return false, false
+	}
+	return trimmed[0] == '{', trimmed[len(trimmed)-1] == '}'
+}
+
 func New(config Config) (*Adapter, error) {
 	return newAdapter(config, nil, time.Now)
 }
@@ -141,30 +244,31 @@ func (a *Adapter) Preflight(ctx context.Context, request modelruntime.ProviderPr
 		return err
 	}
 	if request.ProviderID != ProviderID || strings.TrimSpace(request.ProviderModelID) == "" || request.Deadline.IsZero() {
-		return &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureBeforeRequest, Outcome: a.notSentOutcome("invalid_request", "provider_scope_invalid"), Cause: modelruntime.ErrInvalidRequest}
+		return &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureBeforeRequest, Outcome: a.notSentOutcome("invalid_request", "provider_scope_invalid", failureTelemetry{}), Cause: modelruntime.ErrInvalidRequest}
 	}
 	if !request.Deadline.After(a.now()) {
 		return context.DeadlineExceeded
 	}
 	if !a.breaker.allow(a.now()) {
-		return &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureBeforeRequest, Outcome: a.notSentOutcome("circuit_breaker", "circuit_open"), Cause: modelruntime.ErrProviderUnavailable}
+		return &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureBeforeRequest, Outcome: a.notSentOutcome("circuit_breaker", "circuit_open", failureTelemetry{}), Cause: modelruntime.ErrProviderUnavailable}
 	}
 	token, err := secrets.LoadBearerToken(a.config.CredentialFile)
 	if err != nil {
-		return &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureBeforeRequest, Outcome: a.notSentOutcome("credential", "credential_unavailable"), Cause: err}
+		return &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureBeforeRequest, Outcome: a.notSentOutcome("credential", "credential_unavailable", failureTelemetry{}), Cause: err}
 	}
 	secrets.Zero(token)
 	return nil
 }
 
 func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRequest) (modelruntime.RawResponse, error) {
+	baseTelemetry := requestTelemetry(request)
 	body, err := encodeRequest(request)
 	if err != nil {
-		return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureBeforeRequest, Outcome: a.notSentOutcome("request_encoding", "request_encoding_failed"), Cause: err}
+		return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureBeforeRequest, Outcome: a.notSentOutcome("request_encoding", "request_encoding_failed", baseTelemetry), Cause: err}
 	}
 	token, err := secrets.LoadBearerToken(a.config.CredentialFile)
 	if err != nil {
-		return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureBeforeRequest, Outcome: a.notSentOutcome("credential", "credential_unavailable"), Cause: err}
+		return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureBeforeRequest, Outcome: a.notSentOutcome("credential", "credential_unavailable", baseTelemetry), Cause: err}
 	}
 	defer secrets.Zero(token)
 
@@ -176,13 +280,14 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 	defer cancel()
 	httpRequest, err := http.NewRequestWithContext(requestCtx, http.MethodPost, a.config.EndpointURL, bytes.NewReader(body))
 	if err != nil {
-		return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureBeforeRequest, Outcome: a.notSentOutcome("request_build", "request_build_failed"), Cause: err}
+		return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureBeforeRequest, Outcome: a.notSentOutcome("request_build", "request_build_failed", baseTelemetry), Cause: err}
 	}
 	httpRequest.Header.Set("Authorization", "Bearer "+string(token))
 	httpRequest.Header.Set("Content-Type", "application/json")
 	httpRequest.Header.Set("Accept", "application/json")
 	httpRequest.Header.Set("X-Client-Request-Id", request.ProviderIdempotencyKey)
 
+	sendStart := a.now()
 	response, err := a.client.Do(httpRequest)
 	if err != nil {
 		// Caller cancellation is not provider instability and must not open the
@@ -191,10 +296,13 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 		if !errors.Is(err, context.Canceled) {
 			a.breaker.failure(a.now())
 		}
+		telemetry := baseTelemetry.withDuration(a.now().Sub(sendStart))
 		outcome := modelruntime.ProviderOutcome{
 			OutcomeClassification: modelruntime.ProviderOutcomeAmbiguous,
 			ErrorClass:            "transport", ErrorCode: classifyTransportError(err), Retryable: true,
 			ResponseSchemaVersion: ResponseSchemaVersion,
+			ResponseFormat:        telemetry.responseFormat, MaxOutputTokens: telemetry.maxOutputTokens,
+			RequestDuration: telemetry.requestDuration,
 		}
 		return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureAmbiguous, Outcome: outcome, Cause: err}
 	}
@@ -202,6 +310,7 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 	responseBody, readErr := readBounded(response.Body, a.config.MaxResponseBytes)
 	responseHash := modelruntime.SHA256Bytes(responseBody)
 	providerRequestID := strings.TrimSpace(response.Header.Get("x-request-id"))
+	telemetry := baseTelemetry.withDuration(a.now().Sub(sendStart)).withResponseBytes(len(responseBody))
 	if readErr != nil {
 		// A deadline or cancellation while the body is still arriving leaves
 		// the call AMBIGUOUS, not rejected: the provider accepted the request
@@ -216,7 +325,7 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 			return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureAmbiguous, Outcome: outcome, Cause: readErr}
 		}
 		a.breaker.failure(a.now())
-		outcome := responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", "response_read_failed", response.StatusCode >= 500)
+		outcome := responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", "response_read_failed", response.StatusCode >= 500, telemetry)
 		return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureResponseReceived, Outcome: outcome, Cause: readErr}
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
@@ -225,31 +334,33 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 			a.breaker.failure(a.now())
 		}
 		class, code := parseProviderError(responseBody)
-		outcome := responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, class, code, retryable)
+		outcome := responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, class, code, retryable, telemetry)
 		return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureResponseReceived, Outcome: outcome, Cause: modelruntime.ErrResponseRejected}
 	}
 	var decoded chatResponse
 	if err = json.Unmarshal(responseBody, &decoded); err != nil {
 		a.breaker.failure(a.now())
-		outcome := responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", "response_json_invalid", false)
+		outcome := responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", "response_json_invalid", false, telemetry.withJSONDecodeFailure(err, responseBody))
 		return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureResponseReceived, Outcome: outcome, Cause: err}
 	}
 	if providerRequestID == "" {
 		providerRequestID = strings.TrimSpace(decoded.ID)
 	}
+	telemetry = telemetry.withUsage(decoded.Usage)
 	if len(decoded.Choices) != 1 {
-		outcome := responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", "response_choice_count_invalid", false)
+		outcome := responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", "response_choice_count_invalid", false, telemetry)
 		return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureResponseReceived, Outcome: outcome, Cause: modelruntime.ErrResponseRejected}
 	}
+	telemetry = telemetry.withFinishReason(strings.TrimSpace(decoded.Choices[0].FinishReason))
 	content, err := decodeContent(decoded.Choices[0].Message.Content)
 	if err != nil {
-		outcome := responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", "response_content_invalid", false)
+		outcome := responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", "response_content_invalid", false, telemetry)
 		return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureResponseReceived, Outcome: outcome, Cause: err}
 	}
 	tools := make([]modelruntime.RawToolIntent, 0, len(decoded.Choices[0].Message.ToolCalls))
 	for _, call := range decoded.Choices[0].Message.ToolCalls {
 		if strings.TrimSpace(call.Function.Name) == "" {
-			return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureResponseReceived, Outcome: responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", "tool_call_name_missing", false), Cause: modelruntime.ErrResponseRejected}
+			return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureResponseReceived, Outcome: responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", "tool_call_name_missing", false, telemetry), Cause: modelruntime.ErrResponseRejected}
 		}
 		tools = append(tools, modelruntime.RawToolIntent{ID: call.ID, Name: call.Function.Name, Arguments: append([]byte(nil), call.Function.Arguments...)})
 	}
@@ -261,10 +372,10 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 	// finish_reason=length with empty content and zero tool calls.
 	switch finish := strings.TrimSpace(decoded.Choices[0].FinishReason); {
 	case finish == "content_filter":
-		outcome := responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", "response_content_filtered", false)
+		outcome := responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", "response_content_filtered", false, telemetry)
 		return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureResponseReceived, Outcome: outcome, Cause: modelruntime.ErrResponseRejected}
 	case finish == "length" && len(content) == 0 && len(tools) == 0:
-		outcome := responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", "response_truncated_empty", false)
+		outcome := responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", "response_truncated_empty", false, telemetry)
 		return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureResponseReceived, Outcome: outcome, Cause: modelruntime.ErrResponseRejected}
 	}
 	a.breaker.success()
@@ -272,6 +383,10 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 		OutcomeClassification: modelruntime.ProviderOutcomeResponseReceived,
 		ProviderRequestID:     providerRequestID, HTTPStatus: response.StatusCode,
 		ResponseHash: responseHash, ResponseSchemaVersion: ResponseSchemaVersion,
+		FinishReason: bound(telemetry.finishReason, 120), ResponseContentBytes: telemetry.responseContentBytes,
+		UsageAvailable: telemetry.usageAvailable, InputTokens: telemetry.inputTokens, OutputTokens: telemetry.outputTokens,
+		ResponseFormat: telemetry.responseFormat, MaxOutputTokens: telemetry.maxOutputTokens,
+		RequestDuration: telemetry.requestDuration,
 	}
 	return modelruntime.RawResponse{
 		Content: content, ToolIntents: tools, ProviderRequestID: providerRequestID,
@@ -431,19 +546,26 @@ func normalizeProviderToken(value, fallback string, maximum int) string {
 	return value
 }
 
-func responseErrorOutcome(status int, requestID, responseHash, class, code string, retryable bool) modelruntime.ProviderOutcome {
+func responseErrorOutcome(status int, requestID, responseHash, class, code string, retryable bool, telemetry failureTelemetry) modelruntime.ProviderOutcome {
 	return modelruntime.ProviderOutcome{
 		OutcomeClassification: modelruntime.ProviderOutcomeRejected,
 		ProviderRequestID:     requestID, HTTPStatus: status, ErrorClass: bound(class, 120),
 		ErrorCode: bound(code, 160), Retryable: retryable, ResponseHash: responseHash,
 		ResponseSchemaVersion: ResponseSchemaVersion,
+		FinishReason:          bound(telemetry.finishReason, 120), ResponseContentBytes: telemetry.responseContentBytes,
+		UsageAvailable: telemetry.usageAvailable, InputTokens: telemetry.inputTokens, OutputTokens: telemetry.outputTokens,
+		ResponseFormat: telemetry.responseFormat, MaxOutputTokens: telemetry.maxOutputTokens,
+		RequestDuration: telemetry.requestDuration,
+		JSONErrorClass:  bound(telemetry.jsonErrorClass, 120), JSONErrorOffset: telemetry.jsonErrorOffset,
+		StartsWithJSONObject: telemetry.startsWithJSONObject, EndsWithJSONObject: telemetry.endsWithJSONObject,
 	}
 }
 
-func (a *Adapter) notSentOutcome(class, code string) modelruntime.ProviderOutcome {
+func (a *Adapter) notSentOutcome(class, code string, telemetry failureTelemetry) modelruntime.ProviderOutcome {
 	return modelruntime.ProviderOutcome{
 		OutcomeClassification: modelruntime.ProviderOutcomeNotSent,
 		ErrorClass:            class, ErrorCode: code, ResponseSchemaVersion: ResponseSchemaVersion,
+		ResponseFormat: telemetry.responseFormat, MaxOutputTokens: telemetry.maxOutputTokens,
 	}
 }
 
