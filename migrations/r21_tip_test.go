@@ -24,7 +24,7 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const wantCount = 61
+	const wantCount = 62
 	if len(loaded) != wantCount {
 		t.Fatalf("migration count=%d want %d", len(loaded), wantCount)
 	}
@@ -84,6 +84,11 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		// the exact gap this finding is about, reproduced in the migration
 		// history itself.
 		61: "seed_xai_wallet",
+		// ORGANIZATION-GRAND-AUDIT-001 G1-003 remediation: the one narrow,
+		// documented exception to Gate F's metadata-only persistence -- a
+		// bounded raw-content column for the specific case where OUR OWN
+		// normalization failed on an otherwise-successful provider response.
+		62: "add_normalization_failure_raw_content",
 	}
 	byVersion := make(map[int64]string, len(loaded))
 	for _, migration := range loaded {
