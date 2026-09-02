@@ -331,13 +331,17 @@ services:
     security_opt:
       - no-new-privileges:true
     healthcheck:
-      # ORG-AUDIT-008: process-liveness only (catches a crashed/exited
-      # process; restart:unless-stopped already recovers from that, but
-      # this makes it visible in `docker compose ps`/`--wait` instead of
-      # silent). Does NOT prove the dispatcher is making progress -- a
-      # real readiness signal needs the worker to expose one, which it
-      # does not today.
-      test: ["CMD-SHELL", "pgrep -f 'orgctl model worker run' > /dev/null"]
+      # Real readiness, not process-liveness-only: model-worker now runs
+      # the same internal/platform/httpserver orgd does (cmd/orgctl/
+      # worker.go), so this is the identical CMD form orgd's own
+      # healthcheck already uses -- not a CMD-SHELL/pgrep check, which
+      # could never run at all in this distroless, shell-less image
+      # (found live: model-worker reported unhealthy the entire time
+      # despite dispatching real, successful model calls -- Wave 5
+      # finding, ORGANIZATION-GRAND-AUDIT-001). --ready pings the real
+      # database dependency, so this proves more than the pgrep check
+      # it replaces, not merely a portable version of it.
+      test: ["CMD", "/usr/local/bin/orgctl", "health", "--ready", "--url", "http://127.0.0.1:8080"]
       interval: 15s
       timeout: 3s
       retries: 5
