@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/organization/canonicalsync"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	"github.com/Mireuz13/explorarte-organization/internal/platform/buildinfo"
+	"github.com/Mireuz13/explorarte-organization/internal/platform/logging"
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
 	"github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
@@ -56,6 +58,18 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
+	// G2-003: cmd/orgd's main() calls slog.SetDefault with the
+	// ORG_LOG_FORMAT/ORG_LOG_LEVEL-configured logger; orgctl never did,
+	// so any internal package that logs via slog.Default() (e.g.
+	// internal/memory/semantic.go) printed plain text through every
+	// orgctl invocation regardless of ORG_LOG_FORMAT=json -- and orgctl,
+	// not orgd, is what actually drives real dispatch (executive submit/
+	// resume). Best-effort: a lightweight command like "version" that
+	// cannot or need not load full config still runs with the stdlib
+	// default logger, exactly as before this fix.
+	if cfg, err := config.Load(); err == nil {
+		slog.SetDefault(logging.New(stderr, cfg.Logging.Level, cfg.Logging.Format))
+	}
 	if len(args) == 0 {
 		printUsage(stderr)
 		return exitUsage
