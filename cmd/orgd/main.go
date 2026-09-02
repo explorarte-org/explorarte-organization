@@ -10,7 +10,6 @@ import (
 
 	"github.com/Mireuz13/explorarte-organization/internal/app"
 	"github.com/Mireuz13/explorarte-organization/internal/config"
-	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
 	"github.com/Mireuz13/explorarte-organization/internal/platform/buildinfo"
 	"github.com/Mireuz13/explorarte-organization/internal/platform/logging"
 )
@@ -22,9 +21,6 @@ var (
 )
 
 func main() {
-	// R9.1 fix 4: see cmd/orgctl/main.go -- same BuildSHA wiring, in case
-	// any dispatch path ever runs under this binary too.
-	modelruntime.BuildSHA = commit
 	os.Exit(run())
 }
 
