@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
+	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/circuitbreaker"
 )
 
 const testToken = "xai-test-token-value-not-a-real-credential"
@@ -52,7 +53,7 @@ func newTestAdapter(t *testing.T, handler http.HandlerFunc) (*Adapter, *httptest
 			Transport: modelruntime.TransportHTTP, RequestSchemaVersion: RequestSchemaVersion,
 			ResponseSchemaVersion: ResponseSchemaVersion,
 		},
-		breaker: newCircuitBreaker(config.FailureThreshold, config.OpenDuration),
+		breaker: circuitbreaker.New(config.FailureThreshold, config.OpenDuration),
 		now:     time.Now,
 	}
 	return adapter, server

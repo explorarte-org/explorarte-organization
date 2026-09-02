@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
+	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/circuitbreaker"
 	"github.com/Mireuz13/explorarte-organization/internal/secrets"
 )
 
@@ -21,7 +22,7 @@ type Adapter struct {
 	config     Config
 	client     *http.Client
 	descriptor modelruntime.AdapterDescriptor
-	breaker    *circuitBreaker
+	breaker    *circuitbreaker.Breaker
 	now        func() time.Time
 }
 
@@ -236,7 +237,7 @@ func newAdapter(config Config, client *http.Client, now func() time.Time) (*Adap
 		return nil, err
 	}
 	config.EndpointURL = endpoint.String()
-	return &Adapter{config: config, client: client, descriptor: descriptor, breaker: newCircuitBreaker(config.FailureThreshold, config.OpenDuration), now: now}, nil
+	return &Adapter{config: config, client: client, descriptor: descriptor, breaker: circuitbreaker.New(config.FailureThreshold, config.OpenDuration), now: now}, nil
 }
 
 func (*Adapter) ProviderID() string                           { return ProviderID }
@@ -252,7 +253,7 @@ func (a *Adapter) Preflight(ctx context.Context, request modelruntime.ProviderPr
 	if !request.Deadline.After(a.now()) {
 		return context.DeadlineExceeded
 	}
-	if !a.breaker.allow(a.now()) {
+	if !a.breaker.Allow(a.now()) {
 		return &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureBeforeRequest, Outcome: a.notSentOutcome("circuit_breaker", "circuit_open", failureTelemetry{}), Cause: modelruntime.ErrProviderUnavailable}
 	}
 	token, err := secrets.LoadBearerToken(a.config.CredentialFile)
@@ -297,7 +298,7 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 		// circuit. Timeouts and transport failures remain ambiguous because the
 		// client cannot prove whether the upstream accepted the request.
 		if !errors.Is(err, context.Canceled) {
-			a.breaker.failure(a.now())
+			a.breaker.Failure(a.now())
 		}
 		telemetry := baseTelemetry.withDuration(a.now().Sub(sendStart))
 		outcome := modelruntime.ProviderOutcome{
@@ -322,19 +323,19 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 		// ended a campaign for a transient failure.
 		if modelruntime.IsIncompleteRead(readErr) {
 			if !modelruntime.IsCallerCancellation(readErr) {
-				a.breaker.failure(a.now())
+				a.breaker.Failure(a.now())
 			}
 			outcome := modelruntime.IncompleteReadOutcome(response.StatusCode, providerRequestID, responseHash, ResponseSchemaVersion)
 			return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureAmbiguous, Outcome: outcome, Cause: readErr}
 		}
-		a.breaker.failure(a.now())
+		a.breaker.Failure(a.now())
 		outcome := responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", "response_read_failed", response.StatusCode >= 500, telemetry)
 		return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureResponseReceived, Outcome: outcome, Cause: readErr}
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		retryable := retryableStatus(response.StatusCode)
 		if retryable {
-			a.breaker.failure(a.now())
+			a.breaker.Failure(a.now())
 		}
 		class, code := parseProviderError(responseBody)
 		outcome := responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, class, code, retryable, telemetry)
@@ -342,7 +343,7 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 	}
 	var decoded chatResponse
 	if err = json.Unmarshal(responseBody, &decoded); err != nil {
-		a.breaker.failure(a.now())
+		a.breaker.Failure(a.now())
 		outcome := responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", "response_json_invalid", false, telemetry.withJSONDecodeFailure(err, responseBody))
 		// No usage object was ever decoded here -- json.Unmarshal itself
 		// failed, so there is nothing recoverable to attach.
@@ -396,7 +397,7 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 		outcome := responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", "response_truncated_empty", false, telemetry)
 		return usageOnlyResponse, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureResponseReceived, Outcome: outcome, Cause: modelruntime.ErrResponseRejected}
 	}
-	a.breaker.success()
+	a.breaker.Success()
 	outcome := modelruntime.ProviderOutcome{
 		OutcomeClassification: modelruntime.ProviderOutcomeResponseReceived,
 		ProviderRequestID:     providerRequestID, HTTPStatus: response.StatusCode,
