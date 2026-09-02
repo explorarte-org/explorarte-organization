@@ -10,11 +10,14 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/cellworker"
 	cellworkerpostgres "github.com/Mireuz13/explorarte-organization/internal/cellworker/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/config"
 	modelbootstrap "github.com/Mireuz13/explorarte-organization/internal/modelruntime/bootstrap"
+	"github.com/Mireuz13/explorarte-organization/internal/platform/buildinfo"
+	"github.com/Mireuz13/explorarte-organization/internal/platform/httpserver"
 	"github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
 )
 
@@ -61,10 +64,48 @@ func runModelWorker(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
+	// A real health/readiness endpoint, not a pgrep-based Docker healthcheck:
+	// this process runs in the same distroless, shell-less image as orgd, so
+	// a CMD-SHELL pgrep check (what this compose service originally shipped
+	// with) can never execute at all -- found live, model-worker reported
+	// unhealthy the entire time despite dispatching real, successful model
+	// calls (Wave 5 finding, ORGANIZATION-GRAND-AUDIT-001). Reuses the same
+	// internal/platform/httpserver orgd already runs, bound to the same
+	// ORG_HTTP_ADDR default -- distinct containers, no port collision -- so
+	// the Docker healthcheck can be `orgctl health --ready`, the exact form
+	// already proven for orgd, instead of a shell command that can't run
+	// here. Readiness reflects real dependency health (a DB ping), not mere
+	// process existence -- a strictly stronger signal than the pgrep check
+	// it replaces, not just a portable version of it.
+	healthServer := httpserver.New(cfg.HTTP, nil, buildinfo.Info{Version: version, Commit: commit, BuildTime: buildTime}, func(readyCtx context.Context) error {
+		pingCtx, cancel := context.WithTimeout(readyCtx, cfg.Database.PingTimeout)
+		defer cancel()
+		return dbStore.Ping(pingCtx)
+	})
+	healthErrs, err := healthServer.Start()
+	if err != nil {
+		fmt.Fprintf(stderr, "start health endpoint: %v\n", err)
+		return exitInternal
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	fmt.Fprintf(stdout, "model worker starting: principal=%s batch=%d concurrency=%d\n", workerCfg.PrincipalKey, workerCfg.BatchSize, workerCfg.Concurrency)
 	runErr := worker.Run(ctx)
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	if shutdownErr := healthServer.Shutdown(shutdownCtx); shutdownErr != nil {
+		fmt.Fprintf(stderr, "shut down health endpoint: %v\n", shutdownErr)
+	}
+	select {
+	case healthErr := <-healthErrs:
+		if healthErr != nil {
+			fmt.Fprintf(stderr, "health endpoint stopped with error: %v\n", healthErr)
+		}
+	default:
+	}
+
 	if runErr != nil && !errors.Is(runErr, context.Canceled) {
 		fmt.Fprintf(stderr, "model worker stopped with error: %v\n", runErr)
 		return exitInternal
