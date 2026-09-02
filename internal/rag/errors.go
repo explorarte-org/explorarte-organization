@@ -19,4 +19,10 @@ var (
 	ErrInvalidGeneration   = errors.New("invalid knowledge index generation")
 	ErrSourceDrift         = errors.New("knowledge source drift")
 	ErrIdempotencyConflict = errors.New("knowledge idempotency conflict")
+	// ErrSelfReview means the reviewing role is the same role that proposed
+	// this version (ActorRoleID == ProposedBy). Independent of, and additive
+	// to, capability-matrix.yaml restricting rag.publish_approved to
+	// owner-only (G4-001): a future canonical grant change must not
+	// silently reintroduce self-review with zero code change.
+	ErrSelfReview          = errors.New("knowledge review rejected: reviewer proposed this version")
 )

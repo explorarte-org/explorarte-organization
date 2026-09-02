@@ -95,6 +95,12 @@ func (m *Manager) Review(ctx context.Context, request ReviewRequest) (KnowledgeV
 	if err != nil {
 		return KnowledgeVersion{}, err
 	}
+	// Independent of capability-matrix.yaml (G4-001): even a role holding
+	// rag.publish_approved must never be the same role that proposed this
+	// version.
+	if strings.TrimSpace(request.Mutation.ActorRoleID) == strings.TrimSpace(current.ProposedBy) {
+		return KnowledgeVersion{}, fmt.Errorf("%w: role %q", ErrSelfReview, request.Mutation.ActorRoleID)
+	}
 	updated, err := m.domain.Review(current, request.Outcome, request.Mutation.ActorRoleID)
 	if err != nil {
 		return KnowledgeVersion{}, err

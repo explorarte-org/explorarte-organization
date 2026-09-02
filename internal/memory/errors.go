@@ -14,4 +14,11 @@ var (
 	ErrRevisionConflict   = errors.New("memory revision conflict")
 	ErrDuplicateCandidate = errors.New("duplicate memory candidate")
 	ErrConflict           = errors.New("memory conflict")
+	// ErrSelfReview means the reviewing role is the same role that proposed
+	// the entry (Review.ReviewerID == Entry.ProposedBy). This is an
+	// independent guard, additive to -- never a replacement for --
+	// capability-matrix.yaml restricting memory.approve to owner-only
+	// (G4-001): a future canonical grant change must not silently
+	// reintroduce self-review with zero code change.
+	ErrSelfReview         = errors.New("memory review rejected: reviewer proposed this entry")
 )

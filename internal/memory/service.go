@@ -107,6 +107,11 @@ func (s *Service) Review(entry Entry, review Review) (Entry, error) {
 	if err := review.Validate(); err != nil {
 		return Entry{}, err
 	}
+	// Independent of capability-matrix.yaml (G4-001): even a role holding
+	// memory.approve must never be the same role that proposed this entry.
+	if strings.TrimSpace(review.ReviewerID) == strings.TrimSpace(entry.ProposedBy) {
+		return Entry{}, fmt.Errorf("%w: role %q", ErrSelfReview, review.ReviewerID)
+	}
 	var to Status
 	switch review.Outcome {
 	case ReviewApprove:

@@ -136,6 +136,32 @@ func TestAdmissionMustPrecedeCandidate(t *testing.T) {
 	}
 }
 
+// TestReviewRejectsSelfReview (G4-001): the same role that proposed an
+// entry must never be able to review it, independent of whatever
+// capability-matrix.yaml currently grants -- this guard cannot be
+// bypassed by a future canonical grant change.
+func TestReviewRejectsSelfReview(t *testing.T) {
+	now := time.Date(2026, 8, 7, 4, 0, 0, 0, time.UTC)
+	clock := &fixedClock{now: now}
+	service := NewService(clock)
+	entry, err := service.Propose(validCommand(now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.ProposedBy != "ingenieria_ia/orquestador" {
+		t.Fatalf("fixture proposer=%q, test assumes ingenieria_ia/orquestador", entry.ProposedBy)
+	}
+	_, err = service.Review(entry, Review{Outcome: ReviewApprove, ReviewerID: entry.ProposedBy})
+	if !errors.Is(err, ErrSelfReview) {
+		t.Fatalf("expected ErrSelfReview, got %v", err)
+	}
+	// A different reviewer role still succeeds -- the guard is specific to
+	// self-review, not a blanket rejection.
+	if _, err = service.Review(entry, Review{Outcome: ReviewApprove, ReviewerID: "empresa/human"}); err != nil {
+		t.Fatalf("distinct reviewer role must still be allowed: %v", err)
+	}
+}
+
 func TestApprovedEntryRequiresReviewer(t *testing.T) {
 	now := time.Date(2026, 8, 7, 4, 0, 0, 0, time.UTC)
 	service := NewService(&fixedClock{now: now})
