@@ -13,7 +13,7 @@ func TestLoadCanonicalRoutingAndPlan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if routing.Hash == "" || len(routing.Policies) != 8 {
+	if routing.Hash == "" || len(routing.Policies) != 7 {
 		t.Fatalf("unexpected routing: %#v", routing)
 	}
 	roles := []RoleRef{{ID: "empresa/ceo", ModelPolicy: "executive.ceo", Enabled: true, Executable: true}, {ID: "ingenieria_ia/orquestador", ModelPolicy: "department.leader", Enabled: true, Executable: true}, {ID: "ingenieria_ia/qa", ModelPolicy: "department.worker", Enabled: true, Executable: true}}
@@ -21,7 +21,7 @@ func TestLoadCanonicalRoutingAndPlan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Bindings) != 3 || len(plan.Versions) != 8 {
+	if len(plan.Bindings) != 3 || len(plan.Versions) != 7 {
 		t.Fatalf("unexpected plan sizes: %#v", plan)
 	}
 	for _, version := range plan.Versions {

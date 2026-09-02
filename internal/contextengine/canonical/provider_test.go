@@ -63,6 +63,23 @@ func TestImportedSkillsAreNotActive(t *testing.T) {
 	}
 }
 
+// flipFirstByte returns hash with its first character changed to
+// something OTHER than what it already is, so the corruption this test
+// relies on can never accidentally no-op just because a real hash happens
+// to start with the digit this test used to hardcode ('0') -- exactly what
+// happened the first time a canonical file edit produced a BundleHash
+// starting with '0'.
+func flipFirstByte(hash string) string {
+	if len(hash) == 0 {
+		return hash
+	}
+	replacement := byte('0')
+	if hash[0] == '0' {
+		replacement = '1'
+	}
+	return string(replacement) + hash[1:]
+}
+
 func TestCanonicalValidateReportsDrift(t *testing.T) {
 	provider, err := New(filepath.Join("..", "..", "..", "docs", "canonical"), 1<<20)
 	if err != nil {
@@ -72,10 +89,10 @@ func TestCanonicalValidateReportsDrift(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = provider.Validate(t.Context(), "0"+bundle.PrecedenceHash[1:], bundle.BundleHash); contextengine.ReasonOf(err) != contextengine.ReasonPrecedenceHashMismatch {
+	if err = provider.Validate(t.Context(), flipFirstByte(bundle.PrecedenceHash), bundle.BundleHash); contextengine.ReasonOf(err) != contextengine.ReasonPrecedenceHashMismatch {
 		t.Fatalf("error=%v", err)
 	}
-	if err = provider.Validate(t.Context(), bundle.PrecedenceHash, "0"+bundle.BundleHash[1:]); contextengine.ReasonOf(err) != contextengine.ReasonCanonicalBundleDrift {
+	if err = provider.Validate(t.Context(), bundle.PrecedenceHash, flipFirstByte(bundle.BundleHash)); contextengine.ReasonOf(err) != contextengine.ReasonCanonicalBundleDrift {
 		t.Fatalf("error=%v", err)
 	}
 	if errors.Is(err, contextengine.ErrDatabaseUnavailable) {

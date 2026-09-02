@@ -494,9 +494,6 @@ func compiledAdapterAvailability(policy routingPolicy) (AdapterStatus, bool) {
 		return AdapterAvailable, true
 	case policy.Transport == TransportHTTP && policy.Provider == "deepseek":
 		return AdapterAvailable, true
-	case policy.Transport == TransportHTTP && policy.Provider == "mimo":
-		// R10.2 challenger canary -- internal/modelruntime/adapter/mimo.
-		return AdapterAvailable, true
 	case policy.Transport == TransportHTTP && policy.Provider == "gemini":
 		return AdapterAvailable, true
 	case policy.Transport == TransportHTTP && policy.Provider == "openai_responses":

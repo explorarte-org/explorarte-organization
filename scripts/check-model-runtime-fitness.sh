@@ -33,7 +33,7 @@ fi
 if find internal/modelruntime/adapter -maxdepth 1 -type f -name '*.go' ! -name '*_test.go' ! -name 'fake.go' ! -name 'fake_test.go' ! -name 'registry.go' -print | grep -q .; then
   fail "unexpected top-level provider adapter implementation found"
 fi
-if find internal/modelruntime/adapter -mindepth 1 -maxdepth 1 -type d ! -name openaicompat ! -name alibabaclaude ! -name deepseek ! -name gemini ! -name mimo ! -name xai ! -name openairesponses -print | grep -q .; then
+if find internal/modelruntime/adapter -mindepth 1 -maxdepth 1 -type d ! -name openaicompat ! -name alibabaclaude ! -name deepseek ! -name gemini ! -name xai ! -name openairesponses -print | grep -q .; then
   fail "unexpected real provider adapter directory found"
 fi
 

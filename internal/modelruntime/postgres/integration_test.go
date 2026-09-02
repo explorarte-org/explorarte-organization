@@ -162,7 +162,7 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		for _, policy := range routingForCount.Policies {
 			perProvider[policy.Provider]++
 		}
-		for _, provider := range []string{"openai_compatible", "deepseek", "gemini", "mimo", "openai_responses"} {
+		for _, provider := range []string{"openai_compatible", "deepseek", "gemini", "openai_responses"} {
 			assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_profile_versions WHERE organization_revision_id=$1 AND provider_id='`+provider+`' AND transport='http_adapter' AND dispatch_enabled AND adapter_status='available'`, revision.ID, perProvider[provider])
 		}
 		// The CEO profile must resolve to whichever provider the canonical

@@ -253,17 +253,6 @@ services:
       # regardless of cluster size or max_output_tokens. Infra/timeout
       # fix only, does not touch prompt/schema/rubric/threshold.
       ORG_MODEL_RUNTIME_COMMAND_TIMEOUT: 10m
-      # MiMo-V2.5 (Xiaomi Token Plan) -- R10.2 challenger canary. Confirmed
-      # live: base https://token-plan-sgp.xiaomimimo.com/v1, POST
-      # /chat/completions, api-key header (not Authorization: Bearer).
-      # billing_mode=subscription (Token Plan), never modeled as a PAYG
-      # PriceTier -- see internal/modelruntime/costgate.go's
-      # subscriptionProviders and migrations/000039. Disabled by default
-      # in production; enabled only for this explicit canary run.
-      ORG_MODEL_PROVIDER_MIMO_ENABLED: "true"
-      ORG_MODEL_PROVIDER_MIMO_ENDPOINT_URL: https://token-plan-sgp.xiaomimimo.com/v1/chat/completions
-      ORG_MODEL_PROVIDER_MIMO_CREDENTIAL_FILE: /run/secrets/mimo-api-key
-      ORG_MODEL_PROVIDER_MIMO_REQUEST_TIMEOUT: 10m
       # OpenAI-compatible: credential mounted and ready, but left disabled.
       # The current adapter (internal/modelruntime/adapter/openaicompat)
       # only speaks Chat Completions (AdapterID=openai_chat_completions,
@@ -301,7 +290,6 @@ services:
     volumes:
       - /etc/explorarte/secrets/model-execution-identity.pem:/run/secrets/model-execution-identity.pem:ro
       - /etc/explorarte/secrets/deepseek-api-key:/run/secrets/deepseek-api-key:ro
-      - /etc/explorarte/secrets/mimo-api-key:/run/secrets/mimo-api-key:ro
       - /etc/explorarte/secrets/openai-compatible-api-key:/run/secrets/openai-compatible-api-key:ro
       - /etc/explorarte/secrets/oci-object-storage-api-key.pem:/run/secrets/oci-object-storage-api-key.pem:ro
     read_only: true
