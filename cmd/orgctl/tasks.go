@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/config"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
@@ -160,6 +161,32 @@ func runOutbox(args []string, stdout, stderr io.Writer) int {
 			return taskError(stderr, err)
 		}
 		writeValue(stdout, jsonOutput, stats)
+		return exitOK
+	case "prune":
+		// G5-001: defaults are the safe side of every choice -- dry-run
+		// unless --apply is explicit, published/dead only unless
+		// --include-pending is explicit, 90-day floor. See
+		// tasks.OutboxPruneRequest's own doc comment for why.
+		flags := flag.NewFlagSet("outbox prune", flag.ContinueOnError)
+		flags.SetOutput(stderr)
+		olderThan := flags.Duration("older-than", 90*24*time.Hour, "minimum age of a row to be eligible")
+		includePublished := flags.Bool("include-published", true, "eligible: delivered rows")
+		includeDead := flags.Bool("include-dead", true, "eligible: attempts-exhausted rows")
+		includePending := flags.Bool("include-pending", false, "eligible: never-consumed rows -- requires --older-than >= 720h, see Service.PruneOutbox")
+		apply := flags.Bool("apply", false, "perform the deletion; omit for a dry-run count only")
+		limit := flags.Int("limit", 1000, "maximum rows to affect in one call")
+		jsonOutput := flags.Bool("json", false, "emit JSON")
+		if parseInterspersed(flags, args[1:]) != nil || flags.NArg() != 0 {
+			return exitUsage
+		}
+		result, err := service.PruneOutbox(ctx, tasks.OutboxPruneRequest{
+			OlderThan: *olderThan, IncludePublished: *includePublished, IncludeDead: *includeDead,
+			IncludePending: *includePending, DryRun: !*apply, Limit: *limit,
+		})
+		if err != nil {
+			return taskError(stderr, err)
+		}
+		writeValue(stdout, *jsonOutput, result)
 		return exitOK
 	default:
 		fmt.Fprintf(stderr, "unknown outbox command %q\n", args[0])

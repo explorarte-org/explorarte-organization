@@ -52,6 +52,7 @@ type OutboxStore interface {
 	NackOutbox(context.Context, OutboxDisposition) error
 	RecoverOutbox(context.Context, int) (int, error)
 	OutboxStats(context.Context) (OutboxStats, error)
+	PruneOutbox(context.Context, OutboxPruneRequest) (OutboxPruneResult, error)
 }
 
 type Persistence interface {

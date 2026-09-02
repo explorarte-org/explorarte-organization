@@ -236,6 +236,50 @@ const (
 	OutboxDead      OutboxStatus = "dead"
 )
 
+// OutboxPruneRequest bounds a retention sweep over outbox_events
+// (G5-001). No investigation found evidence this repository ever designed
+// a specific downstream consumer for the outbox -- ten branch integration
+// docs describe the transactional write side in detail and none mention a
+// consumer, webhook, or integration target; it is a general-purpose
+// transactional-outbox pattern built for future extensibility, not an
+// unfinished feature. That does not make unbounded growth safe, so this
+// exists -- but it defaults to the position the finding's own
+// DO_NOT_FIX_WITH states explicitly: never delete pending rows (the only
+// durable record of domain events for whatever consumer might someday
+// exist) without deliberate, explicit operator confirmation. claimed rows
+// are never eligible regardless of flags -- an in-flight claim is swept by
+// RecoverOutbox on expiry, never by this.
+type OutboxPruneRequest struct {
+	// OlderThan is a hard floor, not a suggestion: rows newer than this are
+	// never eligible no matter what else is set.
+	OlderThan time.Duration
+	// IncludePublished/IncludeDead opt into the terminal, already-delivered-
+	// or-abandoned statuses. Both default false at the CLI layer; a caller
+	// must ask for at least one non-pending status or pass IncludePending.
+	IncludePublished bool
+	IncludeDead      bool
+	// IncludePending is a second, separate opt-in from IncludeDead/
+	// IncludePublished on purpose: deleting rows nothing has ever consumed
+	// is a materially different, more destructive decision than pruning
+	// rows a consumer already finished with, and must never be reachable
+	// by the same flag that prunes terminal rows.
+	IncludePending bool
+	// DryRun defaults true at the CLI layer; this field exists so the
+	// service/store layer never has an implicit unsafe default of its own.
+	DryRun bool
+	Limit  int
+}
+
+// OutboxPruneResult reports what matched and, only on a real (non-dry-run)
+// sweep, what was actually deleted -- kept separate so a dry-run's count is
+// never mistaken for a completed deletion.
+type OutboxPruneResult struct {
+	DryRun   bool             `json:"dry_run"`
+	Matched  int64            `json:"matched"`
+	Deleted  int64            `json:"deleted"`
+	ByStatus map[string]int64 `json:"by_status,omitempty"`
+}
+
 type OutboxEvent struct {
 	ID             int64          `json:"id"`
 	AggregateType  string         `json:"aggregate_type"`

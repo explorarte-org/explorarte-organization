@@ -144,6 +144,10 @@ func (p *boundaryPersistence) OutboxStats(context.Context) (tasks.OutboxStats, e
 	return tasks.OutboxStats{}, p.refuse()
 }
 
+func (p *boundaryPersistence) PruneOutbox(context.Context, tasks.OutboxPruneRequest) (tasks.OutboxPruneResult, error) {
+	return tasks.OutboxPruneResult{}, p.refuse()
+}
+
 // RecordEvidence is the one live method: reaching it means ValidateEvidence
 // already accepted the command.
 func (p *boundaryPersistence) RecordEvidence(_ context.Context, command tasks.RecordEvidenceCommand, _ int) (tasks.Evidence, error) {

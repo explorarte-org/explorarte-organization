@@ -571,6 +571,32 @@ func (s *Service) OutboxStats(ctx context.Context) (OutboxStats, error) {
 	return s.persistence.OutboxStats(ctx)
 }
 
+// PruneOutbox validates a retention sweep before it ever reaches SQL
+// (G5-001). The floor durations below are deliberately generous and
+// deliberately not configurable to anything shorter: this command deletes
+// durable domain-event records, and a fat-fingered short duration must not
+// be able to prune rows an operator would call "recent".
+func (s *Service) PruneOutbox(ctx context.Context, request OutboxPruneRequest) (OutboxPruneResult, error) {
+	const minOlderThan = 24 * time.Hour
+	const minOlderThanForPending = 30 * 24 * time.Hour
+	if request.OlderThan < minOlderThan {
+		return OutboxPruneResult{}, fmt.Errorf("%w: older-than must be at least 24h", ErrInvalidInput)
+	}
+	if request.IncludePending && request.OlderThan < minOlderThanForPending {
+		return OutboxPruneResult{}, fmt.Errorf("%w: pruning pending rows requires older-than of at least 30 days", ErrInvalidInput)
+	}
+	if !request.IncludePublished && !request.IncludeDead && !request.IncludePending {
+		return OutboxPruneResult{}, fmt.Errorf("%w: at least one of published, dead, or pending must be selected", ErrInvalidInput)
+	}
+	if request.Limit <= 0 {
+		request.Limit = 1000
+	}
+	if request.Limit > 10000 {
+		return OutboxPruneResult{}, fmt.Errorf("%w: prune limit is too large for one call", ErrInvalidInput)
+	}
+	return s.persistence.PruneOutbox(ctx, request)
+}
+
 func (s *Service) validateLeaseCommand(command LeaseCommand, heartbeat bool) error {
 	if command.TaskID <= 0 || command.AttemptID <= 0 {
 		return fmt.Errorf("%w: task and attempt IDs must be positive", ErrInvalidInput)

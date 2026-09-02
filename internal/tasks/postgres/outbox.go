@@ -178,6 +178,86 @@ func (s *Store) OutboxStats(ctx context.Context) (tasks.OutboxStats, error) {
 	return stats, mapError(err)
 }
 
+
+// PruneOutbox deletes durable outbox_events rows matching the caller's
+// already-validated request (Service.PruneOutbox enforces the minimum
+// age/explicit-status floors; this layer trusts them but still never
+// touches a 'claimed' row under any request shape -- an in-flight claim
+// is RecoverOutbox's job, never a deletion target here).
+func (s *Store) PruneOutbox(ctx context.Context, request tasks.OutboxPruneRequest) (tasks.OutboxPruneResult, error) {
+	statuses := make([]string, 0, 3)
+	if request.IncludePublished {
+		statuses = append(statuses, string(tasks.OutboxPublished))
+	}
+	if request.IncludeDead {
+		statuses = append(statuses, string(tasks.OutboxDead))
+	}
+	if request.IncludePending {
+		statuses = append(statuses, string(tasks.OutboxPending))
+	}
+	if len(statuses) == 0 {
+		return tasks.OutboxPruneResult{DryRun: request.DryRun}, nil
+	}
+	cutoff := time.Now().UTC().Add(-request.OlderThan)
+
+	if request.DryRun {
+		rows, err := s.pool.Query(ctx, `
+			SELECT status, COUNT(*) FROM outbox_events
+			WHERE status = ANY($1) AND created_at <= $2
+			GROUP BY status
+		`, statuses, cutoff)
+		if err != nil {
+			return tasks.OutboxPruneResult{}, mapError(err)
+		}
+		defer rows.Close()
+		byStatus := make(map[string]int64, len(statuses))
+		var total int64
+		for rows.Next() {
+			var status string
+			var count int64
+			if err := rows.Scan(&status, &count); err != nil {
+				return tasks.OutboxPruneResult{}, mapError(err)
+			}
+			byStatus[status] = count
+			total += count
+		}
+		if err := rows.Err(); err != nil {
+			return tasks.OutboxPruneResult{}, mapError(err)
+		}
+		return tasks.OutboxPruneResult{DryRun: true, Matched: total, ByStatus: byStatus}, nil
+	}
+
+	return withTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) (tasks.OutboxPruneResult, error) {
+		rows, err := tx.Query(ctx, `
+			DELETE FROM outbox_events
+			WHERE id IN (
+				SELECT id FROM outbox_events
+				WHERE status = ANY($1) AND created_at <= $2
+				ORDER BY created_at, id
+				FOR UPDATE SKIP LOCKED LIMIT $3
+			)
+			RETURNING status
+		`, statuses, cutoff, request.Limit)
+		if err != nil {
+			return tasks.OutboxPruneResult{}, mapError(err)
+		}
+		defer rows.Close()
+		byStatus := make(map[string]int64, len(statuses))
+		var total int64
+		for rows.Next() {
+			var status string
+			if err := rows.Scan(&status); err != nil {
+				return tasks.OutboxPruneResult{}, mapError(err)
+			}
+			byStatus[status]++
+			total++
+		}
+		if err := rows.Err(); err != nil {
+			return tasks.OutboxPruneResult{}, mapError(err)
+		}
+		return tasks.OutboxPruneResult{DryRun: false, Matched: total, Deleted: total, ByStatus: byStatus}, nil
+	})
+}
 func scanOutbox(row scanner) (tasks.OutboxEvent, error) {
 	var value tasks.OutboxEvent
 	var payload []byte
