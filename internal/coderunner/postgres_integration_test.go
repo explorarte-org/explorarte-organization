@@ -194,6 +194,79 @@ func TestCodeRunnerDurableTaskToEvidencePostgreSQL(t *testing.T) {
 	}
 }
 
+// TestCodeRunnerTaskClaimIsRoleScopedPostgreSQL (AUTH-005, CodeRunner stage):
+// proves, against a real database rather than an in-process fake, that a
+// task assigned to ingenieria_ia/code-runner cannot be claimed by a worker
+// asking for a different role -- the same WHERE assigned_role_id=$N clause
+// (internal/tasks/postgres/queue.go) every other role-bound worker in this
+// system already relies on, exercised here for CodeRunner specifically,
+// which until this test only had this property proven with fakes
+// (worker_adversarial_test.go). ORG-AUDIT-010 left AssignedRoleID optional
+// at the Service.ClaimTasks layer (omitting it claims from any role) --
+// irrelevant here, since coderunner.Worker.RunOnce always hardcodes
+// coderunner.RoleID as a Go constant, never task- or caller-supplied; this
+// test's own wrong-role claim attempt supplies a role explicitly, the same
+// shape a real second worker type would use.
+func TestCodeRunnerTaskClaimIsRoleScopedPostgreSQL(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+
+	store := openIntegrationStore(t, ctx)
+	defer store.Close()
+	resetIntegrationSchema(t, ctx, store)
+	syncCanonical(t, ctx, store)
+
+	taskService := openCodeRunnerTaskService(t, store)
+
+	required := true
+	created, inserted, err := taskService.CreateTask(ctx, tasks.CreateRequest{
+		AssignedRoleID: coderunner.RoleID,
+		IdempotencyKey: "coderunner-role-scope-1",
+		Title:          "Role-scoped claim probe",
+		Instructions:   `{"schema_version":"code-runner-execution/v1","operations":[{"type":"GIT_STATUS"}]}`,
+		Requirements: []tasks.RequirementSpec{
+			{Key: "candidate-artifact", Type: tasks.RequirementArtifact, Description: "candidate manifest and patch", Required: &required},
+		},
+	}, "human", "eduardo")
+	if err != nil || !inserted {
+		t.Fatalf("create task: inserted=%v err=%v", inserted, err)
+	}
+
+	// A worker asking for a DIFFERENT role must see nothing: the real SQL
+	// WHERE assigned_role_id=$N clause, not an application-level filter
+	// that a caller could bypass.
+	wrongRoleClaims, err := taskService.ClaimTasks(ctx, tasks.ClaimRequest{
+		WorkerID: "impostor-worker", HolderPrincipalID: "impostor-worker",
+		AssignedRoleID: "ingenieria_ia/orquestador", BatchSize: 10, LeaseDuration: time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("wrong-role claim: %v", err)
+	}
+	for _, claim := range wrongRoleClaims {
+		if claim.Task.ID == created.ID {
+			t.Fatalf("task %d assigned to %s was claimable under role ingenieria_ia/orquestador -- role isolation is broken", created.ID, coderunner.RoleID)
+		}
+	}
+
+	// The correctly role-bound worker must still be able to claim it.
+	correctClaims, err := taskService.ClaimTasks(ctx, tasks.ClaimRequest{
+		WorkerID: "real-code-runner", HolderPrincipalID: "real-code-runner",
+		AssignedRoleID: coderunner.RoleID, BatchSize: 10, LeaseDuration: time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("correct-role claim: %v", err)
+	}
+	found := false
+	for _, claim := range correctClaims {
+		if claim.Task.ID == created.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("task %d was not claimable by its own assigned role %s", created.ID, coderunner.RoleID)
+	}
+}
+
 func initializeCodeRunnerRepository(t *testing.T, root string) string {
 	t.Helper()
 	if err := os.MkdirAll(root, 0o700); err != nil {
