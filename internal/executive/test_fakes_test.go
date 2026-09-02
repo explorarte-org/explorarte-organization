@@ -15,7 +15,7 @@ import (
 // defaultHarnessBody is a valid, schema-shaped answer for the department-plan
 // purpose most unit tests drive. Tests that care about the content set their
 // own.
-var defaultHarnessBody = json.RawMessage(`{"schema_version":"department-plan/v1","department_id":"ingenieria_ia","tasks":[],"review_criteria":[],"unresolved":[]}`)
+var defaultHarnessBody = json.RawMessage(`{"schema_version":"department-plan/v2","department_id":"ingenieria_ia","tasks":[],"review_criteria":[],"unresolved":[]}`)
 
 // fakeHarness stands in for the Execution Harness. It records what it was
 // asked to run, persists the durable invocation a real run would leave behind,

@@ -431,11 +431,11 @@ func (f *integrationModelRuntime) output(purpose string) json.RawMessage {
 		if f.crossDepartment {
 			role = "negocio/estratega_crecimiento"
 		}
-		return json.RawMessage(fmt.Sprintf(`{"schema_version":"department-plan/v1","department_id":"ingenieria_ia","tasks":[{"client_key":"inspect","assigned_role_id":%q,"title":"Inspect state","instructions":"Inspect the bounded task context and report findings.","acceptance_criteria":["return findings"],"dependencies":[],"requirements":[],"priority":5}],"review_criteria":["findings verified"],"unresolved":[]}`, role))
+		return json.RawMessage(fmt.Sprintf(`{"schema_version":"department-plan/v2","department_id":"ingenieria_ia","tasks":[{"client_key":"inspect","assigned_role_id":%q,"title":"Inspect state","instructions":"Inspect the bounded task context and report findings.","acceptance_criteria":["return findings"],"dependencies":[],"requirements":[],"priority":5}],"review_criteria":["findings verified"],"unresolved":[]}`, role))
 	case "department_worker":
 		return json.RawMessage(`{"schema_version":"worker-result/v1","summary":"bounded findings","evidence_refs":["integration:evidence:1"]}`)
 	case "department_review":
-		return json.RawMessage(`{"schema_version":"department-review/v1","verdict":"accept","findings":["criteria satisfied"],"unsatisfied_criteria":[],"evidence_refs":["integration:evidence:1"],"proposed_followup_tasks":[]}`)
+		return json.RawMessage(`{"schema_version":"department-review/v2","verdict":"accept","findings":["criteria satisfied"],"unsatisfied_criteria":[],"evidence_refs":[],"proposed_followup_tasks":[]}`)
 	case "executive_ceo_closure":
 		return json.RawMessage(`{"schema_version":"executive-closure/v1","status":"completed","answer_to_owner":"The requested area was analyzed with verified evidence.","completed_items":["engineering analysis"],"blocked_items":[],"unresolved_decisions":[],"evidence_refs":["integration:evidence:1"]}`)
 	default:
@@ -553,8 +553,8 @@ func TestExecutivePostgreSQL17EndToEndAndRestart(t *testing.T) {
 	if run.State != executive.StateCompleted || run.AnswerToOwner == "" {
 		t.Fatalf("run=%+v", run)
 	}
-	if models.ensureCalls != executive.NormalExpectedCalls(1, 1) {
-		t.Fatalf("model calls=%d want=%d", models.ensureCalls, executive.NormalExpectedCalls(1, 1))
+	if models.ensureCalls != executive.NormalExpectedCalls(1, 1, false) {
+		t.Fatalf("model calls=%d want=%d", models.ensureCalls, executive.NormalExpectedCalls(1, 1, false))
 	}
 	if completionGate.calls != 6 {
 		t.Fatalf("completion verifier calls=%d want=6", completionGate.calls)

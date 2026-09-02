@@ -14,11 +14,27 @@ func (b InvocationBudget) Total() int { return b.CEOCalls + b.LeaderCalls + b.Wo
 // NormalExpectedCalls is the happy path with no retries and no replans: the
 // CEO's phases, two calls per department (plan and review), and the worker
 // attempts the plan asked for.
-func NormalExpectedCalls(departments, attempts int) int {
+//
+// designFreeze must reflect whether THIS scenario is actually governed by
+// a design freeze (plan, adjudicate, close -- ceoPhases) or not (plan,
+// close -- ceoPhases-1). ORG_STAGING_ENABLED=false means the freeze path
+// never runs in production today, so most real campaigns are the
+// two-phase case; ceoPhases itself was fixed at 3 for a DIFFERENT
+// incident (root 294) that DID need adjudication, then applied here
+// unconditionally to every caller -- silently over-counting by one CEO
+// call for every campaign that never adjudicates anything, which is
+// exactly what TestExecutivePostgreSQL17EndToEndAndRestart's scenario
+// ("return a one-area plan without external actions", no design freeze)
+// is.
+func NormalExpectedCalls(departments, attempts int, designFreeze bool) int {
 	if departments < 0 || attempts < 0 {
 		return 0
 	}
-	return ceoPhases + 2*departments + attempts
+	phases := ceoPhases
+	if !designFreeze {
+		phases--
+	}
+	return phases + 2*departments + attempts
 }
 
 // The CEO is asked to do three things in one governed campaign: plan the run,

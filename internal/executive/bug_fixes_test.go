@@ -23,7 +23,7 @@ func TestBugA_DepartmentPlanParser_RejectsFlatTaskClass(t *testing.T) {
 
 	t.Run("flat discovery rejected by parser", func(t *testing.T) {
 		body := []byte(`{
-			"schema_version":"department-plan/v1",
+			"schema_version":"department-plan/v2",
 			"department_id":"ingenieria_ia",
 			"tasks":[{
 				"client_key":"a","assigned_role_id":"ingenieria_ia/backend_engineer",
@@ -41,7 +41,7 @@ func TestBugA_DepartmentPlanParser_RejectsFlatTaskClass(t *testing.T) {
 
 	t.Run("flat design rejected by parser", func(t *testing.T) {
 		body := []byte(`{
-			"schema_version":"department-plan/v1",
+			"schema_version":"department-plan/v2",
 			"department_id":"ingenieria_ia",
 			"tasks":[{
 				"client_key":"a","assigned_role_id":"ingenieria_ia/backend_engineer",
@@ -59,7 +59,7 @@ func TestBugA_DepartmentPlanParser_RejectsFlatTaskClass(t *testing.T) {
 
 	t.Run("flat review rejected by parser", func(t *testing.T) {
 		body := []byte(`{
-			"schema_version":"department-plan/v1",
+			"schema_version":"department-plan/v2",
 			"department_id":"ingenieria_ia",
 			"tasks":[{
 				"client_key":"a","assigned_role_id":"ingenieria_ia/backend_engineer",
@@ -77,7 +77,7 @@ func TestBugA_DepartmentPlanParser_RejectsFlatTaskClass(t *testing.T) {
 
 	t.Run("dotted task_class accepted", func(t *testing.T) {
 		body := []byte(`{
-			"schema_version":"department-plan/v1",
+			"schema_version":"department-plan/v2",
 			"department_id":"ingenieria_ia",
 			"tasks":[{
 				"client_key":"a","assigned_role_id":"ingenieria_ia/backend_engineer",
@@ -99,7 +99,7 @@ func TestBugA_DepartmentPlanParser_RejectsFlatTaskClass(t *testing.T) {
 
 	t.Run("general.work accepted", func(t *testing.T) {
 		body := []byte(`{
-			"schema_version":"department-plan/v1",
+			"schema_version":"department-plan/v2",
 			"department_id":"ingenieria_ia",
 			"tasks":[{
 				"client_key":"a","assigned_role_id":"ingenieria_ia/backend_engineer",
@@ -127,7 +127,7 @@ func TestBugA_DepartmentReviewFollowupUsesSameContract(t *testing.T) {
 
 	t.Run("flat task_class in followup rejected", func(t *testing.T) {
 		body := []byte(`{
-			"schema_version":"department-review/v1",
+			"schema_version":"department-review/v2",
 			"verdict":"needs_replan",
 			"findings":[],
 			"unsatisfied_criteria":[],
@@ -147,7 +147,7 @@ func TestBugA_DepartmentReviewFollowupUsesSameContract(t *testing.T) {
 
 	t.Run("dotted task_class in followup accepted", func(t *testing.T) {
 		body := []byte(`{
-			"schema_version":"department-review/v1",
+			"schema_version":"department-review/v2",
 			"verdict":"needs_replan",
 			"findings":[],
 			"unsatisfied_criteria":[],
@@ -368,7 +368,7 @@ func extractTaskItemSchema(t *testing.T, schema map[string]any, property string)
 // the given task_class value for quick testing.
 func buildDepartmentPlanJSON(taskClass string) []byte {
 	body := fmt.Sprintf(`{
-		"schema_version":"department-plan/v1",
+		"schema_version":"department-plan/v2",
 		"department_id":"ingenieria_ia",
 		"tasks":[{
 			"client_key":"a","assigned_role_id":"ingenieria_ia/backend_engineer",
@@ -411,7 +411,7 @@ func TestBugB_ProviderSucceeds_ContractRejected_AttemptClosed(t *testing.T) {
 	// Set up the harness to return a valid response shape BUT with a flat
 	// task_class value that will be rejected by ParseDepartmentPlan.
 	flatTaskBody := json.RawMessage(`{
-		"schema_version":"department-plan/v1",
+		"schema_version":"department-plan/v2",
 		"department_id":"ingenieria_ia",
 		"tasks":[{
 			"client_key":"a","assigned_role_id":"ingenieria_ia/backend_engineer",
@@ -656,7 +656,7 @@ func TestSentinelA_ProviderSucceeded_ValidateRejected(t *testing.T) {
 
 	// Harness returns valid shape but with flat task_class that fails validation
 	flatTaskBody := json.RawMessage(`{
-		"schema_version":"department-plan/v1",
+		"schema_version":"department-plan/v2",
 		"department_id":"ingenieria_ia",
 		"tasks":[{
 			"client_key":"a","assigned_role_id":"ingenieria_ia/backend_engineer",
@@ -821,14 +821,16 @@ func TestBugA_PreexistingTaskGetsGuidanceAtExecutionTime(t *testing.T) {
 			models := newFakeModels()
 			harness := newFakeHarness(models)
 			if tc.purpose == PurposeDepartmentReview {
-				// defaultHarnessBody is a department-plan/v1 body, reused
+				// defaultHarnessBody is a department-plan/v2 body, reused
 				// across many unrelated tests. This test's own validate is a
 				// no-op (it only inspects ExecutionContract), but
 				// driveTypedTask now also parses a real PurposeDepartmentReview
 				// result to check offered evidence's provenance -- see
 				// evidence_provenance.go -- so the fake body must at least be
-				// a schema-valid, v1 (provenance-exempt) DepartmentReview.
-				harness.body = json.RawMessage(`{"schema_version":"department-review/v1","verdict":"accept","findings":[],"unsatisfied_criteria":[],"evidence_refs":[],"proposed_followup_tasks":[]}`)
+				// a schema-valid department-review/v2 with empty evidence_refs
+				// (VerifyEvidenceProvenance trivially passes on zero refs, so
+				// this stays exempt without needing v1's blanket skip).
+				harness.body = json.RawMessage(`{"schema_version":"department-review/v2","verdict":"accept","findings":[],"unsatisfied_criteria":[],"evidence_refs":[],"proposed_followup_tasks":[]}`)
 			}
 			orchestrator := testOrchestratorWithHarness(t, tasksPort, models, harness, &countingBudget{}, &fakeCompletion{verdict: CompletionPass})
 

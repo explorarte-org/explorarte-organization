@@ -227,7 +227,7 @@ func TestCEOCompletedClaimCannotOverrideReviewEvidence(t *testing.T) {
 	review.Attempts = []AttemptRecord{{ID: 88, Ordinal: 1, State: "finished"}}
 	tasksPort.tasks[review.ID] = review
 	models.invocations[invocationKey(review.ID, 88)] = []InvocationRecord{{ID: 888, TaskID: review.ID, AttemptID: 88, Status: "succeeded"}}
-	models.results[888] = InvocationResult{InvocationID: 888, JSONOutput: json.RawMessage(`{"schema_version":"department-review/v1","verdict":"blocked","findings":["blocked"],"unsatisfied_criteria":["x"],"evidence_refs":[],"proposed_followup_tasks":[]}`)}
+	models.results[888] = InvocationResult{InvocationID: 888, JSONOutput: json.RawMessage(`{"schema_version":"department-review/v2","verdict":"blocked","findings":["blocked"],"unsatisfied_criteria":["x"],"evidence_refs":[],"proposed_followup_tasks":[]}`)}
 	plan := ExecutivePlan{
 		SchemaVersion: ExecutivePlanSchemaVersion, Objective: "x",
 		DepartmentRequests: []DepartmentRequest{{UnitID: "ingenieria_ia", Objective: "x", Deliverable: "x"}},
