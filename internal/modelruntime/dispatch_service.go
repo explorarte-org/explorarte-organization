@@ -734,6 +734,13 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64) (Dis
 			ErrorCode:             "response_normalization_failed",
 			OutcomeClassification: "response_received_rejected",
 			Usage:                 usage,
+			// G3-004: the only place this ever gets set. The adapter already
+			// decoded the envelope fine (we are past adapterErr==nil above),
+			// so rawResponse.Content is the provider's real answer -- our OWN
+			// business JSON parse is what just failed. Bounded to
+			// normalizationFailureRawContentBound so a runaway/truncated
+			// response cannot turn this into unbounded content storage.
+			NormalizationFailureRawContent: boundedPrefix(rawResponse.Content, normalizationFailureRawContentBound),
 		}, s.config.OutboxMaxAttempts)
 		if persistErr != nil {
 			return DispatchResult{}, errors.Join(err, persistErr)
@@ -883,6 +890,22 @@ func (s *DispatchService) settleNonSuccessReservation(ctx context.Context, reser
 // response_json_invalid/HTTP-error-status branches, where no usage object
 // was ever decoded and ProviderReported stays false). Returns nil when
 // nothing recoverable is known.
+// normalizationFailureRawContentBound is the diagnostic ceiling for G3-004:
+// large enough to see the shape of a runaway/repetition/truncation pattern,
+// small enough that this narrow content-storing exception never turns
+// model_provider_outcomes into an unbounded response archive.
+const normalizationFailureRawContentBound = 16 << 10
+
+// boundedPrefix returns at most limit bytes from the start of content. A
+// prefix, not a full capture: the point is showing what kind of content a
+// runaway generation produced, not reproducing it exactly.
+func boundedPrefix(content []byte, limit int) []byte {
+	if len(content) <= limit {
+		return content
+	}
+	return content[:limit]
+}
+
 func recoveredUsage(invocationID, dispatchAttemptID int64, rawResponse RawResponse) *Usage {
 	if !rawResponse.ProviderReported {
 		return nil
