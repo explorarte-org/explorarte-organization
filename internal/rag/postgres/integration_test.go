@@ -997,6 +997,70 @@ func TestApprovedKnowledgeRAGPostgresRepository(t *testing.T) {
 			t.Fatal("expected an unexpected-dimension query vector to be rejected")
 		}
 	})
+
+	// G4-004: reports/database-audit.md found zero namespace_kind=own rows
+	// and every real production row under a single department namespace --
+	// isolation across namespaces was architecturally present but never
+	// empirically observed. This proves it at the deepest layer that could
+	// leak: Store.Query resolves the active generation strictly by
+	// (namespace_kind, namespace_id) before ever touching a chunk row, so a
+	// query scoped to one namespace can only ever see that namespace's own
+	// active generation -- not "filtered results from a mixed set", a
+	// disjoint generation lookup. Both a positive and negative query prove
+	// this: querying the OTHER namespace's own text must still find its
+	// own chunk, ruling out a trivially-broken setup passing by accident.
+	t.Run("Query never surfaces a chunk indexed under a different namespace", func(t *testing.T) {
+		const namespaceA = "ingenieria_ia_isolation_a"
+		const namespaceB = "ingenieria_ia_isolation_b"
+		clock.now = now.Add(90 * time.Second)
+
+		versionA := proposeVersionInNamespace(t, domain, clock, clock.now, "know-isolation-a", namespaceA)
+		versionA.Title = "isolation fixture a"
+		versionA.Body = "quarantine namespace alpha contains this unique passphrase zephyrwatch"
+		versionA = mustReconanonicalize(t, versionA)
+		createdA, _, err := store.CreateCandidate(ctx, rag.CreateCandidateCommand{Version: versionA, IdempotencyKey: "idem-isolation-a"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		clock.now = clock.now.Add(time.Second)
+		approvedA, err := domain.Review(createdA, rag.ReviewApprove, ragIntegrationReviewer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		approvedA, err = store.Save(ctx, rag.SaveCommand{Version: approvedA, ExpectedRevision: 1, ActorID: ragIntegrationReviewer, Reason: "ok"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		chunksA, err := rag.ChunkBody(approvedA.ID, rag.DefaultChunkerID, rag.DefaultChunkerVersion, approvedA.Body)
+		if err != nil || len(chunksA) == 0 {
+			t.Fatalf("chunks=%v err=%v", chunksA, err)
+		}
+		if _, err := store.Reindex(ctx, rag.ReindexCommand{OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceDepartment, NamespaceID: namespaceA, ChunkerID: rag.DefaultChunkerID, ChunkerVersion: rag.DefaultChunkerVersion, Chunks: chunksA}); err != nil {
+			t.Fatal(err)
+		}
+
+		// namespaceB is deliberately left with NO active generation at all --
+		// the realistic shape of the finding's own observation (namespace_kind=
+		// own had zero rows in production), and the strictest possible test of
+		// the isolation boundary: there is nothing namespaceB's own lookup
+		// could accidentally match except namespaceA's generation, if the
+		// filter were broken.
+		crossResults, err := store.Query(ctx, rag.QueryCommand{OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceDepartment, NamespaceID: namespaceB, QueryText: "zephyrwatch", Limit: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(crossResults) != 0 {
+			t.Fatalf("querying namespace B for namespace A's unique text leaked %d result(s): %+v", len(crossResults), crossResults)
+		}
+
+		ownResults, err := store.Query(ctx, rag.QueryCommand{OrganizationID: ragIntegrationOrganization, NamespaceKind: rag.NamespaceDepartment, NamespaceID: namespaceA, QueryText: "zephyrwatch", Limit: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(ownResults) == 0 {
+			t.Fatal("querying namespace A for its own unique text found nothing -- test setup is broken, the zero-result cross-namespace check above proves nothing")
+		}
+	})
 }
 
 // TestQueryResultSurfacesMediaProvenance is the RAG-QUERY-PROVENANCE-001
