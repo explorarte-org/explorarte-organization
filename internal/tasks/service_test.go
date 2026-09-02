@@ -115,6 +115,34 @@ func (f *fakePersistence) OutboxStats(context.Context) (OutboxStats, error) {
 	return OutboxStats{}, nil
 }
 
+func (f *fakePersistence) PruneOutbox(context.Context, OutboxPruneRequest) (OutboxPruneResult, error) {
+	return OutboxPruneResult{}, nil
+}
+
+// TestPruneOutboxValidatesRetentionFloors (G5-001): the floor checks run
+// BEFORE anything reaches persistence -- a fat-fingered short duration or
+// an empty status selection must never reach SQL.
+func TestPruneOutboxValidatesRetentionFloors(t *testing.T) {
+	service, _, _ := serviceFixture(t)
+	ctx := context.Background()
+
+	if _, err := service.PruneOutbox(ctx, OutboxPruneRequest{OlderThan: time.Hour, IncludeDead: true}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput for sub-24h older-than, got %v", err)
+	}
+	if _, err := service.PruneOutbox(ctx, OutboxPruneRequest{OlderThan: 24 * time.Hour, IncludePending: true}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput for pending prune under 30d, got %v", err)
+	}
+	if _, err := service.PruneOutbox(ctx, OutboxPruneRequest{OlderThan: 90 * 24 * time.Hour}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput when no status is selected, got %v", err)
+	}
+	if _, err := service.PruneOutbox(ctx, OutboxPruneRequest{OlderThan: 90 * 24 * time.Hour, IncludeDead: true, Limit: 50000}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput for an oversized limit, got %v", err)
+	}
+	if _, err := service.PruneOutbox(ctx, OutboxPruneRequest{OlderThan: 90 * 24 * time.Hour, IncludeDead: true}); err != nil {
+		t.Fatalf("expected a valid request to pass validation, got %v", err)
+	}
+}
+
 func serviceFixture(t *testing.T) (*Service, *fakePersistence, *fakeCatalog) {
 	t.Helper()
 	persistence := &fakePersistence{created: Task{ID: 1, OrganizationID: "explorarte", OrganizationRevisionID: 7, AssignedRoleID: "ingenieria_ia/qa", AssignedUnitID: "ingenieria_ia", Status: StatusReady}}
