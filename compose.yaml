@@ -360,6 +360,7 @@ services:
     build:
       context: .
       target: coderunner
+    command: ["code-runner", "worker", "run"]
     environment:
       ORG_APP_NAME: ${ORG_APP_NAME:-explorarte-organization}
       ORG_ENVIRONMENT: ${ORG_ENVIRONMENT:-development}
