@@ -418,7 +418,7 @@ func (f *integrationModelRuntime) output(purpose string) json.RawMessage {
 	case "department_plan":
 		role := "ingenieria_ia/qa"
 		if f.crossDepartment {
-			role = "marketing/estratega_crecimiento"
+			role = "negocio/estratega_crecimiento"
 		}
 		return json.RawMessage(fmt.Sprintf(`{"schema_version":"department-plan/v1","department_id":"ingenieria_ia","tasks":[{"client_key":"inspect","assigned_role_id":%q,"title":"Inspect state","instructions":"Inspect the bounded task context and report findings.","acceptance_criteria":["return findings"],"dependencies":[],"requirements":[],"priority":5}],"review_criteria":["findings verified"],"unresolved":[]}`, role))
 	case "department_worker":

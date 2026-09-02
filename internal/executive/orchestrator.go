@@ -375,6 +375,17 @@ func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error
 			// poorer each pass. Landing the missing file is content
 			// authoring, not something this run can do to itself.
 			return ProjectRun(root, nil), ErrRunBlocked
+		case ReasonModelAuthorityViolation:
+			// A model tried to name a forbiddenModelKeys field or delegate
+			// across a department boundary. Unlike most blocked reasons,
+			// a fresh attempt COULD behave correctly next time -- but
+			// silently retrying an attempted authority escalation is
+			// exactly the wrong instinct: it treats a security-relevant
+			// signal as a quality hiccup. This stays blocked for a human
+			// to look at why the model tried this before anything runs
+			// again, same posture as ReasonDepartmentReviewBlocked and
+			// ReasonAdversarialReviewUnavailable above.
+			return ProjectRun(root, nil), ErrRunBlocked
 		case "dispatch_assignment_required":
 			if !o.anyProvisionedLeasedTask(ctx, root.CorrelationID) {
 				return o.Status(ctx, rootTaskID)
@@ -2125,6 +2136,19 @@ func (o *Orchestrator) recordHarnessSuccess(ctx context.Context, task TaskRecord
 		if errors.Is(err, ErrEvidenceSensorUnavailable) {
 			return o.failAttempt(ctx, task, lease, actorID, "evidence_sensor_unavailable", truncate(err.Error(), 2000), ErrCompletionFailed, true)
 		}
+		// A model that names a forbiddenModelKeys field or delegates across
+		// a department boundary is not producing a low-quality result a
+		// retry could improve -- it is attempting to control something only
+		// the host may decide (G1-005's sibling finding: AUTH-001). Folding
+		// this into ErrModelResultContractRejected below would mark it
+		// retryable and let the run spin through fresh attempts against the
+		// same authority violation forever (proven live by
+		// TestExecutivePostgreSQL17RejectsModelOverridesAndCrossDepartmentDelegation
+		// never reaching StateBlocked before this check existed). The
+		// attempt closes non-retryable and the root blocks for human review.
+		if errors.Is(err, ErrForbiddenField) || errors.Is(err, ErrCrossDepartmentDelegation) {
+			return o.failAttempt(ctx, task, lease, actorID, ReasonModelAuthorityViolation, truncate(err.Error(), 2000), ErrModelAuthorityViolation, false)
+		}
 		// Provider succeeded but host-side semantic validation rejected the
 		// result. The invocation stays succeeded (it was executed and charged).
 		// The attempt must NOT stay running — close it durably as a contract
@@ -2465,6 +2489,9 @@ func (o *Orchestrator) handlePhaseError(ctx context.Context, root, task TaskReco
 	}
 	if errors.Is(err, ErrContractRejected) {
 		code = "model_result_contract_rejected"
+	}
+	if errors.Is(err, ErrModelAuthorityViolation) {
+		code = ReasonModelAuthorityViolation
 	}
 	run, blockErr := o.blockRoot(ctx, root, code, err.Error())
 	if blockErr != nil {

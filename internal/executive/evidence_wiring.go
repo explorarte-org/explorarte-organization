@@ -130,6 +130,13 @@ const ReasonEvidenceDeliveryViolation = "evidence_delivery_violation"
 // physical file tree. See ErrContextSourceRejected.
 const ReasonContextSourceMissing = "context_source_missing"
 
+// ReasonModelAuthorityViolation is the root-level Run.ReasonCode for
+// AUTH-001's sibling finding: a model named a forbiddenModelKeys field
+// or delegated across a department boundary. See
+// ErrModelAuthorityViolation. Stays blocked through Resume like every
+// other reason a human, not a fresh attempt, must clear.
+const ReasonModelAuthorityViolation = "model_authority_violation"
+
 // evidenceFailureReason classifies a supply-preflight failure by WHOSE
 // promise broke. Owner-goal obligations were never admitted against capacity,
 // so their failure stays the honest "the world cannot supply this";
