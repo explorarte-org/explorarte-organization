@@ -24,7 +24,17 @@ const (
 	RequestSchemaVersion  = "openai.chat.completions.request.v1"
 	ResponseSchemaVersion = "openai.chat.completions.response.v1"
 
-	defaultRequestTimeout   = 2 * time.Minute
+	// RECON-001 raised openairesponses's default from 2m to 10m and gave
+	// deepseek an explicit 10m override in compose.yaml, but never swept
+	// xai -- found live, first real xai adversarial-review call this
+	// deployment ever completed: model_dispatch_attempts recorded
+	// error_code=response_incomplete, outcome_classification=
+	// ambiguous_transport, finished_at-send_started_at=120.0073s, i.e.
+	// this exact 2m default cutting the call off mid-flight. xai routes
+	// research.adversarial_review with reasoning_effort=high
+	// (docs/canonical/model-routing.yaml), the same class of
+	// long-reasoning call the other two fixes were already made for.
+	defaultRequestTimeout   = 10 * time.Minute
 	defaultFailureThreshold = 5
 	defaultOpenDuration     = 30 * time.Second
 )
