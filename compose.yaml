@@ -357,9 +357,7 @@ services:
     # artifact (application/vnd.git.binary-patch); turning that into a
     # real GitHub PR remains a separate, human-reviewed step, exactly
     # like every other PR this session produced.
-    build:
-      context: .
-      target: coderunner
+    image: explorarte-organization-coderunner:${ORG_VERSION:-dev}
     command: ["code-runner", "worker", "run"]
     environment:
       ORG_APP_NAME: ${ORG_APP_NAME:-explorarte-organization}
