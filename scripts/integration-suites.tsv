@@ -61,6 +61,7 @@ platform-postgres	all	integration	15m	-	compose_run go test -count=1 -tags=integ
 organization-registry	all	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/organization/registry
 tasks-postgres	all,tasks	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/tasks/postgres
 staging-postgres	all,staging	integration	20m	-	compose_run go test -count=1 -tags=integration ./internal/staging/postgres
+coderunner-postgres	all,staging,mission	integration	20m	-	compose_run go test -count=1 -tags=integration ./internal/coderunner
 authorization-postgres	all,authorization	integration	20m	-	compose_run go test -count=1 -tags=integration ./internal/authorization/postgres
 contextengine-postgres	all,context	integration	25m	-	compose_run go test -count=1 -tags=integration ./internal/contextengine/postgres
 memory-postgres	all,memory	integration	20m	-	compose_run go test -count=1 -tags=integration ./internal/memory/postgres
