@@ -82,9 +82,10 @@ func leasedChildTask(t *testing.T, h *integrationHarness, models *integrationMod
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Authority that could not be consulted is the one outcome that leaves the
-	// attempt running and the lease held, with nothing recorded -- exactly the
-	// state a process that died mid-run leaves behind.
+	// stopWithoutVerdict now simulates a cancelled execution (see
+	// integrationModelRuntime.Execute), the harness outcome that leaves the
+	// attempt running and the lease held with nothing recorded -- exactly
+	// the state a process that died mid-run leaves behind.
 	models.stopWithoutVerdict = true
 	if _, err = orchestrator.Resume(h.ctx, run.RootTaskID); err == nil {
 		t.Fatal("expected the run to stop without a verdict")
