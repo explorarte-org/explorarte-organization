@@ -41,7 +41,7 @@ func testSnapshot(actorRoleID string, roleCatalogContent []byte) contextengine.S
 	// every existing fixture built through this helper keeps exercising
 	// the SAME positive-path scenario it always did. A non-research
 	// actorRoleID gets neither, and correctly canonical-falls-back.
-	if actorRoleID == researchWorkerHourlyRoleID || actorRoleID == researchWorkerHourlyMimoCanaryRoleID {
+	if actorRoleID == researchWorkerHourlyRoleID {
 		snap.TaskClass = ResearchCorpusCurateV1TaskClass
 		snap.ActorUnitID = researchUnitID
 	}

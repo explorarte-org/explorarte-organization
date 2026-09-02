@@ -14,7 +14,6 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/modelpricing"
 	modelpricingpostgres "github.com/Mireuz13/explorarte-organization/internal/modelpricing/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
-	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/mimo"
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/testdbguard"
@@ -159,7 +158,10 @@ func TestEveryRoutedNonSubscriptionProviderHasPricingAndAWallet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	subscriptionProviders := map[string]bool{mimo.ProviderID: true}
+	// No subscription-billed provider is currently routed; this stays a
+	// live map (not deleted) so the next one added here is automatically
+	// exempted from the pricing/wallet requirement below, same as mimo was.
+	subscriptionProviders := map[string]bool{}
 
 	type routedModel struct{ provider, model string }
 	seen := map[routedModel]bool{}

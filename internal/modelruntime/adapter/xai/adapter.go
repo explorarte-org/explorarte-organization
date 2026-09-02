@@ -3,7 +3,7 @@
 // It exists as its own package rather than a second instance of openaicompat
 // because ProviderID is a package constant there and the adapter registry
 // indexes by it: two instances would collide. That is the same reason
-// deepseek, gemini and mimo are separate packages despite three of them
+// deepseek and gemini are separate packages despite both of them
 // speaking the OpenAI request shape.
 //
 // The differences from those neighbours are deliberate and each one is

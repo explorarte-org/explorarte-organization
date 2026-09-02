@@ -10,16 +10,15 @@ import "github.com/Mireuz13/explorarte-organization/internal/contextengine"
 // canonical snapshot unchanged for any selector this doesn't match).
 const ResearchCorpusCurateV1TaskClass = "research.corpus_curate"
 
-// researchWorkerHourlyRoleID / researchWorkerHourlyMimoCanaryRoleID are
-// the exact two roles this profile remains applicable to (M1.3 section
-// 11/12): TaskClass=research.corpus_curate alone is never sufficient --
+// researchWorkerHourlyRoleID is the exact role this profile remains
+// applicable to (M1.3 section 11/12): TaskClass=research.corpus_curate
+// alone is never sufficient --
 // an unrelated role/unit proposing this TaskClass must still
 // canonical-fallback, exactly as it did before M1.3 (when the ActorRoleID
 // proxy was the only thing gating this profile at all).
 const (
-	researchWorkerHourlyRoleID           = "investigacion/research_worker_hourly"
-	researchWorkerHourlyMimoCanaryRoleID = "investigacion/research_worker_hourly_mimo_canary"
-	researchUnitID                       = "investigacion"
+	researchWorkerHourlyRoleID = "investigacion/research_worker_hourly"
+	researchUnitID             = "investigacion"
 )
 
 // ResearchCorpusCurateV1 is the ONE profile R10 V1 implements, built
@@ -63,7 +62,7 @@ var defaultSelectorRegistry = MustBuildSelectorRegistry(
 			// proposed for an unrelated role or a role outside the
 			// investigacion unit must still canonical-fallback (M1.3
 			// section 11/12/13).
-			ApplicableActorRoleIDs: []string{researchWorkerHourlyRoleID, researchWorkerHourlyMimoCanaryRoleID},
+			ApplicableActorRoleIDs: []string{researchWorkerHourlyRoleID},
 			ApplicableActorUnitIDs: []string{researchUnitID},
 		},
 	},

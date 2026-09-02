@@ -27,7 +27,6 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/deepseek"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/gemini"
-	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/mimo"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/openaicompat"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/openairesponses"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/xai"
@@ -151,10 +150,6 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	if err != nil {
 		return nil, fmt.Errorf("load DeepSeek provider config: %w", err)
 	}
-	mimoConfig, err := mimo.LoadConfig(os.LookupEnv, runtimeCfg.MaxResponseBytes)
-	if err != nil {
-		return nil, fmt.Errorf("load MiMo provider config: %w", err)
-	}
 	geminiConfig, err := gemini.LoadConfig(os.LookupEnv, runtimeCfg.MaxResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("load Gemini provider config: %w", err)
@@ -179,17 +174,6 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 		providerAdapter, providerErr := deepseek.New(deepseekConfig)
 		if providerErr != nil {
 			return nil, fmt.Errorf("open DeepSeek provider adapter: %w", providerErr)
-		}
-		registeredAdapters = append(registeredAdapters, providerAdapter)
-	}
-	if mimoConfig.Enabled {
-		// MiMo is deliberately not wired into docs/canonical/model-routing.yaml
-		// as any role's default in this phase -- registering the adapter here
-		// only makes provider=mimo dispatchable when explicitly invoked (the
-		// owner's canary smoke tests), never chosen by routing defaults.
-		providerAdapter, providerErr := mimo.New(mimoConfig)
-		if providerErr != nil {
-			return nil, fmt.Errorf("open MiMo provider adapter: %w", providerErr)
 		}
 		registeredAdapters = append(registeredAdapters, providerAdapter)
 	}
@@ -236,10 +220,7 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	if err != nil {
 		return nil, fmt.Errorf("create agent budget ledger: %w", err)
 	}
-	// mimo.ProviderID is billed via a fixed Token Plan (subscription/quota),
-	// not pay-as-you-go -- costgate.Gate skips PriceTier resolution and
-	// wallet reservation entirely for it (see costgate/gate.go's Reserve).
-	gate, err := costgate.New(pricingService, walletLedger, budgetLedger, mimo.ProviderID)
+	gate, err := costgate.New(pricingService, walletLedger, budgetLedger)
 	if err != nil {
 		return nil, fmt.Errorf("create cost/budget gate: %w", err)
 	}
