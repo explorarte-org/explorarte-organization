@@ -82,14 +82,20 @@ type RegistryDiff struct {
 }
 
 type RegistrySyncResult struct {
-	Applied                bool   `json:"applied"`
-	NoOp                   bool   `json:"no_op"`
-	CanonicalHash          string `json:"canonical_hash"`
-	OrganizationRevisionID int64  `json:"organization_revision_id"`
-	Providers              int    `json:"providers"`
-	Profiles               int    `json:"profiles"`
-	Versions               int    `json:"versions"`
-	Bindings               int    `json:"bindings"`
+	Applied                bool     `json:"applied"`
+	NoOp                   bool     `json:"no_op"`
+	CanonicalHash          string   `json:"canonical_hash"`
+	OrganizationRevisionID int64    `json:"organization_revision_id"`
+	Providers              int      `json:"providers"`
+	Profiles               int      `json:"profiles"`
+	Versions               int      `json:"versions"`
+	Bindings               int      `json:"bindings"`
+	// MissingProviderWallets names every dispatch-enabled provider this
+	// sync's own plan requires that has no provider_wallets row at all
+	// (G2-001) -- populated whenever a ProviderWalletProvisionChecker is
+	// wired, regardless of NoOp/apply/dry-run, so this gap is visible at
+	// sync time rather than on the first real dispatch attempt.
+	MissingProviderWallets []string `json:"missing_provider_wallets,omitempty"`
 }
 
 type ResolvedBinding struct {

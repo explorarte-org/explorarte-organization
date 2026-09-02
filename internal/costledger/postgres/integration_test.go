@@ -101,7 +101,15 @@ INSERT INTO provider_wallets (provider_id, balance_usd_nanos, reserved_usd_nanos
     -- TestEveryRoutedNonSubscriptionProviderHasPricingAndAWallet once that
     -- suite joined the official harness manifest.
     ('mimo', 0, 0, NOW()),
-    ('openai_responses', 9700000000, 0, NOW())`); err != nil {
+    ('openai_responses', 9700000000, 0, NOW()),
+    -- 000061 seeds this one once per database, same reason as the two
+    -- above -- xai/grok-4.6 got real pricing in 000054 but no migration
+    -- ever seeded its wallet until G2-001's remediation added 000061;
+    -- this list's own gap for xai was the SAME root cause reproduced a
+    -- second time, caught only once RegistryService.Sync started
+    -- checking for it (cli-smoke, which shares this database, runs
+    -- after this suite in the harness).
+    ('xai', 1000000000, 0, NOW())`); err != nil {
 		t.Fatalf("reseed wallets: %v", err)
 	}
 
@@ -483,6 +491,36 @@ func TestReserveFailsClosedOnInsufficientBalanceAndUnknownWallet(t *testing.T) {
 	}
 	if after.ReservedUSD != before.ReservedUSD {
 		t.Fatalf("rejected reservation must not change reserved amount: before=%d after=%d", before.ReservedUSD, after.ReservedUSD)
+	}
+}
+
+func TestProvisionedProviderIDsReportsOnlyRealWalletRows(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	fixture := openLedgerFixture(t, ctx)
+	ledger, err := costledgerpostgres.New(fixture.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+
+	// G2-001: RegistryService.Sync uses exactly this method to catch a
+	// priced, routed provider with no provider_wallets row at all before
+	// its first real dispatch attempt fails closed with an indistinguishable
+	// budget_exceeded. funded genuinely gets a row; neverFunded never does.
+	if _, err := ledger.SetBalance(ctx, "test.provisioned", modelpricing.USDFromDollars(1), now); err != nil {
+		t.Fatal(err)
+	}
+
+	provisioned, err := ledger.ProvisionedProviderIDs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !provisioned["test.provisioned"] {
+		t.Fatal("expected a provider with a real provider_wallets row to be reported as provisioned")
+	}
+	if provisioned["test.never_funded"] {
+		t.Fatal("expected a provider with no provider_wallets row to be absent, not merely false")
 	}
 }
 

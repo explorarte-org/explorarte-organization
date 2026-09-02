@@ -43,6 +43,7 @@ const (
 	exitCompletionFailed       = 10
 	exitCompletionInconclusive = 11
 	exitShadowDivergence       = 12
+	exitProvisioningIncomplete = 13
 )
 
 func main() {

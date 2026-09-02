@@ -56,6 +56,21 @@ func New(pricing *modelpricing.Service, ledger costledger.Ledger, budgets agentb
 var _ modelruntime.CostBudgetGate = (*Gate)(nil)
 var _ modelruntime.SubscriptionSettler = (*Gate)(nil)
 
+// translateReserveErr distinguishes "no provider_wallets row exists at
+// all" (a provisioning gap, G2-001) from every other reservation
+// failure -- including a real, funded wallet that ran out of balance --
+// by wrapping costledger.ErrWalletNotFound in
+// modelruntime.ErrProviderWalletNotProvisioned. DispatchService checks
+// for this via errors.Is instead of the caller having to know
+// costledger's own sentinel errors (this package's whole reason to
+// exist is keeping that dependency out of DispatchService).
+func translateReserveErr(err error) error {
+	if errors.Is(err, costledger.ErrWalletNotFound) {
+		return fmt.Errorf("%w: %w", modelruntime.ErrProviderWalletNotProvisioned, err)
+	}
+	return err
+}
+
 func (g *Gate) Reserve(ctx context.Context, request modelruntime.CostReservationRequest, now time.Time) (modelruntime.CostReservation, error) {
 	// Budget tracking is independently optional per task (not every task is
 	// attached to a budget tree — e.g. CEO planning/review/closure tasks
@@ -122,13 +137,13 @@ func (g *Gate) Reserve(ctx context.Context, request modelruntime.CostReservation
 				return modelruntime.CostReservation{}, fmt.Errorf("program scoped reservation unavailable")
 			}
 			if err := scoped.ReserveWithinProgramCeiling(ctx, costledger.ProgramReservation{ProviderID: request.ProviderID, FamilyModelIDs: append([]string(nil), programScope.Family.ModelIDs...), InvocationID: request.InvocationID, CorrelationID: programScope.CorrelationID, MaxUSD: programScope.Family.MaxUSD, EstimatedUSD: estimatedUSD}, now); err != nil {
-				return modelruntime.CostReservation{}, err
+				return modelruntime.CostReservation{}, translateReserveErr(err)
 			}
 		} else if err := g.ledger.Reserve(ctx, request.ProviderID, request.InvocationID, estimatedUSD, now); err != nil {
-			return modelruntime.CostReservation{}, err
+			return modelruntime.CostReservation{}, translateReserveErr(err)
 		}
 	} else if err := g.ledger.Reserve(ctx, request.ProviderID, request.InvocationID, estimatedUSD, now); err != nil {
-		return modelruntime.CostReservation{}, err
+		return modelruntime.CostReservation{}, translateReserveErr(err)
 	}
 	reservation := modelruntime.CostReservation{
 		ProviderID: request.ProviderID, ProviderModelID: request.ProviderModelID,

@@ -63,11 +63,16 @@ func OpenRegistry(cfg config.Config, platformStore *platformpostgres.Store) (*Re
 	if err != nil {
 		return nil, err
 	}
+	walletProvisionChecker, err := costledgerpostgres.New(platformStore)
+	if err != nil {
+		return nil, fmt.Errorf("open provider wallet provisioning checker: %w", err)
+	}
 	catalog := catalogAdapter{reader: registryRepo}
 	service, err := modelruntime.NewRegistryService(cfg.Registry.CanonicalDir, cfg.Tasks.OrganizationID, catalog, modelStore)
 	if err != nil {
 		return nil, err
 	}
+	service.SetWalletChecker(walletProvisionChecker)
 	return &RegistryRuntime{Config: runtimeCfg, Registry: service, Store: modelStore}, nil
 }
 
@@ -143,6 +148,11 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	if err != nil {
 		return nil, err
 	}
+	registryWalletChecker, err := costledgerpostgres.New(platformStore)
+	if err != nil {
+		return nil, fmt.Errorf("open provider wallet provisioning checker: %w", err)
+	}
+	registryService.SetWalletChecker(registryWalletChecker)
 	invocationService, err := modelruntime.NewInvocationService(cfg.Tasks.OrganizationID, catalog, tasksAdapter, contexts, modelStore, egressRuntime.Store, identityRuntime.Store, dispatchRuntime.Store, modelruntime.ClockFunc(time.Now), cfg.Tasks.OutboxMaxAttempts, cfg.ModelRuntime.SingleProviderTestMode)
 	if err != nil {
 		return nil, err

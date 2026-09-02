@@ -24,7 +24,7 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const wantCount = 60
+	const wantCount = 61
 	if len(loaded) != wantCount {
 		t.Fatalf("migration count=%d want %d", len(loaded), wantCount)
 	}
@@ -79,6 +79,11 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		// not a budget. 69%% of a campaign ceiling went to output space
 		// that was never used.
 		60: "settle_agent_budget_after_the_call",
+		// ORGANIZATION-GRAND-AUDIT-001 G2-001 remediation: xai/grok-4.6 got
+		// real pricing in 000054 but no migration ever seeded its wallet --
+		// the exact gap this finding is about, reproduced in the migration
+		// history itself.
+		61: "seed_xai_wallet",
 	}
 	byVersion := make(map[int64]string, len(loaded))
 	for _, migration := range loaded {

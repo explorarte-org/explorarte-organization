@@ -206,6 +206,15 @@ func modelRegistry(ctx context.Context, cfg config.Config, runtime *modelbootstr
 			return modelError(stderr, err)
 		}
 		writeValue(stdout, *jsonOutput, value)
+		if len(value.MissingProviderWallets) > 0 {
+			// G2-001: loud and distinct from a drift exit -- the registry
+			// itself may be perfectly synchronized while a provider it just
+			// made dispatchable has no funded wallet at all, which would
+			// otherwise surface silently as budget_exceeded on the first
+			// real dispatch attempt instead of here, at sync time.
+			fmt.Fprintf(stderr, "provider wallet not provisioned: %s\n", strings.Join(value.MissingProviderWallets, ", "))
+			return exitProvisioningIncomplete
+		}
 		if !*apply && !value.NoOp {
 			return exitDrift
 		}
