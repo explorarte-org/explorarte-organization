@@ -366,6 +366,15 @@ func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error
 			// for, and they have not changed. A new obligation or a new world
 			// is what reopens this, and neither arrives through Resume.
 			return ProjectRun(root, nil), ErrRunBlocked
+		case ReasonContextSourceMissing:
+			// The missing context source (most commonly a role's PERFIL.md
+			// registered but never committed to the image) does not appear
+			// through Resume -- only a fixed role catalog or a corrected
+			// image does. Unblocking here would re-drive context assembly
+			// straight back into the identical rejection, one attempt
+			// poorer each pass. Landing the missing file is content
+			// authoring, not something this run can do to itself.
+			return ProjectRun(root, nil), ErrRunBlocked
 		case "dispatch_assignment_required":
 			if !o.anyProvisionedLeasedTask(ctx, root.CorrelationID) {
 				return o.Status(ctx, rootTaskID)
@@ -1658,6 +1667,37 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		CorrelationID:      root.CorrelationID, CausationID: attemptCausation(task.ID, lease.AttemptID),
 	})
 	if err != nil {
+		// G1-005: a role can be present and executable in organization_roles
+		// while its PERFIL.md (or any other context source the assembled
+		// snapshot depends on) was never committed to the image -- two
+		// independently-maintained sources of truth for "does this role
+		// really exist" (canonical/DB registration vs. the physical file
+		// tree). ContextCoordinator.Build translates the underlying
+		// content-rejection into ErrContextSourceRejected at the adapter
+		// boundary (see runtimeadapter.Context.Build) precisely so this
+		// package never needs to import contextengine to recognize it.
+		// Left unhandled, that error propagated as a plain Go error all the
+		// way up, surfacing as a raw, unclassified filesystem error
+		// ("resolve symlinks: lstat ...: no such file or directory")
+		// instead of a clean host finding an operator can act on. This
+		// mirrors the evidence-supply pattern immediately below: the
+		// attempt is ended cleanly (never left running), and the root is
+		// blocked with a reason code and detail identifying exactly which
+		// context source was missing -- never organization_revision_id, so
+		// the permanent revision-drift guard is untouched and the root
+		// remains resumable via UnblockTask once the profile lands.
+		if errors.Is(err, ErrContextSourceRejected) {
+			if _, failErr := o.tasks.RecordAttemptFailed(ctx, lease, actorID,
+				"host_context_source_missing", truncate(err.Error(), 480), false); failErr != nil {
+				return task, failErr
+			}
+			o.forgetLease(task.ID)
+			if _, blockErr := o.tasks.BlockTask(ctx, root.ID, ReasonContextSourceMissing,
+				truncate(err.Error(), 480), "service", orchestratorWorkerID); blockErr != nil {
+				return task, blockErr
+			}
+			return task, ErrContextSourceRejected
+		}
 		return task, err
 	}
 	// Supply is checked HERE: the snapshot exists, so the host knows what it
@@ -2446,6 +2486,7 @@ func isNonBlockingPhaseError(err error) bool {
 		errors.Is(err, ErrPriorExecutionUnresolved),
 		errors.Is(err, ErrExecutionInterrupted),
 		errors.Is(err, ErrEvidenceInsufficient),
+		errors.Is(err, ErrContextSourceRejected),
 		errors.Is(err, ErrModelResultContractRejected):
 		return true
 	}
