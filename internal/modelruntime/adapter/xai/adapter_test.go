@@ -446,3 +446,122 @@ func TestProviderIDIsStable(t *testing.T) {
 		t.Fatalf("ProviderID=%q -- canonical routing and the egress scope both key on this", ProviderID)
 	}
 }
+
+
+// --- Gate F: Provider Failure Telemetry ------------------------------------
+//
+// Mirrors internal/modelruntime/adapter/deepseek's Gate F test suite: each
+// case asserts both what gets populated and what stays NULL/false when the
+// corresponding fact was never knowable at that point in the call.
+
+func TestGateFTelemetryOnTruncatedEmpty(t *testing.T) {
+	adapter, _ := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"id":"r","choices":[{"message":{"content":null},"finish_reason":"length"}],"usage":{"prompt_tokens":10,"completion_tokens":0}}`))
+	})
+	_, err := adapter.Dispatch(context.Background(), canonicalRequest())
+	var adapterErr *modelruntime.AdapterError
+	if !errors.As(err, &adapterErr) || adapterErr.Outcome.ErrorCode != "response_truncated_empty" {
+		t.Fatalf("err=%v", err)
+	}
+	outcome := adapterErr.Outcome
+	if !outcome.UsageAvailable || outcome.InputTokens == nil || *outcome.InputTokens != 10 || outcome.OutputTokens == nil || *outcome.OutputTokens != 0 {
+		t.Fatalf("expected usage recovered from the decoded envelope: outcome=%+v", outcome)
+	}
+	if outcome.FinishReason != "length" {
+		t.Fatalf("expected finish_reason=length, got %q", outcome.FinishReason)
+	}
+	if outcome.ResponseFormat != "text" || outcome.MaxOutputTokens == nil || *outcome.MaxOutputTokens != 4096 {
+		t.Fatalf("expected request-shaping telemetry from the CanonicalRequest: outcome=%+v", outcome)
+	}
+	if outcome.RequestDuration == nil || *outcome.RequestDuration < 0 {
+		t.Fatalf("expected a non-negative request duration, got %+v", outcome.RequestDuration)
+	}
+}
+
+func TestGateFTelemetryIncludesReasoningTokensInBilledOutput(t *testing.T) {
+	adapter, _ := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"id":"r","choices":[{"message":{"content":null},"finish_reason":"length"}],"usage":{"prompt_tokens":208,"completion_tokens":10,"completion_tokens_details":{"reasoning_tokens":1036}}}`))
+	})
+	_, err := adapter.Dispatch(context.Background(), canonicalRequest())
+	var adapterErr *modelruntime.AdapterError
+	if !errors.As(err, &adapterErr) || adapterErr.Outcome.ErrorCode != "response_truncated_empty" {
+		t.Fatalf("err=%v", err)
+	}
+	outcome := adapterErr.Outcome
+	// billedOutputTokens folds reasoning into the outcome-level telemetry too,
+	// not just the success-path RawResponse -- the same undercounting risk
+	// documented on billedOutputTokens applies to a failed call's Gate F row.
+	if outcome.OutputTokens == nil || *outcome.OutputTokens != 1046 {
+		t.Fatalf("expected billed output tokens (visible+reasoning)=1046, got %+v", outcome.OutputTokens)
+	}
+}
+
+func TestGateFTelemetryOnResponseContentInvalid(t *testing.T) {
+	body := `{"id":"r1","choices":[{"finish_reason":"stop","message":{"content":42}}],"usage":{"prompt_tokens":7,"completion_tokens":3}}`
+	adapter, _ := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(body))
+	})
+	_, err := adapter.Dispatch(context.Background(), canonicalRequest())
+	var adapterErr *modelruntime.AdapterError
+	if !errors.As(err, &adapterErr) || adapterErr.Outcome.ErrorCode != "response_content_invalid" {
+		t.Fatalf("err=%v", err)
+	}
+	outcome := adapterErr.Outcome
+	if !outcome.UsageAvailable || outcome.InputTokens == nil || *outcome.InputTokens != 7 || outcome.OutputTokens == nil || *outcome.OutputTokens != 3 {
+		t.Fatalf("expected usage recovered from the decoded envelope: outcome=%+v", outcome)
+	}
+	if outcome.FinishReason != "stop" {
+		t.Fatalf("expected finish_reason=stop, got %q", outcome.FinishReason)
+	}
+	if outcome.JSONErrorClass != "" || outcome.JSONErrorOffset != nil {
+		t.Fatalf("JSON error telemetry must stay empty -- the envelope itself decoded fine: outcome=%+v", outcome)
+	}
+}
+
+func TestGateFTelemetryOnResponseJSONInvalid(t *testing.T) {
+	adapter, _ := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`not json`))
+	})
+	_, err := adapter.Dispatch(context.Background(), canonicalRequest())
+	var adapterErr *modelruntime.AdapterError
+	if !errors.As(err, &adapterErr) || adapterErr.Outcome.ErrorCode != "response_json_invalid" {
+		t.Fatalf("err=%v", err)
+	}
+	outcome := adapterErr.Outcome
+	if outcome.UsageAvailable || outcome.InputTokens != nil || outcome.OutputTokens != nil {
+		t.Fatalf("usage must be unavailable -- json.Unmarshal itself failed: outcome=%+v", outcome)
+	}
+	if outcome.JSONErrorClass != "syntax_error" {
+		t.Fatalf("expected json_error_class=syntax_error for a non-JSON body, got %q", outcome.JSONErrorClass)
+	}
+	if outcome.JSONErrorOffset == nil || *outcome.JSONErrorOffset <= 0 {
+		t.Fatalf("expected a positive json_error_offset, got %+v", outcome.JSONErrorOffset)
+	}
+	if outcome.StartsWithJSONObject == nil || *outcome.StartsWithJSONObject {
+		t.Fatalf("expected starts_with_json_object=false, got %+v", outcome.StartsWithJSONObject)
+	}
+}
+
+func TestGateFTelemetryOnSuccessCarriesUsageAndFinishReason(t *testing.T) {
+	adapter, _ := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("x-request-id", "req-gatef")
+		w.Write([]byte(chatBody(`{"verdict":"accept"}`)))
+	})
+	raw, err := adapter.Dispatch(context.Background(), canonicalRequest())
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	outcome := raw.ProviderOutcome
+	if outcome.FinishReason != "stop" {
+		t.Fatalf("expected finish_reason=stop, got %q", outcome.FinishReason)
+	}
+	if !outcome.UsageAvailable || outcome.InputTokens == nil || *outcome.InputTokens != 120 || outcome.OutputTokens == nil || *outcome.OutputTokens != 40 {
+		t.Fatalf("expected usage telemetry mirroring RawResponse: outcome=%+v", outcome)
+	}
+	if outcome.CacheHitTokens == nil || *outcome.CacheHitTokens != 100 || outcome.CacheMissTokens == nil || *outcome.CacheMissTokens != 20 {
+		t.Fatalf("expected cache split telemetry: outcome=%+v", outcome)
+	}
+	if outcome.ResponseContentBytes == nil || *outcome.ResponseContentBytes <= 0 {
+		t.Fatalf("expected a positive response content byte length, got %+v", outcome.ResponseContentBytes)
+	}
+}

@@ -353,3 +353,171 @@ type roundTripperFunc func(*http.Request) (*http.Response, error)
 func (f roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return f(request)
 }
+
+
+// --- Gate F: Provider Failure Telemetry ------------------------------------
+//
+// Mirrors internal/modelruntime/adapter/deepseek's Gate F test suite,
+// adapted to the Responses API's status/incomplete_details shape instead of
+// a chat-completions finish_reason.
+
+func TestGateFTelemetryOnIncompleteMaxOutputTokens(t *testing.T) {
+	// This is exactly the shape of this organization's own live incident:
+	// gpt-5.6-luna (validRequest's own ProviderModelID) consumed its entire
+	// output budget on invisible reasoning, status=="incomplete",
+	// incomplete_details.reason=="max_output_tokens", zero visible text --
+	// billed anyway. Before Gate F parity here, none of this was visible on
+	// the outcome row without a raw response dump.
+	credential := writeCredential(t, "test-provider-token")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"r1","object":"response","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"reasoning"}],"usage":{"input_tokens":14337,"output_tokens":2800}}`)
+	}))
+	defer server.Close()
+	adapter, err := newAdapter(adapterConfig(server.URL+"/v1/responses", credential), server.Client(), time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = adapter.Dispatch(context.Background(), validRequest(time.Now().Add(time.Minute)))
+	classified, ok := modelruntime.AsAdapterError(err)
+	if !ok {
+		t.Fatalf("err=%v", err)
+	}
+	outcome := classified.Outcome
+	if outcome.FinishReason != "incomplete:max_output_tokens" {
+		t.Fatalf("expected finish_reason=incomplete:max_output_tokens, got %q", outcome.FinishReason)
+	}
+	if !outcome.UsageAvailable || outcome.InputTokens == nil || *outcome.InputTokens != 14337 || outcome.OutputTokens == nil || *outcome.OutputTokens != 2800 {
+		t.Fatalf("expected usage recovered from the decoded envelope: outcome=%+v", outcome)
+	}
+	if outcome.ResponseFormat != "text" || outcome.MaxOutputTokens == nil || *outcome.MaxOutputTokens != 64 {
+		t.Fatalf("expected request-shaping telemetry from the CanonicalRequest: outcome=%+v", outcome)
+	}
+	if outcome.RequestDuration == nil || *outcome.RequestDuration < 0 {
+		t.Fatalf("expected a non-negative request duration, got %+v", outcome.RequestDuration)
+	}
+}
+
+func TestGateFTelemetryOnResponseReadFailed(t *testing.T) {
+	credential := writeCredential(t, "test-provider-token")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, strings.Repeat("x", 2048))
+	}))
+	defer server.Close()
+	cfg := adapterConfig(server.URL+"/v1/responses", credential)
+	cfg.MaxResponseBytes = 1024
+	adapter, err := newAdapter(cfg, server.Client(), time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = adapter.Dispatch(context.Background(), validRequest(time.Now().Add(time.Minute)))
+	classified, ok := modelruntime.AsAdapterError(err)
+	if !ok || classified.Outcome.ErrorCode != "response_read_failed" {
+		t.Fatalf("error=%v classified=%+v", err, classified)
+	}
+	outcome := classified.Outcome
+	if outcome.ResponseContentBytes == nil || *outcome.ResponseContentBytes <= 0 {
+		t.Fatalf("expected a positive response content byte length, got %+v", outcome.ResponseContentBytes)
+	}
+	if outcome.UsageAvailable || outcome.InputTokens != nil || outcome.OutputTokens != nil {
+		t.Fatalf("usage must be unavailable before any decode was attempted: outcome=%+v", outcome)
+	}
+	if outcome.FinishReason != "" {
+		t.Fatalf("finish reason must be unknown before decode: outcome=%+v", outcome)
+	}
+	if outcome.JSONErrorClass != "" || outcome.JSONErrorOffset != nil {
+		t.Fatalf("JSON error telemetry must stay empty for a non-JSON failure: outcome=%+v", outcome)
+	}
+}
+
+func TestGateFTelemetryOnResponseJSONInvalid(t *testing.T) {
+	credential := writeCredential(t, "test-provider-token")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `not json`)
+	}))
+	defer server.Close()
+	adapter, err := newAdapter(adapterConfig(server.URL+"/v1/responses", credential), server.Client(), time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = adapter.Dispatch(context.Background(), validRequest(time.Now().Add(time.Minute)))
+	classified, ok := modelruntime.AsAdapterError(err)
+	if !ok || classified.Outcome.ErrorCode != "response_json_invalid" {
+		t.Fatalf("error=%v classified=%+v", err, classified)
+	}
+	outcome := classified.Outcome
+	if outcome.UsageAvailable || outcome.InputTokens != nil || outcome.OutputTokens != nil {
+		t.Fatalf("usage must be unavailable -- json.Unmarshal itself failed: outcome=%+v", outcome)
+	}
+	if outcome.JSONErrorClass != "syntax_error" {
+		t.Fatalf("expected json_error_class=syntax_error for a non-JSON body, got %q", outcome.JSONErrorClass)
+	}
+	if outcome.JSONErrorOffset == nil || *outcome.JSONErrorOffset <= 0 {
+		t.Fatalf("expected a positive json_error_offset, got %+v", outcome.JSONErrorOffset)
+	}
+	if outcome.StartsWithJSONObject == nil || *outcome.StartsWithJSONObject {
+		t.Fatalf("expected starts_with_json_object=false, got %+v", outcome.StartsWithJSONObject)
+	}
+}
+
+func TestGateFTelemetryOnSuccessCarriesUsageAndStatus(t *testing.T) {
+	credential := writeCredential(t, "test-provider-token")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"r1","object":"response","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}],"usage":{"input_tokens":50,"output_tokens":5}}`)
+	}))
+	defer server.Close()
+	adapter, err := newAdapter(adapterConfig(server.URL+"/v1/responses", credential), server.Client(), time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := adapter.Dispatch(context.Background(), validRequest(time.Now().Add(time.Minute)))
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	outcome := raw.ProviderOutcome
+	if outcome.FinishReason != "completed" {
+		t.Fatalf("expected finish_reason=completed (no incomplete_details to combine), got %q", outcome.FinishReason)
+	}
+	if !outcome.UsageAvailable || outcome.InputTokens == nil || *outcome.InputTokens != 50 || outcome.OutputTokens == nil || *outcome.OutputTokens != 5 {
+		t.Fatalf("expected usage telemetry mirroring RawResponse: outcome=%+v", outcome)
+	}
+	if outcome.ResponseContentBytes == nil || *outcome.ResponseContentBytes <= 0 {
+		t.Fatalf("expected a positive response content byte length, got %+v", outcome.ResponseContentBytes)
+	}
+}
+
+// TestGateFJSONErrorOffsetMatchesStandardLibrary is the dedicated
+// offset/class capture test: it independently reproduces the same
+// json.Unmarshal call the adapter makes and asserts the adapter's captured
+// offset is exactly the standard library's own SyntaxError.Offset.
+func TestGateFJSONErrorOffsetMatchesStandardLibrary(t *testing.T) {
+	body := `{"id":"r1","output":`
+	var decoded responsesResponse
+	independentErr := json.Unmarshal([]byte(body), &decoded)
+	var expected *json.SyntaxError
+	if !errors.As(independentErr, &expected) {
+		t.Fatalf("test fixture must reproduce a json.SyntaxError, got %T: %v", independentErr, independentErr)
+	}
+
+	credential := writeCredential(t, "test-provider-token")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, body)
+	}))
+	defer server.Close()
+	adapter, err := newAdapter(adapterConfig(server.URL+"/v1/responses", credential), server.Client(), time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, dispatchErr := adapter.Dispatch(context.Background(), validRequest(time.Now().Add(time.Minute)))
+	classified, ok := modelruntime.AsAdapterError(dispatchErr)
+	if !ok || classified.Outcome.ErrorCode != "response_json_invalid" {
+		t.Fatalf("error=%v classified=%+v", dispatchErr, classified)
+	}
+	outcome := classified.Outcome
+	if outcome.JSONErrorOffset == nil || *outcome.JSONErrorOffset != expected.Offset {
+		t.Fatalf("expected json_error_offset=%d (from encoding/json itself), got %+v", expected.Offset, outcome.JSONErrorOffset)
+	}
+}
