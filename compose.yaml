@@ -276,6 +276,24 @@ services:
       ORG_MODEL_PROVIDER_OPENAI_RESPONSES_ENABLED: "true"
       ORG_MODEL_PROVIDER_OPENAI_RESPONSES_ENDPOINT_URL: https://api.openai.com/v1/responses
       ORG_MODEL_PROVIDER_OPENAI_RESPONSES_CREDENTIAL_FILE: /run/secrets/openai-compatible-api-key
+      # Gemini chat completions (department.leader/department.worker routing,
+      # owner_conversation_r17v8/r17v11_gemini_worker_migration): this service is
+      # the ONLY one that actually dispatches model calls, and this block was never
+      # added here when gemini was migrated to -- the adapter compiled and the
+      # routing pointed at it, but model-worker itself had no credential to ever
+      # reach it, so every real department.leader/worker dispatch failed closed
+      # with "model provider adapter unavailable" (found live, ORGANIZATION-AUTONOMOUS-
+      # TRANSFORM-001's first real campaign). Reuses the same Google API key already
+      # mounted for embeddings -- one Google AI Studio key works for both.
+      ORG_MODEL_PROVIDER_GEMINI_ENABLED: "true"
+      ORG_MODEL_PROVIDER_GEMINI_ENDPOINT_URL: https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
+      ORG_MODEL_PROVIDER_GEMINI_CREDENTIAL_FILE: /run/secrets/gemini-embedding-api-key
+      # xAI (research.adversarial_review routing, owner_conversation_grok_adversarial_review_001):
+      # same gap as gemini above -- compiled and routed, never actually reachable
+      # from the one service that dispatches.
+      ORG_MODEL_PROVIDER_XAI_ENABLED: "true"
+      ORG_MODEL_PROVIDER_XAI_ENDPOINT_URL: https://api.x.ai/v1/chat/completions
+      ORG_MODEL_PROVIDER_XAI_CREDENTIAL_FILE: /run/secrets/grok-api-key
       # OCI Object Storage: source-of-truth bucket for the knowledge ingestion
       # pipeline (raw/normalized/manifests/logs). Hand-rolled OCI Signing v1
       # client (internal/objectstorage), no OCI SDK dependency.
@@ -291,6 +309,8 @@ services:
       - /etc/explorarte/secrets/model-execution-identity.pem:/run/secrets/model-execution-identity.pem:ro
       - /etc/explorarte/secrets/deepseek-api-key:/run/secrets/deepseek-api-key:ro
       - /etc/explorarte/secrets/openai-compatible-api-key:/run/secrets/openai-compatible-api-key:ro
+      - /etc/explorarte/secrets/gemini-embedding-api-key:/run/secrets/gemini-embedding-api-key:ro
+      - /etc/explorarte/secrets/grok-api-key:/run/secrets/grok-api-key:ro
       - /etc/explorarte/secrets/oci-object-storage-api-key.pem:/run/secrets/oci-object-storage-api-key.pem:ro
     read_only: true
     tmpfs:
