@@ -417,6 +417,19 @@ func (s *Store) FailAfterResponse(ctx context.Context, command modelruntime.Fail
 		if err = insertRecoveredUsage(ctx, tx, command.Usage); err != nil {
 			return modelruntime.Invocation{}, err
 		}
+		// G3-004: the outcome row for this attempt was already inserted by
+		// MarkResponseReceived (the provider answered fine; normalization is
+		// what just failed) -- this UPDATEs that existing row rather than
+		// inserting a second one, and is a no-op WHERE clause match (0 rows,
+		// no error) on every call site that never sets this field.
+		if command.NormalizationFailureRawContent != nil {
+			if _, err = tx.Exec(ctx, `
+UPDATE model_provider_outcomes
+SET normalization_failure_raw_content=$2
+WHERE dispatch_attempt_id=$1`, command.DispatchAttemptID, command.NormalizationFailureRawContent); err != nil {
+				return modelruntime.Invocation{}, mapError(err)
+			}
+		}
 		if _, err = tx.Exec(ctx, `
 UPDATE model_dispatch_attempts
 SET status='completed',retry_safety='not_retryable',

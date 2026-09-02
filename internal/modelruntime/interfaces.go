@@ -231,6 +231,13 @@ type FailureCommand struct {
 	// are set by the caller the same way CompletionCommand.Response.Usage
 	// already requires.
 	Usage *Usage
+	// NormalizationFailureRawContent carries a bounded prefix of the raw
+	// provider response content when this failure is specifically a
+	// host-side normalization failure (dispatch_service.go's Normalize()
+	// call), the one narrow case where Model Runtime persists response
+	// CONTENT rather than metadata (G3-004). nil in every other case --
+	// callers other than that one call site must never set this.
+	NormalizationFailureRawContent []byte
 }
 
 type Clock interface{ Now() time.Time }

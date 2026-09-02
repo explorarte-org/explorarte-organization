@@ -171,6 +171,11 @@ type fakeStore struct {
 	// usage-survives-failure mechanism (see recoveredUsage in
 	// dispatch_service.go). nil means the call passed no recovered usage.
 	lastFailureUsage *Usage
+	// lastNormalizationFailureRawContent captures whatever
+	// FailureCommand.NormalizationFailureRawContent the service last set
+	// (G3-004) -- nil on every path except the one normalization-failure
+	// call site.
+	lastNormalizationFailureRawContent []byte
 	retryableFailure bool
 }
 
@@ -369,6 +374,7 @@ func (f *fakeStore) FailBeforeSend(context.Context, FailureCommand, int) (Invoca
 func (f *fakeStore) FailAfterResponse(_ context.Context, command FailureCommand, _ int) (Invocation, error) {
 	f.failed = true
 	f.lastFailureUsage = command.Usage
+	f.lastNormalizationFailureRawContent = command.NormalizationFailureRawContent
 	v := f.invocation
 	v.Status = InvocationFailed
 	return v, nil
@@ -1017,6 +1023,33 @@ func TestDispatchNormalizationFailureCommitsActualFromAdapterUsage(t *testing.T)
 	}
 	if store.lastFailureUsage == nil || store.lastFailureUsage.InputTokens != 19 {
 		t.Fatalf("expected usage to be threaded through FailAfterResponse, got %+v", store.lastFailureUsage)
+	}
+	// G3-004: the raw content that failed OUR normalization must reach the
+	// store call, bounded, not silently dropped the way it always was
+	// before this failure class existed a way to persist it.
+	if string(store.lastNormalizationFailureRawContent) != string(response.Content) {
+		t.Fatalf("expected raw content %q to be threaded through FailAfterResponse, got %q", response.Content, store.lastNormalizationFailureRawContent)
+	}
+}
+
+func TestDispatchNormalizationFailureBoundsRawContentToTheDiagnosticCeiling(t *testing.T) {
+	store, catalog, task, contexts, assignments, principals, now := serviceFixture()
+	gate := &fakeCostBudgetGate{}
+	oversized := make([]byte, normalizationFailureRawContentBound+500)
+	for i := range oversized {
+		oversized[i] = 'x'
+	}
+	response := RawResponse{Content: oversized, ProviderRequestID: "fake-oversized", ProviderReported: true, InputTokens: 1, OutputTokens: 1}
+	service, _ := NewDispatchService("explorarte", dispatchCfgWithCostGate(), catalog, task, contexts, fakeEvaluator{allow: true}, store, modelegress.NewEvaluator(), store, principals, assignments, store, store, fakeAdapterRegistry{value: &deterministicAdapter{response: &response}}, ClockFunc(func() time.Time { return now }), WithCostBudgetGate(gate))
+	_, err := service.Dispatch(context.Background(), 11)
+	if !errors.Is(err, ErrResponseRejected) {
+		t.Fatalf("expected terminal known-response failure, got %v", err)
+	}
+	if len(store.lastNormalizationFailureRawContent) != normalizationFailureRawContentBound {
+		t.Fatalf("expected raw content capped at %d bytes, got %d", normalizationFailureRawContentBound, len(store.lastNormalizationFailureRawContent))
+	}
+	if string(store.lastNormalizationFailureRawContent) != string(oversized[:normalizationFailureRawContentBound]) {
+		t.Fatal("expected the bounded content to be a PREFIX of the real content, not truncated some other way")
 	}
 }
 
