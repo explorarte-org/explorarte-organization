@@ -53,7 +53,12 @@ ENTRYPOINT ["/usr/local/bin/orgctl"]
 # never the absence of a shell in the container -- CodeRunner never exposes
 # a generic shell operation for anything in this image to reach.
 FROM golang@sha256:908f8ff2ec296df2f349563072c7925775cd28b50361a52ed834a8a37399b9bf AS coderunner
-RUN apt-get update && apt-get install -y --no-install-recommends git ripgrep ca-certificates && rm -rf /var/lib/apt/lists/* && useradd --system --no-create-home --shell /usr/sbin/nologin coderunner
+# uid/gid 65532 deliberately matches orgd's distroless USER (see below): both
+# processes read/write the same internal/staging roots, and staging.PrepareRoots
+# chmods every root to a strict 0700 (owner-only, no group bits at all) --
+# the only way two different processes can share that directory is by being
+# the exact same numeric UID, not just a shared group.
+RUN apt-get update && apt-get install -y --no-install-recommends git ripgrep ca-certificates && rm -rf /var/lib/apt/lists/* && groupadd --system --gid 65532 coderunner && useradd --system --no-create-home --shell /usr/sbin/nologin --uid 65532 --gid 65532 coderunner
 COPY --from=build /out/orgctl /usr/local/bin/orgctl
 RUN mkdir -p /var/lib/explorarte/staging/workspaces && chown coderunner:coderunner /var/lib/explorarte/staging/workspaces
 ENV ORG_STAGING_WORKSPACE_ROOT=/var/lib/explorarte/staging/workspaces
