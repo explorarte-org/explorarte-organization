@@ -114,6 +114,19 @@ services:
       ORG_STAGING_ARTIFACT_ROOT: ${ORG_STAGING_ARTIFACT_ROOT:-/var/lib/explorarte/staging/artifacts}
       ORG_STAGING_QUARANTINE_ROOT: ${ORG_STAGING_QUARANTINE_ROOT:-/var/lib/explorarte/staging/quarantine}
       ORG_STAGING_COMMAND_TIMEOUT: ${ORG_STAGING_COMMAND_TIMEOUT:-2m}
+      # R17-001: internal/executive/bootstrap/missionprovisioning.go's
+      # missionProvisioningOptions silently returns (nil, nil) -- no
+      # mission provisioning at all, not an error -- when either of these
+      # two is unset, even with staging fully enabled. Found live: orgd
+      # had every ORG_STAGING_* var above but neither of these, so the
+      # design-freeze -> EngineeringMission -> CodeRunner handoff could
+      # never fire in this deployment regardless of staging's own state.
+      # Values matched to code-runner's own block below on purpose --
+      # see that block's comment on why the Executive that bases a
+      # mission on a ref and the worker that later promotes onto it must
+      # read the same ref.
+      ORG_CODE_RUNNER_REPOSITORY_ID: explorarte-organization
+      ORG_CODE_RUNNER_TARGET_REF: refs/heads/main
       ORG_STAGING_MAX_ARTIFACT_BYTES: ${ORG_STAGING_MAX_ARTIFACT_BYTES:-67108864}
       ORG_STAGING_MAX_CHANGED_FILES: ${ORG_STAGING_MAX_CHANGED_FILES:-500}
       ORG_STAGING_STALE_AFTER: ${ORG_STAGING_STALE_AFTER:-30m}
