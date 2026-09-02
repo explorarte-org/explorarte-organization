@@ -493,6 +493,7 @@ INSERT INTO model_invocations(
 		if err != nil {
 			t.Fatal(err)
 		}
+		freshStore.SetContextSnapshotReader(contextSnapshotStore)
 		reloaded, err := freshStore.GetContextExecutionTelemetry(ctx, modelIntegrationOrganization, invocationID)
 		if err != nil {
 			t.Fatal(err)
