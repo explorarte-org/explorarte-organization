@@ -366,7 +366,20 @@ func (g *gitRepo) run(t *testing.T, script string, env map[string]string, args .
 	t.Helper()
 	cmd := exec.Command("bash", append([]string{script}, args...)...)
 	cmd.Env = func() []string {
-		base := os.Environ()
+		// The real CI job that runs this suite exports TASK_ENGINE_BASE_COMMIT
+		// via $GITHUB_ENV in an earlier step, for a LATER step's use -- but
+		// GitHub Actions applies $GITHUB_ENV to every remaining step in the
+		// job, including this test binary. Left alone, that ambient value
+		// leaks into every subprocess here regardless of what an individual
+		// test intends, so every property below is scrubbed of it first and
+		// only reintroduced via this test's own explicit env override.
+		base := make([]string, 0, len(os.Environ())+len(env))
+		for _, kv := range os.Environ() {
+			if strings.HasPrefix(kv, "TASK_ENGINE_BASE_COMMIT=") {
+				continue
+			}
+			base = append(base, kv)
+		}
 		for k, v := range env {
 			base = append(base, k+"="+v)
 		}
