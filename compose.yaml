@@ -142,6 +142,17 @@ services:
       - /etc/explorarte/secrets/oci-object-storage-api-key.pem:/run/secrets/oci-object-storage-api-key.pem:ro
       - /home/ubuntu/rag_curado:/opt/explorarte/knowledge-source/rag_curado:ro
       - /etc/explorarte/secrets/gemini-embedding-api-key:/run/secrets/gemini-embedding-api-key:ro
+      # Staging roots: orgd's own reconciler (internal/app/app.go, gated on
+      # cfg.Staging.Enabled) needs these mounted too, not just code-runner --
+      # found live, first real deploy with staging enabled: orgd logged
+      # "staging initialization failed... readiness is blocked" (fails soft,
+      # HTTP health stays live) because /var/lib/explorarte wasn't mounted at
+      # all here and orgd's read_only root filesystem refused the mkdir.
+      - /etc/explorarte/repositories.yaml:/etc/explorarte/repositories.yaml:ro
+      - /var/lib/explorarte/staging/repo/explorarte-organization:/var/lib/explorarte/staging/repo/explorarte-organization
+      - /var/lib/explorarte/staging/workspaces:/var/lib/explorarte/staging/workspaces
+      - /var/lib/explorarte/staging/artifacts:/var/lib/explorarte/staging/artifacts
+      - /var/lib/explorarte/staging/quarantine:/var/lib/explorarte/staging/quarantine
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=32m
