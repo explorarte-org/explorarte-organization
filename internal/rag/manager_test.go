@@ -247,6 +247,39 @@ func TestManagerReviewRejectsStaleRevision(t *testing.T) {
 	}
 }
 
+// TestManagerReviewRejectsSelfReview (G4-001): the same role that
+// proposed a version must never be able to review it, independent of
+// whatever capability-matrix.yaml currently grants -- this guard cannot
+// be bypassed by a future canonical grant change.
+func TestManagerReviewRejectsSelfReview(t *testing.T) {
+	gate := &recordingGate{}
+	manager, clock, _ := newTestManager(t, gate, &fakeNamespaces{})
+	ctx := context.Background()
+	version, _, err := manager.Propose(ctx, ProposeRequest{Command: validProposeCommand(clock.now), IdempotencyKey: "key-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version.ProposedBy != "investigacion/research_worker_hourly" {
+		t.Fatalf("fixture proposer=%q, test assumes investigacion/research_worker_hourly", version.ProposedBy)
+	}
+	clock.now = clock.now.Add(time.Minute)
+	_, err = manager.Review(ctx, ReviewRequest{Mutation: MutationRequest{OrganizationID: version.OrganizationID, VersionID: version.ID, ExpectedRevision: 1, ActorRoleID: version.ProposedBy, Reason: "self review attempt"}, Outcome: ReviewApprove})
+	if !errors.Is(err, ErrSelfReview) {
+		t.Fatalf("expected ErrSelfReview, got %v", err)
+	}
+	// A different reviewer role still succeeds -- the guard is specific to
+	// self-review, not a blanket rejection. The gate is not asked to
+	// authorize the rejected self-review attempt above (it fails before
+	// authorizeMutation runs), so only this successful call's request
+	// should be recorded.
+	if _, err = manager.Review(ctx, ReviewRequest{Mutation: MutationRequest{OrganizationID: version.OrganizationID, VersionID: version.ID, ExpectedRevision: 1, ActorRoleID: "empresa/human", Reason: "looks correct"}, Outcome: ReviewApprove}); err != nil {
+		t.Fatalf("distinct reviewer role must still be allowed: %v", err)
+	}
+	if len(gate.requests) != 2 {
+		t.Fatalf("expected propose + one authorized review request, got %+v", gate.requests)
+	}
+}
+
 func TestManagerFullLifecycleAndReindexAndQuery(t *testing.T) {
 	gate := &recordingGate{}
 	manager, clock, repo := newTestManager(t, gate, &fakeNamespaces{own: "investigacion/research_worker_hourly", department: "ingenieria_ia"})
