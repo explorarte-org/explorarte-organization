@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, rootless]
     timeout-minutes: 35
     steps:
       - name: Checkout
@@ -89,7 +89,7 @@ jobs:
           outputs: type=cacheonly
 
   postgres-final-validation:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, rootless]
     timeout-minutes: 65
     steps:
       - name: Checkout
