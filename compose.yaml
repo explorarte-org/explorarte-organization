@@ -338,6 +338,123 @@ services:
     networks:
       - org-internal
 
+  code-runner:
+    # orgctl code-runner worker run: the CodeRunner worker loop
+    # (internal/coderunner.Worker), the actual code-writing stage this
+    # session's audit (G4-005/AUTH-005) found sitting fully dormant --
+    # ORG_STAGING_ENABLED was false in production the whole time. Built
+    # from the Dockerfile's dedicated 'coderunner' target: a separate,
+    # smaller image (plain golang base, not distroless) because this is
+    # the one process that needs a real go/git toolchain to actually run
+    # GO_BUILD/GO_VET/GO_TEST/GIT_DIFF -- and its own unprivileged system
+    # user (coderunner, uid/gid 999, no login shell), distinct from
+    # orgd/model-worker's distroless nonroot uid 65532.
+    #
+    # This worker can NEVER push or open a PR by itself -- confirmed by
+    # reading internal/staging/gitexec/backend.go end to end: every git
+    # operation it runs is worktree/rev-parse/diff/update-ref, never
+    # push. The durable output of a sealed workspace is a stored patch
+    # artifact (application/vnd.git.binary-patch); turning that into a
+    # real GitHub PR remains a separate, human-reviewed step, exactly
+    # like every other PR this session produced.
+    build:
+      context: .
+      target: coderunner
+    environment:
+      ORG_APP_NAME: ${ORG_APP_NAME:-explorarte-organization}
+      ORG_ENVIRONMENT: ${ORG_ENVIRONMENT:-development}
+      ORG_LOG_LEVEL: ${ORG_LOG_LEVEL:-info}
+      ORG_LOG_FORMAT: ${ORG_LOG_FORMAT:-json}
+      ORG_DATABASE_HOST: postgres
+      ORG_DATABASE_PORT: 5432
+      ORG_DATABASE_NAME: ${ORG_POSTGRES_DATABASE:-explorarte_org}
+      ORG_DATABASE_USER: ${ORG_POSTGRES_USER:-explorarte_app}
+      ORG_DATABASE_PASSWORD: ${ORG_POSTGRES_PASSWORD:?set ORG_POSTGRES_PASSWORD in .env}
+      ORG_DATABASE_SSLMODE: disable
+      ORG_DATABASE_MAX_CONNS: ${ORG_DATABASE_MAX_CONNS:-8}
+      ORG_DATABASE_MIN_CONNS: ${ORG_DATABASE_MIN_CONNS:-1}
+      ORG_DATABASE_MAX_CONN_LIFETIME: ${ORG_DATABASE_MAX_CONN_LIFETIME:-30m}
+      ORG_DATABASE_MAX_CONN_IDLE_TIME: ${ORG_DATABASE_MAX_CONN_IDLE_TIME:-5m}
+      ORG_DATABASE_HEALTH_CHECK_PERIOD: ${ORG_DATABASE_HEALTH_CHECK_PERIOD:-30s}
+      ORG_DATABASE_CONNECT_TIMEOUT: ${ORG_DATABASE_CONNECT_TIMEOUT:-5s}
+      ORG_DATABASE_PING_TIMEOUT: ${ORG_DATABASE_PING_TIMEOUT:-2s}
+      ORG_DATABASE_STATEMENT_TIMEOUT: ${ORG_DATABASE_STATEMENT_TIMEOUT:-30s}
+      ORG_DATABASE_LOCK_TIMEOUT: ${ORG_DATABASE_LOCK_TIMEOUT:-5s}
+      ORG_DATABASE_AUTO_MIGRATE: ${ORG_DATABASE_AUTO_MIGRATE:-false}
+      ORG_DATABASE_MIGRATION_TIMEOUT: ${ORG_DATABASE_MIGRATION_TIMEOUT:-45s}
+      ORG_DATABASE_MIGRATION_RETRY: ${ORG_DATABASE_MIGRATION_RETRY:-5s}
+      ORG_CANONICAL_DIR: /opt/explorarte/docs/canonical
+      ORG_REGISTRY_SYNC_TIMEOUT: ${ORG_REGISTRY_SYNC_TIMEOUT:-30s}
+      ORG_TASK_ORGANIZATION_ID: ${ORG_TASK_ORGANIZATION_ID:-explorarte}
+      ORG_TASK_RECONCILER_ENABLED: ${ORG_TASK_RECONCILER_ENABLED:-true}
+      ORG_TASK_RECONCILE_INTERVAL: ${ORG_TASK_RECONCILE_INTERVAL:-5s}
+      ORG_TASK_RECONCILE_BATCH_SIZE: ${ORG_TASK_RECONCILE_BATCH_SIZE:-100}
+      ORG_TASK_DEFAULT_MAX_ATTEMPTS: ${ORG_TASK_DEFAULT_MAX_ATTEMPTS:-5}
+      ORG_TASK_DEFAULT_LEASE_DURATION: ${ORG_TASK_DEFAULT_LEASE_DURATION:-2m}
+      ORG_TASK_MAX_LEASE_DURATION: ${ORG_TASK_MAX_LEASE_DURATION:-15m}
+      ORG_TASK_RETRY_BASE_DELAY: ${ORG_TASK_RETRY_BASE_DELAY:-5s}
+      ORG_TASK_RETRY_MAX_DELAY: ${ORG_TASK_RETRY_MAX_DELAY:-10m}
+      ORG_TASK_OUTBOX_MAX_ATTEMPTS: ${ORG_TASK_OUTBOX_MAX_ATTEMPTS:-10}
+      ORG_TASK_OUTBOX_CLAIM_DURATION: ${ORG_TASK_OUTBOX_CLAIM_DURATION:-1m}
+      ORG_TASK_COMMAND_TIMEOUT: ${ORG_TASK_COMMAND_TIMEOUT:-30s}
+      ORG_STAGING_ENABLED: ${ORG_STAGING_ENABLED:-false}
+      ORG_STAGING_REPOSITORIES_FILE: ${ORG_STAGING_REPOSITORIES_FILE:-/etc/explorarte/repositories.yaml}
+      ORG_STAGING_WORKSPACE_ROOT: ${ORG_STAGING_WORKSPACE_ROOT:-/var/lib/explorarte/staging/workspaces}
+      ORG_STAGING_ARTIFACT_ROOT: ${ORG_STAGING_ARTIFACT_ROOT:-/var/lib/explorarte/staging/artifacts}
+      ORG_STAGING_QUARANTINE_ROOT: ${ORG_STAGING_QUARANTINE_ROOT:-/var/lib/explorarte/staging/quarantine}
+      ORG_STAGING_COMMAND_TIMEOUT: ${ORG_STAGING_COMMAND_TIMEOUT:-2m}
+      ORG_STAGING_MAX_ARTIFACT_BYTES: ${ORG_STAGING_MAX_ARTIFACT_BYTES:-67108864}
+      ORG_STAGING_MAX_CHANGED_FILES: ${ORG_STAGING_MAX_CHANGED_FILES:-500}
+      ORG_STAGING_STALE_AFTER: ${ORG_STAGING_STALE_AFTER:-30m}
+      ORG_STAGING_RECONCILE_INTERVAL: ${ORG_STAGING_RECONCILE_INTERVAL:-30s}
+      ORG_STAGING_RECONCILE_BATCH_SIZE: ${ORG_STAGING_RECONCILE_BATCH_SIZE:-100}
+      ORG_STAGING_GIT_BINARY: ${ORG_STAGING_GIT_BINARY:-git}
+      # Trusted runtime configuration for internal/coderunner.Worker.
+      # RepositoryID/BaseCommit/TargetRef are only the STARTUP-VALIDATION
+      # default (cmd/orgctl/code_runner.go refuses to start if any of
+      # these five are empty) -- every real engineering-mission task
+      # overrides base/target per-task via engineeringmission.
+      # WorkspaceResolver reading that mission's own durably-stored
+      # BaseSHA (internal/coderunner/staging_adapter.go:Open), never this
+      # static value. Confirmed by reading that resolution path before
+      # setting these.
+      ORG_CODE_RUNNER_PRINCIPAL_ID: "22"
+      ORG_CODE_RUNNER_WORKER_ID: code-runner-01
+      ORG_CODE_RUNNER_REPOSITORY_ID: explorarte-organization
+      ORG_CODE_RUNNER_BASE_COMMIT: 599e5d78a5280b31dbdd37fb7e172270609148c8
+      ORG_CODE_RUNNER_TARGET_REF: refs/heads/main
+      GOCACHE: /tmp/go-cache
+      GOMODCACHE: /tmp/go-mod
+      GOFLAGS: -mod=mod
+    volumes:
+      - /etc/explorarte/repositories.yaml:/etc/explorarte/repositories.yaml:ro
+      - /etc/explorarte/secrets/code-runner-identity.pem:/run/secrets/code-runner-identity.pem:ro
+      - /var/lib/explorarte/staging/repo/explorarte-organization:/var/lib/explorarte/staging/repo/explorarte-organization
+      - /var/lib/explorarte/staging/workspaces:/var/lib/explorarte/staging/workspaces
+      - /var/lib/explorarte/staging/artifacts:/var/lib/explorarte/staging/artifacts
+      - /var/lib/explorarte/staging/quarantine:/var/lib/explorarte/staging/quarantine
+    read_only: true
+    tmpfs:
+      - /tmp:rw,exec,nosuid,size=2g
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      # Matches ORG-AUDIT-008's own reasoning for model-worker: process
+      # liveness only, not proof of forward progress.
+      test: ["CMD-SHELL", "pgrep -f 'orgctl code-runner worker run' > /dev/null"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+    stop_grace_period: 30s
+    depends_on:
+      - postgres
+    networks:
+      - org-internal
+
 volumes:
   # ORG-AUDIT-007 pinned this to the project name so worktree Compose
   # projects would never collide with production over the same volume --
