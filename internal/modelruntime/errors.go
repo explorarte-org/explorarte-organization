@@ -24,6 +24,11 @@ var (
 	ErrResponseRejected         = errors.New("model response rejected")
 	ErrCancellationRequested    = errors.New("model invocation cancellation requested")
 	ErrDatabaseUnavailable      = errors.New("model runtime database unavailable")
+	// ErrProviderWalletNotProvisioned is returned when a provider is
+	// priced and routed but has no provider_wallets row at all (G2-001) --
+	// distinct from a real budget/balance exhaustion, which is a funded
+	// wallet that simply ran out, not a forgotten provisioning step.
+	ErrProviderWalletNotProvisioned = errors.New("model runtime: provider wallet not provisioned")
 
 	ErrAssignmentUnavailable        = errors.New("model dispatcher assignment unavailable")
 	ErrAssignmentRevisionDrift      = errors.New("model dispatcher assignment organization revision drift")

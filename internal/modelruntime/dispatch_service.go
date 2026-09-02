@@ -514,7 +514,13 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64) (Dis
 			EstimatedInputTokens: estimatedInputTokens, MaxOutputTokens: int64(invocation.MaxOutputTokens),
 		}, s.clock.Now())
 		if reserveErr != nil {
-			return failBeforeSend("budget_exceeded", reserveErr, AuditInvocationFailed)
+			code := "budget_exceeded"
+			if errors.Is(reserveErr, ErrProviderWalletNotProvisioned) {
+				// Distinct from real budget exhaustion (G2-001): a forgotten
+				// provisioning step, not a spend limit anyone actually hit.
+				code = "provider_wallet_not_provisioned"
+			}
+			return failBeforeSend(code, reserveErr, AuditInvocationFailed)
 		}
 		costReservation, reservationApplied = reserved, true
 		defer func() {

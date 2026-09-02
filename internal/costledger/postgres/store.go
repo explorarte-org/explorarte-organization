@@ -329,6 +329,29 @@ ON CONFLICT (provider_id, invocation_id, kind) WHERE invocation_id IS NOT NULL D
 	return tx.Commit(ctx)
 }
 
+// ProvisionedProviderIDs implements
+// modelruntime.ProviderWalletProvisionChecker (G2-001): it reports every
+// provider_id that already has a provider_wallets row, so a caller can
+// tell "funded, possibly at $0" apart from "never provisioned at all"
+// without duplicating this table's own knowledge of which providers
+// exist. Read-only -- never creates a row.
+func (s *Store) ProvisionedProviderIDs(ctx context.Context) (map[string]bool, error) {
+	rows, err := s.pool.Query(ctx, `SELECT provider_id FROM provider_wallets`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	provisioned := make(map[string]bool)
+	for rows.Next() {
+		var providerID string
+		if err := rows.Scan(&providerID); err != nil {
+			return nil, err
+		}
+		provisioned[providerID] = true
+	}
+	return provisioned, rows.Err()
+}
+
 func (s *Store) Reconcile(ctx context.Context, providerID string, invocationID int64, actualUSD modelpricing.USDNanos, now time.Time) error {
 	if actualUSD < 0 {
 		return fmt.Errorf("%w: actual cost must be non-negative", costledger.ErrInvalidRequest)
