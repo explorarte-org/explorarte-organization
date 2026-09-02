@@ -94,4 +94,16 @@ var (
 	// blocked with a reason an operator can act on, never left to
 	// propagate as a raw, unclassified filesystem error.
 	ErrContextSourceRejected = errors.New("executive context source rejected")
+	// ErrModelAuthorityViolation means the model's own output tried to
+	// control something only the host may decide -- naming a
+	// forbiddenModelKeys field (provider/model/transport/authority/etc,
+	// ErrForbiddenField) or delegating a task to a role outside the
+	// department the plan was scoped to (ErrCrossDepartmentDelegation).
+	// Deliberately its own sentinel, never folded into
+	// ErrModelResultContractRejected: that one is retryable because a
+	// fresh attempt may produce a valid result, but an attempted
+	// authority escalation is not a quality problem a retry can fix --
+	// it is a fact about this model/task that a fresh attempt cannot
+	// un-happen. The root is blocked for human review, not retried.
+	ErrModelAuthorityViolation = errors.New("executive model attempted an authority violation")
 )
