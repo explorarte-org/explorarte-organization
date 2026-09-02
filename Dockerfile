@@ -60,6 +60,15 @@ FROM golang@sha256:908f8ff2ec296df2f349563072c7925775cd28b50361a52ed834a8a37399b
 # the exact same numeric UID, not just a shared group.
 RUN apt-get update && apt-get install -y --no-install-recommends git ripgrep ca-certificates && rm -rf /var/lib/apt/lists/* && groupadd --system --gid 65532 coderunner && useradd --system --no-create-home --shell /usr/sbin/nologin --uid 65532 --gid 65532 coderunner
 COPY --from=build /out/orgctl /usr/local/bin/orgctl
+# Every stage that runs orgctl needs this -- config.Load() validates the
+# whole struct including the canonical registry at startup, same as
+# orgd/model-worker below. Missing here (found live, first real deploy
+# with ORG_STAGING_ENABLED=true): code-runner crash-looped on
+# "read capability matrix: open /opt/explorarte/docs/canonical/
+# capability-matrix.yaml: no such file or directory" -- the orgd stage
+# had this COPY, this one never did.
+COPY --from=build /src/docs/canonical /opt/explorarte/docs/canonical
+ENV ORG_CANONICAL_DIR=/opt/explorarte/docs/canonical
 RUN mkdir -p /var/lib/explorarte/staging/workspaces && chown coderunner:coderunner /var/lib/explorarte/staging/workspaces
 ENV ORG_STAGING_WORKSPACE_ROOT=/var/lib/explorarte/staging/workspaces
 USER coderunner
