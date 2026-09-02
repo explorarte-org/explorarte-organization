@@ -406,7 +406,7 @@ func TestHarnessSuccessMustMatchTheDurableResult(t *testing.T) {
 			t.Fatalf("invocations=%d", len(invocations))
 		}
 		result, _ := fixture.models.GetResult(context.Background(), invocations[0].ID)
-		result.JSONOutput = []byte(`{"schema_version":"department-plan/v1","department_id":"otro","tasks":[],"review_criteria":[],"unresolved":[]}`)
+		result.JSONOutput = []byte(`{"schema_version":"department-plan/v2","department_id":"otro","tasks":[],"review_criteria":[],"unresolved":[]}`)
 		fixture.models.setResult(invocations[0].ID, result)
 	}
 	if _, err := fixture.drive(t); !errors.Is(err, ErrContractRejected) {

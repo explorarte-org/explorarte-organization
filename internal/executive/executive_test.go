@@ -140,7 +140,7 @@ func TestDependencyCycleRejected(t *testing.T) {
 func TestBudgetNormalFormulaAndBounds(t *testing.T) {
 	// Plan, adjudicate and close, plus two calls per department and the
 	// worker attempts the plan asked for.
-	if got := NormalExpectedCalls(3, 8); got != 17 {
+	if got := NormalExpectedCalls(3, 8, true); got != 17 {
 		t.Fatalf("got=%d", got)
 	}
 	l := DefaultLimits()
