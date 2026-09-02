@@ -41,6 +41,25 @@ import (
 	taskpostgres "github.com/Mireuz13/explorarte-organization/internal/tasks/postgres"
 )
 
+// checkCredentialReadable proves a configured credential file is
+// actually openable by this process right now (G2-002) -- an ownership
+// or permission drift between when a secret was provisioned and when its
+// provider is activated must surface here, not as a confusing
+// "credential_unavailable" adapter error the first time someone flips
+// the provider on. An empty path means the credential simply is not
+// configured for this deployment, which is not a defect.
+func checkCredentialReadable(path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("%s is not readable by this process: %w", path, err)
+	}
+	return file.Close()
+}
+
 type RegistryRuntime struct {
 	Config   modelruntime.RuntimeConfig
 	Registry *modelruntime.RegistryService
@@ -177,6 +196,26 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	xaiConfig, err := xai.LoadConfig(os.LookupEnv, runtimeCfg.MaxResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("load xAI provider config: %w", err)
+	}
+	// G2-002: a credential prepared for future use (mounted, referenced
+	// in env) but not yet readable by this process's UID must fail LOUD
+	// here, at startup, not silently at first real dispatch. Checked
+	// regardless of Enabled -- the incident this closes (grok-api-key
+	// owned root:root for three weeks) was a credential prepared ahead of
+	// activation, and the whole point is catching that gap before
+	// activation, not after. A credential file that is simply not
+	// configured (empty path) is not checked -- that is a deliberate
+	// "provider absent" state, not a readiness defect.
+	for _, credential := range []struct{ provider, path string }{
+		{"openai-compatible", openAIConfig.CredentialFile},
+		{"DeepSeek", deepseekConfig.CredentialFile},
+		{"Gemini", geminiConfig.CredentialFile},
+		{"OpenAI Responses", openaiResponsesConfig.CredentialFile},
+		{"xAI", xaiConfig.CredentialFile},
+	} {
+		if err := checkCredentialReadable(credential.path); err != nil {
+			return nil, fmt.Errorf("%s credential file: %w", credential.provider, err)
+		}
 	}
 	registeredAdapters := make([]modelruntime.ProviderAdapter, 0, 6)
 	if openAIConfig.Enabled {
