@@ -16,6 +16,7 @@ import (
 	contextcompilerpostgres "github.com/Mireuz13/explorarte-organization/internal/contextcompiler/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/contextengine"
 	contextbootstrap "github.com/Mireuz13/explorarte-organization/internal/contextengine/bootstrap"
+	contextenginepostgres "github.com/Mireuz13/explorarte-organization/internal/contextengine/postgres"
 	costledgerpostgres "github.com/Mireuz13/explorarte-organization/internal/costledger/postgres"
 	dispatchbootstrap "github.com/Mireuz13/explorarte-organization/internal/modeldispatch/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/modelegress"
@@ -129,6 +130,11 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	if err != nil {
 		return nil, fmt.Errorf("open execution context view store: %w", err)
 	}
+	contextSnapshotStore, err := contextenginepostgres.New(platformStore)
+	if err != nil {
+		return nil, fmt.Errorf("open context snapshot selector reader: %w", err)
+	}
+	modelStore.SetContextSnapshotReader(contextSnapshotStore)
 	catalog := catalogAdapter{reader: registryRepo}
 	tasksAdapter := taskAdapter{reader: taskStore}
 	contexts := contextAdapter{service: contextRuntime.Service, store: executionContextViewStore}

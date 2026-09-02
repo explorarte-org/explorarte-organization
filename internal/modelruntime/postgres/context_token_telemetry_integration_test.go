@@ -13,6 +13,7 @@ import (
 
 	"github.com/Mireuz13/explorarte-organization/internal/contextcompiler"
 	contextcompilerpostgres "github.com/Mireuz13/explorarte-organization/internal/contextcompiler/postgres"
+	contextenginepostgres "github.com/Mireuz13/explorarte-organization/internal/contextengine/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
 	modelpostgres "github.com/Mireuz13/explorarte-organization/internal/modelruntime/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
@@ -121,6 +122,11 @@ func TestContextTokenTelemetryPostgreSQL17(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	contextSnapshotStore, err := contextenginepostgres.New(platform)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelStore.SetContextSnapshotReader(contextSnapshotStore)
 
 	registrySvc, err := modelruntime.NewRegistryService(filepath.Join("..", "..", "..", "docs", "canonical"), modelIntegrationOrganization, catalog, modelStore)
 	if err != nil {
@@ -137,7 +143,7 @@ func TestContextTokenTelemetryPostgreSQL17(t *testing.T) {
 	}
 
 	// newInvocation builds one real, minimal model_invocations row bound to
-	// a fresh real context_snapshots row (via insertModelExecutionFixture),
+	// a fresh real context snapshot row (via insertModelExecutionFixture),
 	// satisfying every FK model_invocations itself declares -- without
 	// going through the full CreateInvocation/egress/identity pipeline,
 	// which is irrelevant to what M1.2's telemetry write/read paths do.

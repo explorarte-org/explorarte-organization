@@ -62,6 +62,19 @@ type ContextTokenTelemetryReader interface {
 	GetContextTokenTelemetry(ctx context.Context, contextSnapshotID int64) (ContextTokenTelemetry, error)
 }
 
+// ContextSnapshotSelectorReader is an OPTIONAL capability a context-engine
+// reader may additionally provide (mirrors ContextTokenTelemetryReader).
+// GetContextExecutionTelemetry uses it to read a context snapshot's
+// ActorRoleID/TaskClass/ExecutionPurpose/ActorUnitID instead of querying
+// that table directly, so Model Runtime depends only on this interface's
+// contract, never on that table's schema or name. TaskClass/
+// ExecutionPurpose/ActorUnitID stay nil exactly when the underlying
+// snapshot predates M1.3 (the owning package's own NULL-means-pre-M1.3
+// convention) -- never coalesced into an empty string.
+type ContextSnapshotSelectorReader interface {
+	GetContextSnapshotSelectorFacts(ctx context.Context, contextSnapshotID int64) (actorRoleID string, taskClass, executionPurpose, actorUnitID *string, err error)
+}
+
 // ContextTokenTelemetryRecorder is an OPTIONAL capability a Store may
 // additionally provide. Writing this telemetry is always best-effort,
 // exactly like ProviderRenderTelemetryRecorder: a failure here must never
@@ -92,15 +105,18 @@ type ContextExecutionTelemetry struct {
 	ContextProfileVersion  string
 
 	// ActorRoleID/TaskClass/ExecutionPurpose/ActorUnitID/SelectionKind are
-	// M1.3's durable selector/provenance facts, read here by JOINing the
-	// authoritative rows that already own them (context_snapshots,
-	// execution_context_views) -- never duplicated into a new column on
-	// this telemetry row. ActorRoleID is never empty (an existing,
-	// required context_snapshots column, unaffected by M1.3).
+	// M1.3's durable selector/provenance facts, read here through
+	// ContextSnapshotSelectorReader (ActorRoleID/TaskClass/ExecutionPurpose/
+	// ActorUnitID) and the execution_context_views row Model Runtime already
+	// owns joining against (SelectionKind) -- never duplicated into a new
+	// column on this telemetry row, and never read by this package via a
+	// direct query against the table ContextSnapshotSelectorReader's
+	// implementation owns. ActorRoleID is never empty (an existing,
+	// required column on that context snapshot, unaffected by M1.3).
 	// TaskClass/ExecutionPurpose/ActorUnitID are nil exactly when the
-	// underlying context_snapshots row predates M1.3 (see contextengine's
-	// own NULL-means-pre-M1.3 convention); SelectionKind is never nil --
-	// every execution_context_views row, historical or new, has one (see
+	// underlying context snapshot predates M1.3 (see contextengine's own
+	// NULL-means-pre-M1.3 convention); SelectionKind is never nil -- every
+	// execution_context_views row, historical or new, has one (see
 	// migration 000053's backfill).
 	ActorRoleID      string
 	TaskClass        *string

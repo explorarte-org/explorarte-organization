@@ -12,13 +12,33 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type Store struct{ pool *pgxpool.Pool }
+type Store struct {
+	pool *pgxpool.Pool
+	// contextSnapshots is OPTIONAL and nil by default -- only
+	// GetContextExecutionTelemetry needs it, and nothing in production
+	// calls that method yet. Set via SetContextSnapshotReader once a real
+	// caller exists; see that method's own doc comment for why this is a
+	// setter rather than a required constructor argument.
+	contextSnapshots modelruntime.ContextSnapshotSelectorReader
+}
 
 func New(store *platformpostgres.Store) (*Store, error) {
 	if store == nil || store.Pool() == nil {
 		return nil, errors.New("model runtime store requires initialized PostgreSQL")
 	}
 	return &Store{pool: store.Pool()}, nil
+}
+
+// SetContextSnapshotReader wires the OPTIONAL capability
+// GetContextExecutionTelemetry needs to read a context snapshot's
+// ActorRoleID/TaskClass/ExecutionPurpose/ActorUnitID without this package
+// ever querying the context-snapshot table directly. A setter, not a constructor
+// parameter, because the other three New(...) call sites in this codebase
+// (registry sync, orgctl's code runner) never call
+// GetContextExecutionTelemetry and have no reason to construct or thread a
+// context-engine reader through just to satisfy an unused parameter.
+func (s *Store) SetContextSnapshotReader(reader modelruntime.ContextSnapshotSelectorReader) {
+	s.contextSnapshots = reader
 }
 
 func lockInvocation(ctx context.Context, tx pgx.Tx, invocationID int64) error {

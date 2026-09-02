@@ -33,21 +33,35 @@ import (
 // that the referenced view belongs to this exact invocation's own
 // (context_snapshot_id, organization_id): ecv.id alone is never enough.
 //
-// Every field is read from a table this package or contextcompiler/postgres
-// already owns; nothing here is a second write path. organizationID scopes
-// every row this can ever return -- a caller for one organization can never
-// read another organization's invocation/view telemetry through this
-// method (section 18), enforced in the WHERE clause, not only by trusting
-// the caller's own bookkeeping.
+// This package never queries the context-snapshot table directly (Model Runtime is
+// consumed only through contextengine's own public interfaces): the
+// ActorRoleID/TaskClass/ExecutionPurpose/ActorUnitID fields come from a
+// second call through the caller-supplied ContextSnapshotSelectorReader
+// (see SetContextSnapshotReader), keyed on the context_snapshot_id this
+// package's own JOIN above already scoped to this exact
+// organization/invocation -- so the reader is never trusted to do that
+// scoping itself. GetContextExecutionTelemetry fails closed with a clear
+// configuration error if no reader has been wired, rather than a nil
+// pointer panic.
+//
+// Every field is read from a table this package or the injected reader's
+// implementation already owns; nothing here is a second write path.
+// organizationID scopes every row the first query below can ever return --
+// a caller for one organization can never read another organization's
+// invocation/view telemetry through this method (section 18), enforced in
+// the WHERE clause, not only by trusting the caller's own bookkeeping.
 func (s *Store) GetContextExecutionTelemetry(ctx context.Context, organizationID string, invocationID int64) (modelruntime.ContextExecutionTelemetry, error) {
 	if organizationID == "" || invocationID <= 0 {
 		return modelruntime.ContextExecutionTelemetry{}, fmt.Errorf("%w: organization ID and invocation ID are required", modelruntime.ErrInvalidRequest)
+	}
+	if s.contextSnapshots == nil {
+		return modelruntime.ContextExecutionTelemetry{}, errors.New("context execution telemetry: no ContextSnapshotSelectorReader wired (call SetContextSnapshotReader)")
 	}
 	row := s.pool.QueryRow(ctx, `
 SELECT
     mi.id, mi.task_id, mi.attempt_id, mi.context_snapshot_id,
     t.execution_context_view_id, ecv.context_profile_id, ecv.context_profile_version,
-    cs.actor_role_id, cs.task_class, cs.execution_purpose, cs.actor_unit_id, ecv.selection_kind,
+    ecv.selection_kind,
     t.token_estimator_id, t.token_estimator_version,
     t.estimated_provider_visible_tokens, t.estimated_stable_prefix_tokens, t.estimated_dynamic_suffix_tokens,
     t.segment_token_estimates,
@@ -61,9 +75,6 @@ JOIN execution_context_views ecv
     ON ecv.id = t.execution_context_view_id
     AND ecv.context_snapshot_id = mi.context_snapshot_id
     AND ecv.organization_id = mi.organization_id
-JOIN context_snapshots cs
-    ON cs.id = mi.context_snapshot_id
-    AND cs.organization_id = mi.organization_id
 LEFT JOIN model_invocation_usage u ON u.invocation_id = mi.id
 WHERE mi.organization_id = $1 AND mi.id = $2 AND t.execution_context_view_id IS NOT NULL
 `, organizationID, invocationID)
@@ -75,7 +86,7 @@ WHERE mi.organization_id = $1 AND mi.id = $2 AND t.execution_context_view_id IS 
 	err := row.Scan(
 		&result.InvocationID, &result.TaskID, &result.AttemptID, &result.ContextSnapshotID,
 		&result.ExecutionContextViewID, &result.ContextProfileID, &result.ContextProfileVersion,
-		&result.ActorRoleID, &result.TaskClass, &result.ExecutionPurpose, &result.ActorUnitID, &result.SelectionKind,
+		&result.SelectionKind,
 		&result.EstimatorID, &result.EstimatorVersion,
 		&result.EstimatedProviderVisibleTokens, &result.EstimatedStablePrefixTokens, &result.EstimatedDynamicSuffixTokens,
 		&segmentsJSON,
@@ -93,5 +104,10 @@ WHERE mi.organization_id = $1 AND mi.id = $2 AND t.execution_context_view_id IS 
 	if err := json.Unmarshal(segmentsJSON, &result.SegmentTokenEstimates); err != nil {
 		return modelruntime.ContextExecutionTelemetry{}, fmt.Errorf("unmarshal segment token estimates: %w", err)
 	}
+	actorRoleID, taskClass, executionPurpose, actorUnitID, err := s.contextSnapshots.GetContextSnapshotSelectorFacts(ctx, result.ContextSnapshotID)
+	if err != nil {
+		return modelruntime.ContextExecutionTelemetry{}, fmt.Errorf("read context snapshot selector facts: %w", err)
+	}
+	result.ActorRoleID, result.TaskClass, result.ExecutionPurpose, result.ActorUnitID = actorRoleID, taskClass, executionPurpose, actorUnitID
 	return result, nil
 }

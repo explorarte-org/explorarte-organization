@@ -231,6 +231,24 @@ RETURNING `+snapshotColumns, snapshotID, taskClass, executionPurpose, actorUnitI
 	return updated, nil
 }
 
+// GetContextSnapshotSelectorFacts implements
+// modelruntime.ContextSnapshotSelectorReader. It exists so Model Runtime's
+// combined M1.2 telemetry read never queries context_snapshots directly --
+// only this package, which owns the table, does. TaskClass/
+// ExecutionPurpose/ActorUnitID stay nil exactly when the row has never had
+// them set (a historical, pre-M1.3 snapshot -- see BindSelectorFacts above),
+// mirroring Snapshot's own NULL-means-pre-M1.3 convention without
+// coalescing that absence into an empty string the way scanSnapshot/deref
+// do for the wider Snapshot type.
+func (s *Store) GetContextSnapshotSelectorFacts(ctx context.Context, contextSnapshotID int64) (actorRoleID string, taskClass, executionPurpose, actorUnitID *string, err error) {
+	err = s.pool.QueryRow(ctx, `SELECT actor_role_id, task_class, execution_purpose, actor_unit_id FROM context_snapshots WHERE id = $1`, contextSnapshotID).
+		Scan(&actorRoleID, &taskClass, &executionPurpose, &actorUnitID)
+	if err != nil {
+		return "", nil, nil, nil, mapError(err)
+	}
+	return actorRoleID, taskClass, executionPurpose, actorUnitID, nil
+}
+
 func (s *Store) RecordForbiddenSourceRejection(ctx context.Context, request contextengine.BuildRequest, reason contextengine.ReasonCode, now time.Time) (err error) {
 	keyPayload, err := json.Marshal(struct {
 		OrganizationID string                   `json:"organization_id"`
