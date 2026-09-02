@@ -163,6 +163,18 @@ services:
       - org-internal
 
   model-worker:
+    # Dockerfile's HEALTHCHECK (orgctl health --ready --url http://127.0.0.1:8080)
+    # is written for orgd's HTTP server. model-worker is a polling loop with no
+    # HTTP server at all -- inheriting that healthcheck unmodified makes it fail
+    # unconditionally (connection refused on 8080, confirmed live), reporting
+    # "unhealthy" regardless of whether the worker is actually running and
+    # dispatching (Wave 5 finding, ORGANIZATION-GRAND-AUDIT-001). Disabled here
+    # rather than left silently wrong; Docker's own container-running state is
+    # still a real liveness signal. A genuine worker-specific readiness check
+    # (e.g. a recent-claim heartbeat) is real future work, not a healthcheck
+    # fix -- it needs new code, not a compose override.
+    healthcheck:
+      disable: true
     # orgctl model worker run: the only process that consumes
     # ORG_MODEL_EXECUTION_IDENTITY_* / dispatches real invocations (orgd
     # never imports internal/modelruntime -- see
