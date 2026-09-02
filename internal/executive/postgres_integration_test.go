@@ -336,11 +336,22 @@ func (f *integrationModelRuntime) ProviderFailureRetryable(context.Context, int6
 func (f *integrationModelRuntime) Execute(_ context.Context, command executive.HarnessRunCommand) (executive.HarnessRunOutcome, error) {
 	f.runs = append(f.runs, command)
 	if f.stopWithoutVerdict {
-		// Authority that could not be consulted: nothing durable is written and
-		// the attempt keeps its lease, which is the state a crash leaves.
+		// HarnessFailureCancelled is what actually leaves the attempt's
+		// lease untouched today: orchestrator.go's switch on it runs
+		// ambiguityGuard (which finds nothing to reconcile here, since no
+		// invocation was ever durably written) and then returns
+		// ErrExecutionInterrupted without ever calling RecordAttemptFailed
+		// or forgetLease -- exactly the state a crash leaves.
+		// HarnessFailureAuthorityUnavailable used to leave the same trace,
+		// but rescheduleAfterAuthorityOutage was hardened to close the
+		// attempt and drop its lease immediately (avoiding a duplicate
+		// provider call on retry) -- a real, deliberate improvement this
+		// fixture was never updated for. Retryable must be false here:
+		// HarnessRunOutcome.Validate() only allows Retryable=true when
+		// Failure is HarnessFailureAuthorityUnavailable.
 		return executive.HarnessRunOutcome{
-			Status: executive.HarnessRunFailed, Failure: executive.HarnessFailureAuthorityUnavailable,
-			Retryable: true, TerminationReason: "execution authority unavailable",
+			Status: executive.HarnessRunFailed, Failure: executive.HarnessFailureCancelled,
+			Retryable: false, TerminationReason: "execution cancelled",
 		}, nil
 	}
 	purpose := command.Purpose.LegacyPurpose()
