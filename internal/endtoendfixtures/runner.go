@@ -11,6 +11,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/evaluation/fixtures"
 	"github.com/Mireuz13/explorarte-organization/internal/evaluationdb"
 	"github.com/Mireuz13/explorarte-organization/internal/executive"
+	executivepostgres "github.com/Mireuz13/explorarte-organization/internal/executive/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/executive/runtimeadapter"
 	memorypostgres "github.com/Mireuz13/explorarte-organization/internal/memory/postgres"
 	dispatchpostgres "github.com/Mireuz13/explorarte-organization/internal/modeldispatch/postgres"
@@ -94,6 +95,15 @@ func (r Runner) Run(ctx context.Context, f fixtures.Fixture, subjectID string) (
 	if err != nil {
 		return fixtures.RunOutcome{}, err
 	}
+	// Acceptance became a required Dependencies field after this fixture was
+	// last touched (see NewOrchestrator's completeness check) -- wired here
+	// against the same real Postgres-backed store production uses
+	// (internal/executive/bootstrap/runtime.go), not a fake, so acceptance
+	// recording is exercised rather than stubbed.
+	acceptanceStore, err := executivepostgres.NewAcceptanceStore(r.Store.Pool())
+	if err != nil {
+		return fixtures.RunOutcome{}, err
+	}
 	orchestrator, err := executive.NewOrchestrator(
 		executive.Dependencies{
 			OrganizationID: fixtureOrganization,
@@ -112,6 +122,7 @@ func (r Runner) Run(ctx context.Context, f fixtures.Fixture, subjectID string) (
 			Completion:    h.completion,
 			Decisions:     h.decisions,
 			Authorization: h.authz,
+			Acceptance:    acceptanceStore,
 			Limits:        executive.DefaultLimits(),
 			Clock:         executive.ClockFunc(time.Now),
 		},
