@@ -1844,7 +1844,7 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		Purpose:              purpose,
 		OutputSchema:         schema,
 		ExecutionContract:    executionContractFor(purpose, required),
-		MaxOutputTokens:      o.limits.MaxOutputTokens,
+		MaxOutputTokens:      o.limits.MaxOutputTokensFor(purpose),
 		CorrelationID:        root.CorrelationID,
 		CausationID:          attemptCausation(task.ID, lease.AttemptID),
 		Deadline:             o.clock.Now().Add(o.limits.InvocationDeadline),

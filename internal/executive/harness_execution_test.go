@@ -394,6 +394,43 @@ func TestUnknownPurposeNeverReachesTheHarness(t *testing.T) {
 	}
 }
 
+// TestMaxOutputTokensThreadsPerPurposeIntoTheHarnessCommand (RECON-001):
+// Limits.MaxOutputTokensFor is not merely defined, it is what
+// driveTypedTask actually puts on HarnessRunCommand -- department-worker
+// gets the reduced ceiling, every other purpose still gets the default.
+// Two independent fixtures, not one task driven twice: a typed task's own
+// state (attempt/lease/completion) is not meant to be re-driven for a
+// second purpose, and reusing one risks the second call silently
+// short-circuiting instead of producing a fresh, observable command.
+func TestMaxOutputTokensThreadsPerPurposeIntoTheHarnessCommand(t *testing.T) {
+	worker := newHarnessFixture(t)
+	current, err := worker.tasks.GetTask(context.Background(), worker.task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The validate closure is a no-op, and driveTypedTask has its own
+	// PurposeDepartmentWorker handling that may still reject
+	// defaultHarnessBody's department-plan-shaped response downstream --
+	// irrelevant here: the command (and its MaxOutputTokens) is built and
+	// recorded by fakeHarness.Execute before that later validation ever runs.
+	_, _ = worker.orch.driveTypedTask(context.Background(), worker.root, current, departmentPlanOutputSchema,
+		PurposeDepartmentWorker, func(InvocationResult) error { return nil })
+	if worker.harness.callCount() == 0 {
+		t.Fatal("expected the harness to be called at least once")
+	}
+	if got := worker.harness.commands[len(worker.harness.commands)-1].MaxOutputTokens; got != 24000 {
+		t.Fatalf("department-worker MaxOutputTokens=%d, want 24000", got)
+	}
+
+	plan := newHarnessFixture(t)
+	if _, err = plan.drive(t); err != nil { // PurposeDepartmentPlan, via the fixture's own helper
+		t.Fatal(err)
+	}
+	if got, want := plan.harness.commands[len(plan.harness.commands)-1].MaxOutputTokens, DefaultLimits().MaxOutputTokens; got != want {
+		t.Fatalf("department-plan MaxOutputTokens=%d, want default %d (unchanged)", got, want)
+	}
+}
+
 // TestHarnessSuccessMustMatchTheDurableResult: the verdict carries the answer
 // for convenience, but the bytes that count are the ones Model Runtime
 // persisted and hashed. A disagreement means something rewrote the answer in

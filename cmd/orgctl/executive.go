@@ -23,6 +23,20 @@ import (
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 )
 
+// executiveModelCallDeadline bounds any executive CLI verb that may drive a
+// real model call (submit/resume/reconcile-gating). It replaces a hardcoded
+// 45s deadline that routinely raced real provider completion time (RECON-001):
+// read-only, pre-fix production data (model_provider_outcomes.request_duration_ms,
+// 2026-09-02) showed deepseek at p99=242.7s/max=245.0s and gemini at
+// p99=77.1s/max=138.1s -- both already several times past 45s on real,
+// successful calls, not failures. 12 minutes gives headroom above the
+// largest adapter-level HTTP timeout this fix also raises (openai_responses,
+// see its config.go) plus the deepseek precedent it already matches
+// (ORG_MODEL_PROVIDER_DEEPSEEK_REQUEST_TIMEOUT=10m in compose.yaml), with
+// margin for host-side work (context assembly, DB writes) around the
+// provider call itself.
+const executiveModelCallDeadline = 12 * time.Minute
+
 func runExecutive(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		printExecutiveUsage(stderr)
@@ -82,7 +96,7 @@ func runExecutiveSubmit(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "read executive goal: %v\n", err)
 		return exitInvalid
 	}
-	cfg, runtime, store, ctx, cancel, code := openExecutiveRuntime(stderr, "executive-submit", 45*time.Second)
+	cfg, runtime, store, ctx, cancel, code := openExecutiveRuntime(stderr, "executive-submit", executiveModelCallDeadline)
 	if code != exitOK {
 		return code
 	}
@@ -139,7 +153,7 @@ func runExecutiveResume(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "ROOT_TASK_ID must be a positive integer")
 		return exitUsage
 	}
-	_, runtime, store, ctx, cancel, code := openExecutiveRuntime(stderr, "executive-resume", 45*time.Second)
+	_, runtime, store, ctx, cancel, code := openExecutiveRuntime(stderr, "executive-resume", executiveModelCallDeadline)
 	if code != exitOK {
 		return code
 	}
@@ -338,7 +352,7 @@ func runExecutiveReconcileGating(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "usage: orgctl executive reconcile-gating [--limit 100] [--json]")
 		return exitUsage
 	}
-	_, runtime, store, ctx, cancel, code := openExecutiveRuntime(stderr, "executive-reconcile-gating", 45*time.Second)
+	_, runtime, store, ctx, cancel, code := openExecutiveRuntime(stderr, "executive-reconcile-gating", executiveModelCallDeadline)
 	if code != exitOK {
 		return code
 	}

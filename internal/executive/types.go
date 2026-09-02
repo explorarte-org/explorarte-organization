@@ -214,6 +214,43 @@ func DefaultLimits() Limits {
 	}
 }
 
+// MaxOutputTokensFor returns the output-token ceiling for one purpose
+// (RECON-001, G1-001/MODEL-003). MaxOutputTokens remains the default,
+// applied to every purpose whose legitimate output shape can genuinely
+// need it: PurposeCEOPlan/PurposeCEOClosure/PurposeDesignAdjudication and
+// PurposeAdversarialReview route through canonical policies that set a
+// real reasoning_effort (executive.ceo/executive.observer: xhigh;
+// research.adversarial_review: high -- docs/canonical/model-routing.yaml),
+// where hidden reasoning can consume a large share of the budget before
+// any visible text appears (this session's own live Luna incident:
+// reasoning.effort=high burned an entire 2800-token test budget on
+// invisible reasoning, zero visible output). PurposeDepartmentPlan and
+// PurposeDepartmentReview can legitimately contain nested
+// WorkerTaskProposal entries (MaxWorkerTasksPerPlan/MaxFollowupTasks
+// tasks, each up to MaxInstructionsBytes of instructions) whose
+// worst-case legitimate size already approaches the default ceiling, so
+// they keep it too. PurposeImplementationPlan (post-freeze, carries an
+// actual repository patch) needs the same headroom and is unreached in
+// production today regardless (ORG_STAGING_ENABLED=false).
+//
+// PurposeDepartmentWorker is the one exception: its schema (WorkerResult
+// -- Summary, EvidenceRefs, Evidence) is a small, flat, bounded structure
+// with no nested task lists, has NO reasoning_effort set on
+// department.worker's routing policy, and is the SPECIFIC purpose this
+// session traced a real production runaway to (invocation 134/140,
+// negocio/analista_costos, finish_reason=length at 65,521 output tokens
+// against the shared 128000 ceiling -- G3-004). A quarter of the default
+// ceiling is still many times larger than any legitimate WorkerResult
+// needs, while turning a repetition-loop/open-ended-answer runaway into a
+// truncation that dead-letters at 24K tokens of real spend instead of
+// 65K+.
+func (l Limits) MaxOutputTokensFor(purpose ExecutionPurpose) int {
+	if purpose == PurposeDepartmentWorker {
+		return 24000
+	}
+	return l.MaxOutputTokens
+}
+
 type OwnerGoal struct {
 	Goal string `json:"goal"`
 	// AcceptanceCriteria carries each requirement with the phase that owns
