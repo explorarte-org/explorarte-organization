@@ -26,7 +26,18 @@ const (
 	RequestSchemaVersion  = "openai.responses.request.v1"
 	ResponseSchemaVersion = "openai.responses.response.v1"
 
-	defaultRequestTimeout   = 2 * time.Minute
+	// defaultRequestTimeout was 2 minutes; raised as part of RECON-001. This
+	// is the CEO/executive.ceo purpose's real adapter (executive.ceo,
+	// executive.observer route here with reasoning_effort=xhigh) -- exactly
+	// the purpose this session repeatedly observed racing a short deadline
+	// against real completion time. No production request_duration_ms data
+	// exists yet for this specific provider (Gate F telemetry is live but
+	// this adapter has not accumulated rows), so this matches the deepseek
+	// precedent (ORG_MODEL_PROVIDER_DEEPSEEK_REQUEST_TIMEOUT=10m in
+	// compose.yaml, backed by real observed p99=242.7s/max=245.0s for a
+	// comparable reasoning-heavy workload) rather than inventing an
+	// unrelated number.
+	defaultRequestTimeout   = 10 * time.Minute
 	defaultFailureThreshold = 5
 	defaultOpenDuration     = 30 * time.Second
 )
