@@ -14,6 +14,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/config"
 	"github.com/Mireuz13/explorarte-organization/internal/executive/runtimeadapter"
 	"github.com/Mireuz13/explorarte-organization/internal/executive/smoke"
+	modelegressbootstrap "github.com/Mireuz13/explorarte-organization/internal/modelegress/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
@@ -124,6 +125,25 @@ RESTART IDENTITY CASCADE`); err != nil {
 		store.Close()
 		cancel()
 		t.Fatalf("sync registry: result=%+v err=%v", syncResult, syncErr)
+	}
+
+	// Registry sync alone leaves the current revision without a durable
+	// model-egress binding (they are two independently-maintained canonical
+	// documents, synced through two separate services) -- exactly the gap
+	// Preflight's EgressBound check exists to catch (added for
+	// CUTOVER-REHEARSAL-001). Every test in this file that expects to get
+	// PAST Preflight needs this bound, the same way a real deployment's
+	// bootstrap already does it via modelegress/bootstrap.Open.
+	egressRuntime, err := modelegressbootstrap.Open(cfg, store)
+	if err != nil {
+		store.Close()
+		cancel()
+		t.Fatal(err)
+	}
+	if egressSync, egressErr := egressRuntime.Service.Sync(ctx, true); egressErr != nil || !egressSync.Applied {
+		store.Close()
+		cancel()
+		t.Fatalf("sync model egress policy: result=%+v err=%v", egressSync, egressErr)
 	}
 
 	messages, err := smoke.Wire(cfg, store)
