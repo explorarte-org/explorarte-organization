@@ -124,3 +124,35 @@ CLI RAG smoke path, which rejects a review where `actor_role_id` and
 `internal/rag` and `scripts/test-integration.sh` are unchanged relative to
 `origin/main`, so this is recorded for a separate fix rather than changed in
 this audit.
+
+## Resolution status for the 2026-09-03 verification pass
+
+The findings above remain as the historical record of what was observed. The
+following separate commits resolve the reproducible blockers without changing
+the frozen audit evidence:
+
+- F-001: resolved by `7fe3463`; the eight reported Go files are formatted and
+  the repository `fmt-check` now passes.
+- F-002: resolved by `8590606`; durable outbox retention now uses the
+  PostgreSQL clock in both dry-run and delete paths, avoiding application
+  wall-clock skew.
+- F-003: resolved by `205606f`; the executive fitness guard now checks the
+  executable bounded ambiguity disposition rather than matching explanatory
+  comments or diagnostic text. The pure-model retry policy is unchanged.
+- F-004: resolved by `fea781e` and `608e7a8`; the model-egress, model-provider,
+  Alibaba CLI, and embedding fitness checks now match the current
+  implementation and canonical audit scope. The Gemini comment-only false
+  positive was removed without changing runtime behavior.
+- F-005: resolved by `fea781e`; the dispatch guard no longer rejects the
+  approved role-catalog update that belongs to this audit branch.
+- F-006: closed as an expected validation boundary. Compose validation passes
+  with process-local placeholder values; no `.env` or secret file is changed.
+- F-007: resolved by `f19e17a`; the disposable CLI RAG smoke fixture now uses
+  a non-self reviewer proposal while retaining `empresa/human` as the review
+  actor. The complete host-run integration suite reports 35/35 evidence units
+  passed and `COMPLETE_GREEN`.
+
+The local verification pass after these resolutions reports `make verify`,
+`make build-cross`, `make registry-validate`, both governance guards, Compose
+configuration, and the complete integration suite as passing. CI remains the
+authoritative remote gate before any VPS deployment smoke.
