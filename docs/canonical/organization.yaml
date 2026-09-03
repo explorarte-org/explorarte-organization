@@ -18,7 +18,7 @@ executive:
     may_mutate_projects: false
     late_result_policy: attach_to_next_turn
     model_policy: executive.observer
-    decision_status: candidate_owner_confirmed_behavior_model_pending
+    decision_status: owner_confirmation_required
 operational_departments:
 - id: ingenieria_ia
   leader_role_id: ingenieria_ia/orquestador
@@ -57,5 +57,5 @@ daily_cycle:
   decision_status: open_exact_behavior_not_defined_by_sources
 counts:
   operational_departments: 4
-  imported_profiles: 46
-  proposed_profiles: 2
+  imported_profiles: 41
+  proposed_profiles: 7

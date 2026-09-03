@@ -10,7 +10,7 @@ LDFLAGS := -s -w \
 	-X main.commit=$(COMMIT) \
 	-X main.buildTime=$(BUILD_TIME)
 
-.PHONY: help deps fmt fmt-check vet test test-unit test-race test-integration check-integration-evidence check-egress-restorability test-task-integration test-task-fitness test-staging-integration test-staging-fitness test-authorization-integration test-authorization-fitness test-context-integration test-context-fitness test-memory-integration test-memory-fitness test-skillregistry-integration test-skillregistry-fitness test-rag-integration test-rag-fitness test-model-runtime-integration test-model-runtime-fitness test-model-egress-integration test-model-egress-fitness test-model-identity-integration test-model-identity-fitness test-model-provider-fitness test-alibaba-cli-fitness test-cellworker-integration test-cellworker-fitness test-decisiongraph-integration test-decisiongraph-fitness test-decisiongraphtrace-integration test-improvement-integration test-improvement-fitness test-completion-integration test-completion-fitness test-composition-integration test-mission-integration test-executive-integration test-executive-fitness test-embeddingruntime-fitness test-webevidence-fitness build build-cross run verify verify-all clean docker-build compose-up compose-down compose-logs migrate-up migrate-status registry-validate registry-diff registry-sync registry-status task-reconcile outbox-status
+.PHONY: help deps fmt fmt-check vet test test-unit test-race test-integration test-kernel-governance-fitness test-model-dispatch-fitness test-model-dispatch-integration test-cibase-fitness check-integration-evidence check-egress-restorability test-task-integration test-task-fitness test-staging-integration test-staging-fitness test-authorization-integration test-authorization-fitness test-context-integration test-context-fitness test-memory-integration test-memory-fitness test-skillregistry-integration test-skillregistry-fitness test-rag-integration test-rag-fitness test-model-runtime-integration test-model-runtime-fitness test-model-egress-integration test-model-egress-fitness test-model-identity-integration test-model-identity-fitness test-model-provider-fitness test-alibaba-cli-fitness test-cellworker-integration test-cellworker-fitness test-decisiongraph-integration test-decisiongraph-fitness test-decisiongraphtrace-integration test-improvement-integration test-improvement-fitness test-completion-integration test-completion-fitness test-composition-integration test-mission-integration test-executive-integration test-executive-fitness test-embeddingruntime-fitness test-webevidence-fitness build build-cross run verify verify-all clean docker-build compose-up compose-down compose-logs migrate-up migrate-status registry-validate registry-diff registry-sync registry-status task-reconcile outbox-status
 
 help:
 	@printf '%s\n' \
@@ -200,6 +200,9 @@ test-executive-fitness:
 test-cibase-fitness:
 	$(GO) test ./internal/cibase
 
+test-kernel-governance-fitness:
+	./scripts/check-kernel-governance-fitness.sh
+
 test-executive-integration:
 	./scripts/test-executive-integration.sh
 
@@ -218,7 +221,7 @@ build-cross:
 run:
 	$(GO) run ./cmd/orgd
 
-verify: fmt-check vet test-unit test-cibase-fitness test-task-fitness test-staging-fitness test-authorization-fitness test-context-fitness test-memory-fitness test-skillregistry-fitness test-rag-fitness test-model-runtime-fitness test-model-egress-fitness test-model-dispatch-fitness test-model-identity-fitness test-model-provider-fitness test-alibaba-cli-fitness test-cellworker-fitness test-decisiongraph-fitness test-improvement-fitness test-completion-fitness test-executive-fitness test-embeddingruntime-fitness test-webevidence-fitness build
+verify: fmt-check vet test-unit test-cibase-fitness test-kernel-governance-fitness test-task-fitness test-staging-fitness test-authorization-fitness test-context-fitness test-memory-fitness test-skillregistry-fitness test-rag-fitness test-model-runtime-fitness test-model-egress-fitness test-model-dispatch-fitness test-model-identity-fitness test-model-provider-fitness test-alibaba-cli-fitness test-cellworker-fitness test-decisiongraph-fitness test-improvement-fitness test-completion-fitness test-executive-fitness test-embeddingruntime-fitness test-webevidence-fitness build
 
 verify-all: verify build-cross registry-validate test-integration test-context-integration test-memory-integration test-skillregistry-integration test-rag-integration test-model-runtime-integration test-model-egress-integration test-model-dispatch-integration test-model-identity-integration test-cellworker-integration test-decisiongraph-integration test-decisiongraphtrace-integration test-improvement-integration test-authorization-integration test-staging-integration test-completion-integration test-executive-integration
 

@@ -64,6 +64,12 @@ capabilities:
   risk: medium
 - id: code.commit
   risk: high
+# code.promote is the act that moves the authorized ref (orgctl staging
+# promotion apply). It is the highest-consequence step of the self-rewrite
+# loop and was previously implicit in a runbook. Only the owner holds it.
+- id: code.promote
+  risk: high
+  approval: owner
 - id: deployment.request
   risk: high
   approval: owner_or_cell_policy
@@ -137,13 +143,20 @@ grants:
   - organization.read_registry
   - task.review
   - audit.read_sanitized_evidence
+# Precedence: a hard deny always wins over any grant, including the owner's
+# wildcard. The wildcard means "everything not hard-denied", never "everything".
 hard_denies:
   owner:
   - model.invoke
+  executive:
+  - code.promote
+  department_leadership:
+  - code.promote
   '*':
   - cell.read_clinical_data
   - cell.direct_database_access
   execution_service:
+  - code.promote
   - project.create
   - project.delegate_department
   - organization.activate_skill
@@ -157,10 +170,16 @@ hard_denies:
   - model.execution_identity_key.retire
   - model.execution_identity_key.revoke
   specialist:
+  - code.promote
   - project.delegate_department
   - task.assign_worker
   - organization.activate_skill
+  # transversal_audit denies task.review on purpose: the adversarial design
+  # review (investigacion/revisor_adversarial) is orchestrated by the host
+  # inside the design-freeze phase and is NOT a task.review capability use.
+  # An auditor never reviews a task it could be asked to approve.
   transversal_audit:
+  - code.promote
   - code.stage_write
   - code.commit
   - deployment.request
