@@ -49,8 +49,8 @@ func TestWorkerEvidencePromptAndSchemaShareAvailableRefs(t *testing.T) {
 			if !strings.Contains(contract, ref) {
 				t.Errorf("available ref %q for %+v is missing literally from execution contract", ref, slot)
 			}
-		found := false
-		for _, enumRef := range document.Properties.Evidence.Items.Properties.Ref.Enum {
+			found := false
+			for _, enumRef := range document.Properties.Evidence.Items.Properties.Ref.Enum {
 				if enumRef == ref {
 					found = true
 					break
