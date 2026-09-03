@@ -10,7 +10,7 @@ fail() { echo "ERROR: $*" >&2; exit 1; }
 require() { rg -q "$1" "$2" || fail "$3"; }
 forbid() { if rg -n "$1" "$2"; then fail "$3"; fi; }
 
-forbid 'internal/(staging|tasks)(/|\")' internal/contextengine 'contextengine imports staging or tasks'
+forbid 'internal/(staging|tasks)(/|")' internal/contextengine 'contextengine imports staging or tasks'
 forbid 'internal/.+(model|adapter)' internal/contextengine 'contextengine imports model adapters'
 if rg -n '(openai|anthropic|qwen|deepseek|ollama|llm).*\(' internal/contextengine --glob '*.go'; then fail 'contextengine appears to call an LLM'; fi
 if rg -n 'time\.Now\(' internal/contextengine --glob '*.go' --glob '!clock.go' --glob '!*_test.go'; then fail 'time.Now appears outside the injected clock adapter'; fi
