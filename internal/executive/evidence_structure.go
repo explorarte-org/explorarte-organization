@@ -320,7 +320,20 @@ func anyAvailable(refs []string, available []string) bool {
 // host (refsAreAllStructured) requires only that no evidence_refs entry falls
 // outside the structured evidence; stating more would make the prompt stricter
 // than the validator and build the next PROMPT_CONTRACT_MISMATCH.
-func evidenceContractGuidance(required []EvidenceRequirement) string {
+// evidenceContractGuidance renders the authoritative obligation list into
+// prose the model reads before it answers. When available is non-nil, it
+// also states, per slot, the exact ref(s) the host's own classifier already
+// found supplied in this execution -- copy one of these character-for-
+// character rather than deriving a new one from the snapshot. Root 18978
+// (V8, capacity-liveness canary) reproduced the gap this closes: the goal
+// text alone carried the right citation, but the execution contract --
+// the text the model is actually judged against -- only said "identify
+// repository evidence supplied", so a real worker invocation re-searched
+// the snapshot and cited a plausible-looking but wrong excerpt. available
+// is exactly the map ValidateEvidenceSupply already validated the run
+// against, so stating it here cannot assert anything the validator would
+// disagree with.
+func evidenceContractGuidance(required []EvidenceRequirement, available map[EvidenceSlot][]string) string {
 	if len(required) == 0 {
 		return ""
 	}
@@ -335,13 +348,24 @@ func evidenceContractGuidance(required []EvidenceRequirement) string {
 		sort.Strings(relations)
 		for _, relation := range relations {
 			fmt.Fprintf(&guidance, "- subject=%q, relation=%q\n", requirement.Subject, relation)
+			refs := available[EvidenceSlot{Subject: requirement.Subject, Relation: relation}]
+			if len(refs) == 0 {
+				continue
+			}
+			guidance.WriteString("    accepted ref(s) for this exact slot -- copy one character-for-character, do not derive a different one:\n")
+			for _, ref := range refs {
+				fmt.Fprintf(&guidance, "      %q\n", ref)
+			}
 		}
 	}
 	guidance.WriteString(`
 For every required slot:
 - emit at least one evidence[] item with exactly that subject and relation;
 - its ref must identify repository evidence supplied in this execution;
-- do not invent repository refs.
+- do not invent repository refs;
+- when this slot lists accepted ref(s) above, its evidence[] item's ref must be
+  exactly one of them -- not a paraphrase, not a different range, not a
+  different file.
 
 For worker-result/v2:
 - evidence[] is the structured authority;
