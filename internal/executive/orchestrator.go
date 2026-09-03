@@ -1858,7 +1858,7 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		Context:              snapshot,
 		Purpose:              purpose,
 		OutputSchema:         schema,
-		ExecutionContract:    executionContractForWithProofs(purpose, required, available, proofs),
+		ExecutionContract:    executionContractForWithSupply(purpose, required, proofs, available),
 		MaxOutputTokens:      o.limits.MaxOutputTokensFor(purpose),
 		CorrelationID:        root.CorrelationID,
 		CausationID:          attemptCausation(task.ID, lease.AttemptID),
@@ -1998,6 +1998,30 @@ func executionContractForWithProofs(purpose ExecutionPurpose, required []Evidenc
 		contract += guidance
 	}
 	if guidance := proofCarryForwardGuidance(required, proofs); guidance != "" {
+		if contract != "" {
+			contract += "\n\n"
+		}
+		contract += guidance
+	}
+	return contract
+}
+
+// executionContractForWithSupply is executionContractForWithProofs plus the
+// host's slot-to-ref answer key (evidenceSlotSupplyGuidance) for department
+// workers. It is what actually reaches HarnessRunCommand.ExecutionContract.
+//
+// `available` is the same map the worker's result is judged with
+// (ValidateEvidenceStructure), read back from the snapshot the worker is
+// about to see -- so the refs it lists are, by construction, exactly the
+// ones the validator will accept. It is rendered LAST, after every other
+// guidance, so the most consequential copy-exactly instruction is also the
+// most recent thing the model reads before the schema.
+func executionContractForWithSupply(purpose ExecutionPurpose, required []EvidenceRequirement, proofs map[EvidenceSlot]EvidenceProof, available map[EvidenceSlot][]string) string {
+	contract := executionContractForWithProofs(purpose, required, proofs)
+	if purpose != PurposeDepartmentWorker {
+		return contract
+	}
+	if guidance := evidenceSlotSupplyGuidance(required, available, proofs); guidance != "" {
 		if contract != "" {
 			contract += "\n\n"
 		}

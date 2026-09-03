@@ -146,6 +146,44 @@ func TestStructurallyForbiddenPathsAreRefusedUnderEveryScope(t *testing.T) {
 	}
 }
 
+// Governance CODE is denied like governance data: the packages that decide
+// what a mission may touch cannot be rewritten by a mission, under any scope.
+func TestKernelGovernanceCodeIsRefusedUnderEveryScope(t *testing.T) {
+	kernel := []string{
+		"internal/missionplan/missionplan.go",
+		"internal/coderunner/path.go",
+		"internal/engineeringmission/policy.go",
+		"internal/authorization/policy.go",
+		"internal/modelegress/policy.go",
+		"internal/modelidentity/keys.go",
+		"internal/modeldispatch/assign.go",
+		"internal/organization/registry/validation.go",
+		"internal/secrets/loader.go",
+		"internal/config/config.go",
+		"internal/staging/gitexec/backend.go",
+		"internal/missionplan",
+	}
+	for _, scope := range []Scope{ScopeDocumentation, ScopeInternalCode} {
+		for _, target := range kernel {
+			request := docsRequest()
+			request.Scope = scope
+			request.Changes = []Change{{Path: target, Intent: "x", Patch: unifiedDiff(target)}}
+			if _, err := Derive(request); !errors.Is(err, ErrKernelGovernance) {
+				t.Fatalf("scope %s: %q must be refused as kernel governance, got %v", scope, target, err)
+			}
+		}
+	}
+	// The rest of internal/ stays reachable under the code scope: the
+	// denylist protects the enforcement, not the organization's ability to
+	// change its own product code.
+	request := docsRequest()
+	request.Scope = ScopeInternalCode
+	request.Changes = []Change{{Path: "internal/executive/orchestrator.go", Intent: "x", Patch: unifiedDiff("internal/executive/orchestrator.go")}}
+	if _, err := Derive(request); err != nil {
+		t.Fatalf("non-kernel internal code was refused: %v", err)
+	}
+}
+
 // Scope is a boundary, not a hint: documentation missions cannot reach code.
 func TestScopeConfinesTheMission(t *testing.T) {
 	request := docsRequest()

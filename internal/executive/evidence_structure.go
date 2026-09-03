@@ -373,3 +373,75 @@ For worker-result/v2:
 - do not put unstructured additional refs in evidence_refs.`)
 	return guidance.String()
 }
+
+// evidenceSlotSupplyGuidance hands the worker the host's own answer key: for
+// every required slot without a durable proof, the exact reference strings
+// suppliedEvidence classified as able to fill it, rendered as JSON objects
+// the worker copies into evidence[] changing only the claim.
+//
+// It exists because evidenceContractGuidance names the slots but not the
+// refs, and its "its ref must identify repository evidence supplied in this
+// execution" is, read literally, an instruction to search the excerpts and
+// choose. Roots 18878 through 18978 did exactly that: the worker picked an
+// application-site excerpt of RetryPolicy it had been shown, used it for
+// definition too, and relationsAreDistinct rejected it three times per
+// campaign. The host had known the correct mapping all along -- `available`
+// is the very map ValidateEvidenceStructure judges with -- and simply never
+// said it. Rendering that map here means prompt and validator cannot drift:
+// a ref listed here is accepted, a ref not listed here is not.
+//
+// Slots that carry a durable proof are skipped: proofCarryForwardGuidance
+// already renders them, and addProofBackedSupply has put the proof ref into
+// `available`, so listing them twice would only cost tokens.
+func evidenceSlotSupplyGuidance(required []EvidenceRequirement, available map[EvidenceSlot][]string, proofs map[EvidenceSlot]EvidenceProof) string {
+	if len(required) == 0 || len(available) == 0 {
+		return ""
+	}
+	var body strings.Builder
+	rendered := 0
+	for _, slot := range evidenceSlots(required) {
+		if _, proven := proofs[slot]; proven {
+			continue
+		}
+		refs := distinctSortedRefs(available[slot])
+		if len(refs) == 0 {
+			continue
+		}
+		rendered++
+		fmt.Fprintf(&body, "- subject=%q, relation=%q -- copy exactly ONE of these items into evidence[], changing only claim:\n", slot.Subject, slot.Relation)
+		for _, ref := range refs {
+			fmt.Fprintf(&body, "    {\"claim\":\"<what this range shows>\",\"subject\":%q,\"relation\":%q,\"ref\":%q}\n", slot.Subject, slot.Relation, ref)
+		}
+	}
+	if rendered == 0 {
+		return ""
+	}
+	var guidance strings.Builder
+	guidance.WriteString("Host-classified evidence for each required slot (the ONLY refs the validator accepts for that slot):\n\n")
+	guidance.WriteString(body.String())
+	guidance.WriteString(`
+Rules for these slots:
+- the mapping above is the host's own classification of the repository excerpts you were shown; do not choose or derive refs from the excerpts yourself;
+- a ref listed under one relation is not accepted for another relation of the same subject unless it is listed there too;
+- copy the ref character for character; a different path, commit or line range is rejected;
+- for worker-result/v2 send evidence_refs: [] -- the host derives it from evidence[].`)
+	return guidance.String()
+}
+
+func distinctSortedRefs(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, duplicate := seen[value]; duplicate {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
