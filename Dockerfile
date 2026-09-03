@@ -74,7 +74,27 @@ ENV ORG_STAGING_WORKSPACE_ROOT=/var/lib/explorarte/staging/workspaces
 USER coderunner
 ENTRYPOINT ["/usr/local/bin/orgctl"]
 
-FROM gcr.io/distroless/static-debian12:nonroot AS orgd
+# SELF-AUDIT-001 (2026-09-02): orgd and model-worker (same image, different
+# entrypoint/command) were distroless/static with no git binary at all, but
+# internal/staging/gitexec/backend.go's ReadTarget shells out to a real
+# `git rev-parse --verify` to resolve mission-provisioning's and repository-
+# evidence's program target SHA -- both features this session enabled today
+# (ORG_STAGING_ENABLED=true). Found live: the very first real executive
+# resume against a staging-aware config failed outright with
+# "exec: git: executable file not found in $PATH". No pure-Go git
+# dependency exists in this module (go.mod has none), and hand-copying just
+# the git binary into a static-distroless base without its dynamic library
+# dependencies is fragile and easy to get subtly wrong -- so this switches
+# to the same debian-slim base + explicit package install the pdfingest and
+# coderunner stages above already use, rather than reinventing a minimal-
+# git packaging scheme. git is invoked ONLY with a fixed, Go-level-
+# controlled small set of subcommands (rev-parse, update-ref) against a
+# catalog-allowlisted repository and a staging.ValidateTargetRef-checked
+# ref -- never arbitrary caller input -- the same "the allowlist is what
+# withholds authority, not the absence of a shell" reasoning the coderunner
+# stage's own comment already states for exactly this class of trade-off.
+FROM debian:bookworm-slim AS orgd
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/* && groupadd --system --gid 65532 orgd && useradd --system --no-create-home --shell /usr/sbin/nologin --uid 65532 --gid 65532 orgd
 COPY --from=build /out/orgd /usr/local/bin/orgd
 COPY --from=build /out/orgctl /usr/local/bin/orgctl
 COPY --from=build /src/docs/canonical /opt/explorarte/docs/canonical
@@ -96,7 +116,7 @@ COPY --from=build /src/empresa /opt/explorarte/context-source/empresa
 COPY --from=build /src/investigacion /opt/explorarte/context-source/investigacion
 ENV ORG_CONTEXT_SOURCE_ROOT=/opt/explorarte/context-source
 
-USER 65532:65532
+USER orgd
 EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=5 CMD ["/usr/local/bin/orgctl", "health", "--ready", "--url", "http://127.0.0.1:8080"]
 ENTRYPOINT ["/usr/local/bin/orgd"]
