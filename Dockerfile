@@ -59,6 +59,17 @@ FROM golang@sha256:908f8ff2ec296df2f349563072c7925775cd28b50361a52ed834a8a37399b
 # the only way two different processes can share that directory is by being
 # the exact same numeric UID, not just a shared group.
 RUN apt-get update && apt-get install -y --no-install-recommends git ripgrep ca-certificates && rm -rf /var/lib/apt/lists/* && groupadd --system --gid 65532 coderunner && useradd --system --no-create-home --shell /usr/sbin/nologin --uid 65532 --gid 65532 coderunner
+# Git 2.35.2+ (CVE-2022-24765 fix) refuses to operate on a repository
+# directory it does not own, even when the directory is world-writable --
+# permission bits are not what this check looks at. This repository is
+# legitimately shared across multiple real UIDs (the host's own
+# `ubuntu` user for the periodic fetch, this container's uid 65532), so
+# the git-documented mechanism for exactly this case is a safe.directory
+# exception, not a chown that would just move the same conflict onto a
+# different UID. --system (not --global) writes to /etc/gitconfig,
+# baked into the image at build time, so it applies regardless of
+# $HOME or the read-only runtime filesystem.
+RUN git config --system --add safe.directory /var/lib/explorarte/staging/repo/explorarte-organization
 COPY --from=build /out/orgctl /usr/local/bin/orgctl
 # Every stage that runs orgctl needs this -- config.Load() validates the
 # whole struct including the canonical registry at startup, same as
@@ -95,6 +106,12 @@ ENTRYPOINT ["/usr/local/bin/orgctl"]
 # stage's own comment already states for exactly this class of trade-off.
 FROM debian:bookworm-slim AS orgd
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/* && groupadd --system --gid 65532 orgd && useradd --system --no-create-home --shell /usr/sbin/nologin --uid 65532 --gid 65532 orgd
+# Same dubious-ownership exception as the coderunner stage above -- see
+# its comment. Needed here because programTargetResolver.ReadTarget
+# (internal/staging/gitexec/backend.go) reads this same shared clone
+# directly, found live on the very first real executive resume against
+# this newly-git-capable image: "fatal: detected dubious ownership".
+RUN git config --system --add safe.directory /var/lib/explorarte/staging/repo/explorarte-organization
 COPY --from=build /out/orgd /usr/local/bin/orgd
 COPY --from=build /out/orgctl /usr/local/bin/orgctl
 COPY --from=build /src/docs/canonical /opt/explorarte/docs/canonical
