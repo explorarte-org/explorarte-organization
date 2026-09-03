@@ -228,13 +228,29 @@ func ValidateEvidenceStructure(result WorkerResult, required []EvidenceRequireme
 		}
 
 	}
-	// One range cannot stand for two roles. R5's design offered
+	// One range cannot stand for two roles UNLESS the host's own content
+	// classification already agrees it genuinely does. R5's design offered
 	// budget.go#L31-L65 as evidence for two different limits and two
-	// different roles. This is checked per SUBJECT rather than per
-	// requirement, because one subject can now carry obligations from
-	// several sources and a clash between them is still a clash.
+	// different roles -- a real clash, because that range never established
+	// either fact for the second role. But a small function whose only
+	// caller sits a few lines above its own definition puts a real
+	// definition and a real application in front of a worker within one
+	// narrow excerpt, and a worker citing that same range for both is not
+	// laundering, it is accurate (found live, SELF-AUDIT-001, 2026-09-02:
+	// validatePackage's definition and its call site in packages() both
+	// fall inside internal/coderunner/executor.go#L283-L331). `available`
+	// is already the host's own content-aware answer to "does this exact
+	// reference genuinely support this relation" -- suppliedEvidence built
+	// it via repositoryevidence.ExcerptRelations, the same classifier that
+	// decides definition vs application from real content, not from
+	// citation shape. Trusting it here instead of a shape-only rule means
+	// this check only fires when the reference is NOT corroborated for at
+	// least one of the two relations, which is what laundering actually is.
+	// This is checked per SUBJECT rather than per requirement, because one
+	// subject can now carry obligations from several sources and a clash
+	// between them is still a clash.
 	for subject, relations := range bySubject {
-		if err := relationsAreDistinct(subject, relations); err != nil {
+		if err := relationsAreDistinct(subject, relations, available); err != nil {
 			return err
 		}
 	}
@@ -252,7 +268,7 @@ func ValidateEvidenceStructure(result WorkerResult, required []EvidenceRequireme
 	return fmt.Errorf("%w: evidence is missing for %s", ErrContractRejected, strings.Join(unfilled, ", "))
 }
 
-func relationsAreDistinct(subject string, relations map[string][]string) error {
+func relationsAreDistinct(subject string, relations map[string][]string, available map[EvidenceSlot][]string) error {
 	ordered := make([]string, 0, len(relations))
 	for relation := range relations {
 		ordered = append(ordered, relation)
@@ -262,8 +278,13 @@ func relationsAreDistinct(subject string, relations map[string][]string) error {
 	for _, relation := range ordered {
 		for _, ref := range relations[relation] {
 			if other, clash := seen[ref]; clash && other != relation {
-				return fmt.Errorf("%w: %s cites the same range for %s and %s (%s)",
-					ErrContractRejected, subject, other, relation, ref)
+				corroboratedForBoth := anyAvailable([]string{ref}, available[EvidenceSlot{Subject: subject, Relation: other}]) &&
+					anyAvailable([]string{ref}, available[EvidenceSlot{Subject: subject, Relation: relation}])
+				if !corroboratedForBoth {
+					return fmt.Errorf("%w: %s cites the same range for %s and %s (%s)",
+						ErrContractRejected, subject, other, relation, ref)
+				}
+				continue
 			}
 			seen[ref] = relation
 		}
