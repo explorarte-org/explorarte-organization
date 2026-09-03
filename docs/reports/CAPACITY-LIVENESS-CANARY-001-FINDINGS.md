@@ -1,173 +1,216 @@
 # CAPACITY-LIVENESS-CANARY-001 -- FINDINGS
 
-Status: **CLOSED FOR TONIGHT. PR #183 remains IMPLEMENTED_AND_VERIFIED.
-EXACT_LIVE_LIVENESS_FIX remains NOT_YET_PROVEN -- an open gap, not a
-failure.** This document closes out a live-canary campaign against
-PR #183 (`evidence_proofs` / DURABLE-EVIDENCE-PROOF-CONTRACT.md), records
-two findings that survive independently of any one campaign's outcome, and
-hands back a concrete, already-verified methodology for whoever resumes
-this.
+Status: **CLOSED WITH A REPRODUCED LIVE GAP.** PR #183's storage, minting,
+invalidation, and exclusion mechanisms are deployed and individually verified,
+but the exact cross-round growth claim is **not complete**. V6 proved that
+already-existing proofs are excluded from a later probe. V7 then reached the
+previously untested crossing case and proved that a first revise cannot use the
+current round's valid evidence to admit novel requirements when the cumulative
+fresh probe is already over capacity.
 
 ## Classification
 
-```
+```text
 PR #183
-CODE                    = PROVEN
-POSTGRES                = PROVEN
-MIGRATION               = PROVEN
-ORCHESTRATION_WIRING    = PROVEN
-PRODUCTION_HEALTH       = PROVEN
+CODE_PRESENT                    = PROVEN
+POSTGRES_STORE                  = PROVEN
+MIGRATION                       = PROVEN
+PRODUCTION_HEALTH               = PROVEN
+LIVE_MINT                       = PROVEN             (V6, root 18929)
+LIVE_EXCLUSION_OF_SAVED_PROOFS  = PROVEN             (V6, root 18929)
 
-EXACT_LIVE_LIVENESS_FIX = NOT_YET_PROVEN
-                         != FAILED
+FIRST_REVISE_MINT_THEN_GROWTH   = FAILED_LIVE        (V7, root 18948)
+EXACT_CAPACITY_LIVENESS_FIX     = INCOMPLETE
 ```
 
-The first five rows rest on real unit tests (`evidence_proofs_wiring_test.go`
-proving orchestration-level exclusion and minting), a real Postgres
-integration test (`evidence_proofs_integration_test.go`, 7/7 subtests
-including the immutability trigger), the full `go test ./...` suite (107
-packages, 0 FAIL), the real integration suite
-(`scripts/test-integration.sh executive`, `COMPLETE_GREEN`, 5/5), and a
-live, verified production deployment (`orgd`/`model-worker` healthy at
-migration tip 63, commit `2a5bcce`). None of that is in question here.
+This supersedes the earlier `EXACT_LIVE_LIVENESS_FIX = NOT_YET_PROVEN`
+classification. The gap is no longer merely an unexecuted scenario: V7
+executed it against production and received the old cumulative-capacity
+failure before any proof could be minted for that root.
 
-What was attempted tonight, and did not land, was a *live, multi-round R17
-campaign* that empirically exercises the exclusion mechanism end to end
-against real model output -- the "PROVEN_IN_REAL_MULTIROUND_EXECUTION"
-category distinct from the test-level proof above.
+## Decisive result
 
-## Finding 1 -- citation count is not repository range count
+The durable-proof implementation has two real, independently observed
+behaviors:
 
-The first canary design assumed `N subjects x 2 relations = 2N ranges`
-against `jointAdmissionLimits().MaxRanges = 16`. This is wrong.
-`GatherWithCoverage` coalesces nearby citations into shared fragments, and
-separately `explorer.go`'s `MaxFiles = 8` binds *before* `MaxRanges = 16`
-does whenever candidate subjects live in few distinct files or the search
-sensor pulls in incidental matches from unrelated files (including, found
-live tonight, the campaign's own freshly-written investigation docs, whose
-prose happens to mention several of the chosen subject names).
+1. If proofs already exist at the root's frozen `base_sha`, the next
+   adjudication excludes those slots from `PlanSlots`. V6 demonstrated this in
+   production.
+2. On the first adjudication that both validates current evidence and proposes
+   capacity-crossing growth, those current slots do not yet have proofs. The
+   implementation probes the full current-plus-novel set first and mints only
+   after the whole probe succeeds. V7 demonstrated that this ordering rejects
+   the growth and leaves zero proofs.
 
-Concretely: root 18890 requested 9 subjects / 18 slots in one round and
-got through the worker/department_review stage without ever approaching
-either cap -- the naive citation-count estimate was off by roughly 2x on
-ranges alone, before file-budget effects are even considered. **This
-invalidates the first two canary designs' experimental setup, not
-PR #183's logic.**
+The second behavior is the remaining liveness defect. It is not caused by SHA
+drift, citation quality, an unavailable repository sensor, or a guessed
+capacity boundary.
 
-The corrected model, confirmed by direct measurement (see Finding 3):
-whether a candidate set exceeds capacity is not derivable from citation
-count. It must be measured against the real `repositoryevidence.PlanSlots`
-call, with the real `Limits`, against the real pinned tree, before
-resources are spent finding out empirically.
+## Deterministic precondition
 
-## Finding 2 -- LLM worker convergence is a separate, real constraint
+The canary set was measured with the same
+`repositoryevidence.PlanSlots(..., DefaultLimits(), 24, slots)` path used by
+the host. The original run used commit `2a5bcce`; V7 re-ran the preflight at
+its actual frozen design base,
+`8a4c342772fee64f8b84c58a14b133bbd07bf9b2`, immediately before submission.
+Both commits produce the intended shape:
 
-Independent of Finding 1: asking a real LLM worker to precisely ground
-many simultaneous `repository://` citations in one delivery, within a
-3-attempt task budget, converged unreliably across every naive attempt
-tonight -- a miscited range, a duplicate range claimed for both relations,
-an entirely empty citation set, an oversized summary, a typo'd role ID, a
-CEO plan fragmenting into multiple department plans, and (in the run that
-came closest) a design document reproducing citation text as prose,
-tripping the adversarial-review bundle's source-reproduction guard.
+| Set | Subjects | Slots | Result at `8a4c342` |
+|---|---|---:|---|
+| Round 1 | `RetryPolicy`, `EmbedItem`, `RankedChunk` | 6 | covered 6/6 |
+| Round 2, novel only | `ProgramReservation`, `ControllerRefinementRequest`, `BronzePaper`, `ContextResource`, `SkillAssignment` | 10 | covered 10/10 |
+| Fresh cumulative probe | all eight | 16 | covered 15/16; `SkillAssignment/application` undelivered |
 
-**This is worth its own investigation later, and should not be folded into
-CAPACITY-LIVENESS.** It is a property of how much unaided precision a
-department worker can sustain per delivery, not of the joint-admission
-protocol PR #183 changes. Tonight's partial mitigation -- computing exact
-citations host-side and handing them to the worker to transcribe verbatim
--- measurably worked (round 1 of the v4 attempt succeeded on its first
-try, where three prior designs failed repeatedly) and is a reasonable
-starting point for that future investigation, but was not itself the
-subject under test.
+The cumulative run consumed all eight file slots. Round 1 and the novel set
+each fit on their own. This is the exact crossing shape the durable-proof
+mechanism was meant to make live.
 
-## Finding 3 -- a deterministic preflight, and what it found
+## V6 -- live mint and live exclusion proved
 
-Before spending on a fourth live attempt, the real admission mechanism was
-run locally and read-only, against the actual pinned tree at
-`TARGET_SHA=2a5bcce49da803221537bd3a9bdd3b5bacfaf17e`, using the exact
-call `probeAdjudicationRequirements` itself makes
-(`repositoryevidence.PlanSlots(ctx, "explorarte-organization", TARGET_SHA,
-source, repositoryevidence.DefaultLimits(), 24, slots)`, `source` a real
-`gitsource.Source` over the deployed worktree) -- no live campaign, no
-model calls, zero cost. This is the **CANARY-V4 PRECONDITION**: know,
-before paying for a round, whether the chosen scenario actually
-reproduces the old ceiling being crossed.
+V6 was root task **18929**, correlation
+`executive:af7997ef69c40595508df36a44d6272f`. It ended at the explicitly
+allowed terminal state `design_rounds_exhausted`. All child tasks completed;
+there were no dead letters and no exhausted child attempts.
 
-Eight subjects were chosen for maximum physical dispersion (distinct
-files, distinct packages, none mentioned in this session's own fresh
-docs, to avoid Finding 1's contamination):
+The goal incorrectly required citations at `2a5bcce` after main had advanced
+to `8a4c342` through the findings merge. The host correctly froze the mission
+at `8a4c342`, and the worker correctly cited that real base. The adversarial
+reviewer correctly rejected the contradiction twice, so V6 never requested
+the five novel subjects.
 
-| Set | Subjects | Slots | Result |
-|---|---|---|---|
-| round 1 | `RetryPolicy`, `EmbedItem`, `RankedChunk` | 6 | **covered 6/6** |
-| round 2 (new only) | `ProgramReservation`, `ControllerRefinementRequest`, `BronzePaper`, `ContextResource`, `SkillAssignment` | 10 | **covered 10/10** |
-| full cumulative (all 8, one fresh probe) | all of the above | 16 | **covered 15, undelivered 1** (`SkillAssignment/application`) |
+That campaign nevertheless produced strong live evidence:
 
-The cumulative probe genuinely fails -- `MaxFiles = 8` is exhausted before
-`SkillAssignment`'s application excerpt (itself found in a documentation
-file, not code, which is why it needed its own separate file slot) can be
-read. Round 1 alone and round 2's five new subjects alone both admit
-cleanly on their own. This is exactly the shape PR #183 exists to route
-around: if round 1's three subjects are already durably proven, round 2's
-fresh probe only needs to admit the five new ones -- which fit -- instead
-of re-admitting all eight -- which do not.
+- Adjudication task **18939**, invocation **227**, returned `revise` and
+  restated the three already-in-force evidence requirements. Its successful
+  probe minted six rows at `2026-09-03 04:20:29+00`: each of the three subjects
+  with `definition` and `application`.
+- Adjudication task **18947**, invocation **232**, again restated the same six
+  slots. `ValidProofs` found the six saved rows at the same base and the probe
+  had no raw slots left to gather. No row was inserted, updated, or
+  invalidated.
+- The final table contained exactly six rows, all at `8a4c342`, with null
+  `invalidated_at` values.
 
-The exact fragment-level citations this preflight computed (via the same
-`repositoryevidence.ExcerptRelations` classifier production uses) were
-handed to the department worker verbatim in the v4 goal, to remove
-Finding 2's derivation burden from the experiment.
+Therefore `MintProof` and exclusion of already-saved proofs both ran in a real
+production campaign. V6 did **not** prove growth because neither adjudication
+proposed the five novel subjects.
 
-## The v4 live attempt
+## V7 -- the exact growth scenario failed live
 
-Root task **18910**. Round 1's worker (task 18913) succeeded on its
-**first attempt**, citing exactly the three provided references --
-confirming the host-computed-citation approach resolves Finding 2's
-convergence problem for at least one round. Department review completed.
+V7 was root task **18948**, correlation
+`executive:e6a812bfbb1fc7c8ace8c37a2ba56f81`. Submission verified that both the
+deployed repository worktree and `origin/main` were still exactly `8a4c342`.
+The SHA-drift confounder from V6 was absent.
 
-The campaign then blocked with `adversarial_review_bundle_rejected`:
-*"candidate design carries organizational repository source: it
-reproduces 48 characters of
-repository://explorarte-organization@2a5bcce.../internal/webevidence/rank.go#L1-L40"*.
-This is a **separate, correct guard** (the department worker's own
-standing contract: *"cite it, do not reproduce it"*) -- triggered because
-the v4 goal instructed the worker to *"transcribir exactamente"* the
-citation strings, and the worker wrote them into the report's own prose
-rather than only into the structured `evidence_refs`/`evidence[].ref`
-fields. A second resume pass produced no new task and repeated the
-identical block -- the root's own attempt budget (2) was left unspent
-(`attempt_count: 0`), consistent with this being a hard block rather than
-an automatically-retried failure.
+The first-round worker path completed, department review task **18963**
+completed, and adversarial review task **18967** / invocation **239** returned
+`verdict=accept` with an empty findings array. The decisive task was design
+adjudication **18971**:
 
-**Round 2 -- the decisive test -- was never reached.** This is a fixable
-goal-wording defect in the campaign design, not a finding about PR #183
-either way.
+| Attempt | Invocation | Result |
+|---:|---:|---|
+| 1 / 3 | 240 | Model referenced finding IDs the review never raised; correctly rejected as a model-result contract error. |
+| 2 / 3 | 241 | Returned the intended `revise`, no accepted/rejected findings, and exactly the five novel subjects with both relations. The host rejected it with the measured cumulative `CAPACITY_CONFLICT`. |
+| 3 / 3 | 242 | Again referenced nonexistent finding IDs; correctly rejected as a model-result contract error. |
 
-## Recommendation for whoever resumes this
+The exact durable failure summary for attempt 2 was:
 
-The subject/citation set in Finding 3's table is already verified and
-does not need to be recomputed. A v5 needs exactly one change: instruct
-the worker that citations belong **only** in `evidence_refs` and each
-`evidence[].ref` field -- never written out as literal text inside the
-document body -- matching the standing worker-task contract precisely
-instead of overriding it with "transcribe exactly." Everything else
-(subjects, exact fragment references, round split, hard spend cap, single
-department, no clustered fields) carries forward unchanged.
+```text
+CAPACITY_CONFLICT at pin 8a4c342772fee64f8b84c58a14b133bbd07bf9b2:
+undelivered=[SkillAssignment/application]
+ranges=8/16 bytes=13648/98304 lines=340/400
+already_in_force(fixed, cannot be dropped)=
+[EmbedItem/application, EmbedItem/definition,
+ RankedChunk/application, RankedChunk/definition,
+ RetryPolicy/application, RetryPolicy/definition]
+```
 
-## Disposition of tonight's roots
+Task 18971 ended `dead_letter`, 3/3 attempts, reason
+`model_result_contract_rejected`. The root reports `failed` using the last
+attempt's nonexistent-finding error. That terminal reason must not obscure the
+middle attempt: invocation 241 was structurally correct and reached the exact
+capacity gate under test.
 
-None of the following constitutes evidence against PR #183 -- each died
-for a reason unrelated to joint-admission logic:
+The final production query for root 18948 returned **zero rows** from
+`evidence_proofs`; nothing was invalidated because nothing had been minted.
+
+## Root cause -- proof minting happens after the gate that needs the proof
+
+`probeAdjudicationRequirements` currently performs this sequence:
+
+1. Load cumulative current-round requirements.
+2. Add novel requirements proposed by the adjudicator.
+3. Load proofs already saved for this root and base SHA.
+4. Remove only those already-saved slots from the raw probe.
+5. Run `PlanSlots` for everything else.
+6. If any slot is undelivered, return `CapacityConflict` immediately.
+7. Only after a fully successful plan, call
+   `mintProofsForNewlyCovered(...)`.
+
+On V7's first valid growth attempt there could not yet be saved proofs for the
+six round-1 slots: this was the adjudication that was supposed to validate and
+mint them. The raw probe therefore contained all sixteen slots, failed at the
+known old boundary, returned before step 7, and minted nothing. Retrying cannot
+change that state.
+
+V6 succeeded at minting only because invocation 227 restated the six current
+slots without adding novel ones, so the whole probe fit. Its next adjudication
+could then exclude them. V7 shows that this two-event sequence does not fit the
+real two-round protocol when the first revise must both settle the current
+evidence and bind the next round's growth.
+
+## Why the existing tests did not close this case
+
+The orchestration tests prove useful pieces, but not this transition:
+
+- The exclusion test starts with proofs pre-seeded in the fake store.
+- The minting test uses a cumulative set that fits, so the function reaches
+  `mintProofsForNewlyCovered`.
+- The Postgres integration test verifies persistence and immutability without
+  running this campaign transition.
+
+A regression test needs an initially empty proof store, current obligations
+that fit alone, novel obligations that fit alone, and a cumulative set that
+does not fit. A valid first `revise` must both mint the current covered slots
+and admit the novel set after excluding those newly minted slots.
+
+## Separate model-output findings
+
+V7 also reproduced two model reliability issues that are not the capacity
+root cause:
+
+- The department planner split a requested single deliverable into three
+  worker tasks. Only the three owner-required subjects received authorized
+  evidence, so the candidate still reached review with the intended initial
+  evidence contract.
+- Adjudication invocations 240 and 242 invented review finding IDs. The host
+  rejected both correctly. Invocation 241 did not have this defect and is the
+  clean capacity-liveness observation.
+
+These failures explain V7's final `dead_letter`; they do not explain or weaken
+the independently recorded `CAPACITY_CONFLICT` on invocation 241.
+
+## Disposition of campaign roots
 
 | Root | Outcome |
-|---|---|
-| 18875, 18876 | Abandoned unresumed -- submission budget too small for CEO planning's own context cost |
-| 18878 | Round-1 worker exhausted 3 attempts on citation precision (pre-Finding-3 methodology) |
-| 18879 | Blocked on an unrelated repository-evidence context-lookup failure, not root-caused |
-| 18889 | Abandoned mid-flight -- CEO planning fragmented into 3 department plans and 3 worker tasks; never converged |
-| 18890 | Reached department_review with 9 subjects / 18 citations without ever approaching either cap (Finding 1), then exhausted 3 worker attempts on citation precision |
-| 18910 | Round 1 succeeded (Finding 3's methodology validated); blocked pre-round-2 by an unrelated adversarial-review guard |
+|---:|---|
+| 18875, 18876 | Submission budget too small for CEO planning context. |
+| 18878 | Worker exhausted citation-precision attempts before the deterministic methodology. |
+| 18879 | Unrelated repository-evidence context lookup failure. |
+| 18889 | Planner fragmented the campaign and workers did not converge. |
+| 18890 | Demonstrated that citation count is not range count, then exhausted citation attempts. |
+| 18910 | Round 1 succeeded; blocked by source reproduction caused by goal wording. |
+| 18929 (V6) | `design_rounds_exhausted`; live mint and later exclusion proved, growth never requested because of SHA contradiction. |
+| 18948 (V7) | `failed`; clean attempt 249/invocation 241 reproduced the exact cumulative conflict before first-round proofs could be minted. |
 
-None of these roots should be resumed or reused -- each is left as
-historical evidence of its own specific, already-diagnosed failure mode,
-exactly as recorded above.
+## Required next change
+
+Do not run another paid canary with the same implementation. First define and
+test a safe ordering that proves current-round delivered slots from host-
+verified evidence before pricing novel next-round requirements, without
+allowing model-authored evidence or partially covered novel slots to become
+proofs. Then deploy that change and repeat the same V7 precondition unchanged.
+
+The success condition for the next canary is objective: six round-1 proofs are
+minted, the subsequent raw probe contains only the ten novel slots, all ten are
+admitted, and the root ends with sixteen valid proofs at one frozen base SHA.
