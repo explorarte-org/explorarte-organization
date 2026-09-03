@@ -46,6 +46,32 @@ func TestOneRangeCannotStandForBothRoles(t *testing.T) {
 	}
 }
 
+// SELF-AUDIT-001 (2026-09-02): a small function whose only caller sits a
+// few lines above its own definition puts a real definition and a real
+// application in front of a worker within one narrow excerpt --
+// validatePackage in internal/coderunner/executor.go is exactly this
+// shape. The host's own content classification (available, built via
+// repositoryevidence.ExcerptRelations from real content) already agrees
+// the one excerpt genuinely supports both relations, so citing it for
+// both is accurate, not laundering, and must be accepted -- unlike R5's
+// shape above, where the host's own classification never put budgetRef
+// in the definition slot at all.
+func TestOneRangeCanStandForBothRolesWhenTheHostAgreesBothAreGenuine(t *testing.T) {
+	const smallHelperRef = "repository://org@sha/internal/coderunner/executor.go#L283-L331"
+	requirements := []EvidenceRequirement{{Subject: "validatePackage", Relations: []string{EvidenceDefinition, EvidenceApplication}}}
+	available := map[EvidenceSlot][]string{
+		{Subject: "validatePackage", Relation: EvidenceDefinition}:  {smallHelperRef},
+		{Subject: "validatePackage", Relation: EvidenceApplication}: {smallHelperRef},
+	}
+	result := WorkerResult{SchemaVersion: WorkerResultSchemaVersionV2, Evidence: []EvidenceItem{
+		{Subject: "validatePackage", Relation: EvidenceDefinition, Claim: "declared here", Ref: smallHelperRef},
+		{Subject: "validatePackage", Relation: EvidenceApplication, Claim: "called here", Ref: smallHelperRef},
+	}}
+	if err := ValidateEvidenceStructure(result, requirements, available); err != nil {
+		t.Fatalf("a citation the host itself classified as supporting both relations was refused: %v", err)
+	}
+}
+
 // worker-result/v1 cannot express the relation at all, so demanding it of a v1
 // artifact must fail on the contract, not on the worker's diligence.
 func TestAnArtifactThatCannotExpressRelationsIsRefusedAsSuch(t *testing.T) {
