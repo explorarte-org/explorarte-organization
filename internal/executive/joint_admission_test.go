@@ -158,7 +158,7 @@ func TestR15MirrorUnfitSetIsRefusedBeforeRoundTwoExists(t *testing.T) {
 	if task.ReasonCode != "model_result_contract_rejected" {
 		t.Fatalf("adjudication closed as %q; the unfit set must be refused at admission", task.ReasonCode)
 	}
-	for _, want := range []string{"joint evidence capacity cannot deliver", "driveDesignFreeze/application"} {
+	for _, want := range []string{"CAPACITY_CONFLICT", "driveDesignFreeze/application"} {
 		if !strings.Contains(task.Reason, want) {
 			t.Fatalf("rejection feedback missing %q, got: %q", want, task.Reason)
 		}
@@ -265,7 +265,7 @@ func Zeta() byte { return 0 }
 	if task.ReasonCode != "model_result_contract_rejected" {
 		t.Fatalf("the union was admitted: %q (%s)", task.ReasonCode, task.Reason)
 	}
-	for _, want := range []string{"joint evidence capacity cannot deliver", "Zeta/definition"} {
+	for _, want := range []string{"CAPACITY_CONFLICT", "Zeta/definition"} {
 		if !strings.Contains(task.Reason, want) {
 			t.Fatalf("rejection missing %q, got: %q", want, task.Reason)
 		}

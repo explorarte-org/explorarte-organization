@@ -90,24 +90,161 @@ func (o *Orchestrator) probeAdjudicationRequirements(ctx context.Context, root T
 	candidate = append(candidate, inForce...)
 	candidate = append(candidate, AdoptEvidenceRequirements(novel, EvidenceFromAdjudication)...)
 	slots := evidenceSlots(candidate)
+
+	// DURABLE-EVIDENCE-PROOF-CONTRACT: a slot already durably proven at this
+	// exact base_sha costs nothing this round -- its raw evidence does not
+	// need to be re-gathered to know the joint set can be delivered. This
+	// changes only the ACCOUNTING (which slots must pay MaxRanges/MaxBytes/
+	// MaxLines this round); the obligation itself stays exactly as durable
+	// and monotonic in `candidate`/`inForce` as it always was.
+	proven := map[EvidenceSlot]EvidenceProof{}
+	if o.evidenceProofs != nil {
+		proven, err = o.evidenceProofs.ValidProofs(ctx, root.ID, baseSHA)
+		if err != nil {
+			return fmt.Errorf("%w: read durable evidence proofs: %v", ErrEvidenceSensorUnavailable, err)
+		}
+	}
 	probeSlots := make([]repositoryevidence.EvidenceSlot, 0, len(slots))
 	for _, slot := range slots {
+		if _, alreadyProven := proven[slot]; alreadyProven {
+			continue
+		}
 		probeSlots = append(probeSlots, repositoryevidence.EvidenceSlot{Subject: slot.Subject, Relation: slot.Relation})
 	}
+	if len(probeSlots) == 0 {
+		// Every demanded slot is already durably proven -- nothing new to
+		// admit, and no sensor read is needed to say so.
+		return nil
+	}
 
+	limits := jointAdmissionLimits()
 	plan, planErr := repositoryevidence.PlanSlots(ctx, o.repositoryID, baseSHA,
-		o.repositorySource, jointAdmissionLimits(), 24, probeSlots)
+		o.repositorySource, limits, 24, probeSlots)
 	if planErr != nil {
 		return fmt.Errorf("%w: joint evidence admission at %s: %v", ErrEvidenceSensorUnavailable, baseSHA, planErr)
 	}
-	if len(plan.Undelivered) == 0 {
-		return nil
+	if len(plan.Undelivered) > 0 {
+		return newCapacityConflict(baseSHA, limits, inForce, plan)
 	}
-	impossible := make([]string, 0, len(plan.Undelivered))
-	for _, slot := range plan.Undelivered {
+	o.mintProofsForNewlyCovered(ctx, root.ID, baseSHA, plan)
+	return nil
+}
+
+// mintProofsForNewlyCovered records a durable proof for each slot this
+// round's dry-run actually classified as covered, from the exact fragment
+// that classification came from -- never a second, independent read, and
+// never anything a model supplied. Best-effort: a mint failure degrades to
+// "this round re-probes the same evidence next time", never to a false
+// admission, so it is logged-equivalent (returned errors are swallowed by
+// design) rather than failing a round that already passed the real
+// admission check.
+func (o *Orchestrator) mintProofsForNewlyCovered(ctx context.Context, rootTaskID int64, baseSHA string, plan repositoryevidence.CoveragePlan) {
+	if o.evidenceProofs == nil {
+		return
+	}
+	for _, slot := range plan.Covered {
+		fragment, found := fragmentSatisfying(plan.Fragments, slot)
+		if !found {
+			continue
+		}
+		_ = o.evidenceProofs.MintProof(ctx, EvidenceProof{
+			OrganizationID:  o.organizationID,
+			RootTaskID:      rootTaskID,
+			Subject:         slot.Subject,
+			Relation:        slot.Relation,
+			BaseSHA:         baseSHA,
+			SourceReference: fragment.Reference(),
+			ContentDigest:   repositoryevidence.DigestOf(fragment.Content),
+		})
+	}
+}
+
+// fragmentSatisfying finds the first gathered fragment whose real content
+// classifies as slot's relation for slot's subject -- the same
+// ExcerptRelations classifier admission itself already trusted, so a minted
+// proof can never claim more than the dry-run actually established.
+func fragmentSatisfying(fragments []repositoryevidence.Fragment, slot repositoryevidence.EvidenceSlot) (repositoryevidence.Fragment, bool) {
+	for _, fragment := range fragments {
+		if repositoryevidence.ExcerptRelations(fragment.Content, slot.Subject)[slot.Relation] {
+			return fragment, true
+		}
+	}
+	return repositoryevidence.Fragment{}, false
+}
+
+// CapacityConflict is the structured signal a plain-text rejection could
+// not carry: which counts made the joint set undeliverable, and which
+// slots are fixed (already in force, monotonic, cannot be dropped) versus
+// which were this round's own novel demand. Its String form is what
+// reaches the adjudicator's retry through the durable result_summary
+// transport, the same path the old plain-text message used, but now with
+// enough structure for a reader (or a future recovery policy) to tell
+// "physically impossible given what is already owed" from "this specific
+// selection was too greedy."
+type CapacityConflict struct {
+	BaseSHA string
+
+	AvailableRanges int
+	ConsumedRanges  int
+	AvailableBytes  int
+	ConsumedBytes   int
+	AvailableLines  int
+	ConsumedLines   int
+
+	// AlreadyInForce is the fixed cost: obligations from earlier rounds,
+	// monotonic, never droppable. Distinguishing this from Undelivered is
+	// the whole point -- it tells a reader how much of the ceiling was
+	// never available to this round's own request in the first place.
+	AlreadyInForce []EvidenceSlot
+	Undelivered    []repositoryevidence.EvidenceSlot
+}
+
+func newCapacityConflict(baseSHA string, limits repositoryevidence.Limits, inForce []EvidenceRequirement, plan repositoryevidence.CoveragePlan) error {
+	consumedBytes, consumedLines := 0, 0
+	for _, fragment := range plan.Fragments {
+		consumedBytes += len(fragment.Content)
+		if fragment.LineEnd >= fragment.LineStart {
+			consumedLines += fragment.LineEnd - fragment.LineStart + 1
+		}
+	}
+	conflict := CapacityConflict{
+		BaseSHA:         baseSHA,
+		AvailableRanges: limits.MaxRanges, ConsumedRanges: len(plan.Fragments),
+		AvailableBytes: limits.MaxBytes, ConsumedBytes: consumedBytes,
+		AvailableLines: limits.MaxLines, ConsumedLines: consumedLines,
+		AlreadyInForce: evidenceSlots(inForce),
+		Undelivered:    plan.Undelivered,
+	}
+	sort.Slice(conflict.AlreadyInForce, func(i, j int) bool {
+		if conflict.AlreadyInForce[i].Subject != conflict.AlreadyInForce[j].Subject {
+			return conflict.AlreadyInForce[i].Subject < conflict.AlreadyInForce[j].Subject
+		}
+		return conflict.AlreadyInForce[i].Relation < conflict.AlreadyInForce[j].Relation
+	})
+	sort.Slice(conflict.Undelivered, func(i, j int) bool {
+		if conflict.Undelivered[i].Subject != conflict.Undelivered[j].Subject {
+			return conflict.Undelivered[i].Subject < conflict.Undelivered[j].Subject
+		}
+		return conflict.Undelivered[i].Relation < conflict.Undelivered[j].Relation
+	})
+	return fmt.Errorf("%w: %s", ErrContractRejected, conflict.String())
+}
+
+func (c CapacityConflict) String() string {
+	impossible := make([]string, 0, len(c.Undelivered))
+	for _, slot := range c.Undelivered {
 		impossible = append(impossible, slot.Subject+"/"+slot.Relation)
 	}
-	sort.Strings(impossible)
-	return fmt.Errorf("%w: joint evidence capacity cannot deliver, at pin %s: %s",
-		ErrContractRejected, baseSHA, strings.Join(impossible, ", "))
+	fixed := make([]string, 0, len(c.AlreadyInForce))
+	for _, slot := range c.AlreadyInForce {
+		fixed = append(fixed, slot.Subject+"/"+slot.Relation)
+	}
+	return fmt.Sprintf(
+		"CAPACITY_CONFLICT at pin %s: undelivered=[%s] ranges=%d/%d bytes=%d/%d lines=%d/%d already_in_force(fixed, cannot be dropped)=[%s]",
+		c.BaseSHA, strings.Join(impossible, ", "),
+		c.ConsumedRanges, c.AvailableRanges,
+		c.ConsumedBytes, c.AvailableBytes,
+		c.ConsumedLines, c.AvailableLines,
+		strings.Join(fixed, ", "),
+	)
 }

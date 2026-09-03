@@ -61,6 +61,11 @@ type Orchestrator struct {
 	repositorySource repositoryevidence.Source
 	repositoryID     string
 	missions         MissionProvisioner
+	// evidenceProofs persists durable proof of already-satisfied evidence
+	// slots (DURABLE-EVIDENCE-PROOF-CONTRACT). Optional: nil degrades to
+	// this system's pre-existing behavior, every round re-probing the full
+	// cumulative obligation set from raw evidence.
+	evidenceProofs EvidenceProofStore
 
 	mu     sync.Mutex
 	leases map[int64]LeaseRecord
