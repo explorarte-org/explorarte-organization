@@ -297,7 +297,7 @@ func (o *Orchestrator) driveDesignFreeze(ctx context.Context, root TaskRecord, a
 				"Every finding must be falsifiable and name the requirement it affects",
 				"Do not propose follow-up tasks or approvals",
 			},
-			Priority: 90, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID),
+			Priority: 90, MaxAttempts: o.maxAttempts(3), CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID),
 			Requirements: []RequirementProposal{{Key: "typed_adversarial_review", Type: "result", Description: "Validated AdversarialReview invocation result", Required: true}},
 		})
 		if err != nil {
@@ -340,7 +340,7 @@ func (o *Orchestrator) driveDesignFreeze(ctx context.Context, root TaskRecord, a
 				"Return strict DesignAdjudication JSON",
 				"A freeze verdict may not carry required changes or unresolved owner decisions",
 			},
-			Priority: 95, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID),
+			Priority: 95, MaxAttempts: o.maxAttempts(3), CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID),
 			Requirements: []RequirementProposal{{Key: "typed_design_adjudication", Type: "result", Description: "Validated DesignAdjudication invocation result", Required: true}},
 		})
 		if err != nil {

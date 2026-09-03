@@ -37,3 +37,17 @@ func TestMaxOutputTokensForPurposeReducesOnlyDepartmentWorker(t *testing.T) {
 		}
 	}
 }
+
+func TestMaxOutputTokensForPurposeHonorsLowerGlobalCeiling(t *testing.T) {
+	limits := DefaultLimits()
+	limits.MaxOutputTokens = 2000
+	for _, purpose := range []ExecutionPurpose{
+		PurposeCEOPlan, PurposeDepartmentPlan, PurposeDepartmentWorker,
+		PurposeDepartmentReview, PurposeCEOClosure, PurposeAdversarialReview,
+		PurposeDesignAdjudication, PurposeImplementationPlan,
+	} {
+		if got := limits.MaxOutputTokensFor(purpose); got != 2000 {
+			t.Fatalf("%s=%d, want the configured global ceiling 2000", purpose, got)
+		}
+	}
+}

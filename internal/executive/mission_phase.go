@@ -159,7 +159,7 @@ func (o *Orchestrator) driveImplementationMission(ctx context.Context, root Task
 				"Every change carries a real unified diff",
 				"Do not declare allowed paths, gates, budgets or approvals",
 			},
-			Priority: 96, MaxAttempts: 3, CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID),
+			Priority: 96, MaxAttempts: o.maxAttempts(3), CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID),
 			Requirements: []RequirementProposal{{Key: "typed_implementation_plan", Type: "result", Description: "Validated ImplementationPlan invocation result", Required: true}},
 		})
 		if err != nil {
