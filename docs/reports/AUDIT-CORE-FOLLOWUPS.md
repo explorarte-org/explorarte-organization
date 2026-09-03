@@ -72,3 +72,40 @@ The audit branch does not modify the files named above. All applicable
 governance, evidence-contract, mission-gate, repository-hygiene, and compose
 changes remain in the branch and are covered by the targeted tests reported in
 the audit handoff.
+
+## F-004 — additional pre-existing fitness failures
+
+The same guard results were reproduced in a temporary worktree at
+`origin/main`:
+
+- `check-model-egress-fitness.sh` rejects the pre-existing canonical file
+  `docs/canonical/instrument-v4-controller-binding-001.provenance.yaml`.
+- `check-model-provider-fitness.sh` rejects the pre-existing canonical change
+  to `docs/canonical/capability-matrix.yaml`.
+- `check-alibaba-cli-fitness.sh` reports that rendered context is not passed by
+  stdin.
+- `check-embeddingruntime-fitness.sh` matches the pre-existing
+  `API_KEY_SERVICE_BLOCKED` text in a comment in the Gemini adapter.
+
+These failures are present on `origin/main` and are not caused by this audit
+branch. They were not changed here.
+
+## F-005 — model-dispatch guard versus this branch's canonical update
+
+`check-model-dispatch-fitness.sh` passes on `origin/main` but rejects the
+audit branch because `docs/canonical/role-catalog.yaml` changed. That
+canonical change is part of the transported audit and is covered by the
+canonical approval trailer. The guard currently treats any role-catalog
+change as outside its own historical scope.
+
+Resolving this requires an explicit owner decision about the guard's allowed
+change boundary; weakening the guard or changing the canonical audit update
+was intentionally not done in this branch.
+
+## F-006 — compose validation boundary
+
+`docker compose -f compose.yaml config` succeeds with ephemeral placeholder
+values supplied only in the process environment. Running it without those
+values fails because the repository intentionally requires production secret
+variables. No `.env` or secret file was read or modified, and no service was
+started.
