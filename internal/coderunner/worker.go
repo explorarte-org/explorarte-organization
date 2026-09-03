@@ -293,7 +293,7 @@ func (w Worker) finish(ctx context.Context, lease tasks.LeaseCommand, workspaceI
 }
 
 // verifyOrdering enforces that any mutation after a successful verification
-// invalidates that verification: if a GO_BUILD/GO_VET/GO_TEST result is
+// invalidates that verification: if a GO_BUILD/GO_VET/GO_TEST/FITNESS result is
 // being used as proof of correctness for this attempt (i.e. it appears
 // anywhere in the plan), the last such check must post-date the last
 // mutating operation (APPLY_PATCH/GOFMT). A plan with no checks at all is

@@ -48,14 +48,14 @@ func TestDeriveProducesAGovernedMission(t *testing.T) {
 		t.Fatalf("allowed paths=%v", derived.Policy.AllowedPaths)
 	}
 	// The gates are the host's, in full, always.
-	if len(derived.Policy.RequiredGates) != 3 {
+	if len(derived.Policy.RequiredGates) != 4 {
 		t.Fatalf("gates=%v", derived.Policy.RequiredGates)
 	}
 	types := map[engineeringmission.GateType]bool{}
 	for _, gate := range derived.Policy.RequiredGates {
 		types[gate.Type] = true
 	}
-	for _, required := range []engineeringmission.GateType{engineeringmission.GateBuild, engineeringmission.GateVet, engineeringmission.GateTest} {
+	for _, required := range []engineeringmission.GateType{engineeringmission.GateBuild, engineeringmission.GateVet, engineeringmission.GateTest, engineeringmission.GateFitness} {
 		if !types[required] {
 			t.Fatalf("missing gate %s", required)
 		}
@@ -73,8 +73,8 @@ func TestDeriveProducesAGovernedMission(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CodeRunner rejected the generated plan: %v", err)
 	}
-	last := parsed.Operations[len(parsed.Operations)-3:]
-	if last[0].Type != coderunner.GoBuild || last[1].Type != coderunner.GoVet || last[2].Type != coderunner.GoTest {
+	last := parsed.Operations[len(parsed.Operations)-4:]
+	if last[0].Type != coderunner.GoBuild || last[1].Type != coderunner.GoVet || last[2].Type != coderunner.GoTest || last[3].Type != coderunner.Fitness {
 		t.Fatalf("gates are not the final operations: %+v", parsed.Operations)
 	}
 	if parsed.Operations[0].Type != coderunner.ApplyPatch {

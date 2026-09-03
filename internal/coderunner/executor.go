@@ -225,6 +225,10 @@ func (e *Executor) ExecuteOperation(ctx context.Context, op Operation) (Result, 
 			args = append(args, "-race")
 		}
 		return e.run(ctx, op.Type, "go", args...)
+	case Fitness:
+		// FITNESS is a host-owned gate. Its executable and arguments are
+		// fixed here; the plan carries no model-supplied command surface.
+		return e.run(ctx, op.Type, "make", "test-kernel-governance-fitness", "test-executive-fitness")
 	case GitStatus:
 		return e.run(ctx, op.Type, "git", "status", "--short")
 	case GitDiff:

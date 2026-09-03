@@ -181,7 +181,7 @@ func Derive(request Request) (Derived, error) {
 
 	seen := map[string]struct{}{}
 	allowed := make([]string, 0, len(request.Changes))
-	operations := make([]coderunner.Operation, 0, len(request.Changes)+4)
+	operations := make([]coderunner.Operation, 0, len(request.Changes)+5)
 	touchesGo := false
 
 	for i, change := range request.Changes {
@@ -221,6 +221,7 @@ func Derive(request Request) (Derived, error) {
 		coderunner.Operation{Type: coderunner.GoBuild},
 		coderunner.Operation{Type: coderunner.GoVet},
 		coderunner.Operation{Type: coderunner.GoTest},
+		coderunner.Operation{Type: coderunner.Fitness},
 	)
 
 	policy := engineeringmission.MissionPolicy{
@@ -259,6 +260,7 @@ func RequiredGates() []engineeringmission.RequiredGate {
 		{Type: engineeringmission.GateBuild},
 		{Type: engineeringmission.GateVet},
 		{Type: engineeringmission.GateTest},
+		{Type: engineeringmission.GateFitness},
 	}
 }
 
