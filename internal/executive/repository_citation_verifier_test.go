@@ -37,6 +37,72 @@ func snapshotWith() stubSnapshotSources {
 	}}
 }
 
+// SELF-AUDIT-001 (2026-09-02): the repository evidence provider shows a
+// symbol as one or more excerpts, sometimes as overlapping sliding windows
+// over the same region rather than one single fragment. A model that read
+// both windows and cited the natural merged range it actually saw was
+// rejected as "unverifiable" before this fix, even though every line it
+// named was genuinely shown -- found live, the first real self-audit
+// worker did exactly this.
+const (
+	overlapFileA    = "repository://explorarte-organization@c30328eda491241fccb81b8c83feb8a5b1e6cc35/internal/coderunner/worker.go#L38-L86"
+	overlapFileB    = "repository://explorarte-organization@c30328eda491241fccb81b8c83feb8a5b1e6cc35/internal/coderunner/worker.go#L76-L124"
+	mergedCite      = "repository://explorarte-organization@c30328eda491241fccb81b8c83feb8a5b1e6cc35/internal/coderunner/worker.go#L38-L124"
+	gapCite         = "repository://explorarte-organization@c30328eda491241fccb81b8c83feb8a5b1e6cc35/internal/coderunner/worker.go#L1-L124"
+	partialOnlyCite = "repository://explorarte-organization@c30328eda491241fccb81b8c83feb8a5b1e6cc35/internal/coderunner/worker.go#L60-L70"
+)
+
+func snapshotWithOverlappingFragments() stubSnapshotSources {
+	return stubSnapshotSources{sources: []SnapshotSource{
+		{Kind: "repository_evidence", Reference: overlapFileA, Version: designSHA, Included: true},
+		{Kind: "repository_evidence", Reference: overlapFileB, Version: designSHA, Included: true},
+	}}
+}
+
+// GUARD -- a citation naming the merged span of two overlapping shown
+// fragments is admissible: every line it names was genuinely in front of
+// the model, even though no single shown fragment matches it exactly.
+func TestACitationSpanningTwoOverlappingFragmentsIsVerified(t *testing.T) {
+	orchestrator := &Orchestrator{}
+	verified, err := orchestrator.VerifyRepositoryCitations(context.Background(), snapshotWithOverlappingFragments(), 7, designSHA,
+		"See "+mergedCite+".", 42, 99, "d1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(verified) != 1 || verified[0].Reference != mergedCite {
+		t.Fatalf("verified=%+v, want the merged citation admitted", verified)
+	}
+}
+
+// GUARD -- a citation that names lines never actually shown (L1-L37, before
+// either fragment starts) is still rejected: coverage must be real and
+// contiguous, not "the file was mentioned somewhere."
+func TestACitationWithAGapBeforeTheShownFragmentsIsNotVerified(t *testing.T) {
+	orchestrator := &Orchestrator{}
+	verified, err := orchestrator.VerifyRepositoryCitations(context.Background(), snapshotWithOverlappingFragments(), 7, designSHA,
+		"See "+gapCite+".", 42, 99, "d1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(verified) != 0 {
+		t.Fatalf("verified=%+v, want the gapped citation rejected", verified)
+	}
+}
+
+// GUARD -- a citation entirely inside one shown fragment's range still
+// verifies (the ordinary, non-overlapping case must keep working).
+func TestACitationInsideOneShownFragmentIsStillVerified(t *testing.T) {
+	orchestrator := &Orchestrator{}
+	verified, err := orchestrator.VerifyRepositoryCitations(context.Background(), snapshotWithOverlappingFragments(), 7, designSHA,
+		"See "+partialOnlyCite+".", 42, 99, "d1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(verified) != 1 || verified[0].Reference != partialOnlyCite {
+		t.Fatalf("verified=%+v, want the fully-covered sub-range admitted", verified)
+	}
+}
+
 // P11: a citation that was really in front of this model is verified.
 func TestACitationTheModelActuallySawIsVerified(t *testing.T) {
 	orchestrator := &Orchestrator{}
