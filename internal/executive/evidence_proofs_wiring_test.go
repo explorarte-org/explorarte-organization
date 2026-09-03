@@ -2,7 +2,11 @@ package executive
 
 import (
 	"context"
+	"sort"
+	"strings"
 	"testing"
+
+	"github.com/Mireuz13/explorarte-organization/internal/repositoryevidence"
 )
 
 // fakeEvidenceProofStore is an in-memory EvidenceProofStore double for
@@ -21,7 +25,8 @@ type fakeEvidenceProofStore struct {
 
 func (f *fakeEvidenceProofStore) ValidProofs(_ context.Context, _ int64, baseSHA string) (map[EvidenceSlot]EvidenceProof, error) {
 	out := map[EvidenceSlot]EvidenceProof{}
-	for _, proof := range f.seeded {
+	all := append(append([]EvidenceProof(nil), f.seeded...), f.minted...)
+	for _, proof := range all {
 		if proof.BaseSHA == baseSHA {
 			out[EvidenceSlot{Subject: proof.Subject, Relation: proof.Relation}] = proof
 		}
@@ -130,4 +135,135 @@ func TestANewlyCoveredSlotIsMintedAfterTheProbeSucceeds(t *testing.T) {
 			t.Fatalf("slot %+v was covered but never minted", slot)
 		}
 	}
+}
+
+// V7's production failure: the current three subjects and the proposed five
+// each fit independently, but their cumulative raw transport crossed the old
+// ceiling. A durable proof store must turn that into a successful next round:
+// old slots travel as exact refs in the execution contract, while only novel
+// slots consume repository retrieval.
+func TestProofBackedRoundCarriesOldSlotsAndRetrievesOnlyNovelSlots(t *testing.T) {
+	world := &probeWorldSource{worlds: map[string]map[string]string{targetSHA: {
+		"internal/executive/alpha.go": "package executive\n\nfunc Alpha() bool { return true }\n",
+		"internal/executive/beta.go":  "package executive\n\nfunc Beta() int { return 1 }\n",
+		"internal/executive/gamma.go": "package executive\n\nfunc Gamma() string { return \"\" }\n",
+		"internal/executive/zeta.go":  "package executive\n\nfunc Zeta() byte { return 0 }\n",
+	}}}
+	ref := func(subject string) string {
+		return "repository://explorarte-organization@" + targetSHA + "/internal/executive/" + strings.ToLower(subject) + ".go#L1-L4"
+	}
+	sources := []SnapshotSource{
+		wiringSource(ref("Alpha"), "\nfunc Alpha() bool { return true }\n"),
+		wiringSource(ref("Beta"), "\nfunc Beta() int { return 1 }\n"),
+		wiringSource(ref("Gamma"), "\nfunc Gamma() string { return \"\" }\n"),
+		wiringSource(ref("Zeta"), "\nfunc Zeta() byte { return 0 }\n"),
+	}
+	store := &fakeEvidenceProofStore{}
+	fixture := newWiringFixture(t, "revise", sources, []EvidenceRequirementProposal{
+		{Subject: "Alpha", Relations: []string{"definition"}},
+		{Subject: "Beta", Relations: []string{"definition"}},
+	}, WithRepositoryEvidenceSource("explorarte-organization", world), WithEvidenceProofs(store))
+	fixture.harness.adjudicationEvidence =
+		`[{"subject":"Gamma","relations":["definition"]},` +
+			`{"subject":"Zeta","relations":["definition"]}]`
+	fixture.harness.adjudicationVerdictByRound = map[int]string{1: "revise", 2: "freeze"}
+	fixture.harness.departmentWorkerBody = func(task TaskRecord) string {
+		round := designRoundOf(task.IdempotencyKey)
+		if round == 1 {
+			return workerResultForSlots(map[EvidenceSlot]string{
+				{Subject: "Alpha", Relation: "definition"}: ref("Alpha"),
+				{Subject: "Beta", Relation: "definition"}:  ref("Beta"),
+			})
+		}
+		proofs, err := store.ValidProofs(context.Background(), fixture.root, targetSHA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return workerResultForSlots(map[EvidenceSlot]string{
+			{Subject: "Alpha", Relation: "definition"}: proofs[EvidenceSlot{Subject: "Alpha", Relation: "definition"}].SourceReference,
+			{Subject: "Beta", Relation: "definition"}:  proofs[EvidenceSlot{Subject: "Beta", Relation: "definition"}].SourceReference,
+			{Subject: "Gamma", Relation: "definition"}: ref("Gamma"),
+			{Subject: "Zeta", Relation: "definition"}:  ref("Zeta"),
+		})
+	}
+
+	original := jointAdmissionLimits
+	jointAdmissionLimits = func() repositoryevidence.Limits {
+		return repositoryevidence.Limits{MaxFiles: 8, MaxRanges: 16, MaxBytes: 96 * 1024, MaxSearches: 2, MaxLines: 400}
+	}
+	defer func() { jointAdmissionLimits = original }()
+
+	driveCapability(t, fixture, 32)
+	if !hasRoundRequirements(t, fixture, 2) {
+		t.Fatal("independently fitting current and novel sets did not open round 2")
+	}
+
+	var roundTwo HarnessRunCommand
+	for _, command := range fixture.harness.commands {
+		if command.Purpose != PurposeDepartmentWorker {
+			continue
+		}
+		task, err := fixture.tasks.GetTask(context.Background(), command.TaskID)
+		if err == nil && designRoundOf(task.IdempotencyKey) == 2 {
+			roundTwo = command
+			break
+		}
+	}
+	if roundTwo.TaskID == 0 {
+		t.Fatal("round-2 worker never ran")
+	}
+	request := fixture.harness.contexts.requests[roundTwo.Context.ID]
+	gotSlots := map[EvidenceSlot]bool{}
+	for _, slot := range request.RepositorySlots {
+		gotSlots[slot] = true
+	}
+	for _, old := range []EvidenceSlot{{Subject: "Alpha", Relation: "definition"}, {Subject: "Beta", Relation: "definition"}} {
+		if gotSlots[old] {
+			t.Fatalf("proof-backed slot was re-transported in round 2: %+v", old)
+		}
+		proof := findProof(store.minted, old)
+		if proof.SourceReference == "" || !strings.Contains(roundTwo.ExecutionContract, proof.SourceReference) {
+			t.Fatalf("proof-backed slot missing from execution contract: %+v", old)
+		}
+	}
+	for _, novel := range []EvidenceSlot{{Subject: "Gamma", Relation: "definition"}, {Subject: "Zeta", Relation: "definition"}} {
+		if !gotSlots[novel] {
+			t.Fatalf("novel slot was not retrieved in round 2: %+v", novel)
+		}
+	}
+	task, err := fixture.tasks.GetTask(context.Background(), roundTwo.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != "completed" {
+		t.Fatalf("proof-backed round-2 worker ended %q: %s", task.Status, task.Reason)
+	}
+}
+
+func workerResultForSlots(slots map[EvidenceSlot]string) string {
+	ordered := make([]EvidenceSlot, 0, len(slots))
+	for slot := range slots {
+		ordered = append(ordered, slot)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].Subject != ordered[j].Subject {
+			return ordered[i].Subject < ordered[j].Subject
+		}
+		return ordered[i].Relation < ordered[j].Relation
+	})
+	refs, items := make([]string, 0, len(ordered)), make([]string, 0, len(ordered))
+	for _, slot := range ordered {
+		refs = append(refs, slots[slot])
+		items = append(items, `{"claim":"grounded","subject":"`+slot.Subject+`","relation":"`+slot.Relation+`","ref":"`+slots[slot]+`"}`)
+	}
+	return `{"schema_version":"worker-result/v2","summary":"Grounded.","evidence_refs":[` + refsJSON(refs) + `],"evidence":[` + strings.Join(items, ",") + `]}`
+}
+
+func findProof(proofs []EvidenceProof, slot EvidenceSlot) EvidenceProof {
+	for _, proof := range proofs {
+		if proof.Subject == slot.Subject && proof.Relation == slot.Relation {
+			return proof
+		}
+	}
+	return EvidenceProof{}
 }

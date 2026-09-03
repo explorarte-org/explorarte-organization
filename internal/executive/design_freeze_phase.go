@@ -878,6 +878,10 @@ func (o *Orchestrator) verifiedDesignCitations(ctx context.Context, root TaskRec
 	if o.programTarget != nil && o.snapshotSources == nil {
 		return nil, nil, fmt.Errorf("%w: design cites a pinned world but no snapshot reader is wired", ErrContractRejected)
 	}
+	proofs, err := o.validEvidenceProofs(ctx, root.ID, baseSHA)
+	if err != nil {
+		return nil, nil, err
+	}
 	organizational := make([]OrganizationalSource, 0, 8)
 	deliverables := make([]designreview.DeliverableCitations, 0, len(artifact.Units))
 	for _, unit := range artifact.Units {
@@ -931,8 +935,8 @@ func (o *Orchestrator) verifiedDesignCitations(ctx context.Context, root TaskRec
 				organizational = append(organizational, OrganizationalSource{Reference: source.Reference, Content: source.Content})
 			}
 		}
-		verified, verifyErr := o.VerifyRepositoryCitations(ctx, o.snapshotSources,
-			invocation.ContextSnapshotID, baseSHA, body, unit.TaskID, unit.InvocationID, result.ResponseHash)
+		verified, verifyErr := o.verifyRepositoryCitationsWithProofs(ctx, o.snapshotSources,
+			invocation.ContextSnapshotID, baseSHA, body, unit.TaskID, unit.InvocationID, result.ResponseHash, proofs)
 		if verifyErr != nil {
 			return nil, nil, verifyErr
 		}

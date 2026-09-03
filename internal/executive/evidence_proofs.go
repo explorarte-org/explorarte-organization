@@ -1,6 +1,11 @@
 package executive
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"sort"
+	"strings"
+)
 
 // EvidenceProof is the durable record DURABLE-EVIDENCE-PROOF-CONTRACT
 // (docs/reports/DURABLE-EVIDENCE-PROOF-CONTRACT.md) adds to close
@@ -60,4 +65,84 @@ type EvidenceProofStore interface {
 // recovering) behavior rather than failing closed.
 func WithEvidenceProofs(store EvidenceProofStore) OrchestratorOption {
 	return func(o *Orchestrator) { o.evidenceProofs = store }
+}
+
+// validEvidenceProofs reads the carry-forward capabilities available to one
+// execution. An unwired store means the old full-transport behavior; a wired
+// store that cannot answer is a sensor outage, never permission to forget a
+// cumulative obligation.
+func (o *Orchestrator) validEvidenceProofs(ctx context.Context, rootTaskID int64, baseSHA string) (map[EvidenceSlot]EvidenceProof, error) {
+	if o.evidenceProofs == nil || rootTaskID == 0 || strings.TrimSpace(baseSHA) == "" {
+		return map[EvidenceSlot]EvidenceProof{}, nil
+	}
+	proofs, err := o.evidenceProofs.ValidProofs(ctx, rootTaskID, baseSHA)
+	if err != nil {
+		return nil, fmt.Errorf("%w: read durable evidence proofs: %v", ErrEvidenceSensorUnavailable, err)
+	}
+	return proofs, nil
+}
+
+// requirementsWithoutProofs is the raw evidence payload for this execution.
+// Requirements remain cumulative elsewhere; only slots with an exact durable
+// proof at the frozen base are removed from repository transport.
+func requirementsWithoutProofs(required []EvidenceRequirement, proofs map[EvidenceSlot]EvidenceProof) []EvidenceRequirement {
+	if len(proofs) == 0 {
+		return append([]EvidenceRequirement(nil), required...)
+	}
+	remaining := make([]EvidenceRequirement, 0, len(required))
+	for _, requirement := range required {
+		copyRequirement := requirement
+		copyRequirement.Relations = nil
+		for _, relation := range requirement.Relations {
+			if _, proven := proofs[EvidenceSlot{Subject: requirement.Subject, Relation: relation}]; !proven {
+				copyRequirement.Relations = append(copyRequirement.Relations, relation)
+			}
+		}
+		if len(copyRequirement.Relations) > 0 {
+			remaining = append(remaining, copyRequirement)
+		}
+	}
+	return remaining
+}
+
+func addProofBackedSupply(available map[EvidenceSlot][]string, required []EvidenceRequirement, proofs map[EvidenceSlot]EvidenceProof) map[EvidenceSlot][]string {
+	if available == nil {
+		available = map[EvidenceSlot][]string{}
+	}
+	for _, slot := range evidenceSlots(required) {
+		if proof, ok := proofs[slot]; ok && strings.TrimSpace(proof.SourceReference) != "" {
+			available[slot] = append(available[slot], proof.SourceReference)
+		}
+	}
+	return available
+}
+
+// proofCarryForwardGuidance gives the worker exactly the host-authored facts
+// it may carry without retransmitting old source. It contains references, not
+// repository content, and is rendered from the same map used by validation.
+func proofCarryForwardGuidance(required []EvidenceRequirement, proofs map[EvidenceSlot]EvidenceProof) string {
+	var slots []EvidenceSlot
+	for _, slot := range evidenceSlots(required) {
+		if proof, ok := proofs[slot]; ok && strings.TrimSpace(proof.SourceReference) != "" {
+			slots = append(slots, slot)
+		}
+	}
+	if len(slots) == 0 {
+		return ""
+	}
+	sort.Slice(slots, func(i, j int) bool {
+		if slots[i].Subject != slots[j].Subject {
+			return slots[i].Subject < slots[j].Subject
+		}
+		return slots[i].Relation < slots[j].Relation
+	})
+	var guidance strings.Builder
+	guidance.WriteString("Durable repository evidence carried forward from earlier design rounds:\n\n")
+	for _, slot := range slots {
+		fmt.Fprintf(&guidance, "- subject=%q, relation=%q, ref=%q\n", slot.Subject, slot.Relation, proofs[slot].SourceReference)
+	}
+	guidance.WriteString(`
+These exact refs are host-verified repository evidence at this campaign's frozen commit. Their raw excerpts are intentionally not retransmitted in this execution.
+For every carried slot, copy the exact subject, relation and ref into evidence[] so the cumulative contract remains explicit. Do not alter, widen or invent a carried ref.`)
+	return guidance.String()
 }

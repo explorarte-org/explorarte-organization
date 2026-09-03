@@ -43,6 +43,7 @@ type scriptedHarness struct {
 	// which is everything a body needs to vary per scenario. Returning an
 	// empty string falls back to the static body.
 	departmentPlanBody   func(task TaskRecord) string
+	departmentWorkerBody func(task TaskRecord) string
 	departmentReviewBody func(task TaskRecord) string
 
 	// adjudicationVerdictByRound overrides adjudicationVerdict for specific
@@ -85,6 +86,14 @@ func (h *scriptedHarness) Execute(_ context.Context, command HarnessRunCommand) 
 		if h.departmentPlanBody != nil {
 			if task, taskErr := h.tasks.GetTask(context.Background(), command.TaskID); taskErr == nil {
 				if dynamic := h.departmentPlanBody(task); dynamic != "" {
+					body = dynamic
+				}
+			}
+		}
+	case PurposeDepartmentWorker:
+		if h.departmentWorkerBody != nil {
+			if task, taskErr := h.tasks.GetTask(context.Background(), command.TaskID); taskErr == nil {
+				if dynamic := h.departmentWorkerBody(task); dynamic != "" {
 					body = dynamic
 				}
 			}

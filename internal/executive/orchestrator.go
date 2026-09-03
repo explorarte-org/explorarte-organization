@@ -1665,6 +1665,15 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 	if requiredErr != nil {
 		return task, requiredErr
 	}
+	proofs := map[EvidenceSlot]EvidenceProof{}
+	transportRequired := required
+	if purpose == PurposeDepartmentWorker {
+		proofs, requiredErr = o.validEvidenceProofs(ctx, root.ID, repositoryBaseSHA)
+		if requiredErr != nil {
+			return task, requiredErr
+		}
+		transportRequired = requirementsWithoutProofs(required, proofs)
+	}
 	snapshot, err := o.contexts.Build(ctx, ContextRequest{
 		OrganizationRevisionID: task.OrganizationRevisionID, ActorRoleID: task.AssignedRoleID,
 		Purpose: purpose.LegacyPurpose(), TaskRef: "task:" + strconv.FormatInt(task.ID, 10),
@@ -1677,8 +1686,8 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		// model/instruction text.
 		TaskClass: task.TaskClass, ExecutionPurpose: string(purpose), ActorUnitID: task.AssignedUnitID,
 		RepositoryBaseSHA: repositoryBaseSHA, RepositoryQuery: repositoryQuery,
-		RepositorySubjects: evidenceSubjects(required),
-		RepositorySlots:    evidenceSlots(required),
+		RepositorySubjects: evidenceSubjects(transportRequired),
+		RepositorySlots:    evidenceSlots(transportRequired),
 		IdempotencyKey:     childKey(root.ID, fmt.Sprintf("context:%d:%d", task.ID, lease.AttemptID)),
 		CorrelationID:      root.CorrelationID, CausationID: attemptCausation(task.ID, lease.AttemptID),
 	})
@@ -1728,6 +1737,7 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 	if availableErr != nil {
 		return task, availableErr
 	}
+	available = addProofBackedSupply(available, required, proofs)
 	if supplyErr := ValidateEvidenceSupply(required, available); supplyErr != nil {
 		// The host could not put up what it was about to demand. That is
 		// not the worker's failure, so it costs no model call -- and it is
@@ -1798,7 +1808,7 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 			if parsed.SchemaVersion != WorkerResultSchemaVersionV2 {
 				return nil
 			}
-			return o.verifyOfferedEvidenceProvenance(ctx, snapshot.ID, repositoryBaseSHA, task.ID, task.Evidence, parsed.EvidenceRefs)
+			return o.verifyWorkerEvidenceProvenance(ctx, snapshot.ID, repositoryBaseSHA, task.ID, task.Evidence, parsed, proofs)
 		}
 	}
 	// A department review can convert a fabricated reference into apparent
@@ -1848,7 +1858,7 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		Context:              snapshot,
 		Purpose:              purpose,
 		OutputSchema:         schema,
-		ExecutionContract:    executionContractFor(purpose, required),
+		ExecutionContract:    executionContractForWithProofs(purpose, required, proofs),
 		MaxOutputTokens:      o.limits.MaxOutputTokensFor(purpose),
 		CorrelationID:        root.CorrelationID,
 		CausationID:          attemptCausation(task.ID, lease.AttemptID),
@@ -1921,6 +1931,10 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 // lives in candidate_declassifier.go, beside the gate it describes, so one
 // definition serves both ends.
 func executionContractFor(purpose ExecutionPurpose, required []EvidenceRequirement) string {
+	return executionContractForWithProofs(purpose, required, nil)
+}
+
+func executionContractForWithProofs(purpose ExecutionPurpose, required []EvidenceRequirement, proofs map[EvidenceSlot]EvidenceProof) string {
 	contract := ""
 	switch purpose {
 	case PurposeDepartmentPlan, PurposeDepartmentReview:
@@ -1978,6 +1992,12 @@ func executionContractFor(purpose ExecutionPurpose, required []EvidenceRequireme
 		contract += "\n\n" + departmentReviewDelegationScopeGuidance
 	}
 	if guidance := evidenceContractGuidance(required); guidance != "" {
+		if contract != "" {
+			contract += "\n\n"
+		}
+		contract += guidance
+	}
+	if guidance := proofCarryForwardGuidance(required, proofs); guidance != "" {
 		if contract != "" {
 			contract += "\n\n"
 		}

@@ -201,6 +201,52 @@ func (o *Orchestrator) verifyOfferedEvidenceProvenance(ctx context.Context, snap
 		ErrContractRejected, describeInadmissibleReferences(ctx, o.snapshotSources, snapshotID, taskID, evidence, invalid))
 }
 
+// verifyWorkerEvidenceProvenance extends the ordinary "shown in this
+// snapshot" rule with the only other repository references a later-round
+// worker is shown: exact durable proof refs in its execution contract. The
+// authorization is slot-bound, so a proof for Alpha/definition cannot be
+// relabelled as Alpha/application or attached to another subject.
+func (o *Orchestrator) verifyWorkerEvidenceProvenance(ctx context.Context, snapshotID int64, baseSHA string, taskID int64, taskEvidence []EvidenceRecord, result WorkerResult, proofs map[EvidenceSlot]EvidenceProof) error {
+	invalid, err := o.VerifyEvidenceProvenance(ctx, o.snapshotSources, snapshotID, baseSHA, result.EvidenceRefs)
+	if err != nil {
+		return err
+	}
+	if len(invalid) == 0 {
+		return nil
+	}
+	invalidSet := make(map[string]struct{}, len(invalid))
+	authorized := make(map[string]struct{}, len(invalid))
+	for _, ref := range invalid {
+		invalidSet[ref] = struct{}{}
+	}
+	for _, item := range result.Evidence {
+		ref := strings.TrimSpace(item.Ref)
+		if _, needsProof := invalidSet[ref]; !needsProof {
+			continue
+		}
+		slot := EvidenceSlot{Subject: strings.TrimSpace(item.Subject), Relation: item.Relation}
+		proof, ok := proofs[slot]
+		if !ok || proof.BaseSHA != baseSHA || proof.SourceReference != ref {
+			return fmt.Errorf("%w: durable evidence ref %s is not authorized for %s/%s",
+				ErrContractRejected, ref, slot.Subject, slot.Relation)
+		}
+		authorized[ref] = struct{}{}
+	}
+	for ref := range authorized {
+		delete(invalidSet, ref)
+	}
+	if len(invalidSet) == 0 {
+		return nil
+	}
+	remaining := make([]string, 0, len(invalidSet))
+	for ref := range invalidSet {
+		remaining = append(remaining, ref)
+	}
+	sort.Strings(remaining)
+	return fmt.Errorf("%w: %s",
+		ErrContractRejected, describeInadmissibleReferences(ctx, o.snapshotSources, snapshotID, taskID, taskEvidence, remaining))
+}
+
 // nonRepositoryEvidenceGuidance states, to every department worker asked for
 // worker-result/v2, that organizational context in its snapshot -- canonical
 // or policy documents, role and department profiles, and similar material --

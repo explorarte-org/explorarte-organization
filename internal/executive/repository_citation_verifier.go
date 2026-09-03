@@ -100,6 +100,42 @@ func (o *Orchestrator) VerifyRepositoryCitations(ctx context.Context, sources Sn
 	return verified, nil
 }
 
+// verifyRepositoryCitationsWithProofs also recognizes exact durable refs the
+// host placed in a later-round worker's execution contract. Unlike excerpts
+// in the current snapshot, proof refs cannot be widened: the stored range is
+// the complete carried capability.
+func (o *Orchestrator) verifyRepositoryCitationsWithProofs(ctx context.Context, sources SnapshotSourceReader, snapshotID int64, baseSHA, text string, taskID, invocationID int64, resultDigest string, proofs map[EvidenceSlot]EvidenceProof) ([]VerifiedCitation, error) {
+	verified, err := o.VerifyRepositoryCitations(ctx, sources, snapshotID, baseSHA, text, taskID, invocationID, resultDigest)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{}, len(verified))
+	for _, citation := range verified {
+		seen[citation.Reference] = struct{}{}
+	}
+	allowed := make(map[string]struct{}, len(proofs))
+	for _, proof := range proofs {
+		if proof.BaseSHA == baseSHA && strings.TrimSpace(proof.SourceReference) != "" {
+			allowed[proof.SourceReference] = struct{}{}
+		}
+	}
+	for _, candidate := range citationPattern.FindAllString(text, -1) {
+		if _, exists := seen[candidate]; exists {
+			continue
+		}
+		if _, carried := allowed[candidate]; !carried {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		verified = append(verified, VerifiedCitation{
+			Reference: candidate, BaseSHA: baseSHA,
+			TaskID: taskID, InvocationID: invocationID, ResultDigest: resultDigest,
+		})
+	}
+	sort.Slice(verified, func(i, j int) bool { return verified[i].Reference < verified[j].Reference })
+	return verified, nil
+}
+
 // RepositoryCitationsIn extracts the citations a text claims, verified or not.
 //
 // Used to tell "cited nothing" from "cited something that does not exist",
