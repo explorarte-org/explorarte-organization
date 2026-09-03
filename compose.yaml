@@ -247,6 +247,20 @@ services:
       ORG_STAGING_RECONCILE_INTERVAL: ${ORG_STAGING_RECONCILE_INTERVAL:-30s}
       ORG_STAGING_RECONCILE_BATCH_SIZE: ${ORG_STAGING_RECONCILE_BATCH_SIZE:-100}
       ORG_STAGING_GIT_BINARY: ${ORG_STAGING_GIT_BINARY:-git}
+      # SELF-AUDIT-001 (2026-09-02): internal/executive/bootstrap/
+      # repositoryevidence.go's repositoryEvidenceOption reads this SAME
+      # env var (missionRepositoryEnv) and silently returns no repository
+      # evidence source at all -- no error, no log -- when it is unset,
+      # exactly like missionProvisioningOptions (R17-001). orgd got this
+      # fix; model-worker did not, even though `executive submit`/`resume`
+      # are actually run against THIS service in practice (orgd has no
+      # ORG_MODEL_EXECUTION_PRINCIPAL_KEY). Found live: a real self-audit
+      # worker task asked to review internal/coderunner/ and
+      # internal/engineeringmission/ had zero source code in its context
+      # and honestly reported "no source code provided" -- not a model
+      # failure, a missing evidence source.
+      ORG_CODE_RUNNER_REPOSITORY_ID: explorarte-organization
+      ORG_CODE_RUNNER_TARGET_REF: refs/heads/main
       ORG_MODEL_RUNTIME_ENABLED: "true"
       ORG_MODEL_EXECUTION_IDENTITY_ENABLED: "true"
       ORG_MODEL_EXECUTION_IDENTITY_KEY_FILE: /run/secrets/model-execution-identity.pem
