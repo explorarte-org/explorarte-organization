@@ -350,6 +350,20 @@ services:
       - /etc/explorarte/secrets/gemini-embedding-api-key:/run/secrets/gemini-embedding-api-key:ro
       - /etc/explorarte/secrets/grok-api-key:/run/secrets/grok-api-key:ro
       - /etc/explorarte/secrets/oci-object-storage-api-key.pem:/run/secrets/oci-object-storage-api-key.pem:ro
+      # Staging roots: internal/executive/bootstrap/repositoryevidence.go's
+      # repositoryEvidenceOption (SELF-AUDIT-001 fix) now actually runs for
+      # this service and opens the staging runtime, which tries to prepare
+      # these roots on start -- found live: model-worker had
+      # ORG_STAGING_ENABLED=true and ORG_CODE_RUNNER_REPOSITORY_ID set but
+      # none of the actual volume mounts, so "executive submit" failed
+      # outright with "mkdir /var/lib/explorarte: read-only file system"
+      # the very first time this path was ever exercised on this service.
+      # Same fix orgd already got (PR #162).
+      - /etc/explorarte/repositories.yaml:/etc/explorarte/repositories.yaml:ro
+      - /var/lib/explorarte/staging/repo/explorarte-organization:/var/lib/explorarte/staging/repo/explorarte-organization
+      - /var/lib/explorarte/staging/workspaces:/var/lib/explorarte/staging/workspaces
+      - /var/lib/explorarte/staging/artifacts:/var/lib/explorarte/staging/artifacts
+      - /var/lib/explorarte/staging/quarantine:/var/lib/explorarte/staging/quarantine
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=32m
