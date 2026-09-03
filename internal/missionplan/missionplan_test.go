@@ -2,6 +2,10 @@ package missionplan
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sort"
 	"strings"
 	"testing"
 
@@ -181,6 +185,45 @@ func TestKernelGovernanceCodeIsRefusedUnderEveryScope(t *testing.T) {
 	request.Changes = []Change{{Path: "internal/executive/orchestrator.go", Intent: "x", Patch: unifiedDiff("internal/executive/orchestrator.go")}}
 	if _, err := Derive(request); err != nil {
 		t.Fatalf("non-kernel internal code was refused: %v", err)
+	}
+}
+
+// The autonomous denylist and the human-PR guard protect the same code
+// surface. Keep this test pointed at the script's actual KERNEL_PATHS block so
+// adding one side without the other fails in the package that owns the
+// autonomous boundary.
+func TestKernelGovernancePrefixesMatchFitnessScript(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	scriptPath := filepath.Join(filepath.Dir(thisFile), "..", "..", "scripts", "check-kernel-governance-fitness.sh")
+	contents, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("read kernel fitness script: %v", err)
+	}
+
+	var actual []string
+	inPaths := false
+	for _, raw := range strings.Split(string(contents), "\n") {
+		line := strings.TrimSpace(raw)
+		switch {
+		case line == "KERNEL_PATHS=(":
+			inPaths = true
+		case inPaths && line == ")":
+			inPaths = false
+		case inPaths && strings.HasPrefix(line, "internal/"):
+			actual = append(actual, strings.TrimSuffix(line, "/")+"/")
+		}
+	}
+	if inPaths {
+		t.Fatal("KERNEL_PATHS block is not closed")
+	}
+	sort.Strings(actual)
+	expected := append([]string(nil), kernelGovernancePrefixes...)
+	sort.Strings(expected)
+	if strings.Join(actual, "\x00") != strings.Join(expected, "\x00") {
+		t.Fatalf("script KERNEL_PATHS internal entries=%v, missionplan kernelGovernancePrefixes=%v", actual, expected)
 	}
 }
 
