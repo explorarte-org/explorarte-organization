@@ -56,8 +56,9 @@ type Orchestrator struct {
 	snapshotSources SnapshotSourceReader
 	// repositorySource reads the pinned tree directly, so an adjudication's
 	// proposed obligations can be probed for supplyability before they bind a
-	// round. Optional: without it proposals are adopted unprobed, and the
-	// round's own preflight remains the last line of defence.
+	// round. It is required whenever proposals exist: adopting obligations
+	// without the sensor would make the host promise a capability it never
+	// measured.
 	repositorySource repositoryevidence.Source
 	repositoryID     string
 	missions         MissionProvisioner

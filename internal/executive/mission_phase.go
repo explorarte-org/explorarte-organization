@@ -99,9 +99,9 @@ func WithSnapshotSources(reader SnapshotSourceReader) OrchestratorOption {
 // sensor the context builder uses, so adjudicated obligations can be probed
 // for supplyability against the pinned tree before they bind a round.
 //
-// Optional: without it proposals are adopted unprobed, and the round's own
-// preflight stays the last line of defence -- later and more expensive, but
-// equally fail-closed.
+// If it is absent while an adjudication proposes obligations, the proposal
+// is rejected as an unavailable host capability rather than adopted
+// unprobed. This keeps the admission promise fail-closed.
 func WithRepositoryEvidenceSource(repositoryID string, source repositoryevidence.Source) OrchestratorOption {
 	return func(o *Orchestrator) {
 		o.repositoryID = repositoryID

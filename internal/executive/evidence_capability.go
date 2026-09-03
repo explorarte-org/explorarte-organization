@@ -65,11 +65,14 @@ var jointAdmissionLimits = repositoryevidence.DefaultLimits
 //
 // The probe reads the delivered baseSHA explicitly (never HEAD) through the
 // same Source the context builder uses. A sensor failure is reported as
-// ErrEvidenceSensorUnavailable so it is never recorded as Luna's rejection;
+// ErrEvidenceSensorUnavailable so it is never recorded as the adjudicator's rejection;
 // "cannot fit together" is not a sensor failure, it IS the verdict.
 func (o *Orchestrator) probeAdjudicationRequirements(ctx context.Context, root TaskRecord, proposals []EvidenceRequirementProposal) error {
-	if len(proposals) == 0 || o.repositorySource == nil {
+	if len(proposals) == 0 {
 		return nil
+	}
+	if o.repositorySource == nil {
+		return fmt.Errorf("%w: adjudication proposed %d evidence requirements but no repository sensor is wired", ErrEvidenceSensorUnavailable, len(proposals))
 	}
 	baseSHA, err := o.frozenDesignBaseSHA(ctx, root)
 	if err != nil {
