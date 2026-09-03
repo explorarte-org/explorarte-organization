@@ -360,7 +360,7 @@ func TestAnUnfilledSlotIsAContractRejectionNotAHostFailure(t *testing.T) {
 func TestARestatedSlotKeepsItsOriginalAuthority(t *testing.T) {
 	fixture := newWiringFixture(t, "revise", fullSupply(), []EvidenceRequirementProposal{
 		{Subject: "MaxDesignRounds", Relations: []string{"definition"}},
-	})
+	}, WithRepositoryEvidenceSource("explorarte-organization", capabilityWorld()))
 	fixture.harness.adjudicationEvidence = `[` +
 		`{"subject":"MaxDesignRounds","relations":["definition"]},` +
 		`{"subject":"MaxDepartmentReplans","relations":["application"]}]`
@@ -408,7 +408,7 @@ func TestARestatedSlotKeepsItsOriginalAuthority(t *testing.T) {
 func TestRoundTwoWorkerCannotRunBeforeItsObligationsAreDurable(t *testing.T) {
 	fixture := newWiringFixture(t, "revise", fullSupply(), []EvidenceRequirementProposal{
 		{Subject: "MaxDesignRounds", Relations: []string{"definition"}},
-	})
+	}, WithRepositoryEvidenceSource("explorarte-organization", capabilityWorld()))
 	fixture.harness.adjudicationEvidence = `[{"subject":"MaxDepartmentReplans","relations":["application"]}]`
 	fixture.harness.bodies[PurposeDepartmentWorker] =
 		`{"schema_version":"worker-result/v2","summary":"Grounded.",` +
@@ -446,7 +446,7 @@ func TestRoundTwoWorkerCannotRunBeforeItsObligationsAreDurable(t *testing.T) {
 func TestAResumedRunAdoptsTheSameDecisionOnce(t *testing.T) {
 	fixture := newWiringFixture(t, "revise", fullSupply(), []EvidenceRequirementProposal{
 		{Subject: "MaxDesignRounds", Relations: []string{"definition"}},
-	})
+	}, WithRepositoryEvidenceSource("explorarte-organization", capabilityWorld()))
 	fixture.harness.adjudicationEvidence = `[{"subject":"MaxDepartmentReplans","relations":["application"]}]`
 	fixture.harness.bodies[PurposeDepartmentWorker] =
 		`{"schema_version":"worker-result/v2","summary":"Grounded.",` +
