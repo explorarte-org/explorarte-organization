@@ -73,9 +73,13 @@ func (o *Orchestrator) probeAdjudicationRequirements(ctx context.Context, root T
 	if err != nil {
 		return err
 	}
-	// The contract under test is CUMULATIVE: everything already in force
-	// through the current round, plus this revise's novel demands. Restating
-	// an in-force slot is free; only genuinely new slots join.
+	// The durable contract is cumulative, but its transport cost is not. With
+	// durable proofs wired, obligations that have already governed a worker
+	// round are proven and minted first; genuinely novel proposals are then
+	// admitted against a fresh snapshot budget. They are deliberately NOT
+	// minted yet: the next worker still needs their raw excerpts in order to
+	// do the newly requested design work. On the following adjudication those
+	// slots are inForce, are minted, and become cheap carry-forward facts.
 	all, err := o.tasks.ListByCorrelation(ctx, root.CorrelationID)
 	if err != nil {
 		return err
@@ -86,10 +90,7 @@ func (o *Orchestrator) probeAdjudicationRequirements(ctx context.Context, root T
 		return err
 	}
 	novel := withoutSlotsAlreadyInForce(proposals, inForce)
-	candidate := make([]EvidenceRequirement, 0, len(inForce)+len(novel))
-	candidate = append(candidate, inForce...)
-	candidate = append(candidate, AdoptEvidenceRequirements(novel, EvidenceFromAdjudication)...)
-	slots := evidenceSlots(candidate)
+	adoptedNovel := AdoptEvidenceRequirements(novel, EvidenceFromAdjudication)
 
 	// DURABLE-EVIDENCE-PROOF-CONTRACT: a slot already durably proven at this
 	// exact base_sha costs nothing this round -- its raw evidence does not
@@ -104,6 +105,47 @@ func (o *Orchestrator) probeAdjudicationRequirements(ctx context.Context, root T
 			return fmt.Errorf("%w: read durable evidence proofs: %v", ErrEvidenceSensorUnavailable, err)
 		}
 	}
+	limits := jointAdmissionLimits()
+	if o.evidenceProofs == nil {
+		// Compatibility for deployments without the durable store: preserve
+		// the original cumulative joint-admission promise exactly.
+		candidate := append(append([]EvidenceRequirement(nil), inForce...), adoptedNovel...)
+		plan, planErr := o.planUnprovenSlots(ctx, baseSHA, limits, candidate, proven)
+		if planErr != nil {
+			return planErr
+		}
+		if len(plan.Undelivered) > 0 {
+			return newCapacityConflict(baseSHA, limits, inForce, plan)
+		}
+		return nil
+	}
+
+	// Checkpoint 1: settle the round that actually ran. Mint only these
+	// covered slots, so the next round can carry them by durable reference.
+	currentPlan, planErr := o.planUnprovenSlots(ctx, baseSHA, limits, inForce, proven)
+	if planErr != nil {
+		return planErr
+	}
+	if len(currentPlan.Undelivered) > 0 {
+		return newCapacityConflict(baseSHA, limits, inForce, currentPlan)
+	}
+	o.mintProofsForNewlyCovered(ctx, root.ID, baseSHA, currentPlan)
+
+	// Checkpoint 2: prove that the NEW work fits one real worker snapshot.
+	// Do not mint it here; admission proves deliverability, while minting is
+	// the receipt that lets a later round avoid transporting it again.
+	novelPlan, planErr := o.planUnprovenSlots(ctx, baseSHA, limits, adoptedNovel, proven)
+	if planErr != nil {
+		return planErr
+	}
+	if len(novelPlan.Undelivered) > 0 {
+		return newCapacityConflict(baseSHA, limits, inForce, novelPlan)
+	}
+	return nil
+}
+
+func (o *Orchestrator) planUnprovenSlots(ctx context.Context, baseSHA string, limits repositoryevidence.Limits, requirements []EvidenceRequirement, proven map[EvidenceSlot]EvidenceProof) (repositoryevidence.CoveragePlan, error) {
+	slots := evidenceSlots(requirements)
 	probeSlots := make([]repositoryevidence.EvidenceSlot, 0, len(slots))
 	for _, slot := range slots {
 		if _, alreadyProven := proven[slot]; alreadyProven {
@@ -112,22 +154,14 @@ func (o *Orchestrator) probeAdjudicationRequirements(ctx context.Context, root T
 		probeSlots = append(probeSlots, repositoryevidence.EvidenceSlot{Subject: slot.Subject, Relation: slot.Relation})
 	}
 	if len(probeSlots) == 0 {
-		// Every demanded slot is already durably proven -- nothing new to
-		// admit, and no sensor read is needed to say so.
-		return nil
+		return repositoryevidence.CoveragePlan{}, nil
 	}
-
-	limits := jointAdmissionLimits()
-	plan, planErr := repositoryevidence.PlanSlots(ctx, o.repositoryID, baseSHA,
+	plan, err := repositoryevidence.PlanSlots(ctx, o.repositoryID, baseSHA,
 		o.repositorySource, limits, 24, probeSlots)
-	if planErr != nil {
-		return fmt.Errorf("%w: joint evidence admission at %s: %v", ErrEvidenceSensorUnavailable, baseSHA, planErr)
+	if err != nil {
+		return repositoryevidence.CoveragePlan{}, fmt.Errorf("%w: joint evidence admission at %s: %v", ErrEvidenceSensorUnavailable, baseSHA, err)
 	}
-	if len(plan.Undelivered) > 0 {
-		return newCapacityConflict(baseSHA, limits, inForce, plan)
-	}
-	o.mintProofsForNewlyCovered(ctx, root.ID, baseSHA, plan)
-	return nil
+	return plan, nil
 }
 
 // mintProofsForNewlyCovered records a durable proof for each slot this
