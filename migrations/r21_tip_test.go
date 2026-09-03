@@ -24,7 +24,7 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const wantCount = 62
+	const wantCount = 63
 	if len(loaded) != wantCount {
 		t.Fatalf("migration count=%d want %d", len(loaded), wantCount)
 	}
@@ -89,6 +89,11 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		// bounded raw-content column for the specific case where OUR OWN
 		// normalization failed on an otherwise-successful provider response.
 		62: "add_normalization_failure_raw_content",
+		// DURABLE-EVIDENCE-PROOF-CONTRACT: closes
+		// EVIDENCE_CAPACITY_LIVENESS_INCOMPLETENESS -- separates an
+		// obligation staying durably in force from its raw evidence needing
+		// to be re-paid every design round.
+		63: "create_evidence_proofs",
 	}
 	byVersion := make(map[int64]string, len(loaded))
 	for _, migration := range loaded {

@@ -215,6 +215,18 @@ func (o *Orchestrator) driveImplementationMission(ctx context.Context, root Task
 		return Run{}, true, err
 	}
 	if strings.TrimSpace(current) != baseSHA {
+		// DURABLE-EVIDENCE-PROOF-CONTRACT: a proof minted under baseSHA
+		// attests exactly that SHA's content -- once the world has moved,
+		// it must never again read as "already delivered" for a future
+		// round pinned to a different SHA. Invalidated in the SAME pass
+		// that blocks the run on this exact fact, not a separate sweep
+		// that could race or be skipped. Best-effort: a failure here must
+		// never stop the block itself from taking effect -- fail-closed
+		// blocking the run is the load-bearing action; tombstoning stale
+		// proofs is a durability cleanup on top of it.
+		if o.evidenceProofs != nil {
+			_ = o.evidenceProofs.InvalidateProofs(ctx, root.ID, strings.TrimSpace(current))
+		}
 		run, blockErr := o.blockRoot(ctx, root, ReasonWorldChangedSinceFreeze,
 			fmt.Sprintf("the design was decided about %s and the promotion target is now %s; a decision about one repository is not a decision about another",
 				baseSHA, strings.TrimSpace(current)))

@@ -81,6 +81,7 @@ completion-postgres	all,completion	integration	15m	-	compose_run go test -count=
 shadowverifier-postgres	all,shadow	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/shadowverifier/postgres
 agentmessaging-postgres	all,messaging	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/agentmessaging/postgres
 executive-postgres	all,executive	integration	20m	-	compose_run go test -count=1 -tags=integration ./internal/executive
+evidence-proofs-postgres	all,executive	integration	20m	-	compose_run go test -count=1 -tags=integration ./internal/executive/postgres
 executive-postrun-postgres	all,executive	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/executive/postrun
 executive-sleep-postgres	all,executive	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/executive/sleep
 executive-smoke-postgres	all,executive	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/executive/smoke

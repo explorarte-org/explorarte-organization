@@ -22,6 +22,13 @@ type CoveragePlan struct {
 	// either the subject is absent from the pin, or admitting the set as a
 	// whole would need more capacity than one snapshot has.
 	Undelivered []EvidenceSlot
+	// Fragments is every excerpt the dry-run actually gathered to deliver
+	// Covered -- the same real, host-read content GatherWithCoverage used to
+	// answer the admission question, not a second, separate read. A caller
+	// that wants to durably prove a covered slot (DURABLE-EVIDENCE-PROOF-
+	// CONTRACT) finds its grounding fragment here, from the exact dry-run
+	// that established admission, rather than re-reading the tree.
+	Fragments []Fragment
 }
 
 // PlanSlots is joint admission (checkpoint D): it answers not "can each
@@ -79,7 +86,7 @@ func PlanSlots(ctx context.Context, repositoryID, baseSHA string, source Source,
 	for _, slot := range uncovered {
 		delete(coveredSet, slot)
 	}
-	plan := CoveragePlan{Covered: []EvidenceSlot{}, Undelivered: []EvidenceSlot{}}
+	plan := CoveragePlan{Covered: []EvidenceSlot{}, Undelivered: []EvidenceSlot{}, Fragments: fragments}
 	for _, slot := range slots {
 		if coveredSet[slot] {
 			plan.Covered = append(plan.Covered, slot)
@@ -93,7 +100,6 @@ func PlanSlots(ctx context.Context, repositoryID, baseSHA string, source Source,
 		}
 		return plan.Undelivered[first].Relation < plan.Undelivered[second].Relation
 	})
-	_ = fragments
 	return plan, nil
 }
 

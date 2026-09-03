@@ -197,6 +197,10 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create executive acceptance store: %w", err)
 	}
+	evidenceProofStore, err := executivepostgres.NewEvidenceProofStore(store.Pool())
+	if err != nil {
+		return nil, fmt.Errorf("create executive evidence proof store: %w", err)
+	}
 	var orchestrator *executive.Orchestrator
 	dependencies := executive.Dependencies{
 		OrganizationID: cfg.Tasks.OrganizationID,
@@ -237,6 +241,11 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 	if evidenceSource != nil {
 		options = append(options, executive.WithRepositoryEvidenceSource(evidenceRepositoryID, evidenceSource))
 	}
+	// DURABLE-EVIDENCE-PROOF-CONTRACT: unconditional, unlike the sensor
+	// above -- probeAdjudicationRequirements already no-ops without a
+	// repository source, so wiring this store has no effect until that is
+	// also configured, and no reason to gate it separately.
+	options = append(options, executive.WithEvidenceProofs(evidenceProofStore))
 	orchestrator, err = executive.NewOrchestrator(dependencies, options...)
 	if err != nil {
 		return nil, fmt.Errorf("create executive orchestrator: %w", err)
