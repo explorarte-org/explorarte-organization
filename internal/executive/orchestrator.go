@@ -2017,7 +2017,7 @@ func executionContractForWithProofs(purpose ExecutionPurpose, required []Evidenc
 // guidance, so the most consequential copy-exactly instruction is also the
 // most recent thing the model reads before the schema.
 func executionContractForWithSupply(purpose ExecutionPurpose, required []EvidenceRequirement, proofs map[EvidenceSlot]EvidenceProof, available map[EvidenceSlot][]string) string {
-	contract := executionContractForWithProofs(purpose, required, proofs)
+	contract := executionContractForWithProofs(purpose, required, available, proofs)
 	if purpose != PurposeDepartmentWorker {
 		return contract
 	}
