@@ -133,23 +133,5 @@ jobs:
         run: bash scripts/check-canonical-immutability.sh "${{ steps.change_base.outputs.base }}"
       - name: PostgreSQL 17 complete integration suite and CLI smoke tests
         run: make test-integration
-      - name: Model egress PostgreSQL 17 integration
-        run: make test-model-egress-integration
-      - name: Model runtime PostgreSQL 17 integration
-        run: make test-model-runtime-integration
-      - name: Model dispatch PostgreSQL 17 integration
-        run: make test-model-dispatch-integration
-      - name: Model identity PostgreSQL 17 integration
-        run: make test-model-identity-integration
-      - name: Context engine PostgreSQL 17 integration
-        run: make test-context-integration
-      - name: Authorization PostgreSQL 17 integration
-        run: make test-authorization-integration
-      - name: Persistent cell worker PostgreSQL 17 integration
-        run: make test-cellworker-integration
-      - name: Durable decision graph PostgreSQL 17 integration
-        run: make test-decisiongraph-integration
-      - name: Staging PostgreSQL 17 and real Git integration
-        run: make test-staging-integration
       - name: Exact aggregate verification
         run: make verify-all

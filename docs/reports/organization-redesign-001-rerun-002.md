@@ -122,7 +122,7 @@ on current main.
 
 Counter-evidence recorded and not flattened: the fixture remains a committed artifact whose
 divergent counts form an unsynchronised parallel representation; validator behaviour was derived
-from source and `POST_INCIDENT_VALIDATION.md`, not execution-observed; a zero-match grep cannot
+from source and `docs/handoffs/POST_INCIDENT_VALIDATION.md`, not execution-observed; a zero-match grep cannot
 see untracked or future consumers. This points at a systemic gap in **test-data hygiene and
 post-incident cleanup**, which is a different claim from the localized assertion drift.
 

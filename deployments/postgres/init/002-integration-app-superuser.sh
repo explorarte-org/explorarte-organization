@@ -13,7 +13,7 @@ set -euo pipefail
 # trusted, so CREATE EXTENSION requires a real superuser -- the app role
 # (explorarte_app, intentionally NOSUPERUSER for production) cannot do it,
 # which surfaced only once the isolated integration Postgres instance could
-# actually run end-to-end for the first time (see POST_INCIDENT_VALIDATION.md).
+# actually run end-to-end for the first time (see docs/handoffs/POST_INCIDENT_VALIDATION.md).
 # Making the role superuser here is safe specifically because this database
 # and role exist only inside the disposable integration container/volume
 # torn down after every run -- it is not the production privilege model.

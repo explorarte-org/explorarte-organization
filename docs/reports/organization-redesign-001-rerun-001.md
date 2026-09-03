@@ -73,7 +73,7 @@ invocation 10 with a parsed executive plan, or any outbox event with
 
 The count divergence does **not** indicate a truth-boundary failure. It is explained by
 (a) a stale, already-corrected test assertion (45/3 vs 46/2) documented as pre-existing
-drift in `POST_INCIDENT_VALIDATION.md`, (b) distinct semantic scopes
+drift in `docs/handoffs/POST_INCIDENT_VALIDATION.md`, (b) distinct semantic scopes
 (`organizational_units=6` total vs `operational=4`), and (c) temporal scope plus the
 2026-08-12 truncation (tasks 0→3, outbox 1816→1942).
 
