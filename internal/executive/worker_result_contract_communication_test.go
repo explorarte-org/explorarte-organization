@@ -140,6 +140,73 @@ func TestEvidenceRefElementOverByteLimitIsRejectedAndItsSchemaDeclaresTheSameBou
 	}
 }
 
+// The dynamic worker schema must narrow refs to the same host-classified
+// supply that the validator receives. In particular, a nearby but unshown
+// postrun.go range must not become an allowed enum value merely because the
+// file name is plausible.
+func TestWorkerResultSlotsSchemaEnumeratesOnlyAvailableRefs(t *testing.T) {
+	required := []EvidenceRequirement{
+		{Subject: "PostRun", Relations: []string{"definition"}},
+		{Subject: "RetryPolicy", Relations: []string{"application"}},
+	}
+	available := map[EvidenceSlot][]string{
+		{Subject: "PostRun", Relation: "definition"}: {
+			"repository://explorarte-organization@pin/internal/executive/postrun.go#L1-L20",
+		},
+		{Subject: "RetryPolicy", Relation: "application"}: {
+			"repository://explorarte-organization@pin/internal/executive/retry.go#L20-L30",
+			"repository://explorarte-organization@pin/internal/executive/retry.go#L20-L30",
+		},
+	}
+	schema := WorkerResultOutputSchemaForSlots(DefaultLimits(), required, available, nil)
+	var document struct {
+		Properties struct {
+			Evidence struct {
+				Items struct {
+					Properties struct {
+						Subject struct {
+							Enum []string `json:"enum"`
+						} `json:"subject"`
+						Ref struct {
+							Enum []string `json:"enum"`
+						} `json:"ref"`
+					} `json:"properties"`
+				} `json:"items"`
+			} `json:"evidence"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(schema, &document); err != nil {
+		t.Fatalf("dynamic worker schema is not valid JSON: %v", err)
+	}
+	if got := document.Properties.Evidence.Items.Properties.Subject.Enum; len(got) != 2 || got[0] != "PostRun" || got[1] != "RetryPolicy" {
+		t.Fatalf("subject enum=%v, want sorted required subjects", got)
+	}
+	refs := document.Properties.Evidence.Items.Properties.Ref.Enum
+	for _, want := range []string{
+		"repository://explorarte-organization@pin/internal/executive/postrun.go#L1-L20",
+		"repository://explorarte-organization@pin/internal/executive/retry.go#L20-L30",
+	} {
+		found := false
+		for _, ref := range refs {
+			if ref == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("available ref %q is missing from enum %v", want, refs)
+		}
+	}
+	if len(refs) != 2 {
+		t.Fatalf("refs were not deduplicated: %v", refs)
+	}
+	for _, ref := range refs {
+		if ref == "repository://explorarte-organization@pin/internal/executive/postrun.go#L65-L113" {
+			t.Fatalf("unavailable postrun.go range appeared in ref enum: %v", refs)
+		}
+	}
+}
+
 // GUARD B -- MULTIBYTE ABLATION.
 //
 // Protects the byte semantics against a future "simplification" that swaps

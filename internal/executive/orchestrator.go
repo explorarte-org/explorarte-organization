@@ -1739,6 +1739,13 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		return task, availableErr
 	}
 	available = addProofBackedSupply(available, required, proofs)
+	if purpose == PurposeDepartmentWorker {
+		// The schema is built from the same host-classified supply map used by
+		// ValidateEvidenceStructure below. This turns the finite evidence
+		// contract into a provider-visible enum without inventing a second
+		// source of truth for accepted subjects or refs.
+		schema = WorkerResultOutputSchemaForSlots(o.limits, required, available, proofs)
+	}
 	if supplyErr := ValidateEvidenceSupply(required, available); supplyErr != nil {
 		// The host could not put up what it was about to demand. That is
 		// not the worker's failure, so it costs no model call -- and it is
