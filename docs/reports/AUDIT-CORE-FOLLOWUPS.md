@@ -109,3 +109,18 @@ values supplied only in the process environment. Running it without those
 values fails because the repository intentionally requires production secret
 variables. No `.env` or secret file was read or modified, and no service was
 started.
+
+## F-007 — CI integration findings after the counts correction
+
+The first PR CI run (`33782322497`) correctly exposed one stale integration
+expectation: `internal/organization/registry/integration_test.go` still used
+46 imported and 2 proposed roles. It was corrected to 41/7 in a separate
+governance-approved commit.
+
+The complete local integration suite was rerun after that correction. All
+PostgreSQL-backed suites passed; the only remaining failure was the existing
+CLI RAG smoke path, which rejects a review where `actor_role_id` and
+`proposed_by` are both `empresa/human` with `ErrSelfReview`. Both
+`internal/rag` and `scripts/test-integration.sh` are unchanged relative to
+`origin/main`, so this is recorded for a separate fix rather than changed in
+this audit.
