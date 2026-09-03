@@ -71,7 +71,7 @@ WHERE r.invocation_id=$1 AND r.dispatch_attempt_id=$2`,
 // but whose provider-reported token counts were nonetheless recovered — see
 // modelruntime.FailureCommand.Usage's doc comment. Mirrors the usage insert
 // CompleteInvocation already does on the success path, including the
-// nullable prompt-cache-hit/miss columns.
+// nullable cache-hit/miss columns.
 func insertRecoveredUsage(ctx context.Context, tx pgx.Tx, usage *modelruntime.Usage) error {
 	if usage == nil {
 		return nil
@@ -292,7 +292,7 @@ RETURNING id,created_at`,
 		// result row, so it cannot reach response hashing; it is not in the
 		// outbox payload, so it cannot leave the system; and no context
 		// projection reads this table, so it cannot travel back into a model
-		// prompt. Those three exclusions are what let ORGANIZATIONAL data be
+		// input. Those three exclusions are what let ORGANIZATIONAL data be
 		// kept at all.
 		if reasoning := command.Response.RoleReasoning; len(reasoning) > 0 {
 			if _, err = tx.Exec(ctx, `
