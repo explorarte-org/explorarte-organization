@@ -32,30 +32,32 @@ var jointAdmissionLimits = repositoryevidence.DefaultLimits
 // the adjudicator's own contract boundary, turns that late dead end into a
 // measured rejection the adjudicator can correct on its next attempt.
 //
-// probeAdjudicationRequirements is JOINT admission over the CUMULATIVE
-// contract (checkpoint D): a round-2 worker is judged against everything in
-// force PLUS this revise's novel demands -- evidenceRequirementsForRound is
-// explicitly cumulative -- so admitting Luna's proposals in isolation would
-// still let owner + adjudication jointly exceed what one snapshot can
-// deliver, and round 2 would die at its own preflight. The admitted set is
-// therefore exactly what the next round will carry:
+// The durable obligation set remains cumulative (checkpoint D), while a
+// durable proof store makes its raw transport incremental. The boundary is a
+// design round, never an individual subject:
 //
 //	inForce = obligations already recorded through the current round
 //	novel   = proposals minus slots already in force (withoutSlotsAlreadyInForce)
-//	contract = inForce + Adopt(novel, adjudication)
-//	PlanSlots(evidenceSlots(contract))
+//	PlanSlots(unproven(inForce)); mint every covered current slot
+//	PlanSlots(novel); admit it but leave it raw for the next worker
 //
-// and only an empty Undelivered list accepts the revise.
+// Both joint plans must have an empty Undelivered list. The next worker is
+// still judged against inForce+novel, but receives exact durable refs for the
+// former and raw excerpts for the latter. Without a proof store, the legacy
+// full cumulative PlanSlots check remains unchanged.
 //
 // probeAdjudicationRequirements is JOINT admission (checkpoint D): it asks
 // not "can each proposed slot be grounded on its own" but "can this SET be
 // delivered together, by the same selection algorithm, under the SAME Limits
 // the real snapshot will run with". PlanSlots is a dry-run of delivery, so an
-// accepted adjudication is a strong host promise: every worker snapshot of
-// the adopted round will contain each demanded slot. R15 proved why per-
-// subject probes were not enough -- four subjects passed four independent
-// probes with four full budgets, then one shared snapshot budget starved
-// driveDesignFreeze/application and the preflight killed the worker.
+// accepted adjudication is a strong host promise: every worker execution of
+// the adopted round will receive each demanded slot, either as raw repository
+// evidence or as an exact proof-backed ref. R15 proved why per-subject probes
+// were not enough -- four subjects passed four independent probes with four
+// full budgets, then one shared snapshot budget starved
+// driveDesignFreeze/application and the preflight killed the worker. V7
+// proved the other half: already-settled slots must not consume that shared
+// raw budget forever.
 //
 // The rejection names every undelivered subject/relation pair and reaches the
 // retry through the durable result_summary transport, so Luna can thin her
