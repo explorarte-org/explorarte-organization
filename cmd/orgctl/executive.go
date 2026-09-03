@@ -45,6 +45,8 @@ func runExecutive(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "submit":
 		return runExecutiveSubmit(args[1:], stdout, stderr)
+	case "external-smoke":
+		return runExecutiveExternalSmoke(args[1:], stdout, stderr)
 	case "status":
 		return runExecutiveStatus(args[1:], stdout, stderr)
 	case "resume":
@@ -246,7 +248,7 @@ func readExecutiveGoal(path string) (executive.OwnerGoal, error) {
 	return goal, nil
 }
 
-func openExecutiveRuntime(stderr io.Writer, suffix string, timeout time.Duration) (config.Config, *executivebootstrap.Runtime, *platformpostgres.Store, context.Context, context.CancelFunc, int) {
+func openExecutiveRuntime(stderr io.Writer, suffix string, timeout time.Duration, options ...executivebootstrap.OpenOption) (config.Config, *executivebootstrap.Runtime, *platformpostgres.Store, context.Context, context.CancelFunc, int) {
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(stderr, "load configuration: %v\n", err)
@@ -258,7 +260,7 @@ func openExecutiveRuntime(stderr io.Writer, suffix string, timeout time.Duration
 		cancel()
 		return cfg, nil, nil, nil, func() {}, code
 	}
-	runtime, err := executivebootstrap.Open(cfg, store)
+	runtime, err := executivebootstrap.Open(cfg, store, options...)
 	if err != nil {
 		store.Close()
 		cancel()
@@ -371,6 +373,7 @@ func printExecutiveUsage(out io.Writer) {
 	fmt.Fprintln(out, `usage: orgctl executive <command> [options]
 commands:
   submit --file goal.json --actor-role empresa/human --idempotency-key KEY [--json]
+  external-smoke --confirm EXECUTIVE_EXTERNAL_SMOKE_ONCE --idempotency-key external-smoke-KEY [--json]
   status ROOT_TASK_ID [--json]
   resume ROOT_TASK_ID [--json]
   worker run [--poll 1s] [--error-backoff 3s] [--batch 16]

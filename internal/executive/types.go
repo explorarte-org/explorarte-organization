@@ -245,7 +245,7 @@ func DefaultLimits() Limits {
 // truncation that dead-letters at 24K tokens of real spend instead of
 // 65K+.
 func (l Limits) MaxOutputTokensFor(purpose ExecutionPurpose) int {
-	if purpose == PurposeDepartmentWorker {
+	if purpose == PurposeDepartmentWorker && l.MaxOutputTokens > 24000 {
 		return 24000
 	}
 	return l.MaxOutputTokens

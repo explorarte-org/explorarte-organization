@@ -40,9 +40,42 @@ type Runtime struct {
 	Models *modelbootstrap.Runtime
 }
 
-func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
+type OpenOption func(*openOptions)
+
+type openOptions struct {
+	limits    executive.Limits
+	noRetries bool
+}
+
+func defaultOpenOptions() openOptions {
+	return openOptions{limits: executive.DefaultLimits()}
+}
+
+// WithExecutiveLimits lets a narrowly-scoped local/operator command replace
+// the default Executive limits while keeping every runtime adapter on the
+// same copy. It is intentionally an Open option rather than an environment
+// read, so a strict smoke cannot accidentally inherit a looser process
+// configuration.
+func WithExecutiveLimits(limits executive.Limits) OpenOption {
+	return func(options *openOptions) { options.limits = limits }
+}
+
+// WithNoRetries pins every task created by this Orchestrator to one attempt.
+// It is used only by the one-shot external smoke; normal workers retain the
+// existing retry policy.
+func WithNoRetries() OpenOption {
+	return func(options *openOptions) { options.noRetries = true }
+}
+
+func Open(cfg config.Config, store *platformpostgres.Store, opts ...OpenOption) (*Runtime, error) {
 	if store == nil {
 		return nil, fmt.Errorf("executive bootstrap requires PostgreSQL")
+	}
+	openConfig := defaultOpenOptions()
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&openConfig)
+		}
 	}
 	registryRepository, err := registry.NewPostgresRepository(store)
 	if err != nil {
@@ -115,7 +148,7 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 		return nil, fmt.Errorf("create executive decision graph service: %w", err)
 	}
 
-	limits := executive.DefaultLimits()
+	limits := openConfig.limits
 	baseTasks := runtimeadapter.Tasks{Service: taskService, OrganizationID: cfg.Tasks.OrganizationID}
 	baseModels := runtimeadapter.Models{Service: modelRuntime.Invocations, OrganizationID: cfg.Tasks.OrganizationID}
 	completionGate := runtimeadapter.Completion{Service: completionService}
@@ -227,6 +260,9 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 			PrincipalStore: principalStore,
 			OrganizationID: cfg.Tasks.OrganizationID,
 		}),
+	}
+	if openConfig.noRetries {
+		options = append(options, executive.WithNoRetries())
 	}
 	missionOptions, err := missionProvisioningOptions(cfg, store, taskService)
 	if err != nil {
