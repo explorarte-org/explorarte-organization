@@ -1858,7 +1858,7 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		Context:              snapshot,
 		Purpose:              purpose,
 		OutputSchema:         schema,
-		ExecutionContract:    executionContractForWithProofs(purpose, required, proofs),
+		ExecutionContract:    executionContractForWithProofs(purpose, required, available, proofs),
 		MaxOutputTokens:      o.limits.MaxOutputTokensFor(purpose),
 		CorrelationID:        root.CorrelationID,
 		CausationID:          attemptCausation(task.ID, lease.AttemptID),
@@ -1931,10 +1931,10 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 // lives in candidate_declassifier.go, beside the gate it describes, so one
 // definition serves both ends.
 func executionContractFor(purpose ExecutionPurpose, required []EvidenceRequirement) string {
-	return executionContractForWithProofs(purpose, required, nil)
+	return executionContractForWithProofs(purpose, required, nil, nil)
 }
 
-func executionContractForWithProofs(purpose ExecutionPurpose, required []EvidenceRequirement, proofs map[EvidenceSlot]EvidenceProof) string {
+func executionContractForWithProofs(purpose ExecutionPurpose, required []EvidenceRequirement, available map[EvidenceSlot][]string, proofs map[EvidenceSlot]EvidenceProof) string {
 	contract := ""
 	switch purpose {
 	case PurposeDepartmentPlan, PurposeDepartmentReview:
@@ -1991,7 +1991,7 @@ func executionContractForWithProofs(purpose ExecutionPurpose, required []Evidenc
 		// review/design-freeze are host-orchestrated rather than review-requested.
 		contract += "\n\n" + departmentReviewDelegationScopeGuidance
 	}
-	if guidance := evidenceContractGuidance(required); guidance != "" {
+	if guidance := evidenceContractGuidance(required, available); guidance != "" {
 		if contract != "" {
 			contract += "\n\n"
 		}

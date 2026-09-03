@@ -20,7 +20,7 @@ import (
 // The rendering is derived from whatever list it is handed, never from a
 // literal copy of one campaign's obligations.
 func TestEvidenceContractGuidanceRendersTheAuthoritativeSlots(t *testing.T) {
-	if got := evidenceContractGuidance(nil); got != "" {
+	if got := evidenceContractGuidance(nil, nil); got != "" {
 		t.Fatalf("no obligations must produce no guidance, got %q", got)
 	}
 
@@ -28,7 +28,7 @@ func TestEvidenceContractGuidanceRendersTheAuthoritativeSlots(t *testing.T) {
 		{Subject: "MaxDesignRounds", Relations: []string{"application", "definition"}},
 		{Subject: "MaxDepartmentReplans", Relations: []string{"definition", "application"}},
 	}
-	guidance := evidenceContractGuidance(required)
+	guidance := evidenceContractGuidance(required, nil)
 
 	for _, want := range []string{
 		`- subject="MaxDesignRounds", relation="definition"`,
@@ -53,7 +53,7 @@ func TestEvidenceContractGuidanceRendersTheAuthoritativeSlots(t *testing.T) {
 		{Subject: "MaxDepartmentReplans", Relations: []string{"application", "definition"}},
 		{Subject: "MaxDesignRounds", Relations: []string{"definition", "application"}},
 	}
-	if again := evidenceContractGuidance(permuted); again != guidance {
+	if again := evidenceContractGuidance(permuted, nil); again != guidance {
 		t.Fatalf("guidance is not deterministic under input ordering:\n--- first ---\n%s\n--- again ---\n%s", guidance, again)
 	}
 }
@@ -145,6 +145,80 @@ func TestWorkerRunCarriesTheRequiredEvidenceSlotsInTheRealRequest(t *testing.T) 
 	}
 	if strings.Contains(request.RepositoryQuery, "Required structured evidence slots") {
 		t.Fatal("the evidence guidance changed what retrieval searched for -- the R5 pollution in a new costume")
+	}
+}
+
+// V8's live failure (root 18978, CAPACITY-LIVENESS-CANARY-001): a real
+// department worker was told the exact accepted repository:// ref in the
+// GOAL prose, but the execution contract it was actually judged against only
+// said "identify repository evidence supplied in this execution" -- so it
+// re-searched its snapshot and cited a different, wrong excerpt for the same
+// range twice over. This guard pins the repair: when the host already knows
+// which ref(s) satisfy a slot, the contract states them verbatim, not just
+// the slot's name.
+func TestEvidenceContractGuidanceStatesTheExactAcceptedRefPerSlot(t *testing.T) {
+	required := []EvidenceRequirement{
+		{Subject: "RetryPolicy", Relations: []string{"definition", "application"}},
+	}
+	available := map[EvidenceSlot][]string{
+		{Subject: "RetryPolicy", Relation: "definition"}:  {"repository://explorarte-organization@" + targetSHA + "/internal/tasks/backoff.go#L1-L29"},
+		{Subject: "RetryPolicy", Relation: "application"}: {"repository://explorarte-organization@" + targetSHA + "/internal/tasks/backoff.go#L1-L29"},
+	}
+	guidance := evidenceContractGuidance(required, available)
+
+	for _, want := range []string{
+		`- subject="RetryPolicy", relation="definition"`,
+		`- subject="RetryPolicy", relation="application"`,
+		`"repository://explorarte-organization@` + targetSHA + `/internal/tasks/backoff.go#L1-L29"`,
+		"copy one character-for-character",
+	} {
+		if !strings.Contains(guidance, want) {
+			t.Errorf("guidance missing %q:\n%s", want, guidance)
+		}
+	}
+
+	// A slot the host has no known ref for yet still names the slot, but
+	// asserts no accepted ref -- there is nothing to copy, and the guidance
+	// must not imply otherwise.
+	unresolved := evidenceContractGuidance(required, nil)
+	if strings.Contains(unresolved, "accepted ref(s) for this exact slot") {
+		t.Fatalf("guidance claimed an accepted ref when available was nil:\n%s", unresolved)
+	}
+	if !strings.Contains(unresolved, `- subject="RetryPolicy", relation="definition"`) {
+		t.Fatalf("guidance dropped the slot itself when no ref is known:\n%s", unresolved)
+	}
+}
+
+// THE V8 CRITERION, end to end: a real worker run's ExecutionContract states
+// the exact ref the host's own classifier already found for each required
+// slot -- the same map suppliedEvidence built and ValidateEvidenceSupply
+// already validated the run against, not a second, independent guess.
+func TestWorkerRunCarriesTheExactAcceptedRefInTheRealRequest(t *testing.T) {
+	fixture := newWiringFixture(t, "freeze", fullSupply(), []EvidenceRequirementProposal{
+		{Subject: "MaxDesignRounds", Relations: []string{"definition", "application"}},
+	})
+	fixture.harness.bodies[PurposeDepartmentWorker] =
+		`{"schema_version":"worker-result/v2","summary":"Grounded.",` +
+			`"evidence_refs":["` + wiringDefRef + `","` + wiringAppRef + `"],` +
+			`"evidence":[` +
+			`{"claim":"declared","subject":"MaxDesignRounds","relation":"definition","ref":"` + wiringDefRef + `"},` +
+			`{"claim":"applied","subject":"MaxDesignRounds","relation":"application","ref":"` + wiringAppRef + `"}]}`
+
+	if _, err := fixture.driveUntilStopped(t, 24); err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+	command, ok := fixture.commandFor(PurposeDepartmentWorker)
+	if !ok {
+		t.Fatal("the worker never ran")
+	}
+	for _, want := range []string{
+		`"` + wiringDefRef + `"`,
+		`"` + wiringAppRef + `"`,
+		"copy one character-for-character",
+	} {
+		if !strings.Contains(command.ExecutionContract, want) {
+			t.Errorf("worker ExecutionContract missing the accepted ref %q:\n%s", want, command.ExecutionContract)
+		}
 	}
 }
 
