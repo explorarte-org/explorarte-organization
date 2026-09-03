@@ -21,7 +21,7 @@
 --
 -- CUTOVER-REHEARSAL-001: production already carries a manually-seeded
 -- openai_responses wallet + both pricing tiers (2026-08-10, predating this
--- migration -- see docs/handoffs/HANDOFF-2026-08-10-noche.md), so a plain unconditional
+-- migration -- see HANDOFF-2026-08-10-noche.md), so a plain unconditional
 -- INSERT is wrong twice over:
 --
 --   * model_pricing's unique constraint is scoped by effective_at, and this
