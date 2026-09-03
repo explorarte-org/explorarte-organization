@@ -161,8 +161,12 @@ services:
       # "staging initialization failed... readiness is blocked" (fails soft,
       # HTTP health stays live) because /var/lib/explorarte wasn't mounted at
       # all here and orgd's read_only root filesystem refused the mkdir.
+      # The shared clone is :ro here on purpose: orgd only ever runs
+      # `git rev-parse` against it (programTargetResolver). The single
+      # legitimate writer of staging state is code-runner, and it writes
+      # to workspaces, never to this clone.
       - /etc/explorarte/repositories.yaml:/etc/explorarte/repositories.yaml:ro
-      - /var/lib/explorarte/staging/repo/explorarte-organization:/var/lib/explorarte/staging/repo/explorarte-organization
+      - /var/lib/explorarte/staging/repo/explorarte-organization:/var/lib/explorarte/staging/repo/explorarte-organization:ro
       - /var/lib/explorarte/staging/workspaces:/var/lib/explorarte/staging/workspaces
       - /var/lib/explorarte/staging/artifacts:/var/lib/explorarte/staging/artifacts
       - /var/lib/explorarte/staging/quarantine:/var/lib/explorarte/staging/quarantine
@@ -176,7 +180,8 @@ services:
     restart: unless-stopped
     stop_grace_period: 20s
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "/usr/local/bin/orgctl", "health", "--ready", "--url", "http://127.0.0.1:8080"]
       interval: 10s
@@ -359,8 +364,11 @@ services:
       # outright with "mkdir /var/lib/explorarte: read-only file system"
       # the very first time this path was ever exercised on this service.
       # Same fix orgd already got (PR #162).
+      # The shared clone is :ro here on purpose: model-worker reads the
+      # pinned SHA and file contents for repository evidence and never
+      # mutates the clone. Only code-runner writes, and only to workspaces.
       - /etc/explorarte/repositories.yaml:/etc/explorarte/repositories.yaml:ro
-      - /var/lib/explorarte/staging/repo/explorarte-organization:/var/lib/explorarte/staging/repo/explorarte-organization
+      - /var/lib/explorarte/staging/repo/explorarte-organization:/var/lib/explorarte/staging/repo/explorarte-organization:ro
       - /var/lib/explorarte/staging/workspaces:/var/lib/explorarte/staging/workspaces
       - /var/lib/explorarte/staging/artifacts:/var/lib/explorarte/staging/artifacts
       - /var/lib/explorarte/staging/quarantine:/var/lib/explorarte/staging/quarantine
@@ -376,7 +384,8 @@ services:
       # the same internal/platform/httpserver orgd does (cmd/orgctl/
       # worker.go), so this is the identical CMD form orgd's own
       # healthcheck already uses -- not a CMD-SHELL/pgrep check, which
-      # could never run at all in this distroless, shell-less image
+      # could never run at all when this image was distroless and shell-less;
+      # it is debian-slim with git now (SELF-AUDIT-001) but the CMD form stays
       # (found live: model-worker reported unhealthy the entire time
       # despite dispatching real, successful model calls -- Wave 5
       # finding, ORGANIZATION-GRAND-AUDIT-001). --ready pings the real
@@ -390,7 +399,8 @@ services:
     restart: unless-stopped
     stop_grace_period: 30s
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     networks:
       - org-internal
 
@@ -403,8 +413,10 @@ services:
     # smaller image (plain golang base, not distroless) because this is
     # the one process that needs a real go/git toolchain to actually run
     # GO_BUILD/GO_VET/GO_TEST/GIT_DIFF -- and its own unprivileged system
-    # user (coderunner, uid/gid 999, no login shell), distinct from
-    # orgd/model-worker's distroless nonroot uid 65532.
+    # user (coderunner, uid/gid 65532, no login shell) -- deliberately the
+    # SAME numeric uid as orgd/model-worker, because staging.PrepareRoots
+    # chmods the shared roots to 0700 and only an identical uid can share
+    # them (see the coderunner stage in the Dockerfile).
     #
     # This worker can NEVER push or open a PR by itself -- confirmed by
     # reading internal/staging/gitexec/backend.go end to end: every git
@@ -506,7 +518,8 @@ services:
     restart: unless-stopped
     stop_grace_period: 30s
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     networks:
       - org-internal
 

@@ -4,6 +4,12 @@ Monolito modular en Go para el plano de control organizacional de Explorarte.
 
 ## Estado de esta rama
 
+> **Nota histórica.** Esta sección describe el estado al cierre de la Rama 10 y se
+> conserva como registro de diseño. El estado operativo actual (providers
+> habilitados, servicios, montajes) es el que declara `compose.yaml`; el ruteo
+> vigente es el de `docs/canonical/model-routing.yaml`; las decisiones abiertas,
+> `docs/canonical/decisions-required.yaml`.
+
 La Rama 10 separa la identidad del *subject role* (cognitiva) de la del *dispatch actor* (infraestructura), mediante execution principals y dispatcher assignments durables y acotados, manteniendo el runtime productivo cerrado por defecto.
 
 La fuente de verdad se divide de forma explícita:
@@ -15,7 +21,7 @@ La fuente de verdad se divide de forma explícita:
 
 Toda invocación nueva fija la versión y el hash de la política de egress, además del ID de la dispatcher assignment y del execution principal. Las invocaciones anteriores a Rama 09 permanecen `legacy_unpinned` (egress `NULL/NULL`); las anteriores a Rama 10 permanecen sin assignment/principal (`NULL/NULL`) y nunca llaman al adapter. El orden pre-send es: resolver el principal local y vincular el claim, validar task/attempt/lease y la dispatcher assignment (activa, vigente, con cuota), autorizar `model.invoke` sobre el dispatch actor, evaluar egress, comprobar adapter, renderizar y persistir atómicamente `allow + assignment_use + send_started`.
 
-Los providers reales continúan `adapter_status=unavailable` y `dispatch_enabled=false`. `orgd` no registra adapters ni ejecuta invocaciones. `test.fake` existe únicamente en fixtures aisladas. No hay HTTP a providers, shell, credenciales, worker persistente ni dispatcher productivo: ningún rol combina `model.invoke` + model policy + task assignment + binding + adapter ejecutable fuera de fixtures.
+Estado actual (posterior a Rama 10): `orgd` sigue sin registrar adapters ni ejecutar invocaciones. El único proceso que despacha llamadas reales es `model-worker` (`orgctl model worker run`), con adapters HTTP habilitados para DeepSeek, OpenAI (Chat Completions y Responses), Gemini y xAI según `compose.yaml`; cada credencial vive fuera del repositorio en `/etc/explorarte/secrets` y se monta de solo lectura. `code-runner` es el único proceso con toolchain Go/git y ejecuta exclusivamente operaciones tipadas dentro de una misión gobernada; no hace push ni abre PRs. Ningún rol combina `model.invoke` + model policy + task assignment + binding + adapter ejecutable fuera de `execution_service`.
 
 ## Requisitos
 
@@ -30,7 +36,7 @@ Los providers reales continúan `adapter_status=unavailable` y `dispatch_enabled
 cp .env.example .env
 ```
 
-Reemplaza todos los secretos de ejemplo. `.env` está ignorado por Git. PostgreSQL no publica el puerto 5432 al host.
+Reemplaza todos los secretos de ejemplo. `.env` está ignorado por Git. PostgreSQL publica el puerto 5432 únicamente en loopback (`127.0.0.1:5432`) para invocaciones one-off con `--network host`; los servicios persistentes lo alcanzan por el nombre `postgres` en la red bridge interna.
 
 ## Entorno Docker
 
