@@ -3,6 +3,7 @@ package executive
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -67,7 +68,7 @@ func (o *Orchestrator) VerifyEvidenceProvenance(ctx context.Context, sources Sna
 			continue
 		}
 		seen[ref] = struct{}{}
-		if _, genuine := genuine[ref]; !genuine {
+		if !citationCovered(ref, genuine) {
 			invalid = append(invalid, ref)
 		}
 	}
@@ -81,15 +82,81 @@ func (o *Orchestrator) VerifyEvidenceProvenance(ctx context.Context, sources Sna
 // for the commit the design is about, that survived assembly. Sharing this
 // set is what keeps "was this shown to the model" a single answer instead of
 // two mechanisms that could quietly drift.
-func genuineRepositoryCitations(ctx context.Context, sources SnapshotSourceReader, snapshotID int64, baseSHA string) (map[string]struct{}, error) {
+// lineRange is one shown excerpt's [start, end] line span, 1-based and
+// inclusive, matching Fragment's own convention.
+type lineRange struct{ start, end int }
+
+// citationLineRangePattern splits a citation into its file-level identity
+// (everything before #L, i.e. repo@sha/path -- what a single shown excerpt
+// and a citation naming a DIFFERENT sub-range of the same file share) and
+// the specific [start,end] the citation names.
+var citationLineRangePattern = regexp.MustCompile(`^(repository://[A-Za-z0-9._-]+@[0-9a-f]{40}/[^\s"'` + "`" + `,;)\]]+)#L(\d+)-L(\d+)$`)
+
+func parseCitationRange(candidate string) (fileKey string, span lineRange, ok bool) {
+	match := citationLineRangePattern.FindStringSubmatch(candidate)
+	if match == nil {
+		return "", lineRange{}, false
+	}
+	start, errStart := strconv.Atoi(match[2])
+	end, errEnd := strconv.Atoi(match[3])
+	if errStart != nil || errEnd != nil || start > end {
+		return "", lineRange{}, false
+	}
+	return match[1], lineRange{start: start, end: end}, true
+}
+
+// citationCovered answers whether candidate's exact cited span is fully
+// covered by the union of genuine spans shown for the same file -- not
+// merely whether candidate matches one shown span exactly.
+//
+// The repository evidence provider shows a symbol as one or more excerpts,
+// sometimes as overlapping sliding windows over the same region (e.g.
+// worker.go#L38-L86 and worker.go#L76-L124 together covering L38-L124 with
+// no gap). A model that read both windows and cited the natural merged
+// range it actually saw -- worker.go#L38-L124 -- was citing something
+// entirely real; rejecting it for not matching either individual window's
+// exact string would reject a true, grounded claim as unverifiable. Found
+// live: SELF-AUDIT-001's first real self-audit worker (2026-09-02) did
+// exactly this and was rejected before this fix existed.
+//
+// A gap between shown spans still fails: candidate must be covered end to
+// end, not merely overlap one shown span.
+func citationCovered(candidate string, genuine map[string][]lineRange) bool {
+	fileKey, span, ok := parseCitationRange(candidate)
+	if !ok {
+		return false
+	}
+	spans := genuine[fileKey]
+	if len(spans) == 0 {
+		return false
+	}
+	sorted := make([]lineRange, len(spans))
+	copy(sorted, spans)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].start < sorted[j].start })
+	coveredThrough := span.start - 1
+	for _, shown := range sorted {
+		if shown.start > coveredThrough+1 {
+			break
+		}
+		if shown.end > coveredThrough {
+			coveredThrough = shown.end
+		}
+		if coveredThrough >= span.end {
+			return true
+		}
+	}
+	return coveredThrough >= span.end
+}
+
+func genuineRepositoryCitations(ctx context.Context, sources SnapshotSourceReader, snapshotID int64, baseSHA string) (map[string][]lineRange, error) {
 	if sources == nil || snapshotID <= 0 || baseSHA == "" {
-		return map[string]struct{}{}, nil
+		return map[string][]lineRange{}, nil
 	}
 	available, err := sources.SnapshotSources(ctx, snapshotID)
 	if err != nil {
 		return nil, err
 	}
-	genuine := map[string]struct{}{}
+	genuine := map[string][]lineRange{}
 	for _, source := range available {
 		if source.Kind != "repository_evidence" {
 			continue
@@ -100,7 +167,11 @@ func genuineRepositoryCitations(ctx context.Context, sources SnapshotSourceReade
 		if !source.Included {
 			continue
 		}
-		genuine[source.Reference] = struct{}{}
+		fileKey, span, ok := parseCitationRange(source.Reference)
+		if !ok {
+			continue
+		}
+		genuine[fileKey] = append(genuine[fileKey], span)
 	}
 	return genuine, nil
 }

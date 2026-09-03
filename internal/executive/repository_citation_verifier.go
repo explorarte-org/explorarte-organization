@@ -87,7 +87,7 @@ func (o *Orchestrator) VerifyRepositoryCitations(ctx context.Context, sources Sn
 		if _, already := seen[candidate]; already {
 			continue
 		}
-		if _, real := genuine[candidate]; !real {
+		if !citationCovered(candidate, genuine) {
 			continue
 		}
 		seen[candidate] = struct{}{}
