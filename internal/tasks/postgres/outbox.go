@@ -178,7 +178,6 @@ func (s *Store) OutboxStats(ctx context.Context) (tasks.OutboxStats, error) {
 	return stats, mapError(err)
 }
 
-
 // PruneOutbox deletes durable outbox_events rows matching the caller's
 // already-validated request (Service.PruneOutbox enforces the minimum
 // age/explicit-status floors; this layer trusts them but still never
@@ -198,14 +197,17 @@ func (s *Store) PruneOutbox(ctx context.Context, request tasks.OutboxPruneReques
 	if len(statuses) == 0 {
 		return tasks.OutboxPruneResult{DryRun: request.DryRun}, nil
 	}
-	cutoff := time.Now().UTC().Add(-request.OlderThan)
+	// The database clock is authoritative for retention decisions. Using it
+	// inside each statement keeps pruning consistent with the durable
+	// timestamps and avoids depending on application-host wall-clock skew.
+	olderThanMicros := request.OlderThan.Microseconds()
 
 	if request.DryRun {
 		rows, err := s.pool.Query(ctx, `
 			SELECT status, COUNT(*) FROM outbox_events
-			WHERE status = ANY($1) AND created_at <= $2
+			WHERE status = ANY($1) AND created_at <= clock_timestamp() - ($2::bigint * interval '1 microsecond')
 			GROUP BY status
-		`, statuses, cutoff)
+		`, statuses, olderThanMicros)
 		if err != nil {
 			return tasks.OutboxPruneResult{}, mapError(err)
 		}
@@ -232,12 +234,12 @@ func (s *Store) PruneOutbox(ctx context.Context, request tasks.OutboxPruneReques
 			DELETE FROM outbox_events
 			WHERE id IN (
 				SELECT id FROM outbox_events
-				WHERE status = ANY($1) AND created_at <= $2
+				WHERE status = ANY($1) AND created_at <= clock_timestamp() - ($2::bigint * interval '1 microsecond')
 				ORDER BY created_at, id
 				FOR UPDATE SKIP LOCKED LIMIT $3
 			)
 			RETURNING status
-		`, statuses, cutoff, request.Limit)
+		`, statuses, olderThanMicros, request.Limit)
 		if err != nil {
 			return tasks.OutboxPruneResult{}, mapError(err)
 		}
