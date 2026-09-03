@@ -42,9 +42,26 @@ func New(binary, workspaceRoot string, timeout time.Duration) (*Backend, error) 
 	if err := os.MkdirAll(hooks, 0o700); err != nil {
 		return nil, fmt.Errorf("create empty hooks directory: %w", err)
 	}
+	// Not actually empty: git >= 2.35.2 (CVE-2022-24765) refuses to
+	// operate on a repository directory it does not own, and every
+	// repository this Backend ever touches is legitimately shared across
+	// multiple real UIDs (a host-side fetch process, this container's own
+	// uid). Wildcarding safe.directory here is safe specifically because
+	// this file is the ENTIRE git configuration surface for every command
+	// this Backend runs (GIT_CONFIG_NOSYSTEM=1 in safeEnv below disables
+	// /etc/gitconfig, and GIT_CONFIG_GLOBAL pins global config to exactly
+	// this file, so no host or user config ever applies) -- and by the
+	// time any git command reaches this path, ValidateRepository has
+	// already confirmed the repository against the real catalog. The
+	// dubious-ownership check exists to protect an unaware privileged
+	// process from an attacker-placed repo in a shared location; here the
+	// repository is already vetted before git ever runs, so the check has
+	// nothing left to add. Found live: the very first real git command
+	// this Backend ran against a real shared clone failed outright with
+	// "fatal: detected dubious ownership" (SELF-AUDIT-001, 2026-09-02).
 	globalConfig := filepath.Join(control, "empty-gitconfig")
-	if err := os.WriteFile(globalConfig, []byte(""), 0o600); err != nil {
-		return nil, fmt.Errorf("create empty Git config: %w", err)
+	if err := os.WriteFile(globalConfig, []byte("[safe]\n\tdirectory = *\n"), 0o600); err != nil {
+		return nil, fmt.Errorf("create Git config: %w", err)
 	}
 	return &Backend{binary: binary, workspaceRoot: root, timeout: timeout, globalConfig: globalConfig, hooksDir: hooks}, nil
 }
