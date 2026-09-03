@@ -24,7 +24,7 @@ const RelationDefinitionConst = repositoryevidence.RelationDefinition
 // What may never happen again: acceptance, then a round-2 worker discovering
 // evidence_insufficient.
 
-// r15World is the pinned tree admission reads: every symbol Luna's R15 revise
+// r15World is the pinned tree admission reads: every symbol the adjudicator's R15 revise
 // demanded, laid out so definitions and applications live in different files
 // -- the layout that starved the old selection.
 func r15World(withApplicationSite bool) *probeWorldSource {
@@ -59,7 +59,7 @@ func (o *Orchestrator) driveDesignFreeze(ctx context.Context) (bool, error) {
 }
 
 // r15ExtraSources are the read-back records the fixture's snapshots serve for
-// the slots Luna's revise demands -- the delivery half of the promise.
+// the slots the adjudicator's revise demands -- the delivery half of the promise.
 func r15ExtraSources() []SnapshotSource {
 
 	freezeApp := "repository://explorarte-organization@" + targetSHA + "/internal/executive/orchestrator.go#L1-L9"
@@ -88,7 +88,7 @@ func r15Fixture(t *testing.T, withApplicationSite bool) *wiringFixture {
 	freezeApp := "repository://explorarte-organization@" + targetSHA + "/internal/executive/orchestrator.go#L1-L9"
 	limitsDef := "repository://explorarte-organization@" + targetSHA + "/internal/executive/budget.go#L1-L8"
 	// One superset body answering every slot both rounds will demand: the
-	// owner slot of this fixture plus the two obligations Luna's revise adds.
+	// owner slot of this fixture plus the two obligations the adjudicator's revise adds.
 	items := []string{
 		`{"claim":"declared","subject":"MaxDesignRounds","relation":"definition","ref":"` + wiringDefRef + `"}`,
 		`{"claim":"declared","subject":"driveDesignFreeze","relation":"application","ref":"` + freezeApp + `"}`,

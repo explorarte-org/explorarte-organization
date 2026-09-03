@@ -8,7 +8,7 @@ import (
 
 // The owner may impose the topology directly, so round 1 can be bound without
 // waiting for an adjudicator to reject a design first. Requiring a revise to
-// activate the mechanism would make a correct decision by Luna a technical
+// activate the mechanism would make a correct decision by the adjudicator a technical
 // precondition of the system.
 func TestAnOwnerCanBindTheFirstRound(t *testing.T) {
 	fixture := newSubmitFixture(t)

@@ -408,7 +408,7 @@ var adversarialReviewOutputSchema = json.RawMessage(`{
 // adjudication's evidence_requirements may bind the next round to. It is
 // rendered in TWO places that must never drift apart -- the run-time
 // ExecutionContract for PurposeDesignAdjudication and this output schema's
-// field description -- because R14 died twice at exactly this gap: Luna
+// field description -- because R14 died twice at exactly this gap: the adjudicator
 // proposed creating "MaxModelCalls" and then demanded definition/application
 // evidence FOR it, a symbol her own design had not yet created and which no
 // snapshot at the frozen pin could ever supply. The host's

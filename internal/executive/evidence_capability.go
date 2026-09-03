@@ -60,7 +60,7 @@ var jointAdmissionLimits = repositoryevidence.DefaultLimits
 // raw budget forever.
 //
 // The rejection names every undelivered subject/relation pair and reaches the
-// retry through the durable result_summary transport, so Luna can thin her
+// retry through the durable result_summary transport, so the adjudicator can thin its
 // demands or ground her proposal through existing symbols instead.
 //
 // The probe reads the delivered baseSHA explicitly (never HEAD) through the

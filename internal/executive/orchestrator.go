@@ -2186,7 +2186,7 @@ func (o *Orchestrator) recordHarnessSuccess(ctx context.Context, task TaskRecord
 	}
 	if err = validate(result); err != nil {
 		// A sensor that could not answer is not a verdict about the artifact.
-		// Recording this as Luna's contract rejection would blame a model for
+		// Recording this as the adjudicator's contract rejection would blame a model for
 		// the observer's silence -- the exact misattribution the supply
 		// preflight exists to prevent. The attempt closes as infrastructure,
 		// retryable, so it runs again when the observer can answer.

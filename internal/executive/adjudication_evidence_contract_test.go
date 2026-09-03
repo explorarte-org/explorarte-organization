@@ -78,7 +78,7 @@ func TestAdjudicationSchemaSharesTheSameAuthority(t *testing.T) {
 }
 
 // THE C criterion end to end: on a revise flow the adjudication command
-// carries the rule BEFORE Luna answers -- and like every ExecutionContract
+// carries the rule BEFORE the adjudicator answers -- and like every ExecutionContract
 // rider it stays out of durable instructions and out of what retrieval
 // searches for.
 func TestAdjudicationRunCarriesTheExistingWorldRuleBeforeAnswering(t *testing.T) {

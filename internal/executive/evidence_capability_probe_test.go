@@ -229,7 +229,7 @@ func TestAnAdjudicationCannotBindUnsupplyableSlots(t *testing.T) {
 	}
 }
 
-// The observer failing is infrastructure, not Luna's verdict: the attempt
+// The observer failing is infrastructure, not the adjudicator's verdict: the attempt
 // closes under its own code, and no contract rejection is recorded -- blaming
 // the artifact for the observer's silence would be the misattribution this
 // whole family of guards exists to prevent.
