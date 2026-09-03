@@ -131,7 +131,5 @@ jobs:
         run: go mod download && go mod verify
       - name: Canonical immutability of this change
         run: bash scripts/check-canonical-immutability.sh "${{ steps.change_base.outputs.base }}"
-      - name: PostgreSQL 17 complete integration suite and CLI smoke tests
-        run: make test-integration
-      - name: Exact aggregate verification
+      - name: Full verification including PostgreSQL 17 integration and CLI smoke tests
         run: make verify-all
