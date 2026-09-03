@@ -20,5 +20,5 @@ var (
 	// capability-matrix.yaml restricting memory.approve to owner-only
 	// (G4-001): a future canonical grant change must not silently
 	// reintroduce self-review with zero code change.
-	ErrSelfReview         = errors.New("memory review rejected: reviewer proposed this entry")
+	ErrSelfReview = errors.New("memory review rejected: reviewer proposed this entry")
 )
