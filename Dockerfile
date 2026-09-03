@@ -39,7 +39,7 @@ ENTRYPOINT ["/usr/local/bin/orgctl"]
 # Dedicated CODE_RUNNER_V1 execution runtime (non-default target, built via
 # `docker build --target coderunner`; not part of the default `docker build
 # .` output, which stays the orgd stage below). CodeRunner needs a real
-# go/git/rg toolchain to execute its typed GO_BUILD/GO_VET/GO_TEST/GOFMT/
+# go/git/rg/make toolchain to execute its typed GO_BUILD/GO_VET/GO_TEST/FITNESS/GOFMT/
 # APPLY_PATCH/SEARCH operations (internal/coderunner/executor.go) -- orgd's
 # distroless image above has none of that and this file must never grow
 # orgd's attack surface to serve CodeRunner instead. Pinned by digest (same
@@ -58,7 +58,7 @@ FROM golang@sha256:908f8ff2ec296df2f349563072c7925775cd28b50361a52ed834a8a37399b
 # chmods every root to a strict 0700 (owner-only, no group bits at all) --
 # the only way two different processes can share that directory is by being
 # the exact same numeric UID, not just a shared group.
-RUN apt-get update && apt-get install -y --no-install-recommends git ripgrep ca-certificates && rm -rf /var/lib/apt/lists/* && groupadd --system --gid 65532 coderunner && useradd --system --no-create-home --shell /usr/sbin/nologin --uid 65532 --gid 65532 coderunner
+RUN apt-get update && apt-get install -y --no-install-recommends git ripgrep make ca-certificates && rm -rf /var/lib/apt/lists/* && groupadd --system --gid 65532 coderunner && useradd --system --no-create-home --shell /usr/sbin/nologin --uid 65532 --gid 65532 coderunner
 # Git 2.35.2+ (CVE-2022-24765 fix) refuses to operate on a repository
 # directory it does not own, even when the directory is world-writable --
 # permission bits are not what this check looks at. This repository is

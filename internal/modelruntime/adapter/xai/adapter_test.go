@@ -448,7 +448,6 @@ func TestProviderIDIsStable(t *testing.T) {
 	}
 }
 
-
 // --- Gate F: Provider Failure Telemetry ------------------------------------
 //
 // Mirrors internal/modelruntime/adapter/deepseek's Gate F test suite: each

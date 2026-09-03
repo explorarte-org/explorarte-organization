@@ -2,6 +2,10 @@ package missionplan
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sort"
 	"strings"
 	"testing"
 
@@ -44,14 +48,14 @@ func TestDeriveProducesAGovernedMission(t *testing.T) {
 		t.Fatalf("allowed paths=%v", derived.Policy.AllowedPaths)
 	}
 	// The gates are the host's, in full, always.
-	if len(derived.Policy.RequiredGates) != 3 {
+	if len(derived.Policy.RequiredGates) != 4 {
 		t.Fatalf("gates=%v", derived.Policy.RequiredGates)
 	}
 	types := map[engineeringmission.GateType]bool{}
 	for _, gate := range derived.Policy.RequiredGates {
 		types[gate.Type] = true
 	}
-	for _, required := range []engineeringmission.GateType{engineeringmission.GateBuild, engineeringmission.GateVet, engineeringmission.GateTest} {
+	for _, required := range []engineeringmission.GateType{engineeringmission.GateBuild, engineeringmission.GateVet, engineeringmission.GateTest, engineeringmission.GateFitness} {
 		if !types[required] {
 			t.Fatalf("missing gate %s", required)
 		}
@@ -69,8 +73,8 @@ func TestDeriveProducesAGovernedMission(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CodeRunner rejected the generated plan: %v", err)
 	}
-	last := parsed.Operations[len(parsed.Operations)-3:]
-	if last[0].Type != coderunner.GoBuild || last[1].Type != coderunner.GoVet || last[2].Type != coderunner.GoTest {
+	last := parsed.Operations[len(parsed.Operations)-4:]
+	if last[0].Type != coderunner.GoBuild || last[1].Type != coderunner.GoVet || last[2].Type != coderunner.GoTest || last[3].Type != coderunner.Fitness {
 		t.Fatalf("gates are not the final operations: %+v", parsed.Operations)
 	}
 	if parsed.Operations[0].Type != coderunner.ApplyPatch {
@@ -143,6 +147,83 @@ func TestStructurallyForbiddenPathsAreRefusedUnderEveryScope(t *testing.T) {
 				t.Fatalf("scope %s accepted forbidden path %q", scope, target)
 			}
 		}
+	}
+}
+
+// Governance CODE is denied like governance data: the packages that decide
+// what a mission may touch cannot be rewritten by a mission, under any scope.
+func TestKernelGovernanceCodeIsRefusedUnderEveryScope(t *testing.T) {
+	kernel := []string{
+		"internal/missionplan/missionplan.go",
+		"internal/coderunner/path.go",
+		"internal/engineeringmission/policy.go",
+		"internal/authorization/policy.go",
+		"internal/modelegress/policy.go",
+		"internal/modelidentity/keys.go",
+		"internal/modeldispatch/assign.go",
+		"internal/organization/registry/validation.go",
+		"internal/secrets/loader.go",
+		"internal/config/config.go",
+		"internal/staging/gitexec/backend.go",
+		"internal/missionplan",
+	}
+	for _, scope := range []Scope{ScopeDocumentation, ScopeInternalCode} {
+		for _, target := range kernel {
+			request := docsRequest()
+			request.Scope = scope
+			request.Changes = []Change{{Path: target, Intent: "x", Patch: unifiedDiff(target)}}
+			if _, err := Derive(request); !errors.Is(err, ErrKernelGovernance) {
+				t.Fatalf("scope %s: %q must be refused as kernel governance, got %v", scope, target, err)
+			}
+		}
+	}
+	// The rest of internal/ stays reachable under the code scope: the
+	// denylist protects the enforcement, not the organization's ability to
+	// change its own product code.
+	request := docsRequest()
+	request.Scope = ScopeInternalCode
+	request.Changes = []Change{{Path: "internal/executive/orchestrator.go", Intent: "x", Patch: unifiedDiff("internal/executive/orchestrator.go")}}
+	if _, err := Derive(request); err != nil {
+		t.Fatalf("non-kernel internal code was refused: %v", err)
+	}
+}
+
+// The autonomous denylist and the human-PR guard protect the same code
+// surface. Keep this test pointed at the script's actual KERNEL_PATHS block so
+// adding one side without the other fails in the package that owns the
+// autonomous boundary.
+func TestKernelGovernancePrefixesMatchFitnessScript(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	scriptPath := filepath.Join(filepath.Dir(thisFile), "..", "..", "scripts", "check-kernel-governance-fitness.sh")
+	contents, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("read kernel fitness script: %v", err)
+	}
+
+	var actual []string
+	inPaths := false
+	for _, raw := range strings.Split(string(contents), "\n") {
+		line := strings.TrimSpace(raw)
+		switch {
+		case line == "KERNEL_PATHS=(":
+			inPaths = true
+		case inPaths && line == ")":
+			inPaths = false
+		case inPaths && strings.HasPrefix(line, "internal/"):
+			actual = append(actual, strings.TrimSuffix(line, "/")+"/")
+		}
+	}
+	if inPaths {
+		t.Fatal("KERNEL_PATHS block is not closed")
+	}
+	sort.Strings(actual)
+	expected := append([]string(nil), kernelGovernancePrefixes...)
+	sort.Strings(expected)
+	if strings.Join(actual, "\x00") != strings.Join(expected, "\x00") {
+		t.Fatalf("script KERNEL_PATHS internal entries=%v, missionplan kernelGovernancePrefixes=%v", actual, expected)
 	}
 }
 

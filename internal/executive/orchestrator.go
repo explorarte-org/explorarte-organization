@@ -56,8 +56,9 @@ type Orchestrator struct {
 	snapshotSources SnapshotSourceReader
 	// repositorySource reads the pinned tree directly, so an adjudication's
 	// proposed obligations can be probed for supplyability before they bind a
-	// round. Optional: without it proposals are adopted unprobed, and the
-	// round's own preflight remains the last line of defence.
+	// round. It is required whenever proposals exist: adopting obligations
+	// without the sensor would make the host promise a capability it never
+	// measured.
 	repositorySource repositoryevidence.Source
 	repositoryID     string
 	missions         MissionProvisioner
@@ -1738,6 +1739,13 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		return task, availableErr
 	}
 	available = addProofBackedSupply(available, required, proofs)
+	if purpose == PurposeDepartmentWorker {
+		// The schema is built from the same host-classified supply map used by
+		// ValidateEvidenceStructure below. This turns the finite evidence
+		// contract into a provider-visible enum without inventing a second
+		// source of truth for accepted subjects or refs.
+		schema = WorkerResultOutputSchemaForSlots(o.limits, required, available, proofs)
+	}
 	if supplyErr := ValidateEvidenceSupply(required, available); supplyErr != nil {
 		// The host could not put up what it was about to demand. That is
 		// not the worker's failure, so it costs no model call -- and it is
@@ -1858,7 +1866,7 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		Context:              snapshot,
 		Purpose:              purpose,
 		OutputSchema:         schema,
-		ExecutionContract:    executionContractForWithProofs(purpose, required, available, proofs),
+		ExecutionContract:    executionContractForWithSupply(purpose, required, proofs, available),
 		MaxOutputTokens:      o.limits.MaxOutputTokensFor(purpose),
 		CorrelationID:        root.CorrelationID,
 		CausationID:          attemptCausation(task.ID, lease.AttemptID),
@@ -1998,6 +2006,30 @@ func executionContractForWithProofs(purpose ExecutionPurpose, required []Evidenc
 		contract += guidance
 	}
 	if guidance := proofCarryForwardGuidance(required, proofs); guidance != "" {
+		if contract != "" {
+			contract += "\n\n"
+		}
+		contract += guidance
+	}
+	return contract
+}
+
+// executionContractForWithSupply is executionContractForWithProofs plus the
+// host's slot-to-ref answer key (evidenceSlotSupplyGuidance) for department
+// workers. It is what actually reaches HarnessRunCommand.ExecutionContract.
+//
+// `available` is the same map the worker's result is judged with
+// (ValidateEvidenceStructure), read back from the snapshot the worker is
+// about to see -- so the refs it lists are, by construction, exactly the
+// ones the validator will accept. It is rendered LAST, after every other
+// guidance, so the most consequential copy-exactly instruction is also the
+// most recent thing the model reads before the schema.
+func executionContractForWithSupply(purpose ExecutionPurpose, required []EvidenceRequirement, proofs map[EvidenceSlot]EvidenceProof, available map[EvidenceSlot][]string) string {
+	contract := executionContractForWithProofs(purpose, required, available, proofs)
+	if purpose != PurposeDepartmentWorker {
+		return contract
+	}
+	if guidance := evidenceSlotSupplyGuidance(required, available, proofs); guidance != "" {
 		if contract != "" {
 			contract += "\n\n"
 		}
@@ -2154,7 +2186,7 @@ func (o *Orchestrator) recordHarnessSuccess(ctx context.Context, task TaskRecord
 	}
 	if err = validate(result); err != nil {
 		// A sensor that could not answer is not a verdict about the artifact.
-		// Recording this as Luna's contract rejection would blame a model for
+		// Recording this as the adjudicator's contract rejection would blame a model for
 		// the observer's silence -- the exact misattribution the supply
 		// preflight exists to prevent. The attempt closes as infrastructure,
 		// retryable, so it runs again when the observer can answer.

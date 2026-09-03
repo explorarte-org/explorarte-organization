@@ -144,6 +144,24 @@ func hasRoundRequirements(t *testing.T, f *wiringFixture, round int) bool {
 	return false
 }
 
+// An adjudication proposal is not allowed to become a durable obligation when
+// the host has no repository sensor with which to prove that it can supply
+// the requested slots. The old optional-sensor behavior adopted it unprobed;
+// that was a fail-open admission promise.
+func TestAdjudicationProposalFailsClosedWithoutRepositorySensor(t *testing.T) {
+	proposal := []EvidenceRequirementProposal{{
+		Subject:   "MaxDesignRounds",
+		Relations: []string{EvidenceDefinition},
+	}}
+	err := (&Orchestrator{}).probeAdjudicationRequirements(context.Background(), TaskRecord{}, proposal)
+	if !errors.Is(err, ErrEvidenceSensorUnavailable) {
+		t.Fatalf("proposal without a repository sensor returned %v, want ErrEvidenceSensorUnavailable", err)
+	}
+	if !strings.Contains(err.Error(), "proposed 1 evidence requirements") {
+		t.Fatalf("sensor failure did not identify the proposal count: %v", err)
+	}
+}
+
 // driveCapability resumes past every per-attempt failure class the probe can
 // produce, until the run blocks or terminates. ErrCompletionFailed carries a
 // sensor outage; it is infrastructure, retried, never a verdict.
@@ -211,7 +229,7 @@ func TestAnAdjudicationCannotBindUnsupplyableSlots(t *testing.T) {
 	}
 }
 
-// The observer failing is infrastructure, not Luna's verdict: the attempt
+// The observer failing is infrastructure, not the adjudicator's verdict: the attempt
 // closes under its own code, and no contract rejection is recorded -- blaming
 // the artifact for the observer's silence would be the misattribution this
 // whole family of guards exists to prevent.

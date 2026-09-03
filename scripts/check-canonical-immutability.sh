@@ -1,19 +1,37 @@
 #!/usr/bin/env bash
-# Canonical registry immutability guard, delta-scoped.
+# Canonical registry change guard, delta-scoped.
+#
+# Every change under docs/canonical is a governance action, never an
+# incidental edit. This guard accepts one ONLY when a commit in the audited
+# range carries an explicit approval trailer naming the owner role:
+#
+#     Canonical-Change-Approved-By: empresa/human
+#
+# Before this revision the guard exempted capability-matrix.yaml,
+# model-routing.yaml, model-egress-policy.yaml and
+# model-execution-identity-policy.yaml -- the tier-2 documents that grant
+# authority and route models -- while freezing the organigram. That was
+# inverted: the documents a self-modifying organization must never change
+# silently are precisely the ones that widen what it may do. No file is
+# exempt now; the approval trailer is the only door.
 #
 # Audits ONLY the docs/canonical changes introduced by the change under
 # test, relative to the base commit given as $1 (or resolved through
-# resolve-task-base.sh when omitted). History that is already merged stays
-# out of scope: this guard protects NEW changes, it does not re-litigate
-# August.
+# resolve-task-base.sh when omitted). Merged history stays out of scope.
+#
+# When merging with squash, the trailer must survive in the squash message;
+# a PR whose approval lives only in a squashed-away commit fails on main.
 set -euo pipefail
 
 fail() { echo "ERROR: $*" >&2; exit 1; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TRAILER='^Canonical-Change-Approved-By: empresa/human[[:space:]]*$'
 
 if [[ $# -ge 1 && -n "${1:-}" ]]; then
   BASE_COMMIT="$1"
+elif [[ -n "${TASK_ENGINE_BASE_COMMIT:-}" ]]; then
+  BASE_COMMIT="$TASK_ENGINE_BASE_COMMIT"
 else
   BASE_COMMIT="$(bash "$SCRIPT_DIR/resolve-task-base.sh")"
 fi
@@ -25,17 +43,13 @@ mapfile -t canonical_changes < <({
   git ls-files --others --exclude-standard -- docs/canonical
 } | sort -u)
 
-for path in "${canonical_changes[@]}"; do
-  case "$path" in
-    docs/canonical/capability-matrix.yaml|docs/canonical/model-routing.yaml|docs/canonical/model-egress-policy.yaml|docs/canonical/model-execution-identity-policy.yaml) ;;
-    # R30 resolves D-007 (docs/canonical/decisions-required.yaml:resolved)
-    # with the owner's exact decision text and docs/adr/ADR-0006-hybrid-
-    # logic-ir-shadow.md — a deliberate, documented governance action,
-    # not an incidental edit. D-005 stays open/untouched in that same
-    # file.
-    docs/canonical/decisions-required.yaml) ;;
-    *) fail "unauthorized canonical change: $path" ;;
-  esac
-done
+if [[ ${#canonical_changes[@]} -eq 0 ]]; then
+  echo "canonical immutability ok (base ${BASE_COMMIT:0:12}, no canonical changes in scope)"
+  exit 0
+fi
 
-echo "canonical immutability ok (base ${BASE_COMMIT:0:12}, ${#canonical_changes[@]} changed files in scope)"
+if ! git log --format=%B "${BASE_COMMIT}..HEAD" | grep -Eq "$TRAILER"; then
+  fail "canonical change without owner approval trailer (Canonical-Change-Approved-By: empresa/human): ${canonical_changes[*]}"
+fi
+
+echo "canonical change approved by trailer (base ${BASE_COMMIT:0:12}, ${#canonical_changes[@]} changed files: ${canonical_changes[*]})"

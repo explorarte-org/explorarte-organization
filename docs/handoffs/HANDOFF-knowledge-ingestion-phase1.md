@@ -55,7 +55,7 @@ falta invocarlo sobre estos documentos), 12 (pgvector), 13 (hybrid
 retrieval), 14 (Context Engine), 15 (canary 3-5 docs), 16 (ingesta masiva).
 
 ### Sidecar BGE-M3
-Ver `HANDOFF-bgem3-sidecar.md` — corriendo, probado en vivo, listo para
+Ver `docs/handoffs/HANDOFF-bgem3-sidecar.md` — corriendo, probado en vivo, listo para
 cuando se conecte al flujo de embeddings.
 
 ### Próximo paso sugerido

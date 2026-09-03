@@ -176,7 +176,7 @@ type fakeStore struct {
 	// (G3-004) -- nil on every path except the one normalization-failure
 	// call site.
 	lastNormalizationFailureRawContent []byte
-	retryableFailure bool
+	retryableFailure                   bool
 }
 
 // fakeCostBudgetGate is a deterministic CostBudgetGate double used to

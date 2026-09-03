@@ -60,16 +60,19 @@ var jointAdmissionLimits = repositoryevidence.DefaultLimits
 // raw budget forever.
 //
 // The rejection names every undelivered subject/relation pair and reaches the
-// retry through the durable result_summary transport, so Luna can thin her
+// retry through the durable result_summary transport, so the adjudicator can thin its
 // demands or ground her proposal through existing symbols instead.
 //
 // The probe reads the delivered baseSHA explicitly (never HEAD) through the
 // same Source the context builder uses. A sensor failure is reported as
-// ErrEvidenceSensorUnavailable so it is never recorded as Luna's rejection;
+// ErrEvidenceSensorUnavailable so it is never recorded as the adjudicator's rejection;
 // "cannot fit together" is not a sensor failure, it IS the verdict.
 func (o *Orchestrator) probeAdjudicationRequirements(ctx context.Context, root TaskRecord, proposals []EvidenceRequirementProposal) error {
-	if len(proposals) == 0 || o.repositorySource == nil {
+	if len(proposals) == 0 {
 		return nil
+	}
+	if o.repositorySource == nil {
+		return fmt.Errorf("%w: adjudication proposed %d evidence requirements but no repository sensor is wired", ErrEvidenceSensorUnavailable, len(proposals))
 	}
 	baseSHA, err := o.frozenDesignBaseSHA(ctx, root)
 	if err != nil {
@@ -131,7 +134,27 @@ func (o *Orchestrator) probeAdjudicationRequirements(ctx context.Context, root T
 	if len(currentPlan.Undelivered) > 0 {
 		return newCapacityConflict(baseSHA, limits, inForce, currentPlan)
 	}
-	o.mintProofsForNewlyCovered(ctx, root.ID, baseSHA, currentPlan)
+	if failed := o.mintProofsForNewlyCovered(ctx, root.ID, baseSHA, currentPlan); failed > 0 {
+		// The two-checkpoint scheme assumes every inForce slot was minted,
+		// so the next worker carries inForce by durable reference and pays
+		// raw transport only for novel. A mint that did not land breaks
+		// that assumption: the next worker will need raw excerpts for BOTH
+		// sets in ONE snapshot, a combination neither checkpoint measured,
+		// and the round's preflight would then report
+		// evidence_delivery_violation against a promise that was never
+		// actually made. Fall back to the legacy joint plan over the full
+		// cumulative set, so admission stays true to what will be delivered.
+		// Re-probing slots that did mint is conservative, never unsound.
+		candidate := append(append([]EvidenceRequirement(nil), inForce...), adoptedNovel...)
+		jointPlan, jointErr := o.planUnprovenSlots(ctx, baseSHA, limits, candidate, proven)
+		if jointErr != nil {
+			return jointErr
+		}
+		if len(jointPlan.Undelivered) > 0 {
+			return newCapacityConflict(baseSHA, limits, inForce, jointPlan)
+		}
+		return nil
+	}
 
 	// Checkpoint 2: prove that the NEW work fits one real worker snapshot.
 	// Do not mint it here; admission proves deliverability, while minting is
@@ -169,21 +192,25 @@ func (o *Orchestrator) planUnprovenSlots(ctx context.Context, baseSHA string, li
 // mintProofsForNewlyCovered records a durable proof for each slot this
 // round's dry-run actually classified as covered, from the exact fragment
 // that classification came from -- never a second, independent read, and
-// never anything a model supplied. Best-effort: a mint failure degrades to
-// "this round re-probes the same evidence next time", never to a false
-// admission, so it is logged-equivalent (returned errors are swallowed by
-// design) rather than failing a round that already passed the real
-// admission check.
-func (o *Orchestrator) mintProofsForNewlyCovered(ctx context.Context, rootTaskID int64, baseSHA string, plan repositoryevidence.CoveragePlan) {
+// never anything a model supplied.
+//
+// Best-effort in the sense that a mint failure never fails a round that
+// already passed the real admission check -- but NOT silent: it returns how
+// many covered slots did not end up minted (store error, or no fragment
+// classifying as the slot), so the caller can stop assuming the next round
+// carries them by reference and re-measure the joint set it will actually
+// have to transport raw.
+func (o *Orchestrator) mintProofsForNewlyCovered(ctx context.Context, rootTaskID int64, baseSHA string, plan repositoryevidence.CoveragePlan) (failed int) {
 	if o.evidenceProofs == nil {
-		return
+		return 0
 	}
 	for _, slot := range plan.Covered {
 		fragment, found := fragmentSatisfying(plan.Fragments, slot)
 		if !found {
+			failed++
 			continue
 		}
-		_ = o.evidenceProofs.MintProof(ctx, EvidenceProof{
+		if err := o.evidenceProofs.MintProof(ctx, EvidenceProof{
 			OrganizationID:  o.organizationID,
 			RootTaskID:      rootTaskID,
 			Subject:         slot.Subject,
@@ -191,8 +218,11 @@ func (o *Orchestrator) mintProofsForNewlyCovered(ctx context.Context, rootTaskID
 			BaseSHA:         baseSHA,
 			SourceReference: fragment.Reference(),
 			ContentDigest:   repositoryevidence.DigestOf(fragment.Content),
-		})
+		}); err != nil {
+			failed++
+		}
 	}
+	return failed
 }
 
 // fragmentSatisfying finds the first gathered fragment whose real content

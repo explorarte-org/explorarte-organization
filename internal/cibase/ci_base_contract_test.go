@@ -426,17 +426,20 @@ func TestNewUnauthorizedCanonicalChangeFails(t *testing.T) {
 	}
 }
 
-// The allow-list stays scoped to the CURRENT delta: an exception file may
-// still change inside a task.
-func TestAllowListedExceptionInDeltaPasses(t *testing.T) {
+// No canonical file is exempt from the approval gate: even a document that
+// used to be allow-listed must carry the owner trailer in the change range.
+func TestFormerlyAllowListedCanonicalChangeRequiresApproval(t *testing.T) {
 	g, _ := newScenario(t)
 	gitRun(t, g.dir, "checkout", "-b", "fix/something")
 	writeCommitAll(t, g.dir, "routing update", map[string]string{
 		"docs/canonical/model-routing.yaml": "routing: v2\n",
 	})
 	out, code := g.run(t, repoFile(t, immutabilitySc), nil)
-	if code != 0 {
-		t.Fatalf("an allow-listed delta change failed:\n%s", out)
+	if code == 0 {
+		t.Fatalf("a formerly allow-listed canonical change passed without approval:\n%s", out)
+	}
+	if !strings.Contains(out, "Canonical-Change-Approved-By: empresa/human") {
+		t.Fatalf("refusal did not identify the required approval trailer:\n%s", out)
 	}
 }
 

@@ -229,6 +229,43 @@ func byteLimitedStringSchema(limits Limits) string {
 // had never been told any limit existed. The schema now carries the limit,
 // derived from the same Limits instance ParseWorkerResult enforces.
 func WorkerResultOutputSchemaFor(limits Limits) json.RawMessage {
+	return workerResultOutputSchemaFor(limits, nil, nil)
+}
+
+// WorkerResultOutputSchemaForSlots adds host-known finite enums to the two
+// evidence fields whose values are otherwise open strings. The enum values
+// come only from the required slots and the exact references the host has
+// classified as available (including durable proofs), so a worker cannot
+// submit a plausible but unshown repository range by passing schema validation.
+// When either axis has no usable values, the ordinary byte-limited schema is
+// retained: an empty enum would make the provider contract impossible to fill.
+func WorkerResultOutputSchemaForSlots(limits Limits, required []EvidenceRequirement, available map[EvidenceSlot][]string, proofs map[EvidenceSlot]EvidenceProof) json.RawMessage {
+	subjects := evidenceSubjects(required)
+	refs := evidenceSlotRefs(required, available, proofs)
+	if len(subjects) == 0 || len(refs) == 0 {
+		return WorkerResultOutputSchemaFor(limits)
+	}
+	return workerResultOutputSchemaFor(limits, subjects, refs)
+}
+
+func evidenceSlotRefs(required []EvidenceRequirement, available map[EvidenceSlot][]string, proofs map[EvidenceSlot]EvidenceProof) []string {
+	var refs []string
+	for _, slot := range evidenceSlots(required) {
+		refs = append(refs, available[slot]...)
+		if proof, ok := proofs[slot]; ok {
+			refs = append(refs, proof.SourceReference)
+		}
+	}
+	return distinctSortedRefs(refs)
+}
+
+func workerResultOutputSchemaFor(limits Limits, subjects, refs []string) json.RawMessage {
+	subjectSchema := byteLimitedStringSchema(limits)
+	refSchema := byteLimitedStringSchema(limits)
+	if len(subjects) > 0 && len(refs) > 0 {
+		subjectSchema = byteLimitedStringSchemaWithEnum(limits, subjects)
+		refSchema = byteLimitedStringSchemaWithEnum(limits, refs)
+	}
 	return json.RawMessage(`{
 	  "type":"object",
 	  "additionalProperties":false,
@@ -255,14 +292,24 @@ func WorkerResultOutputSchemaFor(limits Limits) json.RawMessage {
 	        "required":["claim","subject","relation","ref"],
 	        "properties":{
 	          "claim":` + byteLimitedStringSchema(limits) + `,
-	          "subject":` + byteLimitedStringSchema(limits) + `,
-	          "relation":{"type":"string","enum":["definition","application","test","context"]},
-	          "ref":` + byteLimitedStringSchema(limits) + `
+	        "subject":` + subjectSchema + `,
+	        "relation":{"type":"string","enum":["definition","application","test","context"]},
+	        "ref":` + refSchema + `
 	        }
 	      }
 	    }
 	  }
 	}`)
+}
+
+func byteLimitedStringSchemaWithEnum(limits Limits, values []string) string {
+	encoded, _ := json.Marshal(values)
+	return fmt.Sprintf(`{
+	          "type":"string",
+	          "maxLength":%d,
+	          "description":"Must be non-empty and its UTF-8 encoded representation must not exceed %d bytes.",
+	          "enum":%s
+	        }`, limits.MaxStringBytes, limits.MaxStringBytes, encoded)
 }
 
 var (

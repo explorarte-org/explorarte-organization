@@ -100,7 +100,7 @@ psql contra explorarte_org (desarrollo real, no integración):
 
 ## 10. Este documento
 
-Guardado en `POST_INCIDENT_VALIDATION.md` en la raíz del repo, en la rama `feat/rag-knowledge-integrity-hardening-v1`.
+Guardado en `docs/handoffs/POST_INCIDENT_VALIDATION.md`, en la rama `feat/rag-knowledge-integrity-hardening-v1`.
 
 ## Resumen
 

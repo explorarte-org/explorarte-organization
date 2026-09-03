@@ -110,10 +110,9 @@ func (a *Adapter) doJSON(ctx context.Context, method, path string, body any, out
 		return 0, fmt.Errorf("load credential: %w", err)
 	}
 	defer secrets.Zero(token)
-	// Gemini uses x-goog-api-key for a plain API key -- Authorization:
-	// Bearer is reserved for OAuth2 access tokens and a real API key sent
-	// that way is rejected outright (401 API_KEY_SERVICE_BLOCKED, confirmed
-	// live against the real API, not merely a guess from docs).
+	// Gemini uses x-goog-api-key for its credential type. Authorization:
+	// Bearer is reserved for OAuth2 access tokens; sending the configured
+	// credential through that header is rejected by the provider.
 	httpRequest.Header.Set("x-goog-api-key", string(token))
 	httpRequest.Header.Set("Content-Type", "application/json")
 	httpRequest.Header.Set("Accept", "application/json")

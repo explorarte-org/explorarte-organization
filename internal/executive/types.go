@@ -222,7 +222,7 @@ func DefaultLimits() Limits {
 // real reasoning_effort (executive.ceo/executive.observer: xhigh;
 // research.adversarial_review: high -- docs/canonical/model-routing.yaml),
 // where hidden reasoning can consume a large share of the budget before
-// any visible text appears (this session's own live Luna incident:
+// any visible text appears (this session's own live adjudicator incident:
 // reasoning.effort=high burned an entire 2800-token test budget on
 // invisible reasoning, zero visible output). PurposeDepartmentPlan and
 // PurposeDepartmentReview can legitimately contain nested

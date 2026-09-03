@@ -405,9 +405,9 @@ roles:
   department_agent_path: negocio/AGENT.md
   memory_domain: negocio
   memory_path: null
-  summary: Coordinar al departamento (Analista de KPIs, Estratega de Expansión) y mantener la salud financiera de la operación.
-    El Analista de KPIs **prepara** los indicadores; Investigación los **audita** — este rol no se autoevalúa, es una separación
-    deliberada de responsabilidades.
+  summary: 'Responsable funcional del área finanzas dentro de negocio (sin autoridad de departamento: la autoridad formal es
+    negocio/director_negocio). Mantiene la salud financiera de la operación y revisa los indicadores que el Analista de KPIs
+    **prepara**; Investigación los **audita** — este rol no se autoevalúa, es una separación deliberada de responsabilidades.'
   reports_to_source_text: 'Otro líder de departamento, Investigación, o directo a CEO. [Migrado: pasa a reportar a negocio/director_negocio
     tras la consolidación de comunicaciones/creativo/finanzas/marketing en negocio.]'
   rag_topics_source_text: '**Externo:** finanzas para empresas chicas, KPIs (CAC/LTV/burn rate), regulación de medios de pago
@@ -582,8 +582,9 @@ roles:
   department_agent_path: negocio/AGENT.md
   memory_domain: negocio
   memory_path: null
-  summary: Coordinar al departamento (Escritor/Copywriter, Fotógrafo, Ilustrador, Editor de Video), que es puramente productor
-    de activos — no decide estrategia de distribución (eso es Marketing/Comunicaciones) ni publica directamente.
+  summary: 'Responsable funcional del área creativo dentro de negocio (sin autoridad de departamento: la autoridad formal es
+    negocio/director_negocio). Revisa y consolida los activos que producen Copywriter, Fotógrafo, Ilustrador y Editor de Video;
+    el área es puramente productora — no decide estrategia de distribución ni publica directamente.'
   reports_to_source_text: 'Otro líder de departamento, Investigación, o directo a CEO. [Migrado: pasa a reportar a negocio/director_negocio
     tras la consolidación de comunicaciones/creativo/finanzas/marketing en negocio.]'
   rag_topics_source_text: '**Externo:** teoría del color y tipografía, dirección de arte, copywriting persuasivo, composición
@@ -605,9 +606,9 @@ roles:
   department_agent_path: negocio/AGENT.md
   memory_domain: negocio
   memory_path: null
-  summary: Decidir el protocolo de comunicación externa (qué, cómo y dónde se comunica la empresa) y coordinar al Community
-    Manager. Cura y publica el blog consumiendo el copy que produce Creativo — no decide estrategia de producto ni de crecimiento
-    (eso es CEO/Marketing).
+  summary: 'Responsable funcional del área comunicaciones dentro de negocio (sin autoridad de departamento: la autoridad formal
+    es negocio/director_negocio). Propone el protocolo de comunicación externa para decisión del líder, cura y publica el blog
+    consumiendo el copy que produce el área creativo — no decide estrategia de producto ni de crecimiento.'
   reports_to_source_text: 'Otro líder de departamento, Investigación, o directo a CEO. [Migrado: pasa a reportar a negocio/director_negocio
     tras la consolidación de comunicaciones/creativo/finanzas/marketing en negocio.]'
   rag_topics_source_text: '**Externo:** comunicación organizacional, community management, redacción de blog/periodística.
@@ -649,8 +650,9 @@ roles:
   department_agent_path: negocio/AGENT.md
   memory_domain: negocio
   memory_path: null
-  summary: Coordinar al departamento (Investigador del Consumidor, Analista de Performance) y definir la estrategia de crecimiento
-    — no ejecuta campañas él mismo, prioriza y decide qué se prueba.
+  summary: 'Responsable funcional del área crecimiento dentro de negocio (sin autoridad de departamento: la autoridad formal es
+    negocio/director_negocio). Propone la estrategia de crecimiento y qué se prueba, apoyado en Investigador del Consumidor y
+    Analista de Performance — no ejecuta campañas ni asigna trabajo.'
   reports_to_source_text: 'Otro líder de departamento, Investigación, o directo a CEO. [Migrado: pasa a reportar a negocio/director_negocio
     tras la consolidación de comunicaciones/creativo/finanzas/marketing en negocio.]'
   rag_topics_source_text: '**Externo:** psicología del consumidor, economía conductual, growth marketing, pricing psychology,
@@ -798,14 +800,15 @@ roles:
   canonical_leader: false
   legacy_frontmatter_leader: false
   model_policy: department.worker
-  profile_path: recursos_agenticos/curador_catalogo/PERFIL.md
+  profile_path: null
   department_agent_path: recursos_agenticos/AGENT.md
   memory_domain: recursos_agenticos
   memory_path: null
-  summary: null
+  summary: 'Perfil pendiente de importación: su PERFIL.md figura en source-manifest.yaml (organizacion/recursos_agenticos/curador_catalogo/PERFIL.md)
+    pero nunca se copió al repositorio. No ejecutable hasta que el owner apruebe D-006 y el perfil exista en el árbol.'
   reports_to_source_text: null
   rag_topics_source_text: null
-  status: imported_source
+  status: proposed_profile_required
   reports_to:
   - recursos_agenticos/desarrollo_organizacional
 - id: recursos_agenticos/desarrollo_organizacional
@@ -841,14 +844,15 @@ roles:
   canonical_leader: false
   legacy_frontmatter_leader: false
   model_policy: department.worker
-  profile_path: recursos_agenticos/disenador_perfiles/PERFIL.md
+  profile_path: null
   department_agent_path: recursos_agenticos/AGENT.md
   memory_domain: recursos_agenticos
   memory_path: null
-  summary: null
+  summary: 'Perfil pendiente de importación: su PERFIL.md figura en source-manifest.yaml (organizacion/recursos_agenticos/disenador_perfiles/PERFIL.md)
+    pero nunca se copió al repositorio. No ejecutable hasta que el owner apruebe D-006 y el perfil exista en el árbol.'
   reports_to_source_text: null
   rag_topics_source_text: null
-  status: imported_source
+  status: proposed_profile_required
   reports_to:
   - recursos_agenticos/desarrollo_organizacional
 - id: recursos_agenticos/disenador_skills
@@ -860,14 +864,15 @@ roles:
   canonical_leader: false
   legacy_frontmatter_leader: false
   model_policy: department.worker
-  profile_path: recursos_agenticos/disenador_skills/PERFIL.md
+  profile_path: null
   department_agent_path: recursos_agenticos/AGENT.md
   memory_domain: recursos_agenticos
   memory_path: null
-  summary: null
+  summary: 'Perfil pendiente de importación: su PERFIL.md figura en source-manifest.yaml (organizacion/recursos_agenticos/disenador_skills/PERFIL.md)
+    pero nunca se copió al repositorio. No ejecutable hasta que el owner apruebe D-006 y el perfil exista en el árbol.'
   reports_to_source_text: null
   rag_topics_source_text: null
-  status: imported_source
+  status: proposed_profile_required
   reports_to:
   - recursos_agenticos/desarrollo_organizacional
 - id: recursos_agenticos/evaluador_agentes
@@ -879,14 +884,15 @@ roles:
   canonical_leader: false
   legacy_frontmatter_leader: false
   model_policy: department.worker
-  profile_path: recursos_agenticos/evaluador_agentes/PERFIL.md
+  profile_path: null
   department_agent_path: recursos_agenticos/AGENT.md
   memory_domain: recursos_agenticos
   memory_path: null
-  summary: null
+  summary: 'Perfil pendiente de importación: su PERFIL.md figura en source-manifest.yaml (organizacion/recursos_agenticos/evaluador_agentes/PERFIL.md)
+    pero nunca se copió al repositorio. No ejecutable hasta que el owner apruebe D-006 y el perfil exista en el árbol.'
   reports_to_source_text: null
   rag_topics_source_text: null
-  status: imported_source
+  status: proposed_profile_required
   reports_to:
   - recursos_agenticos/desarrollo_organizacional
 - id: recursos_agenticos/investigacion_ra
@@ -898,14 +904,15 @@ roles:
   canonical_leader: false
   legacy_frontmatter_leader: false
   model_policy: department.worker
-  profile_path: recursos_agenticos/investigacion_ra/PERFIL.md
+  profile_path: null
   department_agent_path: recursos_agenticos/AGENT.md
   memory_domain: recursos_agenticos
   memory_path: null
-  summary: null
+  summary: 'Perfil pendiente de importación: su PERFIL.md figura en source-manifest.yaml (organizacion/recursos_agenticos/investigacion_ra/PERFIL.md)
+    pero nunca se copió al repositorio. No ejecutable hasta que el owner apruebe D-006 y el perfil exista en el árbol.'
   reports_to_source_text: null
   rag_topics_source_text: null
-  status: imported_source
+  status: proposed_profile_required
   reports_to:
   - recursos_agenticos/desarrollo_organizacional
 - id: servicios/analista_calidad

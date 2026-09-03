@@ -198,7 +198,7 @@ func TestExecutiveProvisionsAGovernedMissionAfterFreeze(t *testing.T) {
 		t.Fatalf("allowed paths=%v", command.Policy.AllowedPaths)
 	}
 	// Gates are the host's, in full.
-	if len(command.Policy.RequiredGates) != 3 {
+	if len(command.Policy.RequiredGates) != 4 {
 		t.Fatalf("gates=%v", command.Policy.RequiredGates)
 	}
 	// The plan is a real CodeRunner plan its own worker can parse.
@@ -209,8 +209,8 @@ func TestExecutiveProvisionsAGovernedMissionAfterFreeze(t *testing.T) {
 	if parsed.SchemaVersion != coderunner.SchemaVersion {
 		t.Fatalf("plan schema=%q", parsed.SchemaVersion)
 	}
-	tail := parsed.Operations[len(parsed.Operations)-3:]
-	if tail[0].Type != coderunner.GoBuild || tail[1].Type != coderunner.GoVet || tail[2].Type != coderunner.GoTest {
+	tail := parsed.Operations[len(parsed.Operations)-4:]
+	if tail[0].Type != coderunner.GoBuild || tail[1].Type != coderunner.GoVet || tail[2].Type != coderunner.GoTest || tail[3].Type != coderunner.Fitness {
 		t.Fatalf("gates are not the final operations: %+v", parsed.Operations)
 	}
 	// The implementation plan ran as the department leader, under its own

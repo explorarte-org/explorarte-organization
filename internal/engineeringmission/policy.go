@@ -19,9 +19,10 @@ const CodeRunnerRole = coderunner.RoleID
 type GateType string
 
 const (
-	GateBuild GateType = "GO_BUILD"
-	GateVet   GateType = "GO_VET"
-	GateTest  GateType = "GO_TEST"
+	GateBuild   GateType = "GO_BUILD"
+	GateVet     GateType = "GO_VET"
+	GateTest    GateType = "GO_TEST"
+	GateFitness GateType = "FITNESS"
 )
 
 type RequiredGate struct {
@@ -81,8 +82,11 @@ func (p MissionPolicy) Normalize() (MissionPolicy, error) {
 	}
 	for i := range p.RequiredGates {
 		g := &p.RequiredGates[i]
-		if g.Type != GateBuild && g.Type != GateVet && g.Type != GateTest {
+		if g.Type != GateBuild && g.Type != GateVet && g.Type != GateTest && g.Type != GateFitness {
 			return MissionPolicy{}, fmt.Errorf("unsupported required gate %q", g.Type)
+		}
+		if g.Type == GateFitness && (len(g.Packages) > 0 || g.Race || g.Integration) {
+			return MissionPolicy{}, fmt.Errorf("fitness gate has no configurable fields")
 		}
 		for _, pkg := range g.Packages {
 			if strings.TrimSpace(pkg) == "" || strings.HasPrefix(pkg, "-") || !strings.HasPrefix(pkg, "./") || strings.Contains(pkg, "../") || strings.ContainsAny(pkg, ";|&$`\\") {

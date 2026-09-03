@@ -18,7 +18,7 @@ import (
 // CUTOVER-REHEARSAL-001: migration 000047 seeds an openai_responses wallet
 // and pricing tiers, but production already carries both -- seeded
 // manually on 2026-08-10, predating this migration (see
-// HANDOFF-2026-08-10-noche.md). A dress-rehearsal migration run against a
+// docs/handoffs/HANDOFF-2026-08-10-noche.md). A dress-rehearsal migration run against a
 // byte-proven copy of production data failed here with a duplicate-key
 // error on provider_wallets_pkey. These four tests pin down migration
 // 000047's behavior across every combination of pre-existing state it must

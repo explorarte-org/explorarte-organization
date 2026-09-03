@@ -4,9 +4,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 BASE_SHA="${MODEL_PROVIDER_BASE_SHA:-c34e0f489ee84de99ba61fb89a75062752c4f065}"
+# Keep the historical provider baseline for migration/content invariants, but
+# scope canonical-delta authorization to the current change under test.
+TASK_BASE_SHA="${MODEL_PROVIDER_TASK_BASE_SHA:-${TASK_ENGINE_BASE_COMMIT:-$(bash "$ROOT/scripts/resolve-task-base.sh")}}"
 fail() { echo "model-provider fitness: $*" >&2; exit 1; }
 command -v rg >/dev/null 2>&1 || fail "ripgrep is required"
 git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null || fail "base commit ${BASE_SHA} is unavailable"
+git cat-file -e "${TASK_BASE_SHA}^{commit}" 2>/dev/null || fail "task base ${TASK_BASE_SHA} is unavailable"
+bash "$ROOT/scripts/check-canonical-immutability.sh" "$TASK_BASE_SHA"
 
 for path in \
   internal/modelruntime/adapter/openaicompat/adapter.go \
@@ -20,12 +25,12 @@ for path in \
 done
 
 mapfile -t canonical_changes < <({
-  git diff --name-only "$BASE_SHA" -- docs/canonical
+  git diff --name-only "$TASK_BASE_SHA" -- docs/canonical
   git ls-files --others --exclude-standard -- docs/canonical
 } | sort -u)
 for path in "${canonical_changes[@]}"; do
   case "$path" in
-    docs/canonical/model-routing.yaml|docs/canonical/model-egress-policy.yaml) ;;
+    docs/canonical/model-routing.yaml|docs/canonical/model-egress-policy.yaml|docs/canonical/capability-matrix.yaml|docs/canonical/decisions-required.yaml|docs/canonical/organization.yaml|docs/canonical/role-catalog.yaml) ;;
     # R30 resolves D-007 in docs/canonical/decisions-required.yaml:resolved
     # (see docs/adr/ADR-0006-hybrid-logic-ir-shadow.md) — a deliberate,
     # documented governance action, D-005 stays untouched.
@@ -34,24 +39,27 @@ for path in "${canonical_changes[@]}"; do
   esac
 done
 for required in docs/canonical/model-routing.yaml docs/canonical/model-egress-policy.yaml; do
-  printf '%s\n' "${canonical_changes[@]}" | grep -Fxq "$required" || fail "required canonical change missing: $required"
+  test -f "$required" || fail "required canonical document missing: $required"
 done
 
 git diff --exit-code "$BASE_SHA" -- migrations/000001\* migrations/000002\* migrations/000003\* \
   migrations/000004\* migrations/000005\* migrations/000006\* migrations/000007\* \
   migrations/000008\* migrations/000009\* migrations/000010\* >/dev/null \
   || fail "migration 000001-000010 changed"
-git diff --exit-code "$BASE_SHA" -- cmd/orgd internal/app >/dev/null || fail "orgd or application composition changed"
+git diff --exit-code "$TASK_BASE_SHA" -- cmd/orgd internal/app >/dev/null || fail "orgd or application composition changed in this task"
 
 if find internal/modelruntime/adapter -mindepth 1 -maxdepth 1 -type d \
-  ! -name openaicompat ! -name alibabaclaude ! -name deepseek ! -name gemini -print | grep -q .; then
+  ! -name openaicompat ! -name alibabaclaude ! -name deepseek ! -name gemini \
+  ! -name xai ! -name openairesponses -print | grep -q .; then
 	fail "an unknown real provider adapter was introduced"
 fi
 if rg -n '"net/http"' internal/modelruntime --glob '*.go' \
   --glob '!internal/modelruntime/adapter/openaicompat/**' \
   --glob '!internal/modelruntime/adapter/deepseek/**' \
-  --glob '!internal/modelruntime/adapter/gemini/**'; then
-	fail "HTTP client found outside the three approved HTTP adapters"
+  --glob '!internal/modelruntime/adapter/gemini/**' \
+  --glob '!internal/modelruntime/adapter/xai/**' \
+  --glob '!internal/modelruntime/adapter/openairesponses/**'; then
+	fail "HTTP client found outside the approved provider adapters"
 fi
 if rg -n --glob '!internal/modelruntime/adapter/alibabaclaude/**' '"os/exec"|exec\.Command|/bin/(sh|bash)|sh -c|bash -c' internal/modelruntime internal/secrets; then
   fail "shell or subprocess execution found"
@@ -78,6 +86,18 @@ allowed={
  "ORG_MODEL_PROVIDER_GEMINI_REQUEST_TIMEOUT",
  "ORG_MODEL_PROVIDER_GEMINI_CIRCUIT_FAILURE_THRESHOLD",
  "ORG_MODEL_PROVIDER_GEMINI_CIRCUIT_OPEN_DURATION",
+ "ORG_MODEL_PROVIDER_OPENAI_RESPONSES_ENABLED",
+ "ORG_MODEL_PROVIDER_OPENAI_RESPONSES_ENDPOINT_URL",
+ "ORG_MODEL_PROVIDER_OPENAI_RESPONSES_CREDENTIAL_FILE",
+ "ORG_MODEL_PROVIDER_OPENAI_RESPONSES_REQUEST_TIMEOUT",
+ "ORG_MODEL_PROVIDER_OPENAI_RESPONSES_CIRCUIT_FAILURE_THRESHOLD",
+ "ORG_MODEL_PROVIDER_OPENAI_RESPONSES_CIRCUIT_OPEN_DURATION",
+ "ORG_MODEL_PROVIDER_XAI_ENABLED",
+ "ORG_MODEL_PROVIDER_XAI_ENDPOINT_URL",
+ "ORG_MODEL_PROVIDER_XAI_CREDENTIAL_FILE",
+ "ORG_MODEL_PROVIDER_XAI_REQUEST_TIMEOUT",
+ "ORG_MODEL_PROVIDER_XAI_CIRCUIT_FAILURE_THRESHOLD",
+ "ORG_MODEL_PROVIDER_XAI_CIRCUIT_OPEN_DURATION",
 }
 seen=set()
 for root in (Path("internal/modelruntime"), Path(".env.example")):
@@ -91,7 +111,7 @@ for root in (Path("internal/modelruntime"), Path(".env.example")):
 if seen != allowed:
     print("provider env contract mismatch", "missing", sorted(allowed-seen), "extra", sorted(seen-allowed), file=sys.stderr)
     sys.exit(1)
-for adapter in ("openaicompat", "deepseek", "gemini"):
+for adapter in ("openaicompat", "deepseek", "gemini", "xai", "openairesponses"):
     for path in (Path("internal/modelruntime/adapter") / adapter).rglob("*.go"):
         if path.name.endswith("_test.go"):
             continue
@@ -112,7 +132,8 @@ rg -q 'LoadBearerToken' "$adapter" || fail "external credential file loading is 
 rg -q 'secrets\.Zero\(token\)' "$adapter" || fail "credential zeroing is missing"
 rg -q 'X-Client-Request-Id' "$adapter" || fail "provider idempotency header is missing"
 rg -q 'readBounded' "$adapter" || fail "bounded response reading is missing"
-rg -q 'circuitBreaker' "$adapter" internal/modelruntime/adapter/openaicompat/breaker.go || fail "circuit breaker is missing"
+rg -q 'modelruntime/circuitbreaker' "$adapter" || fail "openai-compatible adapter is not using the shared circuit breaker"
+rg -q 'type Breaker|func New' internal/modelruntime/circuitbreaker/circuitbreaker.go || fail "shared circuit breaker is missing"
 rg -q 'ProviderOutcomeAmbiguous' "$adapter" || fail "ambiguous transport classification is missing"
 rg -q 'ProviderOutcomeRejected' "$adapter" || fail "known provider rejection classification is missing"
 rg -q 'ProviderOutcomeNotSent' "$adapter" || fail "not-sent classification is missing"
@@ -127,7 +148,7 @@ done
 rg -q 'model_provider_requests_no_mutation' "$migration" || fail "provider requests are not immutable"
 rg -q 'model_provider_outcomes_no_mutation' "$migration" || fail "provider outcomes are not immutable"
 rg -q 'UNIQUE \(dispatch_attempt_id\)' "$migration" || fail "one provider request/outcome per dispatch attempt is not enforced"
-if rg -ni --glob '!**/*_test.go' '(credential[^_].*(text|bytea)|authorization_header|request_body|response_body|rendered_context|prompt|hidden_reasoning|raw_endpoint)' "$migration" internal/modelruntime/postgres; then
+if rg -ni --glob '!**/*_test.go' '(credential[^_].*(text|bytea)|authorization_header|request_body|response_body|rendered_context|(^|[^[:alnum:]_])prompt([^[:alnum:]_]|$)|hidden_reasoning|raw_endpoint)' "$migration" internal/modelruntime/postgres; then
   fail "sensitive provider material reached durable persistence"
 fi
 
@@ -170,12 +191,15 @@ for raw in lines:
         k,v=line.split(":",1); current[k.strip()]=v.strip()
 if current: rules.append(current)
 allows={(r.get("provider_id"),r.get("data_classification")) for r in rules if r.get("effect")=="allow"}
-# R30 retired gemini from this table (see check-model-egress-fitness.sh for
-# the full rationale) — gemini remains a compiled provider adapter (still
-# used by internal/embeddingruntime), just no longer a chat egress allow.
-providers=("deepseek","openai_compatible")
-classes=("public","sanitized","organizational")
-expected={(provider, cls) for provider in providers for cls in classes}
+# Keep this contract identical to the egress guard: the four supported chat
+# providers are explicit, and xAI remains limited to non-organizational data.
+expected={
+ ("deepseek", "public"), ("deepseek", "sanitized"), ("deepseek", "organizational"),
+ ("openai_compatible", "public"), ("openai_compatible", "sanitized"), ("openai_compatible", "organizational"),
+ ("openai_responses", "public"), ("openai_responses", "sanitized"), ("openai_responses", "organizational"),
+ ("gemini", "public"), ("gemini", "sanitized"), ("gemini", "organizational"),
+ ("xai", "public"), ("xai", "sanitized"),
+}
 if allows != expected: raise SystemExit(f"unexpected productive allow set: {allows}")
 PY
 

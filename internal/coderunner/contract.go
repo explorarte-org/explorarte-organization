@@ -19,6 +19,7 @@ const (
 	GoBuild    OperationType = "GO_BUILD"
 	GoVet      OperationType = "GO_VET"
 	GoTest     OperationType = "GO_TEST"
+	Fitness    OperationType = "FITNESS"
 	GitDiff    OperationType = "GIT_DIFF"
 	GitStatus  OperationType = "GIT_STATUS"
 )
@@ -42,7 +43,7 @@ func (t OperationType) Mutates() bool {
 	switch t {
 	case ApplyPatch, Gofmt:
 		return true
-	case ReadFile, Search, GitDiff, GitStatus, GoBuild, GoVet, GoTest:
+	case ReadFile, Search, GitDiff, GitStatus, GoBuild, GoVet, GoTest, Fitness:
 		return false
 	default:
 		// Fail closed: an operation type this switch does not recognize is
@@ -56,7 +57,7 @@ func (t OperationType) Mutates() bool {
 // correctness for verification-invalidation purposes.
 func (t OperationType) isCheck() bool {
 	switch t {
-	case GoBuild, GoVet, GoTest:
+	case GoBuild, GoVet, GoTest, Fitness:
 		return true
 	default:
 		return false
@@ -74,7 +75,10 @@ func (p Plan) Validate() error {
 	}
 	for _, op := range p.Operations {
 		switch op.Type {
-		case ReadFile, Search, ApplyPatch, Gofmt, GoBuild, GoVet, GoTest, GitDiff, GitStatus:
+		case ReadFile, Search, ApplyPatch, Gofmt, GoBuild, GoVet, GoTest, Fitness, GitDiff, GitStatus:
+			if op.Type == Fitness && (op.Path != "" || op.Pattern != "" || op.Patch != "" || len(op.Packages) > 0 || op.Race || op.Integration) {
+				return fmt.Errorf("fitness operation has no configurable fields")
+			}
 		default:
 			return fmt.Errorf("unsupported operation %q", op.Type)
 		}

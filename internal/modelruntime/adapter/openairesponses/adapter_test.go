@@ -354,7 +354,6 @@ func (f roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, erro
 	return f(request)
 }
 
-
 // --- Gate F: Provider Failure Telemetry ------------------------------------
 //
 // Mirrors internal/modelruntime/adapter/deepseek's Gate F test suite,

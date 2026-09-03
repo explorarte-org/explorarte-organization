@@ -356,7 +356,6 @@ func (f roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, erro
 	return f(request)
 }
 
-
 // --- Gate F: Provider Failure Telemetry ------------------------------------
 //
 // The tests below cover the four documented failure classes plus the

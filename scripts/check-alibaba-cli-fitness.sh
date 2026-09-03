@@ -25,8 +25,9 @@ if grep -R --include='*.go' -nE 'exec\.Command\([^,]*("sh"|"bash"|"zsh")|Command
   fail "Alibaba CLI adapter must not invoke a shell"
 fi
 
-grep -Fq 'Stdin: request.RenderedContext' "$ADAPTER" || fail "rendered context is not passed by stdin"
-if grep -n 'request.RenderedContext' "$ADAPTER" | grep -E 'args|Env|append\(' >/dev/null; then
+grep -Fq 'Stdin: stdin' "$ADAPTER" || fail "encoded model context is not passed by stdin"
+grep -Fq 'request.RenderedContext' "$ADAPTER" || fail "rendered context is not encoded for stdin"
+if grep -nE 'Args:.*request\.RenderedContext|Env:.*request\.RenderedContext' "$ADAPTER" >/dev/null; then
   fail "rendered context may leak into argv/env"
 fi
 for token in '--safe-mode' '--setting-sources' '--no-session-persistence' '--disable-slash-commands' '--no-chrome' '--strict-mcp-config' '--tools' '--disallowedTools'; do

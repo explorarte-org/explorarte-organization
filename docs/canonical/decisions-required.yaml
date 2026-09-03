@@ -1,18 +1,15 @@
 branch: docs/00-canonical-spec
 status: requires_owner_approval_before_branch_01
 accepted_from_owner:
-- Seven operational departments.
+- Four operational departments after the negocio consolidation (comunicaciones, creativo, finanzas and marketing merged
+  into negocio); see organization.yaml.
 - Empresa and Investigación are transversal units.
 - Research is leaderless.
-- CEO target is Qwen 3.6 Flash.
-- Department leaders use GPT Luna.
-- Workers default to DeepSeek V4 Flash.
+- Provider and model selection is decided exclusively in model-routing.yaml (one source_of_decision per policy); this
+  file no longer restates provider or model names.
 - Cells run independently from the organization.
 - The kernel is primarily Go and uses goroutines for concurrency, not durability.
 open:
-- id: D-001
-  question: 'Confirm observer model: Qwen 3.6 Flash or another model.'
-  blocks: model adapter and CEO/observer branch
 - id: D-002
   question: Define the exact 24-hour cycle action and schedule.
   blocks: scheduler daily workflow
@@ -22,13 +19,25 @@ open:
 - id: D-004
   question: Choose one repository with two deployment targets or two repositories.
   blocks: repository governance, not branch 01 bootstrap
-- id: D-005
-  question: Confirm the exact provider/API identity behind gpt-5.6-luna.
-  blocks: leader model adapter
 - id: D-006
-  question: Approve creation of research_worker_hourly and razonamiento_logico profiles.
+  question: 'Approve the proposed profiles: empresa/ceo_observer, ingenieria_ia/razonamiento_logico and the five
+    recursos_agenticos workers (curador_catalogo, disenador_perfiles, disenador_skills, evaluador_agentes,
+    investigacion_ra) whose PERFIL.md are listed in source-manifest.yaml but were never imported into the repository.
+    investigacion/research_worker_hourly is already imported, routed (research.worker) and scheduled hourly without a
+    recorded approval: confirm or revoke that state explicitly.'
   blocks: organization registry activation
 resolved:
+- id: D-001
+  question: 'Confirm observer model: Qwen 3.6 Flash or another model.'
+  decision: 'Superseded. Qwen/Alibaba was retired by the owner; the observer follows model-routing.yaml policy
+    executive.observer (provisional_same_api_family_as_ceo). Behavioural confirmation of the observer itself stays
+    tracked as decision_status: owner_confirmation_required in organization.yaml and model-routing.yaml.'
+  decided_in: docs/canonical/model-routing.yaml
+- id: D-005
+  question: Confirm the exact provider/API identity behind gpt-5.6-luna.
+  decision: 'Resolved by model-routing.yaml policy executive.ceo: provider openai_responses, model gpt-5.6-luna,
+    transport http_adapter (source_of_decision: owner_conversation).'
+  decided_in: docs/canonical/model-routing.yaml
 - id: D-007
   question: 'Choose production logic implementation after shadow phase: embedded Go Datalog subset, external Prolog,
     or hybrid.'

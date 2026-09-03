@@ -29,7 +29,7 @@ func TestLoadCurrentCanonicalDocuments(t *testing.T) {
 	if snapshot.Counts.OperationalUnits != 4 || snapshot.Counts.TransversalUnits != 2 {
 		t.Fatalf("unit counts=%+v", snapshot.Counts)
 	}
-	if snapshot.Counts.Roles != 48 || snapshot.Counts.ImportedRoles != 46 || snapshot.Counts.ProposedRoles != 2 {
+	if snapshot.Counts.Roles != 48 || snapshot.Counts.ImportedRoles != 41 || snapshot.Counts.ProposedRoles != 7 {
 		t.Fatalf("role counts=%+v", snapshot.Counts)
 	}
 	documentHashes := make(map[string]string, len(snapshot.Documents))

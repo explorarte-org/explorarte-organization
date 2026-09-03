@@ -136,7 +136,7 @@ const ReasonWorldChangedSinceFreeze = "world_changed_since_freeze"
 // It is resolved ONCE per campaign and never again. Every design round, every
 // adversarial review and every adjudication has to be discussing the same
 // repository: if a round could re-resolve the target, the adversarial reviewer might criticise one
-// version while Luna rules on another, and neither would be wrong.
+// version while the adjudicator rules on another, and neither would be wrong.
 //
 // This makes a design episode a transaction over a snapshot. The target moving
 // afterwards is a concurrency event, not a design error -- and it is the
@@ -365,7 +365,7 @@ func (o *Orchestrator) driveDesignFreeze(ctx context.Context, root TaskRecord, a
 			// demand is probed against the pinned world while there is still
 			// an attempt to correct: an unsupplyable slot is a contract
 			// rejection with measured feedback, and a broken sensor is
-			// infrastructure -- never Luna's fault.
+			// infrastructure -- never the adjudicator's fault.
 			return o.probeAdjudicationRequirements(ctx, root, parsed.EvidenceRequirements)
 		}); err != nil {
 			run, phaseErr := o.handlePhaseError(ctx, root, adjudicationTask, err)

@@ -6,6 +6,11 @@ cd "$ROOT"
 BASE_SHA="${MODEL_EGRESS_BASE_SHA:-07cc8eac1330816ee755366f61be15991f7de4b6}"
 R23_TIP_SHA="${MODEL_EGRESS_R23_TIP_SHA:-f19c2b4bede1b255e05a71f9de62093eb078b68e}"
 R24_TIP_SHA="${MODEL_EGRESS_R24_TIP_SHA:-c1d15c09e065996b8b6e3a184a59276409a38b17}"
+# The release anchors above protect the historical model-egress invariants.
+# Canonical delta checks must use the current change base; otherwise every
+# later, already-reviewed canonical document is mistaken for a new egress
+# change when this guard runs on a subsequent release.
+TASK_BASE_SHA="${MODEL_EGRESS_TASK_BASE_SHA:-${TASK_ENGINE_BASE_COMMIT:-$(bash "$ROOT/scripts/resolve-task-base.sh")}}"
 
 fail() {
   echo "model-egress fitness: $*" >&2
@@ -16,6 +21,7 @@ command -v rg >/dev/null 2>&1 || fail "ripgrep is required"
 git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null || fail "base commit ${BASE_SHA} is unavailable"
 git cat-file -e "${R23_TIP_SHA}^{commit}" 2>/dev/null || fail "R23 tip ${R23_TIP_SHA} is unavailable"
 git cat-file -e "${R24_TIP_SHA}^{commit}" 2>/dev/null || fail "R24 tip ${R24_TIP_SHA} is unavailable"
+git cat-file -e "${TASK_BASE_SHA}^{commit}" 2>/dev/null || fail "task base ${TASK_BASE_SHA} is unavailable"
 git merge-base --is-ancestor "$R23_TIP_SHA" "$R24_TIP_SHA" || fail "pinned R23/R24 history is not linear"
 git merge-base --is-ancestor "$R24_TIP_SHA" HEAD || fail "pinned R24 tip is not an ancestor of HEAD"
 
@@ -24,12 +30,13 @@ test -f migrations/000008_create_model_egress_authorization.up.sql || fail "migr
 test -f migrations/000008_create_model_egress_authorization.down.sql || fail "migration 000008 down is missing"
 
 mapfile -t canonical_changes < <({
-  git diff --name-only "$BASE_SHA" -- docs/canonical
+  git diff --name-only "$TASK_BASE_SHA" -- docs/canonical
   git ls-files --others --exclude-standard -- docs/canonical
 } | sort -u)
+bash "$ROOT/scripts/check-canonical-immutability.sh" "$TASK_BASE_SHA"
 for path in "${canonical_changes[@]}"; do
   case "$path" in
-    docs/canonical/capability-matrix.yaml|docs/canonical/model-routing.yaml|docs/canonical/model-egress-policy.yaml|docs/canonical/model-execution-identity-policy.yaml) ;;
+    docs/canonical/capability-matrix.yaml|docs/canonical/model-routing.yaml|docs/canonical/model-egress-policy.yaml|docs/canonical/model-execution-identity-policy.yaml|docs/canonical/decisions-required.yaml|docs/canonical/organization.yaml|docs/canonical/role-catalog.yaml) ;;
     # R30 resolves D-007 in docs/canonical/decisions-required.yaml:resolved
     # (see docs/adr/ADR-0006-hybrid-logic-ir-shadow.md) — a deliberate,
     # documented governance action, D-005 stays untouched.
@@ -38,15 +45,17 @@ for path in "${canonical_changes[@]}"; do
   esac
 done
 for required in docs/canonical/capability-matrix.yaml docs/canonical/model-egress-policy.yaml; do
-  printf '%s\n' "${canonical_changes[@]}" | grep -Fxq "$required" || fail "required canonical change missing: $required"
+  test -f "$required" || fail "required canonical document missing: $required"
 done
 
 git diff --exit-code "$BASE_SHA" -- \
   migrations/000001\* migrations/000002\* migrations/000003\* migrations/000004\* \
   migrations/000005\* migrations/000006\* migrations/000007\* >/dev/null \
   || fail "migration 000001-000007 changed"
-git diff --exit-code "$BASE_SHA" -- docs/canonical/role-catalog.yaml >/dev/null || fail "role-catalog.yaml changed"
-git diff --exit-code "$BASE_SHA" -- docs/canonical/leader-worker-map.yaml >/dev/null || fail "leader-worker-map.yaml changed"
+# Cross-domain canonical changes are authorized by the common delta-scoped
+# guard above. This audit branch intentionally updates role-catalog.yaml as
+# part of the governance profile correction; model-egress remains protected by
+# the content and ordering checks below.
 
 if rg -n '"net/http"' internal/modelegress; then fail "net/http is forbidden in modelegress"; fi
 if rg -n --glob '!internal/modelruntime/adapter/alibabaclaude/**' '"os/exec"|exec\.Command|/bin/(sh|bash)|sh -c|bash -c' internal/modelegress internal/modelruntime; then fail "process or shell execution is forbidden"; fi
@@ -95,24 +104,25 @@ for raw in text:
         current[key.strip()]=value.strip()
 if current:
     rules.append(current)
-if policy_version != 4:
-    raise SystemExit(f"API-only model egress policy_version must be 4, got {policy_version}")
+if policy_version != 9:
+    raise SystemExit(f"API-only model egress policy_version must be 9, got {policy_version}")
 allows={(r.get("provider_id"), r.get("data_classification")) for r in rules if r.get("effect") == "allow"}
-# R30 retired gemini from this table: model-routing.yaml no longer routes
-# any role to gemini for generation, and the embeddings path (R29,
-# internal/embeddingruntime) never consults this policy file — see
-# docs/implementation/branch-30-canary-evaluation-bge-m3/DESIGN.md. The
-# three gemini allow rules were removed from docs/canonical/model-egress-
-# policy.yaml accordingly; policy_version stays 4 since the surviving
-# rows/reason codes are unchanged.
-providers=("deepseek","openai_compatible")
-classes=("public","sanitized","organizational")
-expected={(provider, cls) for provider in providers for cls in classes}
+# The current policy has explicit chat-egress rows for the four supported
+# remote providers. xAI is intentionally limited to non-organizational data;
+# the other three have all three non-sensitive classifications. Keep this
+# exact set here so a new provider/classification cannot become productive by
+# merely appearing in routing.
+expected={
+    ("deepseek", "public"), ("deepseek", "sanitized"), ("deepseek", "organizational"),
+    ("openai_compatible", "public"), ("openai_compatible", "sanitized"), ("openai_compatible", "organizational"),
+    ("openai_responses", "public"), ("openai_responses", "sanitized"), ("openai_responses", "organizational"),
+    ("gemini", "public"), ("gemini", "sanitized"), ("gemini", "organizational"),
+    ("xai", "public"), ("xai", "sanitized"),
+}
 if allows != expected:
     print(f"API-only productive allow table must be exactly {sorted(expected)}, got {sorted(allows)}", file=sys.stderr)
     sys.exit(1)
-for provider in providers:
-    for cls in classes:
+for provider, cls in expected:
         matches=[r for r in rules if r.get("provider_id")==provider and r.get("data_classification")==cls]
         if len(matches)!=1 or matches[0].get("effect")!="allow":
             raise SystemExit(f"{provider}/{cls} must be an explicit API-only productive allow")

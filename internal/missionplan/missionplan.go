@@ -32,6 +32,12 @@ var (
 	// ErrPathForbidden means a declared path is in the structural denylist --
 	// governance, secrets, infrastructure. No scope widens it.
 	ErrPathForbidden = fmt.Errorf("missionplan: path is structurally forbidden")
+	// ErrKernelGovernance means a declared path is governance CODE: one of the
+	// packages that decide what a mission may touch, who may do what, or how
+	// the organization reads its own registry. An autonomous mission that
+	// could rewrite its own enforcement has no boundary at all, so no scope
+	// widens this either.
+	ErrKernelGovernance = fmt.Errorf("missionplan: path is kernel governance code and cannot be changed by an autonomous mission")
 	// ErrPlanInvalid means the plan cannot produce a mission at all.
 	ErrPlanInvalid = fmt.Errorf("missionplan: implementation plan is not usable")
 )
@@ -69,7 +75,42 @@ var scopePrefixes = map[Scope][]string{
 // authority in the same motion that uses it.
 var forbiddenPrefixes = []string{
 	".git/", ".github/", "secrets/", "docs/canonical/", "migrations/",
-	"scripts/", "deployments/", "config/", ".claude/",
+	"scripts/", "deployments/", "config/",
+}
+
+// kernelGovernancePrefixes is the governance CODE, denied under every scope.
+//
+// forbiddenPrefixes protects governance DATA. But ScopeInternalCode reaches
+// all of internal/, and internal/ is where the enforcement itself lives: this
+// very denylist, CodeRunner's workspace confinement, the mission policy, the
+// capability authorizer, the egress policy, the execution identity, the
+// secret loader, the config validator and the canonical registry reader. A
+// mission that may rewrite those can widen its own authority in the same
+// motion that uses it, and the only thing left standing between it and
+// main would be a human noticing in review.
+//
+// internal/executive is deliberately NOT here. It is the organization's
+// product -- the orchestration it exists to improve -- and refusing it would
+// make "rewrite yourself" impossible by construction. Its own evidence and
+// adjudication validators are guarded one level up by the mission gates and
+// by scripts/check-kernel-governance-fitness.sh in CI.
+//
+// Keep this list in sync with KERNEL_PATHS in
+// scripts/check-kernel-governance-fitness.sh: that guard refuses the same
+// surface to a human PR without an owner approval trailer; this one refuses
+// it to an autonomous mission at derivation time.
+var kernelGovernancePrefixes = []string{
+	"internal/authorization/",
+	"internal/coderunner/",
+	"internal/config/",
+	"internal/engineeringmission/",
+	"internal/missionplan/",
+	"internal/modeldispatch/",
+	"internal/modelegress/",
+	"internal/modelidentity/",
+	"internal/organization/",
+	"internal/secrets/",
+	"internal/staging/",
 }
 
 // forbiddenExact catches single files rather than trees.
@@ -140,7 +181,7 @@ func Derive(request Request) (Derived, error) {
 
 	seen := map[string]struct{}{}
 	allowed := make([]string, 0, len(request.Changes))
-	operations := make([]coderunner.Operation, 0, len(request.Changes)+4)
+	operations := make([]coderunner.Operation, 0, len(request.Changes)+5)
 	touchesGo := false
 
 	for i, change := range request.Changes {
@@ -180,6 +221,7 @@ func Derive(request Request) (Derived, error) {
 		coderunner.Operation{Type: coderunner.GoBuild},
 		coderunner.Operation{Type: coderunner.GoVet},
 		coderunner.Operation{Type: coderunner.GoTest},
+		coderunner.Operation{Type: coderunner.Fitness},
 	)
 
 	policy := engineeringmission.MissionPolicy{
@@ -218,6 +260,7 @@ func RequiredGates() []engineeringmission.RequiredGate {
 		{Type: engineeringmission.GateBuild},
 		{Type: engineeringmission.GateVet},
 		{Type: engineeringmission.GateTest},
+		{Type: engineeringmission.GateFitness},
 	}
 }
 
@@ -251,6 +294,11 @@ func denied(clean string) error {
 	for _, prefix := range forbiddenPrefixes {
 		if strings.HasPrefix(clean+"/", prefix) || strings.HasPrefix(clean, prefix) {
 			return fmt.Errorf("%w: %s", ErrPathForbidden, clean)
+		}
+	}
+	for _, prefix := range kernelGovernancePrefixes {
+		if strings.HasPrefix(clean+"/", prefix) || strings.HasPrefix(clean, prefix) {
+			return fmt.Errorf("%w: %s", ErrKernelGovernance, clean)
 		}
 	}
 	// A dotfile at the repository root is configuration until proven

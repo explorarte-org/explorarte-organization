@@ -59,8 +59,25 @@ if ! rg -n 'invocation\.Status (!=|==) "ambiguous"' internal/executive/orchestra
    ! rg -n 'ErrModelOutcomeAmbiguous' internal/executive/orchestrator.go >/dev/null; then
   fail "ambiguous model outcome is not explicitly fail-closed"
 fi
-if rg -n 'ambiguous.*retry|retry.*ambiguous' internal/executive --glob '*.go' --glob '!**/*_test.go'; then
-  fail "ambiguous automatic retry detected"
+# Pure-model ambiguity recovery is an explicit, host-owned policy: it writes a
+# per-invocation resolution and only then permits the normal task engine to
+# create a fresh attempt. The old text search rejected explanatory comments
+# and the auditable resolution reason as if they were an execution path. Keep
+# the safety boundary structural instead: the policy must fence unknown
+# effects, emit the durable resolution, and must not directly claim/create an
+# attempt or record a retry from the ambiguity resolver itself.
+ambiguity_source="internal/executive/ambiguity_resolution.go"
+if ! rg -n 'class != EffectPureModel' "$ambiguity_source" >/dev/null; then
+  fail "ambiguous recovery is not fenced to pure-model effects"
+fi
+if ! rg -n 'EffectUnknown' "$ambiguity_source" >/dev/null; then
+  fail "ambiguous recovery has no explicit unknown-effect class"
+fi
+if ! rg -n 'AmbiguityDispositionRetryAuthorized' "$ambiguity_source" >/dev/null; then
+  fail "ambiguous recovery has no durable retry-resolution disposition"
+fi
+if rg -n 'RecordAttemptFailed|ClaimTask|CreateTask|CreateAttempt' "$ambiguity_source"; then
+  fail "ambiguity resolver directly creates or records a retry attempt"
 fi
 
 if ! rg -n 'orphaned_model_result' internal/executive/recovery.go >/dev/null || \

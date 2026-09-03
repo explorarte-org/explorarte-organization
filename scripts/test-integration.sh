@@ -197,7 +197,7 @@ JSON
     rag_admission_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     rag_digest="$(printf %s cli-rag-evidence | sha256sum | cut -d" " -f1)"
     cat >/tmp/rag-propose.json <<JSON
-{"id":"cli-rag-smoke","document_id":"cli-rag-smoke-doc","namespace_kind":"department","namespace_id":"ingenieria_ia","version":1,"title":"CLI RAG smoke knowledge","body":"Antes de desplegar un modelo nuevo, valida la politica de egress y el owner del dataset.","source_kind":"research","source_reference":"investigacion:report:cli-smoke","evidence_refs":[{"reference":"integration:rag:1","digest":"$rag_digest"}],"proposed_by":"empresa/human","admission":{"data_class":"organizational","attested_by":"empresa/human","source_boundary":"organization","evidence_ref":"integration:rag:admission","attested_at":"$rag_admission_time"},"idempotency_key":"cli-rag-smoke"}
+{"id":"cli-rag-smoke","document_id":"cli-rag-smoke-doc","namespace_kind":"department","namespace_id":"ingenieria_ia","version":1,"title":"CLI RAG smoke knowledge","body":"Antes de desplegar un modelo nuevo, valida la politica de egress y el owner del dataset.","source_kind":"research","source_reference":"investigacion:report:cli-smoke","evidence_refs":[{"reference":"integration:rag:1","digest":"$rag_digest"}],"proposed_by":"investigacion/research_worker_hourly","admission":{"data_class":"organizational","attested_by":"investigacion/research_worker_hourly","source_boundary":"organization","evidence_ref":"integration:rag:admission","attested_at":"$rag_admission_time"},"idempotency_key":"cli-rag-smoke"}
 JSON
     /tmp/orgctl rag propose --file /tmp/rag-propose.json --json >/tmp/rag-created.json
     grep -Fq "\"lifecycle\": \"candidate\"" /tmp/rag-created.json

@@ -24,5 +24,5 @@ var (
 	// to, capability-matrix.yaml restricting rag.publish_approved to
 	// owner-only (G4-001): a future canonical grant change must not
 	// silently reintroduce self-review with zero code change.
-	ErrSelfReview          = errors.New("knowledge review rejected: reviewer proposed this version")
+	ErrSelfReview = errors.New("knowledge review rejected: reviewer proposed this version")
 )

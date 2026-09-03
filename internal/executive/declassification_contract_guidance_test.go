@@ -53,7 +53,7 @@ func TestCandidateDeclassificationGuidanceStatesTheGateItDescribes(t *testing.T)
 // department reviewer judges completed work against a plan; the adversarial
 // reviewer and the adjudicator receive the sanitized bundle; none of them was
 // shown organizational source, and handing them an egress rule would imply
-// they had been. Luna's closure and the CEO plan carry nothing at all.
+// they had been. The adjudicator's closure and the CEO plan carry nothing at all.
 func TestTheDeclassificationRuleRidesOnlyWorkerRuns(t *testing.T) {
 	guidance := candidateDeclassificationGuidance()
 	for _, purpose := range []ExecutionPurpose{
@@ -147,7 +147,7 @@ func TestWorkerRunCarriesTheEgressRuleBeforeAnswering(t *testing.T) {
 	}
 
 	// Every OTHER purpose executed in this campaign -- department plan,
-	// review, adversarial reviewer (Grok), adjudication (Luna), closure --
+	// review, adversarial reviewer (Grok), adjudication (the adjudicator), closure --
 	// carries no egress rule: none of them was shown organizational source.
 	for _, purpose := range fixture.purposes() {
 		if purpose == PurposeDepartmentWorker {
