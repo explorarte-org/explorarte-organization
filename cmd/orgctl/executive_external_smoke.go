@@ -12,17 +12,20 @@ import (
 )
 
 const (
-	externalSmokeConfirmation               = "EXECUTIVE_EXTERNAL_SMOKE_ONCE"
-	externalSmokeKeyPrefix                  = "external-smoke-"
-	externalSmokeMaxUSD                     = 0.01
-	externalSmokeMaxCalls                   = 1
-	externalSmokeMaxOutput                  = 2000
-	externalSmokeBudgetedConfirmation       = "EXECUTIVE_EXTERNAL_SMOKE_5USD_ONCE"
-	externalSmokeBudgetedKeyPrefix          = "external-smoke-5usd-"
-	externalSmokeBudgetedMaxUSD             = 5
-	externalSmokeBudgetedMaxCalls           = 1
-	externalSmokeBudgetedMaxOutput          = 5_000_000
-	externalSmokeBudgetedMaxTokens    int64 = 5_000_000
+	externalSmokeConfirmation         = "EXECUTIVE_EXTERNAL_SMOKE_ONCE"
+	externalSmokeKeyPrefix            = "external-smoke-"
+	externalSmokeMaxUSD               = 0.01
+	externalSmokeMaxCalls             = 1
+	externalSmokeMaxOutput            = 2000
+	externalSmokeBudgetedConfirmation = "EXECUTIVE_EXTERNAL_SMOKE_5USD_ONCE"
+	externalSmokeBudgetedKeyPrefix    = "external-smoke-5usd-"
+	externalSmokeBudgetedMaxUSD       = 5
+	externalSmokeBudgetedMaxCalls     = 1
+	// Model Runtime accepts at most 1,048,576 output tokens. The campaign
+	// ceiling remains 5M below; this per-call ceiling is the largest value
+	// that can reach the runtime without being rejected before dispatch.
+	externalSmokeBudgetedMaxOutput       = 1_048_576
+	externalSmokeBudgetedMaxTokens int64 = 5_000_000
 )
 
 // externalSmokeConfig contains no provider, goal, retry, or budget knobs on
