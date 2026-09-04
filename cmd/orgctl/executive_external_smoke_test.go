@@ -40,8 +40,11 @@ func TestExternalSmokeBudgetedSpecHasFixedFiveDollarCeilings(t *testing.T) {
 	if parsed.idempotencyKey != "external-smoke-5usd-test-1" || !parsed.jsonOutput {
 		t.Fatalf("parsed=%+v, want fixed budgeted key and JSON output", parsed)
 	}
-	if spec.maxUSD != 5 || spec.maxCalls != 1 || spec.maxOutputTokens != 5_000_000 || spec.maxCampaignTokens != 5_000_000 {
-		t.Fatalf("spec=%+v, want $5, one call, and 5M token ceilings", spec)
+	if spec.maxUSD != 5 || spec.maxCalls != 1 || spec.maxOutputTokens != 1_048_576 || spec.maxCampaignTokens != 5_000_000 {
+		t.Fatalf("spec=%+v, want $5, one call, runtime-valid output ceiling, and 5M campaign ceiling", spec)
+	}
+	if int64(spec.maxOutputTokens) > spec.maxCampaignTokens {
+		t.Fatalf("per-call output ceiling exceeds campaign ceiling: spec=%+v", spec)
 	}
 }
 
