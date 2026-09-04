@@ -428,10 +428,10 @@ func TestExecutiveRunReachesDesignFreezeThroughTheRealOrchestrator(t *testing.T)
 		candidate := &fixture.tasks.evidence[i]
 		if candidate.Type != "result" {
 			continue
-	}
+		}
 		if _, ok := candidate.Metadata["design_freeze_record"]; ok {
 			frozen = candidate
-	}
+		}
 	}
 	if frozen == nil {
 		t.Fatal("no result evidence was recorded for the freeze")
