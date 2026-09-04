@@ -118,7 +118,23 @@ func WithMissionProvisioning(target ProgramTargetResolver, provisioner MissionPr
 
 func (o *Orchestrator) driveImplementationMission(ctx context.Context, root TaskRecord, all []TaskRecord) (Run, bool, error) {
 	requirement, found := findRequirementByKey(root.Requirements, MissionRequirementKey)
-	if !found || requirement.Status == "satisfied" {
+	if !found {
+		return Run{}, false, nil
+	}
+	if requirement.Status == "satisfied" {
+		if _, required := requiredRootRequirement(root, CodeRunnerExecutionEvidenceRequirementKey); required {
+			if err := o.ensureRequiredCodeRunnerExecution(ctx, root); err != nil {
+				if errors.Is(err, ErrCodeRunnerExecutionPending) {
+					return o.driveInProgress(ctx, root)
+				}
+				reason := "code_runner_execution_invalid"
+				if errors.Is(err, ErrCodeRunnerExecutionFailed) {
+					reason = "code_runner_execution_failed"
+				}
+				run, blockErr := o.blockRoot(ctx, root, reason, err.Error())
+				return run, true, blockErr
+			}
+		}
 		return Run{}, false, nil
 	}
 	// A mission may never precede the decision that authorized it.
@@ -290,6 +306,9 @@ func (o *Orchestrator) driveImplementationMission(ctx context.Context, root Task
 		Satisfies: true,
 	}); err != nil {
 		return Run{}, true, err
+	}
+	if _, required := requiredRootRequirement(root, CodeRunnerExecutionEvidenceRequirementKey); required {
+		return o.driveInProgress(ctx, root)
 	}
 	return Run{}, false, nil
 }

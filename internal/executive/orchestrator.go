@@ -488,6 +488,9 @@ func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error
 			if parseErr != nil {
 				return parseErr
 			}
+			if contractErr := validateCodeRunnerExecutivePlan(root, plan); contractErr != nil {
+				return contractErr
+			}
 			leaders, validateErr := o.validator.ValidateExecutivePlan(ctx, revision.ID, plan)
 			if validateErr != nil {
 				return validateErr
@@ -514,6 +517,9 @@ func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error
 	}
 	plan, err := ParseExecutivePlan(planResult.JSONOutput, o.limits)
 	if err != nil {
+		return o.blockRoot(ctx, root, "executive_plan_invalid", err.Error())
+	}
+	if err = validateCodeRunnerExecutivePlan(root, plan); err != nil {
 		return o.blockRoot(ctx, root, "executive_plan_invalid", err.Error())
 	}
 	leaders, err := o.validator.ValidateExecutivePlan(ctx, revision.ID, plan)
@@ -790,6 +796,9 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 				if e = o.validator.ValidateDepartmentPlan(ctx, revision.ID, req.UnitID, leader.ID, parsed); e != nil {
 					return e
 				}
+				if e = validateCodeRunnerDepartmentPlan(root, req.UnitID, parsed); e != nil {
+					return e
+				}
 				// Checkpoint E: exclusive revision ownership. This sheet is
 				// validated structurally HERE -- known ids, owners drawn
 				// from this plan's own tasks, nothing claimed twice. Legacy
@@ -855,6 +864,9 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 			return Run{}, false, e
 		}
 		if e = o.validator.ValidateDepartmentPlan(ctx, revision.ID, req.UnitID, leader.ID, deptPlan); e != nil {
+			return Run{}, false, e
+		}
+		if e = validateCodeRunnerDepartmentPlan(root, req.UnitID, deptPlan); e != nil {
 			return Run{}, false, e
 		}
 		// This department's assigned subset: whatever ITS OWN sheet claimed,
@@ -2490,6 +2502,11 @@ func (o *Orchestrator) completeRoot(ctx context.Context, root, closureTask TaskR
 }
 
 func (o *Orchestrator) validateRunCompletionEvidence(ctx context.Context, root TaskRecord, plan ExecutivePlan) error {
+	if _, required := requiredRootRequirement(root, CodeRunnerExecutionEvidenceRequirementKey); required {
+		if err := o.ensureRequiredCodeRunnerExecution(ctx, root); err != nil {
+			return err
+		}
+	}
 	all, err := o.tasks.ListByCorrelation(ctx, root.CorrelationID)
 	if err != nil {
 		return err
