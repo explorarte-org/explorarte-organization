@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sort"
 	"strings"
@@ -113,6 +114,29 @@ func TestGoChangesScheduleGofmtAfterEveryPatch(t *testing.T) {
 	}
 	if gofmtIndex < lastPatch {
 		t.Fatal("gofmt runs against a half-applied tree")
+	}
+}
+
+func TestGoChangesScheduleGofmtForEachChangedPath(t *testing.T) {
+	request := docsRequest()
+	request.Scope = ScopeInternalCode
+	request.Changes = []Change{
+		{Path: "internal/a/a.go", Intent: "x", Patch: unifiedDiff("internal/a/a.go")},
+		{Path: "internal/b/b.go", Intent: "y", Patch: unifiedDiff("internal/b/b.go")},
+	}
+	derived, err := Derive(request)
+	if err != nil {
+		t.Fatalf("derive: %v", err)
+	}
+	var got []string
+	for _, operation := range derived.Plan.Operations {
+		if operation.Type == coderunner.Gofmt {
+			got = append(got, operation.Path)
+		}
+	}
+	want := []string{"internal/a/a.go", "internal/b/b.go"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("gofmt paths=%v, want=%v", got, want)
 	}
 }
 

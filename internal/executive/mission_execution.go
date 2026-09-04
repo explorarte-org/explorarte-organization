@@ -171,6 +171,13 @@ func verifiedCodeRunnerEvidence(task TaskRecord) (EvidenceRecord, EvidenceRecord
 		if evidence.Reference != expectedReference {
 			continue
 		}
+		// Promotion records a separate check requirement evidence row that
+		// points at this same immutable result reference. It is a
+		// verification link, not a second CodeRunner execution. Only the
+		// result row is eligible for the attempt-evidence uniqueness check.
+		if evidence.Type != "result" {
+			continue
+		}
 		if found.Reference != "" {
 			return EvidenceRecord{}, EvidenceRecord{}, fmt.Errorf("duplicate attempt evidence for attempt %d", attempt.ID)
 		}

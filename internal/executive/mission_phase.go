@@ -294,7 +294,7 @@ func (o *Orchestrator) driveImplementationMission(ctx context.Context, root Task
 	}
 
 	if err = o.tasks.RecordEvidence(ctx, EvidenceCommand{
-		TaskID: root.ID, RequirementID: requirement.ID, Type: "approval",
+		TaskID: root.ID, RequirementID: requirement.ID, Type: "result",
 		Reference:  fmt.Sprintf("engineering-mission://%d", mission.TaskID),
 		Digest:     policyDigest(derived.Policy),
 		RecordedBy: orchestratorWorkerID,

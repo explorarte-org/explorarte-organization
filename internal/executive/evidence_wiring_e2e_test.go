@@ -132,7 +132,7 @@ func newMultiUnitWiringFixture(t *testing.T, verdict string, sources []SnapshotS
 			AcceptanceCriteria:   []AcceptanceCriterion{{Text: "Design before implementation", Phase: AcceptanceDesign}},
 			EvidenceRequirements: goalReqs,
 			Requirements: []RequirementProposal{{
-				Key: designfreeze.RequirementKey, Type: "approval",
+				Key: designfreeze.RequirementKey, Type: "result",
 				Description: "Design frozen by executive adjudication", Required: true,
 			}},
 		},

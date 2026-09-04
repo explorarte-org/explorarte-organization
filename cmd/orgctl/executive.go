@@ -84,13 +84,22 @@ func runExecutiveSubmit(args []string, stdout, stderr io.Writer) int {
 	defaults := executive.DefaultCampaignBudget()
 	maxUSD := flags.Float64("max-usd", defaults.MaxUSD.USD(), "campaign USD ceiling, recorded durably at submission")
 	maxTokens := flags.Int64("max-tokens", defaults.MaxTokens, "campaign token ceiling, recorded durably at submission")
+	maxModelCalls := flags.Int64("max-model-calls", defaults.MaxModelCalls, "campaign model-call ceiling, recorded durably at submission")
+	noRetries := flags.Bool("no-retries", false, "pin every task to one attempt for a bounded operator-run campaign")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *file == "" || *actorRole == "" || *idempotencyKey == "" {
-		fmt.Fprintln(stderr, "usage: orgctl executive submit --file goal.json --actor-role empresa/human --idempotency-key KEY [--max-usd 5] [--max-tokens 500000] [--json]")
+		fmt.Fprintln(stderr, "usage: orgctl executive submit --file goal.json --actor-role empresa/human --idempotency-key KEY [--max-usd 5] [--max-tokens 500000] [--max-model-calls 100] [--no-retries] [--json]")
 		return exitUsage
 	}
 	budget := defaults
 	budget.MaxUSD = modelpricing.USDFromDollars(*maxUSD)
 	budget.MaxTokens = *maxTokens
+	budget.MaxModelCalls = *maxModelCalls
+	if *noRetries {
+		// MaxRetries remains positive because the budget schema is deliberately
+		// non-zero, while WithNoRetries below prevents the task engine from
+		// creating a second attempt.
+		budget.MaxRetries = 1
+	}
 	if err := budget.Validate(); err != nil {
 		fmt.Fprintf(stderr, "invalid campaign budget: %v\n", err)
 		return exitUsage
@@ -100,7 +109,17 @@ func runExecutiveSubmit(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "read executive goal: %v\n", err)
 		return exitInvalid
 	}
-	cfg, runtime, store, ctx, cancel, code := openExecutiveRuntime(stderr, "executive-submit", executiveModelCallDeadline)
+	limits := executive.DefaultLimits()
+	if *maxModelCalls > int64(^uint(0)>>1) {
+		fmt.Fprintln(stderr, "invalid campaign budget: max-model-calls exceeds the local integer range")
+		return exitUsage
+	}
+	limits.MaxModelCalls = int(*maxModelCalls)
+	options := []executivebootstrap.OpenOption{executivebootstrap.WithExecutiveLimits(limits)}
+	if *noRetries {
+		options = append(options, executivebootstrap.WithNoRetries())
+	}
+	cfg, runtime, store, ctx, cancel, code := openExecutiveRuntime(stderr, "executive-submit", executiveModelCallDeadline, options...)
 	if code != exitOK {
 		return code
 	}
@@ -112,7 +131,10 @@ func runExecutiveSubmit(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "submit executive run: %v\n", err)
 		return executiveExitCode(err)
 	}
-	writeExecutiveValue(stdout, *jsonOutput, map[string]any{"run": run, "reused": reused})
+	writeExecutiveValue(stdout, *jsonOutput, map[string]any{
+		"run": run, "reused": reused, "max_model_calls": *maxModelCalls,
+		"no_retries": *noRetries,
+	})
 	return exitOK
 }
 
@@ -182,6 +204,7 @@ func runExecutiveWorker(args []string, stdout, stderr io.Writer) int {
 	poll := flags.Duration("poll", time.Second, "poll interval")
 	errorBackoff := flags.Duration("error-backoff", 3*time.Second, "source error backoff")
 	batch := flags.Int("batch", 16, "maximum roots per poll")
+	noRetries := flags.Bool("no-retries", false, "pin every task to one attempt for this operator-run campaign")
 	if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 || *poll <= 0 || *errorBackoff <= 0 || *batch <= 0 || *batch > 128 {
 		return exitUsage
 	}
@@ -197,7 +220,11 @@ func runExecutiveWorker(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 	defer store.Close()
-	runtime, err := executivebootstrap.Open(cfg, store)
+	options := make([]executivebootstrap.OpenOption, 0, 1)
+	if *noRetries {
+		options = append(options, executivebootstrap.WithNoRetries())
+	}
+	runtime, err := executivebootstrap.Open(cfg, store, options...)
 	if err != nil {
 		fmt.Fprintf(stderr, "open executive runtime: %v\n", err)
 		return exitInternal
