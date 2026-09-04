@@ -2557,7 +2557,11 @@ func (o *Orchestrator) resultForCompletedTask(ctx context.Context, task TaskReco
 // reconciles the attempt and produces a fresh one -- so the correct response
 // is to report and step back, not to record a verdict.
 func (o *Orchestrator) handlePhaseError(ctx context.Context, root, task TaskRecord, err error) (Run, error) {
-	if isNonBlockingPhaseError(err) {
+	// One-shot/operator runs deliberately pin every task to one attempt.
+	// In that mode a non-blocking error cannot be retried by this orchestrator
+	// instance, so leaving the root executable would create a projected
+	// failure with a durable ready root. Fail closed instead.
+	if isNonBlockingPhaseError(err) && !o.noRetries {
 		run, _ := o.Status(ctx, root.ID)
 		return run, err
 	}
