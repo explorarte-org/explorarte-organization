@@ -422,7 +422,7 @@ func (o *Orchestrator) driveDesignFreeze(ctx context.Context, root TaskRecord, a
 		return Run{}, true, err
 	}
 	if err = o.tasks.RecordEvidence(ctx, EvidenceCommand{
-		TaskID: root.ID, RequirementID: requirement.ID, Type: "approval",
+		TaskID: root.ID, RequirementID: requirement.ID, Type: "result",
 		Reference:  fmt.Sprintf("task:%d:model-invocation:%d", adjudicationTask.ID, adjudicationResult.InvocationID),
 		Digest:     decision.Record.Digest,
 		RecordedBy: orchestratorWorkerID,

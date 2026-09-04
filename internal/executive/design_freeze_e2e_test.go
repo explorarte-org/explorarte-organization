@@ -307,7 +307,7 @@ func newFreezeFixture(t *testing.T, adjudicationVerdict string, reviewerEnabled 
 			Goal:               "M2.1 -- design first, review adversarially, then freeze.",
 			AcceptanceCriteria: []AcceptanceCriterion{{Text: "Design before implementation", Phase: AcceptanceDesign}},
 			Requirements: []RequirementProposal{{
-				Key: designfreeze.RequirementKey, Type: "approval",
+				Key: designfreeze.RequirementKey, Type: "result",
 				Description: "Design frozen by executive adjudication", Required: true,
 			}},
 		},
@@ -425,12 +425,16 @@ func TestExecutiveRunReachesDesignFreezeThroughTheRealOrchestrator(t *testing.T)
 	}
 	var frozen *EvidenceCommand
 	for i := range fixture.tasks.evidence {
-		if fixture.tasks.evidence[i].Type == "approval" {
-			frozen = &fixture.tasks.evidence[i]
+		candidate := &fixture.tasks.evidence[i]
+		if candidate.Type != "result" {
+			continue
 		}
+		if _, ok := candidate.Metadata["design_freeze_record"]; ok {
+			frozen = candidate
+	}
 	}
 	if frozen == nil {
-		t.Fatal("no approval evidence was recorded for the freeze")
+		t.Fatal("no result evidence was recorded for the freeze")
 	}
 	if frozen.Digest == "" || !frozen.Satisfies {
 		t.Fatalf("freeze evidence=%+v", *frozen)

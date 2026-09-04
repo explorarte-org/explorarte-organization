@@ -182,7 +182,7 @@ func Derive(request Request) (Derived, error) {
 	seen := map[string]struct{}{}
 	allowed := make([]string, 0, len(request.Changes))
 	operations := make([]coderunner.Operation, 0, len(request.Changes)+5)
-	touchesGo := false
+	goFiles := make([]string, 0, len(request.Changes))
 
 	for i, change := range request.Changes {
 		clean, err := normalizePath(change.Path)
@@ -205,15 +205,16 @@ func Derive(request Request) (Derived, error) {
 		allowed = append(allowed, clean)
 		operations = append(operations, coderunner.Operation{Type: coderunner.ApplyPatch, Patch: change.Patch})
 		if strings.HasSuffix(clean, ".go") {
-			touchesGo = true
+			goFiles = append(goFiles, clean)
 		}
 	}
 	sort.Strings(allowed)
 
 	// gofmt only where Go actually changed, and only after every patch has
 	// been applied, so formatting never runs against a half-applied tree.
-	if touchesGo {
-		operations = append(operations, coderunner.Operation{Type: coderunner.Gofmt})
+	sort.Strings(goFiles)
+	for _, path := range goFiles {
+		operations = append(operations, coderunner.Operation{Type: coderunner.Gofmt, Path: path})
 	}
 	// The gates are appended by the host, in this order, always. They are not
 	// derived from anything the model said and cannot be reduced by it.

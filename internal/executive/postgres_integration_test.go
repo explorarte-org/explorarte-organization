@@ -272,7 +272,9 @@ type integrationModelRuntime struct {
 	// stopWithoutVerdict makes a run end the way a process crash does: no
 	// verdict, no durable invocation, and the attempt left running with its
 	// lease still held.
-	stopWithoutVerdict bool
+	stopWithoutVerdict     bool
+	implementationPlanBody json.RawMessage
+	designAdjudicationBody func(int64) json.RawMessage
 }
 
 // seedUnresolvedSend plants the state Model Runtime holds while a request may
@@ -368,10 +370,17 @@ func (f *integrationModelRuntime) Execute(_ context.Context, command executive.H
 	invocation := executive.InvocationRecord{
 		ID: f.nextID, TaskID: command.TaskID, AttemptID: command.AttemptID, SubjectRoleID: command.RoleID,
 		Status: status, CorrelationID: command.CorrelationID, CausationID: command.CausationID,
+		ContextSnapshotID: command.Context.ID,
 	}
 	f.byAttempt[key] = []executive.InvocationRecord{invocation}
 	if status == "succeeded" {
 		body := f.output(purpose)
+		if purpose == "implementation_plan" && len(f.implementationPlanBody) > 0 {
+			body = append(json.RawMessage(nil), f.implementationPlanBody...)
+		}
+		if purpose == "design_adjudication" && f.designAdjudicationBody != nil {
+			body = f.designAdjudicationBody(invocation.TaskID)
+		}
 		hash := sha256.Sum256(body)
 		f.results[invocation.ID] = executive.InvocationResult{
 			InvocationID: invocation.ID, JSONOutput: body, ResponseHash: hex.EncodeToString(hash[:]), ResponseBytes: len(body),
@@ -436,6 +445,8 @@ func (f *integrationModelRuntime) output(purpose string) json.RawMessage {
 		return json.RawMessage(`{"schema_version":"worker-result/v1","summary":"bounded findings","evidence_refs":["integration:evidence:1"]}`)
 	case "department_review":
 		return json.RawMessage(`{"schema_version":"department-review/v2","verdict":"accept","findings":["criteria satisfied"],"unsatisfied_criteria":[],"evidence_refs":[],"proposed_followup_tasks":[]}`)
+	case "adversarial_review":
+		return json.RawMessage(`{"schema_version":"adversarial-review/v1","verdict":"accept","findings":[],"contradictions":[],"unverified_assumptions":[],"security_findings":[],"authority_findings":[],"recovery_findings":[],"memory_epistemic_findings":[],"evidence_refs":[]}`)
 	case "executive_ceo_closure":
 		return json.RawMessage(`{"schema_version":"executive-closure/v1","status":"completed","answer_to_owner":"The requested area was analyzed with verified evidence.","completed_items":["engineering analysis"],"blocked_items":[],"unresolved_decisions":[],"evidence_refs":["integration:evidence:1"]}`)
 	default:

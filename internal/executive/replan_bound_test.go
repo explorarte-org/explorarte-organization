@@ -67,7 +67,7 @@ func newReplanFixture(t *testing.T, maxReplans int, reviewBody string) *freezeFi
 			Goal:               "AUTONOMY-SMOKE: exercise the departmental replan bound.",
 			AcceptanceCriteria: []AcceptanceCriterion{{Text: "design is reviewed", Phase: AcceptanceDesign}},
 			Requirements: []RequirementProposal{
-				{Key: designfreeze.RequirementKey, Type: "approval", Description: "Design frozen", Required: true},
+				{Key: designfreeze.RequirementKey, Type: "result", Description: "Design frozen", Required: true},
 			},
 		},
 	})

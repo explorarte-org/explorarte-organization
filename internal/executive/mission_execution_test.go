@@ -19,7 +19,7 @@ func codeRunnerRootForTest() TaskRecord {
 		},
 		Evidence: []EvidenceRecord{{
 			Reference: "engineering-mission://91",
-			Type:      "approval",
+			Type:      "result",
 		}},
 	}
 }
@@ -123,6 +123,24 @@ func TestVerifiedCodeRunnerEvidenceRequiresAllHostGates(t *testing.T) {
 	}
 	if _, _, err := verifiedCodeRunnerEvidence(task); err == nil {
 		t.Fatal("evidence without FITNESS passed the host-owned execution barrier")
+	}
+}
+
+func TestVerifiedCodeRunnerEvidenceIgnoresCheckLinkWithResultReference(t *testing.T) {
+	task := codeRunnerTaskForTest()
+	result := task.Evidence[1]
+	task.Evidence = append(task.Evidence, EvidenceRecord{
+		Type:      "check",
+		Reference: result.Reference,
+		Digest:    result.Digest,
+	})
+	if _, _, err := verifiedCodeRunnerEvidence(task); err != nil {
+		t.Fatalf("verification link sharing the immutable result reference was treated as a second attempt: %v", err)
+	}
+
+	task.Evidence = append(task.Evidence, result)
+	if _, _, err := verifiedCodeRunnerEvidence(task); err == nil || !strings.Contains(err.Error(), "duplicate attempt evidence") {
+		t.Fatalf("duplicate result evidence error=%v, want duplicate attempt evidence", err)
 	}
 }
 

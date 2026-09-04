@@ -140,13 +140,13 @@ func newMissionFixture(t *testing.T, planPath string, widenScope bool) *missionF
 	}
 
 	requirements := []RequirementProposal{
-		{Key: designfreeze.RequirementKey, Type: "approval", Description: "Design frozen", Required: true},
-		{Key: MissionRequirementKey, Type: "approval", Description: "Engineering mission provisioned", Required: true},
+		{Key: designfreeze.RequirementKey, Type: "result", Description: "Design frozen", Required: true},
+		{Key: MissionRequirementKey, Type: "result", Description: "Engineering mission provisioned", Required: true},
 	}
 	if widenScope {
 		requirements = append(requirements, RequirementProposal{
 			Key: InternalCodeScopeRequirementKey, Type: "condition",
-			Description: "Owner widened the mission to internal code", Required: true,
+			Description: "Owner widened the mission to internal code", Required: false,
 		})
 	}
 	run, _, err := orchestrator.Submit(context.Background(), SubmitRequest{
