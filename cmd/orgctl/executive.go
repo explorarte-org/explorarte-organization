@@ -47,6 +47,8 @@ func runExecutive(args []string, stdout, stderr io.Writer) int {
 		return runExecutiveSubmit(args[1:], stdout, stderr)
 	case "external-smoke":
 		return runExecutiveExternalSmoke(args[1:], stdout, stderr)
+	case "external-smoke-5usd":
+		return runExecutiveExternalSmoke5USD(args[1:], stdout, stderr)
 	case "status":
 		return runExecutiveStatus(args[1:], stdout, stderr)
 	case "resume":
@@ -374,6 +376,7 @@ func printExecutiveUsage(out io.Writer) {
 commands:
   submit --file goal.json --actor-role empresa/human --idempotency-key KEY [--json]
   external-smoke --confirm EXECUTIVE_EXTERNAL_SMOKE_ONCE --idempotency-key external-smoke-KEY [--json]
+  external-smoke-5usd --confirm EXECUTIVE_EXTERNAL_SMOKE_5USD_ONCE --idempotency-key external-smoke-5usd-KEY [--json]
   status ROOT_TASK_ID [--json]
   resume ROOT_TASK_ID [--json]
   worker run [--poll 1s] [--error-backoff 3s] [--batch 16]
