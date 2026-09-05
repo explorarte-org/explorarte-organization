@@ -860,3 +860,241 @@ func TestFailureHandling(t *testing.T) {
 		t.Fatalf("Expected same canonical digest on duplicate projection")
 	}
 }
+
+func sha256Hex(s string) string {
+	h := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(h[:])
+}
+
+func TestEpisodeImmutabilityAndReprojection(t *testing.T) {
+	f := newIntegrationFixture(t)
+	defer f.cleanup()
+
+	taskID, attemptID := f.createTaskAndAttempt(t, "qa.verification", "Immutability Task")
+	snapshotID, contextContent, _ := f.createContextSnapshot(t, taskID, attemptID)
+	runID := "harness-run-immutability-1"
+
+	f.createDescriptor(t, runID, taskID, attemptID, snapshotID, contextContent, "profile/standard")
+	f.createHarnessEvents(t, runID, taskID, attemptID, "completed")
+
+	// 1. Initial project -> revision 1, reused = false
+	ep1, err := f.memoryStore.ProjectHarnessRun(f.ctx, runID)
+	if err != nil {
+		t.Fatalf("ProjectHarnessRun 1: %v", err)
+	}
+
+	// 2. Same durable facts -> project -> same Episode -> reuse
+	ep2, err := f.memoryStore.ProjectHarnessRun(f.ctx, runID)
+	if err != nil {
+		t.Fatalf("ProjectHarnessRun 2: %v", err)
+	}
+	if ep1.CanonicalDigest != ep2.CanonicalDigest {
+		t.Fatalf("Expected identical CanonicalDigest on rerun")
+	}
+
+	// 3. Direct SQL UPDATE on memoryos_episodes MUST FAIL closed
+	_, err = f.platformStore.Pool().Exec(f.ctx, `UPDATE memoryos_episodes SET turns_used = 999 WHERE id = $1`, ep1.ID)
+	if err == nil {
+		t.Fatalf("Expected UPDATE on memoryos_episodes to fail via immutable trigger, got nil")
+	}
+	if !strings.Contains(err.Error(), "append-only") {
+		t.Fatalf("Expected append-only error, got: %v", err)
+	}
+
+	// 4. Direct SQL UPDATE on memoryos_episode_skills MUST FAIL closed
+	_, err = f.platformStore.Pool().Exec(f.ctx, `UPDATE memoryos_episode_skills SET included = false WHERE episode_id = $1`, ep1.ID)
+	if err == nil {
+		t.Fatalf("Expected UPDATE on memoryos_episode_skills to fail via immutable trigger, got nil")
+	}
+	if !strings.Contains(err.Error(), "append-only") {
+		t.Fatalf("Expected append-only error, got: %v", err)
+	}
+
+	// 5. Direct SQL DELETE MUST FAIL closed
+	_, err = f.platformStore.Pool().Exec(f.ctx, `DELETE FROM memoryos_episodes WHERE id = $1`, ep1.ID)
+	if err == nil {
+		t.Fatalf("Expected DELETE on memoryos_episodes to fail via immutable trigger, got nil")
+	}
+	if !strings.Contains(err.Error(), "append-only") {
+		t.Fatalf("Expected append-only error, got: %v", err)
+	}
+}
+
+func TestRawContentRetentionZeroSentinels(t *testing.T) {
+	f := newIntegrationFixture(t)
+	defer f.cleanup()
+
+	const (
+		secretSentinel      = "SECRET_SENTINEL_8fa1b2c3d4e5f6071829"
+		clinicalSentinel    = "CLINICAL_SENTINEL_7a0b1c2d3e4f5a6b7c8d"
+		toolArgSentinel     = "TOOL_ARG_SENTINEL_2b3c4d5e6f7a8b9c0d1e"
+		modelOutputSentinel = "MODEL_OUTPUT_SENTINEL_1928374650abcdef1234"
+	)
+
+	taskID, attemptID := f.createTaskAndAttempt(t, "qa.verification", "Privacy Sentinel Task")
+
+	// Create context snapshot with clinicalSentinel
+	snapshotID, contextContent, _ := f.createContextSnapshot(t, taskID, attemptID)
+	contextContentWithSentinel := contextContent + "\n" + clinicalSentinel
+
+	runID := "harness-run-privacy-sentinel-1"
+
+	// Create descriptor
+	f.createDescriptor(t, runID, taskID, attemptID, snapshotID, contextContentWithSentinel, "profile/standard")
+
+	// Insert events with tool argument and model output sentinels in raw payload
+	toolReqPayload := fmt.Sprintf(`{"run_id":"%s","tool_request":{"tool_call_id":"call-1","tool_name":"exec_tool","arguments":{"param":"%s"}}}`, runID, toolArgSentinel)
+	toolResPayload := fmt.Sprintf(`{"run_id":"%s","tool_request":{"tool_call_id":"call-1","tool_name":"exec_tool"},"tool_result":{"result":"%s"}}`, runID, toolArgSentinel)
+	modelPayload := fmt.Sprintf(`{"run_id":"%s","model_result":{"finish_reason":"final","final_output":"%s"}}`, runID, modelOutputSentinel)
+
+	_, err := f.platformStore.Pool().Exec(f.ctx, `
+		INSERT INTO execution_run_events(organization_id, run_id, sequence, task_id, attempt_id, event_type, correlation_id, causation_id, terminal_status, payload, recorded_at)
+		VALUES
+		($1, $2, 1, $3, $4, 'run_started', 'corr-1', 'cause-1', '', jsonb_build_object('run_id', $2::text), NOW()),
+		($1, $2, 2, $3, $4, 'tool_call_requested', 'corr-1', 'cause-1', '', $5::jsonb, NOW()),
+		($1, $2, 3, $3, $4, 'tool_result_recorded', 'corr-1', 'cause-1', '', $6::jsonb, NOW()),
+		($1, $2, 4, $3, $4, 'model_response_recorded', 'corr-1', 'cause-1', '', $7::jsonb, NOW()),
+		($1, $2, 5, $3, $4, 'run_completed', 'corr-1', 'cause-1', 'completed', jsonb_build_object('run_id', $2::text), NOW())
+	`, testOrganization, runID, taskID, attemptID, toolReqPayload, toolResPayload, modelPayload)
+	if err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+
+	// Project and persist into MemoryOS tables
+	_, err = f.memoryStore.ProjectHarnessRun(f.ctx, runID)
+	if err != nil {
+		t.Fatalf("ProjectHarnessRun: %v", err)
+	}
+
+	// Verify all columns of memoryos_% and execution_run_descriptors for sentinels
+	tables := []string{
+		"execution_run_descriptors",
+		"memoryos_episodes",
+		"memoryos_episode_skills",
+		"memoryos_episode_tools",
+		"memoryos_episode_invocations",
+		"memoryos_episode_obligations",
+		"memoryos_completion_observations",
+		"memoryos_clusters",
+	}
+
+	sentinels := []string{secretSentinel, clinicalSentinel, toolArgSentinel, modelOutputSentinel}
+
+	for _, table := range tables {
+		rows, err := f.platformStore.Pool().Query(f.ctx, `
+			SELECT column_name
+			FROM information_schema.columns
+			WHERE table_name = $1 AND table_schema = 'public'
+			  AND data_type IN ('text', 'character varying', 'json', 'jsonb')
+		`, table)
+		if err != nil {
+			t.Fatalf("query columns for %s: %v", table, err)
+		}
+		var columns []string
+		for rows.Next() {
+			var col string
+			if scanErr := rows.Scan(&col); scanErr == nil {
+				columns = append(columns, col)
+			}
+		}
+		rows.Close()
+
+		for _, col := range columns {
+			for _, sentinel := range sentinels {
+				query := fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE %s::text LIKE '%%%s%%'`, table, col, sentinel)
+				var count int
+				if scanErr := f.platformStore.Pool().QueryRow(f.ctx, query).Scan(&count); scanErr != nil {
+					t.Fatalf("scan sentinel count in %s.%s: %v", table, col, scanErr)
+				}
+				if count > 0 {
+					t.Fatalf("RAW CONTENT RETENTION VIOLATION: table %s column %s contains sentinel %q (%d occurrences)", table, col, sentinel, count)
+				}
+			}
+		}
+	}
+}
+
+func TestObligationAuthorityIgnoresNonCompletionVerifier(t *testing.T) {
+	f := newIntegrationFixture(t)
+	defer f.cleanup()
+
+	taskID, attemptID := f.createTaskAndAttempt(t, "qa.verification", "Authority Filter Task")
+	snapshotID, contextContent, _ := f.createContextSnapshot(t, taskID, attemptID)
+	runID := "harness-run-auth-filter-1"
+
+	f.createDescriptor(t, runID, taskID, attemptID, snapshotID, contextContent, "profile/standard")
+	f.createHarnessEvents(t, runID, taskID, attemptID, "completed")
+
+	// Create a decision graph run using fixture helper
+	decisionRunID := f.createDecisionGraphRun(t, taskID, attemptID, "succeeded")
+
+	evHash := sha256Hex("evidence-proof")
+
+	// Create decision graph version
+	var versionID int64
+	err := f.platformStore.Pool().QueryRow(f.ctx, `
+		INSERT INTO decision_graph_versions(organization_id, run_id, version_number, snapshot_hash, node_count, max_depth, created_by)
+		VALUES($1, $2, 1, $3, 1, 0, $4)
+		RETURNING id
+	`, testOrganization, decisionRunID, evHash, testRole).Scan(&versionID)
+	if err != nil {
+		t.Fatalf("insert version: %v", err)
+	}
+
+	// Create a decision node
+	var nodeID int64
+	err = f.platformStore.Pool().QueryRow(f.ctx, `
+		INSERT INTO decision_graph_nodes(
+			organization_id, run_id, graph_version_id, logical_node_id,
+			node_type, branch_state, execution_state, payload_schema_version,
+			payload_hash, depth, created_by
+		) VALUES (
+			$1, $2, $3, 1,
+			'verification', 'active', 'ready', 'v1',
+			$4, 0, $5
+		)
+		RETURNING id
+	`, testOrganization, decisionRunID, versionID, evHash, testRole).Scan(&nodeID)
+	if err != nil {
+		t.Fatalf("insert node: %v", err)
+	}
+
+	// Verification A: Non-completion verifier contradicts
+	_, err = f.platformStore.Pool().Exec(f.ctx, `
+		INSERT INTO decision_verifications(organization_id, run_id, node_id, label, verifier_ref, verifier_version, evidence_set_hash, created_at)
+		VALUES($1, $2, $3, 'contradicted', 'internal/intermediate_step_check', 'v1', $4, NOW())
+	`, testOrganization, decisionRunID, nodeID, evHash)
+	if err != nil {
+		t.Fatalf("insert non-completion verification: %v", err)
+	}
+
+	// Verification B: Completion verifier passes
+	_, err = f.platformStore.Pool().Exec(f.ctx, `
+		INSERT INTO decision_verifications(organization_id, run_id, node_id, label, verifier_ref, verifier_version, evidence_set_hash, created_at)
+		VALUES($1, $2, $3, 'verified', 'internal/completion', 'phase2', $4, NOW() - INTERVAL '1 minute')
+	`, testOrganization, decisionRunID, nodeID, evHash)
+	if err != nil {
+		t.Fatalf("insert completion verification: %v", err)
+	}
+
+	// Project without pre-existing memoryos_completion_observations (forcing fallback to decision_verifications)
+	ep, err := f.memoryStore.ProjectHarnessRun(f.ctx, runID)
+	if err != nil {
+		t.Fatalf("ProjectHarnessRun: %v", err)
+	}
+
+	if ep.Verification == nil {
+		t.Fatalf("expected verification to be projected")
+	}
+
+	// Must be "pass" because non-completion contradicted verifier was ignored
+	if ep.Verification.Verdict != "pass" {
+		t.Fatalf("expected verdict 'pass', got '%s' (non-completion verifier was not filtered out!)", ep.Verification.Verdict)
+	}
+	if len(ep.Verification.Obligations) != 1 {
+		t.Fatalf("expected exactly 1 obligation (from completion verifier), got %d", len(ep.Verification.Obligations))
+	}
+	if ep.Verification.Obligations[0].VerifierRef != "internal/completion" {
+		t.Fatalf("expected verifier_ref 'internal/completion', got %s", ep.Verification.Obligations[0].VerifierRef)
+	}
+}

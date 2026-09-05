@@ -306,11 +306,13 @@ func (s *Store) ProjectHarnessRun(ctx context.Context, harnessRunID string) (epi
 			Obligations:   obligations,
 		}
 	} else if decisionRunID != nil {
-		// Fall back to decision_verifications if present
+		// Fall back to decision_verifications if present: filter strictly by authoritative completion verifier
 		verifRows, verifErr := s.pool.Query(ctx, `
 			SELECT label, verifier_ref, verifier_version, evidence_set_hash
 			FROM decision_verifications
 			WHERE organization_id = $1 AND run_id = $2
+			  AND verifier_ref = 'internal/completion'
+			  AND verifier_version = 'phase2'
 			ORDER BY id ASC
 		`, s.organizationID, *decisionRunID)
 		if verifErr == nil {
