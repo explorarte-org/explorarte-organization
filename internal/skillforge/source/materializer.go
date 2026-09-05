@@ -15,20 +15,24 @@ import (
 
 type LocalMaterializer struct {
 	skillsRoot string
+	reader     PinnedSourceReader
 }
 
-func NewLocalMaterializer(skillsRoot string) (*LocalMaterializer, error) {
+func NewLocalMaterializer(skillsRoot string, reader PinnedSourceReader) (*LocalMaterializer, error) {
 	if strings.TrimSpace(skillsRoot) == "" {
 		return nil, fmt.Errorf("skills root is required")
+	}
+	if reader == nil {
+		return nil, fmt.Errorf("pinned source reader is required")
 	}
 	abs, err := filepath.Abs(skillsRoot)
 	if err != nil {
 		return nil, fmt.Errorf("resolve skills root: %w", err)
 	}
-	return &LocalMaterializer{skillsRoot: abs}, nil
+	return &LocalMaterializer{skillsRoot: abs, reader: reader}, nil
 }
 
-func (m *LocalMaterializer) Materialize(_ context.Context, req MaterializeRequest) (skillregistry.SourceRecord, error) {
+func (m *LocalMaterializer) Materialize(ctx context.Context, req MaterializeRequest) (skillregistry.SourceRecord, error) {
 	// 1. Validate pinned GitHub origin
 	trimmedOrigin := strings.TrimSpace(req.OriginRef)
 	if !githubPinnedPattern.MatchString(trimmedOrigin) {
@@ -44,15 +48,24 @@ func (m *LocalMaterializer) Materialize(_ context.Context, req MaterializeReques
 		return skillregistry.SourceRecord{}, fmt.Errorf("materialized file must be SKILL.md, got %s", filepath.Base(cleanPath))
 	}
 
-	// 3. Verify Raw SHA
-	rawSum := sha256.Sum256(req.SourceBytes)
+	// 3. Read exact bytes from pinned git commit via PinnedSourceReader
+	artifact, err := m.reader.ReadPinned(ctx, PinnedSourceRef{
+		OriginRef: trimmedOrigin,
+		Path:      cleanPath,
+	})
+	if err != nil {
+		return skillregistry.SourceRecord{}, fmt.Errorf("read pinned commit source %s:%s: %w", trimmedOrigin, cleanPath, err)
+	}
+
+	// 4. Verify Raw SHA against pinned commit bytes
+	rawSum := sha256.Sum256(artifact.Bytes)
 	rawSHA := hex.EncodeToString(rawSum[:])
 	if req.ExpectedRawSHA != "" && rawSHA != req.ExpectedRawSHA {
 		return skillregistry.SourceRecord{}, fmt.Errorf("%w: expected raw %s, got %s", ErrDigestMismatch, req.ExpectedRawSHA, rawSHA)
 	}
 
-	// 4. Normalize text and verify Normalized SHA
-	normBytes, err := document.NormalizeText(req.SourceBytes)
+	// 5. Normalize text and verify Normalized SHA
+	normBytes, err := document.NormalizeText(artifact.Bytes)
 	if err != nil {
 		return skillregistry.SourceRecord{}, fmt.Errorf("normalize materialized text: %w", err)
 	}
@@ -62,7 +75,7 @@ func (m *LocalMaterializer) Materialize(_ context.Context, req MaterializeReques
 		return skillregistry.SourceRecord{}, fmt.Errorf("%w: expected normalized %s, got %s", ErrDigestMismatch, req.ExpectedNormSHA, normSHA)
 	}
 
-	// 5. Write to destination under skillsRoot
+	// 6. Write to destination under skillsRoot
 	destPath := filepath.Join(m.skillsRoot, cleanPath)
 	rel, err := filepath.Rel(m.skillsRoot, destPath)
 	if err != nil || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
@@ -72,7 +85,7 @@ func (m *LocalMaterializer) Materialize(_ context.Context, req MaterializeReques
 	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
 		return skillregistry.SourceRecord{}, fmt.Errorf("create materialized directory: %w", err)
 	}
-	if err := os.WriteFile(destPath, req.SourceBytes, 0644); err != nil {
+	if err := os.WriteFile(destPath, artifact.Bytes, 0644); err != nil {
 		return skillregistry.SourceRecord{}, fmt.Errorf("write materialized file: %w", err)
 	}
 

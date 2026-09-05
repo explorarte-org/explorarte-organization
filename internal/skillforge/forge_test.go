@@ -126,10 +126,11 @@ func (noopGate) AuthorizeAssignmentChange(_ context.Context, _, _, _, _, _ strin
 type fakeSourcePublisher struct {
 	owner string
 	repo  string
+	files map[string][]byte
 }
 
 func newFakeSourcePublisher(owner, repo string) *fakeSourcePublisher {
-	return &fakeSourcePublisher{owner: owner, repo: repo}
+	return &fakeSourcePublisher{owner: owner, repo: repo, files: make(map[string][]byte)}
 }
 
 func (f *fakeSourcePublisher) Publish(_ context.Context, req source.PublishRequest) (source.PublishedSource, error) {
@@ -148,12 +149,34 @@ func (f *fakeSourcePublisher) Publish(_ context.Context, req source.PublishReque
 	normSum := sha256.Sum256(normBytes)
 	normSHA := hex.EncodeToString(normSum[:])
 	commitSHA := "1234567890123456789012345678901234567890"
+	relPath := filepath.Join("skills", req.SkillID, "SKILL.md")
+	f.files[relPath] = req.CandidateSourceBytes
 	return source.PublishedSource{
 		OriginRef:        fmt.Sprintf("%s/%s@%s", f.owner, f.repo, commitSHA),
-		Path:             filepath.Join("skills", req.SkillID, "SKILL.md"),
+		Path:             relPath,
 		RawSHA256:        rawSHA,
 		NormalizedSHA256: normSHA,
 		PublicationRef:   fmt.Sprintf("fake-pub:%s:%s", req.SkillID, commitSHA),
+	}, nil
+}
+
+type fakePinnedReader struct {
+	pub *fakeSourcePublisher
+}
+
+func (r *fakePinnedReader) ReadPinned(_ context.Context, ref source.PinnedSourceRef) (source.PinnedSourceArtifact, error) {
+	parts := strings.Split(ref.OriginRef, "@")
+	if len(parts) != 2 {
+		return source.PinnedSourceArtifact{}, errors.New("invalid origin ref")
+	}
+	bytes, ok := r.pub.files[filepath.Clean(ref.Path)]
+	if !ok {
+		return source.PinnedSourceArtifact{}, source.ErrPinnedPathNotFound
+	}
+	return source.PinnedSourceArtifact{
+		CommitSHA: parts[1],
+		Path:      ref.Path,
+		Bytes:     bytes,
 	}, nil
 }
 
@@ -162,7 +185,7 @@ func TestSkillForgeFullE2EFlow(t *testing.T) {
 	skillsRoot := t.TempDir()
 	// Use fake publisher to prove Skill Forge runs with zero git authority
 	publisher := newFakeSourcePublisher("explorarte-org", "skills")
-	materializer, err := source.NewLocalMaterializer(skillsRoot)
+	materializer, err := source.NewLocalMaterializer(skillsRoot, &fakePinnedReader{pub: publisher})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,7 +428,7 @@ func TestMaliciousSkillContractRejection(t *testing.T) {
 	ctx := context.Background()
 	skillsRoot := t.TempDir()
 	publisher := newFakeSourcePublisher("explorarte-org", "skills")
-	materializer, _ := source.NewLocalMaterializer(skillsRoot)
+	materializer, _ := source.NewLocalMaterializer(skillsRoot, &fakePinnedReader{pub: publisher})
 	needRepo := need.NewMemoryRepository()
 	regRepo := newMemoryRegistryRepo()
 	domainService := skillregistry.NewService(nil)

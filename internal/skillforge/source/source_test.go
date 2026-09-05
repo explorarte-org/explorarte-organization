@@ -14,10 +14,40 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/contextengine/document"
 )
 
+type fakePinnedSourceReader struct {
+	files map[string][]byte // key: originRef + ":" + path
+}
+
+func newFakePinnedSourceReader() *fakePinnedSourceReader {
+	return &fakePinnedSourceReader{files: make(map[string][]byte)}
+}
+
+func (f *fakePinnedSourceReader) addFile(originRef, path string, content []byte) {
+	f.files[originRef+":"+filepath.Clean(path)] = content
+}
+
+func (f *fakePinnedSourceReader) ReadPinned(_ context.Context, ref PinnedSourceRef) (PinnedSourceArtifact, error) {
+	parts := strings.Split(ref.OriginRef, "@")
+	if len(parts) != 2 || len(parts[1]) != 40 {
+		return PinnedSourceArtifact{}, fmt.Errorf("invalid origin ref: %s", ref.OriginRef)
+	}
+	clean := filepath.Clean(ref.Path)
+	content, found := f.files[ref.OriginRef+":"+clean]
+	if !found {
+		return PinnedSourceArtifact{}, fmt.Errorf("%w: %s:%s", ErrPinnedPathNotFound, ref.OriginRef, clean)
+	}
+	return PinnedSourceArtifact{
+		CommitSHA: parts[1],
+		Path:      clean,
+		Bytes:     content,
+	}, nil
+}
+
 func TestMutableOriginRejected(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
-	mat, err := NewLocalMaterializer(tmpDir)
+	reader := newFakePinnedSourceReader()
+	mat, err := NewLocalMaterializer(tmpDir, reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +66,6 @@ func TestMutableOriginRejected(t *testing.T) {
 		_, err := mat.Materialize(ctx, MaterializeRequest{
 			OriginRef:    origin,
 			RelativePath: "skills/test/SKILL.md",
-			SourceBytes:  []byte("# Skill"),
 		})
 		if err == nil {
 			t.Fatalf("expected error for mutable origin %q, got nil", origin)
@@ -50,7 +79,8 @@ func TestMutableOriginRejected(t *testing.T) {
 func TestPathSecurityEnforcement(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
-	mat, _ := NewLocalMaterializer(tmpDir)
+	reader := newFakePinnedSourceReader()
+	mat, _ := NewLocalMaterializer(tmpDir, reader)
 	validOrigin := "explorarte-org/skills@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 	badPaths := []string{
@@ -64,7 +94,6 @@ func TestPathSecurityEnforcement(t *testing.T) {
 		_, err := mat.Materialize(ctx, MaterializeRequest{
 			OriginRef:    validOrigin,
 			RelativePath: path,
-			SourceBytes:  []byte("# Skill"),
 		})
 		if err == nil {
 			t.Fatalf("expected error for path %q, got nil", path)
@@ -75,8 +104,10 @@ func TestPathSecurityEnforcement(t *testing.T) {
 func TestMaterializationAndDigestVerification(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
-	mat, _ := NewLocalMaterializer(tmpDir)
+	reader := newFakePinnedSourceReader()
+	mat, _ := NewLocalMaterializer(tmpDir, reader)
 	validOrigin := "explorarte-org/skills@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	skillPath := "skills/pinned-skill/SKILL.md"
 
 	rawContent := []byte("# Pinned Skill\r\n\r\nProcedure.\r\n")
 	rawSum := sha256.Sum256(rawContent)
@@ -86,13 +117,15 @@ func TestMaterializationAndDigestVerification(t *testing.T) {
 	normSum := sha256.Sum256(normText)
 	normHex := hex.EncodeToString(normSum[:])
 
+	// Register file in pinned reader
+	reader.addFile(validOrigin, skillPath, rawContent)
+
 	// 1. Successful materialization
 	rec, err := mat.Materialize(ctx, MaterializeRequest{
 		OriginRef:       validOrigin,
-		RelativePath:    "skills/pinned-skill/SKILL.md",
+		RelativePath:    skillPath,
 		ExpectedRawSHA:  rawHex,
 		ExpectedNormSHA: normHex,
-		SourceBytes:     rawContent,
 		RecordedBy:      "empresa/human",
 		RecordRef:       "mat-rec-1",
 	})
@@ -116,10 +149,9 @@ func TestMaterializationAndDigestVerification(t *testing.T) {
 	// 2. Digest mismatch rejects
 	_, err = mat.Materialize(ctx, MaterializeRequest{
 		OriginRef:       validOrigin,
-		RelativePath:    "skills/pinned-skill/SKILL.md",
+		RelativePath:    skillPath,
 		ExpectedRawSHA:  "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
 		ExpectedNormSHA: normHex,
-		SourceBytes:     rawContent,
 		RecordedBy:      "empresa/human",
 		RecordRef:       "mat-rec-2",
 	})

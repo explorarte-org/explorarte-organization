@@ -11,6 +11,7 @@ import (
 
 // PostgresDivergenceRecorder persists metadata-only parity divergences durably into PostgreSQL.
 // It never records SKILL.md bodies, prompts, context content, or credentials.
+// Aggregations are strictly atomic via UNIQUE(organization_id, divergence_key) and ON CONFLICT DO UPDATE.
 type PostgresDivergenceRecorder struct {
 	store          *platformpostgres.Store
 	organizationID string
@@ -43,43 +44,41 @@ func (r *PostgresDivergenceRecorder) RecordDivergence(ctx context.Context, recor
 	if strings.TrimSpace(record.Reason) == "" {
 		return fmt.Errorf("reason is required")
 	}
-	obsAt := record.ObservedAt
+	obsAt := record.LastObservedAt
+	if obsAt.IsZero() {
+		obsAt = record.ObservedAt
+	}
 	if obsAt.IsZero() {
 		obsAt = time.Now().UTC()
 	}
 
-	// Deterministic deduplication:
-	// If an identical divergence for (organization_id, role_id, skill_id, operation, reason)
-	// was recorded in the last 10 seconds, skip inserting a duplicate row.
-	cutoff := obsAt.Add(-10 * time.Second)
-	var exists bool
-	checkQuery := `
-		SELECT EXISTS (
-			SELECT 1 FROM skill_provider_divergences
-			WHERE organization_id = $1
-			  AND role_id = $2
-			  AND COALESCE(skill_id, '') = COALESCE($3, '')
-			  AND operation = $4
-			  AND reason = $5
-			  AND observed_at >= $6
-		)`
-	err := r.store.Pool().QueryRow(ctx, checkQuery, orgID, record.RoleID, record.SkillID, record.Operation, record.Reason, cutoff).Scan(&exists)
-	if err == nil && exists {
-		return nil
+	record.OrganizationID = orgID
+	key := record.DivergenceKey
+	if key == "" {
+		key = ComputeDivergenceKey(record)
 	}
 
 	insertQuery := `
 		INSERT INTO skill_provider_divergences (
-			organization_id, role_id, skill_id, operation,
-			primary_version, shadow_version, primary_source_hash, shadow_source_hash,
-			reason, observed_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
+			organization_id, divergence_key, role_id, skill_id, operation,
+			field, primary_value, shadow_value, primary_version, shadow_version,
+			primary_source_hash, shadow_source_hash, reason,
+			first_observed_at, last_observed_at, observation_count
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14, 1)
+		ON CONFLICT (organization_id, divergence_key)
+		DO UPDATE SET
+			last_observed_at = EXCLUDED.last_observed_at,
+			observation_count = skill_provider_divergences.observation_count + 1`
 
-	_, err = r.store.Pool().Exec(ctx, insertQuery,
+	_, err := r.store.Pool().Exec(ctx, insertQuery,
 		orgID,
+		key,
 		record.RoleID,
 		record.SkillID,
 		record.Operation,
+		record.Field,
+		record.PrimaryValue,
+		record.ShadowValue,
 		record.PrimaryVersion,
 		record.ShadowVersion,
 		record.PrimarySourceHash,
@@ -111,13 +110,14 @@ func (r *PostgresDivergenceRecorder) ListDivergences(ctx context.Context, filter
 	}
 
 	query := `
-		SELECT organization_id, role_id, COALESCE(skill_id, ''), operation,
+		SELECT organization_id, divergence_key, role_id, COALESCE(skill_id, ''), operation,
+		       COALESCE(field, ''), COALESCE(primary_value, ''), COALESCE(shadow_value, ''),
 		       COALESCE(primary_version, ''), COALESCE(shadow_version, ''),
 		       COALESCE(primary_source_hash, ''), COALESCE(shadow_source_hash, ''),
-		       reason, observed_at
+		       reason, first_observed_at, last_observed_at, observation_count
 		FROM skill_provider_divergences
 		WHERE organization_id = $1
-		ORDER BY observed_at DESC
+		ORDER BY last_observed_at DESC
 		LIMIT $2`
 
 	rows, err := r.store.Pool().Query(ctx, query, orgID, limit)
@@ -131,18 +131,25 @@ func (r *PostgresDivergenceRecorder) ListDivergences(ctx context.Context, filter
 		var rec DivergenceRecord
 		if err := rows.Scan(
 			&rec.OrganizationID,
+			&rec.DivergenceKey,
 			&rec.RoleID,
 			&rec.SkillID,
 			&rec.Operation,
+			&rec.Field,
+			&rec.PrimaryValue,
+			&rec.ShadowValue,
 			&rec.PrimaryVersion,
 			&rec.ShadowVersion,
 			&rec.PrimarySourceHash,
 			&rec.ShadowSourceHash,
 			&rec.Reason,
-			&rec.ObservedAt,
+			&rec.FirstObservedAt,
+			&rec.LastObservedAt,
+			&rec.ObservationCount,
 		); err != nil {
 			return nil, fmt.Errorf("scan divergence row: %w", err)
 		}
+		rec.ObservedAt = rec.LastObservedAt
 		records = append(records, rec)
 	}
 	return records, rows.Err()

@@ -262,7 +262,12 @@ func runSkillForgeRun(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "create publisher: %v\n", err)
 		return exitInternal
 	}
-	materializer, err := source.NewLocalMaterializer(cfg.Context.SourceRoot)
+	pinnedReader, err := skillpublisher.NewGitPinnedSourceReader(cfg.Context.SourceRoot)
+	if err != nil {
+		fmt.Fprintf(stderr, "create pinned reader: %v\n", err)
+		return exitInternal
+	}
+	materializer, err := source.NewLocalMaterializer(cfg.Context.SourceRoot, pinnedReader)
 	if err != nil {
 		fmt.Fprintf(stderr, "create materializer: %v\n", err)
 		return exitInternal
@@ -333,6 +338,7 @@ func runSkillForgeMaterialize(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "read source file: %v\n", err)
 		return exitUsage
 	}
+	_ = content
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -340,7 +346,12 @@ func runSkillForgeMaterialize(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
-	materializer, err := source.NewLocalMaterializer(cfg.Context.SourceRoot)
+	pinnedReader, err := skillpublisher.NewGitPinnedSourceReader(cfg.Context.SourceRoot)
+	if err != nil {
+		fmt.Fprintf(stderr, "create pinned reader: %v\n", err)
+		return exitInternal
+	}
+	materializer, err := source.NewLocalMaterializer(cfg.Context.SourceRoot, pinnedReader)
 	if err != nil {
 		fmt.Fprintf(stderr, "create materializer: %v\n", err)
 		return exitInternal
@@ -351,7 +362,6 @@ func runSkillForgeMaterialize(args []string, stdout, stderr io.Writer) int {
 		RelativePath:    strings.TrimSpace(*path),
 		ExpectedRawSHA:  strings.TrimSpace(*rawSHA),
 		ExpectedNormSHA: strings.TrimSpace(*normSHA),
-		SourceBytes:     content,
 		RecordedBy:      "operator",
 		RecordRef:       "cli:materialize",
 	})

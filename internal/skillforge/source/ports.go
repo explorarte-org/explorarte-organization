@@ -13,6 +13,8 @@ var (
 	ErrPathEscapesRoot       = errors.New("materialized path escapes root")
 	ErrDigestMismatch        = errors.New("source materialization digest mismatch")
 	ErrInvalidOrigin         = errors.New("invalid origin specification")
+	ErrPinnedCommitNotFound  = errors.New("pinned commit not found in repository")
+	ErrPinnedPathNotFound    = errors.New("path not found in pinned commit")
 
 	githubPinnedPattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+@[0-9a-f]{40}$`)
 )
@@ -39,12 +41,30 @@ type SourcePublisher interface {
 	Publish(ctx context.Context, request PublishRequest) (PublishedSource, error)
 }
 
+// PinnedSourceRef specifies an immutable source target within a pinned commit.
+type PinnedSourceRef struct {
+	OriginRef string // owner/repo@40hex
+	Path      string // relative path ending in SKILL.md
+}
+
+// PinnedSourceArtifact represents the immutable bytes retrieved directly from a pinned commit.
+type PinnedSourceArtifact struct {
+	CommitSHA string
+	Path      string
+	Bytes     []byte
+}
+
+// PinnedSourceReader is a host-owned read boundary that extracts bytes directly
+// from an exact pinned commit object without consulting mutable working trees or live network.
+type PinnedSourceReader interface {
+	ReadPinned(ctx context.Context, ref PinnedSourceRef) (PinnedSourceArtifact, error)
+}
+
 type MaterializeRequest struct {
 	OriginRef       string // owner/repo@40-hex-sha
 	RelativePath    string // path within SKILLS_ROOT ending in SKILL.md
 	ExpectedRawSHA  string
 	ExpectedNormSHA string
-	SourceBytes     []byte // provided by host fetcher or local repo
 	RecordedBy      string
 	RecordRef       string
 }

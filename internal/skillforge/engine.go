@@ -213,7 +213,6 @@ func (e *Engine) Run(ctx context.Context, orgID, needID string) (ForgeRun, error
 				RelativePath:    run.PublishedSource.Path,
 				ExpectedRawSHA:  run.PublishedSource.RawSHA256,
 				ExpectedNormSHA: run.PublishedSource.NormalizedSHA256,
-				SourceBytes:     run.Author.CandidateBytes,
 				RecordedBy:      n.RoleID,
 				RecordRef:       fmt.Sprintf("materialize:%s", run.ID),
 			}

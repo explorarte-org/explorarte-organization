@@ -3,19 +3,28 @@
 CREATE TABLE skill_provider_divergences (
     id BIGSERIAL PRIMARY KEY,
     organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
+    divergence_key TEXT NOT NULL CHECK (divergence_key ~ '^[0-9a-f]{64}$'),
     role_id TEXT NOT NULL CHECK (length(trim(role_id)) BETWEEN 1 AND 240),
     skill_id TEXT,
     operation TEXT NOT NULL CHECK (length(trim(operation)) BETWEEN 1 AND 100),
+    field TEXT,
+    primary_value TEXT,
+    shadow_value TEXT,
     primary_version TEXT,
     shadow_version TEXT,
     primary_source_hash TEXT,
     shadow_source_hash TEXT,
     reason TEXT NOT NULL,
-    observed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    first_observed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_observed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    observation_count BIGINT NOT NULL DEFAULT 1 CHECK (observation_count >= 1),
+
+    UNIQUE (organization_id, divergence_key),
+    CHECK (last_observed_at >= first_observed_at)
 );
 
 CREATE INDEX skill_provider_divergences_lookup_idx
-    ON skill_provider_divergences (organization_id, role_id, observed_at DESC);
+    ON skill_provider_divergences (organization_id, role_id, last_observed_at DESC);
 
 CREATE TABLE skillforge_procedure_needs (
     id TEXT NOT NULL CHECK (length(trim(id)) BETWEEN 1 AND 200),
