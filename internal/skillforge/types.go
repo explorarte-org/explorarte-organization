@@ -84,21 +84,36 @@ type ValidationResult struct {
 	Errors               []string `json:"errors,omitempty"`
 }
 
+// AdversarialSkillReview represents the structured verdict of the model-driven adversarial review.
+type AdversarialSkillReview struct {
+	Verdict                   string   `json:"verdict"` // pass | fail
+	PromptInjectionRisk       bool     `json:"prompt_injection_risk"`
+	AuthorityEscalation       bool     `json:"authority_escalation"`
+	CapabilityLaundering      bool     `json:"capability_laundering"`
+	SecretAccessAttempt       bool     `json:"secret_access_attempt"`
+	CrossDepartmentDelegation bool     `json:"cross_department_delegation"`
+	RoutingManipulation       bool     `json:"routing_manipulation"`
+	EvaluationGaming          bool     `json:"evaluation_gaming"`
+	Findings                  []string `json:"findings,omitempty"`
+}
+
 type EvaluationResult struct {
-	Passed                 bool               `json:"passed"`
-	CandidateVersionID     string             `json:"candidate_version_id"`
-	CandidateCanonicalHash string             `json:"candidate_canonical_hash"`
-	CandidateSourceHash    string             `json:"candidate_source_hash"`
-	BaselineVersionID      string             `json:"baseline_version_id,omitempty"`
-	SuiteRef               string             `json:"suite_ref"`
-	ExecutionProfileID     string             `json:"execution_profile_id,omitempty"`
-	ContextSnapshotID      string             `json:"context_snapshot_id,omitempty"`
-	BaselineHarnessRunID   string             `json:"baseline_harness_run_id,omitempty"`
-	CandidateHarnessRunID  string             `json:"candidate_harness_run_id,omitempty"`
-	CanaryHarnessRunID     string             `json:"canary_harness_run_id,omitempty"`
-	Metrics                map[string]float64 `json:"metrics,omitempty"`
-	AdversarialVerdict     string             `json:"adversarial_verdict"` // pass / fail
-	CanaryVerdict          string             `json:"canary_verdict"`      // pass / fail
+	Passed                  bool                    `json:"passed"`
+	CandidateVersionID      string                  `json:"candidate_version_id"`
+	CandidateCanonicalHash  string                  `json:"candidate_canonical_hash"`
+	CandidateSourceHash     string                  `json:"candidate_source_hash"`
+	BaselineVersionID       string                  `json:"baseline_version_id,omitempty"`
+	SuiteRef                string                  `json:"suite_ref"`
+	ExecutionProfileID      string                  `json:"execution_profile_id,omitempty"`
+	ContextSnapshotID       string                  `json:"context_snapshot_id,omitempty"`
+	BaselineHarnessRunID    string                  `json:"baseline_harness_run_id,omitempty"`
+	CandidateHarnessRunID   string                  `json:"candidate_harness_run_id,omitempty"`
+	AdversarialHarnessRunID string                  `json:"adversarial_harness_run_id,omitempty"`
+	CanaryHarnessRunID      string                  `json:"canary_harness_run_id,omitempty"`
+	Metrics                 map[string]float64      `json:"metrics,omitempty"`
+	AdversarialVerdict      string                  `json:"adversarial_verdict"` // pass / fail
+	AdversarialReview       *AdversarialSkillReview `json:"adversarial_review,omitempty"`
+	CanaryVerdict           string                  `json:"canary_verdict"` // pass / fail
 }
 
 type ForgeRun struct {

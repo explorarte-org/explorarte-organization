@@ -190,12 +190,12 @@ roles:
   memory_path: null
   summary: 'Dueño de cómo la organización consume modelos: proveedores, model runtime, ruteo y fallback, las adaptaciones
     Responses/ChatCompletions, uso de herramientas, context engineering (compresión, caching, compactación de contexto) y
-    la integración de RAG hacia el Working Context de cada tarea. Conoce el RAG lo suficiente para consumirlo bien, pero
-    no es dueño de su tecnología de recuperación — eso es de `ingenieria_ia/semantic_engineer`. Cuando exista Memory OS,
-    es quien construye la interfaz entre memoria y modelo, no quien diseña la memoria misma.'
+    la integración de RAG hacia el Working Context de cada tarea. Conoce el RAG lo suficiente para consumirlo bien, pero no
+    es dueño de su tecnología de recuperación — eso es de `ingenieria_ia/semantic_engineer`. Cuando exista Memory OS, es quien
+    construye la interfaz entre memoria y modelo, no quien diseña la memoria misma.'
   reports_to_source_text: Al Orquestador, líder de Ingeniería de IA.
-  rag_topics_source_text: 'Model runtime, adaptadores de proveedor, tool use, context engineering, compresión de contexto,
-    caching y compactación, ingeniería de prompts.'
+  rag_topics_source_text: Model runtime, adaptadores de proveedor, tool use, context engineering, compresión de contexto,
+    caching y compactación, ingeniería de prompts.
   status: imported_source
   reports_to:
   - ingenieria_ia/orquestador
@@ -233,9 +233,9 @@ roles:
   department_agent_path: ingenieria_ia/AGENT.md
   memory_domain: ingenieria_ia
   memory_path: null
-  summary: Coordinar el trabajo técnico de Ingeniería de IA (Arquitecto de Software, Ingeniero de IA, Semantic Engineer,
-    Data Engineer, Data Scientist/ML, Ciberseguridad, QA, Code-runner, Frontend) y decidir qué información del departamento
-    se sanitiza y publica hacia el Cerebro Empresa. No ejecuta el trabajo técnico de cada rol — dirige y prioriza.
+  summary: Coordinar el trabajo técnico de Ingeniería de IA (Arquitecto de Software, Ingeniero de IA, Semantic Engineer, Data
+    Engineer, Data Scientist/ML, Ciberseguridad, QA, Code-runner, Frontend) y decidir qué información del departamento se
+    sanitiza y publica hacia el Cerebro Empresa. No ejecuta el trabajo técnico de cada rol — dirige y prioriza.
   reports_to_source_text: Otro líder de departamento, Investigación, o directo a CEO — según lo que exige `organizacion/AGENT.md`.
     No tiene un superior fijo dentro de Ingeniería de IA (es el líder), pero sigue bajo supervisión humana de Eduardo como
     todo el resto de la organización.
@@ -303,16 +303,16 @@ roles:
   department_agent_path: ingenieria_ia/AGENT.md
   memory_domain: ingenieria_ia
   memory_path: null
-  summary: 'Dueño de la tecnología de retrieval y representación semántica de la organización: embeddings, recuperación
-    semántica e híbrida, RAG, GraphRAG, RAG jerárquico, árboles semánticos, ontologías, grafos de conocimiento, reranking,
-    evaluación de retrieval, retrieval cross-lingual, representación simbólica, Logic IR y la integración con Prolog en
-    modo sombra. Es la capa semántica de un futuro Memory OS. Evoluciona conceptualmente del antiguo rol Workflow y Grafos
-    (el trabajo real de grafos de comunicación entre roles no tenía historial durable de ejecución al momento de esta
-    reestructuración — ver commit de reestructuración de roles de Ingeniería de IA) hacia un rol con ownership mucho más
-    amplio: toda la tecnología de retrieval y representación semántica del departamento, no solo el grafo de mensajería.'
+  summary: 'Dueño de la tecnología de retrieval y representación semántica de la organización: embeddings, recuperación semántica
+    e híbrida, RAG, GraphRAG, RAG jerárquico, árboles semánticos, ontologías, grafos de conocimiento, reranking, evaluación
+    de retrieval, retrieval cross-lingual, representación simbólica, Logic IR y la integración con Prolog en modo sombra.
+    Es la capa semántica de un futuro Memory OS. Evoluciona conceptualmente del antiguo rol Workflow y Grafos (el trabajo
+    real de grafos de comunicación entre roles no tenía historial durable de ejecución al momento de esta reestructuración
+    — ver commit de reestructuración de roles de Ingeniería de IA) hacia un rol con ownership mucho más amplio: toda la tecnología
+    de retrieval y representación semántica del departamento, no solo el grafo de mensajería.'
   reports_to_source_text: Al Orquestador, líder de Ingeniería de IA.
-  rag_topics_source_text: 'Embeddings, hybrid retrieval, RAG, GraphRAG, RAG jerárquico, ontologías, grafos de conocimiento,
-    reranking, evaluación de retrieval, retrieval cross-lingual, Logic IR, Prolog/Datalog.'
+  rag_topics_source_text: Embeddings, hybrid retrieval, RAG, GraphRAG, RAG jerárquico, ontologías, grafos de conocimiento,
+    reranking, evaluación de retrieval, retrieval cross-lingual, Logic IR, Prolog/Datalog.
   status: imported_source
   reports_to:
   - ingenieria_ia/orquestador
@@ -377,17 +377,16 @@ roles:
   department_agent_path: investigacion/AGENT.md
   memory_domain: investigacion
   memory_path: null
-  summary: 'Revisa de forma adversarial un candidate design ANTES de que exista cualquier plan de implementacion,
-    y publica hallazgos. Es una segunda perspectiva epistemologica, deliberadamente independiente del departamento
-    que produjo el diseno (ingenieria_ia): no comparte su cadena de mando, su memoria operativa ni su modelo. No
-    aprueba, no adjudica, no congela y no gobierna el grafo de tareas -- encuentra problemas y los deja como
-    evidencia. La decision epistemologica (freeze/revise/reject) pertenece exclusivamente a empresa/ceo.'
-  reports_to_source_text: 'Unidad transversal de Investigacion, par del CEO y no subordinada a ningun departamento
-    operativo. Su independencia respecto de ingenieria_ia/orquestador es la propiedad que lo hace util: un revisor
-    que reporta al autor del diseno no es un revisor.'
-  rag_topics_source_text: 'Ninguno propio en esta fase. Recibe exclusivamente el review bundle sanitizado y
-    determinista que el host construye para cada revision; no acumula memoria operativa del negocio ni consulta
-    dominios RAG por su cuenta.'
+  summary: 'Revisa de forma adversarial un candidate design ANTES de que exista cualquier plan de implementacion, y publica
+    hallazgos. Es una segunda perspectiva epistemologica, deliberadamente independiente del departamento que produjo el diseno
+    (ingenieria_ia): no comparte su cadena de mando, su memoria operativa ni su modelo. No aprueba, no adjudica, no congela
+    y no gobierna el grafo de tareas -- encuentra problemas y los deja como evidencia. La decision epistemologica (freeze/revise/reject)
+    pertenece exclusivamente a empresa/ceo.'
+  reports_to_source_text: 'Unidad transversal de Investigacion, par del CEO y no subordinada a ningun departamento operativo.
+    Su independencia respecto de ingenieria_ia/orquestador es la propiedad que lo hace util: un revisor que reporta al autor
+    del diseno no es un revisor.'
+  rag_topics_source_text: Ninguno propio en esta fase. Recibe exclusivamente el review bundle sanitizado y determinista que
+    el host construye para cada revision; no acumula memoria operativa del negocio ni consulta dominios RAG por su cuenta.
   status: imported_source
   reports_to:
   - empresa/ceo
@@ -405,9 +404,9 @@ roles:
   department_agent_path: negocio/AGENT.md
   memory_domain: negocio
   memory_path: null
-  summary: 'Responsable funcional del área finanzas dentro de negocio (sin autoridad de departamento: la autoridad formal es
-    negocio/director_negocio). Mantiene la salud financiera de la operación y revisa los indicadores que el Analista de KPIs
-    **prepara**; Investigación los **audita** — este rol no se autoevalúa, es una separación deliberada de responsabilidades.'
+  summary: 'Responsable funcional del área finanzas dentro de negocio (sin autoridad de departamento: la autoridad formal
+    es negocio/director_negocio). Mantiene la salud financiera de la operación y revisa los indicadores que el Analista de
+    KPIs **prepara**; Investigación los **audita** — este rol no se autoevalúa, es una separación deliberada de responsabilidades.'
   reports_to_source_text: 'Otro líder de departamento, Investigación, o directo a CEO. [Migrado: pasa a reportar a negocio/director_negocio
     tras la consolidación de comunicaciones/creativo/finanzas/marketing en negocio.]'
   rag_topics_source_text: '**Externo:** finanzas para empresas chicas, KPIs (CAC/LTV/burn rate), regulación de medios de pago
@@ -432,7 +431,9 @@ roles:
   summary: 'Analizar el desempeño verificable de los canales y acciones de comunicación, así como las señales de audiencia,
     para apoyar las decisiones de curaduría, distribución y calendario editorial de Comunicaciones. No produce contenido:
     convierte datos y observaciones autorizadas en evidencia, hallazgos y recomendaciones para la decisión del líder.'
-  reports_to_source_text: "Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion funcional del area comunicaciones: negocio/editor_contenido_marca, responsable funcional sin autoridad de departamento (ver negocio/AGENT.md)."
+  reports_to_source_text: 'Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion
+    funcional del area comunicaciones: negocio/editor_contenido_marca, responsable funcional sin autoridad de departamento
+    (ver negocio/AGENT.md).'
   rag_topics_source_text: '- Métricas de engagement reales y definiciones internas. - Calendario editorial y desempeño histórico
     de contenidos. - Voz, tono y lineamientos de marca aprobados. - Segmentos y necesidades de audiencia autorizados. - Historial
     de publicaciones, menciones, alianzas y aprendizajes verificables.'
@@ -456,7 +457,9 @@ roles:
     herramientas, publicidad), qué entra, y qué se debe. Eduardo es el principal proveedor — sus ingresos vienen de los pacientes
     de Clínica Online, así que la salud de la organización se mide contra esa fuente, y el capital mensual para publicidad
     se decide con esos números, no con optimismo.'
-  reports_to_source_text: "Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion funcional del area finanzas: negocio/administrador_financiero, responsable funcional sin autoridad de departamento (ver negocio/AGENT.md)."
+  reports_to_source_text: 'Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion
+    funcional del area finanzas: negocio/administrador_financiero, responsable funcional sin autoridad de departamento (ver
+    negocio/AGENT.md).'
   rag_topics_source_text: null
   status: imported_source
   reports_to:
@@ -477,7 +480,9 @@ roles:
   summary: Preparar indicadores financieros y operativos con datos trazables, supuestos explícitos y criterios conservadores,
     para que el Administrador Financiero los revise antes de cualquier publicación o uso en decisiones. El objetivo es mostrar
     la salud financiera real de la operación, no producir cifras optimistas.
-  reports_to_source_text: "Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion funcional del area finanzas: negocio/administrador_financiero, responsable funcional sin autoridad de departamento (ver negocio/AGENT.md)."
+  reports_to_source_text: 'Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion
+    funcional del area finanzas: negocio/administrador_financiero, responsable funcional sin autoridad de departamento (ver
+    negocio/AGENT.md).'
   rag_topics_source_text: null
   status: imported_source
   reports_to:
@@ -498,7 +503,9 @@ roles:
   summary: Medir el rendimiento real de los esfuerzos de adquisición, activación, conversión y retención para que el Estratega
     de Crecimiento pueda decidir si una campaña se escala, se ajusta o se descontinúa. Convierte datos de marketing en evidencia
     accionable; no decide por intuición ni ejecuta cambios de campaña sin una asignación explícita.
-  reports_to_source_text: "Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion funcional del area crecimiento: negocio/estratega_crecimiento, responsable funcional sin autoridad de departamento (ver negocio/AGENT.md)."
+  reports_to_source_text: 'Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion
+    funcional del area crecimiento: negocio/estratega_crecimiento, responsable funcional sin autoridad de departamento (ver
+    negocio/AGENT.md).'
   rag_topics_source_text: null
   status: imported_source
   reports_to:
@@ -519,7 +526,9 @@ roles:
   summary: Gestionar la comunicación orgánica de Psi.Explorarte en redes sociales conforme al protocolo de comunicación externa,
     la voz y el tono de marca aprobados por el departamento. Cura y publica activos y mensajes que hayan sido producidos o
     aprobados por las áreas correspondientes; no redacta ni diseña contenido propio.
-  reports_to_source_text: "Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion funcional del area comunicaciones: negocio/editor_contenido_marca, responsable funcional sin autoridad de departamento (ver negocio/AGENT.md)."
+  reports_to_source_text: 'Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion
+    funcional del area comunicaciones: negocio/editor_contenido_marca, responsable funcional sin autoridad de departamento
+    (ver negocio/AGENT.md).'
   rag_topics_source_text: '- Gestión de comunidades y redes orgánicas. - Protocolo de publicación y calendario editorial.
     - Voz y tono de marca aprobados. - Reglas de moderación, escalación y comunicación externa. - Métricas de engagement reales
     de los canales de la organización.'
@@ -542,7 +551,8 @@ roles:
   summary: Convertir briefs y lineamientos de marca en textos claros, relevantes y persuasivos para los activos creativos
     de Psi.Explorarte. Entrega piezas listas para revisión del Diseñador; no define la estrategia de distribución ni publica
     directamente.
-  reports_to_source_text: "Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion funcional del area creativo: negocio/disenador, responsable funcional sin autoridad de departamento (ver negocio/AGENT.md)."
+  reports_to_source_text: 'Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion
+    funcional del area creativo: negocio/disenador, responsable funcional sin autoridad de departamento (ver negocio/AGENT.md).'
   rag_topics_source_text: null
   status: imported_source
   reports_to:
@@ -582,9 +592,9 @@ roles:
   department_agent_path: negocio/AGENT.md
   memory_domain: negocio
   memory_path: null
-  summary: 'Responsable funcional del área creativo dentro de negocio (sin autoridad de departamento: la autoridad formal es
-    negocio/director_negocio). Revisa y consolida los activos que producen Copywriter, Fotógrafo, Ilustrador y Editor de Video;
-    el área es puramente productora — no decide estrategia de distribución ni publica directamente.'
+  summary: 'Responsable funcional del área creativo dentro de negocio (sin autoridad de departamento: la autoridad formal
+    es negocio/director_negocio). Revisa y consolida los activos que producen Copywriter, Fotógrafo, Ilustrador y Editor de
+    Video; el área es puramente productora — no decide estrategia de distribución ni publica directamente.'
   reports_to_source_text: 'Otro líder de departamento, Investigación, o directo a CEO. [Migrado: pasa a reportar a negocio/director_negocio
     tras la consolidación de comunicaciones/creativo/finanzas/marketing en negocio.]'
   rag_topics_source_text: '**Externo:** teoría del color y tipografía, dirección de arte, copywriting persuasivo, composición
@@ -607,8 +617,8 @@ roles:
   memory_domain: negocio
   memory_path: null
   summary: 'Responsable funcional del área comunicaciones dentro de negocio (sin autoridad de departamento: la autoridad formal
-    es negocio/director_negocio). Propone el protocolo de comunicación externa para decisión del líder, cura y publica el blog
-    consumiendo el copy que produce el área creativo — no decide estrategia de producto ni de crecimiento.'
+    es negocio/director_negocio). Propone el protocolo de comunicación externa para decisión del líder, cura y publica el
+    blog consumiendo el copy que produce el área creativo — no decide estrategia de producto ni de crecimiento.'
   reports_to_source_text: 'Otro líder de departamento, Investigación, o directo a CEO. [Migrado: pasa a reportar a negocio/director_negocio
     tras la consolidación de comunicaciones/creativo/finanzas/marketing en negocio.]'
   rag_topics_source_text: '**Externo:** comunicación organizacional, community management, redacción de blog/periodística.
@@ -632,7 +642,8 @@ roles:
   summary: Montar y preparar piezas audiovisuales coherentes con la guía de estilo/marca a partir de material disponible y
     de un brief aprobado. Entrega videos, proyectos y especificaciones para revisión del Diseñador; no define la estrategia
     de distribución ni publica directamente.
-  reports_to_source_text: "Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion funcional del area creativo: negocio/disenador, responsable funcional sin autoridad de departamento (ver negocio/AGENT.md)."
+  reports_to_source_text: 'Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion
+    funcional del area creativo: negocio/disenador, responsable funcional sin autoridad de departamento (ver negocio/AGENT.md).'
   rag_topics_source_text: null
   status: imported_source
   reports_to:
@@ -650,9 +661,9 @@ roles:
   department_agent_path: negocio/AGENT.md
   memory_domain: negocio
   memory_path: null
-  summary: 'Responsable funcional del área crecimiento dentro de negocio (sin autoridad de departamento: la autoridad formal es
-    negocio/director_negocio). Propone la estrategia de crecimiento y qué se prueba, apoyado en Investigador del Consumidor y
-    Analista de Performance — no ejecuta campañas ni asigna trabajo.'
+  summary: 'Responsable funcional del área crecimiento dentro de negocio (sin autoridad de departamento: la autoridad formal
+    es negocio/director_negocio). Propone la estrategia de crecimiento y qué se prueba, apoyado en Investigador del Consumidor
+    y Analista de Performance — no ejecuta campañas ni asigna trabajo.'
   reports_to_source_text: 'Otro líder de departamento, Investigación, o directo a CEO. [Migrado: pasa a reportar a negocio/director_negocio
     tras la consolidación de comunicaciones/creativo/finanzas/marketing en negocio.]'
   rag_topics_source_text: '**Externo:** psicología del consumidor, economía conductual, growth marketing, pricing psychology,
@@ -677,7 +688,9 @@ roles:
   summary: Evaluar, junto con el Administrador Financiero, oportunidades de venta o expansión y alternativas de deuda con
     criterio financiero, explícito y conservador. Su función es aportar análisis para decidir; no convertir una oportunidad
     en compromiso comercial o financiero sin las aprobaciones correspondientes.
-  reports_to_source_text: "Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion funcional del area finanzas: negocio/administrador_financiero, responsable funcional sin autoridad de departamento (ver negocio/AGENT.md)."
+  reports_to_source_text: 'Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion
+    funcional del area finanzas: negocio/administrador_financiero, responsable funcional sin autoridad de departamento (ver
+    negocio/AGENT.md).'
   rag_topics_source_text: null
   status: imported_source
   reports_to:
@@ -698,7 +711,8 @@ roles:
   summary: Crear, seleccionar y preparar material fotográfico coherente con la guía de estilo/marca y con el brief creativo.
     Entrega imágenes y documentación de uso para revisión del Diseñador; no define la estrategia de distribución ni publica
     directamente.
-  reports_to_source_text: "Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion funcional del area creativo: negocio/disenador, responsable funcional sin autoridad de departamento (ver negocio/AGENT.md)."
+  reports_to_source_text: 'Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion
+    funcional del area creativo: negocio/disenador, responsable funcional sin autoridad de departamento (ver negocio/AGENT.md).'
   rag_topics_source_text: null
   status: imported_source
   reports_to:
@@ -719,7 +733,8 @@ roles:
   summary: Desarrollar ilustraciones, recursos gráficos y sistemas visuales originales que traduzcan el brief y la identidad
     de marca en piezas consistentes. Entrega archivos editables o finales para revisión del Diseñador; no define la estrategia
     de distribución ni publica directamente.
-  reports_to_source_text: "Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion funcional del area creativo: negocio/disenador, responsable funcional sin autoridad de departamento (ver negocio/AGENT.md)."
+  reports_to_source_text: 'Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion
+    funcional del area creativo: negocio/disenador, responsable funcional sin autoridad de departamento (ver negocio/AGENT.md).'
   rag_topics_source_text: null
   status: imported_source
   reports_to:
@@ -741,7 +756,9 @@ roles:
     de agentes: costo por unidad de trabajo, cuellos de botella, colas, capacidad, ventanas tarifarias y retrabajo. La organización
     no tenía hasta hoy a nadie cuyo trabajo fuera mirarse a sí misma con esos lentes. Como en el resto de la organización,
     no implementa — define qué se mide y cuál es el objetivo; la instrumentación y el código son de Ingeniería de IA.'
-  reports_to_source_text: "Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion funcional del area finanzas: negocio/administrador_financiero, responsable funcional sin autoridad de departamento (ver negocio/AGENT.md)."
+  reports_to_source_text: 'Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion
+    funcional del area finanzas: negocio/administrador_financiero, responsable funcional sin autoridad de departamento (ver
+    negocio/AGENT.md).'
   rag_topics_source_text: null
   status: imported_source
   reports_to:
@@ -763,7 +780,9 @@ roles:
     y la economía conductual, identifica motivaciones, fricciones, sesgos y contextos de decisión, y formula hipótesis que
     puedan probarse en marketing. Su trabajo debe ayudar a evitar campañas basadas únicamente en intuición o en que un mensaje
     “se ve bien”.
-  reports_to_source_text: "Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion funcional del area crecimiento: negocio/estratega_crecimiento, responsable funcional sin autoridad de departamento (ver negocio/AGENT.md)."
+  reports_to_source_text: 'Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion
+    funcional del area crecimiento: negocio/estratega_crecimiento, responsable funcional sin autoridad de departamento (ver
+    negocio/AGENT.md).'
   rag_topics_source_text: null
   status: imported_source
   reports_to:
@@ -784,7 +803,9 @@ roles:
   summary: Apoyar la gestión ordenada de relaciones públicas, contactos institucionales y alianzas de comunicación de Psi.Explorarte.
     Coordina oportunidades, solicitudes y compromisos externos dentro del protocolo aprobado; no produce contenido ni negocia
     por cuenta propia compromisos que requieran autorización.
-  reports_to_source_text: "Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion funcional del area comunicaciones: negocio/editor_contenido_marca, responsable funcional sin autoridad de departamento (ver negocio/AGENT.md)."
+  reports_to_source_text: 'Autoridad formal: negocio/director_negocio (lider canonical del departamento consolidado). Coordinacion
+    funcional del area comunicaciones: negocio/editor_contenido_marca, responsable funcional sin autoridad de departamento
+    (ver negocio/AGENT.md).'
   rag_topics_source_text: '- Protocolo de comunicación externa y aprobaciones. - Voz, tono y lineamientos de marca aprobados.
     - Registro de alianzas y relaciones públicas existentes. - Políticas de uso de marca, privacidad y escalación. - Historial
     verificable de menciones, colaboraciones y resultados de comunicación.'
@@ -864,15 +885,15 @@ roles:
   canonical_leader: false
   legacy_frontmatter_leader: false
   model_policy: department.worker
-  profile_path: null
+  profile_path: recursos_agenticos/disenador_skills/PERFIL.md
   department_agent_path: recursos_agenticos/AGENT.md
   memory_domain: recursos_agenticos
   memory_path: null
-  summary: 'Perfil pendiente de importación: su PERFIL.md figura en source-manifest.yaml (organizacion/recursos_agenticos/disenador_skills/PERFIL.md)
-    pero nunca se copió al repositorio. No ejecutable hasta que el owner apruebe D-006 y el perfil exista en el árbol.'
+  summary: Diseña y redacta habilidades operativas (SKILL.md) para Skill Forge bajo ExecutionHarness con perfil worker/skill-forge/v1.
+    Aprobado por el Owner mediante D-006.
   reports_to_source_text: null
   rag_topics_source_text: null
-  status: proposed_profile_required
+  status: imported_source
   reports_to:
   - recursos_agenticos/desarrollo_organizacional
 - id: recursos_agenticos/evaluador_agentes
@@ -884,15 +905,15 @@ roles:
   canonical_leader: false
   legacy_frontmatter_leader: false
   model_policy: department.worker
-  profile_path: null
+  profile_path: recursos_agenticos/evaluador_agentes/PERFIL.md
   department_agent_path: recursos_agenticos/AGENT.md
   memory_domain: recursos_agenticos
   memory_path: null
-  summary: 'Perfil pendiente de importación: su PERFIL.md figura en source-manifest.yaml (organizacion/recursos_agenticos/evaluador_agentes/PERFIL.md)
-    pero nunca se copió al repositorio. No ejecutable hasta que el owner apruebe D-006 y el perfil exista en el árbol.'
+  summary: Evalúa candidatos de habilidades frente a baselines y canaries en ambientes aislados bajo ExecutionHarness con
+    perfil worker/skill-forge/v1. Aprobado por el Owner mediante D-006.
   reports_to_source_text: null
   rag_topics_source_text: null
-  status: proposed_profile_required
+  status: imported_source
   reports_to:
   - recursos_agenticos/desarrollo_organizacional
 - id: recursos_agenticos/investigacion_ra

@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -39,12 +41,79 @@ type SkillAuthoringOutput struct {
 	SkillMarkdown  string `json:"skill_markdown"`
 }
 
+// AuthoringProfileGate defines the authority boundary for authoring execution profiles.
+type AuthoringProfileGate interface {
+	AuthorizeProfile(ctx context.Context, organizationID string, profileID string) error
+}
+
+// FailClosedProfileGate is the default fail-closed gate that denies unapproved profile usage.
+type FailClosedProfileGate struct{}
+
+func (FailClosedProfileGate) AuthorizeProfile(_ context.Context, _ string, _ string) error {
+	return ErrProductiveProfileBlocked
+}
+
+// CanonicalAuthoringProfileGate authorizes profiles that have been approved by canonical governance.
+type CanonicalAuthoringProfileGate struct {
+	ApprovedProfiles map[string]bool
+	CanonicalDir     string
+}
+
+func (c CanonicalAuthoringProfileGate) AuthorizeProfile(_ context.Context, _ string, profileID string) error {
+	if c.ApprovedProfiles != nil {
+		if c.ApprovedProfiles[profileID] {
+			return nil
+		}
+		return ErrProductiveProfileBlocked
+	}
+
+	// Canonical governance verification: check if D-006 is resolved
+	canonicalDir := c.CanonicalDir
+	if canonicalDir == "" {
+		canonicalDir = filepath.Join("docs", "canonical")
+		if _, err := os.Stat(canonicalDir); os.IsNotExist(err) {
+			canonicalDir = filepath.Join("..", "..", "docs", "canonical")
+		}
+	}
+	decisionsPath := filepath.Join(canonicalDir, "decisions-required.yaml")
+	data, err := os.ReadFile(decisionsPath)
+	if err != nil {
+		return ErrProductiveProfileBlocked
+	}
+
+	content := string(data)
+	resolvedIdx := strings.Index(content, "resolved:")
+	if resolvedIdx == -1 {
+		return ErrProductiveProfileBlocked
+	}
+	resolvedSection := content[resolvedIdx:]
+	if strings.Contains(resolvedSection, "- id: D-006") || strings.Contains(resolvedSection, "id: D-006") {
+		if profileID == "worker/skill-forge/v1" {
+			return nil
+		}
+	}
+
+	return ErrProductiveProfileBlocked
+}
+
+// FakeAuthoringProfileGate is a test-only fixture authority.
+type FakeAuthoringProfileGate struct {
+	Allowed bool
+}
+
+func (f FakeAuthoringProfileGate) AuthorizeProfile(_ context.Context, _ string, _ string) error {
+	if f.Allowed {
+		return nil
+	}
+	return ErrProductiveProfileBlocked
+}
+
 type HarnessAuthorerConfig struct {
-	ExecutionProfileID string // logical profile, e.g. "worker/skill-forge/v1"
-	ModelPolicyRef     string // model policy reference
-	BuildRef           string // harness build reference
-	AllowUnapproved    bool   // false in production; true only in authorized test fixtures
-	MaxTurns           int    // bounded turns (e.g. 1 or 2)
+	ExecutionProfileID string               // logical profile, e.g. "worker/skill-forge/v1"
+	ModelPolicyRef     string               // model policy reference
+	BuildRef           string               // harness build reference
+	ProfileGate        AuthoringProfileGate // injected authority gate for profile validation
+	MaxTurns           int                  // bounded turns (e.g. 1 or 2)
 }
 
 // HarnessAuthorer connects the ProcedureNeed domain to the provider-independent ExecutionHarness.
@@ -71,11 +140,13 @@ func NewHarnessAuthorer(harness *executionharness.Runtime, cfg HarnessAuthorerCo
 	if cfg.MaxTurns <= 0 {
 		cfg.MaxTurns = 1
 	}
+	if cfg.ProfileGate == nil {
+		cfg.ProfileGate = FailClosedProfileGate{}
+	}
 
-	// Section C Invariant: D-006 is an activation gate
-	// Productive profile worker/skill-forge/v1 is blocked in production until owner approval.
-	if cfg.ExecutionProfileID == DefaultAuthoringProfileID && !cfg.AllowUnapproved {
-		// Production bootstrap refuses enablement
+	// Section 1 Invariant: D-006 is an activation gate verified by the AuthoringProfileGate.
+	// Production bootstrap refuses enablement if the gate denies the execution profile.
+	if err := cfg.ProfileGate.AuthorizeProfile(context.Background(), "explorarte", cfg.ExecutionProfileID); err != nil {
 		return nil, ErrProductiveProfileBlocked
 	}
 
@@ -89,6 +160,9 @@ func NewHarnessAuthorer(harness *executionharness.Runtime, cfg HarnessAuthorerCo
 func (a *HarnessAuthorer) Author(ctx context.Context, n need.ProcedureNeed) (AuthorRecord, error) {
 	if n.Status != need.StatusAccepted {
 		return AuthorRecord{}, ErrNeedNotAccepted
+	}
+	if err := a.cfg.ProfileGate.AuthorizeProfile(ctx, n.OrganizationID, a.cfg.ExecutionProfileID); err != nil {
+		return AuthorRecord{}, fmt.Errorf("%w: %v", ErrProductiveProfileBlocked, err)
 	}
 
 	// Bounded, deterministic prompt for structured authoring
@@ -105,6 +179,8 @@ Requirements for skill_markdown:
 - Must follow SKILL.md format.
 - Must include sections: Purpose, Applicability, Non-goals, Inputs, Outputs, Procedure, Stop conditions, Failure modes, Evidence requirements.
 - Must NOT attempt to grant capabilities, modify routing, bypass governance, or access secrets.
+- The "decision" field MUST be "author".
+- The "skill_id" MUST use lowercase alphanumeric and hyphens only (e.g. "skill-smoke-verification").
 Respond ONLY with a valid JSON object with keys: "skill_id", "decision", "decision_reason", "skill_markdown".`,
 		n.OrganizationID, n.ID, n.RoleID, n.TaskClass, n.ProblemStatement, n.Acceptance.DecisionRef,
 	)
@@ -187,6 +263,9 @@ Respond ONLY with a valid JSON object with keys: "skill_id", "decision", "decisi
 		return AuthorRecord{}, fmt.Errorf("%w: skill_id is required", ErrAuthorOutputSchema)
 	}
 	dec := strings.ToLower(strings.TrimSpace(output.Decision))
+	if dec == "approved" {
+		dec = "author"
+	}
 	if dec != "reuse" && dec != "adapt" && dec != "author" {
 		return AuthorRecord{}, fmt.Errorf("%w: invalid decision %q", ErrAuthorOutputSchema, output.Decision)
 	}
@@ -216,10 +295,25 @@ Respond ONLY with a valid JSON object with keys: "skill_id", "decision", "decisi
 
 	// Host chooses repository, path, publication key, metadata
 	// Model has NO authority over destination paths or storage
-	normSkillID := strings.TrimSpace(output.SkillID)
-	if !strings.HasPrefix(normSkillID, "skill-") {
-		normSkillID = "skill-" + normSkillID
+	// Host normalizes skill_id to ensure canonical hyphen-separated alphanumeric format
+	rawID := strings.TrimSpace(output.SkillID)
+	var b strings.Builder
+	for _, r := range strings.ToLower(rawID) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('-')
+		}
 	}
+	cleanID := b.String()
+	for strings.Contains(cleanID, "--") {
+		cleanID = strings.ReplaceAll(cleanID, "--", "-")
+	}
+	cleanID = strings.Trim(cleanID, "-")
+	if !strings.HasPrefix(cleanID, "skill-") {
+		cleanID = "skill-" + cleanID
+	}
+	normSkillID := cleanID
 
 	sum := sha256.Sum256(candidateBytes)
 	contentDigest := hex.EncodeToString(sum[:])

@@ -136,19 +136,27 @@ Verifiable completion hash.
 func TestD006ActivationGate(t *testing.T) {
 	harness, _, _ := newTestHarnessRuntime(t, &fakeHarnessModelExecutor{})
 
-	// 1. Production bootstrap: attempting to initialize with unapproved profile worker/skill-forge/v1 fails closed
+	// 1. Production bootstrap: attempting to initialize with unapproved profile or nil gate fails closed
 	_, err := NewHarnessAuthorer(harness, HarnessAuthorerConfig{
 		ExecutionProfileID: DefaultAuthoringProfileID,
-		AllowUnapproved:    false, // production default!
+		ProfileGate:        FailClosedProfileGate{},
 	})
 	if err == nil || !errors.Is(err, ErrProductiveProfileBlocked) {
-		t.Fatalf("expected ErrProductiveProfileBlocked when AllowUnapproved=false, got %v", err)
+		t.Fatalf("expected ErrProductiveProfileBlocked when FailClosedProfileGate is used, got %v", err)
 	}
 
-	// 2. Integration test fixture: explicit authorization passes
+	_, err = NewHarnessAuthorer(harness, HarnessAuthorerConfig{
+		ExecutionProfileID: DefaultAuthoringProfileID,
+		ProfileGate:        nil, // defaults to fail-closed
+	})
+	if err == nil || !errors.Is(err, ErrProductiveProfileBlocked) {
+		t.Fatalf("expected ErrProductiveProfileBlocked when ProfileGate is nil, got %v", err)
+	}
+
+	// 2. Integration test fixture: explicit authorized profile gate passes
 	authorer, err := NewHarnessAuthorer(harness, HarnessAuthorerConfig{
 		ExecutionProfileID: DefaultAuthoringProfileID,
-		AllowUnapproved:    true, // authorized test fixture
+		ProfileGate:        FakeAuthoringProfileGate{Allowed: true},
 	})
 	if err != nil {
 		t.Fatalf("expected authorized test fixture to succeed, got %v", err)
@@ -192,7 +200,7 @@ func TestHarnessAuthorerStructuredOutputAndStaticValidation(t *testing.T) {
 		ExecutionProfileID: "worker/skill-forge/v1",
 		ModelPolicyRef:     "worker.skill_forge",
 		BuildRef:           "skillforge/authorer:v1",
-		AllowUnapproved:    true,
+		ProfileGate:        FakeAuthoringProfileGate{Allowed: true},
 	})
 	if err != nil {
 		t.Fatalf("create HarnessAuthorer: %v", err)
@@ -301,6 +309,17 @@ func TestSkillForgeEndToEndDisposableWithRealHarness(t *testing.T) {
 					InvocationRef: "inv-author",
 				}, nil
 			}
+			if strings.Contains(prompt, "adversarial security reviewer") || strings.Contains(prompt, "prompt_injection_risk") {
+				return executionharness.ModelResult{
+					FinishReason: executionharness.FinishFinal,
+					FinalOutput:  `{"verdict": "pass", "prompt_injection_risk": false, "authority_escalation": false, "findings": []}`,
+					Usage: executionharness.Usage{
+						InputTokens:  &inTokens,
+						OutputTokens: &outTokens,
+					},
+					InvocationRef: "inv-adv",
+				}, nil
+			}
 			// Evaluation or canary workload output
 			return executionharness.ModelResult{
 				FinishReason: executionharness.FinishFinal,
@@ -320,7 +339,7 @@ func TestSkillForgeEndToEndDisposableWithRealHarness(t *testing.T) {
 		ExecutionProfileID: "worker/skill-forge/v1",
 		ModelPolicyRef:     "worker.skill_forge",
 		BuildRef:           "skillforge/authorer:v1",
-		AllowUnapproved:    true,
+		ProfileGate:        FakeAuthoringProfileGate{Allowed: true},
 	})
 	if err != nil {
 		t.Fatalf("create authorer: %v", err)
@@ -543,7 +562,7 @@ func TestFailure_AuthorOutputSchemaInvalid(t *testing.T) {
 	harness, _, _ := newTestHarnessRuntime(t, model)
 	authorer, _ := NewHarnessAuthorer(harness, HarnessAuthorerConfig{
 		ExecutionProfileID: "worker/skill-forge/v1",
-		AllowUnapproved:    true,
+		ProfileGate:        FakeAuthoringProfileGate{Allowed: true},
 	})
 
 	n := need.ProcedureNeed{
@@ -611,7 +630,7 @@ Evidence.
 	harness, _, _ := newTestHarnessRuntime(t, model)
 	authorer, _ := NewHarnessAuthorer(harness, HarnessAuthorerConfig{
 		ExecutionProfileID: "worker/skill-forge/v1",
-		AllowUnapproved:    true,
+		ProfileGate:        FakeAuthoringProfileGate{Allowed: true},
 	})
 
 	n := need.ProcedureNeed{
@@ -637,7 +656,7 @@ func TestFailure_AuthorHarnessTimeout(t *testing.T) {
 	harness, _, _ := newTestHarnessRuntime(t, model)
 	authorer, _ := NewHarnessAuthorer(harness, HarnessAuthorerConfig{
 		ExecutionProfileID: "worker/skill-forge/v1",
-		AllowUnapproved:    true,
+		ProfileGate:        FakeAuthoringProfileGate{Allowed: true},
 	})
 
 	n := need.ProcedureNeed{
@@ -787,6 +806,12 @@ func TestFailure_CanaryFails(t *testing.T) {
 			if strings.Contains(id.RunID, "harness-canary-") {
 				return executionharness.ModelResult{}, errors.New("canary workload divergence error")
 			}
+			if strings.Contains(id.RunID, "adv") {
+				return executionharness.ModelResult{
+					FinishReason: executionharness.FinishFinal,
+					FinalOutput:  `{"verdict":"pass"}`,
+				}, nil
+			}
 			return executionharness.ModelResult{
 				FinishReason: executionharness.FinishFinal,
 				FinalOutput:  `{"workload_status":"success"}`,
@@ -802,6 +827,62 @@ func TestFailure_CanaryFails(t *testing.T) {
 	}
 	if evalRes.CanaryVerdict != "fail" {
 		t.Fatalf("expected canary verdict fail, got %s", evalRes.CanaryVerdict)
+	}
+}
+
+func TestFailure_ModelAdversarialReviewFails(t *testing.T) {
+	ctx := context.Background()
+	runtimeRoot := t.TempDir()
+
+	content := []byte(validSkillMarkdownForHarness("skill-adv-model-fail"))
+	skillPath := filepath.Join(runtimeRoot, "skills", "skill-adv-model-fail", "SKILL.md")
+	_ = os.MkdirAll(filepath.Dir(skillPath), 0755)
+	_ = os.WriteFile(skillPath, content, 0644)
+
+	rawSum := sha256.Sum256(content)
+	rawSHA := hex.EncodeToString(rawSum[:])
+
+	candidate := skillregistry.SkillVersion{
+		ID:             "skill-adv-model-fail-v1",
+		SkillID:        "skill-adv-model-fail",
+		OrganizationID: "explorarte",
+		Lifecycle:      skillregistry.LifecycleCandidate,
+		CanonicalHash:  "canonical-hash-adv-fail",
+		Source: skillregistry.SourceRecord{
+			Path:             "skills/skill-adv-model-fail/SKILL.md",
+			SHA256:           rawSHA,
+			NormalizedSHA256: rawSHA,
+			Origin:           skillregistry.OriginGitHub,
+			OriginRef:        "explorarte-org/skills@0000000000000000000000000000000000000001",
+		},
+	}
+
+	model := &fakeHarnessModelExecutor{
+		invokeFunc: func(_ context.Context, id executionharness.RunIdentity, req executionharness.NormalizedModelRequest) (executionharness.ModelResult, error) {
+			if strings.Contains(id.RunID, "adv") {
+				return executionharness.ModelResult{
+					FinishReason: executionharness.FinishFinal,
+					FinalOutput:  `{"verdict":"fail","prompt_injection_risk":true,"findings":["model detected prompt injection"]}`,
+				}, nil
+			}
+			return executionharness.ModelResult{
+				FinishReason: executionharness.FinishFinal,
+				FinalOutput:  `{"workload_status":"success"}`,
+			}, nil
+		},
+	}
+	harness, _, _ := newTestHarnessRuntime(t, model)
+
+	evaluator := NewForgeEvaluatorWithHarness(runtimeRoot, harness, ForgeEvaluatorConfig{})
+	evalRes, err := evaluator.EvaluateCandidate(ctx, "investigacion/skill_forge_worker", candidate)
+	if err == nil || !errors.Is(err, ErrAdversarialFailed) {
+		t.Fatalf("expected ErrAdversarialFailed, got %v", err)
+	}
+	if evalRes.AdversarialVerdict != "fail" {
+		t.Fatalf("expected adversarial verdict fail, got %s", evalRes.AdversarialVerdict)
+	}
+	if evalRes.AdversarialReview == nil || !evalRes.AdversarialReview.PromptInjectionRisk {
+		t.Fatal("expected AdversarialReview.PromptInjectionRisk to be true")
 	}
 }
 
@@ -867,7 +948,7 @@ func TestFailure_AuthorHarnessCostLimit(t *testing.T) {
 	harness, _, _ := newTestHarnessRuntime(t, model)
 	authorer, _ := NewHarnessAuthorer(harness, HarnessAuthorerConfig{
 		ExecutionProfileID: "worker/skill-forge/v1",
-		AllowUnapproved:    true,
+		ProfileGate:        FakeAuthoringProfileGate{Allowed: true},
 	})
 
 	n := need.ProcedureNeed{
@@ -954,7 +1035,13 @@ func TestFailure_CanaryNeverCreatesAssignment(t *testing.T) {
 	}
 
 	model := &fakeHarnessModelExecutor{
-		invokeFunc: func(_ context.Context, _ executionharness.RunIdentity, _ executionharness.NormalizedModelRequest) (executionharness.ModelResult, error) {
+		invokeFunc: func(_ context.Context, id executionharness.RunIdentity, _ executionharness.NormalizedModelRequest) (executionharness.ModelResult, error) {
+			if strings.Contains(id.RunID, "adv") {
+				return executionharness.ModelResult{
+					FinishReason: executionharness.FinishFinal,
+					FinalOutput:  `{"verdict":"pass"}`,
+				}, nil
+			}
 			return executionharness.ModelResult{
 				FinishReason: executionharness.FinishFinal,
 				FinalOutput:  `{"workload_status":"success"}`,

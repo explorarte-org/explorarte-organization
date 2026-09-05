@@ -1,12 +1,12 @@
 branch: docs/00-canonical-spec
 status: requires_owner_approval_before_branch_01
 accepted_from_owner:
-- Four operational departments after the negocio consolidation (comunicaciones, creativo, finanzas and marketing merged
-  into negocio); see organization.yaml.
+- Four operational departments after the negocio consolidation (comunicaciones, creativo, finanzas and marketing merged into
+  negocio); see organization.yaml.
 - Empresa and Investigación are transversal units.
 - Research is leaderless.
-- Provider and model selection is decided exclusively in model-routing.yaml (one source_of_decision per policy); this
-  file no longer restates provider or model names.
+- Provider and model selection is decided exclusively in model-routing.yaml (one source_of_decision per policy); this file
+  no longer restates provider or model names.
 - Cells run independently from the organization.
 - The kernel is primarily Go and uses goroutines for concurrency, not durability.
 open:
@@ -19,30 +19,34 @@ open:
 - id: D-004
   question: Choose one repository with two deployment targets or two repositories.
   blocks: repository governance, not branch 01 bootstrap
-- id: D-006
-  question: 'Approve the proposed profiles: empresa/ceo_observer, ingenieria_ia/razonamiento_logico and the five
-    recursos_agenticos workers (curador_catalogo, disenador_perfiles, disenador_skills, evaluador_agentes,
-    investigacion_ra) whose PERFIL.md are listed in source-manifest.yaml but were never imported into the repository.
-    investigacion/research_worker_hourly is already imported, routed (research.worker) and scheduled hourly without a
-    recorded approval: confirm or revoke that state explicitly.'
-  blocks: organization registry activation
 resolved:
 - id: D-001
   question: 'Confirm observer model: Qwen 3.6 Flash or another model.'
-  decision: 'Superseded. Qwen/Alibaba was retired by the owner; the observer follows model-routing.yaml policy
-    executive.observer (provisional_same_api_family_as_ceo). Behavioural confirmation of the observer itself stays
-    tracked as decision_status: owner_confirmation_required in organization.yaml and model-routing.yaml.'
+  decision: 'Superseded. Qwen/Alibaba was retired by the owner; the observer follows model-routing.yaml policy executive.observer
+    (provisional_same_api_family_as_ceo). Behavioural confirmation of the observer itself stays tracked as decision_status:
+    owner_confirmation_required in organization.yaml and model-routing.yaml.'
   decided_in: docs/canonical/model-routing.yaml
 - id: D-005
   question: Confirm the exact provider/API identity behind gpt-5.6-luna.
-  decision: 'Resolved by model-routing.yaml policy executive.ceo: provider openai_responses, model gpt-5.6-luna,
-    transport http_adapter (source_of_decision: owner_conversation).'
+  decision: 'Resolved by model-routing.yaml policy executive.ceo: provider openai_responses, model gpt-5.6-luna, transport
+    http_adapter (source_of_decision: owner_conversation).'
   decided_in: docs/canonical/model-routing.yaml
 - id: D-007
-  question: 'Choose production logic implementation after shadow phase: embedded Go Datalog subset, external Prolog,
-    or hybrid.'
+  question: 'Choose production logic implementation after shadow phase: embedded Go Datalog subset, external Prolog, or hybrid.'
   decision: 'Arquitectura híbrida: Go es autoritativo; una representación intermedia tipada se compila hacia Prolog/Datalog
-    aislado en shadow. Ninguna divergencia cambia decisiones productivas hasta superar paridad, auditoría y promoción
-    explícita.'
+    aislado en shadow. Ninguna divergencia cambia decisiones productivas hasta superar paridad, auditoría y promoción explícita.'
   decided_in: branch-30-canary-evaluation-bge-m3
   adr: docs/adr/ADR-0006-hybrid-logic-ir-shadow.md
+- id: D-006
+  question: 'Approve the proposed profiles: empresa/ceo_observer, ingenieria_ia/razonamiento_logico and the five recursos_agenticos
+    workers (curador_catalogo, disenador_perfiles, disenador_skills, evaluador_agentes, investigacion_ra) whose PERFIL.md
+    are listed in source-manifest.yaml but were never imported into the repository. investigacion/research_worker_hourly is
+    already imported, routed (research.worker) and scheduled hourly without a recorded approval: confirm or revoke that state
+    explicitly.'
+  decision: 'Aprobación acotada del Owner para habilitación de Skill Forge: se aprueban formalmente las capacidades y roles
+    especialistas recursos_agenticos/disenador_skills y recursos_agenticos/evaluador_agentes exclusivamente para operar los
+    pipelines gobernados de autoría estructurada y evaluación de habilidades bajo ExecutionHarness con el perfil worker/skill-forge/v1.
+    Se confirma el rol investigacion/research_worker_hourly. No se aprueba delegación cross-department, mutación de routing
+    ni canonical, acceso a secretos, activación automática de skills ni asignación productiva de habilidades sin adjudicación
+    humana explícita.'
+  decided_in: docs/canonical/decisions-required.yaml
