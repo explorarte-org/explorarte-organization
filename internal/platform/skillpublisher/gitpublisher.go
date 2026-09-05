@@ -1,4 +1,4 @@
-package source
+package skillpublisher
 
 import (
 	"context"
@@ -11,11 +11,12 @@ import (
 	"strings"
 
 	"github.com/Mireuz13/explorarte-organization/internal/contextengine/document"
+	"github.com/Mireuz13/explorarte-organization/internal/skillforge/source"
 )
 
-// LocalGitPublisher is a host-owned helper that publishes skills to a disposable
-// or local git repository for testing and controlled environments.
-// It executes strictly within the specified local repo without remote push authority.
+// LocalGitPublisher is a host-owned implementation of source.SourcePublisher.
+// It executes strictly within the specified local repo without remote push authority
+// or repository credential ownership inside Skill Forge.
 type LocalGitPublisher struct {
 	RepoDir string
 	Owner   string
@@ -40,23 +41,23 @@ func NewLocalGitPublisher(repoDir, owner, repo string) (*LocalGitPublisher, erro
 	}, nil
 }
 
-func (p *LocalGitPublisher) Publish(ctx context.Context, req PublishRequest) (PublishedSource, error) {
+func (p *LocalGitPublisher) Publish(ctx context.Context, req source.PublishRequest) (source.PublishedSource, error) {
 	if strings.TrimSpace(req.SkillID) == "" {
-		return PublishedSource{}, fmt.Errorf("skill id is required")
+		return source.PublishedSource{}, fmt.Errorf("skill id is required")
 	}
 	if len(req.CandidateSourceBytes) == 0 {
-		return PublishedSource{}, fmt.Errorf("source bytes cannot be empty")
+		return source.PublishedSource{}, fmt.Errorf("source bytes cannot be empty")
 	}
 
 	rawSum := sha256.Sum256(req.CandidateSourceBytes)
 	rawSHA := hex.EncodeToString(rawSum[:])
 	if req.ExpectedContentDigest != "" && rawSHA != req.ExpectedContentDigest {
-		return PublishedSource{}, fmt.Errorf("expected digest %s, computed %s", req.ExpectedContentDigest, rawSHA)
+		return source.PublishedSource{}, fmt.Errorf("expected digest %s, computed %s", req.ExpectedContentDigest, rawSHA)
 	}
 
 	normBytes, err := document.NormalizeText(req.CandidateSourceBytes)
 	if err != nil {
-		return PublishedSource{}, fmt.Errorf("normalize candidate text: %w", err)
+		return source.PublishedSource{}, fmt.Errorf("normalize candidate text: %w", err)
 	}
 	normSum := sha256.Sum256(normBytes)
 	normSHA := hex.EncodeToString(normSum[:])
@@ -65,40 +66,40 @@ func (p *LocalGitPublisher) Publish(ctx context.Context, req PublishRequest) (Pu
 	fullPath := filepath.Join(p.RepoDir, relPath)
 
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
-		return PublishedSource{}, fmt.Errorf("create skill dir: %w", err)
+		return source.PublishedSource{}, fmt.Errorf("create skill dir: %w", err)
 	}
 	if err := os.WriteFile(fullPath, req.CandidateSourceBytes, 0644); err != nil {
-		return PublishedSource{}, fmt.Errorf("write skill file: %w", err)
+		return source.PublishedSource{}, fmt.Errorf("write skill file: %w", err)
 	}
 
 	// Git add and commit in local repo
 	addCmd := exec.CommandContext(ctx, "git", "add", relPath)
 	addCmd.Dir = p.RepoDir
 	if out, err := addCmd.CombinedOutput(); err != nil {
-		return PublishedSource{}, fmt.Errorf("git add failed: %v, output: %s", err, string(out))
+		return source.PublishedSource{}, fmt.Errorf("git add failed: %v, output: %s", err, string(out))
 	}
 
 	commitMsg := fmt.Sprintf("chore(skills): publish %s candidate", req.SkillID)
 	commitCmd := exec.CommandContext(ctx, "git", "commit", "-m", commitMsg, "--allow-empty")
 	commitCmd.Dir = p.RepoDir
 	if out, err := commitCmd.CombinedOutput(); err != nil {
-		return PublishedSource{}, fmt.Errorf("git commit failed: %v, output: %s", err, string(out))
+		return source.PublishedSource{}, fmt.Errorf("git commit failed: %v, output: %s", err, string(out))
 	}
 
 	revCmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
 	revCmd.Dir = p.RepoDir
 	out, err := revCmd.Output()
 	if err != nil {
-		return PublishedSource{}, fmt.Errorf("git rev-parse HEAD failed: %v", err)
+		return source.PublishedSource{}, fmt.Errorf("git rev-parse HEAD failed: %v", err)
 	}
 	commitSHA := strings.TrimSpace(string(out))
 	if len(commitSHA) != 40 {
-		return PublishedSource{}, fmt.Errorf("invalid commit sha returned: %q", commitSHA)
+		return source.PublishedSource{}, fmt.Errorf("invalid commit sha returned: %q", commitSHA)
 	}
 
 	originRef := fmt.Sprintf("%s/%s@%s", p.Owner, p.Repo, commitSHA)
 
-	return PublishedSource{
+	return source.PublishedSource{
 		OriginRef:        originRef,
 		Path:             relPath,
 		RawSHA256:        rawSHA,

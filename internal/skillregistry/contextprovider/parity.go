@@ -10,75 +10,89 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/contextengine"
 )
 
-type Divergence struct {
-	RoleID       string    `json:"role_id"`
-	SkillID      string    `json:"skill_id"`
-	Field        string    `json:"field"`
-	PrimaryValue string    `json:"primary_value"`
-	ShadowValue  string    `json:"shadow_value"`
-	Reason       string    `json:"reason"`
-	RecordedAt   time.Time `json:"recorded_at"`
+// DivergenceRecord represents a metadata-only observation of a difference
+// between Primary and Shadow skill providers.
+// It never records SKILL.md bodies, prompts, or context content.
+type DivergenceRecord struct {
+	OrganizationID    string    `json:"organization_id"`
+	RoleID            string    `json:"role_id"`
+	SkillID           string    `json:"skill_id,omitempty"`
+	Operation         string    `json:"operation"`
+	Field             string    `json:"field,omitempty"`
+	PrimaryValue      string    `json:"primary_value,omitempty"`
+	ShadowValue       string    `json:"shadow_value,omitempty"`
+	PrimaryVersion    string    `json:"primary_version,omitempty"`
+	ShadowVersion     string    `json:"shadow_version,omitempty"`
+	PrimarySourceHash string    `json:"primary_source_hash,omitempty"`
+	ShadowSourceHash  string    `json:"shadow_source_hash,omitempty"`
+	Reason            string    `json:"reason"`
+	ObservedAt        time.Time `json:"observed_at"`
 }
 
 type DivergenceRecorder interface {
-	RecordDivergence(ctx context.Context, divergence Divergence) error
-	ListDivergences(ctx context.Context) ([]Divergence, error)
+	RecordDivergence(ctx context.Context, record DivergenceRecord) error
+	ListDivergences(ctx context.Context, filters ...any) ([]DivergenceRecord, error)
 }
 
 type MemoryDivergenceRecorder struct {
 	mu          sync.Mutex
-	divergences []Divergence
+	divergences []DivergenceRecord
 }
 
 func NewMemoryDivergenceRecorder() *MemoryDivergenceRecorder {
-	return &MemoryDivergenceRecorder{divergences: []Divergence{}}
+	return &MemoryDivergenceRecorder{divergences: []DivergenceRecord{}}
 }
 
-func (m *MemoryDivergenceRecorder) RecordDivergence(_ context.Context, d Divergence) error {
+func (m *MemoryDivergenceRecorder) RecordDivergence(_ context.Context, d DivergenceRecord) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if d.RecordedAt.IsZero() {
-		d.RecordedAt = time.Now().UTC()
+	if d.ObservedAt.IsZero() {
+		d.ObservedAt = time.Now().UTC()
 	}
 	m.divergences = append(m.divergences, d)
 	return nil
 }
 
-func (m *MemoryDivergenceRecorder) ListDivergences(_ context.Context) ([]Divergence, error) {
+func (m *MemoryDivergenceRecorder) ListDivergences(_ context.Context, filters ...any) ([]DivergenceRecord, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make([]Divergence, len(m.divergences))
+	out := make([]DivergenceRecord, len(m.divergences))
 	copy(out, m.divergences)
 	return out, nil
 }
 
 // ParityProvider runs Primary and Shadow providers.
 // Primary strictly governs all outputs, context, and authority.
-// Shadow comparisons record divergences asynchronously/non-blocking or synchronously to Sink.
+// Shadow comparisons record divergences metadata-only into Sink without altering runtime output.
 type ParityProvider struct {
-	Primary contextengine.SkillProvider
-	Shadow  contextengine.SkillProvider
-	Sink    DivergenceRecorder
+	Primary        contextengine.SkillProvider
+	Shadow         contextengine.SkillProvider
+	Sink           DivergenceRecorder
+	OrganizationID string
 }
 
-func NewParityProvider(primary, shadow contextengine.SkillProvider, sink DivergenceRecorder) (*ParityProvider, error) {
+func NewParityProvider(primary, shadow contextengine.SkillProvider, sink DivergenceRecorder, organizationID ...string) (*ParityProvider, error) {
 	if primary == nil {
 		return nil, fmt.Errorf("primary skill provider is required")
 	}
+	orgID := ""
+	if len(organizationID) > 0 {
+		orgID = organizationID[0]
+	}
 	return &ParityProvider{
-		Primary: primary,
-		Shadow:  shadow,
-		Sink:    sink,
+		Primary:        primary,
+		Shadow:         shadow,
+		Sink:           sink,
+		OrganizationID: orgID,
 	}, nil
 }
 
 func (p *ParityProvider) ListActiveForRole(ctx context.Context, organizationID, roleID string) ([]contextengine.SkillRecord, error) {
 	primaryRecords, primaryErr := p.Primary.ListActiveForRole(ctx, organizationID, roleID)
 
-	// Shadow comparison if shadow is present
 	if p.Shadow != nil && p.Sink != nil {
 		shadowRecords, shadowErr := p.Shadow.ListActiveForRole(ctx, organizationID, roleID)
-		p.compareLists(ctx, roleID, primaryRecords, shadowRecords, primaryErr, shadowErr)
+		p.compareLists(ctx, organizationID, roleID, primaryRecords, shadowRecords, primaryErr, shadowErr)
 	}
 
 	return primaryRecords, primaryErr
@@ -89,7 +103,7 @@ func (p *ParityProvider) GetActiveForRole(ctx context.Context, organizationID, r
 
 	if p.Shadow != nil && p.Sink != nil {
 		shadowRecord, shadowErr := p.Shadow.GetActiveForRole(ctx, organizationID, roleID, skillID)
-		p.compareSingle(ctx, roleID, skillID, primaryRecord, shadowRecord, primaryErr, shadowErr)
+		p.compareSingle(ctx, organizationID, roleID, skillID, primaryRecord, shadowRecord, primaryErr, shadowErr)
 	}
 
 	return primaryRecord, primaryErr
@@ -109,14 +123,20 @@ func (p *ParityProvider) ValidateVersion(ctx context.Context, expected contexten
 			if shadowErr != nil {
 				sErrStr = shadowErr.Error()
 			}
-			_ = p.Sink.RecordDivergence(ctx, Divergence{
-				RoleID:       expected.RoleID,
-				SkillID:      expected.ID,
-				Field:        "ValidateVersion",
-				PrimaryValue: pErrStr,
-				ShadowValue:  sErrStr,
-				Reason:       "error mismatch during validation",
-				RecordedAt:   time.Now().UTC(),
+			_ = p.Sink.RecordDivergence(ctx, DivergenceRecord{
+				OrganizationID:    p.OrganizationID,
+				RoleID:            expected.RoleID,
+				SkillID:           expected.ID,
+				Operation:         "ValidateVersion",
+				Field:             "ValidateVersion",
+				PrimaryValue:      pErrStr,
+				ShadowValue:       sErrStr,
+				PrimaryVersion:    expected.Version,
+				ShadowVersion:     expected.Version,
+				PrimarySourceHash: expected.SourceHash,
+				ShadowSourceHash:  expected.SourceHash,
+				Reason:            fmt.Sprintf("validation error mismatch: primary=%s shadow=%s", pErrStr, sErrStr),
+				ObservedAt:        time.Now().UTC(),
 			})
 		}
 	}
@@ -124,7 +144,12 @@ func (p *ParityProvider) ValidateVersion(ctx context.Context, expected contexten
 	return primaryErr
 }
 
-func (p *ParityProvider) compareLists(ctx context.Context, roleID string, prim, shad []contextengine.SkillRecord, primErr, shadErr error) {
+func (p *ParityProvider) compareLists(ctx context.Context, orgID, roleID string, prim, shad []contextengine.SkillRecord, primErr, shadErr error) {
+	effectiveOrgID := orgID
+	if effectiveOrgID == "" {
+		effectiveOrgID = p.OrganizationID
+	}
+
 	if (primErr == nil && shadErr != nil) || (primErr != nil && shadErr == nil) {
 		pErrStr := "nil"
 		if primErr != nil {
@@ -134,13 +159,15 @@ func (p *ParityProvider) compareLists(ctx context.Context, roleID string, prim, 
 		if shadErr != nil {
 			sErrStr = shadErr.Error()
 		}
-		_ = p.Sink.RecordDivergence(ctx, Divergence{
-			RoleID:       roleID,
-			Field:        "ListActiveForRole.Error",
-			PrimaryValue: pErrStr,
-			ShadowValue:  sErrStr,
-			Reason:       "error divergence between primary and shadow",
-			RecordedAt:   time.Now().UTC(),
+		_ = p.Sink.RecordDivergence(ctx, DivergenceRecord{
+			OrganizationID: effectiveOrgID,
+			RoleID:         roleID,
+			Operation:      "ListActiveForRole",
+			Field:          "ListActiveForRole.Error",
+			PrimaryValue:   pErrStr,
+			ShadowValue:    sErrStr,
+			Reason:         fmt.Sprintf("error divergence: primary=%s shadow=%s", pErrStr, sErrStr),
+			ObservedAt:     time.Now().UTC(),
 		})
 	}
 
@@ -176,36 +203,52 @@ func (p *ParityProvider) compareLists(ctx context.Context, roleID string, prim, 
 		sRec, sHas := sMap[id]
 
 		if pHas && !sHas {
-			_ = p.Sink.RecordDivergence(ctx, Divergence{
-				RoleID:       roleID,
-				SkillID:      id,
-				Field:        "Presence",
-				PrimaryValue: "present",
-				ShadowValue:  "absent",
-				Reason:       "skill present in primary but absent in shadow",
-				RecordedAt:   time.Now().UTC(),
+			_ = p.Sink.RecordDivergence(ctx, DivergenceRecord{
+				OrganizationID:    effectiveOrgID,
+				RoleID:            roleID,
+				SkillID:           id,
+				Operation:         "ListActiveForRole",
+				Field:             "Presence",
+				PrimaryValue:      "present",
+				ShadowValue:       "absent",
+				PrimaryVersion:    pRec.Version,
+				ShadowVersion:     "",
+				PrimarySourceHash: pRec.SourceHash,
+				ShadowSourceHash:  "",
+				Reason:            "skill present in primary but absent in shadow",
+				ObservedAt:        time.Now().UTC(),
 			})
 			continue
 		}
 		if !pHas && sHas {
-			_ = p.Sink.RecordDivergence(ctx, Divergence{
-				RoleID:       roleID,
-				SkillID:      id,
-				Field:        "Presence",
-				PrimaryValue: "absent",
-				ShadowValue:  "present",
-				Reason:       "skill absent in primary but present in shadow",
-				RecordedAt:   time.Now().UTC(),
+			_ = p.Sink.RecordDivergence(ctx, DivergenceRecord{
+				OrganizationID:    effectiveOrgID,
+				RoleID:            roleID,
+				SkillID:           id,
+				Operation:         "ListActiveForRole",
+				Field:             "Presence",
+				PrimaryValue:      "absent",
+				ShadowValue:       "present",
+				PrimaryVersion:    "",
+				ShadowVersion:     sRec.Version,
+				PrimarySourceHash: "",
+				ShadowSourceHash:  sRec.SourceHash,
+				Reason:            "skill absent in primary but present in shadow",
+				ObservedAt:        time.Now().UTC(),
 			})
 			continue
 		}
 
-		// Both have it, compare fields
-		p.compareFields(ctx, roleID, id, pRec, sRec)
+		p.compareFields(ctx, effectiveOrgID, roleID, id, "ListActiveForRole", pRec, sRec)
 	}
 }
 
-func (p *ParityProvider) compareSingle(ctx context.Context, roleID, skillID string, pRec, sRec contextengine.SkillRecord, primErr, shadErr error) {
+func (p *ParityProvider) compareSingle(ctx context.Context, orgID, roleID, skillID string, pRec, sRec contextengine.SkillRecord, primErr, shadErr error) {
+	effectiveOrgID := orgID
+	if effectiveOrgID == "" {
+		effectiveOrgID = p.OrganizationID
+	}
+
 	if (primErr == nil && shadErr != nil) || (primErr != nil && shadErr == nil) {
 		pErrStr := "nil"
 		if primErr != nil {
@@ -215,24 +258,26 @@ func (p *ParityProvider) compareSingle(ctx context.Context, roleID, skillID stri
 		if shadErr != nil {
 			sErrStr = shadErr.Error()
 		}
-		_ = p.Sink.RecordDivergence(ctx, Divergence{
-			RoleID:       roleID,
-			SkillID:      skillID,
-			Field:        "GetActiveForRole.Error",
-			PrimaryValue: pErrStr,
-			ShadowValue:  sErrStr,
-			Reason:       "error divergence on GetActiveForRole",
-			RecordedAt:   time.Now().UTC(),
+		_ = p.Sink.RecordDivergence(ctx, DivergenceRecord{
+			OrganizationID: effectiveOrgID,
+			RoleID:         roleID,
+			SkillID:        skillID,
+			Operation:      "GetActiveForRole",
+			Field:          "GetActiveForRole.Error",
+			PrimaryValue:   pErrStr,
+			ShadowValue:    sErrStr,
+			Reason:         fmt.Sprintf("error divergence on GetActiveForRole: primary=%s shadow=%s", pErrStr, sErrStr),
+			ObservedAt:     time.Now().UTC(),
 		})
 		return
 	}
 	if primErr != nil || shadErr != nil {
 		return
 	}
-	p.compareFields(ctx, roleID, skillID, pRec, sRec)
+	p.compareFields(ctx, effectiveOrgID, roleID, skillID, "GetActiveForRole", pRec, sRec)
 }
 
-func (p *ParityProvider) compareFields(ctx context.Context, roleID, skillID string, pRec, sRec contextengine.SkillRecord) {
+func (p *ParityProvider) compareFields(ctx context.Context, orgID, roleID, skillID, operation string, pRec, sRec contextengine.SkillRecord) {
 	checks := []struct {
 		field string
 		pval  string
@@ -248,14 +293,20 @@ func (p *ParityProvider) compareFields(ctx context.Context, roleID, skillID stri
 
 	for _, check := range checks {
 		if check.pval != check.sval {
-			_ = p.Sink.RecordDivergence(ctx, Divergence{
-				RoleID:       roleID,
-				SkillID:      skillID,
-				Field:        check.field,
-				PrimaryValue: check.pval,
-				ShadowValue:  check.sval,
-				Reason:       fmt.Sprintf("%s mismatch between primary and shadow", check.field),
-				RecordedAt:   time.Now().UTC(),
+			_ = p.Sink.RecordDivergence(ctx, DivergenceRecord{
+				OrganizationID:    orgID,
+				RoleID:            roleID,
+				SkillID:           skillID,
+				Operation:         operation,
+				Field:             check.field,
+				PrimaryValue:      check.pval,
+				ShadowValue:       check.sval,
+				PrimaryVersion:    pRec.Version,
+				ShadowVersion:     sRec.Version,
+				PrimarySourceHash: pRec.SourceHash,
+				ShadowSourceHash:  sRec.SourceHash,
+				Reason:            fmt.Sprintf("%s mismatch between primary and shadow: %s vs %s", check.field, check.pval, check.sval),
+				ObservedAt:        time.Now().UTC(),
 			})
 		}
 	}

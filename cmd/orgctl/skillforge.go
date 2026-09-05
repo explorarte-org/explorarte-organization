@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/config"
+	"github.com/Mireuz13/explorarte-organization/internal/platform/skillpublisher"
 	"github.com/Mireuz13/explorarte-organization/internal/skillforge"
 	"github.com/Mireuz13/explorarte-organization/internal/skillforge/need"
 	needpostgres "github.com/Mireuz13/explorarte-organization/internal/skillforge/need/postgres"
@@ -256,7 +257,7 @@ func runSkillForgeRun(args []string, stdout, stderr io.Writer) int {
 		return exitInternal
 	}
 
-	publisher, err := source.NewLocalGitPublisher(cfg.Context.SourceRoot, "explorarte-org", "skills")
+	publisher, err := skillpublisher.NewLocalGitPublisher(cfg.Context.SourceRoot, "explorarte-org", "skills")
 	if err != nil {
 		fmt.Fprintf(stderr, "create publisher: %v\n", err)
 		return exitInternal

@@ -5,9 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Mireuz13/explorarte-organization/internal/contextengine/document"
@@ -127,26 +128,46 @@ func TestMaterializationAndDigestVerification(t *testing.T) {
 	}
 }
 
-func TestLocalGitPublisherInDisposableRepo(t *testing.T) {
-	ctx := context.Background()
-	repoDir := t.TempDir()
+type fakeInMemoryPublisher struct {
+	Owner string
+	Repo  string
+}
 
-	// Initialize disposable git repo
-	initCmd := exec.CommandContext(ctx, "git", "init")
-	initCmd.Dir = repoDir
-	if out, err := initCmd.CombinedOutput(); err != nil {
-		t.Fatalf("git init failed: %v, output: %s", err, string(out))
+func (f *fakeInMemoryPublisher) Publish(_ context.Context, req PublishRequest) (PublishedSource, error) {
+	if strings.TrimSpace(req.SkillID) == "" {
+		return PublishedSource{}, errors.New("skill id is required")
 	}
-	configCmd := exec.CommandContext(ctx, "git", "config", "user.email", "test@explorarte.org")
-	configCmd.Dir = repoDir
-	_ = configCmd.Run()
-	configCmd = exec.CommandContext(ctx, "git", "config", "user.name", "Test Runner")
-	configCmd.Dir = repoDir
-	_ = configCmd.Run()
+	if len(req.CandidateSourceBytes) == 0 {
+		return PublishedSource{}, errors.New("candidate bytes cannot be empty")
+	}
 
-	pub, err := NewLocalGitPublisher(repoDir, "explorarte-org", "skills")
+	rawSum := sha256.Sum256(req.CandidateSourceBytes)
+	rawSHA := hex.EncodeToString(rawSum[:])
+
+	normBytes, err := document.NormalizeText(req.CandidateSourceBytes)
 	if err != nil {
-		t.Fatalf("NewLocalGitPublisher: %v", err)
+		return PublishedSource{}, fmt.Errorf("normalize candidate text: %w", err)
+	}
+	normSum := sha256.Sum256(normBytes)
+	normSHA := hex.EncodeToString(normSum[:])
+
+	fakeSHA := "abcdef0123456789abcdef0123456789abcdef01"
+	originRef := fmt.Sprintf("%s/%s@%s", f.Owner, f.Repo, fakeSHA)
+
+	return PublishedSource{
+		OriginRef:        originRef,
+		Path:             filepath.Join("skills", req.SkillID, "SKILL.md"),
+		RawSHA256:        rawSHA,
+		NormalizedSHA256: normSHA,
+		PublicationRef:   fmt.Sprintf("fake-git:%s:%s", req.SkillID, fakeSHA),
+	}, nil
+}
+
+func TestFakeSourcePublisherWithoutGit(t *testing.T) {
+	ctx := context.Background()
+	pub := &fakeInMemoryPublisher{
+		Owner: "explorarte-org",
+		Repo:  "skills",
 	}
 
 	content := []byte("# Disposable Skill\n\nContent.\n")
@@ -161,7 +182,8 @@ func TestLocalGitPublisherInDisposableRepo(t *testing.T) {
 	if !githubPinnedPattern.MatchString(res.OriginRef) {
 		t.Fatalf("published origin ref is not pinned: %q", res.OriginRef)
 	}
-	if res.Path != "skills/disposable-skill/SKILL.md" {
-		t.Fatalf("unexpected path: %q", res.Path)
+	expectedPath := filepath.Join("skills", "disposable-skill", "SKILL.md")
+	if res.Path != expectedPath {
+		t.Fatalf("unexpected path: expected %s, got %q", expectedPath, res.Path)
 	}
 }

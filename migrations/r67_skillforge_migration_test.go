@@ -58,6 +58,9 @@ func TestMigration67ForwardBackForward(t *testing.T) {
 		}
 	}
 
+	// Ensure starting at old_tip
+	_, _ = pool.Exec(ctx, string(downBytes))
+
 	// 1. First FORWARD (old_tip -> new_tip)
 	t.Log("Applying migration 67 UP (forward 1)...")
 	if _, err := pool.Exec(ctx, string(upBytes)); err != nil {

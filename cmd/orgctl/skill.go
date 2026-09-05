@@ -332,7 +332,7 @@ func runSkill(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "parity list active: %v\n", err)
 			return exitInternal
 		}
-		divs, _ := sink.ListDivergences(ctx)
+		divs, _ := sink.ListDivergences(ctx, runtime.OrganizationID, 100)
 		out := map[string]any{
 			"role":              *role,
 			"active_skills":     records,

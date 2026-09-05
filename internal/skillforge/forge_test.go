@@ -2,10 +2,17 @@ package skillforge
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
-	"os/exec"
+	"fmt"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/Mireuz13/explorarte-organization/internal/contextengine/document"
+	"github.com/Mireuz13/explorarte-organization/internal/platform/skillpublisher"
 
 	"github.com/Mireuz13/explorarte-organization/internal/contextengine"
 	"github.com/Mireuz13/explorarte-organization/internal/skillforge/need"
@@ -116,24 +123,45 @@ func (noopGate) AuthorizeAssignmentChange(_ context.Context, _, _, _, _, _ strin
 	return skillregistry.GovernanceEvidence{DecisionRef: "dec:assign", ActorRoleID: "empresa/human", DecidedAt: time.Now()}, nil
 }
 
+type fakeSourcePublisher struct {
+	owner string
+	repo  string
+}
+
+func newFakeSourcePublisher(owner, repo string) *fakeSourcePublisher {
+	return &fakeSourcePublisher{owner: owner, repo: repo}
+}
+
+func (f *fakeSourcePublisher) Publish(_ context.Context, req source.PublishRequest) (source.PublishedSource, error) {
+	if strings.TrimSpace(req.SkillID) == "" {
+		return source.PublishedSource{}, errors.New("skill id is required")
+	}
+	if len(req.CandidateSourceBytes) == 0 {
+		return source.PublishedSource{}, errors.New("candidate bytes cannot be empty")
+	}
+	rawSum := sha256.Sum256(req.CandidateSourceBytes)
+	rawSHA := hex.EncodeToString(rawSum[:])
+	normBytes, err := document.NormalizeText(req.CandidateSourceBytes)
+	if err != nil {
+		return source.PublishedSource{}, fmt.Errorf("normalize candidate text: %w", err)
+	}
+	normSum := sha256.Sum256(normBytes)
+	normSHA := hex.EncodeToString(normSum[:])
+	commitSHA := "1234567890123456789012345678901234567890"
+	return source.PublishedSource{
+		OriginRef:        fmt.Sprintf("%s/%s@%s", f.owner, f.repo, commitSHA),
+		Path:             filepath.Join("skills", req.SkillID, "SKILL.md"),
+		RawSHA256:        rawSHA,
+		NormalizedSHA256: normSHA,
+		PublicationRef:   fmt.Sprintf("fake-pub:%s:%s", req.SkillID, commitSHA),
+	}, nil
+}
+
 func TestSkillForgeFullE2EFlow(t *testing.T) {
 	ctx := context.Background()
 	skillsRoot := t.TempDir()
-	gitRepoDir := t.TempDir()
-
-	// Init git repo
-	cmd := exec.CommandContext(ctx, "git", "init")
-	cmd.Dir = gitRepoDir
-	if err := cmd.Run(); err != nil {
-		t.Fatal(err)
-	}
-	_ = exec.CommandContext(ctx, "git", "-C", gitRepoDir, "config", "user.email", "test@explorarte.org").Run()
-	_ = exec.CommandContext(ctx, "git", "-C", gitRepoDir, "config", "user.name", "Test").Run()
-
-	publisher, err := source.NewLocalGitPublisher(gitRepoDir, "explorarte-org", "skills")
-	if err != nil {
-		t.Fatal(err)
-	}
+	// Use fake publisher to prove Skill Forge runs with zero git authority
+	publisher := newFakeSourcePublisher("explorarte-org", "skills")
 	materializer, err := source.NewLocalMaterializer(skillsRoot)
 	if err != nil {
 		t.Fatal(err)
@@ -376,13 +404,7 @@ None.
 func TestMaliciousSkillContractRejection(t *testing.T) {
 	ctx := context.Background()
 	skillsRoot := t.TempDir()
-	gitRepoDir := t.TempDir()
-
-	_ = exec.CommandContext(ctx, "git", "-C", gitRepoDir, "init").Run()
-	_ = exec.CommandContext(ctx, "git", "-C", gitRepoDir, "config", "user.email", "test@explorarte.org").Run()
-	_ = exec.CommandContext(ctx, "git", "-C", gitRepoDir, "config", "user.name", "Test").Run()
-
-	publisher, _ := source.NewLocalGitPublisher(gitRepoDir, "explorarte-org", "skills")
+	publisher := newFakeSourcePublisher("explorarte-org", "skills")
 	materializer, _ := source.NewLocalMaterializer(skillsRoot)
 	needRepo := need.NewMemoryRepository()
 	regRepo := newMemoryRegistryRepo()
@@ -466,4 +488,9 @@ func TestCandidateOverrideProductionBypassDenied(t *testing.T) {
 	if !errors.Is(err, contextengine.ErrRejected) {
 		t.Fatalf("expected client rejection error, got %v", err)
 	}
+}
+
+func TestSkillForgeHostPublisherBoundary(t *testing.T) {
+	// Demonstrates that host-owned LocalGitPublisher implements source.SourcePublisher port
+	var _ source.SourcePublisher = (*skillpublisher.LocalGitPublisher)(nil)
 }

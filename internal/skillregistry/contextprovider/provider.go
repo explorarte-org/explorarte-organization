@@ -72,9 +72,15 @@ func (p *Provider) ListActiveForRole(ctx context.Context, organizationID, roleID
 			continue
 		}
 
-		sourceHash := version.Source.NormalizedSHA256
-		if sourceHash == "" && version.Source.LegacyImported {
-			sourceHash = version.Source.SHA256
+		// Contract: LifecycleActive + active assignment -> NormalizedSHA256 MUST exist.
+		// If missing: FAIL CLOSED with ReasonSkillSourceDrift / source identity incomplete.
+		// Never silently fall back to raw SHA256.
+		if strings.TrimSpace(version.Source.NormalizedSHA256) == "" {
+			return nil, contextengine.Reject(
+				contextengine.ReasonSkillSourceDrift,
+				version.SkillID,
+				fmt.Sprintf("active assigned skill %s version %s lacks required normalized_sha256: source identity incomplete", version.SkillID, version.ID),
+			)
 		}
 
 		department := version.Manifest.Department
@@ -92,7 +98,7 @@ func (p *Provider) ListActiveForRole(ctx context.Context, organizationID, roleID
 			Assigned:     true,
 			Path:         version.Source.Path,
 			Version:      skillregistry.RuntimeVersionString(version),
-			SourceHash:   sourceHash,
+			SourceHash:   version.Source.NormalizedSHA256,
 		})
 	}
 
@@ -145,6 +151,9 @@ func (p *Provider) GetActiveForRole(ctx context.Context, organizationID, roleID,
 }
 
 func (p *Provider) ValidateVersion(ctx context.Context, expected contextengine.SkillRecord) error {
+	if strings.TrimSpace(expected.SourceHash) == "" {
+		return contextengine.Reject(contextengine.ReasonSkillSourceDrift, expected.ID, "expected skill record lacks source hash")
+	}
 	current, err := p.GetActiveForRole(ctx, p.organizationID, expected.RoleID, expected.ID)
 	if err != nil {
 		return contextengine.Reject(contextengine.ReasonSkillStateDrift, expected.ID, fmt.Sprintf("skill validation failed: %v", err))

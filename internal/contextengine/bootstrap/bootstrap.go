@@ -20,16 +20,17 @@ import (
 )
 
 type Runtime struct {
-	Service        contextengine.Service
-	Store          *contextpostgres.Store
-	Registry       *registry.PostgresRepository
-	Documents      *document.Loader
-	Canonical      *canonical.Provider
-	Skills         *canonical.SkillProvider
-	Memory         *memorycontext.Provider
-	RAG            *ragcontext.Provider
-	Tasks          contextengine.TaskContextProvider
-	OrganizationID string
+	Service         contextengine.Service
+	Store           *contextpostgres.Store
+	Registry        *registry.PostgresRepository
+	Documents       *document.Loader
+	Canonical       *canonical.Provider
+	Skills          contextengine.SkillProvider
+	CanonicalSkills *canonical.SkillProvider
+	Memory          *memorycontext.Provider
+	RAG             *ragcontext.Provider
+	Tasks           contextengine.TaskContextProvider
+	OrganizationID  string
 }
 
 // Open wires the context runtime. taskProvider is supplied by the caller
@@ -72,7 +73,8 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store, taskProvider
 	if err != nil {
 		return nil, err
 	}
-	parityProvider, err := contextprovider.NewParityProvider(registrySkillProvider, canonicalSkillProvider, contextprovider.NewMemoryDivergenceRecorder())
+	divergenceRecorder := contextprovider.NewPostgresDivergenceRecorder(platformStore, cfg.Tasks.OrganizationID)
+	parityProvider, err := contextprovider.NewParityProvider(registrySkillProvider, canonicalSkillProvider, divergenceRecorder, cfg.Tasks.OrganizationID)
 	if err != nil {
 		return nil, err
 	}
@@ -112,5 +114,17 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store, taskProvider
 	if err != nil {
 		return nil, err
 	}
-	return &Runtime{Service: service, Store: store, Registry: registryRepository, Documents: documents, Canonical: canonicalProvider, Skills: canonicalSkillProvider, Memory: memoryProvider, RAG: ragProvider, Tasks: taskProvider, OrganizationID: cfg.Tasks.OrganizationID}, nil
+	return &Runtime{
+		Service:         service,
+		Store:           store,
+		Registry:        registryRepository,
+		Documents:       documents,
+		Canonical:       canonicalProvider,
+		Skills:          parityProvider,
+		CanonicalSkills: canonicalSkillProvider,
+		Memory:          memoryProvider,
+		RAG:             ragProvider,
+		Tasks:           taskProvider,
+		OrganizationID:  cfg.Tasks.OrganizationID,
+	}, nil
 }

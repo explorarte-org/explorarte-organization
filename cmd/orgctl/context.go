@@ -152,13 +152,14 @@ func contextValidateSource(args []string, stdout, stderr io.Writer) int {
 			break
 		}
 		name, _ := doc.Frontmatter["name"].(string)
-		record, ok := runtime.Skills.Record(strings.TrimSpace(name))
-		if !ok {
+		skillID := strings.TrimSpace(name)
+		record, getErr := runtime.Skills.GetActiveForRole(ctx, runtime.OrganizationID, role.ID, skillID)
+		if getErr != nil {
 			memory := ""
 			if role.MemoryDomain != nil {
 				memory = *role.MemoryDomain
 			}
-			record = contextengine.SkillRecord{ID: strings.TrimSpace(name), RoleID: role.ID, Department: role.UnitID, MemoryDomain: memory, Path: *path}
+			record = contextengine.SkillRecord{ID: skillID, RoleID: role.ID, Department: role.UnitID, MemoryDomain: memory, Path: *path}
 		}
 		result.Warnings, err = contextengine.ValidateSkill(doc, record)
 	default:

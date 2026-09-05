@@ -632,3 +632,301 @@ func TestPinnedCandidateEvaluationIsolation(t *testing.T) {
 		t.Fatalf("candidate visible in standard production provider: %+v", baseRecords)
 	}
 }
+
+func TestNormalizedHashFailClosedInvariants(t *testing.T) {
+	ctx := context.Background()
+	orgID := "explorarte"
+	roleID := "ingenieria_ia/qa"
+
+	// Case 1: legacy draft + normalized empty -> allowed to exist, NOT runtime visible
+	{
+		repo := newFakeRepo()
+		repo.skills["legacy-draft"] = skillregistry.Skill{ID: "legacy-draft", OrganizationID: orgID}
+		repo.versions["v-draft"] = skillregistry.SkillVersion{
+			ID:             "v-draft",
+			SkillID:        "legacy-draft",
+			OrganizationID: orgID,
+			Version:        1,
+			Lifecycle:      skillregistry.LifecycleDraft,
+			Manifest:       skillregistry.Manifest{Name: "legacy-draft", Department: "ingenieria_ia"},
+			Source: skillregistry.SourceRecord{
+				Path:             "skills/legacy-draft/SKILL.md",
+				SHA256:           "raw-sha-draft",
+				NormalizedSHA256: "", // empty normalized hash
+				LegacyImported:   true,
+			},
+		}
+		repo.assignments[roleID] = []skillregistry.SkillAssignment{
+			{ID: "asgn-draft", OrganizationID: orgID, RoleID: roleID, SkillID: "legacy-draft", SkillVersionID: "v-draft", Status: skillregistry.AssignmentActive},
+		}
+		p, err := New(repo, orgID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		records, err := p.ListActiveForRole(ctx, orgID, roleID)
+		if err != nil {
+			t.Fatalf("unexpected error for draft: %v", err)
+		}
+		if len(records) != 0 {
+			t.Fatalf("draft skill must not be runtime visible, got %d", len(records))
+		}
+	}
+
+	// Case 2: legacy active fixture + normalized empty -> DENY (fail closed)
+	{
+		repo := newFakeRepo()
+		repo.skills["legacy-active"] = skillregistry.Skill{ID: "legacy-active", OrganizationID: orgID}
+		repo.versions["v-legacy-act"] = skillregistry.SkillVersion{
+			ID:             "v-legacy-act",
+			SkillID:        "legacy-active",
+			OrganizationID: orgID,
+			Version:        1,
+			Lifecycle:      skillregistry.LifecycleActive,
+			Manifest:       skillregistry.Manifest{Name: "legacy-active", Department: "ingenieria_ia"},
+			Source: skillregistry.SourceRecord{
+				Path:             "skills/legacy-active/SKILL.md",
+				SHA256:           "raw-sha-legacy-act",
+				NormalizedSHA256: "", // empty normalized hash on active version!
+				LegacyImported:   true,
+			},
+		}
+		repo.assignments[roleID] = []skillregistry.SkillAssignment{
+			{ID: "asgn-legacy-act", OrganizationID: orgID, RoleID: roleID, SkillID: "legacy-active", SkillVersionID: "v-legacy-act", Status: skillregistry.AssignmentActive},
+		}
+		p, err := New(repo, orgID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = p.ListActiveForRole(ctx, orgID, roleID)
+		if err == nil {
+			t.Fatal("expected fail-closed error for legacy active version lacking NormalizedSHA256, got nil")
+		}
+		if contextengine.ReasonOf(err) != contextengine.ReasonSkillSourceDrift {
+			t.Fatalf("expected ReasonSkillSourceDrift, got %v", err)
+		}
+
+		_, err = p.GetActiveForRole(ctx, orgID, roleID, "legacy-active")
+		if err == nil {
+			t.Fatal("expected GetActiveForRole to fail closed for active version lacking NormalizedSHA256, got nil")
+		}
+	}
+
+	// Case 3: native active + normalized empty -> DENY (fail closed)
+	{
+		repo := newFakeRepo()
+		repo.skills["native-active"] = skillregistry.Skill{ID: "native-active", OrganizationID: orgID}
+		repo.versions["v-native-act"] = skillregistry.SkillVersion{
+			ID:             "v-native-act",
+			SkillID:        "native-active",
+			OrganizationID: orgID,
+			Version:        1,
+			Lifecycle:      skillregistry.LifecycleActive,
+			Manifest:       skillregistry.Manifest{Name: "native-active", Department: "ingenieria_ia"},
+			Source: skillregistry.SourceRecord{
+				Path:             "skills/native-active/SKILL.md",
+				SHA256:           "raw-sha-native-act",
+				NormalizedSHA256: "", // empty normalized hash on native active version!
+				LegacyImported:   false,
+			},
+		}
+		repo.assignments[roleID] = []skillregistry.SkillAssignment{
+			{ID: "asgn-native-act", OrganizationID: orgID, RoleID: roleID, SkillID: "native-active", SkillVersionID: "v-native-act", Status: skillregistry.AssignmentActive},
+		}
+		p, err := New(repo, orgID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = p.ListActiveForRole(ctx, orgID, roleID)
+		if err == nil {
+			t.Fatal("expected fail-closed error for native active version lacking NormalizedSHA256, got nil")
+		}
+		if contextengine.ReasonOf(err) != contextengine.ReasonSkillSourceDrift {
+			t.Fatalf("expected ReasonSkillSourceDrift, got %v", err)
+		}
+	}
+
+	// Case 4: active + normalized set correctly -> visible
+	{
+		repo := newFakeRepo()
+		repo.skills["valid-active"] = skillregistry.Skill{ID: "valid-active", OrganizationID: orgID}
+		repo.versions["v-valid"] = skillregistry.SkillVersion{
+			ID:             "v-valid",
+			SkillID:        "valid-active",
+			OrganizationID: orgID,
+			Version:        1,
+			Lifecycle:      skillregistry.LifecycleActive,
+			Manifest:       skillregistry.Manifest{Name: "valid-active", Department: "ingenieria_ia"},
+			Source: skillregistry.SourceRecord{
+				Path:             "skills/valid-active/SKILL.md",
+				SHA256:           "raw-sha-1234",
+				NormalizedSHA256: "norm-sha-5678",
+				LegacyImported:   false,
+			},
+		}
+		repo.assignments[roleID] = []skillregistry.SkillAssignment{
+			{ID: "asgn-valid", OrganizationID: orgID, RoleID: roleID, SkillID: "valid-active", SkillVersionID: "v-valid", Status: skillregistry.AssignmentActive},
+		}
+		p, err := New(repo, orgID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		records, err := p.ListActiveForRole(ctx, orgID, roleID)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(records) != 1 {
+			t.Fatalf("expected 1 active record, got %d", len(records))
+		}
+		if records[0].SourceHash != "norm-sha-5678" {
+			t.Fatalf("expected SourceHash norm-sha-5678, got %s", records[0].SourceHash)
+		}
+	}
+
+	// Case 5: raw bytes CRLF, normalized bytes LF, rawSHA != normalizedSHA -> Loader.Hash == runtime SourceHash
+	{
+		rawCRLF := []byte("# Skill Title\r\n\r\nStep 1.\r\nStep 2.\r\n")
+		rawSum := sha256.Sum256(rawCRLF)
+		rawSHA := hex.EncodeToString(rawSum[:])
+
+		normLF, err := document.NormalizeText(rawCRLF)
+		if err != nil {
+			t.Fatal(err)
+		}
+		normSum := sha256.Sum256(normLF)
+		normSHA := hex.EncodeToString(normSum[:])
+
+		if rawSHA == normSHA {
+			t.Fatal("expected rawSHA != normSHA for CRLF content")
+		}
+
+		tmpDir := t.TempDir()
+		skillPath := filepath.Join(tmpDir, "SKILL.md")
+		if err := os.WriteFile(skillPath, rawCRLF, 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		loader, err := document.NewLoader(tmpDir, 65536)
+		if err != nil {
+			t.Fatal(err)
+		}
+		loadedDoc, err := loader.Load(ctx, "SKILL.md", 65536)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if loadedDoc.Hash != normSHA {
+			t.Fatalf("expected loadedDoc.Hash == normSHA (%s), got %s", normSHA, loadedDoc.Hash)
+		}
+
+		repo := newFakeRepo()
+		repo.skills["crlf-skill"] = skillregistry.Skill{ID: "crlf-skill", OrganizationID: orgID}
+		repo.versions["v-crlf"] = skillregistry.SkillVersion{
+			ID:             "v-crlf",
+			SkillID:        "crlf-skill",
+			OrganizationID: orgID,
+			Version:        1,
+			Lifecycle:      skillregistry.LifecycleActive,
+			Manifest:       skillregistry.Manifest{Name: "crlf-skill", Department: "ingenieria_ia"},
+			Source: skillregistry.SourceRecord{
+				Path:             "SKILL.md",
+				SHA256:           rawSHA,
+				NormalizedSHA256: normSHA,
+			},
+		}
+		repo.assignments[roleID] = []skillregistry.SkillAssignment{
+			{ID: "asgn-crlf", OrganizationID: orgID, RoleID: roleID, SkillID: "crlf-skill", SkillVersionID: "v-crlf", Status: skillregistry.AssignmentActive},
+		}
+		p, err := New(repo, orgID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		records, err := p.ListActiveForRole(ctx, orgID, roleID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(records) != 1 {
+			t.Fatalf("expected 1 record, got %d", len(records))
+		}
+		if records[0].SourceHash != loadedDoc.Hash {
+			t.Fatalf("runtime SourceHash (%s) != loadedDoc.Hash (%s)", records[0].SourceHash, loadedDoc.Hash)
+		}
+	}
+}
+
+func TestSingleRuntimeSkillSurfaceRegistryNative(t *testing.T) {
+	ctx := context.Background()
+	orgID := "explorarte"
+	roleID := "ingenieria_ia/qa"
+
+	repo := newFakeRepo()
+	repo.skills["native-skill"] = skillregistry.Skill{ID: "native-skill", OrganizationID: orgID}
+	repo.versions["v-nat-1"] = skillregistry.SkillVersion{
+		ID:             "v-nat-1",
+		SkillID:        "native-skill",
+		OrganizationID: orgID,
+		Version:        1,
+		Lifecycle:      skillregistry.LifecycleActive,
+		Manifest:       skillregistry.Manifest{Name: "native-skill", Department: "ingenieria_ia"},
+		Source: skillregistry.SourceRecord{
+			Path:             "skills/native-skill/SKILL.md",
+			SHA256:           "hash-raw",
+			NormalizedSHA256: "hash-norm",
+		},
+	}
+	repo.assignments[roleID] = []skillregistry.SkillAssignment{
+		{ID: "asgn-1", OrganizationID: orgID, RoleID: roleID, SkillID: "native-skill", SkillVersionID: "v-nat-1", Status: skillregistry.AssignmentActive},
+	}
+
+	regProvider, err := New(repo, orgID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Canonical provider does NOT know about native-skill
+	canonicalRoot := filepath.Join(findRepoRoot(), "docs", "canonical")
+	canProvider, err := canonical.NewSkillProvider(canonicalRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sink := NewMemoryDivergenceRecorder()
+	// ParityProvider with Registry as Primary, Canonical as Shadow
+	runtimeProvider, err := NewParityProvider(regProvider, canProvider, sink, orgID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Validate against runtimeProvider -> resolves against Registry identity successfully!
+	rec, err := runtimeProvider.GetActiveForRole(ctx, orgID, roleID, "native-skill")
+	if err != nil {
+		t.Fatalf("expected registry-native skill to resolve in runtime provider, got: %v", err)
+	}
+	if rec.ID != "native-skill" || rec.SourceHash != "hash-norm" {
+		t.Fatalf("unexpected record: %+v", rec)
+	}
+
+	// Also test ListActiveForRole
+	records, err := runtimeProvider.ListActiveForRole(ctx, orgID, roleID)
+	if err != nil {
+		t.Fatalf("expected registry-native skill in ListActiveForRole, got: %v", err)
+	}
+	if len(records) != 1 || records[0].ID != "native-skill" {
+		t.Fatalf("unexpected records: %+v", records)
+	}
+
+	// 2. Divergence was observed separately into sink
+	divs, _ := sink.ListDivergences(ctx)
+	if len(divs) == 0 {
+		t.Fatal("expected divergence recorded because canonical lacks native-skill")
+	}
+	foundPresenceMismatch := false
+	for _, d := range divs {
+		if d.SkillID == "native-skill" && d.Field == "Presence" && d.PrimaryValue == "present" && d.ShadowValue == "absent" {
+			foundPresenceMismatch = true
+			break
+		}
+	}
+	if !foundPresenceMismatch {
+		t.Fatalf("expected presence divergence for native-skill, got %+v", divs)
+	}
+}
