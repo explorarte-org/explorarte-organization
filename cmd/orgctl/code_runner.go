@@ -83,8 +83,11 @@ func codeRunnerMaxRecoveryEpisodes(stderr io.Writer) int {
 }
 
 func runCodeRunner(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "mission" {
+		return runCodeRunnerMission(args[1:], stdout, stderr)
+	}
 	if len(args) != 2 || args[0] != "worker" || args[1] != "run" {
-		fmt.Fprintln(stderr, "usage: orgctl code-runner worker run")
+		fmt.Fprintln(stderr, "usage: orgctl code-runner worker run | mission <request-review|review>")
 		return exitUsage
 	}
 	cfg, stagingRuntime, stagingCleanup, code := openStagingRuntime(stderr)

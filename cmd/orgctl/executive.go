@@ -18,6 +18,7 @@ import (
 	executivebootstrap "github.com/Mireuz13/explorarte-organization/internal/executive/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/executive/runtimeadapter"
 	"github.com/Mireuz13/explorarte-organization/internal/modelpricing"
+	modelruntimepostgres "github.com/Mireuz13/explorarte-organization/internal/modelruntime/postgres"
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
@@ -142,7 +143,7 @@ func runExecutiveStatus(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("executive status", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	jsonOutput := flags.Bool("json", false, "emit JSON")
-	if err := flags.Parse(args); err != nil || flags.NArg() != 1 {
+	if err := parseInterspersed(flags, args); err != nil || flags.NArg() != 1 {
 		fmt.Fprintln(stderr, "usage: orgctl executive status ROOT_TASK_ID [--json]")
 		return exitUsage
 	}
@@ -151,13 +152,25 @@ func runExecutiveStatus(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "ROOT_TASK_ID must be a positive integer")
 		return exitUsage
 	}
-	_, runtime, store, ctx, cancel, code := openExecutiveRuntime(stderr, "executive-status", 30*time.Second)
+	cfg, taskService, cleanup, code := openTaskService(stderr)
 	if code != exitOK {
 		return code
 	}
+	defer cleanup()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	store, code := openExecutiveDatabase(ctx, cfg, stderr, "executive-status")
+	if code != exitOK {
+		return code
+	}
 	defer store.Close()
-	run, err := runtime.Orchestrator.Status(ctx, rootID)
+	results, err := modelruntimepostgres.New(store)
+	if err != nil {
+		return exitInternal
+	}
+	run, err := executive.ReadStatus(ctx,
+		runtimeadapter.Tasks{Service: taskService, OrganizationID: cfg.Tasks.OrganizationID},
+		runtimeadapter.StoredResults{Store: results, OrganizationID: cfg.Tasks.OrganizationID}, rootID, executive.DefaultLimits())
 	if err != nil {
 		fmt.Fprintf(stderr, "executive status: %v\n", err)
 		return executiveExitCode(err)

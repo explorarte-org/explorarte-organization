@@ -161,6 +161,10 @@ func (o *Orchestrator) driveImplementationMission(ctx context.Context, root Task
 
 	planTask, ok := findTaskByKey(all, childKey(root.ID, "implementation-plan"))
 	if !ok {
+		guidance, guidanceErr := missionplan.ExecutionGuidance(missionScope(root))
+		if guidanceErr != nil {
+			return Run{}, true, guidanceErr
+		}
 		planTask, _, err = o.tasks.CreateTask(ctx, CreateTaskCommand{
 			RequestedByRoleID: CEORoleID, AssignedRoleID: leader.ID,
 			TaskClass:      TaskClassCoordinationImplementationPlan,
@@ -169,7 +173,7 @@ func (o *Orchestrator) driveImplementationMission(ctx context.Context, root Task
 			Instructions: "The design is frozen. Produce ImplementationPlan JSON: the objective, the exact " +
 				"repository-relative files to change, a unified diff for each, and what verification is expected. " +
 				"Naming a path is a request, not a grant -- the host decides which paths are permitted, which gates " +
-				"must pass, and which commit the work is based on.\n\nOWNER GOAL:\n" + root.Instructions,
+				"must pass, and which commit the work is based on.\n\n" + guidance + "\n\nOWNER GOAL:\n" + root.Instructions,
 			AcceptanceCriteria: []string{
 				"Return strict ImplementationPlan JSON",
 				"Every change carries a real unified diff",
