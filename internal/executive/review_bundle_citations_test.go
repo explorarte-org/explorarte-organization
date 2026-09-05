@@ -79,7 +79,12 @@ func TestTheReviewBundleCarriesVerifiedCitationsPerDeliverable(t *testing.T) {
 			t.Fatalf("the review bundle carries repository source: %q", forbidden)
 		}
 	}
-	for _, needed := range []string{"unverifiable_repository_claim", "deliverables[].verified_repository_refs"} {
+	for _, needed := range []string{
+		"unverifiable_repository_claim", "deliverables[].verified_repository_refs",
+		"not source bodies", "not that every semantic claim about it is true",
+		"overlapping fixed-width windows", "alone do not prove a contradiction",
+		"Do not invent replacement line ranges", "unverified assumption requiring authorized verification",
+	} {
 		if !strings.Contains(bundle, needed) {
 			t.Fatalf("the reviewer is not told the rule: missing %q", needed)
 		}

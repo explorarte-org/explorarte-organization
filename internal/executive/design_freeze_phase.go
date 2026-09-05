@@ -1031,6 +1031,9 @@ func (o *Orchestrator) reviewBundle(ctx context.Context, root TaskRecord, design
 			"A reference authorized for one deliverable does not authorize a claim made by another: each deliverable saw different code.",
 			"A claim of that kind with no authorized repository citation is a finding of kind unverifiable_repository_claim.",
 			"Do not infer that a repository citation exists merely because the candidate design names a file or path.",
+			"Repository references are opaque authorized identifiers, not source bodies. Authorization proves that the designer received the cited range, not that every semantic claim about it is true.",
+			"The host may supply overlapping fixed-width windows containing multiple declarations or both a declaration and a call site. Equal window lengths, overlap or reuse alone do not prove a contradiction or citation defect; identify a concrete contradiction in the supplied candidate instead.",
+			"Do not invent replacement line ranges or demand that a designer cite a range absent from its authorized supply. If a semantic source check needs code you cannot see, record it as an unverified assumption requiring authorized verification, not as a proven source defect or a proven success.",
 		},
 		AuthorityConstraints: []string{
 			"The reviewer publishes findings; it does not approve, adjudicate or freeze.",
