@@ -24,7 +24,7 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const wantCount = 63
+	const wantCount = 66
 	if len(loaded) != wantCount {
 		t.Fatalf("migration count=%d want %d", len(loaded), wantCount)
 	}
@@ -94,6 +94,10 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		// obligation staying durably in force from its raw evidence needing
 		// to be re-paid every design round.
 		63: "create_evidence_proofs",
+		// MEMORYOS-PHASE-1:
+		64: "create_execution_run_descriptors",
+		65: "create_memoryos_episodes",
+		66: "create_memoryos_clusters",
 	}
 	byVersion := make(map[int64]string, len(loaded))
 	for _, migration := range loaded {
