@@ -290,26 +290,7 @@ func (o *Orchestrator) Submit(ctx context.Context, request SubmitRequest) (Run, 
 }
 
 func (o *Orchestrator) Status(ctx context.Context, rootTaskID int64) (Run, error) {
-	root, err := o.tasks.GetTask(ctx, rootTaskID)
-	if err != nil {
-		return Run{}, err
-	}
-	if root.AssignedRoleID != CEORoleID || root.CorrelationID == "" {
-		return Run{}, fmt.Errorf("%w: task is not an executive root", ErrInvalidInput)
-	}
-	tasks, err := o.tasks.ListByCorrelation(ctx, root.CorrelationID)
-	if err != nil {
-		return Run{}, err
-	}
-	run := ProjectRun(root, withoutRoot(tasks, root.ID))
-	if closure, ok := findTaskByMarker(tasks, keyClosureMarker); ok && closure.Status == "completed" {
-		if result, ok := o.resultForCompletedTask(ctx, closure); ok {
-			if parsed, parseErr := ParseExecutiveClosure(result.JSONOutput, o.limits); parseErr == nil {
-				run.AnswerToOwner = parsed.AnswerToOwner
-			}
-		}
-	}
-	return run, nil
+	return ReadStatus(ctx, o.tasks, o.models, rootTaskID, o.limits)
 }
 
 func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error) {
@@ -1421,7 +1402,8 @@ FORBIDDEN  copying source text out of the evidence: a pasted line, a pasted
 
 A deliverable that reproduces source is refused as a whole, and the campaign
 stops there. Describing the code precisely and citing where it lives is
-always sufficient -- the reviewer can read the citation itself.`
+preserves the egress boundary. The reviewer sees the citation identifier, not
+the source body; do not claim that reference authorization proves semantics.`
 
 // repositoryGroundedCampaign reports whether this campaign's workers can see
 // the repository at all. It mirrors repositoryGrounding's own gate on purpose:
@@ -2532,19 +2514,7 @@ func (o *Orchestrator) validateRunCompletionEvidence(ctx context.Context, root T
 }
 
 func (o *Orchestrator) resultForCompletedTask(ctx context.Context, task TaskRecord) (InvocationResult, bool) {
-	attemptID := latestFinishedAttemptID(task.Attempts)
-	if attemptID == 0 {
-		return InvocationResult{}, false
-	}
-	invocations, err := o.models.FindTaskAttemptInvocations(ctx, task.ID, attemptID)
-	if err != nil || len(invocations) != 1 || invocations[0].Status != "succeeded" {
-		return InvocationResult{}, false
-	}
-	result, err := o.models.GetResult(ctx, invocations[0].ID)
-	if err != nil {
-		return InvocationResult{}, false
-	}
-	return result, true
+	return completedTaskResult(ctx, o.models, task)
 }
 
 // handlePhaseError decides whether a phase failure is a durable statement
