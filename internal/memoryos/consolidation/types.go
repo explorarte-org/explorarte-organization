@@ -36,6 +36,16 @@ const (
 	SourceBoundary        = "internal/memoryos/consolidation"
 )
 
+type SemanticOwner string
+
+const (
+	SemanticOwnerSleep    SemanticOwner = "sleep"
+	SemanticOwnerMemoryOS SemanticOwner = "memoryos"
+	DefaultSemanticOwner  SemanticOwner = SemanticOwnerSleep
+
+	SemanticSkipReasonNotOwner = "not_semantic_owner"
+)
+
 // These aliases keep consolidation coupled to the canonical Episode domain,
 // so a consumer cannot accidentally project a second, divergent episode
 // schema. Bodies remain absent from the domain types by construction.
@@ -135,23 +145,27 @@ type Failure struct {
 }
 
 type Result struct {
-	WindowStart                 time.Time `json:"window_start"`
-	WindowEnd                   time.Time `json:"window_end"`
-	EpisodesSeen                int       `json:"episodes_seen"`
-	EpisodesProjected           int       `json:"episodes_projected"`
-	EpisodesReused              int       `json:"episodes_reused"`
-	SemanticGroups              int       `json:"semantic_groups"`
-	SemanticCandidates          int       `json:"semantic_candidates"`
-	SemanticReused              int       `json:"semantic_reused"`
-	CorrectiveClusters          int       `json:"corrective_clusters"`
-	CorrectiveCandidates        int       `json:"corrective_candidates"`
-	CorrectiveReused            int       `json:"corrective_reused"`
-	MixedBindingEpisodes        int       `json:"mixed_binding_episodes"`
-	EpisodesWithoutVerification int       `json:"episodes_without_verification"`
-	Failures                    []Failure `json:"failures"`
+	WindowStart                 time.Time     `json:"window_start"`
+	WindowEnd                   time.Time     `json:"window_end"`
+	EpisodesSeen                int           `json:"episodes_seen"`
+	EpisodesProjected           int           `json:"episodes_projected"`
+	EpisodesReused              int           `json:"episodes_reused"`
+	SemanticOwner               SemanticOwner `json:"semantic_owner"`
+	SemanticGroups              int           `json:"semantic_groups"`
+	SemanticCandidates          int           `json:"semantic_candidates"`
+	SemanticReused              int           `json:"semantic_reused"`
+	SemanticSkippedNotOwner     bool          `json:"semantic_skipped_not_owner"`
+	SemanticSkipReason          string        `json:"semantic_skip_reason,omitempty"`
+	CorrectiveClusters          int           `json:"corrective_clusters"`
+	CorrectiveCandidates        int           `json:"corrective_candidates"`
+	CorrectiveReused            int           `json:"corrective_reused"`
+	MixedBindingEpisodes        int           `json:"mixed_binding_episodes"`
+	EpisodesWithoutVerification int           `json:"episodes_without_verification"`
+	Failures                    []Failure     `json:"failures"`
 }
 
 type Config struct {
+	SemanticOwner           SemanticOwner
 	MinSemanticRecurrence   int
 	MinCorrectiveRecurrence int
 	MaxEpisodes             int
@@ -162,6 +176,7 @@ type Config struct {
 
 func DefaultConfig() Config {
 	return Config{
+		SemanticOwner:           SemanticOwnerSleep,
 		MinSemanticRecurrence:   3,
 		MinCorrectiveRecurrence: 3,
 		MaxEpisodes:             2048,
@@ -171,6 +186,9 @@ func DefaultConfig() Config {
 }
 
 func (c Config) Validate() error {
+	if c.SemanticOwner != "" && c.SemanticOwner != SemanticOwnerSleep && c.SemanticOwner != SemanticOwnerMemoryOS {
+		return fmt.Errorf("memoryos: invalid semantic owner %q (allowed: %q, %q)", c.SemanticOwner, SemanticOwnerSleep, SemanticOwnerMemoryOS)
+	}
 	if c.MinSemanticRecurrence < 2 || c.MinSemanticRecurrence > 1000 || c.MinCorrectiveRecurrence < 2 || c.MinCorrectiveRecurrence > 1000 {
 		return errors.New("memoryos: recurrence thresholds are outside allowed range")
 	}

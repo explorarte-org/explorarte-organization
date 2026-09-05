@@ -249,7 +249,11 @@ func runMemoryOSConsolidate(args []string, stdout, stderr io.Writer) int {
 	} else {
 		fmt.Fprintf(stdout, "MemoryOS Consolidation Results (%s to %s):\n", result.WindowStart.Format(time.RFC3339), result.WindowEnd.Format(time.RFC3339))
 		fmt.Fprintf(stdout, "  Episodes Seen: %d (Projected: %d, Reused: %d)\n", result.EpisodesSeen, result.EpisodesProjected, result.EpisodesReused)
-		fmt.Fprintf(stdout, "  Semantic Candidates: %d (Reused: %d, Groups: %d)\n", result.SemanticCandidates, result.SemanticReused, result.SemanticGroups)
+		if result.SemanticSkippedNotOwner {
+			fmt.Fprintf(stdout, "  Semantic Candidates: 0 (skipped: owner is %s, reason: %s, groups: %d)\n", result.SemanticOwner, result.SemanticSkipReason, result.SemanticGroups)
+		} else {
+			fmt.Fprintf(stdout, "  Semantic Candidates: %d (Reused: %d, Groups: %d)\n", result.SemanticCandidates, result.SemanticReused, result.SemanticGroups)
+		}
 		fmt.Fprintf(stdout, "  Corrective Candidates: %d (Reused: %d, Clusters: %d)\n", result.CorrectiveCandidates, result.CorrectiveReused, result.CorrectiveClusters)
 		fmt.Fprintf(stdout, "  Mixed Binding Episodes: %d\n", result.MixedBindingEpisodes)
 		fmt.Fprintf(stdout, "  Episodes Without Verification: %d\n", result.EpisodesWithoutVerification)

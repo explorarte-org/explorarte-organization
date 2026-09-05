@@ -348,6 +348,7 @@ func TestSemanticConsolidationCandidateOnlyAndMixedBinding(t *testing.T) {
 	semanticProposer := newMemorySemanticProposer()
 
 	cfg := consolidation.DefaultConfig()
+	cfg.SemanticOwner = consolidation.SemanticOwnerMemoryOS
 	cfg.MinSemanticRecurrence = 3
 
 	svc, err := consolidation.NewService(reader, clusterStore, semanticProposer, nil, cfg)
@@ -447,6 +448,7 @@ func TestPartialFailureIsolationSemantic(t *testing.T) {
 	}
 
 	cfg := consolidation.DefaultConfig()
+	cfg.SemanticOwner = consolidation.SemanticOwnerMemoryOS
 	cfg.MinSemanticRecurrence = 3
 
 	svc, err := consolidation.NewService(reader, clusterStore, semanticProposer, nil, cfg)

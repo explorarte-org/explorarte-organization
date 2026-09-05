@@ -28,6 +28,9 @@ func NewService(reader EpisodeReader, clusters ClusterStore, semantic SemanticPr
 	if semantic == nil && corrective == nil {
 		return nil, errors.New("memoryos: at least one candidate proposer is required")
 	}
+	if config.SemanticOwner == "" {
+		config.SemanticOwner = SemanticOwnerSleep
+	}
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
@@ -67,6 +70,7 @@ func (s *Service) Consolidate(ctx context.Context, organizationID string, from, 
 			result.EpisodesWithoutVerification++
 		}
 	}
+	result.SemanticOwner = s.config.SemanticOwner
 	if s.semantic != nil {
 		s.semanticPass(ctx, organizationID, valid, &result)
 	}
@@ -144,6 +148,12 @@ func canonicalEpisodes(organizationID string, input []episode.Episode) ([]episod
 }
 
 func (s *Service) semanticPass(ctx context.Context, organizationID string, episodes []episode.Episode, result *Result) {
+	owner := s.config.SemanticOwner
+	if owner == "" {
+		owner = SemanticOwnerSleep
+	}
+	result.SemanticOwner = owner
+
 	groups := make(map[SemanticGroupKey][]episode.Episode)
 	for _, current := range episodes {
 		// Positive semantic consolidation requires an actual completion pass,
@@ -161,6 +171,17 @@ func (s *Service) semanticPass(ctx context.Context, organizationID string, episo
 	}
 	sort.Slice(keys, func(i, j int) bool { return keys[i].String() < keys[j].String() })
 	result.SemanticGroups = len(keys)
+
+	// Structural single-owner check:
+	// If MemoryOS is not designated as the active semantic owner (Sleep remains
+	// the active owner for Phase 1), observe and report semantic groups, but do
+	// not emit candidate proposals into RAG staging.
+	if owner != SemanticOwnerMemoryOS {
+		result.SemanticSkippedNotOwner = true
+		result.SemanticSkipReason = SemanticSkipReasonNotOwner
+		return
+	}
+
 	for _, key := range keys {
 		members := uniqueEpisodes(groups[key])
 		if len(members) < s.config.MinSemanticRecurrence {
