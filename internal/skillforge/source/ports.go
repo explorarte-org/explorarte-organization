@@ -15,6 +15,7 @@ var (
 	ErrInvalidOrigin         = errors.New("invalid origin specification")
 	ErrPinnedCommitNotFound  = errors.New("pinned commit not found in repository")
 	ErrPinnedPathNotFound    = errors.New("path not found in pinned commit")
+	ErrInvalidRuntimeRoot    = errors.New("runtime root cannot contain git authority or overlap with source repo root")
 
 	githubPinnedPattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+@[0-9a-f]{40}$`)
 )
@@ -58,6 +59,12 @@ type PinnedSourceArtifact struct {
 // from an exact pinned commit object without consulting mutable working trees or live network.
 type PinnedSourceReader interface {
 	ReadPinned(ctx context.Context, ref PinnedSourceRef) (PinnedSourceArtifact, error)
+}
+
+// RepoRootHolder is an optional interface implemented by repository-backed source readers
+// to allow the materializer to enforce isolation between source repo root and runtime root.
+type RepoRootHolder interface {
+	SourceRepoRoot() string
 }
 
 type MaterializeRequest struct {

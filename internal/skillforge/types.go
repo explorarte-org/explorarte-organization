@@ -68,11 +68,12 @@ type SearchRecord struct {
 }
 
 type AuthorRecord struct {
-	SkillID          string                 `json:"skill_id"`
-	CandidateBytes   []byte                 `json:"candidate_bytes"`
-	Manifest         skillregistry.Manifest `json:"manifest"`
-	ContentDigest    string                 `json:"content_digest"`
-	AuthorProfileRef string                 `json:"author_profile_ref"`
+	SkillID            string                 `json:"skill_id"`
+	CandidateBytes     []byte                 `json:"candidate_bytes"`
+	Manifest           skillregistry.Manifest `json:"manifest"`
+	ContentDigest      string                 `json:"content_digest"`
+	AuthorProfileRef   string                 `json:"author_profile_ref"`
+	AuthorHarnessRunID string                 `json:"author_harness_run_id,omitempty"`
 }
 
 type ValidationResult struct {
@@ -90,6 +91,11 @@ type EvaluationResult struct {
 	CandidateSourceHash    string             `json:"candidate_source_hash"`
 	BaselineVersionID      string             `json:"baseline_version_id,omitempty"`
 	SuiteRef               string             `json:"suite_ref"`
+	ExecutionProfileID     string             `json:"execution_profile_id,omitempty"`
+	ContextSnapshotID      string             `json:"context_snapshot_id,omitempty"`
+	BaselineHarnessRunID   string             `json:"baseline_harness_run_id,omitempty"`
+	CandidateHarnessRunID  string             `json:"candidate_harness_run_id,omitempty"`
+	CanaryHarnessRunID     string             `json:"canary_harness_run_id,omitempty"`
 	Metrics                map[string]float64 `json:"metrics,omitempty"`
 	AdversarialVerdict     string             `json:"adversarial_verdict"` // pass / fail
 	CanaryVerdict          string             `json:"canary_verdict"`      // pass / fail

@@ -29,6 +29,26 @@ func NewLocalMaterializer(skillsRoot string, reader PinnedSourceReader) (*LocalM
 	if err != nil {
 		return nil, fmt.Errorf("resolve skills root: %w", err)
 	}
+
+	// 1. Runtime root must contain NO git authority (.git directory or file)
+	gitPath := filepath.Join(abs, ".git")
+	if _, err := os.Stat(gitPath); err == nil {
+		return nil, fmt.Errorf("%w: runtime root %q contains .git authority", ErrInvalidRuntimeRoot, abs)
+	}
+
+	// 2. Runtime root must NOT overlap with or be identical to source repo root
+	if holder, ok := reader.(RepoRootHolder); ok {
+		repoDir := holder.SourceRepoRoot()
+		if repoDir != "" {
+			absRepo, err := filepath.Abs(repoDir)
+			if err == nil {
+				if abs == absRepo || strings.HasPrefix(abs, absRepo+string(filepath.Separator)) || strings.HasPrefix(absRepo, abs+string(filepath.Separator)) {
+					return nil, fmt.Errorf("%w: runtime root %q overlaps with source repo root %q", ErrInvalidRuntimeRoot, abs, absRepo)
+				}
+			}
+		}
+	}
+
 	return &LocalMaterializer{skillsRoot: abs, reader: reader}, nil
 }
 
@@ -75,7 +95,7 @@ func (m *LocalMaterializer) Materialize(ctx context.Context, req MaterializeRequ
 		return skillregistry.SourceRecord{}, fmt.Errorf("%w: expected normalized %s, got %s", ErrDigestMismatch, req.ExpectedNormSHA, normSHA)
 	}
 
-	// 6. Write to destination under skillsRoot
+	// 6. Write to destination under skillsRoot (SkillRuntimeRoot)
 	destPath := filepath.Join(m.skillsRoot, cleanPath)
 	rel, err := filepath.Rel(m.skillsRoot, destPath)
 	if err != nil || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {

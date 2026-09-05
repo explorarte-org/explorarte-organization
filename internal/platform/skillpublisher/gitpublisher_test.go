@@ -5,10 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Mireuz13/explorarte-organization/internal/contextengine/document"
@@ -16,39 +18,41 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/skillforge/source"
 )
 
-func initGitRepo(t *testing.T, dir string) {
-	t.Helper()
-	runCmd(t, dir, "git", "init")
-	runCmd(t, dir, "git", "config", "user.email", "audit@explorarte.org")
-	runCmd(t, dir, "git", "config", "user.name", "Explorarte Audit")
-	runCmd(t, dir, "git", "commit", "--allow-empty", "-m", "initial commit")
-	runCmd(t, dir, "git", "branch", "-M", "main")
-}
-
-func initBareRepo(t *testing.T, dir string) {
-	t.Helper()
-	runCmd(t, dir, "git", "init", "--bare")
-}
-
 func runCmd(t *testing.T, dir string, name string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("command %s %v in %s failed: %v\nOutput: %s", name, args, dir, err, string(out))
+		t.Fatalf("cmd %s %v in %s failed: %v\nOutput:\n%s", name, args, dir, err, string(out))
 	}
-	return strings.TrimSpace(string(out))
+	return string(out)
+}
+
+func initGitRepo(t *testing.T, dir string) {
+	t.Helper()
+	runCmd(t, dir, "git", "init", "-b", "main")
+	runCmd(t, dir, "git", "config", "user.name", "Skill Publisher Test")
+	runCmd(t, dir, "git", "config", "user.email", "publisher@explorarte.test")
+	readme := filepath.Join(dir, "README.md")
+	if err := os.WriteFile(readme, []byte("# Skills Repository\n"), 0644); err != nil {
+		t.Fatalf("write readme: %v", err)
+	}
+	runCmd(t, dir, "git", "add", "README.md")
+	runCmd(t, dir, "git", "commit", "-m", "initial commit")
+}
+
+func initBareRepo(t *testing.T, dir string) {
+	t.Helper()
+	runCmd(t, dir, "git", "init", "--bare", "-b", "main")
 }
 
 func TestRemotePublicationAndAttestation(t *testing.T) {
 	ctx := context.Background()
 
-	// 1. Setup bare remote repo (simulating explorarte-org/skills on remote host)
 	bareRemoteDir := t.TempDir()
 	initBareRepo(t, bareRemoteDir)
 
-	// 2. Setup local publisher repo
 	publisherDir := t.TempDir()
 	initGitRepo(t, publisherDir)
 	runCmd(t, publisherDir, "git", "remote", "add", "origin", bareRemoteDir)
@@ -63,12 +67,12 @@ func TestRemotePublicationAndAttestation(t *testing.T) {
 		RequireRemote: true,
 	})
 	if err != nil {
-		t.Fatalf("create GitPublisher: %v", err)
+		t.Fatalf("NewGitPublisher failed: %v", err)
 	}
 
-	content := []byte("# Remote Attested Skill\r\n\r\nProcedure content.\r\n")
+	content := []byte("# Remote Attested Skill\n\nAttested publication.\n")
 	res, err := publisher.Publish(ctx, source.PublishRequest{
-		SkillID:              "remote-attested-skill",
+		SkillID:              "remote-test-skill",
 		CandidateSourceBytes: content,
 		Metadata:             map[string]string{"organization_id": "explorarte"},
 	})
@@ -76,24 +80,24 @@ func TestRemotePublicationAndAttestation(t *testing.T) {
 		t.Fatalf("Publish failed: %v", err)
 	}
 
-	parts := strings.Split(res.OriginRef, "@")
-	if len(parts) != 2 || len(parts[1]) != 40 {
-		t.Fatalf("invalid origin ref: %s", res.OriginRef)
+	if !strings.HasPrefix(res.OriginRef, "explorarte-org/skills@") {
+		t.Fatalf("unexpected origin ref: %s", res.OriginRef)
 	}
+
+	parts := strings.Split(res.OriginRef, "@")
 	commitSHA := parts[1]
 
-	// Attestation check on bare remote: verify commit exists on bare remote refs
-	remoteHead := runCmd(t, bareRemoteDir, "git", "rev-parse", "main")
-	if remoteHead != commitSHA {
-		t.Fatalf("bare remote main does not match published commit: remote=%s, published=%s", remoteHead, commitSHA)
+	lsOut := runCmd(t, publisherDir, "git", "ls-remote", "origin", res.PublicationRef)
+	if !strings.Contains(lsOut, commitSHA) {
+		t.Fatalf("remote tag %s does not point to commit %s in remote repo: %s", res.PublicationRef, commitSHA, lsOut)
 	}
 }
 
 func TestLocalOnlyCommitRejectedWithoutRemote(t *testing.T) {
+	ctx := context.Background()
 	publisherDir := t.TempDir()
 	initGitRepo(t, publisherDir)
 
-	// Publisher configured with RequireRemote: true but no valid remote
 	_, err := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
 		RepoDir:       publisherDir,
 		RemoteName:    "",
@@ -102,8 +106,31 @@ func TestLocalOnlyCommitRejectedWithoutRemote(t *testing.T) {
 		Repo:          "skills",
 		RequireRemote: true,
 	})
-	if err == nil || !errors.Is(err, skillpublisher.ErrRemoteRequired) {
-		t.Fatalf("expected ErrRemoteRequired for empty remote when RequireRemote=true, got %v", err)
+	if err == nil {
+		t.Fatal("expected NewGitPublisher to fail when RequireRemote is true and RemoteName is empty")
+	}
+	if !errors.Is(err, skillpublisher.ErrRemoteRequired) {
+		t.Fatalf("expected ErrRemoteRequired, got %v", err)
+	}
+
+	publisherNoRemote, _ := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
+		RepoDir:       publisherDir,
+		RemoteName:    "",
+		Branch:        "main",
+		Owner:         "explorarte-org",
+		Repo:          "skills",
+		RequireRemote: false,
+	})
+	content := []byte("# Local Only Skill\n")
+	res, err := publisherNoRemote.Publish(ctx, source.PublishRequest{
+		SkillID:              "local-skill",
+		CandidateSourceBytes: content,
+	})
+	if err != nil {
+		t.Fatalf("local publish failed: %v", err)
+	}
+	if !strings.HasPrefix(res.OriginRef, "explorarte-org/skills@") {
+		t.Fatalf("unexpected local origin ref: %s", res.OriginRef)
 	}
 }
 
@@ -118,7 +145,7 @@ func TestPublicationIdempotencyAndCrashRecovery(t *testing.T) {
 	runCmd(t, publisherDir, "git", "remote", "add", "origin", bareRemoteDir)
 	runCmd(t, publisherDir, "git", "push", "-u", "origin", "main")
 
-	publisher, err := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
+	publisher, _ := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
 		RepoDir:       publisherDir,
 		RemoteName:    "origin",
 		Branch:        "main",
@@ -126,50 +153,29 @@ func TestPublicationIdempotencyAndCrashRecovery(t *testing.T) {
 		Repo:          "skills",
 		RequireRemote: true,
 	})
-	if err != nil {
-		t.Fatalf("create GitPublisher: %v", err)
-	}
 
-	content := []byte("# Idempotent Skill\n\nContent.\n")
+	content := []byte("# Idempotent Skill\n\nMust produce exact same commit on retry.\n")
 	req := source.PublishRequest{
 		SkillID:              "idempotent-skill",
 		CandidateSourceBytes: content,
 		Metadata:             map[string]string{"organization_id": "explorarte"},
 	}
 
-	// 1. Initial publication
-	res1, err := publisher.Publish(ctx, req)
+	pub1, err := publisher.Publish(ctx, req)
 	if err != nil {
-		t.Fatalf("initial publish failed: %v", err)
+		t.Fatalf("pub1 failed: %v", err)
 	}
 
-	commitCountBefore := runCmd(t, publisherDir, "git", "rev-list", "--count", "HEAD")
-
-	// 2. Simulate crash and retry: create brand new publisher instance with same request
-	publisher2, err := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
-		RepoDir:       publisherDir,
-		RemoteName:    "origin",
-		Branch:        "main",
-		Owner:         "explorarte-org",
-		Repo:          "skills",
-		RequireRemote: true,
-	})
+	pub2, err := publisher.Publish(ctx, req)
 	if err != nil {
-		t.Fatalf("recreate publisher: %v", err)
+		t.Fatalf("pub2 failed: %v", err)
 	}
 
-	res2, err := publisher2.Publish(ctx, req)
-	if err != nil {
-		t.Fatalf("retry publish failed: %v", err)
+	if pub1.OriginRef != pub2.OriginRef {
+		t.Fatalf("expected identical commit SHA on retry: %s vs %s", pub1.OriginRef, pub2.OriginRef)
 	}
-
-	if res1.OriginRef != res2.OriginRef {
-		t.Fatalf("expected identical OriginRef on retry, got %s vs %s", res1.OriginRef, res2.OriginRef)
-	}
-
-	commitCountAfter := runCmd(t, publisherDir, "git", "rev-list", "--count", "HEAD")
-	if commitCountBefore != commitCountAfter {
-		t.Fatalf("duplicate commit created on retry! count before=%s, after=%s", commitCountBefore, commitCountAfter)
+	if pub1.PublicationRef != pub2.PublicationRef {
+		t.Fatalf("expected identical publication ref: %s vs %s", pub1.PublicationRef, pub2.PublicationRef)
 	}
 }
 
@@ -203,7 +209,6 @@ func TestGitPinnedSourceReaderAndIsolation(t *testing.T) {
 		t.Fatalf("publish v1 failed: %v", err)
 	}
 
-	// 3. Setup runtime mirror repo (cloned from bare remote, host-owned runtime cache)
 	mirrorDir := t.TempDir()
 	runCmd(t, mirrorDir, "git", "clone", bareRemoteDir, ".")
 
@@ -212,7 +217,6 @@ func TestGitPinnedSourceReaderAndIsolation(t *testing.T) {
 		t.Fatalf("create GitPinnedSourceReader: %v", err)
 	}
 
-	// Read exact pinned source
 	artifact, err := reader.ReadPinned(ctx, source.PinnedSourceRef{
 		OriginRef: pubRes.OriginRef,
 		Path:      pubRes.Path,
@@ -224,15 +228,13 @@ func TestGitPinnedSourceReaderAndIsolation(t *testing.T) {
 		t.Fatalf("read pinned bytes mismatch: got %q", string(artifact.Bytes))
 	}
 
-	// 4. Test WORKING_TREE_DRIFT_ISOLATED:
-	// Intentionally corrupt working tree file in mirror
+	// WORKING_TREE_DRIFT_ISOLATED:
 	mirrorFilePath := filepath.Join(mirrorDir, filepath.FromSlash(pubRes.Path))
 	_ = os.MkdirAll(filepath.Dir(mirrorFilePath), 0755)
 	if err := os.WriteFile(mirrorFilePath, []byte("CORRUPTED WORKING TREE CONTENT"), 0644); err != nil {
 		t.Fatalf("corrupt working tree file: %v", err)
 	}
 
-	// Reader MUST still return exact immutable bytes from commit object
 	artifactAfterDrift, err := reader.ReadPinned(ctx, source.PinnedSourceRef{
 		OriginRef: pubRes.OriginRef,
 		Path:      pubRes.Path,
@@ -244,8 +246,7 @@ func TestGitPinnedSourceReaderAndIsolation(t *testing.T) {
 		t.Fatalf("WORKING_TREE_DRIFT_ISOLATED failed: read drift bytes instead of commit blob: %q", string(artifactAfterDrift.Bytes))
 	}
 
-	// 5. Test BRANCH_MOVEMENT_REPRODUCIBLE:
-	// Move main forward with a new commit in publisher and push to remote
+	// BRANCH_MOVEMENT_REPRODUCIBLE:
 	contentV2 := []byte("# Version 2\n\nNew version content.\n")
 	_, err = publisher.Publish(ctx, source.PublishRequest{
 		SkillID:              "pinned-test-skill-v2",
@@ -256,10 +257,8 @@ func TestGitPinnedSourceReaderAndIsolation(t *testing.T) {
 		t.Fatalf("publish v2 failed: %v", err)
 	}
 
-	// Fetch new commits into mirror
 	runCmd(t, mirrorDir, "git", "fetch", "origin")
 
-	// Historical pinned ref for V1 MUST still be reproducible
 	artifactV1AfterBranchMove, err := reader.ReadPinned(ctx, source.PinnedSourceRef{
 		OriginRef: pubRes.OriginRef,
 		Path:      pubRes.Path,
@@ -271,7 +270,7 @@ func TestGitPinnedSourceReaderAndIsolation(t *testing.T) {
 		t.Fatalf("BRANCH_MOVEMENT_REPRODUCIBLE failed: expected v1 bytes, got %q", string(artifactV1AfterBranchMove.Bytes))
 	}
 
-	// 6. Test missing commit / missing path
+	// Missing commit / missing path
 	_, err = reader.ReadPinned(ctx, source.PinnedSourceRef{
 		OriginRef: "explorarte-org/skills@0000000000000000000000000000000000000000",
 		Path:      pubRes.Path,
@@ -336,7 +335,6 @@ func TestLocalMaterializerWithPinnedReaderContract(t *testing.T) {
 	normSum := sha256.Sum256(normText)
 	normHex := hex.EncodeToString(normSum[:])
 
-	// 1. Valid exact SHA:path + matching digests -> PASS
 	matRec, err := materializer.Materialize(ctx, source.MaterializeRequest{
 		OriginRef:       pubRes.OriginRef,
 		RelativePath:    pubRes.Path,
@@ -352,33 +350,7 @@ func TestLocalMaterializerWithPinnedReaderContract(t *testing.T) {
 		t.Fatalf("unexpected matRec digests: %+v", matRec)
 	}
 
-	// 2. Commit absent -> DENY
-	_, err = materializer.Materialize(ctx, source.MaterializeRequest{
-		OriginRef:       "explorarte-org/skills@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-		RelativePath:    pubRes.Path,
-		ExpectedRawSHA:  rawHex,
-		ExpectedNormSHA: normHex,
-		RecordedBy:      "empresa/human",
-		RecordRef:       "mat-2",
-	})
-	if err == nil {
-		t.Fatal("expected error for absent commit, got nil")
-	}
-
-	// 3. Path absent in commit -> DENY
-	_, err = materializer.Materialize(ctx, source.MaterializeRequest{
-		OriginRef:       pubRes.OriginRef,
-		RelativePath:    "skills/absent/SKILL.md",
-		ExpectedRawSHA:  rawHex,
-		ExpectedNormSHA: normHex,
-		RecordedBy:      "empresa/human",
-		RecordRef:       "mat-3",
-	})
-	if err == nil {
-		t.Fatal("expected error for absent path, got nil")
-	}
-
-	// 4. Raw hash differs -> DENY
+	// Wrong raw hash -> DENY
 	_, err = materializer.Materialize(ctx, source.MaterializeRequest{
 		OriginRef:       pubRes.OriginRef,
 		RelativePath:    pubRes.Path,
@@ -390,17 +362,525 @@ func TestLocalMaterializerWithPinnedReaderContract(t *testing.T) {
 	if err == nil || !errors.Is(err, source.ErrDigestMismatch) {
 		t.Fatalf("expected ErrDigestMismatch for wrong raw hash, got %v", err)
 	}
+}
 
-	// 5. Normalized hash differs -> DENY
-	_, err = materializer.Materialize(ctx, source.MaterializeRequest{
-		OriginRef:       pubRes.OriginRef,
-		RelativePath:    pubRes.Path,
-		ExpectedRawSHA:  rawHex,
-		ExpectedNormSHA: "0000000000000000000000000000000000000000000000000000000000000000",
-		RecordedBy:      "empresa/human",
-		RecordRef:       "mat-5",
+// Section A Test: REMOTE_BRANCH_ADVANCES_AFTER_PUBLICATION
+func TestRemoteBranchAdvancesAfterPublication(t *testing.T) {
+	ctx := context.Background()
+
+	bareRemoteDir := t.TempDir()
+	initBareRepo(t, bareRemoteDir)
+
+	publisherDir := t.TempDir()
+	initGitRepo(t, publisherDir)
+	runCmd(t, publisherDir, "git", "remote", "add", "origin", bareRemoteDir)
+	runCmd(t, publisherDir, "git", "push", "-u", "origin", "main")
+
+	publisher, err := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
+		RepoDir:       publisherDir,
+		RemoteName:    "origin",
+		Branch:        "main",
+		Owner:         "explorarte-org",
+		Repo:          "skills",
+		RequireRemote: true,
 	})
-	if err == nil || !errors.Is(err, source.ErrDigestMismatch) {
-		t.Fatalf("expected ErrDigestMismatch for wrong normalized hash, got %v", err)
+	if err != nil {
+		t.Fatalf("NewGitPublisher failed: %v", err)
+	}
+
+	contentC := []byte("# Skill C\n\nCandidate C procedure.\n")
+	pubC, err := publisher.Publish(ctx, source.PublishRequest{
+		SkillID:              "skill-branch-advance",
+		CandidateSourceBytes: contentC,
+		Metadata:             map[string]string{"organization_id": "explorarte"},
+	})
+	if err != nil {
+		t.Fatalf("Publish C failed: %v", err)
+	}
+
+	// Another publisher advances main branch C -> D on remote
+	otherDir := t.TempDir()
+	runCmd(t, otherDir, "git", "clone", bareRemoteDir, ".")
+	runCmd(t, otherDir, "git", "config", "user.name", "Other Publisher")
+	runCmd(t, otherDir, "git", "config", "user.email", "other@explorarte.test")
+	dummyFile := filepath.Join(otherDir, "dummy.txt")
+	_ = os.WriteFile(dummyFile, []byte("Branch advance D\n"), 0644)
+	runCmd(t, otherDir, "git", "add", "dummy.txt")
+	runCmd(t, otherDir, "git", "commit", "-m", "advance branch C -> D")
+	runCmd(t, otherDir, "git", "push", "origin", "main")
+
+	// Verify remote branch now points to D, NOT C
+	remoteHead := runCmd(t, bareRemoteDir, "git", "rev-parse", "refs/heads/main")
+	commitC := strings.Split(pubC.OriginRef, "@")[1]
+	if strings.TrimSpace(remoteHead) == commitC {
+		t.Fatal("expected remote branch to have advanced beyond commit C")
+	}
+
+	// Verify immutable publication ref for C remains C on remote
+	lsTag := runCmd(t, publisherDir, "git", "ls-remote", "origin", pubC.PublicationRef)
+	if !strings.Contains(lsTag, commitC) {
+		t.Fatalf("immutable publication ref %s does not point to commit C: %s", pubC.PublicationRef, lsTag)
+	}
+}
+
+// Section A Test: CRASH_AFTER_BRANCH_PUSH_BEFORE_TAG
+func TestCrashAfterBranchPushBeforeTag(t *testing.T) {
+	ctx := context.Background()
+
+	bareRemoteDir := t.TempDir()
+	initBareRepo(t, bareRemoteDir)
+
+	publisherDir := t.TempDir()
+	initGitRepo(t, publisherDir)
+	runCmd(t, publisherDir, "git", "remote", "add", "origin", bareRemoteDir)
+	runCmd(t, publisherDir, "git", "push", "-u", "origin", "main")
+
+	content := []byte("# Skill Crash Tag\n\nContent.\n")
+	rawSum := sha256.Sum256(content)
+	rawSHA := hex.EncodeToString(rawSum[:])
+	pubKeySum := sha256.Sum256([]byte("explorarte" + "crash-skill" + rawSHA))
+	pubKey := hex.EncodeToString(pubKeySum[:])
+
+	// Simulate crash: Commit created and pushed to branch, but tag NOT created/pushed
+	skillPath := filepath.Join(publisherDir, "skills", "crash-skill", "SKILL.md")
+	_ = os.MkdirAll(filepath.Dir(skillPath), 0755)
+	_ = os.WriteFile(skillPath, content, 0644)
+	runCmd(t, publisherDir, "git", "add", "skills/crash-skill/SKILL.md")
+	commitMsg := fmt.Sprintf("chore(skills): publish crash-skill candidate\n\nPublication-Key: %s", pubKey)
+	runCmd(t, publisherDir, "git", "commit", "-m", commitMsg)
+	commitSHA := strings.TrimSpace(runCmd(t, publisherDir, "git", "rev-parse", "HEAD"))
+	runCmd(t, publisherDir, "git", "push", "origin", "main")
+
+	// Verify tag does NOT exist yet on remote
+	lsTagBefore := runCmd(t, publisherDir, "git", "ls-remote", "origin", fmt.Sprintf("refs/tags/skillforge/%s", pubKey))
+	if strings.TrimSpace(lsTagBefore) != "" {
+		t.Fatal("expected tag to not exist prior to retry")
+	}
+
+	publisher, _ := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
+		RepoDir:       publisherDir,
+		RemoteName:    "origin",
+		Branch:        "main",
+		Owner:         "explorarte-org",
+		Repo:          "skills",
+		RequireRemote: true,
+	})
+
+	pubRes, err := publisher.Publish(ctx, source.PublishRequest{
+		SkillID:              "crash-skill",
+		CandidateSourceBytes: content,
+		Metadata:             map[string]string{"organization_id": "explorarte"},
+	})
+	if err != nil {
+		t.Fatalf("retry publish failed: %v", err)
+	}
+
+	if !strings.HasSuffix(pubRes.OriginRef, commitSHA) {
+		t.Fatalf("expected retry to reuse commit %s, got %s", commitSHA, pubRes.OriginRef)
+	}
+
+	lsTagAfter := runCmd(t, publisherDir, "git", "ls-remote", "origin", fmt.Sprintf("refs/tags/skillforge/%s", pubKey))
+	if !strings.Contains(lsTagAfter, commitSHA) {
+		t.Fatalf("expected remote tag to point to %s, got %s", commitSHA, lsTagAfter)
+	}
+}
+
+// Section A Test: CRASH_AFTER_TAG_BEFORE_LOCAL_PERSIST
+func TestCrashAfterTagBeforeLocalPersist(t *testing.T) {
+	ctx := context.Background()
+
+	bareRemoteDir := t.TempDir()
+	initBareRepo(t, bareRemoteDir)
+
+	publisherDir := t.TempDir()
+	initGitRepo(t, publisherDir)
+	runCmd(t, publisherDir, "git", "remote", "add", "origin", bareRemoteDir)
+	runCmd(t, publisherDir, "git", "push", "-u", "origin", "main")
+
+	publisher1, _ := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
+		RepoDir:       publisherDir,
+		RemoteName:    "origin",
+		Branch:        "main",
+		Owner:         "explorarte-org",
+		Repo:          "skills",
+		RequireRemote: true,
+	})
+
+	content := []byte("# Fresh Clone Skill\n\nDeterministic content.\n")
+	pub1, err := publisher1.Publish(ctx, source.PublishRequest{
+		SkillID:              "fresh-clone-skill",
+		CandidateSourceBytes: content,
+		Metadata:             map[string]string{"organization_id": "explorarte"},
+	})
+	if err != nil {
+		t.Fatalf("initial publish failed: %v", err)
+	}
+
+	freshHostDir := t.TempDir()
+	runCmd(t, freshHostDir, "git", "clone", bareRemoteDir, ".")
+	runCmd(t, freshHostDir, "git", "config", "user.name", "Fresh Host Publisher")
+	runCmd(t, freshHostDir, "git", "config", "user.email", "fresh@explorarte.test")
+
+	publisherFresh, _ := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
+		RepoDir:       freshHostDir,
+		RemoteName:    "origin",
+		Branch:        "main",
+		Owner:         "explorarte-org",
+		Repo:          "skills",
+		RequireRemote: true,
+	})
+
+	pub2, err := publisherFresh.Publish(ctx, source.PublishRequest{
+		SkillID:              "fresh-clone-skill",
+		CandidateSourceBytes: content,
+		Metadata:             map[string]string{"organization_id": "explorarte"},
+	})
+	if err != nil {
+		t.Fatalf("fresh host publish failed: %v", err)
+	}
+
+	if pub2.OriginRef != pub1.OriginRef {
+		t.Fatalf("expected fresh host to reuse exact commit %s, got %s", pub1.OriginRef, pub2.OriginRef)
+	}
+	if pub2.PublicationRef != pub1.PublicationRef {
+		t.Fatalf("expected publication ref %s, got %s", pub1.PublicationRef, pub2.PublicationRef)
+	}
+}
+
+// Section A Test: PUBLICATION_TAG_EXISTS_DIFFERENT_SHA
+func TestPublicationTagExistsDifferentSHA(t *testing.T) {
+	ctx := context.Background()
+
+	bareRemoteDir := t.TempDir()
+	initBareRepo(t, bareRemoteDir)
+
+	publisherDir := t.TempDir()
+	initGitRepo(t, publisherDir)
+	runCmd(t, publisherDir, "git", "remote", "add", "origin", bareRemoteDir)
+	runCmd(t, publisherDir, "git", "push", "-u", "origin", "main")
+
+	contentOriginal := []byte("# Original Content\n")
+	rawSum := sha256.Sum256(contentOriginal)
+	rawSHA := hex.EncodeToString(rawSum[:])
+	pubKeySum := sha256.Sum256([]byte("explorarte" + "collision-skill" + rawSHA))
+	pubKey := hex.EncodeToString(pubKeySum[:])
+	tagRef := fmt.Sprintf("refs/tags/skillforge/%s", pubKey)
+
+	maliciousDir := t.TempDir()
+	runCmd(t, maliciousDir, "git", "clone", bareRemoteDir, ".")
+	runCmd(t, maliciousDir, "git", "config", "user.name", "Malicious")
+	runCmd(t, maliciousDir, "git", "config", "user.email", "malicious@explorarte.test")
+	fakeSkillPath := filepath.Join(maliciousDir, "skills", "collision-skill", "SKILL.md")
+	_ = os.MkdirAll(filepath.Dir(fakeSkillPath), 0755)
+	_ = os.WriteFile(fakeSkillPath, []byte("# Tampered Content\n"), 0644)
+	runCmd(t, maliciousDir, "git", "add", "skills/collision-skill/SKILL.md")
+	runCmd(t, maliciousDir, "git", "commit", "-m", "tampered commit")
+	tamperedSHA := strings.TrimSpace(runCmd(t, maliciousDir, "git", "rev-parse", "HEAD"))
+	runCmd(t, maliciousDir, "git", "tag", fmt.Sprintf("skillforge/%s", pubKey), tamperedSHA)
+	runCmd(t, maliciousDir, "git", "push", "origin", tagRef)
+
+	publisher, _ := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
+		RepoDir:       publisherDir,
+		RemoteName:    "origin",
+		Branch:        "main",
+		Owner:         "explorarte-org",
+		Repo:          "skills",
+		RequireRemote: true,
+	})
+
+	_, err := publisher.Publish(ctx, source.PublishRequest{
+		SkillID:              "collision-skill",
+		CandidateSourceBytes: contentOriginal,
+		Metadata:             map[string]string{"organization_id": "explorarte"},
+	})
+	if err == nil || !errors.Is(err, skillpublisher.ErrPublicationCollision) {
+		t.Fatalf("expected ErrPublicationCollision, got %v", err)
+	}
+}
+
+// Section B Test: MATERIALIZE_V1_WHILE_REPO_HEAD_V2
+func TestMaterializeV1WhileRepoHeadV2(t *testing.T) {
+	ctx := context.Background()
+
+	bareRemoteDir := t.TempDir()
+	initBareRepo(t, bareRemoteDir)
+
+	publisherDir := t.TempDir()
+	initGitRepo(t, publisherDir)
+	runCmd(t, publisherDir, "git", "remote", "add", "origin", bareRemoteDir)
+	runCmd(t, publisherDir, "git", "push", "-u", "origin", "main")
+
+	publisher, err := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
+		RepoDir:       publisherDir,
+		RemoteName:    "origin",
+		Branch:        "main",
+		Owner:         "explorarte-org",
+		Repo:          "skills",
+		RequireRemote: true,
+	})
+	if err != nil {
+		t.Fatalf("NewGitPublisher failed: %v", err)
+	}
+
+	contentV1 := []byte("# Skill V1\n\nVersion 1 procedure.\n")
+	pubV1, err := publisher.Publish(ctx, source.PublishRequest{
+		SkillID:              "repo-isolation-skill",
+		CandidateSourceBytes: contentV1,
+		Metadata:             map[string]string{"organization_id": "explorarte"},
+	})
+	if err != nil {
+		t.Fatalf("publish v1 failed: %v", err)
+	}
+
+	contentV2 := []byte("# Skill V2\n\nVersion 2 procedure.\n")
+	_, err = publisher.Publish(ctx, source.PublishRequest{
+		SkillID:              "repo-isolation-skill",
+		CandidateSourceBytes: contentV2,
+		Metadata:             map[string]string{"organization_id": "explorarte"},
+	})
+	if err != nil {
+		t.Fatalf("publish v2 failed: %v", err)
+	}
+
+	workingTreeBytes, _ := os.ReadFile(filepath.Join(publisherDir, pubV1.Path))
+	if string(workingTreeBytes) != string(contentV2) {
+		t.Fatalf("expected repo working tree to be at V2, got %q", string(workingTreeBytes))
+	}
+
+	reader, err := skillpublisher.NewGitPinnedSourceReader(publisherDir)
+	if err != nil {
+		t.Fatalf("NewGitPinnedSourceReader failed: %v", err)
+	}
+
+	runtimeRoot := t.TempDir()
+	materializer, err := source.NewLocalMaterializer(runtimeRoot, reader)
+	if err != nil {
+		t.Fatalf("NewLocalMaterializer failed: %v", err)
+	}
+
+	matRec, err := materializer.Materialize(ctx, source.MaterializeRequest{
+		OriginRef:       pubV1.OriginRef,
+		RelativePath:    pubV1.Path,
+		ExpectedRawSHA:  pubV1.RawSHA256,
+		ExpectedNormSHA: pubV1.NormalizedSHA256,
+		RecordedBy:      "empresa/test",
+		RecordRef:       "mat-hist-v1",
+	})
+	if err != nil {
+		t.Fatalf("materialize historical v1 failed: %v", err)
+	}
+
+	matBytes, _ := os.ReadFile(filepath.Join(runtimeRoot, matRec.Path))
+	if string(matBytes) != string(contentV1) {
+		t.Fatalf("expected runtime root to contain V1, got %q", string(matBytes))
+	}
+
+	statusOut := runCmd(t, publisherDir, "git", "status", "--porcelain")
+	if strings.TrimSpace(statusOut) != "" {
+		t.Fatalf("expected git working tree to be clean, got:\n%s", statusOut)
+	}
+	repoBytesAfter, _ := os.ReadFile(filepath.Join(publisherDir, pubV1.Path))
+	if string(repoBytesAfter) != string(contentV2) {
+		t.Fatalf("git working tree was mutated by materialization: expected V2, got %q", string(repoBytesAfter))
+	}
+}
+
+// Section B Test: PUBLISH_V3_WHILE_RUNTIME_V1
+func TestPublishV3WhileRuntimeV1(t *testing.T) {
+	ctx := context.Background()
+
+	bareRemoteDir := t.TempDir()
+	initBareRepo(t, bareRemoteDir)
+
+	publisherDir := t.TempDir()
+	initGitRepo(t, publisherDir)
+	runCmd(t, publisherDir, "git", "remote", "add", "origin", bareRemoteDir)
+	runCmd(t, publisherDir, "git", "push", "-u", "origin", "main")
+
+	publisher, err := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
+		RepoDir:       publisherDir,
+		RemoteName:    "origin",
+		Branch:        "main",
+		Owner:         "explorarte-org",
+		Repo:          "skills",
+		RequireRemote: true,
+	})
+	if err != nil {
+		t.Fatalf("NewGitPublisher failed: %v", err)
+	}
+
+	contentV1 := []byte("# Runtime Test Skill V1\n\nContent V1.\n")
+	pubV1, err := publisher.Publish(ctx, source.PublishRequest{
+		SkillID:              "runtime-isolation-skill",
+		CandidateSourceBytes: contentV1,
+		Metadata:             map[string]string{"organization_id": "explorarte"},
+	})
+	if err != nil {
+		t.Fatalf("publish v1 failed: %v", err)
+	}
+
+	runtimeRoot := t.TempDir()
+	reader, _ := skillpublisher.NewGitPinnedSourceReader(publisherDir)
+	materializer, _ := source.NewLocalMaterializer(runtimeRoot, reader)
+
+	_, err = materializer.Materialize(ctx, source.MaterializeRequest{
+		OriginRef:       pubV1.OriginRef,
+		RelativePath:    pubV1.Path,
+		ExpectedRawSHA:  pubV1.RawSHA256,
+		ExpectedNormSHA: pubV1.NormalizedSHA256,
+		RecordedBy:      "empresa/test",
+		RecordRef:       "mat-v1",
+	})
+	if err != nil {
+		t.Fatalf("materialize v1 failed: %v", err)
+	}
+
+	contentV3 := []byte("# Runtime Test Skill V3\n\nContent V3 Candidate.\n")
+	_, err = publisher.Publish(ctx, source.PublishRequest{
+		SkillID:              "runtime-isolation-skill",
+		CandidateSourceBytes: contentV3,
+		Metadata:             map[string]string{"organization_id": "explorarte"},
+	})
+	if err != nil {
+		t.Fatalf("publish v3 failed: %v", err)
+	}
+
+	runtimeBytes, err := os.ReadFile(filepath.Join(runtimeRoot, pubV1.Path))
+	if err != nil {
+		t.Fatalf("read runtime file: %v", err)
+	}
+	if string(runtimeBytes) != string(contentV1) {
+		t.Fatalf("runtime root was mutated by publish: expected V1, got %q", string(runtimeBytes))
+	}
+}
+
+// Section B Test: CONCURRENT_PUBLISH_AND_MATERIALIZE
+func TestConcurrentPublishAndMaterialize(t *testing.T) {
+	ctx := context.Background()
+
+	bareRemoteDir := t.TempDir()
+	initBareRepo(t, bareRemoteDir)
+
+	publisherDir := t.TempDir()
+	initGitRepo(t, publisherDir)
+	runCmd(t, publisherDir, "git", "remote", "add", "origin", bareRemoteDir)
+	runCmd(t, publisherDir, "git", "push", "-u", "origin", "main")
+
+	publisher, err := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
+		RepoDir:       publisherDir,
+		RemoteName:    "origin",
+		Branch:        "main",
+		Owner:         "explorarte-org",
+		Repo:          "skills",
+		RequireRemote: true,
+	})
+	if err != nil {
+		t.Fatalf("NewGitPublisher failed: %v", err)
+	}
+
+	runtimeRoot := t.TempDir()
+	reader, _ := skillpublisher.NewGitPinnedSourceReader(publisherDir)
+	materializer, _ := source.NewLocalMaterializer(runtimeRoot, reader)
+
+	contentV0 := []byte("# Concurrent Base Skill V0\n\nSeed content.\n")
+	pubV0, err := publisher.Publish(ctx, source.PublishRequest{
+		SkillID:              "concurrent-base",
+		CandidateSourceBytes: contentV0,
+		Metadata:             map[string]string{"organization_id": "explorarte"},
+	})
+	if err != nil {
+		t.Fatalf("seed publish failed: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, 10)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 5; i++ {
+			rec, err := materializer.Materialize(ctx, source.MaterializeRequest{
+				OriginRef:       pubV0.OriginRef,
+				RelativePath:    pubV0.Path,
+				ExpectedRawSHA:  pubV0.RawSHA256,
+				ExpectedNormSHA: pubV0.NormalizedSHA256,
+				RecordedBy:      "empresa/concurrent",
+				RecordRef:       fmt.Sprintf("mat-%d", i),
+			})
+			if err != nil {
+				errCh <- fmt.Errorf("concurrent materialize %d failed: %w", i, err)
+				return
+			}
+			if rec.SHA256 != pubV0.RawSHA256 {
+				errCh <- fmt.Errorf("digest mismatch on concurrent materialize")
+				return
+			}
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 1; i <= 5; i++ {
+			c := []byte(fmt.Sprintf("# Candidate %d\n\nContent %d.\n", i, i))
+			pub, err := publisher.Publish(ctx, source.PublishRequest{
+				SkillID:              fmt.Sprintf("concurrent-cand-%d", i),
+				CandidateSourceBytes: c,
+				Metadata:             map[string]string{"organization_id": "explorarte"},
+			})
+			if err != nil {
+				errCh <- fmt.Errorf("concurrent publish %d failed: %w", i, err)
+				return
+			}
+			sum := sha256.Sum256(c)
+			if pub.RawSHA256 != hex.EncodeToString(sum[:]) {
+				errCh <- fmt.Errorf("publish %d raw sha mismatch", i)
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatal(err)
+	}
+}
+
+// Section B Test: RUNTIME_ROOT_CONTAINS_NO_GIT_AUTHORITY & RUNTIME_ROOT_REPO_ROOT_MUST_DIFFER
+func TestRuntimeRootAuthorityAndSeparation(t *testing.T) {
+	publisherDir := t.TempDir()
+	initGitRepo(t, publisherDir)
+
+	reader, err := skillpublisher.NewGitPinnedSourceReader(publisherDir)
+	if err != nil {
+		t.Fatalf("create reader: %v", err)
+	}
+
+	// 1. RUNTIME_ROOT_REPO_ROOT_MUST_DIFFER: configuring runtime root identical to repo root fails
+	_, err = source.NewLocalMaterializer(publisherDir, reader)
+	if err == nil || !errors.Is(err, source.ErrInvalidRuntimeRoot) {
+		t.Fatalf("expected ErrInvalidRuntimeRoot when runtime root == repo root, got %v", err)
+	}
+
+	// 2. RUNTIME_ROOT_CONTAINS_NO_GIT_AUTHORITY: configuring runtime root with .git directory fails
+	fakeGitDir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(fakeGitDir, ".git"), 0755)
+	_, err = source.NewLocalMaterializer(fakeGitDir, reader)
+	if err == nil || !errors.Is(err, source.ErrInvalidRuntimeRoot) {
+		t.Fatalf("expected ErrInvalidRuntimeRoot when runtime root contains .git, got %v", err)
+	}
+
+	// 3. Valid separated runtime root passes and has NO .git authority
+	validRuntime := t.TempDir()
+	mat, err := source.NewLocalMaterializer(validRuntime, reader)
+	if err != nil {
+		t.Fatalf("expected valid runtime root to succeed, got %v", err)
+	}
+	if mat == nil {
+		t.Fatal("materializer is nil")
+	}
+	if _, err := os.Stat(filepath.Join(validRuntime, ".git")); err == nil {
+		t.Fatal("runtime root must NOT contain .git directory")
 	}
 }

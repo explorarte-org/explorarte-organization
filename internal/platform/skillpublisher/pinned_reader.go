@@ -28,6 +28,10 @@ func NewGitPinnedSourceReader(repoDir string) (*GitPinnedSourceReader, error) {
 	return &GitPinnedSourceReader{RepoDir: abs}, nil
 }
 
+func (r *GitPinnedSourceReader) SourceRepoRoot() string {
+	return r.RepoDir
+}
+
 func (r *GitPinnedSourceReader) ReadPinned(ctx context.Context, ref source.PinnedSourceRef) (source.PinnedSourceArtifact, error) {
 	// Parse OriginRef: owner/repo@<40hex>
 	parts := strings.Split(ref.OriginRef, "@")

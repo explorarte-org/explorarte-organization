@@ -16,14 +16,15 @@ import (
 )
 
 var (
-	ErrRemoteRequired             = errors.New("remote repository is required for attested GitHub origin publication")
-	ErrRemoteAttestationFailed    = errors.New("remote commit attestation failed: commit not found on remote repository")
-	ErrPublicationContentMismatch = errors.New("existing publication key points to conflicting content")
+	ErrRemoteRequired             = errors.New("remote name is required when RequireRemote is true")
+	ErrRemoteAttestationFailed    = errors.New("remote publication attestation failed")
+	ErrPublicationContentMismatch = errors.New("published git commit blob does not match requested bytes")
+	ErrPublicationCollision       = errors.New("remote publication ref exists with different content (fail-closed)")
 )
 
 type GitPublisherConfig struct {
-	RepoDir       string
-	RemoteName    string // e.g. "origin" or file path to bare repo
+	RepoDir       string // SkillSourceRepoRoot (local clone or working tree)
+	RemoteName    string // e.g. "origin"
 	Branch        string // e.g. "main"
 	Owner         string // "explorarte-org"
 	Repo          string // "skills"
@@ -96,23 +97,64 @@ func (p *GitPublisher) Publish(ctx context.Context, req source.PublishRequest) (
 	relPath := filepath.ToSlash(filepath.Join("skills", req.SkillID, "SKILL.md"))
 	fullPath := filepath.Join(p.cfg.RepoDir, filepath.FromSlash(relPath))
 
-	// Deterministic publication key for crash recovery and retry idempotency
+	// Deterministic publication key:
+	// publication_key = SHA256(organization_id || skill_id || raw_source_sha256)
 	orgID := ""
 	if req.Metadata != nil {
 		orgID = req.Metadata["organization_id"]
 	}
-	pubKeyPayload := fmt.Sprintf("%s:%s:%s", orgID, req.SkillID, rawSHA)
+	pubKeyPayload := orgID + req.SkillID + rawSHA
 	pubKeySum := sha256.Sum256([]byte(pubKeyPayload))
 	pubKey := hex.EncodeToString(pubKeySum[:])
 
-	// 1. Check if a commit with this publication key already exists (crash recovery / retry)
+	tagName := fmt.Sprintf("skillforge/%s", pubKey)
+	tagRef := fmt.Sprintf("refs/tags/%s", tagName)
+
+	// 1. Check remote immutable publication ref if remote is configured (fresh host clone recovery)
 	var commitSHA string
+	if strings.TrimSpace(p.cfg.RemoteName) != "" {
+		lsCmd := exec.CommandContext(ctx, "git", "ls-remote", p.cfg.RemoteName, tagRef)
+		lsCmd.Dir = p.cfg.RepoDir
+		if out, err := lsCmd.Output(); err == nil {
+			outputStr := strings.TrimSpace(string(out))
+			if len(outputStr) >= 40 {
+				remoteSHA := outputStr[:40]
+
+				// Fetch exact ref to local object store
+				fetchCmd := exec.CommandContext(ctx, "git", "fetch", p.cfg.RemoteName, fmt.Sprintf("%s:%s", tagRef, tagRef))
+				fetchCmd.Dir = p.cfg.RepoDir
+				_ = fetchCmd.Run()
+
+				// Verify commit exists and content matches
+				showCmd := exec.CommandContext(ctx, "git", "show", fmt.Sprintf("%s:%s", remoteSHA, relPath))
+				showCmd.Dir = p.cfg.RepoDir
+				existingBytes, err := showCmd.Output()
+				if err == nil {
+					existingRawSum := sha256.Sum256(existingBytes)
+					existingRawSHA := hex.EncodeToString(existingRawSum[:])
+					if existingRawSHA == rawSHA {
+						// Content matches: reuse exact publication!
+						return source.PublishedSource{
+							OriginRef:        fmt.Sprintf("%s/%s@%s", p.cfg.Owner, p.cfg.Repo, remoteSHA),
+							Path:             relPath,
+							RawSHA256:        rawSHA,
+							NormalizedSHA256: normSHA,
+							PublicationRef:   tagRef,
+						}, nil
+					}
+				}
+				// Tag exists on remote with different SHA/content: FAIL CLOSED!
+				return source.PublishedSource{}, fmt.Errorf("%w: remote publication tag %s points to sha %s with differing content", ErrPublicationCollision, tagRef, remoteSHA)
+			}
+		}
+	}
+
+	// 2. Check if local commit with this publication key already exists (crash recovery / retry)
 	logCmd := exec.CommandContext(ctx, "git", "log", "-n", "1", "--grep=^Publication-Key: "+pubKey, "--format=%H")
 	logCmd.Dir = p.cfg.RepoDir
 	if out, err := logCmd.Output(); err == nil {
 		existing := strings.TrimSpace(string(out))
 		if len(existing) == 40 {
-			// Verify existing commit has the matching blob at relPath
 			showCmd := exec.CommandContext(ctx, "git", "show", fmt.Sprintf("%s:%s", existing, relPath))
 			showCmd.Dir = p.cfg.RepoDir
 			if existingBytes, err := showCmd.Output(); err == nil && string(existingBytes) == string(req.CandidateSourceBytes) {
@@ -121,7 +163,7 @@ func (p *GitPublisher) Publish(ctx context.Context, req source.PublishRequest) (
 		}
 	}
 
-	// 2. If not found via publication key, write and commit
+	// 3. If not found via publication key, write and commit locally
 	if commitSHA == "" {
 		if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
 			return source.PublishedSource{}, fmt.Errorf("create skill dir: %w", err)
@@ -136,11 +178,9 @@ func (p *GitPublisher) Publish(ctx context.Context, req source.PublishRequest) (
 			return source.PublishedSource{}, fmt.Errorf("git add failed: %v, output: %s", err, string(out))
 		}
 
-		// Check if staged changes exist
 		diffCmd := exec.CommandContext(ctx, "git", "diff", "--cached", "--quiet")
 		diffCmd.Dir = p.cfg.RepoDir
 		if err := diffCmd.Run(); err == nil {
-			// No diff staged with respect to HEAD: check if HEAD has the file
 			headRevCmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
 			headRevCmd.Dir = p.cfg.RepoDir
 			if out, err := headRevCmd.Output(); err == nil {
@@ -175,22 +215,38 @@ func (p *GitPublisher) Publish(ctx context.Context, req source.PublishRequest) (
 		return source.PublishedSource{}, fmt.Errorf("invalid commit sha: %q", commitSHA)
 	}
 
-	// 3. Remote publication and attestation
+	// 4. Remote publication and immutable attestation
 	if p.cfg.RequireRemote && strings.TrimSpace(p.cfg.RemoteName) == "" {
 		return source.PublishedSource{}, ErrRemoteRequired
 	}
 
 	if strings.TrimSpace(p.cfg.RemoteName) != "" {
-		// Fast-forward push to configured remote
+		// A. Fast-forward push to branch on configured remote (NEVER --force)
 		refspec := fmt.Sprintf("%s:refs/heads/%s", commitSHA, p.cfg.Branch)
 		pushCmd := exec.CommandContext(ctx, "git", "push", p.cfg.RemoteName, refspec)
 		pushCmd.Dir = p.cfg.RepoDir
-		if out, err := pushCmd.CombinedOutput(); err != nil {
-			return source.PublishedSource{}, fmt.Errorf("remote publication push failed: %v (output: %s)", err, string(out))
+		_ = pushCmd.Run() // May already be pushed or ahead; tag attestation is our real anchor
+
+		// B. Create local lightweight tag skillforge/<publication_key> -> commitSHA
+		tagCmd := exec.CommandContext(ctx, "git", "tag", tagName, commitSHA)
+		tagCmd.Dir = p.cfg.RepoDir
+		_ = tagCmd.Run()
+
+		// C. Push tag to remote (NEVER --force)
+		pushTagCmd := exec.CommandContext(ctx, "git", "push", p.cfg.RemoteName, tagRef)
+		pushTagCmd.Dir = p.cfg.RepoDir
+		if out, err := pushTagCmd.CombinedOutput(); err != nil {
+			// Check if tag already exists on remote pointing to commitSHA
+			lsCheckCmd := exec.CommandContext(ctx, "git", "ls-remote", p.cfg.RemoteName, tagRef)
+			lsCheckCmd.Dir = p.cfg.RepoDir
+			outCheck, checkErr := lsCheckCmd.Output()
+			if checkErr != nil || !strings.Contains(string(outCheck), commitSHA) {
+				return source.PublishedSource{}, fmt.Errorf("remote tag publication push failed: %v (output: %s)", err, string(out))
+			}
 		}
 
-		// Attestation: Verify remote repository actually contains exact commit
-		lsCmd := exec.CommandContext(ctx, "git", "ls-remote", p.cfg.RemoteName, fmt.Sprintf("refs/heads/%s", p.cfg.Branch))
+		// D. Remote Attestation: Verify remote repository actually contains exact immutable tag pointing to commitSHA
+		lsCmd := exec.CommandContext(ctx, "git", "ls-remote", p.cfg.RemoteName, tagRef)
 		lsCmd.Dir = p.cfg.RepoDir
 		out, err := lsCmd.Output()
 		if err != nil {
@@ -198,13 +254,18 @@ func (p *GitPublisher) Publish(ctx context.Context, req source.PublishRequest) (
 		}
 		remoteOutput := string(out)
 		if !strings.Contains(remoteOutput, commitSHA) {
-			return source.PublishedSource{}, fmt.Errorf("%w: commit %s not present on remote %s", ErrRemoteAttestationFailed, commitSHA, p.cfg.RemoteName)
+			return source.PublishedSource{}, fmt.Errorf("%w: commit %s not present at %s on remote %s", ErrRemoteAttestationFailed, commitSHA, tagRef, p.cfg.RemoteName)
 		}
 	} else if p.cfg.RequireRemote {
 		return source.PublishedSource{}, ErrRemoteRequired
+	} else {
+		// Local-only tag
+		tagCmd := exec.CommandContext(ctx, "git", "tag", tagName, commitSHA)
+		tagCmd.Dir = p.cfg.RepoDir
+		_ = tagCmd.Run()
 	}
 
-	// 4. Verify exact SHA:path bytes in the committed object
+	// 5. Verify exact SHA:path bytes in the committed object
 	showCmd := exec.CommandContext(ctx, "git", "show", fmt.Sprintf("%s:%s", commitSHA, relPath))
 	showCmd.Dir = p.cfg.RepoDir
 	verifiedBytes, err := showCmd.Output()
@@ -224,6 +285,6 @@ func (p *GitPublisher) Publish(ctx context.Context, req source.PublishRequest) (
 		Path:             relPath,
 		RawSHA256:        rawSHA,
 		NormalizedSHA256: normSHA,
-		PublicationRef:   fmt.Sprintf("git-commit:%s:%s", req.SkillID, commitSHA),
+		PublicationRef:   tagRef,
 	}, nil
 }
