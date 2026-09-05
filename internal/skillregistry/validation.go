@@ -56,6 +56,23 @@ func (m Manifest) Validate(skillID string) error {
 	if len(m.VerifierRef) > 240 || strings.ContainsRune(m.VerifierRef, 0) {
 		return fmt.Errorf("%w: invalid verifier ref", ErrInvalidVersion)
 	}
+	if m.ManifestSchemaVersion != "" && m.ManifestSchemaVersion != "skill-manifest/v2" {
+		return fmt.Errorf("%w: invalid manifest schema version", ErrInvalidVersion)
+	}
+	if len(m.EvaluationSuiteRef) > 240 || strings.ContainsRune(m.EvaluationSuiteRef, 0) {
+		return fmt.Errorf("%w: invalid evaluation suite ref", ErrInvalidVersion)
+	}
+	if len(m.CanaryPolicyRef) > 240 || strings.ContainsRune(m.CanaryPolicyRef, 0) {
+		return fmt.Errorf("%w: invalid canary policy ref", ErrInvalidVersion)
+	}
+	if len(m.ExecutionProfileRef) > 240 || strings.ContainsRune(m.ExecutionProfileRef, 0) {
+		return fmt.Errorf("%w: invalid execution profile ref", ErrInvalidVersion)
+	}
+	for _, tr := range m.RequiredTools {
+		if strings.TrimSpace(tr.ToolName) == "" || len(tr.ToolName) > 120 {
+			return fmt.Errorf("%w: invalid tool requirement", ErrInvalidVersion)
+		}
+	}
 	seen := map[string]struct{}{}
 	for _, capability := range m.RequiredCapabilities {
 		capability = strings.TrimSpace(capability)
@@ -89,6 +106,9 @@ func (s SourceRecord) Validate() error {
 	}
 	if !digestPattern.MatchString(strings.TrimSpace(s.SHA256)) {
 		return fmt.Errorf("%w: source sha256 is invalid", ErrInvalidVersion)
+	}
+	if s.NormalizedSHA256 != "" && !digestPattern.MatchString(strings.TrimSpace(s.NormalizedSHA256)) {
+		return fmt.Errorf("%w: source normalized sha256 is invalid", ErrInvalidVersion)
 	}
 	if !s.Origin.Valid() {
 		return fmt.Errorf("%w: invalid origin", ErrInvalidVersion)
