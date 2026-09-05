@@ -7,6 +7,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/Mireuz13/explorarte-organization/internal/contextengine/canonical"
+	"github.com/Mireuz13/explorarte-organization/internal/skillregistry/contextprovider"
 	"io"
 	"os"
 	"strings"
@@ -301,6 +303,65 @@ func runSkill(args []string, stdout, stderr io.Writer) int {
 		}
 		writeValue(stdout, *jsonOutput, assignments)
 		return exitOK
+	case "parity":
+		flags := flag.NewFlagSet("skill parity", flag.ContinueOnError)
+		flags.SetOutput(stderr)
+		role := flags.String("role", "", "role id")
+		jsonOutput := flags.Bool("json", false, "emit JSON")
+		if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 || strings.TrimSpace(*role) == "" {
+			return exitUsage
+		}
+		canProvider, err := canonical.NewSkillProvider(cfg.Registry.CanonicalDir)
+		if err != nil {
+			fmt.Fprintf(stderr, "create canonical skill provider: %v\n", err)
+			return exitInternal
+		}
+		regProvider, err := contextprovider.New(runtime.Store, runtime.OrganizationID)
+		if err != nil {
+			fmt.Fprintf(stderr, "create registry skill provider: %v\n", err)
+			return exitInternal
+		}
+		sink := contextprovider.NewMemoryDivergenceRecorder()
+		parity, err := contextprovider.NewParityProvider(regProvider, canProvider, sink)
+		if err != nil {
+			fmt.Fprintf(stderr, "create parity provider: %v\n", err)
+			return exitInternal
+		}
+		records, err := parity.ListActiveForRole(ctx, runtime.OrganizationID, *role)
+		if err != nil {
+			fmt.Fprintf(stderr, "parity list active: %v\n", err)
+			return exitInternal
+		}
+		divs, _ := sink.ListDivergences(ctx)
+		out := map[string]any{
+			"role":              *role,
+			"active_skills":     records,
+			"divergences_count": len(divs),
+			"divergences":       divs,
+			"parity_status":     len(divs) == 0,
+		}
+		writeValue(stdout, *jsonOutput, out)
+		return exitOK
+	case "list-active":
+		flags := flag.NewFlagSet("skill list-active", flag.ContinueOnError)
+		flags.SetOutput(stderr)
+		role := flags.String("role", "", "role id")
+		jsonOutput := flags.Bool("json", false, "emit JSON")
+		if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 || strings.TrimSpace(*role) == "" {
+			return exitUsage
+		}
+		regProvider, err := contextprovider.New(runtime.Store, runtime.OrganizationID)
+		if err != nil {
+			fmt.Fprintf(stderr, "create registry skill provider: %v\n", err)
+			return exitInternal
+		}
+		records, err := regProvider.ListActiveForRole(ctx, runtime.OrganizationID, *role)
+		if err != nil {
+			fmt.Fprintf(stderr, "list active skills: %v\n", err)
+			return exitInternal
+		}
+		writeValue(stdout, *jsonOutput, records)
+		return exitOK
 	default:
 		printSkillUsage(stderr)
 		return exitUsage
@@ -367,5 +428,5 @@ func skillCommandError(stderr io.Writer, err error) int {
 	}
 }
 func printSkillUsage(out io.Writer) {
-	fmt.Fprintln(out, "usage: orgctl skill <propose|approve|qualify|activate|suspend|retire|assign|revoke|get-version|list-versions|get-assignment|list-assignments> [options]")
+	fmt.Fprintln(out, "usage: orgctl skill <propose|approve|qualify|activate|suspend|retire|assign|revoke|get-version|list-versions|get-assignment|list-assignments|parity|list-active> [options]")
 }
