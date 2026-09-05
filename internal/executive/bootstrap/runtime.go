@@ -212,9 +212,10 @@ func Open(cfg config.Config, store *platformpostgres.Store, opts ...OpenOption) 
 		return nil, fmt.Errorf("create executive execution context view store: %w", err)
 	}
 	harness := runtimeadapter.Harness{
-		OrganizationID: cfg.Tasks.OrganizationID,
-		Authority:      harnessAuthority,
-		History:        harnessHistory,
+		OrganizationID:  cfg.Tasks.OrganizationID,
+		Authority:       harnessAuthority,
+		History:         harnessHistory,
+		DescriptorStore: harnessHistory,
 		NewModelExecutor: func(config modelruntimeadapter.Config) (executionharness.ModelExecutor, error) {
 			return modelRuntime.NewHarnessModelExecutor(config)
 		},

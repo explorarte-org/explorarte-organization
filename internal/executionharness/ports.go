@@ -42,6 +42,20 @@ type ExecutionHistoryStore interface {
 	Read(context.Context, string) ([]Event, error)
 }
 
+// RunDescriptorStore persists the immutable execution contract that was
+// frozen before a Harness run emitted its first event. It is intentionally a
+// separate port from ExecutionHistoryStore: descriptor metadata is queried by
+// MemoryOS and is not part of the runtime's append-only trajectory API.
+//
+// EnsureRunDescriptor is idempotent for the same canonical descriptor and
+// returns ErrRunDescriptorConflict when the same organization/run identity is
+// presented with different frozen facts. Implementations must never overwrite
+// an existing descriptor.
+type RunDescriptorStore interface {
+	EnsureRunDescriptor(context.Context, RunDescriptor) error
+	ReadRunDescriptor(context.Context, string, string) (RunDescriptor, error)
+}
+
 // InvocationFailure reports a model call that failed AFTER a durable
 // invocation existed, and names it.
 //
