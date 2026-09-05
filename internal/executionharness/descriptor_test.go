@@ -110,6 +110,7 @@ func TestRunDescriptorStoreRejectsIdentityDrift(t *testing.T) {
 	for name, mutate := range map[string]func(*RunSpec){
 		"execution profile": func(spec *RunSpec) { spec.Policy.ExecutionProfileID = "profile/v2" },
 		"model policy":      func(spec *RunSpec) { spec.Policy.ModelPolicyRef = "policy/v2" },
+		"build ref":         func(spec *RunSpec) { spec.Policy.BuildRef = "build/v2" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			spec := testRunDescriptorSpec()
@@ -256,5 +257,144 @@ func TestRuntimeBackfillsLegacyHistoryWithoutPoisoningDescriptor(t *testing.T) {
 	}
 	if _, err = store.ReadRunDescriptor(context.Background(), spec.Identity.OrganizationID, spec.Identity.RunID); err != nil {
 		t.Fatalf("original identity did not backfill descriptor: %v", err)
+	}
+}
+
+type descriptorCountingModels struct {
+	invocations int
+}
+
+func (m *descriptorCountingModels) Invoke(context.Context, RunIdentity, NormalizedModelRequest) (ModelResult, error) {
+	m.invocations++
+	return ModelResult{FinishReason: FinishFinal, FinalOutput: "output"}, nil
+}
+
+type descriptorCountingTools struct {
+	executions int
+}
+
+func (t *descriptorCountingTools) Execute(context.Context, RunIdentity, ToolRequest) (ToolExecutionResult, error) {
+	t.executions++
+	return ToolExecutionResult{}, nil
+}
+
+type descriptorFailingStore struct {
+	err error
+}
+
+func (s descriptorFailingStore) EnsureRunDescriptor(context.Context, RunDescriptor) error {
+	return s.err
+}
+
+func (s descriptorFailingStore) ReadRunDescriptor(context.Context, string, string) (RunDescriptor, error) {
+	return RunDescriptor{}, s.err
+}
+
+// Test A: descriptor persist FAIL -> 0 model invocations, 0 tool executions
+func TestRuntimeDescriptorPersistFailurePreventsExecution(t *testing.T) {
+	models := &descriptorCountingModels{}
+	tools := &descriptorCountingTools{}
+	history := NewMemoryHistoryStore()
+	store := descriptorFailingStore{err: errors.New("simulated database failure")}
+	runtime, err := NewWithDescriptorStore(descriptorTestAuthority{}, models, descriptorTestCatalog{}, tools, history, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := runtime.Execute(context.Background(), testRunDescriptorSpec())
+	if result.Status != StatusHistoryError && result.Status != StatusIdentityDrift {
+		t.Fatalf("status=%s want history_error or identity_drift", result.Status)
+	}
+	if models.invocations != 0 {
+		t.Fatalf("model invocations=%d want 0", models.invocations)
+	}
+	if tools.executions != 0 {
+		t.Fatalf("tool executions=%d want 0", tools.executions)
+	}
+}
+
+// Test B: descriptor persisted -> process dies before run_started (events empty) -> restart same RunSpec -> resumes safely without identity conflict
+func TestRuntimeResumeSameSpecWhenDiedBeforeRunStarted(t *testing.T) {
+	spec := testRunDescriptorSpec()
+	desc, err := BuildRunDescriptor(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewMemoryRunDescriptorStore()
+	if err := store.EnsureRunDescriptor(context.Background(), desc); err != nil {
+		t.Fatal(err)
+	}
+	history := NewMemoryHistoryStore() // empty history: died before EventRunStarted
+	runtime, err := NewWithDescriptorStore(descriptorTestAuthority{}, descriptorTestModels{}, descriptorTestCatalog{}, descriptorTestTools{}, history, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := runtime.Execute(context.Background(), spec)
+	// Must reach authority check and NOT fail with descriptor conflict
+	if result.Status != StatusAuthorityUnavailable {
+		t.Fatalf("status=%s want authority_unavailable", result.Status)
+	}
+	events, err := history.Read(context.Background(), spec.Identity.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) == 0 || events[0].Type != EventRunStarted {
+		t.Fatalf("expected EventRunStarted to be recorded on resume, got events=%v", events)
+	}
+}
+
+// Test C: descriptor persisted -> no run events -> restart different RunSpec under same RunID -> DENY
+func TestRuntimeRejectDriftedSpecWhenDiedBeforeRunStarted(t *testing.T) {
+	spec := testRunDescriptorSpec()
+	desc, err := BuildRunDescriptor(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewMemoryRunDescriptorStore()
+	if err := store.EnsureRunDescriptor(context.Background(), desc); err != nil {
+		t.Fatal(err)
+	}
+	history := NewMemoryHistoryStore() // empty history
+
+	drifted := spec
+	drifted.Policy.ExecutionProfileID = "profile/drifted-restart"
+
+	runtime, err := NewWithDescriptorStore(descriptorTestAuthority{}, descriptorTestModels{}, descriptorTestCatalog{}, descriptorTestTools{}, history, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := runtime.Execute(context.Background(), drifted)
+	if result.Status != StatusIdentityDrift {
+		t.Fatalf("drifted restart status=%s want identity_drift", result.Status)
+	}
+	events, _ := history.Read(context.Background(), spec.Identity.RunID)
+	if len(events) != 0 {
+		t.Fatalf("expected 0 events written for drifted spec, got %d", len(events))
+	}
+}
+
+// Test D: descriptor persisted -> authority later denied -> define state, verify MemoryOS does not interpret mere existence of descriptor as successful execution
+func TestRuntimeAuthorityDeniedAfterDescriptorPersisted(t *testing.T) {
+	spec := testRunDescriptorSpec()
+	store := NewMemoryRunDescriptorStore()
+	history := NewMemoryHistoryStore()
+	runtime, err := NewWithDescriptorStore(descriptorTestAuthority{}, descriptorTestModels{}, descriptorTestCatalog{}, descriptorTestTools{}, history, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := runtime.Execute(context.Background(), spec)
+	if result.Status != StatusAuthorityUnavailable {
+		t.Fatalf("status=%s want authority_unavailable", result.Status)
+	}
+	// Verify descriptor exists
+	if _, err := store.ReadRunDescriptor(context.Background(), spec.Identity.OrganizationID, spec.Identity.RunID); err != nil {
+		t.Fatalf("read descriptor: %v", err)
+	}
+	// Events recorded
+	events, err := history.Read(context.Background(), spec.Identity.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) == 0 {
+		t.Fatal("expected events to be written")
 	}
 }

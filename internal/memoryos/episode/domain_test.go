@@ -434,3 +434,89 @@ func TestEpisodeNoSecretsOrClinicalContent(t *testing.T) {
 		}
 	}
 }
+
+func TestModelInvocationAttributionZeroOneMany(t *testing.T) {
+	now := time.Date(2026, 9, 5, 1, 0, 0, 0, time.UTC)
+	desc := sampleDescriptor("run-inv-attr", "profile/standard")
+	ctxUse := sampleContext("exec")
+	events := sampleEvents(now)
+
+	// 1. Zero invocations: empty invocations, BindingModeHomogeneous, NO fabricated provider or model anywhere
+	inputZero := episode.ProjectionInput{
+		Descriptor:  desc,
+		TaskClass:   "qa_verification",
+		Context:     ctxUse,
+		Events:      events,
+		Invocations: []episode.InvocationFact{},
+	}
+	epZero, err := episode.Project(inputZero)
+	if err != nil {
+		t.Fatalf("Project zero invocations: %v", err)
+	}
+	if len(epZero.Invocations) != 0 {
+		t.Fatalf("expected 0 invocations, got %d", len(epZero.Invocations))
+	}
+	if epZero.BindingMode != episode.BindingModeHomogeneous {
+		t.Fatalf("zero invocations binding mode=%s want homogeneous", epZero.BindingMode)
+	}
+
+	// 2. Exactly one invocation -> BindingModeHomogeneous
+	inputOne := episode.ProjectionInput{
+		Descriptor: desc,
+		TaskClass:  "qa_verification",
+		Context:    ctxUse,
+		Events:     events,
+		Invocations: []episode.InvocationFact{
+			{InvocationID: 1, ProviderID: "anthropic", ProviderModelID: "claude-3-5-sonnet", Status: "succeeded"},
+		},
+	}
+	epOne, err := episode.Project(inputOne)
+	if err != nil {
+		t.Fatalf("Project one invocation: %v", err)
+	}
+	if epOne.BindingMode != episode.BindingModeHomogeneous {
+		t.Fatalf("one invocation binding mode=%s want homogeneous", epOne.BindingMode)
+	}
+	if len(epOne.Invocations) != 1 {
+		t.Fatalf("expected 1 invocation, got %d", len(epOne.Invocations))
+	}
+
+	// 3. N same invocations -> BindingModeHomogeneous
+	inputSame := episode.ProjectionInput{
+		Descriptor: desc,
+		TaskClass:  "qa_verification",
+		Context:    ctxUse,
+		Events:     events,
+		Invocations: []episode.InvocationFact{
+			{InvocationID: 1, ProviderID: "anthropic", ProviderModelID: "claude-3-5-sonnet", Status: "succeeded"},
+			{InvocationID: 2, ProviderID: "anthropic", ProviderModelID: "claude-3-5-sonnet", Status: "succeeded"},
+			{InvocationID: 3, ProviderID: "anthropic", ProviderModelID: "claude-3-5-sonnet", Status: "succeeded"},
+		},
+	}
+	epSame, err := episode.Project(inputSame)
+	if err != nil {
+		t.Fatalf("Project N same invocations: %v", err)
+	}
+	if epSame.BindingMode != episode.BindingModeHomogeneous {
+		t.Fatalf("N same invocations binding mode=%s want homogeneous", epSame.BindingMode)
+	}
+
+	// 4. N mixed invocations -> BindingModeMixed
+	inputMixed := episode.ProjectionInput{
+		Descriptor: desc,
+		TaskClass:  "qa_verification",
+		Context:    ctxUse,
+		Events:     events,
+		Invocations: []episode.InvocationFact{
+			{InvocationID: 1, ProviderID: "anthropic", ProviderModelID: "claude-3-5-sonnet", Status: "succeeded"},
+			{InvocationID: 2, ProviderID: "google", ProviderModelID: "gemini-1.5-pro", Status: "succeeded"},
+		},
+	}
+	epMixed, err := episode.Project(inputMixed)
+	if err != nil {
+		t.Fatalf("Project N mixed invocations: %v", err)
+	}
+	if epMixed.BindingMode != episode.BindingModeMixed {
+		t.Fatalf("N mixed invocations binding mode=%s want mixed", epMixed.BindingMode)
+	}
+}
