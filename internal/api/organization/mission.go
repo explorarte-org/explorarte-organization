@@ -73,7 +73,8 @@ func (s *Service) HandleCreateMission(w http.ResponseWriter, r *http.Request) {
 		CausationID:   "owner:" + idempotencyKey,
 	}
 
-	task, reused, err := s.taskService.CreateTask(r.Context(), createCmd, "role", "empresa/human")
+	task, created, err := s.taskService.CreateTask(r.Context(), createCmd, "role", "empresa/human")
+	reused := !created
 	if err != nil {
 		if errors.Is(err, tasks.ErrIdempotencyConflict) {
 			writeError(w, http.StatusConflict, "Esta clave ya fue usada para una campaña diferente.")
@@ -84,7 +85,7 @@ func (s *Service) HandleCreateMission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !reused {
+	if created {
 		if s.acceptance != nil {
 			err = s.acceptance.RecordAcceptance(r.Context(), task.ID, []executive.AcceptanceCriterion{
 				{Text: "Elaborar y validar el plan ejecutivo del objetivo: " + objective, Phase: executive.AcceptanceDesign},
