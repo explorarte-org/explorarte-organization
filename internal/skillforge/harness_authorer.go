@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -55,45 +56,38 @@ func (FailClosedProfileGate) AuthorizeProfile(_ context.Context, _ string, _ str
 
 // CanonicalAuthoringProfileGate authorizes profiles that have been approved by canonical governance.
 type CanonicalAuthoringProfileGate struct {
-	ApprovedProfiles map[string]bool
-	CanonicalDir     string
+	Reader       SkillForgeGovernanceReader
+	CanonicalDir string
+	RoleID       string
 }
 
-func (c CanonicalAuthoringProfileGate) AuthorizeProfile(_ context.Context, _ string, profileID string) error {
-	if c.ApprovedProfiles != nil {
-		if c.ApprovedProfiles[profileID] {
-			return nil
+func (c CanonicalAuthoringProfileGate) AuthorizeProfile(ctx context.Context, organizationID string, profileID string) error {
+	reader := c.Reader
+	if reader == nil {
+		canonicalDir := c.CanonicalDir
+		if canonicalDir == "" {
+			canonicalDir = filepath.Join("docs", "canonical")
+			if _, err := os.Stat(canonicalDir); os.IsNotExist(err) {
+				canonicalDir = filepath.Join("..", "..", "docs", "canonical")
+			}
 		}
-		return ErrProductiveProfileBlocked
+		r, err := NewCanonicalSkillForgeGovernanceReader(canonicalDir)
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrProductiveProfileBlocked, err)
+		}
+		reader = r
 	}
 
-	// Canonical governance verification: check if D-006 is resolved
-	canonicalDir := c.CanonicalDir
-	if canonicalDir == "" {
-		canonicalDir = filepath.Join("docs", "canonical")
-		if _, err := os.Stat(canonicalDir); os.IsNotExist(err) {
-			canonicalDir = filepath.Join("..", "..", "docs", "canonical")
-		}
-	}
-	decisionsPath := filepath.Join(canonicalDir, "decisions-required.yaml")
-	data, err := os.ReadFile(decisionsPath)
-	if err != nil {
-		return ErrProductiveProfileBlocked
+	roleID := c.RoleID
+	if roleID == "" {
+		roleID = "recursos_agenticos/disenador_skills"
 	}
 
-	content := string(data)
-	resolvedIdx := strings.Index(content, "resolved:")
-	if resolvedIdx == -1 {
-		return ErrProductiveProfileBlocked
+	auth, err := reader.ResolveAuthoringAuthorization(ctx, organizationID, roleID, profileID)
+	if err != nil || !auth.Approved {
+		return fmt.Errorf("%w: %v", ErrProductiveProfileBlocked, err)
 	}
-	resolvedSection := content[resolvedIdx:]
-	if strings.Contains(resolvedSection, "- id: D-006") || strings.Contains(resolvedSection, "id: D-006") {
-		if profileID == "worker/skill-forge/v1" {
-			return nil
-		}
-	}
-
-	return ErrProductiveProfileBlocked
+	return nil
 }
 
 // FakeAuthoringProfileGate is a test-only fixture authority.
@@ -109,11 +103,18 @@ func (f FakeAuthoringProfileGate) AuthorizeProfile(_ context.Context, _ string, 
 }
 
 type HarnessAuthorerConfig struct {
-	ExecutionProfileID string               // logical profile, e.g. "worker/skill-forge/v1"
-	ModelPolicyRef     string               // model policy reference
-	BuildRef           string               // harness build reference
-	ProfileGate        AuthoringProfileGate // injected authority gate for profile validation
-	MaxTurns           int                  // bounded turns (e.g. 1 or 2)
+	ExecutionProfileID   string               // logical profile, e.g. "worker/skill-forge/v1"
+	ModelPolicyRef       string               // model policy reference
+	BuildRef             string               // harness build reference
+	ProfileGate          AuthoringProfileGate // injected authority gate for profile validation
+	MaxTurns             int                  // bounded turns (e.g. 1 or 2)
+	TaskID               int64                // optional task binding
+	AttemptID            int64                // optional task attempt binding
+	ExecutionPrincipalID string               // optional execution principal ID
+	LeaseToken           string               // optional lease token
+	ContextSnapshotID    int64                // optional context snapshot binding
+	ContextContent       string               // optional pre-rendered context content
+	ContextDigest        string               // optional pre-rendered context digest
 }
 
 // HarnessAuthorer connects the ProcedureNeed domain to the provider-independent ExecutionHarness.
@@ -190,23 +191,50 @@ Respond ONLY with a valid JSON object with keys: "skill_id", "decision", "decisi
 
 	runID := fmt.Sprintf("harness-author-%s-%d", n.ID, time.Now().UnixNano())
 
+	taskID := a.cfg.TaskID
+	if taskID <= 0 {
+		taskID = 1
+	}
+	attemptID := a.cfg.AttemptID
+	if attemptID <= 0 {
+		attemptID = 1
+	}
+	principalID := a.cfg.ExecutionPrincipalID
+	if strings.TrimSpace(principalID) == "" {
+		principalID = "skillforge-harness-authorer"
+	}
+	leaseToken := a.cfg.LeaseToken
+	if strings.TrimSpace(leaseToken) == "" {
+		leaseToken = fmt.Sprintf("lease-%s", runID)
+	}
+	ctxID := fmt.Sprintf("ctx-author-%s", n.ID)
+	ctxContent := promptContent
+	ctxDigest := promptDigest
+	if a.cfg.ContextSnapshotID > 0 {
+		ctxID = strconv.FormatInt(a.cfg.ContextSnapshotID, 10)
+		if strings.TrimSpace(a.cfg.ContextContent) != "" {
+			ctxContent = a.cfg.ContextContent
+			ctxDigest = a.cfg.ContextDigest
+		}
+	}
+
 	spec := executionharness.RunSpec{
 		Identity: executionharness.RunIdentity{
 			RunID:                runID,
 			OrganizationID:       n.OrganizationID,
-			TaskID:               1,
-			AttemptID:            1,
+			TaskID:               taskID,
+			AttemptID:            attemptID,
 			RoleID:               n.RoleID,
-			ExecutionPrincipalID: "skillforge-harness-authorer",
+			ExecutionPrincipalID: principalID,
 			CorrelationID:        n.ID,
 			CausationID:          n.Acceptance.DecisionRef,
 		},
-		LeaseToken: fmt.Sprintf("lease-%s", runID),
+		LeaseToken: leaseToken,
 		Context: executionharness.InitialContext{
-			ID:      fmt.Sprintf("ctx-author-%s", n.ID),
+			ID:      ctxID,
 			Version: "v1",
-			Digest:  promptDigest,
-			Content: promptContent,
+			Digest:  ctxDigest,
+			Content: ctxContent,
 		},
 		Tools: nil, // MaxToolCalls = 0: no tools visible to authorer
 		Policy: executionharness.RunPolicy{

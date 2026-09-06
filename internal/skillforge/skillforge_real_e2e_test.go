@@ -308,7 +308,7 @@ func TestRealSkillForgeBoundedE2E(t *testing.T) {
 	}
 
 	// 3. Setup disposable Git Publisher and remote
-	bareRemoteDir := t.TempDir()
+	bareRemoteDir := filepath.Join(t.TempDir(), "explorarte-org", "skills.git")
 	testInitBareRepo(t, bareRemoteDir)
 
 	publisherDir := t.TempDir()
@@ -317,12 +317,13 @@ func TestRealSkillForgeBoundedE2E(t *testing.T) {
 	testRunCmd(t, publisherDir, "git", "push", "-u", "origin", "main")
 
 	publisher, err := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
-		RepoDir:       publisherDir,
-		RemoteName:    "origin",
-		Branch:        "main",
-		Owner:         "explorarte-org",
-		Repo:          "skills",
-		RequireRemote: true,
+		RepoDir:           publisherDir,
+		RemoteName:        "origin",
+		ExpectedRemoteURL: bareRemoteDir,
+		Branch:            "main",
+		Owner:             "explorarte-org",
+		Repo:              "skills",
+		RequireRemote:     true,
 	})
 	if err != nil {
 		t.Fatalf("create GitPublisher: %v", err)

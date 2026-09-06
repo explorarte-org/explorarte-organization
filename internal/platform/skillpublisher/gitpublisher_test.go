@@ -44,14 +44,23 @@ func initGitRepo(t *testing.T, dir string) {
 
 func initBareRepo(t *testing.T, dir string) {
 	t.Helper()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
 	runCmd(t, dir, "git", "init", "--bare", "-b", "main")
+}
+
+func setupBareRemote(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "explorarte-org", "skills.git")
+	initBareRepo(t, dir)
+	return dir
 }
 
 func TestRemotePublicationAndAttestation(t *testing.T) {
 	ctx := context.Background()
 
-	bareRemoteDir := t.TempDir()
-	initBareRepo(t, bareRemoteDir)
+	bareRemoteDir := setupBareRemote(t)
 
 	publisherDir := t.TempDir()
 	initGitRepo(t, publisherDir)
@@ -59,12 +68,13 @@ func TestRemotePublicationAndAttestation(t *testing.T) {
 	runCmd(t, publisherDir, "git", "push", "-u", "origin", "main")
 
 	publisher, err := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
-		RepoDir:       publisherDir,
-		RemoteName:    "origin",
-		Branch:        "main",
-		Owner:         "explorarte-org",
-		Repo:          "skills",
-		RequireRemote: true,
+		RepoDir:           publisherDir,
+		RemoteName:        "origin",
+		ExpectedRemoteURL: bareRemoteDir,
+		Branch:            "main",
+		Owner:             "explorarte-org",
+		Repo:              "skills",
+		RequireRemote:     true,
 	})
 	if err != nil {
 		t.Fatalf("NewGitPublisher failed: %v", err)
@@ -137,8 +147,7 @@ func TestLocalOnlyCommitRejectedWithoutRemote(t *testing.T) {
 func TestPublicationIdempotencyAndCrashRecovery(t *testing.T) {
 	ctx := context.Background()
 
-	bareRemoteDir := t.TempDir()
-	initBareRepo(t, bareRemoteDir)
+	bareRemoteDir := setupBareRemote(t)
 
 	publisherDir := t.TempDir()
 	initGitRepo(t, publisherDir)
@@ -146,12 +155,13 @@ func TestPublicationIdempotencyAndCrashRecovery(t *testing.T) {
 	runCmd(t, publisherDir, "git", "push", "-u", "origin", "main")
 
 	publisher, _ := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
-		RepoDir:       publisherDir,
-		RemoteName:    "origin",
-		Branch:        "main",
-		Owner:         "explorarte-org",
-		Repo:          "skills",
-		RequireRemote: true,
+		RepoDir:           publisherDir,
+		RemoteName:        "origin",
+		ExpectedRemoteURL: bareRemoteDir,
+		Branch:            "main",
+		Owner:             "explorarte-org",
+		Repo:              "skills",
+		RequireRemote:     true,
 	})
 
 	content := []byte("# Idempotent Skill\n\nMust produce exact same commit on retry.\n")
@@ -182,8 +192,7 @@ func TestPublicationIdempotencyAndCrashRecovery(t *testing.T) {
 func TestGitPinnedSourceReaderAndIsolation(t *testing.T) {
 	ctx := context.Background()
 
-	bareRemoteDir := t.TempDir()
-	initBareRepo(t, bareRemoteDir)
+	bareRemoteDir := setupBareRemote(t)
 
 	publisherDir := t.TempDir()
 	initGitRepo(t, publisherDir)
@@ -191,12 +200,13 @@ func TestGitPinnedSourceReaderAndIsolation(t *testing.T) {
 	runCmd(t, publisherDir, "git", "push", "-u", "origin", "main")
 
 	publisher, _ := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
-		RepoDir:       publisherDir,
-		RemoteName:    "origin",
-		Branch:        "main",
-		Owner:         "explorarte-org",
-		Repo:          "skills",
-		RequireRemote: true,
+		RepoDir:           publisherDir,
+		RemoteName:        "origin",
+		ExpectedRemoteURL: bareRemoteDir,
+		Branch:            "main",
+		Owner:             "explorarte-org",
+		Repo:              "skills",
+		RequireRemote:     true,
 	})
 
 	contentV1 := []byte("# Version 1\n\nOriginal immutable content.\n")
@@ -291,8 +301,7 @@ func TestGitPinnedSourceReaderAndIsolation(t *testing.T) {
 func TestLocalMaterializerWithPinnedReaderContract(t *testing.T) {
 	ctx := context.Background()
 
-	bareRemoteDir := t.TempDir()
-	initBareRepo(t, bareRemoteDir)
+	bareRemoteDir := setupBareRemote(t)
 
 	publisherDir := t.TempDir()
 	initGitRepo(t, publisherDir)
@@ -300,12 +309,13 @@ func TestLocalMaterializerWithPinnedReaderContract(t *testing.T) {
 	runCmd(t, publisherDir, "git", "push", "-u", "origin", "main")
 
 	publisher, _ := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
-		RepoDir:       publisherDir,
-		RemoteName:    "origin",
-		Branch:        "main",
-		Owner:         "explorarte-org",
-		Repo:          "skills",
-		RequireRemote: true,
+		RepoDir:           publisherDir,
+		RemoteName:        "origin",
+		ExpectedRemoteURL: bareRemoteDir,
+		Branch:            "main",
+		Owner:             "explorarte-org",
+		Repo:              "skills",
+		RequireRemote:     true,
 	})
 
 	rawContent := []byte("# Pinned Contract Skill\r\n\r\nProcedure.\r\n")
@@ -368,8 +378,7 @@ func TestLocalMaterializerWithPinnedReaderContract(t *testing.T) {
 func TestRemoteBranchAdvancesAfterPublication(t *testing.T) {
 	ctx := context.Background()
 
-	bareRemoteDir := t.TempDir()
-	initBareRepo(t, bareRemoteDir)
+	bareRemoteDir := setupBareRemote(t)
 
 	publisherDir := t.TempDir()
 	initGitRepo(t, publisherDir)
@@ -377,12 +386,13 @@ func TestRemoteBranchAdvancesAfterPublication(t *testing.T) {
 	runCmd(t, publisherDir, "git", "push", "-u", "origin", "main")
 
 	publisher, err := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
-		RepoDir:       publisherDir,
-		RemoteName:    "origin",
-		Branch:        "main",
-		Owner:         "explorarte-org",
-		Repo:          "skills",
-		RequireRemote: true,
+		RepoDir:           publisherDir,
+		RemoteName:        "origin",
+		ExpectedRemoteURL: bareRemoteDir,
+		Branch:            "main",
+		Owner:             "explorarte-org",
+		Repo:              "skills",
+		RequireRemote:     true,
 	})
 	if err != nil {
 		t.Fatalf("NewGitPublisher failed: %v", err)
@@ -427,8 +437,7 @@ func TestRemoteBranchAdvancesAfterPublication(t *testing.T) {
 func TestCrashAfterBranchPushBeforeTag(t *testing.T) {
 	ctx := context.Background()
 
-	bareRemoteDir := t.TempDir()
-	initBareRepo(t, bareRemoteDir)
+	bareRemoteDir := setupBareRemote(t)
 
 	publisherDir := t.TempDir()
 	initGitRepo(t, publisherDir)
@@ -458,12 +467,13 @@ func TestCrashAfterBranchPushBeforeTag(t *testing.T) {
 	}
 
 	publisher, _ := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
-		RepoDir:       publisherDir,
-		RemoteName:    "origin",
-		Branch:        "main",
-		Owner:         "explorarte-org",
-		Repo:          "skills",
-		RequireRemote: true,
+		RepoDir:           publisherDir,
+		RemoteName:        "origin",
+		ExpectedRemoteURL: bareRemoteDir,
+		Branch:            "main",
+		Owner:             "explorarte-org",
+		Repo:              "skills",
+		RequireRemote:     true,
 	})
 
 	pubRes, err := publisher.Publish(ctx, source.PublishRequest{
@@ -489,8 +499,7 @@ func TestCrashAfterBranchPushBeforeTag(t *testing.T) {
 func TestCrashAfterTagBeforeLocalPersist(t *testing.T) {
 	ctx := context.Background()
 
-	bareRemoteDir := t.TempDir()
-	initBareRepo(t, bareRemoteDir)
+	bareRemoteDir := setupBareRemote(t)
 
 	publisherDir := t.TempDir()
 	initGitRepo(t, publisherDir)
@@ -498,12 +507,13 @@ func TestCrashAfterTagBeforeLocalPersist(t *testing.T) {
 	runCmd(t, publisherDir, "git", "push", "-u", "origin", "main")
 
 	publisher1, _ := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
-		RepoDir:       publisherDir,
-		RemoteName:    "origin",
-		Branch:        "main",
-		Owner:         "explorarte-org",
-		Repo:          "skills",
-		RequireRemote: true,
+		RepoDir:           publisherDir,
+		RemoteName:        "origin",
+		ExpectedRemoteURL: bareRemoteDir,
+		Branch:            "main",
+		Owner:             "explorarte-org",
+		Repo:              "skills",
+		RequireRemote:     true,
 	})
 
 	content := []byte("# Fresh Clone Skill\n\nDeterministic content.\n")
@@ -522,12 +532,13 @@ func TestCrashAfterTagBeforeLocalPersist(t *testing.T) {
 	runCmd(t, freshHostDir, "git", "config", "user.email", "fresh@explorarte.test")
 
 	publisherFresh, _ := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
-		RepoDir:       freshHostDir,
-		RemoteName:    "origin",
-		Branch:        "main",
-		Owner:         "explorarte-org",
-		Repo:          "skills",
-		RequireRemote: true,
+		RepoDir:           freshHostDir,
+		RemoteName:        "origin",
+		ExpectedRemoteURL: bareRemoteDir,
+		Branch:            "main",
+		Owner:             "explorarte-org",
+		Repo:              "skills",
+		RequireRemote:     true,
 	})
 
 	pub2, err := publisherFresh.Publish(ctx, source.PublishRequest{
@@ -551,8 +562,7 @@ func TestCrashAfterTagBeforeLocalPersist(t *testing.T) {
 func TestPublicationTagExistsDifferentSHA(t *testing.T) {
 	ctx := context.Background()
 
-	bareRemoteDir := t.TempDir()
-	initBareRepo(t, bareRemoteDir)
+	bareRemoteDir := setupBareRemote(t)
 
 	publisherDir := t.TempDir()
 	initGitRepo(t, publisherDir)
@@ -580,12 +590,13 @@ func TestPublicationTagExistsDifferentSHA(t *testing.T) {
 	runCmd(t, maliciousDir, "git", "push", "origin", tagRef)
 
 	publisher, _ := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
-		RepoDir:       publisherDir,
-		RemoteName:    "origin",
-		Branch:        "main",
-		Owner:         "explorarte-org",
-		Repo:          "skills",
-		RequireRemote: true,
+		RepoDir:           publisherDir,
+		RemoteName:        "origin",
+		ExpectedRemoteURL: bareRemoteDir,
+		Branch:            "main",
+		Owner:             "explorarte-org",
+		Repo:              "skills",
+		RequireRemote:     true,
 	})
 
 	_, err := publisher.Publish(ctx, source.PublishRequest{
@@ -602,8 +613,7 @@ func TestPublicationTagExistsDifferentSHA(t *testing.T) {
 func TestMaterializeV1WhileRepoHeadV2(t *testing.T) {
 	ctx := context.Background()
 
-	bareRemoteDir := t.TempDir()
-	initBareRepo(t, bareRemoteDir)
+	bareRemoteDir := setupBareRemote(t)
 
 	publisherDir := t.TempDir()
 	initGitRepo(t, publisherDir)
@@ -611,12 +621,13 @@ func TestMaterializeV1WhileRepoHeadV2(t *testing.T) {
 	runCmd(t, publisherDir, "git", "push", "-u", "origin", "main")
 
 	publisher, err := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
-		RepoDir:       publisherDir,
-		RemoteName:    "origin",
-		Branch:        "main",
-		Owner:         "explorarte-org",
-		Repo:          "skills",
-		RequireRemote: true,
+		RepoDir:           publisherDir,
+		RemoteName:        "origin",
+		ExpectedRemoteURL: bareRemoteDir,
+		Branch:            "main",
+		Owner:             "explorarte-org",
+		Repo:              "skills",
+		RequireRemote:     true,
 	})
 	if err != nil {
 		t.Fatalf("NewGitPublisher failed: %v", err)
@@ -689,8 +700,7 @@ func TestMaterializeV1WhileRepoHeadV2(t *testing.T) {
 func TestPublishV3WhileRuntimeV1(t *testing.T) {
 	ctx := context.Background()
 
-	bareRemoteDir := t.TempDir()
-	initBareRepo(t, bareRemoteDir)
+	bareRemoteDir := setupBareRemote(t)
 
 	publisherDir := t.TempDir()
 	initGitRepo(t, publisherDir)
@@ -698,12 +708,13 @@ func TestPublishV3WhileRuntimeV1(t *testing.T) {
 	runCmd(t, publisherDir, "git", "push", "-u", "origin", "main")
 
 	publisher, err := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
-		RepoDir:       publisherDir,
-		RemoteName:    "origin",
-		Branch:        "main",
-		Owner:         "explorarte-org",
-		Repo:          "skills",
-		RequireRemote: true,
+		RepoDir:           publisherDir,
+		RemoteName:        "origin",
+		ExpectedRemoteURL: bareRemoteDir,
+		Branch:            "main",
+		Owner:             "explorarte-org",
+		Repo:              "skills",
+		RequireRemote:     true,
 	})
 	if err != nil {
 		t.Fatalf("NewGitPublisher failed: %v", err)
@@ -758,8 +769,7 @@ func TestPublishV3WhileRuntimeV1(t *testing.T) {
 func TestConcurrentPublishAndMaterialize(t *testing.T) {
 	ctx := context.Background()
 
-	bareRemoteDir := t.TempDir()
-	initBareRepo(t, bareRemoteDir)
+	bareRemoteDir := setupBareRemote(t)
 
 	publisherDir := t.TempDir()
 	initGitRepo(t, publisherDir)
@@ -767,12 +777,13 @@ func TestConcurrentPublishAndMaterialize(t *testing.T) {
 	runCmd(t, publisherDir, "git", "push", "-u", "origin", "main")
 
 	publisher, err := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
-		RepoDir:       publisherDir,
-		RemoteName:    "origin",
-		Branch:        "main",
-		Owner:         "explorarte-org",
-		Repo:          "skills",
-		RequireRemote: true,
+		RepoDir:           publisherDir,
+		RemoteName:        "origin",
+		ExpectedRemoteURL: bareRemoteDir,
+		Branch:            "main",
+		Owner:             "explorarte-org",
+		Repo:              "skills",
+		RequireRemote:     true,
 	})
 	if err != nil {
 		t.Fatalf("NewGitPublisher failed: %v", err)
@@ -883,4 +894,434 @@ func TestRuntimeRootAuthorityAndSeparation(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(validRuntime, ".git")); err == nil {
 		t.Fatal("runtime root must NOT contain .git directory")
 	}
+}
+
+func TestRemoteIdentityVerification(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("EXPECTED_REMOTE_MATCHES_ORIGIN", func(t *testing.T) {
+		bareRemote := setupBareRemote(t)
+		publisherDir := t.TempDir()
+		initGitRepo(t, publisherDir)
+		runCmd(t, publisherDir, "git", "remote", "add", "origin", bareRemote)
+		runCmd(t, publisherDir, "git", "push", "-u", "origin", "main")
+
+		pub, err := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
+			RepoDir:           publisherDir,
+			RemoteName:        "origin",
+			ExpectedRemoteURL: bareRemote,
+			Branch:            "main",
+			Owner:             "explorarte-org",
+			Repo:              "skills",
+			RequireRemote:     true,
+		})
+		if err != nil {
+			t.Fatalf("NewGitPublisher: %v", err)
+		}
+
+		ident, err := pub.VerifyRemote(ctx)
+		if err != nil {
+			t.Fatalf("expected remote to match origin, got error: %v", err)
+		}
+		if ident.Owner != "explorarte-org" || ident.Repo != "skills" {
+			t.Fatalf("unexpected identity: %+v", ident)
+		}
+
+		// Also verify via Publish
+		res, err := pub.Publish(ctx, source.PublishRequest{
+			SkillID:              "matches-origin-skill",
+			CandidateSourceBytes: []byte("# Matches Origin\n"),
+			Metadata:             map[string]string{"organization_id": "explorarte"},
+		})
+		if err != nil {
+			t.Fatalf("Publish: %v", err)
+		}
+		if !strings.HasPrefix(res.OriginRef, "explorarte-org/skills@") {
+			t.Fatalf("unexpected origin ref: %s", res.OriginRef)
+		}
+		t.Log("✓ EXPECTED_REMOTE_MATCHES_ORIGIN PASS")
+	})
+
+	t.Run("EXPECTED_REMOTE_DIFFERS_FROM_ORIGIN", func(t *testing.T) {
+		repoDir := t.TempDir()
+		initGitRepo(t, repoDir)
+		runCmd(t, repoDir, "git", "remote", "add", "origin", "git@github.com:explorarte-org/skills.git")
+
+		pub, err := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
+			RepoDir:           repoDir,
+			RemoteName:        "origin",
+			ExpectedRemoteURL: "git@github.com:explorarte-org/different-skills.git",
+			Branch:            "main",
+			Owner:             "explorarte-org",
+			Repo:              "skills",
+			RequireRemote:     true,
+		})
+		if err != nil {
+			t.Fatalf("NewGitPublisher: %v", err)
+		}
+
+		_, err = pub.VerifyRemote(ctx)
+		if err == nil {
+			t.Fatal("expected remote verification to DENY when expected remote differs from origin")
+		}
+		if !errors.Is(err, skillpublisher.ErrRemoteVerificationFailed) {
+			t.Fatalf("expected ErrRemoteVerificationFailed, got: %v", err)
+		}
+
+		_, err = pub.Publish(ctx, source.PublishRequest{
+			SkillID:              "differs-skill",
+			CandidateSourceBytes: []byte("# Differs\n"),
+		})
+		if err == nil {
+			t.Fatal("expected Publish to fail closed when expected remote differs")
+		}
+		t.Log("✓ EXPECTED_REMOTE_DIFFERS_FROM_ORIGIN DENY")
+	})
+
+	t.Run("RIGHT_OWNER_WRONG_REPO", func(t *testing.T) {
+		repoDir := t.TempDir()
+		initGitRepo(t, repoDir)
+		runCmd(t, repoDir, "git", "remote", "add", "origin", "git@github.com:explorarte-org/skills-evil.git")
+
+		pub, err := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
+			RepoDir:           repoDir,
+			RemoteName:        "origin",
+			ExpectedRemoteURL: "git@github.com:explorarte-org/skills.git",
+			Branch:            "main",
+			Owner:             "explorarte-org",
+			Repo:              "skills",
+			RequireRemote:     true,
+		})
+		if err != nil {
+			t.Fatalf("NewGitPublisher: %v", err)
+		}
+
+		_, err = pub.VerifyRemote(ctx)
+		if err == nil {
+			t.Fatal("expected remote verification to DENY on right owner wrong repo")
+		}
+		if !strings.Contains(err.Error(), "repository mismatch") {
+			t.Fatalf("expected repository mismatch error, got: %v", err)
+		}
+		t.Log("✓ RIGHT_OWNER_WRONG_REPO DENY")
+	})
+
+	t.Run("WRONG_OWNER_RIGHT_REPO", func(t *testing.T) {
+		repoDir := t.TempDir()
+		initGitRepo(t, repoDir)
+		runCmd(t, repoDir, "git", "remote", "add", "origin", "git@github.com:other-org/skills.git")
+
+		pub, err := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
+			RepoDir:           repoDir,
+			RemoteName:        "origin",
+			ExpectedRemoteURL: "git@github.com:explorarte-org/skills.git",
+			Branch:            "main",
+			Owner:             "explorarte-org",
+			Repo:              "skills",
+			RequireRemote:     true,
+		})
+		if err != nil {
+			t.Fatalf("NewGitPublisher: %v", err)
+		}
+
+		_, err = pub.VerifyRemote(ctx)
+		if err == nil {
+			t.Fatal("expected remote verification to DENY on wrong owner right repo")
+		}
+		if !strings.Contains(err.Error(), "owner mismatch") {
+			t.Fatalf("expected owner mismatch error, got: %v", err)
+		}
+		t.Log("✓ WRONG_OWNER_RIGHT_REPO DENY")
+	})
+
+	t.Run("WRONG_HOST", func(t *testing.T) {
+		repoDir := t.TempDir()
+		initGitRepo(t, repoDir)
+		runCmd(t, repoDir, "git", "remote", "add", "origin", "https://gitlab.com/explorarte-org/skills.git")
+
+		pub, err := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
+			RepoDir:           repoDir,
+			RemoteName:        "origin",
+			ExpectedRemoteURL: "https://github.com/explorarte-org/skills.git",
+			Branch:            "main",
+			Owner:             "explorarte-org",
+			Repo:              "skills",
+			RequireRemote:     true,
+		})
+		if err != nil {
+			t.Fatalf("NewGitPublisher: %v", err)
+		}
+
+		_, err = pub.VerifyRemote(ctx)
+		if err == nil {
+			t.Fatal("expected remote verification to DENY on wrong host")
+		}
+		if !strings.Contains(err.Error(), "host mismatch") {
+			t.Fatalf("expected host mismatch error, got: %v", err)
+		}
+		t.Log("✓ WRONG_HOST DENY")
+	})
+
+	t.Run("SSH_AND_HTTPS_EQUIVALENT_FOR_SAME_GITHUB_REPO", func(t *testing.T) {
+		// Test A: actual remote is git@github.com, expected is https://github.com
+		repoDirA := t.TempDir()
+		initGitRepo(t, repoDirA)
+		runCmd(t, repoDirA, "git", "remote", "add", "origin", "git@github.com:explorarte-org/skills.git")
+
+		pubA, err := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
+			RepoDir:           repoDirA,
+			RemoteName:        "origin",
+			ExpectedRemoteURL: "https://github.com/explorarte-org/skills.git",
+			Branch:            "main",
+			Owner:             "explorarte-org",
+			Repo:              "skills",
+			RequireRemote:     true,
+		})
+		if err != nil {
+			t.Fatalf("NewGitPublisher: %v", err)
+		}
+		identA, err := pubA.VerifyRemote(ctx)
+		if err != nil {
+			t.Fatalf("expected SSH and HTTPS to be equivalent for same repo: %v", err)
+		}
+		if identA.Host != "github.com" || identA.Owner != "explorarte-org" || identA.Repo != "skills" {
+			t.Fatalf("unexpected canonical identity: %+v", identA)
+		}
+
+		// Test B: actual remote is https://github.com, expected is git@github.com
+		repoDirB := t.TempDir()
+		initGitRepo(t, repoDirB)
+		runCmd(t, repoDirB, "git", "remote", "add", "origin", "https://github.com/explorarte-org/skills.git")
+
+		pubB, err := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
+			RepoDir:           repoDirB,
+			RemoteName:        "origin",
+			ExpectedRemoteURL: "git@github.com:explorarte-org/skills.git",
+			Branch:            "main",
+			Owner:             "explorarte-org",
+			Repo:              "skills",
+			RequireRemote:     true,
+		})
+		if err != nil {
+			t.Fatalf("NewGitPublisher: %v", err)
+		}
+		identB, err := pubB.VerifyRemote(ctx)
+		if err != nil {
+			t.Fatalf("expected HTTPS and SSH to be equivalent for same repo: %v", err)
+		}
+		if identB.Host != "github.com" || identB.Owner != "explorarte-org" || identB.Repo != "skills" {
+			t.Fatalf("unexpected canonical identity: %+v", identB)
+		}
+		t.Log("✓ SSH_AND_HTTPS_EQUIVALENT_FOR_SAME_GITHUB_REPO PASS")
+	})
+
+	t.Run("ORIGINREF_DERIVED_FROM_VERIFIED_REMOTE", func(t *testing.T) {
+		bareRemote := setupBareRemote(t)
+		publisherDir := t.TempDir()
+		initGitRepo(t, publisherDir)
+		runCmd(t, publisherDir, "git", "remote", "add", "origin", bareRemote)
+		runCmd(t, publisherDir, "git", "push", "-u", "origin", "main")
+
+		pub, err := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
+			RepoDir:           publisherDir,
+			RemoteName:        "origin",
+			ExpectedRemoteURL: bareRemote,
+			Branch:            "main",
+			Owner:             "explorarte-org",
+			Repo:              "skills",
+			RequireRemote:     true,
+		})
+		if err != nil {
+			t.Fatalf("NewGitPublisher: %v", err)
+		}
+
+		res, err := pub.Publish(ctx, source.PublishRequest{
+			SkillID:              "origin-derived-skill",
+			CandidateSourceBytes: []byte("# Verified Origin\n"),
+			Metadata:             map[string]string{"organization_id": "explorarte"},
+		})
+		if err != nil {
+			t.Fatalf("Publish: %v", err)
+		}
+
+		parts := strings.Split(res.OriginRef, "@")
+		if len(parts) != 2 || parts[0] != "explorarte-org/skills" || len(parts[1]) != 40 {
+			t.Fatalf("expected OriginRef format explorarte-org/skills@40hex, got %q", res.OriginRef)
+		}
+
+		tamperedPub, err := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
+			RepoDir:           publisherDir,
+			RemoteName:        "origin",
+			ExpectedRemoteURL: bareRemote,
+			Branch:            "main",
+			Owner:             "tampered-owner",
+			Repo:              "skills",
+			RequireRemote:     true,
+		})
+		if err != nil {
+			t.Fatalf("NewGitPublisher: %v", err)
+		}
+		_, err = tamperedPub.Publish(ctx, source.PublishRequest{
+			SkillID:              "tampered-skill",
+			CandidateSourceBytes: []byte("# Tampered\n"),
+		})
+		if err == nil {
+			t.Fatal("expected Publish to fail closed when configured Owner differs from verified remote")
+		}
+		t.Log("✓ ORIGINREF_DERIVED_FROM_VERIFIED_REMOTE PASS")
+	})
+
+	t.Run("WRONG_PUSHURL_FAILS_BEFORE_PUBLICATION", func(t *testing.T) {
+		wrongBareRemote := filepath.Join(t.TempDir(), "wrong-owner", "wrong-repo.git")
+		initBareRepo(t, wrongBareRemote)
+
+		publisherDir := t.TempDir()
+		initGitRepo(t, publisherDir)
+		runCmd(t, publisherDir, "git", "remote", "add", "origin", "git@github.com:explorarte-org/skills.git")
+		runCmd(t, publisherDir, "git", "remote", "set-url", "--push", "origin", wrongBareRemote)
+
+		pub, err := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
+			RepoDir:           publisherDir,
+			RemoteName:        "origin",
+			ExpectedRemoteURL: "git@github.com:explorarte-org/skills.git",
+			Branch:            "main",
+			Owner:             "explorarte-org",
+			Repo:              "skills",
+			RequireRemote:     true,
+		})
+		if err != nil {
+			t.Fatalf("NewGitPublisher: %v", err)
+		}
+
+		// 1. VerifyRemote must DENY
+		_, err = pub.VerifyRemote(ctx)
+		if err == nil {
+			t.Fatal("expected VerifyRemote to DENY when push URL differs from expected")
+		}
+		if !errors.Is(err, skillpublisher.ErrRemoteVerificationFailed) {
+			t.Fatalf("expected ErrRemoteVerificationFailed, got %v", err)
+		}
+
+		// 2. Publish must DENY BEFORE git add/commit/push side effects to wrong remote
+		_, err = pub.Publish(ctx, source.PublishRequest{
+			SkillID:              "pushurl-attack-skill",
+			CandidateSourceBytes: []byte("# Push URL Attack Candidate\n"),
+			Metadata:             map[string]string{"organization_id": "explorarte"},
+		})
+		if err == nil {
+			t.Fatal("expected Publish to fail closed before publishing to wrong pushurl")
+		}
+
+		// 3. Verify that wrong remote received ZERO bytes, ZERO branch commits, ZERO tags, ZERO refs
+		checkHead := exec.Command("git", "--git-dir="+wrongBareRemote, "rev-parse", "--verify", "refs/heads/main")
+		if out, err := checkHead.CombinedOutput(); err == nil {
+			t.Fatalf("expected wrong remote to have no main branch, got commit %s", string(out))
+		}
+
+		checkTags := exec.Command("git", "--git-dir="+wrongBareRemote, "tag", "-l")
+		if out, err := checkTags.CombinedOutput(); err == nil && strings.TrimSpace(string(out)) != "" {
+			t.Fatalf("expected wrong remote to have no tags, got %s", string(out))
+		}
+
+		checkRefs := exec.Command("git", "--git-dir="+wrongBareRemote, "for-each-ref")
+		if out, err := checkRefs.CombinedOutput(); err == nil && strings.TrimSpace(string(out)) != "" {
+			t.Fatalf("expected wrong remote to have no refs, got %s", string(out))
+		}
+
+		t.Log("✓ WRONG_PUSHURL_FAILS_BEFORE_PUBLICATION PASS")
+		t.Log("✓ WRONG_PUSHURL_RECEIVES_ZERO_BYTES PASS")
+	})
+
+	t.Run("MATCHING_PUSHURL_SSH_FETCH_HTTPS_PUSH", func(t *testing.T) {
+		repoDir := t.TempDir()
+		initGitRepo(t, repoDir)
+		runCmd(t, repoDir, "git", "remote", "add", "origin", "git@github.com:explorarte-org/skills.git")
+		runCmd(t, repoDir, "git", "remote", "set-url", "--push", "origin", "https://github.com/explorarte-org/skills.git")
+
+		pub, err := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
+			RepoDir:           repoDir,
+			RemoteName:        "origin",
+			ExpectedRemoteURL: "git@github.com:explorarte-org/skills.git",
+			Branch:            "main",
+			Owner:             "explorarte-org",
+			Repo:              "skills",
+			RequireRemote:     true,
+		})
+		if err != nil {
+			t.Fatalf("NewGitPublisher: %v", err)
+		}
+
+		ident, err := pub.VerifyRemote(ctx)
+		if err != nil {
+			t.Fatalf("expected matching fetch/push canonical identities to PASS: %v", err)
+		}
+		if ident.Host != "github.com" || ident.Owner != "explorarte-org" || ident.Repo != "skills" {
+			t.Fatalf("unexpected canonical identity: %+v", ident)
+		}
+		t.Log("✓ MATCHING_PUSHURL PASS")
+	})
+
+	t.Run("MULTIPLE_PUSH_URLS_ONE_WRONG_DENIED", func(t *testing.T) {
+		repoDir := t.TempDir()
+		initGitRepo(t, repoDir)
+		runCmd(t, repoDir, "git", "remote", "add", "origin", "git@github.com:explorarte-org/skills.git")
+		// pushurl #1 -> explorarte-org/skills
+		runCmd(t, repoDir, "git", "remote", "set-url", "--push", "origin", "git@github.com:explorarte-org/skills.git")
+		// pushurl #2 -> wrong/repo
+		runCmd(t, repoDir, "git", "remote", "set-url", "--add", "--push", "origin", "git@github.com:wrong-owner/wrong-repo.git")
+
+		pub, err := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
+			RepoDir:           repoDir,
+			RemoteName:        "origin",
+			ExpectedRemoteURL: "git@github.com:explorarte-org/skills.git",
+			Branch:            "main",
+			Owner:             "explorarte-org",
+			Repo:              "skills",
+			RequireRemote:     true,
+		})
+		if err != nil {
+			t.Fatalf("NewGitPublisher: %v", err)
+		}
+
+		_, err = pub.VerifyRemote(ctx)
+		if err == nil {
+			t.Fatal("expected VerifyRemote to DENY when one of multiple push URLs is wrong")
+		}
+		if !errors.Is(err, skillpublisher.ErrRemoteVerificationFailed) {
+			t.Fatalf("expected ErrRemoteVerificationFailed, got %v", err)
+		}
+		t.Log("✓ MULTIPLE_PUSH_URLS_ONE_WRONG DENY")
+	})
+
+	t.Run("ALL_PUSH_URLS_SAME_EXPECTED_IDENTITY", func(t *testing.T) {
+		repoDir := t.TempDir()
+		initGitRepo(t, repoDir)
+		runCmd(t, repoDir, "git", "remote", "add", "origin", "git@github.com:explorarte-org/skills.git")
+		// pushurl #1 -> git@github.com:explorarte-org/skills.git
+		runCmd(t, repoDir, "git", "remote", "set-url", "--push", "origin", "git@github.com:explorarte-org/skills.git")
+		// pushurl #2 -> https://github.com/explorarte-org/skills.git
+		runCmd(t, repoDir, "git", "remote", "set-url", "--add", "--push", "origin", "https://github.com/explorarte-org/skills.git")
+
+		pub, err := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
+			RepoDir:           repoDir,
+			RemoteName:        "origin",
+			ExpectedRemoteURL: "git@github.com:explorarte-org/skills.git",
+			Branch:            "main",
+			Owner:             "explorarte-org",
+			Repo:              "skills",
+			RequireRemote:     true,
+		})
+		if err != nil {
+			t.Fatalf("NewGitPublisher: %v", err)
+		}
+
+		ident, err := pub.VerifyRemote(ctx)
+		if err != nil {
+			t.Fatalf("expected multiple push URLs with identical canonical identity to PASS: %v", err)
+		}
+		if ident.Host != "github.com" || ident.Owner != "explorarte-org" || ident.Repo != "skills" {
+			t.Fatalf("unexpected canonical identity: %+v", ident)
+		}
+		t.Log("✓ ALL_PUSH_URLS_SAME_EXPECTED_IDENTITY PASS")
+	})
 }

@@ -95,6 +95,9 @@ func testInitGitRepo(t *testing.T, dir string) {
 
 func testInitBareRepo(t *testing.T, dir string) {
 	t.Helper()
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
 	testRunCmd(t, dir, "git", "init", "--bare", "-b", "main")
 }
 
@@ -250,7 +253,7 @@ func TestSkillForgeEndToEndDisposableWithRealHarness(t *testing.T) {
 	orgID := "explorarte"
 
 	// 1. Setup git publisher repo & remote
-	bareRemoteDir := t.TempDir()
+	bareRemoteDir := filepath.Join(t.TempDir(), "explorarte-org", "skills.git")
 	testInitBareRepo(t, bareRemoteDir)
 
 	publisherDir := t.TempDir()
@@ -259,12 +262,13 @@ func TestSkillForgeEndToEndDisposableWithRealHarness(t *testing.T) {
 	testRunCmd(t, publisherDir, "git", "push", "-u", "origin", "main")
 
 	publisher, err := skillpublisher.NewGitPublisher(skillpublisher.GitPublisherConfig{
-		RepoDir:       publisherDir,
-		RemoteName:    "origin",
-		Branch:        "main",
-		Owner:         "explorarte-org",
-		Repo:          "skills",
-		RequireRemote: true,
+		RepoDir:           publisherDir,
+		RemoteName:        "origin",
+		ExpectedRemoteURL: bareRemoteDir,
+		Branch:            "main",
+		Owner:             "explorarte-org",
+		Repo:              "skills",
+		RequireRemote:     true,
 	})
 	if err != nil {
 		t.Fatalf("create GitPublisher: %v", err)

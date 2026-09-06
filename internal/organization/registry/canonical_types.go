@@ -203,7 +203,7 @@ type decisionsRequiredDocument struct {
 	Status            string             `yaml:"status" json:"status"`
 	AcceptedFromOwner []string           `yaml:"accepted_from_owner" json:"accepted_from_owner"`
 	Open              []decisionRequired `yaml:"open" json:"open"`
-	Resolved          []decisionResolved `yaml:"resolved,omitempty" json:"resolved,omitempty"`
+	Resolved          []DecisionResolved `yaml:"resolved,omitempty" json:"resolved,omitempty"`
 }
 
 type decisionRequired struct {
@@ -217,12 +217,23 @@ type decisionRequired struct {
 // keeps the exact decision text verbatim — this document is a governance
 // log, not a mutable summary, so a resolved entry is never edited or
 // removed once recorded, only appended to.
-type decisionResolved struct {
-	ID        string `yaml:"id" json:"id"`
-	Question  string `yaml:"question" json:"question"`
-	Decision  string `yaml:"decision" json:"decision"`
-	DecidedIn string `yaml:"decided_in" json:"decided_in"`
-	ADR       string `yaml:"adr" json:"adr"`
+type DecisionResolved struct {
+	ID            string                 `yaml:"id" json:"id"`
+	Question      string                 `yaml:"question" json:"question"`
+	Decision      string                 `yaml:"decision" json:"decision"`
+	DecidedIn     string                 `yaml:"decided_in" json:"decided_in"`
+	ADR           string                 `yaml:"adr" json:"adr"`
+	Authorization *DecisionAuthorization `yaml:"authorization,omitempty" json:"authorization,omitempty"`
+}
+
+// DecisionAuthorization is the typed authority scope recorded by a resolved
+// owner decision. Lists are allowlists: a caller is authorized only when its
+// exact organization, role, and execution profile are each present.
+type DecisionAuthorization struct {
+	Scope               string   `yaml:"scope" json:"scope"`
+	OrganizationIDs     []string `yaml:"organization_ids" json:"organization_ids"`
+	RoleIDs             []string `yaml:"role_ids" json:"role_ids"`
+	ExecutionProfileIDs []string `yaml:"execution_profile_ids" json:"execution_profile_ids"`
 }
 
 type sourceManifestDocument struct {

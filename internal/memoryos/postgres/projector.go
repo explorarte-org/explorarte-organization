@@ -206,32 +206,25 @@ func (s *Store) ProjectHarnessRun(ctx context.Context, harnessRunID string) (epi
 	if len(invIDs) > 0 {
 		// Read tokens from model_invocation_usage
 		usageRows, err := s.pool.Query(ctx, `
-			SELECT invocation_id, input_tokens, output_tokens, reasoning_tokens
+			SELECT invocation_id, input_tokens, output_tokens
 			FROM model_invocation_usage
 			WHERE invocation_id = ANY($1)
 		`, invIDs)
 		if err == nil {
 			defer usageRows.Close()
-			usageMap := make(map[int64][3]int64)
+			usageMap := make(map[int64][2]int64)
 			for usageRows.Next() {
 				var id, inTok, outTok int64
-				var reasonTok *int64
-				if scanErr := usageRows.Scan(&id, &inTok, &outTok, &reasonTok); scanErr == nil {
-					var r int64
-					if reasonTok != nil {
-						r = *reasonTok
-					}
-					usageMap[id] = [3]int64{inTok, outTok, r}
+				if scanErr := usageRows.Scan(&id, &inTok, &outTok); scanErr == nil {
+					usageMap[id] = [2]int64{inTok, outTok}
 				}
 			}
 			for i := range invocations {
 				if u, ok := usageMap[invocations[i].InvocationID]; ok {
 					inV := u[0]
 					outV := u[1]
-					rV := u[2]
 					invocations[i].InputTokens = &inV
 					invocations[i].OutputTokens = &outV
-					invocations[i].ReasoningTokens = &rV
 				}
 			}
 		}
@@ -247,18 +240,27 @@ func (s *Store) ProjectHarnessRun(ctx context.Context, harnessRunID string) (epi
 			costMap := make(map[int64]*episode.CostFact)
 			for walletRows.Next() {
 				var id int64
-				var kind, prov, outcome string
+				var kind string
 				var amt int64
+				var prov, outcome *string
 				if scanErr := walletRows.Scan(&id, &kind, &amt, &prov, &outcome); scanErr == nil {
 					cf, ok := costMap[id]
 					if !ok {
 						cf = &episode.CostFact{InvocationID: id}
 						costMap[id] = cf
 					}
-					if kind == "committed" && (prov == "actual_provider_reported" || outcome == "actual") {
+					provStr := ""
+					if prov != nil {
+						provStr = *prov
+					}
+					outcomeStr := ""
+					if outcome != nil {
+						outcomeStr = *outcome
+					}
+					if kind == "committed" && (provStr == "actual_provider_reported" || provStr == "reconciled_provider" || outcomeStr == "actual" || outcomeStr == "reconciled") {
 						a := amt
 						cf.ActualUSDNanos = &a
-					} else if prov == "estimated_locally" || kind == "reserved" {
+					} else if provStr == "estimated_locally" || kind == "reserved" {
 						e := amt
 						cf.EstimatedUSDNanos = &e
 					}

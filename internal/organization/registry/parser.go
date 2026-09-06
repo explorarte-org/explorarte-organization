@@ -291,6 +291,13 @@ func normalizeDocuments(documents *parsedDocuments) {
 	sort.Strings(documents.Decisions.AcceptedFromOwner)
 	sort.Slice(documents.Decisions.Open, func(i, j int) bool { return documents.Decisions.Open[i].ID < documents.Decisions.Open[j].ID })
 	sort.Slice(documents.Decisions.Resolved, func(i, j int) bool { return documents.Decisions.Resolved[i].ID < documents.Decisions.Resolved[j].ID })
+	for index := range documents.Decisions.Resolved {
+		if authorization := documents.Decisions.Resolved[index].Authorization; authorization != nil {
+			sort.Strings(authorization.OrganizationIDs)
+			sort.Strings(authorization.RoleIDs)
+			sort.Strings(authorization.ExecutionProfileIDs)
+		}
+	}
 	for index := range documents.SourceManifest.Files {
 		documents.SourceManifest.Files[index].Path = stableSourceReference(documents.SourceManifest.Files[index].Path)
 	}
@@ -377,7 +384,29 @@ func materialize(documents parsedDocuments) Snapshot {
 	sort.Slice(units, func(i, j int) bool { return units[i].ID < units[j].ID })
 	sort.Slice(roles, func(i, j int) bool { return roles[i].ID < roles[j].ID })
 	sort.Slice(reporting, func(i, j int) bool { return reportingKey(reporting[i]) < reportingKey(reporting[j]) })
-	snapshot := Snapshot{Organization: organization, Units: units, Roles: roles, ReportingLines: reporting}
+	resolvedDecisions := make([]DecisionResolved, len(documents.Decisions.Resolved))
+	for index, source := range documents.Decisions.Resolved {
+		resolvedDecisions[index] = source
+		if source.Authorization != nil {
+			authorization := *source.Authorization
+			authorization.OrganizationIDs = append([]string(nil), source.Authorization.OrganizationIDs...)
+			authorization.RoleIDs = append([]string(nil), source.Authorization.RoleIDs...)
+			authorization.ExecutionProfileIDs = append([]string(nil), source.Authorization.ExecutionProfileIDs...)
+			resolvedDecisions[index].Authorization = &authorization
+		}
+	}
+	openDecisionIDs := make([]string, len(documents.Decisions.Open))
+	for index, decision := range documents.Decisions.Open {
+		openDecisionIDs[index] = decision.ID
+	}
+	snapshot := Snapshot{
+		Organization:      organization,
+		Units:             units,
+		Roles:             roles,
+		ReportingLines:    reporting,
+		ResolvedDecisions: resolvedDecisions,
+		OpenDecisionIDs:   openDecisionIDs,
+	}
 	snapshot.Counts = countSnapshot(snapshot)
 	return snapshot
 }

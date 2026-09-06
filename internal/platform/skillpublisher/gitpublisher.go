@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,15 +21,123 @@ var (
 	ErrRemoteAttestationFailed    = errors.New("remote publication attestation failed")
 	ErrPublicationContentMismatch = errors.New("published git commit blob does not match requested bytes")
 	ErrPublicationCollision       = errors.New("remote publication ref exists with different content (fail-closed)")
+	ErrRemoteVerificationFailed   = errors.New("remote identity verification failed")
 )
 
 type GitPublisherConfig struct {
-	RepoDir       string // SkillSourceRepoRoot (local clone or working tree)
-	RemoteName    string // e.g. "origin"
-	Branch        string // e.g. "main"
-	Owner         string // "explorarte-org"
-	Repo          string // "skills"
-	RequireRemote bool   // when true, remote push and remote attestation are mandatory
+	RepoDir           string // SkillSourceRepoRoot (local clone or working tree)
+	RemoteName        string // e.g. "origin"
+	ExpectedRemoteURL string // expected remote publication URL (e.g. "git@github.com:explorarte-org/skills.git")
+	Branch            string // e.g. "main"
+	Owner             string // "explorarte-org"
+	Repo              string // "skills"
+	RequireRemote     bool   // when true, remote push and remote attestation are mandatory
+}
+
+// RemoteIdentity represents the canonical identity of a remote repository.
+type RemoteIdentity struct {
+	Host  string // e.g. "github.com" or "local"
+	Owner string // e.g. "explorarte-org"
+	Repo  string // e.g. "skills"
+}
+
+func (r RemoteIdentity) String() string {
+	if r.Host == "local" || r.Host == "" {
+		return fmt.Sprintf("local:%s/%s", r.Owner, r.Repo)
+	}
+	return fmt.Sprintf("%s/%s/%s", r.Host, r.Owner, r.Repo)
+}
+
+// ParseRemoteIdentity normalizes and canonicalizes a raw git remote URL into its Host, Owner, and Repo.
+// It supports:
+//   - SSH SCP-like syntax: git@github.com:explorarte-org/skills.git
+//   - Standard URL syntax: https://github.com/explorarte-org/skills.git, ssh://git@github.com/explorarte-org/skills.git
+//   - Local file paths / bare repositories: file:///path/to/explorarte-org/skills.git or /path/to/explorarte-org/skills.git
+//
+// It rejects ambiguous, multi-segment, or malformed URLs (fail-closed).
+func ParseRemoteIdentity(raw string) (RemoteIdentity, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return RemoteIdentity{}, fmt.Errorf("%w: remote URL is empty", ErrRemoteVerificationFailed)
+	}
+
+	// 1. Check for file:// or local absolute path
+	if strings.HasPrefix(raw, "file://") || filepath.IsAbs(raw) {
+		path := strings.TrimPrefix(raw, "file://")
+		path = filepath.Clean(path)
+		dir, file := filepath.Split(path)
+		repo := strings.TrimSuffix(file, ".git")
+		cleanDir := filepath.Clean(dir)
+		owner := filepath.Base(cleanDir)
+		if repo == "" || owner == "" || owner == "." || owner == "/" || repo == "." || repo == "/" {
+			return RemoteIdentity{}, fmt.Errorf("%w: cannot derive owner/repo from local path %q", ErrRemoteVerificationFailed, raw)
+		}
+		return RemoteIdentity{
+			Host:  "local",
+			Owner: strings.ToLower(owner),
+			Repo:  strings.ToLower(repo),
+		}, nil
+	}
+
+	// 2. Check for standard URL with scheme (https://, http://, ssh://, git://)
+	if strings.Contains(raw, "://") {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return RemoteIdentity{}, fmt.Errorf("%w: parse remote url %q: %v", ErrRemoteVerificationFailed, raw, err)
+		}
+		host := strings.ToLower(u.Hostname())
+		if host == "" {
+			return RemoteIdentity{}, fmt.Errorf("%w: remote URL has empty host: %q", ErrRemoteVerificationFailed, raw)
+		}
+		trimmedPath := strings.Trim(u.Path, "/")
+		parts := strings.Split(trimmedPath, "/")
+		if len(parts) != 2 {
+			return RemoteIdentity{}, fmt.Errorf("%w: remote URL path must be owner/repo, got %q", ErrRemoteVerificationFailed, u.Path)
+		}
+		owner := strings.TrimSpace(parts[0])
+		repo := strings.TrimSuffix(strings.TrimSpace(parts[1]), ".git")
+		if owner == "" || repo == "" {
+			return RemoteIdentity{}, fmt.Errorf("%w: invalid owner or repo in remote url: %q", ErrRemoteVerificationFailed, raw)
+		}
+		return RemoteIdentity{
+			Host:  host,
+			Owner: strings.ToLower(owner),
+			Repo:  strings.ToLower(repo),
+		}, nil
+	}
+
+	// 3. Check for SCP-style SSH syntax: [user@]host:owner/repo[.git]
+	if strings.Contains(raw, ":") {
+		colonIdx := strings.Index(raw, ":")
+		hostPart := raw[:colonIdx]
+		pathPart := raw[colonIdx+1:]
+
+		if atIdx := strings.Index(hostPart, "@"); atIdx != -1 {
+			hostPart = hostPart[atIdx+1:]
+		}
+		host := strings.ToLower(strings.TrimSpace(hostPart))
+		if host == "" {
+			return RemoteIdentity{}, fmt.Errorf("%w: empty host in remote url: %q", ErrRemoteVerificationFailed, raw)
+		}
+
+		trimmedPath := strings.Trim(pathPart, "/")
+		parts := strings.Split(trimmedPath, "/")
+		if len(parts) != 2 {
+			return RemoteIdentity{}, fmt.Errorf("%w: remote URL path must be owner/repo, got %q", ErrRemoteVerificationFailed, pathPart)
+		}
+		owner := strings.TrimSpace(parts[0])
+		repo := strings.TrimSuffix(strings.TrimSpace(parts[1]), ".git")
+		if owner == "" || repo == "" {
+			return RemoteIdentity{}, fmt.Errorf("%w: invalid owner or repo in remote url: %q", ErrRemoteVerificationFailed, raw)
+		}
+		return RemoteIdentity{
+			Host:  host,
+			Owner: strings.ToLower(owner),
+			Repo:  strings.ToLower(repo),
+		}, nil
+	}
+
+	return RemoteIdentity{}, fmt.Errorf("%w: unsupported remote URL format: %q", ErrRemoteVerificationFailed, raw)
 }
 
 // GitPublisher is a host-owned implementation of source.SourcePublisher.
@@ -56,8 +165,16 @@ func NewGitPublisher(cfg GitPublisherConfig) (*GitPublisher, error) {
 	if strings.TrimSpace(cfg.Branch) == "" {
 		cfg.Branch = "main"
 	}
-	if cfg.RequireRemote && strings.TrimSpace(cfg.RemoteName) == "" {
-		return nil, ErrRemoteRequired
+	if cfg.RequireRemote {
+		if strings.TrimSpace(cfg.RemoteName) == "" {
+			return nil, ErrRemoteRequired
+		}
+		if strings.TrimSpace(cfg.ExpectedRemoteURL) == "" {
+			return nil, fmt.Errorf("%w: expected remote URL is required when RequireRemote is true", ErrRemoteVerificationFailed)
+		}
+		if _, err := ParseRemoteIdentity(cfg.ExpectedRemoteURL); err != nil {
+			return nil, fmt.Errorf("%w: invalid ExpectedRemoteURL: %v", ErrRemoteVerificationFailed, err)
+		}
 	}
 
 	return &GitPublisher{cfg: cfg}, nil
@@ -73,12 +190,127 @@ func NewLocalGitPublisher(repoDir, owner, repo string) (*GitPublisher, error) {
 	})
 }
 
+// VerifyRemote queries both the actual git fetch URLs (`git remote get-url --all <RemoteName>`)
+// and actual git push URLs (`git remote get-url --all --push <RemoteName>`),
+// canonicalizes all returned URLs into RemoteIdentity (host, owner, repo), and verifies
+// that EVERY fetch and push endpoint resolves to the exact expected identity, and that
+// configured Owner/Repo matches the verified identity.
+func (p *GitPublisher) VerifyRemote(ctx context.Context) (RemoteIdentity, error) {
+	if !p.cfg.RequireRemote && strings.TrimSpace(p.cfg.RemoteName) == "" {
+		return RemoteIdentity{
+			Host:  "local",
+			Owner: strings.ToLower(strings.TrimSpace(p.cfg.Owner)),
+			Repo:  strings.ToLower(strings.TrimSpace(p.cfg.Repo)),
+		}, nil
+	}
+
+	if strings.TrimSpace(p.cfg.RemoteName) == "" {
+		return RemoteIdentity{}, ErrRemoteRequired
+	}
+	if strings.TrimSpace(p.cfg.ExpectedRemoteURL) == "" {
+		return RemoteIdentity{}, fmt.Errorf("%w: ExpectedRemoteURL is required when remote is configured", ErrRemoteVerificationFailed)
+	}
+
+	expectedIdent, err := ParseRemoteIdentity(p.cfg.ExpectedRemoteURL)
+	if err != nil {
+		return RemoteIdentity{}, fmt.Errorf("%w: parse expected remote URL %q: %v", ErrRemoteVerificationFailed, p.cfg.ExpectedRemoteURL, err)
+	}
+
+	// 1. Verify Fetch URLs
+	cmdFetch := exec.CommandContext(ctx, "git", "remote", "get-url", "--all", p.cfg.RemoteName)
+	cmdFetch.Dir = p.cfg.RepoDir
+	outFetch, err := cmdFetch.CombinedOutput()
+	if err != nil {
+		return RemoteIdentity{}, fmt.Errorf("%w: remote %q fetch URL missing or get-url failed: %v (output: %s)", ErrRemoteVerificationFailed, p.cfg.RemoteName, err, strings.TrimSpace(string(outFetch)))
+	}
+	fetchLines := strings.Split(strings.TrimSpace(string(outFetch)), "\n")
+	var fetchURLs []string
+	for _, l := range fetchLines {
+		trimmed := strings.TrimSpace(l)
+		if trimmed != "" {
+			fetchURLs = append(fetchURLs, trimmed)
+		}
+	}
+	if len(fetchURLs) == 0 {
+		return RemoteIdentity{}, fmt.Errorf("%w: remote %q fetch URL is empty", ErrRemoteVerificationFailed, p.cfg.RemoteName)
+	}
+
+	for i, rawFetch := range fetchURLs {
+		ident, err := ParseRemoteIdentity(rawFetch)
+		if err != nil {
+			return RemoteIdentity{}, fmt.Errorf("%w: parse fetch URL #%d %q: %v", ErrRemoteVerificationFailed, i+1, rawFetch, err)
+		}
+		if ident.Host != expectedIdent.Host {
+			return RemoteIdentity{}, fmt.Errorf("%w: remote fetch host mismatch on %q: expected %q, got %q", ErrRemoteVerificationFailed, rawFetch, expectedIdent.Host, ident.Host)
+		}
+		if ident.Owner != expectedIdent.Owner {
+			return RemoteIdentity{}, fmt.Errorf("%w: remote fetch owner mismatch on %q: expected %q, got %q", ErrRemoteVerificationFailed, rawFetch, expectedIdent.Owner, ident.Owner)
+		}
+		if ident.Repo != expectedIdent.Repo {
+			return RemoteIdentity{}, fmt.Errorf("%w: remote fetch repository mismatch on %q: expected %q, got %q", ErrRemoteVerificationFailed, rawFetch, expectedIdent.Repo, ident.Repo)
+		}
+	}
+
+	// 2. Verify Push URLs
+	cmdPush := exec.CommandContext(ctx, "git", "remote", "get-url", "--all", "--push", p.cfg.RemoteName)
+	cmdPush.Dir = p.cfg.RepoDir
+	outPush, err := cmdPush.CombinedOutput()
+	if err != nil {
+		return RemoteIdentity{}, fmt.Errorf("%w: remote %q push URL missing or get-url failed: %v (output: %s)", ErrRemoteVerificationFailed, p.cfg.RemoteName, err, strings.TrimSpace(string(outPush)))
+	}
+	pushLines := strings.Split(strings.TrimSpace(string(outPush)), "\n")
+	var pushURLs []string
+	for _, l := range pushLines {
+		trimmed := strings.TrimSpace(l)
+		if trimmed != "" {
+			pushURLs = append(pushURLs, trimmed)
+		}
+	}
+	if len(pushURLs) == 0 {
+		return RemoteIdentity{}, fmt.Errorf("%w: remote %q push URL is empty", ErrRemoteVerificationFailed, p.cfg.RemoteName)
+	}
+
+	for i, rawPush := range pushURLs {
+		ident, err := ParseRemoteIdentity(rawPush)
+		if err != nil {
+			return RemoteIdentity{}, fmt.Errorf("%w: parse push URL #%d %q: %v", ErrRemoteVerificationFailed, i+1, rawPush, err)
+		}
+		if ident.Host != expectedIdent.Host {
+			return RemoteIdentity{}, fmt.Errorf("%w: remote push host mismatch on %q: expected %q, got %q", ErrRemoteVerificationFailed, rawPush, expectedIdent.Host, ident.Host)
+		}
+		if ident.Owner != expectedIdent.Owner {
+			return RemoteIdentity{}, fmt.Errorf("%w: remote push owner mismatch on %q: expected %q, got %q", ErrRemoteVerificationFailed, rawPush, expectedIdent.Owner, ident.Owner)
+		}
+		if ident.Repo != expectedIdent.Repo {
+			return RemoteIdentity{}, fmt.Errorf("%w: remote push repository mismatch on %q: expected %q, got %q", ErrRemoteVerificationFailed, rawPush, expectedIdent.Repo, ident.Repo)
+		}
+	}
+
+	// 3. Verify Configured Owner/Repo Matches Verified Canonical Identity
+	cfgOwner := strings.ToLower(strings.TrimSpace(p.cfg.Owner))
+	cfgRepo := strings.ToLower(strings.TrimSpace(p.cfg.Repo))
+	if cfgOwner != expectedIdent.Owner {
+		return RemoteIdentity{}, fmt.Errorf("%w: configured owner %q differs from actual remote owner %q", ErrRemoteVerificationFailed, p.cfg.Owner, expectedIdent.Owner)
+	}
+	if cfgRepo != expectedIdent.Repo {
+		return RemoteIdentity{}, fmt.Errorf("%w: configured repo %q differs from actual remote repo %q", ErrRemoteVerificationFailed, p.cfg.Repo, expectedIdent.Repo)
+	}
+
+	return expectedIdent, nil
+}
+
 func (p *GitPublisher) Publish(ctx context.Context, req source.PublishRequest) (source.PublishedSource, error) {
 	if strings.TrimSpace(req.SkillID) == "" {
 		return source.PublishedSource{}, fmt.Errorf("skill id is required")
 	}
 	if len(req.CandidateSourceBytes) == 0 {
 		return source.PublishedSource{}, fmt.Errorf("source bytes cannot be empty")
+	}
+
+	// 0. Verify remote identity if remote is required
+	verifiedRemote, err := p.VerifyRemote(ctx)
+	if err != nil {
+		return source.PublishedSource{}, fmt.Errorf("verify remote: %w", err)
 	}
 
 	rawSum := sha256.Sum256(req.CandidateSourceBytes)
@@ -135,7 +367,7 @@ func (p *GitPublisher) Publish(ctx context.Context, req source.PublishRequest) (
 					if existingRawSHA == rawSHA {
 						// Content matches: reuse exact publication!
 						return source.PublishedSource{
-							OriginRef:        fmt.Sprintf("%s/%s@%s", p.cfg.Owner, p.cfg.Repo, remoteSHA),
+							OriginRef:        fmt.Sprintf("%s/%s@%s", verifiedRemote.Owner, verifiedRemote.Repo, remoteSHA),
 							Path:             relPath,
 							RawSHA256:        rawSHA,
 							NormalizedSHA256: normSHA,
@@ -278,7 +510,7 @@ func (p *GitPublisher) Publish(ctx context.Context, req source.PublishRequest) (
 		return source.PublishedSource{}, fmt.Errorf("%w: expected %s, verified %s", ErrPublicationContentMismatch, rawSHA, verifiedRawSHA)
 	}
 
-	originRef := fmt.Sprintf("%s/%s@%s", p.cfg.Owner, p.cfg.Repo, commitSHA)
+	originRef := fmt.Sprintf("%s/%s@%s", verifiedRemote.Owner, verifiedRemote.Repo, commitSHA)
 
 	return source.PublishedSource{
 		OriginRef:        originRef,

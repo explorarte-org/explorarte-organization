@@ -32,6 +32,7 @@ func New(store *platformpostgres.Store, organizationID string) (*Store, error) {
 }
 
 func (s *Store) CreateNeed(ctx context.Context, n need.ProcedureNeed) (need.ProcedureNeed, error) {
+	sanitizeNeedSlices(&n)
 	if err := n.Validate(); err != nil {
 		return need.ProcedureNeed{}, err
 	}
@@ -201,6 +202,7 @@ func (s *Store) SaveNeed(ctx context.Context, n need.ProcedureNeed, expectedRevi
 
 	n.Revision = current.Revision + 1
 	n.UpdatedAt = time.Now().UTC()
+	sanitizeNeedSlices(&n)
 	if err := n.Validate(); err != nil {
 		return need.ProcedureNeed{}, err
 	}
@@ -231,4 +233,19 @@ func (s *Store) SaveNeed(ctx context.Context, n need.ProcedureNeed, expectedRevi
 	}
 
 	return n, nil
+}
+
+func sanitizeNeedSlices(n *need.ProcedureNeed) {
+	if n.EpisodeRefs == nil {
+		n.EpisodeRefs = []string{}
+	}
+	if n.ClusterRefs == nil {
+		n.ClusterRefs = []string{}
+	}
+	if n.EvidenceRefs == nil {
+		n.EvidenceRefs = []need.EvidenceRef{}
+	}
+	if n.SuggestedSkillIDs == nil {
+		n.SuggestedSkillIDs = []string{}
+	}
 }

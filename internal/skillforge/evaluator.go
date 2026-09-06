@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,6 +27,11 @@ type ForgeEvaluatorConfig struct {
 	AdversarialPolicyRef string
 	BuildRef             string
 	SuiteRef             string
+	TaskID               int64
+	AttemptID            int64
+	ExecutionPrincipalID string
+	LeaseToken           string
+	ContextSnapshotID    int64
 }
 
 type ForgeEvaluator struct {
@@ -65,6 +71,36 @@ func NewForgeEvaluatorWithHarness(skillsRoot string, harness *executionharness.R
 }
 
 func (e *ForgeEvaluator) EvaluateCandidate(ctx context.Context, roleID string, candidate skillregistry.SkillVersion) (EvaluationResult, error) {
+	baseTaskID := int64(101)
+	candTaskID := int64(102)
+	advTaskID := int64(100)
+	canaryTaskID := int64(103)
+	if e.cfg.TaskID > 0 {
+		baseTaskID = e.cfg.TaskID
+		candTaskID = e.cfg.TaskID
+		advTaskID = e.cfg.TaskID
+		canaryTaskID = e.cfg.TaskID
+	}
+	attemptID := int64(1)
+	if e.cfg.AttemptID > 0 {
+		attemptID = e.cfg.AttemptID
+	}
+	principalID := e.cfg.ExecutionPrincipalID
+	if strings.TrimSpace(principalID) == "" {
+		principalID = "skillforge-evaluator"
+	}
+	leaseToken := e.cfg.LeaseToken
+
+	baseCtxID := fmt.Sprintf("ctx-base-%s", candidate.ID)
+	candCtxID := fmt.Sprintf("ctx-cand-%s", candidate.ID)
+	advCtxID := fmt.Sprintf("ctx-adv-%s", candidate.ID)
+	canaryCtxID := fmt.Sprintf("ctx-canary-%s", candidate.ID)
+	if e.cfg.ContextSnapshotID > 0 {
+		baseCtxID = strconv.FormatInt(e.cfg.ContextSnapshotID, 10)
+		candCtxID = strconv.FormatInt(e.cfg.ContextSnapshotID, 10)
+		advCtxID = strconv.FormatInt(e.cfg.ContextSnapshotID, 10)
+		canaryCtxID = strconv.FormatInt(e.cfg.ContextSnapshotID, 10)
+	}
 	// Section I Invariant: Candidate must remain LifecycleCandidate, never active
 	if candidate.Lifecycle != skillregistry.LifecycleCandidate {
 		return EvaluationResult{}, fmt.Errorf("candidate lifecycle must be candidate, got %s", candidate.Lifecycle)
@@ -141,16 +177,21 @@ func (e *ForgeEvaluator) EvaluateCandidate(ctx context.Context, roleID string, c
 			Identity: executionharness.RunIdentity{
 				RunID:                baseRunID,
 				OrganizationID:       candidate.OrganizationID,
-				TaskID:               101,
-				AttemptID:            1,
+				TaskID:               baseTaskID,
+				AttemptID:            attemptID,
 				RoleID:               roleID,
-				ExecutionPrincipalID: "skillforge-evaluator",
+				ExecutionPrincipalID: principalID,
 				CorrelationID:        candidate.ID,
 				CausationID:          candidate.CanonicalHash,
 			},
-			LeaseToken: fmt.Sprintf("lease-%s", baseRunID),
+			LeaseToken: func() string {
+				if leaseToken != "" {
+					return leaseToken
+				}
+				return fmt.Sprintf("lease-%s", baseRunID)
+			}(),
 			Context: executionharness.InitialContext{
-				ID:      fmt.Sprintf("ctx-base-%s", candidate.ID),
+				ID:      baseCtxID,
 				Version: "v1",
 				Digest:  baseDigest,
 				Content: basePrompt,
@@ -191,16 +232,21 @@ func (e *ForgeEvaluator) EvaluateCandidate(ctx context.Context, roleID string, c
 			Identity: executionharness.RunIdentity{
 				RunID:                candRunID,
 				OrganizationID:       candidate.OrganizationID,
-				TaskID:               102,
-				AttemptID:            1,
+				TaskID:               candTaskID,
+				AttemptID:            attemptID,
 				RoleID:               roleID,
-				ExecutionPrincipalID: "skillforge-evaluator",
+				ExecutionPrincipalID: principalID,
 				CorrelationID:        candidate.ID,
 				CausationID:          candidate.CanonicalHash,
 			},
-			LeaseToken: fmt.Sprintf("lease-%s", candRunID),
+			LeaseToken: func() string {
+				if leaseToken != "" {
+					return leaseToken
+				}
+				return fmt.Sprintf("lease-%s", candRunID)
+			}(),
 			Context: executionharness.InitialContext{
-				ID:      contextSnapshotID,
+				ID:      candCtxID,
 				Version: "v1",
 				Digest:  candDigest,
 				Content: candPrompt,
@@ -307,16 +353,21 @@ Review the candidate skill below and output a strict JSON object matching this s
 			Identity: executionharness.RunIdentity{
 				RunID:                advRunID,
 				OrganizationID:       candidate.OrganizationID,
-				TaskID:               100,
-				AttemptID:            1,
+				TaskID:               advTaskID,
+				AttemptID:            attemptID,
 				RoleID:               "investigacion/revisor_adversarial",
 				ExecutionPrincipalID: "skillforge-adversarial-reviewer",
 				CorrelationID:        candidate.ID,
 				CausationID:          candidate.CanonicalHash,
 			},
-			LeaseToken: fmt.Sprintf("lease-%s", advRunID),
+			LeaseToken: func() string {
+				if leaseToken != "" {
+					return leaseToken
+				}
+				return fmt.Sprintf("lease-%s", advRunID)
+			}(),
 			Context: executionharness.InitialContext{
-				ID:      fmt.Sprintf("ctx-adv-%s", candidate.ID),
+				ID:      advCtxID,
 				Version: "v1",
 				Digest:  advDigest,
 				Content: advPrompt,
@@ -405,16 +456,21 @@ Review the candidate skill below and output a strict JSON object matching this s
 			Identity: executionharness.RunIdentity{
 				RunID:                canaryID,
 				OrganizationID:       candidate.OrganizationID,
-				TaskID:               103,
-				AttemptID:            1,
+				TaskID:               canaryTaskID,
+				AttemptID:            attemptID,
 				RoleID:               roleID,
 				ExecutionPrincipalID: "skillforge-canary",
 				CorrelationID:        candidate.ID,
 				CausationID:          candidate.CanonicalHash,
 			},
-			LeaseToken: fmt.Sprintf("lease-%s", canaryID),
+			LeaseToken: func() string {
+				if leaseToken != "" {
+					return leaseToken
+				}
+				return fmt.Sprintf("lease-%s", canaryID)
+			}(),
 			Context: executionharness.InitialContext{
-				ID:      fmt.Sprintf("ctx-canary-%s", candidate.ID),
+				ID:      canaryCtxID,
 				Version: "v1",
 				Digest:  canaryDigest,
 				Content: canaryPrompt,

@@ -50,3 +50,12 @@ resolved:
     ni canonical, acceso a secretos, activación automática de skills ni asignación productiva de habilidades sin adjudicación
     humana explícita.'
   decided_in: docs/canonical/decisions-required.yaml
+  authorization:
+    scope: skill_authoring_evaluation
+    organization_ids:
+    - explorarte
+    role_ids:
+    - recursos_agenticos/disenador_skills
+    - recursos_agenticos/evaluador_agentes
+    execution_profile_ids:
+    - worker/skill-forge/v1

@@ -7,12 +7,19 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/config"
+	"github.com/Mireuz13/explorarte-organization/internal/executionharness"
+	modelruntimeadapter "github.com/Mireuz13/explorarte-organization/internal/executionharness/modelruntimeadapter"
+	harnesspostgres "github.com/Mireuz13/explorarte-organization/internal/executionharness/postgres"
+	modelruntime "github.com/Mireuz13/explorarte-organization/internal/modelruntime"
+	modelbootstrap "github.com/Mireuz13/explorarte-organization/internal/modelruntime/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/platform/skillpublisher"
 	"github.com/Mireuz13/explorarte-organization/internal/skillforge"
+	skillforgebootstrap "github.com/Mireuz13/explorarte-organization/internal/skillforge/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/skillforge/need"
 	needpostgres "github.com/Mireuz13/explorarte-organization/internal/skillforge/need/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/skillforge/source"
@@ -211,6 +218,13 @@ func runSkillForgeRun(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("skillforge run", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	needID := flags.String("need-id", "", "procedure need id")
+	taskID := flags.Int64("task-id", 0, "task id binding")
+	attemptID := flags.Int64("attempt-id", 0, "attempt id binding")
+	principalID := flags.String("principal-id", "", "execution principal id")
+	leaseToken := flags.String("lease-token", "", "lease token")
+	sourceRepoRoot := flags.String("source-repo-root", "", "skill source repository root directory")
+	runtimeRoot := flags.String("runtime-root", "", "skill runtime root directory")
+	remoteURL := flags.String("remote-url", "", "published remote git repository URL")
 	jsonOutput := flags.Bool("json", false, "emit JSON")
 
 	// Allow either `run <need-id>` or `run --need-id <need-id>`
@@ -236,6 +250,11 @@ func runSkillForgeRun(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
+	if !cfg.SkillForge.Enabled {
+		fmt.Fprintln(stderr, "error: skillforge is disabled (ORG_SKILLFORGE_ENABLED=false)")
+		return exitDenied
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -245,40 +264,92 @@ func runSkillForgeRun(args []string, stdout, stderr io.Writer) int {
 	}
 	defer platformStore.Close()
 
-	needRepo, err := needpostgres.New(platformStore, cfg.Tasks.OrganizationID)
-	if err != nil {
-		fmt.Fprintf(stderr, "create need store: %v\n", err)
-		return exitInternal
-	}
-
 	registryRuntime, err := skillregistrybootstrap.Open(cfg, platformStore)
 	if err != nil {
 		fmt.Fprintf(stderr, "open registry runtime: %v\n", err)
 		return exitInternal
 	}
 
-	publisher, err := skillpublisher.NewLocalGitPublisher(cfg.Context.SourceRoot, "explorarte-org", "skills")
+	modelRuntime, err := modelbootstrap.Open(cfg, platformStore)
 	if err != nil {
-		fmt.Fprintf(stderr, "create publisher: %v\n", err)
-		return exitInternal
-	}
-	pinnedReader, err := skillpublisher.NewGitPinnedSourceReader(cfg.Context.SourceRoot)
-	if err != nil {
-		fmt.Fprintf(stderr, "create pinned reader: %v\n", err)
-		return exitInternal
-	}
-	materializer, err := source.NewLocalMaterializer(cfg.Context.SourceRoot, pinnedReader)
-	if err != nil {
-		fmt.Fprintf(stderr, "create materializer: %v\n", err)
+		fmt.Fprintf(stderr, "open model runtime: %v\n", err)
 		return exitInternal
 	}
 
-	validator := skillforge.NewStaticValidator(cfg.Context.SourceRoot)
-	evaluator := skillforge.NewForgeEvaluator(cfg.Context.SourceRoot)
+	harnessStore, err := harnesspostgres.New(platformStore, cfg.Tasks.OrganizationID)
+	if err != nil {
+		fmt.Fprintf(stderr, "open harness store: %v\n", err)
+		return exitInternal
+	}
 
-	engine := skillforge.NewEngine(needRepo, registryRuntime.Store, registryRuntime.Manager, publisher, materializer, nil, validator, evaluator)
+	authority, err := modelRuntime.NewHarnessAuthority()
+	if err != nil {
+		fmt.Fprintf(stderr, "open harness authority: %v\n", err)
+		return exitInternal
+	}
 
-	run, err := engine.Run(ctx, cfg.Tasks.OrganizationID, targetNeedID)
+	modelExecutor, err := modelRuntime.NewHarnessModelExecutor(modelruntimeadapter.Config{
+		MaxOutputTokens: 4096,
+		InvocationTTL:   10 * time.Minute,
+		ThinkingMode:    modelruntime.ThinkingDisabled,
+		OutputMode:      modelruntime.OutputText,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "open harness model executor: %v\n", err)
+		return exitInternal
+	}
+
+	harness, err := executionharness.NewWithDescriptorStore(
+		authority,
+		modelExecutor,
+		emptyCatalog{},
+		emptyTools{},
+		harnessStore,
+		harnessStore,
+	)
+	if err != nil {
+		fmt.Fprintf(stderr, "create execution harness: %v\n", err)
+		return exitInternal
+	}
+
+	effectiveSourceRoot := cfg.SkillForge.SkillSourceRepoRoot
+	effectiveRuntimeRoot := cfg.SkillForge.SkillRuntimeRoot
+	effectiveRemoteURL := cfg.SkillForge.PublishedRemoteURL
+
+	flags.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "source-repo-root":
+			effectiveSourceRoot = strings.TrimSpace(*sourceRepoRoot)
+		case "runtime-root":
+			effectiveRuntimeRoot = strings.TrimSpace(*runtimeRoot)
+		case "remote-url":
+			effectiveRemoteURL = strings.TrimSpace(*remoteURL)
+		}
+	})
+	bCfg := skillforgebootstrap.Config{
+		OrganizationID:       cfg.Tasks.OrganizationID,
+		CanonicalDir:         cfg.Registry.CanonicalDir,
+		SkillSourceRepoRoot:  effectiveSourceRoot,
+		SkillRuntimeRoot:     effectiveRuntimeRoot,
+		SourceRepositoryDir:  effectiveSourceRoot,
+		MaterializeRootDir:   effectiveRuntimeRoot,
+		PublishedRemoteURL:   effectiveRemoteURL,
+		ExecutionProfileID:   "worker/skill-forge/v1",
+		RoleID:               "recursos_agenticos/disenador_skills",
+		TaskID:               *taskID,
+		AttemptID:            *attemptID,
+		ExecutionPrincipalID: *principalID,
+		LeaseToken:           *leaseToken,
+		Enabled:              cfg.SkillForge.Enabled,
+	}
+
+	forgeRuntime, err := skillforgebootstrap.Open(bCfg, platformStore, harness, harness, registryRuntime.Manager)
+	if err != nil {
+		fmt.Fprintf(stderr, "skillforge bootstrap open: %v\n", err)
+		return exitInternal
+	}
+
+	run, err := forgeRuntime.Engine.Run(ctx, cfg.Tasks.OrganizationID, targetNeedID)
 	if err != nil && !errors.Is(err, skillforge.ErrHumanApprovalNeeded) {
 		fmt.Fprintf(stderr, "skillforge run failed: %v\n", err)
 		return exitInternal
@@ -327,6 +398,8 @@ func runSkillForgeMaterialize(args []string, stdout, stderr io.Writer) int {
 	filePath := flags.String("file", "", "source file to materialize")
 	rawSHA := flags.String("raw-sha", "", "expected raw sha256")
 	normSHA := flags.String("norm-sha", "", "expected normalized sha256")
+	sourceRepoRoot := flags.String("source-repo-root", "", "skill source repository root directory")
+	runtimeRoot := flags.String("runtime-root", "", "skill runtime root directory")
 	jsonOutput := flags.Bool("json", false, "emit JSON")
 
 	if err := flags.Parse(args); err != nil || strings.TrimSpace(*origin) == "" || strings.TrimSpace(*path) == "" || strings.TrimSpace(*filePath) == "" {
@@ -346,12 +419,25 @@ func runSkillForgeMaterialize(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
-	pinnedReader, err := skillpublisher.NewGitPinnedSourceReader(cfg.Context.SourceRoot)
+	effectiveSourceRoot := strings.TrimSpace(*sourceRepoRoot)
+	if effectiveSourceRoot == "" {
+		effectiveSourceRoot = cfg.SkillForge.SkillSourceRepoRoot
+	}
+	effectiveRuntimeRoot := strings.TrimSpace(*runtimeRoot)
+	if effectiveRuntimeRoot == "" {
+		effectiveRuntimeRoot = cfg.SkillForge.SkillRuntimeRoot
+	}
+	if filepath.Clean(effectiveSourceRoot) == filepath.Clean(effectiveRuntimeRoot) {
+		fmt.Fprintf(stderr, "source root and runtime root must be distinct: %s == %s\n", effectiveSourceRoot, effectiveRuntimeRoot)
+		return exitInvalid
+	}
+
+	pinnedReader, err := skillpublisher.NewGitPinnedSourceReader(effectiveSourceRoot)
 	if err != nil {
 		fmt.Fprintf(stderr, "create pinned reader: %v\n", err)
 		return exitInternal
 	}
-	materializer, err := source.NewLocalMaterializer(cfg.Context.SourceRoot, pinnedReader)
+	materializer, err := source.NewLocalMaterializer(effectiveRuntimeRoot, pinnedReader)
 	if err != nil {
 		fmt.Fprintf(stderr, "create materializer: %v\n", err)
 		return exitInternal
@@ -377,7 +463,23 @@ func runSkillForgeMaterialize(args []string, stdout, stderr io.Writer) int {
 func printSkillForgeUsage(out io.Writer) {
 	fmt.Fprintln(out, "usage: orgctl skillforge <need|run|status|materialize> [options]")
 	fmt.Fprintln(out, "  need <create|list|get|accept|reject>")
-	fmt.Fprintln(out, "  run <need-id>")
+	fmt.Fprintln(out, "  run <need-id> [--task-id <id>] [--attempt-id <id>] [--source-repo-root <dir>] [--runtime-root <dir>] [--remote-url <url>]")
 	fmt.Fprintln(out, "  status <run-id>")
-	fmt.Fprintln(out, "  materialize --origin <origin> --path <path> --file <file>")
+	fmt.Fprintln(out, "  materialize --origin <origin> --path <path> --file <file> [--source-repo-root <dir>] [--runtime-root <dir>]")
+}
+
+type emptyCatalog struct{}
+
+func (emptyCatalog) Lookup(context.Context, string) (executionharness.ToolDefinition, bool) {
+	return executionharness.ToolDefinition{}, false
+}
+
+func (emptyCatalog) ValidateArguments(context.Context, executionharness.ToolDefinition, []byte) error {
+	return nil
+}
+
+type emptyTools struct{}
+
+func (emptyTools) Execute(context.Context, executionharness.RunIdentity, executionharness.ToolRequest) (executionharness.ToolExecutionResult, error) {
+	return executionharness.ToolExecutionResult{}, nil
 }

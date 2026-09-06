@@ -60,6 +60,7 @@ func (v *validator) run() {
 	v.validateModelsAndAuthorities()
 	v.validateModelEgressPolicy()
 	v.validateModelInvokeCapability()
+	v.validateDecisions()
 	v.validateCounts()
 	v.validateProposedRoles()
 	v.validateSourceManifest()
@@ -469,6 +470,105 @@ func (v *validator) validateModelInvokeCapability() {
 	}
 	if !containsString(v.documents.Capabilities.HardDenies["owner"], "model.invoke") {
 		v.addError("capability.model_invoke_owner_deny_missing", "capability-matrix.yaml:hard_denies.owner", "owner must have hard deny for model.invoke")
+	}
+}
+
+func (v *validator) validateDecisions() {
+	document := v.documents.Decisions
+	if strings.TrimSpace(document.Branch) == "" {
+		v.addError("decisions.branch_missing", "decisions-required.yaml:branch", "decisions-required.yaml requires a branch")
+	}
+	if strings.TrimSpace(document.Status) == "" {
+		v.addError("decisions.status_missing", "decisions-required.yaml:status", "decisions-required.yaml requires a status")
+	}
+
+	seen := make(map[string]string, len(document.Open)+len(document.Resolved))
+	for index, decision := range document.Open {
+		path := fmt.Sprintf("decisions-required.yaml:open[%d]", index)
+		id := validateDecisionID(v, path, decision.ID)
+		if strings.TrimSpace(decision.Question) == "" {
+			v.addError("decisions.question_missing", path+":question", "open decision %q requires a question", decision.ID)
+		}
+		if id == "" {
+			continue
+		}
+		if previous, exists := seen[id]; exists {
+			v.addError("decisions.duplicate_id", path+":id", "decision %q is declared in both %s and %s", id, previous, path)
+		} else {
+			seen[id] = path
+		}
+	}
+	for index, decision := range document.Resolved {
+		path := fmt.Sprintf("decisions-required.yaml:resolved[%d]", index)
+		id := validateDecisionID(v, path, decision.ID)
+		for field, value := range map[string]string{
+			"question":   decision.Question,
+			"decision":   decision.Decision,
+			"decided_in": decision.DecidedIn,
+		} {
+			if strings.TrimSpace(value) == "" {
+				v.addError("decisions.field_missing", path+":"+field, "resolved decision %q requires %s", decision.ID, field)
+			}
+		}
+		if decision.Authorization != nil {
+			v.validateDecisionAuthorization(path, *decision.Authorization)
+		}
+		if id == "" {
+			continue
+		}
+		if previous, exists := seen[id]; exists {
+			v.addError("decisions.duplicate_id", path+":id", "decision %q is declared in both %s and %s", id, previous, path)
+		} else {
+			seen[id] = path
+		}
+	}
+}
+
+func validateDecisionID(v *validator, path, value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		v.addError("decisions.id_missing", path+":id", "decision ID cannot be empty")
+		return ""
+	}
+	if trimmed != value {
+		v.addError("decisions.id_not_normalized", path+":id", "decision ID %q is not normalized", value)
+		return ""
+	}
+	return value
+}
+
+func (v *validator) validateDecisionAuthorization(path string, authorization DecisionAuthorization) {
+	if strings.TrimSpace(authorization.Scope) == "" || strings.TrimSpace(authorization.Scope) != authorization.Scope {
+		v.addError("decisions.authorization_scope_invalid", path+":authorization.scope", "decision authorization scope must be a normalized non-empty value")
+	}
+	validateDecisionAuthorizationList(v, path+":authorization.organization_ids", authorization.OrganizationIDs, func(value string) bool {
+		return ValidateUnitID(value) == nil
+	})
+	validateDecisionAuthorizationList(v, path+":authorization.role_ids", authorization.RoleIDs, func(value string) bool {
+		return ValidateRoleID(value) == nil
+	})
+	validateDecisionAuthorizationList(v, path+":authorization.execution_profile_ids", authorization.ExecutionProfileIDs, func(value string) bool {
+		return value != "" && strings.TrimSpace(value) == value && !strings.ContainsAny(value, "\t\r\n")
+	})
+}
+
+func validateDecisionAuthorizationList(v *validator, path string, values []string, valid func(string) bool) {
+	if len(values) == 0 {
+		v.addError("decisions.authorization_list_empty", path, "decision authorization list cannot be empty")
+		return
+	}
+	seen := make(map[string]struct{}, len(values))
+	for index, value := range values {
+		itemPath := fmt.Sprintf("%s[%d]", path, index)
+		if strings.TrimSpace(value) != value || !valid(value) {
+			v.addError("decisions.authorization_value_invalid", itemPath, "decision authorization value %q is malformed", value)
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			v.addError("decisions.authorization_duplicate", itemPath, "decision authorization value %q is duplicated", value)
+			continue
+		}
+		seen[value] = struct{}{}
 	}
 }
 
