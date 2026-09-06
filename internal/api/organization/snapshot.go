@@ -196,7 +196,7 @@ func (s *Service) GetSnapshot(ctx context.Context) (Snapshot, error) {
 
 				var compTasks, totTasks int64
 				_ = s.pool.QueryRow(ctx, `
-					SELECT count(*) FILTER (WHERE status = completed), count(*)
+					SELECT count(*) FILTER (WHERE status = 'completed'), count(*)
 					FROM tasks
 					WHERE correlation_id LIKE executive:% AND causation_id LIKE owner:%
 				`).Scan(&compTasks, &totTasks)
@@ -232,7 +232,7 @@ func (s *Service) GetSnapshot(ctx context.Context) (Snapshot, error) {
 	}
 
 	var objCompleted, objTotal int64
-	_ = s.pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE status = completed), count(*) FROM tasks`).Scan(&objCompleted, &objTotal)
+	_ = s.pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE status = 'completed'), count(*) FROM tasks`).Scan(&objCompleted, &objTotal)
 
 	var episodesCount, clustersCount int64
 	_ = s.pool.QueryRow(ctx, `SELECT count(*) FROM memoryos_episodes`).Scan(&episodesCount)
