@@ -17,6 +17,9 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/staging"
 	stagingbootstrap "github.com/Mireuz13/explorarte-organization/internal/staging/bootstrap"
+	agentbudgetpostgres "github.com/Mireuz13/explorarte-organization/internal/agentbudget/postgres"
+	orgapi "github.com/Mireuz13/explorarte-organization/internal/api/organization"
+	executivepostgres "github.com/Mireuz13/explorarte-organization/internal/executive/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/tasks"
 	taskpostgres "github.com/Mireuz13/explorarte-organization/internal/tasks/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/tasks/registryadapter"
@@ -108,7 +111,22 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, info build
 		store.Close()
 		return nil, fmt.Errorf("create durable task service: %w", err)
 	}
-	application := newWithDependencies(cfg, logger, info, store, migrator)
+	acceptanceStore, err := executivepostgres.NewAcceptanceStore(store.Pool())
+	if err != nil {
+		store.Close()
+		return nil, fmt.Errorf("create executive acceptance store for api: %w", err)
+	}
+	budgetStore, err := agentbudgetpostgres.New(store)
+	if err != nil {
+		store.Close()
+		return nil, fmt.Errorf("create agent budget store for api: %w", err)
+	}
+	apiService, err := orgapi.NewService(store.Pool(), taskService, acceptanceStore, budgetStore, cfg, logger)
+	if err != nil {
+		store.Close()
+		return nil, fmt.Errorf("create organization api service: %w", err)
+	}
+	application := newWithDependencies(cfg, logger, info, store, migrator, apiService.RegisterRoutes)
 	application.reconciler = taskService
 	if cfg.Staging.Enabled {
 		runtime, stagingErr := stagingbootstrap.Open(cfg, store)
@@ -122,7 +140,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, info build
 	return application, nil
 }
 
-func newWithDependencies(cfg config.Config, logger *slog.Logger, info buildinfo.Info, database Database, migrator Migrator) *App {
+func newWithDependencies(cfg config.Config, logger *slog.Logger, info buildinfo.Info, database Database, migrator Migrator, routes ...httpserver.RouteRegistrar) *App {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -131,7 +149,7 @@ func newWithDependencies(cfg config.Config, logger *slog.Logger, info buildinfo.
 	// archaeology (see buildinfo.Info.MigrationTip).
 	info.MigrationTip = migrator.Tip()
 	application := &App{cfg: cfg, logger: logger, database: database, migrator: migrator, fatal: make(chan error, 1)}
-	application.server = httpserver.New(cfg.HTTP, logger, info, application.Ready)
+	application.server = httpserver.New(cfg.HTTP, logger, info, application.Ready, routes...)
 	return application
 }
 

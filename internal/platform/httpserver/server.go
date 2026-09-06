@@ -17,6 +17,7 @@ import (
 )
 
 type ReadyFunc func(context.Context) error
+type RouteRegistrar func(*http.ServeMux)
 
 type Server struct {
 	logger     *slog.Logger
@@ -27,7 +28,7 @@ type Server struct {
 	listener   net.Listener
 }
 
-func New(cfg config.HTTPConfig, logger *slog.Logger, info buildinfo.Info, ready ReadyFunc) *Server {
+func New(cfg config.HTTPConfig, logger *slog.Logger, info buildinfo.Info, ready ReadyFunc, registrars ...RouteRegistrar) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -39,6 +40,11 @@ func New(cfg config.HTTPConfig, logger *slog.Logger, info buildinfo.Info, ready 
 	mux.HandleFunc("GET /healthz", server.handleHealth)
 	mux.HandleFunc("GET /readyz", server.handleReady)
 	mux.HandleFunc("GET /version", server.handleVersion)
+	for _, reg := range registrars {
+		if reg != nil {
+			reg(mux)
+		}
+	}
 	server.httpServer = &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           server.recoverPanic(server.logRequest(mux)),
