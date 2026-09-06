@@ -155,8 +155,8 @@ func (s *Service) GetSnapshot(ctx context.Context) (Snapshot, error) {
 
 	missionRows, err := s.pool.Query(ctx, `
 		SELECT t.id, t.title, t.instructions, t.status,
-		       coalesce(b.max_usd_nanos / 1000, 5000000) as b_max,
-		       coalesce(b.used_usd_nanos / 1000, 0) as b_used
+		       coalesce(b.max_usd_nanos / 1000, 5000000)::bigint as b_max,
+		       coalesce(b.used_usd_nanos / 1000, 0)::bigint as b_used
 		FROM tasks t
 		LEFT JOIN agent_budgets b ON b.root_task_id = t.id AND b.task_id = t.id
 		WHERE t.task_class = owner.goal OR t.requested_by_role_id = empresa/human
@@ -170,7 +170,7 @@ func (s *Service) GetSnapshot(ctx context.Context) (Snapshot, error) {
 		for missionRows.Next() {
 			var id int64
 			var title, instructions, status string
-			var bMax, bUsed float64
+			var bMax, bUsed int64
 			if err := missionRows.Scan(&id, &title, &instructions, &status, &bMax, &bUsed); err == nil {
 				mStatus := "active"
 				switch status {
@@ -216,12 +216,14 @@ func (s *Service) GetSnapshot(ctx context.Context) (Snapshot, error) {
 					Title:          displayTitle,
 					Status:         mStatus,
 					Department:     "empresa",
-					BudgetMicrousd: int64(bMax),
-					SpentMicrousd:  int64(bUsed),
+					BudgetMicrousd: bMax,
+					SpentMicrousd:  bUsed,
 					Progress:       prog,
 					CompletedTasks: compTasks,
 					TotalTasks:     totTasks,
 				})
+			} else {
+				s.logger.Warn("failed to scan mission row", "error", err)
 			}
 		}
 	}
@@ -248,10 +250,10 @@ func (s *Service) GetSnapshot(ctx context.Context) (Snapshot, error) {
 		FROM organizational_memory_entries
 	`).Scan(&memEpisodic, &memSemantic, &memCorrective)
 
-	var costActual, costBudget float64
+	var costActual, costBudget int64
 	_ = s.pool.QueryRow(ctx, `
-		SELECT coalesce(sum(used_usd_nanos) / 1000, 0),
-		       coalesce(sum(max_usd_nanos) / 1000, 0)
+		SELECT coalesce(sum(used_usd_nanos) / 1000, 0)::bigint,
+		       coalesce(sum(max_usd_nanos) / 1000, 0)::bigint
 		FROM agent_budgets
 	`).Scan(&costActual, &costBudget)
 	if costBudget == 0 {
@@ -351,7 +353,7 @@ func (s *Service) GetSnapshot(ctx context.Context) (Snapshot, error) {
 
 	var spend []SpendItem
 	spendRows, err := s.pool.Query(ctx, `
-		SELECT u.display_name, coalesce(sum(b.used_usd_nanos)/1000, 0) as used
+		SELECT u.display_name, coalesce(sum(b.used_usd_nanos)/1000, 0)::bigint as used
 		FROM organizational_units u
 		LEFT JOIN organization_roles r ON r.unit_id = u.id
 		LEFT JOIN agent_budgets b ON b.role_id = r.id
@@ -362,11 +364,11 @@ func (s *Service) GetSnapshot(ctx context.Context) (Snapshot, error) {
 		defer spendRows.Close()
 		for spendRows.Next() {
 			var label string
-			var used float64
+			var used int64
 			if err := spendRows.Scan(&label, &used); err == nil {
 				spend = append(spend, SpendItem{
 					Label:    label,
-					Microusd: int64(used),
+					Microusd: used,
 				})
 			}
 		}
@@ -387,9 +389,9 @@ func (s *Service) GetSnapshot(ctx context.Context) (Snapshot, error) {
 			Skills:     SkillsMetric{Created: skillsCreated, Learned: skillsLearned},
 			Memories:   MemoriesMetric{Episodic: memEpisodic, Semantic: memSemantic, Corrective: memCorrective},
 			Cost: CostMetric{
-				ActualMicrousd:    int64(costActual),
-				BudgetMicrousd:    int64(costBudget),
-				EstimatedMicrousd: int64(costEst),
+				ActualMicrousd:    costActual,
+				BudgetMicrousd:    costBudget,
+				EstimatedMicrousd: costEst,
 			},
 		},
 		Departments:  departments,
