@@ -273,6 +273,11 @@ Respond ONLY with a valid JSON object with keys: "skill_id", "decision", "decisi
 		rawOutput = strings.TrimSuffix(rawOutput, "```")
 		rawOutput = strings.TrimSpace(rawOutput)
 	}
+	if start := strings.Index(rawOutput, "{"); start != -1 {
+		if end := strings.LastIndex(rawOutput, "}"); end > start {
+			rawOutput = rawOutput[start : end+1]
+		}
+	}
 
 	// Strict JSON schema validation
 	decoder := json.NewDecoder(bytes.NewReader([]byte(rawOutput)))

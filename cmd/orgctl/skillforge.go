@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/config"
+	"github.com/Mireuz13/explorarte-organization/internal/contextcompiler"
+	contextcompilerpostgres "github.com/Mireuz13/explorarte-organization/internal/contextcompiler/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/executionharness"
 	modelruntimeadapter "github.com/Mireuz13/explorarte-organization/internal/executionharness/modelruntimeadapter"
 	harnesspostgres "github.com/Mireuz13/explorarte-organization/internal/executionharness/postgres"
@@ -225,6 +227,7 @@ func runSkillForgeRun(args []string, stdout, stderr io.Writer) int {
 	sourceRepoRoot := flags.String("source-repo-root", "", "skill source repository root directory")
 	runtimeRoot := flags.String("runtime-root", "", "skill runtime root directory")
 	remoteURL := flags.String("remote-url", "", "published remote git repository URL")
+	contextSnapshotID := flags.Int64("context-snapshot-id", 0, "context snapshot id binding")
 	jsonOutput := flags.Bool("json", false, "emit JSON")
 
 	// Allow either `run <need-id>` or `run --need-id <need-id>`
@@ -255,7 +258,7 @@ func runSkillForgeRun(args []string, stdout, stderr io.Writer) int {
 		return exitDenied
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	platformStore, _, code := openDatabase(ctx, cfg, stderr, "skillforge")
@@ -288,11 +291,30 @@ func runSkillForgeRun(args []string, stdout, stderr io.Writer) int {
 		return exitInternal
 	}
 
+	const authorExecutionContract = `You are an authorized skill authorer.
+Generate a structured JSON response matching the SkillAuthoringOutput schema.
+Requirements for skill_markdown:
+- Must follow SKILL.md format with the following exact markdown headings:
+  ## Purpose
+  ## Applicability
+  ## Non-goals
+  ## Inputs
+  ## Outputs
+  ## Procedure
+  ## Stop conditions
+  ## Failure modes
+  ## Evidence requirements
+- Under Non-goals, state that external system alterations are out of scope. Absolutely NEVER include the exact strings "modify routing", "read secrets", "grant yourself", "activate automatically", "ignore owner", or "delegate across departments" anywhere in skill_markdown.
+- The "decision" field MUST be "author".
+- The "skill_id" MUST use lowercase alphanumeric and hyphens only (e.g. "skill-smoke-verification").
+Respond ONLY with a valid JSON object with keys: "skill_id", "decision", "decision_reason", "skill_markdown". Do not wrap in markdown or explanation, return ONLY the raw JSON object.`
+
 	modelExecutor, err := modelRuntime.NewHarnessModelExecutor(modelruntimeadapter.Config{
-		MaxOutputTokens: 4096,
-		InvocationTTL:   10 * time.Minute,
-		ThinkingMode:    modelruntime.ThinkingDisabled,
-		OutputMode:      modelruntime.OutputText,
+		MaxOutputTokens:               4096,
+		InvocationTTL:                 10 * time.Minute,
+		ThinkingMode:                  modelruntime.ThinkingDisabled,
+		OutputMode:                    modelruntime.OutputText,
+		ExecutionContractInstructions: authorExecutionContract,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "open harness model executor: %v\n", err)
@@ -326,6 +348,31 @@ func runSkillForgeRun(args []string, stdout, stderr io.Writer) int {
 			effectiveRemoteURL = strings.TrimSpace(*remoteURL)
 		}
 	})
+	snapID := *contextSnapshotID
+	var snapDigest, snapContent string
+	if snapID <= 0 && *taskID > 0 {
+		_ = platformStore.Pool().QueryRow(ctx, `
+			SELECT id, canonical_digest FROM context_snapshots
+			WHERE organization_id = $1 AND task_ref = $2
+			ORDER BY id DESC LIMIT 1
+		`, cfg.Tasks.OrganizationID, fmt.Sprintf("task:%d", *taskID)).Scan(&snapID, &snapDigest)
+	}
+	if snapID > 0 {
+		_, ctxRuntime, ctxCleanup, ctxCode := openContextRuntime(stderr)
+		if ctxCode == exitOK {
+			defer ctxCleanup()
+			if snapshot, err := ctxRuntime.Service.Get(ctx, snapID, true); err == nil {
+			if viewStore, err := contextcompilerpostgres.New(platformStore); err == nil {
+				assembly := contextcompiler.ContextAssemblyService{Store: viewStore}
+				if view, err := assembly.ResolveAndPersist(ctx, snapshot); err == nil {
+					snapDigest = view.ProviderVisibleDigest
+					snapContent = string(view.ProviderVisibleBytes)
+				}
+			}
+			}
+		}
+	}
+
 	bCfg := skillforgebootstrap.Config{
 		OrganizationID:       cfg.Tasks.OrganizationID,
 		CanonicalDir:         cfg.Registry.CanonicalDir,
@@ -340,6 +387,9 @@ func runSkillForgeRun(args []string, stdout, stderr io.Writer) int {
 		AttemptID:            *attemptID,
 		ExecutionPrincipalID: *principalID,
 		LeaseToken:           *leaseToken,
+		ContextSnapshotID:    snapID,
+		ContextDigest:        snapDigest,
+		ContextContent:       snapContent,
 		Enabled:              cfg.SkillForge.Enabled,
 	}
 
