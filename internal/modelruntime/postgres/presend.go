@@ -270,13 +270,13 @@ INSERT INTO audit_events(
 // lockAssignmentForConsume locks and returns the current quota state of the
 // assignment pinned to this invocation. It is called only from the allow
 // path: a deny never touches the assignment.
-func lockAssignmentForConsume(ctx context.Context, tx pgx.Tx, organizationID string, assignmentID int64) (status string, maxInvocations, usedInvocations int, assignmentHash string, err error) {
+func lockAssignmentForConsume(ctx context.Context, tx pgx.Tx, organizationID string, assignmentID int64) (status string, maxInvocations, usedInvocations int, assignmentHash string, validUntil time.Time, err error) {
 	err = tx.QueryRow(ctx, `
-SELECT status,max_invocations,used_invocations,assignment_hash
+SELECT status,max_invocations,used_invocations,assignment_hash,valid_until
 FROM model_dispatcher_assignments
 WHERE id=$1 AND organization_id=$2
-FOR UPDATE`, assignmentID, organizationID).Scan(&status, &maxInvocations, &usedInvocations, &assignmentHash)
-	return status, maxInvocations, usedInvocations, assignmentHash, mapError(err)
+FOR UPDATE`, assignmentID, organizationID).Scan(&status, &maxInvocations, &usedInvocations, &assignmentHash, &validUntil)
+	return status, maxInvocations, usedInvocations, assignmentHash, validUntil, mapError(err)
 }
 
 func insertAssignmentConsumedAudit(ctx context.Context, tx pgx.Tx, eventType string, assignmentID, invocationID, dispatchAttemptID, executionPrincipalID int64, usedInvocations, maxInvocations int, status string) error {
@@ -305,12 +305,15 @@ func (s *Store) PersistPreSendAllowAndMarkSendStarted(ctx context.Context, comma
 		if err != nil {
 			return struct{}{}, err
 		}
-		status, maxInvocations, usedInvocations, assignmentHash, err := lockAssignmentForConsume(ctx, tx, command.Evaluation.OrganizationID, *ref.dispatcherAssignmentID)
+		status, maxInvocations, usedInvocations, assignmentHash, validUntil, err := lockAssignmentForConsume(ctx, tx, command.Evaluation.OrganizationID, *ref.dispatcherAssignmentID)
 		if err != nil {
 			return struct{}{}, err
 		}
 		if status != string(modeldispatch.AssignmentActive) {
 			return struct{}{}, modeldispatch.ErrAssignmentInactive
+		}
+		if !time.Now().UTC().Before(validUntil) {
+			return struct{}{}, modeldispatch.ErrAssignmentExpired
 		}
 		if usedInvocations >= maxInvocations {
 			return struct{}{}, modeldispatch.ErrAssignmentExhausted

@@ -12,6 +12,7 @@ import (
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/platform/skillpublisher"
 	"github.com/Mireuz13/explorarte-organization/internal/skillforge"
+	skillforgepostgres "github.com/Mireuz13/explorarte-organization/internal/skillforge/postgres"
 	needpostgres "github.com/Mireuz13/explorarte-organization/internal/skillforge/need/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/skillforge/source"
 	"github.com/Mireuz13/explorarte-organization/internal/skillregistry"
@@ -233,6 +234,11 @@ func Open(
 		validator,
 		evaluator,
 	)
+	if platformStore != nil && platformStore.Pool() != nil {
+		if runStore, rErr := skillforgepostgres.NewRunStore(platformStore, cfg.OrganizationID); rErr == nil {
+			engine.SetRunRepository(runStore)
+		}
+	}
 
 	return &Runtime{
 		Config:           cfg,

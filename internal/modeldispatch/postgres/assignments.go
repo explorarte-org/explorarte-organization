@@ -168,7 +168,8 @@ func (s *Store) ResolveActive(ctx context.Context, organizationID string, taskID
 	assignment, err := scanAssignment(s.pool.QueryRow(ctx, `
 SELECT `+assignmentColumns+`
 FROM model_dispatcher_assignments
-WHERE organization_id=$1 AND task_id=$2 AND attempt_id=$3 AND subject_role_id=$4 AND status='active'`,
+WHERE organization_id=$1 AND task_id=$2 AND attempt_id=$3 AND subject_role_id=$4 AND status='active'
+  AND valid_from <= clock_timestamp() AND valid_until > clock_timestamp()`,
 		organizationID, taskID, attemptID, subjectRoleID))
 	if err != nil {
 		return modeldispatch.ResolvedAssignment{}, err

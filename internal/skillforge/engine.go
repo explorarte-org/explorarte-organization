@@ -99,8 +99,7 @@ type Engine struct {
 	authorer     Authorer
 	validator    *StaticValidator
 	evaluator    *ForgeEvaluator
-	runs         map[string]ForgeRun
-	events       map[string][]Event
+	runRepo      RunRepository
 }
 
 func NewEngine(
@@ -125,8 +124,15 @@ func NewEngine(
 		authorer:     authorer,
 		validator:    validator,
 		evaluator:    evaluator,
-		runs:         make(map[string]ForgeRun),
-		events:       make(map[string][]Event),
+		runRepo:      NewMemoryRunStore(),
+	}
+}
+
+func (e *Engine) SetRunRepository(repo RunRepository) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if repo != nil {
+		e.runRepo = repo
 	}
 }
 
@@ -144,20 +150,39 @@ func (e *Engine) Run(ctx context.Context, orgID, needID string) (ForgeRun, error
 	}
 
 	runID := "run:" + needID
-	run, exists := e.runs[runID]
-	if !exists {
+	run, err := e.runRepo.GetRun(ctx, orgID, runID)
+	if err != nil {
+		run, err = e.runRepo.GetRun(ctx, orgID, needID)
+	}
+	if err != nil {
+		run, err = e.runRepo.GetLatestRunByNeed(ctx, orgID, needID)
+	}
+	if err != nil {
+		inputDigest := n.CanonicalDigest
+		if len(inputDigest) != 64 {
+			h := sha256.Sum256([]byte(needID))
+			inputDigest = hex.EncodeToString(h[:])
+		}
 		run = ForgeRun{
 			ID:             runID,
 			OrganizationID: orgID,
 			NeedID:         needID,
 			Status:         StatusCreated,
 			CurrentStep:    StepSearch,
-			InputDigest:    n.CanonicalDigest,
+			InputDigest:    inputDigest,
 			Revision:       1,
 			StartedAt:      time.Now().UTC(),
 		}
-		e.runs[runID] = run
-		e.recordEvent(runID, "run_created", map[string]string{"need_id": needID}, n.CanonicalDigest)
+		created, cErr := e.runRepo.CreateRun(ctx, run)
+		if cErr != nil {
+			return ForgeRun{}, fmt.Errorf("create run in store: %w", cErr)
+		}
+		run = created
+		_ = e.recordEvent(ctx, run.ID, orgID, "run_created", map[string]string{"need_id": needID}, n.CanonicalDigest)
+	}
+
+	if run.Status == StatusCandidateReady {
+		return run, nil
 	}
 
 	// State machine execution loop
@@ -174,19 +199,21 @@ func (e *Engine) Run(ctx context.Context, orgID, needID string) (ForgeRun, error
 			}
 			run.Search = &searchRec
 			run.CurrentStep = StepAuthor
-			e.recordEvent(run.ID, "search_completed", map[string]string{"decision": string(searchRec.Decision)}, "")
+			_ = e.recordEvent(ctx, run.ID, orgID, "search_completed", map[string]string{"decision": string(searchRec.Decision)}, "")
+			run, _ = e.runRepo.SaveRun(ctx, run)
 
 		case StepAuthor:
 			run.Status = StatusAuthoring
 			authorRec, err := e.authorer.Author(ctx, n)
 			if err != nil {
 				run.Status = StatusFailed
-				e.runs[run.ID] = run
+				_, _ = e.runRepo.SaveRun(ctx, run)
 				return run, fmt.Errorf("authoring failed: %w", err)
 			}
 			run.Author = &authorRec
 			run.CurrentStep = StepPublish
-			e.recordEvent(run.ID, "authoring_completed", map[string]string{"skill_id": authorRec.SkillID}, authorRec.ContentDigest)
+			_ = e.recordEvent(ctx, run.ID, orgID, "authoring_completed", map[string]string{"skill_id": authorRec.SkillID}, authorRec.ContentDigest)
+			run, _ = e.runRepo.SaveRun(ctx, run)
 
 		case StepPublish:
 			run.Status = StatusPublishing
@@ -199,44 +226,44 @@ func (e *Engine) Run(ctx context.Context, orgID, needID string) (ForgeRun, error
 			pubSource, err := e.publisher.Publish(ctx, pubReq)
 			if err != nil {
 				run.Status = StatusFailed
-				e.runs[run.ID] = run
+				_, _ = e.runRepo.SaveRun(ctx, run)
 				return run, fmt.Errorf("publication failed: %w", err)
 			}
 			run.PublishedSource = &pubSource
-			run.CurrentStep = StepMaterialize
-			e.recordEvent(run.ID, "published", map[string]string{"origin_ref": pubSource.OriginRef}, pubSource.RawSHA256)
+			run.CurrentStep = StepDraft
+			_ = e.recordEvent(ctx, run.ID, orgID, "published", map[string]string{"origin_ref": pubSource.OriginRef}, pubSource.RawSHA256)
+			run, _ = e.runRepo.SaveRun(ctx, run)
 
 		case StepMaterialize:
-			run.Status = StatusMaterializing
-			matReq := source.MaterializeRequest{
-				OriginRef:       run.PublishedSource.OriginRef,
-				RelativePath:    run.PublishedSource.Path,
-				ExpectedRawSHA:  run.PublishedSource.RawSHA256,
-				ExpectedNormSHA: run.PublishedSource.NormalizedSHA256,
-				RecordedBy:      n.RoleID,
-				RecordRef:       fmt.Sprintf("materialize:%s", run.ID),
-			}
-			matSource, err := e.materializer.Materialize(ctx, matReq)
-			if err != nil {
-				run.Status = StatusFailed
-				e.runs[run.ID] = run
-				return run, fmt.Errorf("materialization failed: %w", err)
-			}
-			run.MaterializedSource = &matSource
+			// Backward compatibility if resumed from older state
 			run.CurrentStep = StepDraft
-			e.recordEvent(run.ID, "materialized", map[string]string{"path": matSource.Path}, matSource.NormalizedSHA256)
+			run, _ = e.runRepo.SaveRun(ctx, run)
 
 		case StepDraft:
-			// Register Draft in SkillRegistry
+			// Register Draft in SkillRegistry BEFORE touching filesystem (Materialization Atomicity)
 			versionID := fmt.Sprintf("%s-v1", run.Author.SkillID)
 			skillID := run.Author.SkillID
 
+			sourceRecord := skillregistry.SourceRecord{
+				Path:             run.PublishedSource.Path,
+				SHA256:           run.PublishedSource.RawSHA256,
+				NormalizedSHA256: run.PublishedSource.NormalizedSHA256,
+				Origin:           skillregistry.OriginGitHub,
+				OriginRef:        run.PublishedSource.OriginRef,
+				RecordedBy:       n.RoleID,
+				RecordRef:        fmt.Sprintf("publish:%s", run.ID),
+			}
+
 			manifestHash, err := skillregistry.HashManifest(run.Author.Manifest)
 			if err != nil {
+				run.Status = StatusFailed
+				_, _ = e.runRepo.SaveRun(ctx, run)
 				return run, err
 			}
-			canonicalHash, err := skillregistry.HashVersionIdentity(skillID, orgID, 1, manifestHash, *run.MaterializedSource)
+			canonicalHash, err := skillregistry.HashVersionIdentity(skillID, orgID, 1, manifestHash, sourceRecord)
 			if err != nil {
+				run.Status = StatusFailed
+				_, _ = e.runRepo.SaveRun(ctx, run)
 				return run, err
 			}
 
@@ -254,8 +281,8 @@ func (e *Engine) Run(ctx context.Context, orgID, needID string) (ForgeRun, error
 				Version:        1,
 				Lifecycle:      skillregistry.LifecycleDraft,
 				Manifest:       run.Author.Manifest,
-				Source:         *run.MaterializedSource,
-				ContentHash:    run.MaterializedSource.SHA256,
+				Source:         sourceRecord,
+				ContentHash:    sourceRecord.SHA256,
 				ManifestHash:   manifestHash,
 				CanonicalHash:  canonicalHash,
 				Revision:       1,
@@ -277,16 +304,35 @@ func (e *Engine) Run(ctx context.Context, orgID, needID string) (ForgeRun, error
 					savedVer = existingVer
 				} else {
 					run.Status = StatusFailed
-					e.runs[run.ID] = run
+					_, _ = e.runRepo.SaveRun(ctx, run)
 					return run, fmt.Errorf("register draft failed: %w", err)
 				}
 			}
 
+			// Materialize ONLY after draft is registered in database
+			run.Status = StatusMaterializing
+			matReq := source.MaterializeRequest{
+				OriginRef:       run.PublishedSource.OriginRef,
+				RelativePath:    run.PublishedSource.Path,
+				ExpectedRawSHA:  run.PublishedSource.RawSHA256,
+				ExpectedNormSHA: run.PublishedSource.NormalizedSHA256,
+				RecordedBy:      n.RoleID,
+				RecordRef:       fmt.Sprintf("materialize:%s", run.ID),
+			}
+			matSource, err := e.materializer.Materialize(ctx, matReq)
+			if err != nil {
+				run.Status = StatusFailed
+				_, _ = e.runRepo.SaveRun(ctx, run)
+				return run, fmt.Errorf("materialization failed: %w", err)
+			}
+			run.MaterializedSource = &matSource
+			_ = e.recordEvent(ctx, run.ID, orgID, "materialized", map[string]string{"path": matSource.Path}, matSource.NormalizedSHA256)
+
 			run.SkillVersionID = savedVer.ID
 			run.Status = StatusWaitingHumanApproval
 			run.CurrentStep = StepWaitApproval
-			e.recordEvent(run.ID, "draft_registered", map[string]string{"version_id": savedVer.ID}, canonicalHash)
-			e.runs[run.ID] = run
+			_ = e.recordEvent(ctx, run.ID, orgID, "draft_registered", map[string]string{"version_id": savedVer.ID}, canonicalHash)
+			run, _ = e.runRepo.SaveRun(ctx, run)
 
 			// MUST STOP HERE: wait for external human approval
 			return run, nil
@@ -300,7 +346,7 @@ func (e *Engine) Run(ctx context.Context, orgID, needID string) (ForgeRun, error
 
 			if ver.Lifecycle == skillregistry.LifecycleDraft {
 				run.Status = StatusWaitingHumanApproval
-				e.runs[run.ID] = run
+				_, _ = e.runRepo.SaveRun(ctx, run)
 				return run, ErrHumanApprovalNeeded
 			}
 
@@ -309,7 +355,8 @@ func (e *Engine) Run(ctx context.Context, orgID, needID string) (ForgeRun, error
 			}
 
 			run.CurrentStep = StepValidate
-			e.recordEvent(run.ID, "human_approval_detected", map[string]string{"version_id": ver.ID}, ver.CanonicalHash)
+			_ = e.recordEvent(ctx, run.ID, orgID, "human_approval_detected", map[string]string{"version_id": ver.ID}, ver.CanonicalHash)
+			run, _ = e.runRepo.SaveRun(ctx, run)
 
 		case StepValidate:
 			run.Status = StatusValidating
@@ -321,21 +368,21 @@ func (e *Engine) Run(ctx context.Context, orgID, needID string) (ForgeRun, error
 			schemaRef, schemaPass, err := e.validator.ValidateSkillSource(ctx, ver.SkillID, ver.Source, ver.Manifest)
 			if err != nil || !schemaPass {
 				run.Status = StatusRejected
-				e.runs[run.ID] = run
+				_, _ = e.runRepo.SaveRun(ctx, run)
 				return run, fmt.Errorf("%w: schema validation failed: %v", ErrValidationFailed, err)
 			}
 
 			capRef, capPass, err := e.validator.ReviewRoleCapabilities(ctx, n.RoleID, ver.SkillID, ver.Manifest.RequiredCapabilities)
 			if err != nil || !capPass {
 				run.Status = StatusRejected
-				e.runs[run.ID] = run
+				_, _ = e.runRepo.SaveRun(ctx, run)
 				return run, fmt.Errorf("%w: capability review failed: %v", ErrValidationFailed, err)
 			}
 
 			safetyRef, safetyPass, err := e.validator.ReviewSkillInstructions(ctx, ver.SkillID, ver.Source, ver.Manifest)
 			if err != nil || !safetyPass {
 				run.Status = StatusRejected
-				e.runs[run.ID] = run
+				_, _ = e.runRepo.SaveRun(ctx, run)
 				return run, fmt.Errorf("%w: safety review failed: %v", ErrValidationFailed, err)
 			}
 
@@ -370,7 +417,8 @@ func (e *Engine) Run(ctx context.Context, orgID, needID string) (ForgeRun, error
 				InstructionSafetyRef: safetyRef,
 			}
 			run.CurrentStep = StepEvaluate
-			e.recordEvent(run.ID, "validated_candidate", map[string]string{"version_id": ver.ID}, ver.CanonicalHash)
+			_ = e.recordEvent(ctx, run.ID, orgID, "validated_candidate", map[string]string{"version_id": ver.ID}, ver.CanonicalHash)
+			run, _ = e.runRepo.SaveRun(ctx, run)
 
 		case StepEvaluate, StepAdversarial, StepCanary:
 			run.Status = StatusEvaluating
@@ -383,49 +431,49 @@ func (e *Engine) Run(ctx context.Context, orgID, needID string) (ForgeRun, error
 			if err != nil {
 				run.Status = StatusRejected
 				run.Evaluation = &evalResult
-				e.runs[run.ID] = run
+				_, _ = e.runRepo.SaveRun(ctx, run)
 				return run, fmt.Errorf("evaluation rejected: %w", err)
 			}
 
 			run.Evaluation = &evalResult
 			run.CurrentStep = StepComplete
-			e.recordEvent(run.ID, "evaluation_passed", map[string]string{"suite": evalResult.SuiteRef}, "")
+			_ = e.recordEvent(ctx, run.ID, orgID, "evaluation_passed", map[string]string{"suite": evalResult.SuiteRef}, "")
+			run, _ = e.runRepo.SaveRun(ctx, run)
 
 		case StepComplete:
 			run.Status = StatusCandidateReady
 			now := time.Now().UTC()
 			run.FinishedAt = &now
-			e.recordEvent(run.ID, "candidate_ready", map[string]string{"version_id": run.SkillVersionID}, "")
-			e.runs[run.ID] = run
+			_ = e.recordEvent(ctx, run.ID, orgID, "candidate_ready", map[string]string{"version_id": run.SkillVersionID}, "")
+			run, _ = e.runRepo.SaveRun(ctx, run)
 			return run, nil
 		}
 	}
 }
 
-func (e *Engine) GetRun(_ context.Context, runID string) (ForgeRun, error) {
+func (e *Engine) GetRun(ctx context.Context, runID string) (ForgeRun, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	run, ok := e.runs[runID]
-	if !ok {
-		return ForgeRun{}, fmt.Errorf("forge run %s not found", runID)
+	run, err := e.runRepo.GetRun(ctx, "", runID)
+	if err != nil && !strings.HasPrefix(runID, "run:") {
+		run, err = e.runRepo.GetRun(ctx, "", "run:"+runID)
 	}
-	return run, nil
+	return run, err
 }
 
-func (e *Engine) ListEvents(_ context.Context, runID string) ([]Event, error) {
+func (e *Engine) ListEvents(ctx context.Context, runID string) ([]Event, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.events[runID], nil
+	return e.runRepo.ListEvents(ctx, "", runID)
 }
 
-func (e *Engine) recordEvent(runID, eventType string, refs map[string]string, digest string) {
-	seq := int64(len(e.events[runID]) + 1)
-	e.events[runID] = append(e.events[runID], Event{
-		RunID:      runID,
-		Sequence:   seq,
-		EventType:  eventType,
-		Refs:       refs,
-		Digest:     digest,
-		RecordedAt: time.Now().UTC(),
+func (e *Engine) recordEvent(ctx context.Context, runID, orgID, eventType string, refs map[string]string, digest string) error {
+	return e.runRepo.RecordEvent(ctx, Event{
+		RunID:          runID,
+		OrganizationID: orgID,
+		EventType:      eventType,
+		Refs:           refs,
+		Digest:         digest,
+		RecordedAt:     time.Now().UTC(),
 	})
 }

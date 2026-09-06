@@ -172,33 +172,52 @@ func (s *Store) ProjectHarnessRun(ctx context.Context, harnessRunID string) (epi
 	}
 
 	// 6. Read Model Invocations and Usage
+	// Only query invocations that belong to this specific harness run.
 	invocations := make([]episode.InvocationFact, 0)
 	costs := make([]episode.CostFact, 0)
 	invIDs := make([]int64, 0)
 
-	invRows, err := s.pool.Query(ctx, `
-		SELECT id, provider_id, provider_model_id, status, created_at, terminal_at
-		FROM model_invocations
-		WHERE organization_id = $1 AND task_id = $2 AND attempt_id = $3
-		ORDER BY id ASC
-	`, s.organizationID, d.TaskID, d.AttemptID)
-	if err == nil {
-		defer invRows.Close()
-		for invRows.Next() {
-			var id int64
-			var providerID, modelID, status string
-			var crAt time.Time
-			var termAt *time.Time
-			if scanErr := invRows.Scan(&id, &providerID, &modelID, &status, &crAt, &termAt); scanErr == nil {
-				invocations = append(invocations, episode.InvocationFact{
-					InvocationID:    id,
-					ProviderID:      providerID,
-					ProviderModelID: modelID,
-					Status:          status,
-					CreatedAt:       crAt.UTC(),
-					TerminalAt:      termAt,
-				})
-				invIDs = append(invIDs, id)
+	runInvIDMap := make(map[int64]struct{})
+	for _, ev := range events {
+		if ev.InvocationRef != "" {
+			cleanRef := strings.TrimPrefix(ev.InvocationRef, "invocation:")
+			cleanRef = strings.TrimPrefix(cleanRef, "inv-")
+			if parsedID, pErr := strconv.ParseInt(cleanRef, 10, 64); pErr == nil && parsedID > 0 {
+				runInvIDMap[parsedID] = struct{}{}
+			}
+		}
+	}
+
+	var targetInvIDs []int64
+	for id := range runInvIDMap {
+		targetInvIDs = append(targetInvIDs, id)
+	}
+
+	if len(targetInvIDs) > 0 {
+		invRows, err := s.pool.Query(ctx, `
+			SELECT id, provider_id, provider_model_id, status, created_at, terminal_at
+			FROM model_invocations
+			WHERE organization_id = $1 AND id = ANY($2)
+			ORDER BY id ASC
+		`, s.organizationID, targetInvIDs)
+		if err == nil {
+			defer invRows.Close()
+			for invRows.Next() {
+				var id int64
+				var providerID, modelID, status string
+				var crAt time.Time
+				var termAt *time.Time
+				if scanErr := invRows.Scan(&id, &providerID, &modelID, &status, &crAt, &termAt); scanErr == nil {
+					invocations = append(invocations, episode.InvocationFact{
+						InvocationID:    id,
+						ProviderID:      providerID,
+						ProviderModelID: modelID,
+						Status:          status,
+						CreatedAt:       crAt.UTC(),
+						TerminalAt:      termAt,
+					})
+					invIDs = append(invIDs, id)
+				}
 			}
 		}
 	}

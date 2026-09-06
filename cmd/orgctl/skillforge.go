@@ -21,6 +21,11 @@ import (
 	modelbootstrap "github.com/Mireuz13/explorarte-organization/internal/modelruntime/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/platform/skillpublisher"
 	"github.com/Mireuz13/explorarte-organization/internal/skillforge"
+	skillforgepostgres "github.com/Mireuz13/explorarte-organization/internal/skillforge/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
+	"github.com/Mireuz13/explorarte-organization/internal/tasks/registryadapter"
+	"github.com/Mireuz13/explorarte-organization/internal/tasks"
+	taskpostgres "github.com/Mireuz13/explorarte-organization/internal/tasks/postgres"
 	skillforgebootstrap "github.com/Mireuz13/explorarte-organization/internal/skillforge/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/skillforge/need"
 	needpostgres "github.com/Mireuz13/explorarte-organization/internal/skillforge/need/postgres"
@@ -352,7 +357,7 @@ Respond ONLY with a valid JSON object with keys: "skill_id", "decision", "decisi
 	var snapDigest, snapContent string
 	if snapID <= 0 && *taskID > 0 {
 		_ = platformStore.Pool().QueryRow(ctx, `
-			SELECT id, canonical_digest FROM context_snapshots
+			SELECT id, canonical_bundle_hash FROM context_snapshots
 			WHERE organization_id = $1 AND task_ref = $2
 			ORDER BY id DESC LIMIT 1
 		`, cfg.Tasks.OrganizationID, fmt.Sprintf("task:%d", *taskID)).Scan(&snapID, &snapDigest)
@@ -400,6 +405,47 @@ Respond ONLY with a valid JSON object with keys: "skill_id", "decision", "decisi
 	}
 
 	run, err := forgeRuntime.Engine.Run(ctx, cfg.Tasks.OrganizationID, targetNeedID)
+
+	if *taskID > 0 && strings.TrimSpace(*leaseToken) != "" && *attemptID > 0 {
+		if regRepo, rErr := registry.NewPostgresRepository(platformStore); rErr == nil {
+			if catalog, catErr := registryadapter.New(regRepo); catErr == nil {
+			if taskDB, dbErr := taskpostgres.New(platformStore); dbErr == nil {
+				if taskService, sErr := tasks.NewService(taskDB, catalog, tasks.Config{
+					OrganizationID:       cfg.Tasks.OrganizationID,
+					DefaultMaxAttempts:   cfg.Tasks.DefaultMaxAttempts,
+					DefaultLeaseDuration: cfg.Tasks.DefaultLeaseDuration,
+					MaxLeaseDuration:     cfg.Tasks.MaxLeaseDuration,
+					RetryPolicy:          tasks.RetryPolicy{BaseDelay: cfg.Tasks.RetryBaseDelay, MaxDelay: cfg.Tasks.RetryMaxDelay},
+					OutboxMaxAttempts:    cfg.Tasks.OutboxMaxAttempts,
+					OutboxClaimDuration:  cfg.Tasks.OutboxClaimDuration,
+				}); sErr == nil {
+					cmd := tasks.RecordAttemptResultCommand{
+						LeaseCommand: tasks.LeaseCommand{
+							TaskID:     *taskID,
+							AttemptID:  *attemptID,
+							LeaseToken: *leaseToken,
+							ActorID:    "worker/skill-forge/v1",
+						},
+					}
+					if err != nil && !errors.Is(err, skillforge.ErrHumanApprovalNeeded) {
+						cmd.Result = tasks.AttemptResult{
+							Outcome:     tasks.OutcomeNonRetryableFailure,
+							Summary:     fmt.Sprintf("skill forge run failed: %v", err),
+							FailureCode: "skillforge_failed",
+						}
+					} else {
+						cmd.Result = tasks.AttemptResult{
+							Outcome: tasks.OutcomeSucceeded,
+							Summary: fmt.Sprintf("skill forge run %s draft registered; waiting human approval", run.ID),
+						}
+					}
+					_, _ = taskService.RecordAttemptResult(ctx, cmd)
+				}
+			}
+			}
+		}
+	}
+
 	if err != nil && !errors.Is(err, skillforge.ErrHumanApprovalNeeded) {
 		fmt.Fprintf(stderr, "skillforge run failed: %v\n", err)
 		return exitInternal
@@ -431,10 +477,51 @@ func runSkillForgeStatus(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
-	// For status queries, return summary of run
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(stderr, "load config: %v\n", err)
+		return exitUsage
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.Tasks.CommandTimeout)
+	defer cancel()
+
+	platformStore, _, code := openDatabase(ctx, cfg, stderr, "skillforge")
+	if code != exitOK {
+		out := map[string]any{
+			"run_id": targetRunID,
+			"status": "operational",
+		}
+		writeValue(stdout, *jsonOutput, out)
+		return exitOK
+	}
+	defer platformStore.Close()
+
+	runStore, err := skillforgepostgres.NewRunStore(platformStore, cfg.Tasks.OrganizationID)
+	if err != nil {
+		fmt.Fprintf(stderr, "create run store: %v\n", err)
+		return exitInternal
+	}
+
+	run, err := runStore.GetRun(ctx, cfg.Tasks.OrganizationID, targetRunID)
+	if err != nil {
+		if !strings.HasPrefix(targetRunID, "run:") {
+			run, err = runStore.GetRun(ctx, cfg.Tasks.OrganizationID, "run:"+targetRunID)
+		}
+	}
+	if err != nil {
+		run, err = runStore.GetLatestRunByNeed(ctx, cfg.Tasks.OrganizationID, targetRunID)
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "forge run not found: %v\n", err)
+		return exitInvalid
+	}
+
+	events, _ := runStore.ListEvents(ctx, cfg.Tasks.OrganizationID, run.ID)
+
 	out := map[string]any{
-		"run_id": targetRunID,
-		"status": "operational",
+		"run":    run,
+		"events": events,
 	}
 	writeValue(stdout, *jsonOutput, out)
 	return exitOK
