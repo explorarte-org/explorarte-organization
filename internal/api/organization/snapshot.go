@@ -159,7 +159,7 @@ func (s *Service) GetSnapshot(ctx context.Context) (Snapshot, error) {
 		       coalesce(b.used_usd_nanos / 1000, 0)::bigint as b_used
 		FROM tasks t
 		LEFT JOIN agent_budgets b ON b.root_task_id = t.id AND b.task_id = t.id
-		WHERE t.task_class = owner.goal OR t.requested_by_role_id = empresa/human
+		WHERE t.task_class = 'owner.goal' OR t.requested_by_role_id = 'empresa/human'
 		ORDER BY t.id DESC
 		LIMIT 15
 	`)
