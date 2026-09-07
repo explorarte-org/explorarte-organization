@@ -133,3 +133,59 @@ type CreateMissionResponse struct {
 type ErrorResponse struct {
 	Error string `json:"error"`
 }
+
+type MissionReport struct {
+	MissionID         string                 `json:"missionId"`
+	RootTaskID        int64                  `json:"rootTaskId"`
+	Title             string                 `json:"title"`
+	Objective         string                 `json:"objective"`
+	Status            string                 `json:"status"`
+	CreatedAt         string                 `json:"createdAt"`
+	CompletedAt       string                 `json:"completedAt,omitempty"`
+	Duration          string                 `json:"duration,omitempty"`
+	BudgetMicrousd    int64                  `json:"budgetMicrousd"`
+	SpentMicrousd     int64                  `json:"spentMicrousd"`
+	TotalTokens       int64                  `json:"totalTokens"`
+	InputTokens       int64                  `json:"inputTokens"`
+	OutputTokens      int64                  `json:"outputTokens"`
+	TotalTasks        int64                  `json:"totalTasks"`
+	CompletedTasks    int64                  `json:"completedTasks"`
+	CeoClosure        *CeoClosureReport      `json:"ceoClosure,omitempty"`
+	ExecutivePlan     *ExecutivePlanReport   `json:"executivePlan,omitempty"`
+	DepartmentReviews []DepartmentReviewItem `json:"departmentReviews"`
+	SpecialistAudits  []SpecialistAuditItem  `json:"specialistAudits"`
+	KeyResolutions    []string               `json:"keyResolutions"`
+}
+
+type CeoClosureReport struct {
+	Status              string   `json:"status"`
+	AnswerToOwner       string   `json:"answerToOwner"`
+	CompletedItems      []string `json:"completedItems"`
+	BlockedItems        []string `json:"blockedItems"`
+	UnresolvedDecisions []string `json:"unresolvedDecisions"`
+}
+
+type ExecutivePlanReport struct {
+	Objective         string   `json:"objective"`
+	SuccessCriteria   []string `json:"successCriteria"`
+	GlobalConstraints []string `json:"globalConstraints"`
+}
+
+type DepartmentReviewItem struct {
+	TaskID     int64    `json:"taskId"`
+	Department string   `json:"department"`
+	RoleID     string   `json:"roleId"`
+	Verdict    string   `json:"verdict"`
+	Findings   []string `json:"findings"`
+}
+
+type SpecialistAuditItem struct {
+	TaskID     int64  `json:"taskId"`
+	Department string `json:"department"`
+	RoleID     string `json:"roleId"`
+	RoleName   string `json:"roleName"`
+	Title      string `json:"title"`
+	TaskClass  string `json:"taskClass"`
+	Status     string `json:"status"`
+	Summary    string `json:"summary"`
+}

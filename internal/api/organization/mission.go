@@ -99,12 +99,12 @@ func (s *Service) HandleCreateMission(w http.ResponseWriter, r *http.Request) {
 		if s.budgetStore != nil {
 			limits := agentbudget.Limits{
 				MaxUSD:        modelpricing.USDNanos(req.BudgetMicrousd * 1000),
-				MaxTokens:     500000,
+				MaxTokens:     5000000,
 				MaxModelCalls: 100,
 				MaxWallTimeMS: int64(30 * time.Minute / time.Millisecond),
 				MaxDepth:      5,
 				MaxRetries:    2,
-				MaxSubagents:  10,
+				MaxSubagents:  25,
 			}
 			_, err = s.budgetStore.CreateRootBudget(r.Context(), s.cfg.Tasks.OrganizationID, task.ID, "empresa/ceo", limits, time.Now().UTC())
 			if err != nil {

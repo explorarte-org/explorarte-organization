@@ -65,6 +65,8 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/organization/snapshot", s.HandleSnapshot)
 	mux.HandleFunc("POST /api/organization/ceo/messages", s.HandleCEOMessage)
 	mux.HandleFunc("POST /api/organization/missions", s.HandleCreateMission)
+	mux.HandleFunc("GET /api/organization/missions/{id}/report", s.HandleMissionReport)
+	mux.HandleFunc("GET /api/organization/missions/report", s.HandleMissionReport)
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
