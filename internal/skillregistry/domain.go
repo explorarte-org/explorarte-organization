@@ -1,6 +1,9 @@
 package skillregistry
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 type Lifecycle string
 
@@ -48,24 +51,35 @@ type Skill struct {
 }
 
 type SourceRecord struct {
-	Path           string     `json:"path"`
-	SHA256         string     `json:"sha256"`
-	Origin         OriginKind `json:"origin"`
-	OriginRef      string     `json:"origin_ref,omitempty"`
-	LegacyImported bool       `json:"legacy_imported,omitempty"`
-	RecordedBy     string     `json:"recorded_by"`
-	RecordRef      string     `json:"record_ref"`
+	Path             string     `json:"path"`
+	SHA256           string     `json:"sha256"`
+	NormalizedSHA256 string     `json:"normalized_sha256,omitempty"`
+	Origin           OriginKind `json:"origin"`
+	OriginRef        string     `json:"origin_ref,omitempty"`
+	LegacyImported   bool       `json:"legacy_imported,omitempty"`
+	RecordedBy       string     `json:"recorded_by"`
+	RecordRef        string     `json:"record_ref"`
+}
+
+type ToolRequirement struct {
+	ToolName    string   `json:"tool_name"`
+	Permissions []string `json:"permissions,omitempty"`
 }
 
 type Manifest struct {
-	Name                 string   `json:"name"`
-	Description          string   `json:"description"`
-	Department           string   `json:"department"`
-	OwnerRoleID          string   `json:"owner_role_id"`
-	MemoryDomain         string   `json:"memory_domain"`
-	BaseProtocol         string   `json:"base_protocol"`
-	VerifierRef          string   `json:"verifier_ref,omitempty"`
-	RequiredCapabilities []string `json:"required_capabilities,omitempty"`
+	Name                  string            `json:"name"`
+	Description           string            `json:"description"`
+	Department            string            `json:"department"`
+	OwnerRoleID           string            `json:"owner_role_id"`
+	MemoryDomain          string            `json:"memory_domain"`
+	BaseProtocol          string            `json:"base_protocol"`
+	VerifierRef           string            `json:"verifier_ref,omitempty"`
+	RequiredCapabilities  []string          `json:"required_capabilities,omitempty"`
+	ManifestSchemaVersion string            `json:"manifest_schema_version,omitempty"`
+	EvaluationSuiteRef    string            `json:"evaluation_suite_ref,omitempty"`
+	CanaryPolicyRef       string            `json:"canary_policy_ref,omitempty"`
+	ExecutionProfileRef   string            `json:"execution_profile_ref,omitempty"`
+	RequiredTools         []ToolRequirement `json:"required_tools,omitempty"`
 }
 
 type ApprovalEvidence struct {
@@ -120,4 +134,11 @@ type SkillAssignment struct {
 	UpdatedAt             time.Time        `json:"updated_at"`
 	RevokedAt             *time.Time       `json:"revoked_at,omitempty"`
 	RevokeReason          string           `json:"revoke_reason,omitempty"`
+}
+
+func RuntimeVersionString(v SkillVersion) string {
+	if v.Source.LegacyImported {
+		return "canonical-import-v1"
+	}
+	return fmt.Sprintf("registry-v%d", v.Version)
 }

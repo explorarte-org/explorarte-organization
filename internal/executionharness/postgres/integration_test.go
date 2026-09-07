@@ -80,7 +80,7 @@ func newFixture(t *testing.T) *fixture {
 		fail("refusing destructive TRUNCATE: %v", err)
 	}
 	if _, err = platformStore.Pool().Exec(ctx, `
-		TRUNCATE execution_run_events,outbox_events,task_dead_letters,task_events,task_leases,task_attempts,
+		TRUNCATE execution_run_descriptors,execution_run_events,outbox_events,task_dead_letters,task_events,task_leases,task_attempts,
 		         task_evidence,task_requirements,task_dependencies,tasks,organization_reporting_lines,
 		         organization_registry_revision_documents,organization_roles,organizational_units,
 		         organizations,organization_registry_revisions,audit_events RESTART IDENTITY CASCADE

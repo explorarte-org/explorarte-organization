@@ -8,18 +8,37 @@ import (
 )
 
 type Runtime struct {
-	authority ExecutionAuthorityPort
-	models    ModelExecutor
-	catalog   ToolCatalog
-	tools     ToolExecutor
-	history   ExecutionHistoryStore
+	authority  ExecutionAuthorityPort
+	models     ModelExecutor
+	catalog    ToolCatalog
+	tools      ToolExecutor
+	history    ExecutionHistoryStore
+	descriptor RunDescriptorStore
 }
 
 func New(authority ExecutionAuthorityPort, models ModelExecutor, catalog ToolCatalog, tools ToolExecutor, history ExecutionHistoryStore) (*Runtime, error) {
-	if authority == nil || models == nil || catalog == nil || tools == nil || history == nil {
+	// The production PostgreSQL history adapter implements the descriptor port
+	// on the same scoped store. Discovering that implementation here prevents a
+	// caller that already selected durable history from silently falling back to
+	// process-local descriptor metadata. Pure in-process callers keep the
+	// historical constructor behavior through the explicit memory adapter.
+	descriptors, ok := history.(RunDescriptorStore)
+	if !ok {
+		descriptors = NewMemoryRunDescriptorStore()
+	}
+	return NewWithDescriptorStore(authority, models, catalog, tools, history, descriptors)
+}
+
+// NewWithDescriptorStore constructs a Harness runtime with an explicit
+// descriptor adapter. Production bootstrap uses the PostgreSQL adapter so
+// descriptor metadata is committed before EventRunStarted. New retains the
+// historical constructor and uses the process-local adapter for existing unit
+// and in-process callers.
+func NewWithDescriptorStore(authority ExecutionAuthorityPort, models ModelExecutor, catalog ToolCatalog, tools ToolExecutor, history ExecutionHistoryStore, descriptors RunDescriptorStore) (*Runtime, error) {
+	if authority == nil || models == nil || catalog == nil || tools == nil || history == nil || descriptors == nil {
 		return nil, fmt.Errorf("%w: harness dependencies are incomplete", ErrInvalidRun)
 	}
-	return &Runtime{authority: authority, models: models, catalog: catalog, tools: tools, history: history}, nil
+	return &Runtime{authority: authority, models: models, catalog: catalog, tools: tools, history: history, descriptor: descriptors}, nil
 }
 
 func (r *Runtime) Execute(ctx context.Context, spec RunSpec) RunResult {
@@ -36,12 +55,35 @@ func (r *Runtime) Execute(ctx context.Context, spec RunSpec) RunResult {
 		return historyFailure(spec, nil, err)
 	}
 	if len(events) == 0 {
+		descriptor, descriptorErr := BuildRunDescriptor(spec)
+		if descriptorErr != nil {
+			return RunResult{RunID: spec.Identity.RunID, Status: StatusIdentityDrift, TerminationReason: descriptorErr.Error(), Provenance: "executionharness/v1"}
+		}
+		// The descriptor is the first durable fact of a new run. If the process
+		// dies after this call and before EventRunStarted, a retry can still
+		// prove which execution contract was frozen; a changed contract is
+		// rejected closed by the descriptor store rather than overwriting it.
+		if err = r.descriptor.EnsureRunDescriptor(ctx, descriptor); err != nil {
+			return descriptorFailure(spec, nil, err)
+		}
 		events, err = r.append(ctx, spec, events, Event{Type: EventRunStarted, IdentityDigest: identityDigest})
 		if err != nil {
 			return historyFailure(spec, events, err)
 		}
 	} else if err = validateHistory(spec.Identity.RunID, events, identityDigest); err != nil {
 		return result(spec, events, StatusIdentityDrift, "stable run identity, context, tool set, or policy changed", "", "", countTurns(events), countToolCalls(events))
+	} else {
+		// Validate the existing event ledger before creating a descriptor. This
+		// preserves re-entry for histories written before MemoryOS phase 0A:
+		// a drifted retry cannot poison the missing descriptor slot with its own
+		// identity, while the original identity can still backfill it.
+		descriptor, descriptorErr := BuildRunDescriptor(spec)
+		if descriptorErr != nil {
+			return RunResult{RunID: spec.Identity.RunID, Status: StatusIdentityDrift, TerminationReason: descriptorErr.Error(), Provenance: "executionharness/v1"}
+		}
+		if err = r.descriptor.EnsureRunDescriptor(ctx, descriptor); err != nil {
+			return descriptorFailure(spec, events, err)
+		}
 	}
 	if terminal, found, terminalErr := terminalResult(spec, events); terminalErr != nil {
 		return historyFailure(spec, events, terminalErr)
@@ -230,6 +272,14 @@ func (r *Runtime) Execute(ctx context.Context, spec RunSpec) RunResult {
 	}
 }
 
+func descriptorFailure(spec RunSpec, events []Event, err error) RunResult {
+	status := StatusHistoryError
+	if errors.Is(err, ErrRunDescriptorConflict) || errors.Is(err, ErrRunIdentityDrift) {
+		status = StatusIdentityDrift
+	}
+	return result(spec, events, status, err.Error(), "", lastModelOutput(events), countTurns(events), countToolCalls(events))
+}
+
 func cloneRunSpec(spec RunSpec) RunSpec {
 	result := spec
 	result.Tools = make([]ToolDefinition, len(spec.Tools))
@@ -312,15 +362,9 @@ func allowedTool(tools []ToolDefinition, name string) (ToolDefinition, bool) {
 }
 
 func sameToolDefinition(left, right ToolDefinition) bool {
-	leftNormalized, leftNormalizeErr := normalizeTools([]ToolDefinition{left})
-	rightNormalized, rightNormalizeErr := normalizeTools([]ToolDefinition{right})
-	if leftNormalizeErr != nil || rightNormalizeErr != nil {
-		return false
-	}
-	leftBody, leftErr := canonicalJSON(leftNormalized[0].InputSchema)
-	rightBody, rightErr := canonicalJSON(rightNormalized[0].InputSchema)
-	return leftErr == nil && rightErr == nil && leftNormalized[0].Name == rightNormalized[0].Name &&
-		leftNormalized[0].Description == rightNormalized[0].Description && string(leftBody) == string(rightBody)
+	leftDigest, leftErr := ToolDefinitionDigest(left)
+	rightDigest, rightErr := ToolDefinitionDigest(right)
+	return leftErr == nil && rightErr == nil && leftDigest == rightDigest
 }
 
 // requestedToolCallIDs seeds the in-run replay guard from history. It counts

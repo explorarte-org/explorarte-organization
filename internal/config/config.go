@@ -79,6 +79,10 @@ const (
 	defaultStagingReconcileInterval           = 30 * time.Second
 	defaultStagingReconcileBatchSize          = 100
 	defaultStagingGitBinary                   = "git"
+	defaultSkillForgeEnabled                  = false
+	defaultSkillForgeSourceRepoRoot           = "/opt/explorarte/skills-source"
+	defaultSkillForgeRuntimeRoot              = "/opt/explorarte/skills-runtime"
+	defaultSkillForgePublishedRemoteURL       = "git@github.com:explorarte-org/skills.git"
 )
 
 type Config struct {
@@ -92,6 +96,14 @@ type Config struct {
 	Context       ContextConfig
 	Staging       StagingConfig
 	ModelRuntime  ModelRuntimeConfig
+	SkillForge    SkillForgeConfig
+}
+
+type SkillForgeConfig struct {
+	Enabled             bool
+	SkillSourceRepoRoot string
+	SkillRuntimeRoot    string
+	PublishedRemoteURL  string
 }
 
 // ModelRuntimeConfig holds test-only overrides for model routing/egress. All
@@ -262,6 +274,10 @@ func LoadFrom(lookup LookupEnv) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	skillForge, err := loadSkillForge(lookup)
+	if err != nil {
+		return Config{}, err
+	}
 	singleProviderTestMode, err := boolean(lookup, "ORG_MODEL_SINGLE_PROVIDER_TEST", false)
 	if err != nil {
 		return Config{}, err
@@ -291,6 +307,7 @@ func LoadFrom(lookup LookupEnv) (Config, error) {
 		Context:       contextConfig,
 		Staging:       staging,
 		ModelRuntime:  ModelRuntimeConfig{SingleProviderTestMode: singleProviderTestMode},
+		SkillForge:    skillForge,
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -542,6 +559,35 @@ func loadStaging(lookup LookupEnv) (StagingConfig, error) {
 	}, nil
 }
 
+func loadSkillForge(lookup LookupEnv) (SkillForgeConfig, error) {
+	enabled, err := boolean(lookup, "ORG_SKILLFORGE_ENABLED", defaultSkillForgeEnabled)
+	if err != nil {
+		return SkillForgeConfig{}, err
+	}
+	sourceRoot := text(lookup, "ORG_SKILLFORGE_SOURCE_REPO_ROOT", defaultSkillForgeSourceRepoRoot)
+	if !filepath.IsAbs(sourceRoot) {
+		if abs, err := filepath.Abs(sourceRoot); err == nil {
+			sourceRoot = abs
+		}
+	}
+	runtimeRoot := text(lookup, "ORG_SKILLFORGE_RUNTIME_ROOT", defaultSkillForgeRuntimeRoot)
+	if !filepath.IsAbs(runtimeRoot) {
+		if abs, err := filepath.Abs(runtimeRoot); err == nil {
+			runtimeRoot = abs
+		}
+	}
+	remoteURL := defaultSkillForgePublishedRemoteURL
+	if val, ok := lookup("ORG_SKILLFORGE_PUBLISHED_REMOTE_URL"); ok {
+		remoteURL = strings.TrimSpace(val)
+	}
+	return SkillForgeConfig{
+		Enabled:             enabled,
+		SkillSourceRepoRoot: filepath.Clean(sourceRoot),
+		SkillRuntimeRoot:    filepath.Clean(runtimeRoot),
+		PublishedRemoteURL:  strings.TrimSpace(remoteURL),
+	}, nil
+}
+
 func (cfg Config) Validate() error {
 	if strings.TrimSpace(cfg.App.Name) == "" {
 		return errors.New("ORG_APP_NAME cannot be empty")
@@ -582,6 +628,9 @@ func (cfg Config) Validate() error {
 		return err
 	}
 	if err := cfg.Staging.Validate(); err != nil {
+		return err
+	}
+	if err := cfg.SkillForge.Validate(); err != nil {
 		return err
 	}
 	// ORG_MODEL_SINGLE_PROVIDER_TEST relaxes the R24 executive egress scope
@@ -869,6 +918,27 @@ func validateAddr(addr string) error {
 	}
 	if number < 0 || number > 65535 {
 		return fmt.Errorf("port must be between 0 and 65535, got %d", number)
+	}
+	return nil
+}
+
+func (cfg SkillForgeConfig) Validate() error {
+	if !cfg.Enabled {
+		return nil
+	}
+	cleanSource := filepath.Clean(strings.TrimSpace(cfg.SkillSourceRepoRoot))
+	cleanRuntime := filepath.Clean(strings.TrimSpace(cfg.SkillRuntimeRoot))
+	if cleanSource == "" || !filepath.IsAbs(cleanSource) {
+		return errors.New("ORG_SKILLFORGE_SOURCE_REPO_ROOT must be a non-empty absolute path")
+	}
+	if cleanRuntime == "" || !filepath.IsAbs(cleanRuntime) {
+		return errors.New("ORG_SKILLFORGE_RUNTIME_ROOT must be a non-empty absolute path")
+	}
+	if cleanSource == cleanRuntime {
+		return errors.New("ORG_SKILLFORGE_SOURCE_REPO_ROOT and ORG_SKILLFORGE_RUNTIME_ROOT must be distinct paths")
+	}
+	if strings.TrimSpace(cfg.PublishedRemoteURL) == "" {
+		return errors.New("ORG_SKILLFORGE_PUBLISHED_REMOTE_URL must be non-empty when skillforge is enabled")
 	}
 	return nil
 }

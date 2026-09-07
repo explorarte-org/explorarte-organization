@@ -98,6 +98,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runMemory(args[1:], stdout, stderr)
 	case "skill":
 		return runSkill(args[1:], stdout, stderr)
+	case "skillforge":
+		return runSkillForge(args[1:], stdout, stderr)
 	case "rag":
 		return runRAG(args[1:], stdout, stderr)
 	case "model":
@@ -136,6 +138,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runComposition(args[1:], stdout, stderr)
 	case "corpus":
 		return runCorpus(args[1:], stdout, stderr)
+	case "memoryos":
+		return runMemoryOS(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return exitOK

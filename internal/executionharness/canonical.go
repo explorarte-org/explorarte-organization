@@ -95,3 +95,44 @@ func validateSpec(spec RunSpec) ([]ToolDefinition, string, error) {
 	}
 	return tools, sha256Bytes(body), nil
 }
+
+// canonicalToolDefinitionBytes is the sole canonical representation used for
+// tool-definition identity. Input schemas are normalized with canonicalJSON,
+// and the enclosing object is marshalled with stable struct field order.
+func canonicalToolDefinitionBytes(tool ToolDefinition) ([]byte, error) {
+	normalized, err := normalizeTools([]ToolDefinition{tool})
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(struct {
+		Name        string          `json:"name"`
+		Description string          `json:"description"`
+		InputSchema json.RawMessage `json:"input_schema"`
+	}{
+		Name: normalized[0].Name, Description: normalized[0].Description, InputSchema: normalized[0].InputSchema,
+	})
+}
+
+// ToolDefinitionDigest identifies exactly one normalized tool definition.
+// It is intentionally exported so future Tool Registry code can reuse this
+// algorithm instead of creating a second identity scheme.
+func ToolDefinitionDigest(tool ToolDefinition) (string, error) {
+	body, err := canonicalToolDefinitionBytes(tool)
+	if err != nil {
+		return "", err
+	}
+	return sha256Bytes(body), nil
+}
+
+func frozenToolRefs(tools []ToolDefinition) ([]FrozenToolRef, error) {
+	refs := make([]FrozenToolRef, len(tools))
+	for index, tool := range tools {
+		digest, err := ToolDefinitionDigest(tool)
+		if err != nil {
+			return nil, err
+		}
+		refs[index] = FrozenToolRef{Name: tool.Name, DefinitionDigest: digest}
+	}
+	sort.Slice(refs, func(i, j int) bool { return refs[i].Name < refs[j].Name })
+	return refs, nil
+}

@@ -1,0 +1,13 @@
+DROP TRIGGER IF EXISTS memoryos_completion_observations_immutable ON memoryos_completion_observations;
+DROP TRIGGER IF EXISTS memoryos_episode_obligations_immutable ON memoryos_episode_obligations;
+DROP TRIGGER IF EXISTS memoryos_episode_tools_immutable ON memoryos_episode_tools;
+DROP TRIGGER IF EXISTS memoryos_episode_invocations_immutable ON memoryos_episode_invocations;
+DROP TRIGGER IF EXISTS memoryos_episode_skills_immutable ON memoryos_episode_skills;
+DROP TRIGGER IF EXISTS memoryos_episodes_immutable ON memoryos_episodes;
+DROP FUNCTION IF EXISTS memoryos_reject_mutation();
+DROP TABLE IF EXISTS memoryos_episode_obligations;
+DROP TABLE IF EXISTS memoryos_episode_tools;
+DROP TABLE IF EXISTS memoryos_episode_invocations;
+DROP TABLE IF EXISTS memoryos_episode_skills;
+DROP TABLE IF EXISTS memoryos_completion_observations;
+DROP TABLE IF EXISTS memoryos_episodes;

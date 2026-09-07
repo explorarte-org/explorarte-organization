@@ -10,11 +10,14 @@ var (
 	// never be reported as a denial: a denial is a durable statement that the
 	// principal or lease lost standing, and fabricating that from a database
 	// outage both misleads operators and destroys a run that was still valid.
-	ErrAuthorityUnavailable = errors.New("execution authority unavailable")
-	ErrHistoryConflict      = errors.New("execution history sequence conflict")
-	ErrHistoryCorrupt       = errors.New("execution history is corrupt")
-	ErrRunIdentityDrift     = errors.New("stable run identity drift")
-	ErrUnknownTool          = errors.New("unknown tool")
-	ErrToolNotAllowed       = errors.New("tool not allowed by run")
-	ErrToolReplay           = errors.New("tool call replay")
+	ErrAuthorityUnavailable  = errors.New("execution authority unavailable")
+	ErrHistoryConflict       = errors.New("execution history sequence conflict")
+	ErrHistoryCorrupt        = errors.New("execution history is corrupt")
+	ErrRunIdentityDrift      = errors.New("stable run identity drift")
+	ErrUnknownTool           = errors.New("unknown tool")
+	ErrToolNotAllowed        = errors.New("tool not allowed by run")
+	ErrToolReplay            = errors.New("tool call replay")
+	ErrRunDescriptorConflict = errors.New("execution run descriptor conflict")
+	ErrRunDescriptorNotFound = errors.New("execution run descriptor not found")
+	ErrRunDescriptorCorrupt  = errors.New("execution run descriptor is corrupt")
 )

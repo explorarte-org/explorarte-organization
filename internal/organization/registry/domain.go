@@ -97,13 +97,15 @@ type Counts struct {
 }
 
 type Snapshot struct {
-	Organization   Organization     `json:"organization"`
-	Units          []Unit           `json:"units"`
-	Roles          []Role           `json:"roles"`
-	ReportingLines []ReportingLine  `json:"reporting_lines"`
-	Documents      []DocumentDigest `json:"documents,omitempty"`
-	CanonicalHash  string           `json:"canonical_hash,omitempty"`
-	Counts         Counts           `json:"counts"`
+	Organization      Organization       `json:"organization"`
+	Units             []Unit             `json:"units"`
+	Roles             []Role             `json:"roles"`
+	ReportingLines    []ReportingLine    `json:"reporting_lines"`
+	ResolvedDecisions []DecisionResolved `json:"resolved_decisions,omitempty"`
+	OpenDecisionIDs   []string           `json:"open_decision_ids,omitempty"`
+	Documents         []DocumentDigest   `json:"documents,omitempty"`
+	CanonicalHash     string             `json:"canonical_hash,omitempty"`
+	Counts            Counts             `json:"counts"`
 }
 
 type Revision struct {

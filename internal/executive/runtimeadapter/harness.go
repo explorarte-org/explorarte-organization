@@ -44,9 +44,13 @@ type HarnessModelExecutorFactory func(modelruntimeadapter.Config) (executionharn
 // this adapter adds is the translation between one Executive run command and
 // one Harness run spec, and the invariant check on the way back.
 type Harness struct {
-	OrganizationID   string
-	Authority        executionharness.ExecutionAuthorityPort
-	History          executionharness.ExecutionHistoryStore
+	OrganizationID string
+	Authority      executionharness.ExecutionAuthorityPort
+	History        executionharness.ExecutionHistoryStore
+	// DescriptorStore persists the immutable run contract before the Harness
+	// emits EventRunStarted. It is optional only for legacy in-process tests;
+	// production bootstrap always supplies the PostgreSQL adapter.
+	DescriptorStore  executionharness.RunDescriptorStore
 	NewModelExecutor HarnessModelExecutorFactory
 	Clock            executive.Clock
 	// RequiredCapabilities is the capability set every executive model call
@@ -93,7 +97,12 @@ func (h Harness) Execute(ctx context.Context, command executive.HarnessRunComman
 	if err != nil {
 		return executive.HarnessRunOutcome{}, fmt.Errorf("build harness model executor: %w", err)
 	}
-	runtime, err := executionharness.New(h.Authority, models, executiveToolCatalog{}, executiveToolExecutor{}, h.History)
+	var runtime *executionharness.Runtime
+	if h.DescriptorStore != nil {
+		runtime, err = executionharness.NewWithDescriptorStore(h.Authority, models, executiveToolCatalog{}, executiveToolExecutor{}, h.History, h.DescriptorStore)
+	} else {
+		runtime, err = executionharness.New(h.Authority, models, executiveToolCatalog{}, executiveToolExecutor{}, h.History)
+	}
 	if err != nil {
 		return executive.HarnessRunOutcome{}, fmt.Errorf("build harness runtime: %w", err)
 	}

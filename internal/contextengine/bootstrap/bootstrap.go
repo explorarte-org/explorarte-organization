@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/Mireuz13/explorarte-organization/internal/config"
 	"github.com/Mireuz13/explorarte-organization/internal/contextengine"
@@ -14,19 +15,22 @@ import (
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
 	ragbootstrap "github.com/Mireuz13/explorarte-organization/internal/rag/bootstrap"
 	ragcontext "github.com/Mireuz13/explorarte-organization/internal/rag/contextprovider"
+	"github.com/Mireuz13/explorarte-organization/internal/skillregistry/contextprovider"
+	skillregistrypostgres "github.com/Mireuz13/explorarte-organization/internal/skillregistry/postgres"
 )
 
 type Runtime struct {
-	Service        contextengine.Service
-	Store          *contextpostgres.Store
-	Registry       *registry.PostgresRepository
-	Documents      *document.Loader
-	Canonical      *canonical.Provider
-	Skills         *canonical.SkillProvider
-	Memory         *memorycontext.Provider
-	RAG            *ragcontext.Provider
-	Tasks          contextengine.TaskContextProvider
-	OrganizationID string
+	Service         contextengine.Service
+	Store           *contextpostgres.Store
+	Registry        *registry.PostgresRepository
+	Documents       *document.Loader
+	Canonical       *canonical.Provider
+	Skills          contextengine.SkillProvider
+	CanonicalSkills *canonical.SkillProvider
+	Memory          *memorycontext.Provider
+	RAG             *ragcontext.Provider
+	Tasks           contextengine.TaskContextProvider
+	OrganizationID  string
 }
 
 // Open wires the context runtime. taskProvider is supplied by the caller
@@ -57,10 +61,24 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store, taskProvider
 	if err != nil {
 		return nil, err
 	}
-	skillProvider, err := canonical.NewSkillProvider(cfg.Registry.CanonicalDir)
+	skillRepo, err := skillregistrypostgres.New(platformStore, cfg.Tasks.OrganizationID)
+	if err != nil {
+		return nil, fmt.Errorf("create skill registry store: %w", err)
+	}
+	registrySkillProvider, err := contextprovider.New(skillRepo, cfg.Tasks.OrganizationID)
+	if err != nil {
+		return nil, fmt.Errorf("create registry skill provider: %w", err)
+	}
+	canonicalSkillProvider, err := canonical.NewSkillProvider(cfg.Registry.CanonicalDir)
 	if err != nil {
 		return nil, err
 	}
+	divergenceRecorder := contextprovider.NewPostgresDivergenceRecorder(platformStore, cfg.Tasks.OrganizationID)
+	parityProvider, err := contextprovider.NewParityProvider(registrySkillProvider, canonicalSkillProvider, divergenceRecorder, cfg.Tasks.OrganizationID)
+	if err != nil {
+		return nil, err
+	}
+	skillProvider := parityProvider
 	store, err := contextpostgres.New(platformStore)
 	if err != nil {
 		return nil, err
@@ -96,5 +114,17 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store, taskProvider
 	if err != nil {
 		return nil, err
 	}
-	return &Runtime{Service: service, Store: store, Registry: registryRepository, Documents: documents, Canonical: canonicalProvider, Skills: skillProvider, Memory: memoryProvider, RAG: ragProvider, Tasks: taskProvider, OrganizationID: cfg.Tasks.OrganizationID}, nil
+	return &Runtime{
+		Service:         service,
+		Store:           store,
+		Registry:        registryRepository,
+		Documents:       documents,
+		Canonical:       canonicalProvider,
+		Skills:          parityProvider,
+		CanonicalSkills: canonicalSkillProvider,
+		Memory:          memoryProvider,
+		RAG:             ragProvider,
+		Tasks:           taskProvider,
+		OrganizationID:  cfg.Tasks.OrganizationID,
+	}, nil
 }

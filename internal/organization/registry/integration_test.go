@@ -98,15 +98,15 @@ func TestCanonicalRegistryAgainstPostgreSQL(t *testing.T) {
 			}
 		}
 	}
-	// 41 imported + 7 proposed = the 48 roles asserted above. These counts
+	// 43 imported + 5 proposed = the 48 roles asserted above. These counts
 	// track docs/canonical/role-catalog.yaml, which is the source of truth:
 	// a role leaves proposed_profile_required the moment it gains a profile.
 	// The previous 45/3 expectation went stale when a role gained one on
 	// main without this test being updated, which left the integration suite
 	// red on the trunk itself -- update these numbers deliberately alongside
 	// the catalog, never to make a red run go green.
-	if imported != 41 || proposed != 7 {
-		t.Fatalf("imported=%d proposed=%d (expected 41/7 per docs/canonical/role-catalog.yaml)", imported, proposed)
+	if imported != 43 || proposed != 5 {
+		t.Fatalf("imported=%d proposed=%d (expected 43/5 per docs/canonical/role-catalog.yaml)", imported, proposed)
 	}
 	canonicalSnapshot, _, err := loader.Load()
 	if err != nil {

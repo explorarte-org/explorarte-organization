@@ -43,6 +43,9 @@ func TestLoadFromDefaults(t *testing.T) {
 	if cfg.Staging.Enabled || cfg.Staging.ReconcileBatchSize != 100 || cfg.Staging.MaxArtifactBytes != 64<<20 || cfg.Staging.GitBinary != "git" {
 		t.Fatalf("unexpected staging defaults: %+v", cfg.Staging)
 	}
+	if cfg.SkillForge.Enabled || cfg.SkillForge.SkillSourceRepoRoot != "/opt/explorarte/skills-source" || cfg.SkillForge.SkillRuntimeRoot != "/opt/explorarte/skills-runtime" || cfg.SkillForge.PublishedRemoteURL != "git@github.com:explorarte-org/skills.git" {
+		t.Fatalf("unexpected skillforge defaults: %+v", cfg.SkillForge)
+	}
 }
 
 func TestLoadFromOverrides(t *testing.T) {
@@ -101,6 +104,10 @@ func TestLoadFromOverrides(t *testing.T) {
 		"ORG_STAGING_RECONCILE_INTERVAL":      "13s",
 		"ORG_STAGING_RECONCILE_BATCH_SIZE":    "21",
 		"ORG_STAGING_GIT_BINARY":              "/usr/bin/git",
+		"ORG_SKILLFORGE_ENABLED":              "true",
+		"ORG_SKILLFORGE_SOURCE_REPO_ROOT":     "/tmp/custom-skills-source",
+		"ORG_SKILLFORGE_RUNTIME_ROOT":         "/tmp/custom-skills-runtime",
+		"ORG_SKILLFORGE_PUBLISHED_REMOTE_URL": "git@github.com:explorarte-org/custom-skills.git",
 	}
 	cfg, err := LoadFrom(mapLookup(values))
 	if err != nil {
@@ -135,6 +142,9 @@ func TestLoadFromOverrides(t *testing.T) {
 	}
 	if !cfg.Staging.Enabled || cfg.Staging.CommandTimeout != 45*time.Second || cfg.Staging.MaxArtifactBytes != 1048576 || cfg.Staging.MaxChangedFiles != 25 || cfg.Staging.ReconcileBatchSize != 21 || cfg.Staging.GitBinary != "/usr/bin/git" {
 		t.Fatalf("unexpected staging config: %+v", cfg.Staging)
+	}
+	if !cfg.SkillForge.Enabled || cfg.SkillForge.SkillSourceRepoRoot != "/tmp/custom-skills-source" || cfg.SkillForge.SkillRuntimeRoot != "/tmp/custom-skills-runtime" || cfg.SkillForge.PublishedRemoteURL != "git@github.com:explorarte-org/custom-skills.git" {
+		t.Fatalf("unexpected skillforge config: %+v", cfg.SkillForge)
 	}
 	parsed, err := url.Parse(cfg.Database.ConnectionString())
 	if err != nil {
@@ -191,6 +201,8 @@ func TestLoadFromRejectsInvalidValues(t *testing.T) {
 		"invalid context segment":                       {"ORG_CONTEXT_MAX_TOTAL_BYTES": "65536", "ORG_CONTEXT_MAX_SEGMENT_BYTES": "65537"},
 		"invalid context segment count":                 {"ORG_CONTEXT_MAX_SEGMENTS": "0"},
 		"invalid context skill count":                   {"ORG_CONTEXT_MAX_SKILLS": "101"},
+		"skillforge same roots":                         {"ORG_SKILLFORGE_ENABLED": "true", "ORG_SKILLFORGE_SOURCE_REPO_ROOT": "/opt/explorarte/same", "ORG_SKILLFORGE_RUNTIME_ROOT": "/opt/explorarte/same"},
+		"skillforge missing remote":                     {"ORG_SKILLFORGE_ENABLED": "true", "ORG_SKILLFORGE_PUBLISHED_REMOTE_URL": ""},
 		"invalid context memory count":                  {"ORG_CONTEXT_MAX_MEMORY_SEGMENTS": "501"},
 		"invalid context rag count":                     {"ORG_CONTEXT_MAX_RAG_SEGMENTS": "501"},
 		"invalid staging flag":                          {"ORG_STAGING_ENABLED": "sometimes"},

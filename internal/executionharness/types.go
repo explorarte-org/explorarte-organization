@@ -194,3 +194,44 @@ type RunResult struct {
 	Retryable  bool   `json:"retryable"`
 	Provenance string `json:"provenance"`
 }
+
+// FrozenToolRef is the identity of the tool definition the Harness exposed
+// for a run. It intentionally carries no executable implementation or schema
+// body: the definition digest is enough to prove which definition was frozen
+// while keeping the run descriptor metadata-only.
+type FrozenToolRef struct {
+	Name             string `json:"name"`
+	DefinitionDigest string `json:"definition_digest"`
+}
+
+// RunDescriptor is the immutable, metadata-only execution contract frozen
+// before a Harness run can emit trajectory. It is deliberately separate from
+// EventRunStarted's legacy identity digest: the digest remains the replay
+// guard, while this descriptor makes the facts behind that digest durable and
+// inspectable by MemoryOS.
+//
+// Do not add lease tokens, credentials, prompt bodies, or provider reasoning
+// here. A descriptor is an execution identity record, not an execution log.
+type RunDescriptor struct {
+	RunID                string `json:"run_id"`
+	OrganizationID       string `json:"organization_id"`
+	TaskID               int64  `json:"task_id"`
+	AttemptID            int64  `json:"attempt_id"`
+	RoleID               string `json:"role_id"`
+	ExecutionPrincipalID string `json:"execution_principal_id"`
+
+	ContextID      string `json:"context_id"`
+	ContextVersion string `json:"context_version"`
+	ContextDigest  string `json:"context_digest"`
+
+	ExecutionProfileID string `json:"execution_profile_id"`
+	ModelPolicyRef     string `json:"model_policy_ref"`
+	BuildRef           string `json:"build_ref"`
+
+	MaxTurns     int `json:"max_turns"`
+	MaxToolCalls int `json:"max_tool_calls"`
+
+	FrozenTools []FrozenToolRef `json:"frozen_tools"`
+
+	IdentityDigest string `json:"identity_digest"`
+}
