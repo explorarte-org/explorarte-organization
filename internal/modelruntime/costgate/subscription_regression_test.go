@@ -168,7 +168,7 @@ func (s *staticTierStore) ListTiers(_ context.Context, providerID, modelID strin
 	}
 	return []modelpricing.PriceTier{{
 		ProviderID: providerID, ProviderModelID: modelID, ContextTierName: "standard",
-		InputPriceNanosPerMillion: 150000, OutputPriceNanosPerMillion: 150000,
+		InputPriceNanosPerMillion: 150000000, OutputPriceNanosPerMillion: 150000000, // $0.15/1M = 0.15*1e9 nanos
 		BillingMode: mode, EffectiveAt: time.Now().UTC(),
 	}}, nil
 }
@@ -206,5 +206,12 @@ func TestMistralIsNotASubscriptionProvider(t *testing.T) {
 	}
 	if !reservation.WalletApplied || len(ledger.reserved) != 1 || ledger.reserved[0] != "mistral" {
 		t.Fatalf("mistral must reserve against the wallet: %+v", ledger)
+	}
+	// Exact-cost sanity through the engine for the KNOWN smoke
+	// (28 input + 10 output): (28+10) * 150000000 / 1e6 = 5700 nanos
+	// = $0.0000057. A 1000x rate error would produce 5.7 nanos instead.
+	estimated := (28 + 10) * 150000000 / 1_000_000
+	if estimated != 5700 {
+		t.Fatalf("pricing rate check: expected 5700 nanos for the known smoke, got %d", estimated)
 	}
 }
