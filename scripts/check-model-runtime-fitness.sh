@@ -16,7 +16,7 @@ test -f migrations/000007_create_model_runtime_gateway.down.sql || fail "migrati
 # shell execution and background model daemons remain forbidden everywhere
 # outside the retired, unlinked Alibaba CLI package, which remains only for
 # historical source compatibility and is governed by its retirement check.
-if rg -n --glob '*.go' --glob '!internal/modelruntime/adapter/openaicompat/**' --glob '!internal/modelruntime/adapter/deepseek/**' --glob '!internal/modelruntime/adapter/gemini/**' --glob '!internal/modelruntime/adapter/mimo/**' --glob '!internal/modelruntime/adapter/xai/**' --glob '!internal/modelruntime/adapter/openairesponses/**' '"net/http"' internal/modelruntime; then
+if rg -n --glob '*.go' --glob '!internal/modelruntime/adapter/openaicompat/**' --glob '!internal/modelruntime/adapter/deepseek/**' --glob '!internal/modelruntime/adapter/gemini/**' --glob '!internal/modelruntime/adapter/mimo/**' --glob '!internal/modelruntime/adapter/xai/**' --glob '!internal/modelruntime/adapter/openairesponses/**' --glob '!internal/modelruntime/adapter/cloudflare/**' '"net/http"' internal/modelruntime; then
   fail "network client found outside the approved openai-compatible, DeepSeek, Gemini, MiMo, xAI, or OpenAI Responses adapters"
 fi
 # *_test.go is excluded: the umask permission test legitimately uses
@@ -33,7 +33,7 @@ fi
 if find internal/modelruntime/adapter -maxdepth 1 -type f -name '*.go' ! -name '*_test.go' ! -name 'fake.go' ! -name 'fake_test.go' ! -name 'registry.go' -print | grep -q .; then
   fail "unexpected top-level provider adapter implementation found"
 fi
-if find internal/modelruntime/adapter -mindepth 1 -maxdepth 1 -type d ! -name openaicompat ! -name alibabaclaude ! -name deepseek ! -name gemini ! -name xai ! -name openairesponses -print | grep -q .; then
+if find internal/modelruntime/adapter -mindepth 1 -maxdepth 1 -type d ! -name openaicompat ! -name alibabaclaude ! -name deepseek ! -name gemini ! -name xai ! -name openairesponses ! -name cloudflare -print | grep -q .; then
   fail "unexpected real provider adapter directory found"
 fi
 
@@ -88,6 +88,11 @@ allowed = {
     "ORG_MODEL_PROVIDER_XAI_REQUEST_TIMEOUT",
     "ORG_MODEL_PROVIDER_XAI_CIRCUIT_FAILURE_THRESHOLD",
     "ORG_MODEL_PROVIDER_XAI_CIRCUIT_OPEN_DURATION",
+    "ORG_MODEL_PROVIDER_CLOUDFLARE_ENABLED",
+    "ORG_MODEL_PROVIDER_CLOUDFLARE_CREDENTIAL_FILE",
+    "ORG_MODEL_PROVIDER_CLOUDFLARE_REQUEST_TIMEOUT",
+    "ORG_MODEL_PROVIDER_CLOUDFLARE_CIRCUIT_FAILURE_THRESHOLD",
+    "ORG_MODEL_PROVIDER_CLOUDFLARE_CIRCUIT_OPEN_DURATION",
 }
 seen=set()
 for path in [Path("internal/modelruntime"), Path(".env.example")]:
@@ -170,6 +175,7 @@ required = {
     'policy.Transport == TransportFake && policy.Provider == "test.fake"',
     'policy.Transport == TransportHTTP && policy.Provider == "openai_compatible"',
     'policy.Transport == TransportHTTP && policy.Provider == "deepseek"',
+    'policy.Transport == TransportHTTP && policy.Provider == "cloudflare_workers_ai"',
     'policy.Transport == TransportHTTP && policy.Provider == "gemini"',
     'policy.Transport == TransportHTTP && policy.Provider == "openai_responses"',
     'policy.Transport == TransportHTTP && policy.Provider == "xai"',

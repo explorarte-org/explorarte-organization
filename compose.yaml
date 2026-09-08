@@ -337,6 +337,13 @@ services:
       ORG_MODEL_PROVIDER_XAI_ENABLED: "true"
       ORG_MODEL_PROVIDER_XAI_ENDPOINT_URL: https://api.x.ai/v1/chat/completions
       ORG_MODEL_PROVIDER_XAI_CREDENTIAL_FILE: /run/secrets/grok-api-key
+      # Cloudflare Workers AI: direct OpenAI-compatible Chat Completions.
+      # The model is selected by canonical routing per request; the initial
+      # investigator route uses @cf/zai-org/glm-4.7-flash.
+      ORG_MODEL_PROVIDER_CLOUDFLARE_ENABLED: "true"
+      CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:?set CLOUDFLARE_ACCOUNT_ID in .env}
+      ORG_MODEL_PROVIDER_CLOUDFLARE_CREDENTIAL_FILE: /run/secrets/cloudflare-api-token
+      ORG_MODEL_PROVIDER_CLOUDFLARE_REQUEST_TIMEOUT: ${ORG_MODEL_PROVIDER_CLOUDFLARE_REQUEST_TIMEOUT:-10m}
       # OCI Object Storage: source-of-truth bucket for the knowledge ingestion
       # pipeline (raw/normalized/manifests/logs). Hand-rolled OCI Signing v1
       # client (internal/objectstorage), no OCI SDK dependency.
@@ -355,6 +362,9 @@ services:
       - /etc/explorarte/secrets/gemini-embedding-api-key:/run/secrets/gemini-embedding-api-key:ro
       - /etc/explorarte/secrets/grok-api-key:/run/secrets/grok-api-key:ro
       - /etc/explorarte/secrets/oci-object-storage-api-key.pem:/run/secrets/oci-object-storage-api-key.pem:ro
+      - /etc/explorarte/secrets/exa-api-key:/run/secrets/exa-api-key:ro
+      - /etc/explorarte/secrets/brave-api-key:/run/secrets/brave-api-key:ro
+      - /etc/explorarte/secrets/tavily-api-key:/run/secrets/tavily-api-key:ro
       # Staging roots: internal/executive/bootstrap/repositoryevidence.go's
       # repositoryEvidenceOption (SELF-AUDIT-001 fix) now actually runs for
       # this service and opens the staging runtime, which tries to prepare
@@ -372,6 +382,7 @@ services:
       - /var/lib/explorarte/staging/workspaces:/var/lib/explorarte/staging/workspaces
       - /var/lib/explorarte/staging/artifacts:/var/lib/explorarte/staging/artifacts
       - /var/lib/explorarte/staging/quarantine:/var/lib/explorarte/staging/quarantine
+      - /etc/explorarte/secrets/cloudflare-api-token:/run/secrets/cloudflare-api-token:ro
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=32m

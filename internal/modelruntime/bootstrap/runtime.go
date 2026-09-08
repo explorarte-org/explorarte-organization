@@ -26,6 +26,7 @@ import (
 	modelpricingpostgres "github.com/Mireuz13/explorarte-organization/internal/modelpricing/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter"
+	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/cloudflare"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/deepseek"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/gemini"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/openaicompat"
@@ -181,6 +182,10 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	if err != nil {
 		return nil, fmt.Errorf("load openai-compatible provider config: %w", err)
 	}
+	cloudflareConfig, err := cloudflare.LoadConfig(os.LookupEnv, runtimeCfg.MaxResponseBytes)
+	if err != nil {
+		return nil, fmt.Errorf("load Cloudflare Workers AI provider config: %w", err)
+	}
 	deepseekConfig, err := deepseek.LoadConfig(os.LookupEnv, runtimeCfg.MaxResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("load DeepSeek provider config: %w", err)
@@ -208,6 +213,7 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	// "provider absent" state, not a readiness defect.
 	for _, credential := range []struct{ provider, path string }{
 		{"openai-compatible", openAIConfig.CredentialFile},
+		{"Cloudflare Workers AI", cloudflareConfig.CredentialFile},
 		{"DeepSeek", deepseekConfig.CredentialFile},
 		{"Gemini", geminiConfig.CredentialFile},
 		{"OpenAI Responses", openaiResponsesConfig.CredentialFile},
@@ -217,11 +223,18 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 			return nil, fmt.Errorf("%s credential file: %w", credential.provider, err)
 		}
 	}
-	registeredAdapters := make([]modelruntime.ProviderAdapter, 0, 6)
+	registeredAdapters := make([]modelruntime.ProviderAdapter, 0, 7)
 	if openAIConfig.Enabled {
 		providerAdapter, providerErr := openaicompat.New(openAIConfig)
 		if providerErr != nil {
 			return nil, fmt.Errorf("open openai-compatible provider adapter: %w", providerErr)
+		}
+		registeredAdapters = append(registeredAdapters, providerAdapter)
+	}
+	if cloudflareConfig.Enabled {
+		providerAdapter, providerErr := cloudflare.New(cloudflareConfig)
+		if providerErr != nil {
+			return nil, fmt.Errorf("open Cloudflare Workers AI provider adapter: %w", providerErr)
 		}
 		registeredAdapters = append(registeredAdapters, providerAdapter)
 	}
@@ -275,7 +288,7 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	if err != nil {
 		return nil, fmt.Errorf("create agent budget ledger: %w", err)
 	}
-	gate, err := costgate.New(pricingService, walletLedger, budgetLedger)
+	gate, err := costgate.New(pricingService, walletLedger, budgetLedger, cloudflare.ProviderID)
 	if err != nil {
 		return nil, fmt.Errorf("create cost/budget gate: %w", err)
 	}
