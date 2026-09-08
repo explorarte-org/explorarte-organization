@@ -1,0 +1,25 @@
+[Unit]
+Description=Explorarte organization web
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/explorarte-organization/web
+Environment=WEB_HOST=0.0.0.0
+Environment=WEB_PORT=80
+Environment=WEB_API_UPSTREAM=http://127.0.0.1:8080
+ExecStart=/usr/bin/node scripts/serve-vps.mjs
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
