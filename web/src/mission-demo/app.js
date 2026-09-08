@@ -92,6 +92,15 @@ function budgetToMicrousd(value) {
   validateBudgetMicrousd(micros);
   return micros;
 }
+function createIdempotencyKey() {
+  if (typeof globalThis.crypto?.randomUUID === 'function') return globalThis.crypto.randomUUID();
+  const template = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx';
+  return template.replace(/[xy]/g, character => {
+    const value = Math.floor(Math.random() * 16);
+    const nibble = character === 'x' ? value : (value & 0x3) | 0x8;
+    return nibble.toString(16);
+  });
+}
 async function sendCEO() {
   const text = chatDraft.trim();
   if (!text || chatBusy) return;
@@ -136,7 +145,7 @@ async function createMissionFromChat() {
   chatError = '';
   render();
   try {
-    const idempotencyKey = crypto.randomUUID();
+    const idempotencyKey = createIdempotencyKey();
     const result = await chatClient.createMission({ objective, budgetMicrousd, idempotencyKey });
     ceoMessages.push({ role: 'ceo', text: result.message });
     missionComposer = null;
