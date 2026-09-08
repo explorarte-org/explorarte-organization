@@ -158,10 +158,11 @@ func TestEveryRoutedNonSubscriptionProviderHasPricingAndAWallet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// No subscription-billed provider is currently routed; this stays a
-	// live map (not deleted) so the next one added here is automatically
-	// exempted from the pricing/wallet requirement below, same as mimo was.
-	subscriptionProviders := map[string]bool{}
+	// Cloudflare Workers AI is quota-billed for this deployment: the first
+	// bucket is the provider's free daily neuron allowance, not a PAYG USD
+	// price. Keep it out of model_pricing resolution and require only its
+	// zero-value wallet anchor for durable subscription consumption events.
+	subscriptionProviders := map[string]bool{"cloudflare_workers_ai": true}
 
 	type routedModel struct{ provider, model string }
 	seen := map[routedModel]bool{}
