@@ -344,9 +344,10 @@ services:
       CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:?set CLOUDFLARE_ACCOUNT_ID in .env}
       ORG_MODEL_PROVIDER_CLOUDFLARE_CREDENTIAL_FILE: /run/secrets/cloudflare-api-token
       ORG_MODEL_PROVIDER_CLOUDFLARE_REQUEST_TIMEOUT: ${ORG_MODEL_PROVIDER_CLOUDFLARE_REQUEST_TIMEOUT:-10m}
-      ORG_MODEL_PROVIDER_MISTRAL_ENABLED: "true"
+      ORG_MODEL_PROVIDER_MISTRAL_ENABLED: ${ORG_MODEL_PROVIDER_MISTRAL_ENABLED:-false}
       ORG_MODEL_PROVIDER_MISTRAL_CREDENTIAL_FILE: /run/secrets/mistral-api-key
       ORG_MODEL_PROVIDER_MISTRAL_REQUEST_TIMEOUT: ${ORG_MODEL_PROVIDER_MISTRAL_REQUEST_TIMEOUT:-2m}
+      MISTRAL_CREDIT_CEILING_USD: ${MISTRAL_CREDIT_CEILING_USD:-}
       # OCI Object Storage: source-of-truth bucket for the knowledge ingestion
       # pipeline (raw/normalized/manifests/logs). Hand-rolled OCI Signing v1
       # client (internal/objectstorage), no OCI SDK dependency.
@@ -386,6 +387,7 @@ services:
       - /var/lib/explorarte/staging/artifacts:/var/lib/explorarte/staging/artifacts
       - /var/lib/explorarte/staging/quarantine:/var/lib/explorarte/staging/quarantine
       - /etc/explorarte/secrets/cloudflare-api-token:/run/secrets/cloudflare-api-token:ro
+      - /etc/explorarte/secrets/mistral-api-key:/run/secrets/mistral-api-key:ro
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=32m
