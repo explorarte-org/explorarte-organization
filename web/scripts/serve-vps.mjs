@@ -62,7 +62,13 @@ function proxyAPI(req, res) {
 }
 
 const server = createServer(async (req, res) => {
-  const pathname = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`).pathname;
+  const requestUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+  const pathname = requestUrl.pathname;
+  if (pathname === '/' && requestUrl.searchParams.get('source') !== 'vps') {
+    res.writeHead(302, { Location: '/?source=vps', ...headers('text/plain; charset=utf-8') });
+    res.end(req.method === 'HEAD' ? undefined : 'Redirecting to the live VPS dashboard.');
+    return;
+  }
   if (pathname.startsWith('/api/')) {
     proxyAPI(req, res);
     return;
