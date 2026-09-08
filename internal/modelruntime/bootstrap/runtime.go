@@ -29,6 +29,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/cloudflare"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/deepseek"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/gemini"
+	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/mistral"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/openaicompat"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/openairesponses"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/xai"
@@ -186,6 +187,10 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	if err != nil {
 		return nil, fmt.Errorf("load Cloudflare Workers AI provider config: %w", err)
 	}
+	mistralConfig, err := mistral.LoadConfig(os.LookupEnv, runtimeCfg.MaxResponseBytes)
+	if err != nil {
+		return nil, fmt.Errorf("load Mistral provider config: %w", err)
+	}
 	deepseekConfig, err := deepseek.LoadConfig(os.LookupEnv, runtimeCfg.MaxResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("load DeepSeek provider config: %w", err)
@@ -214,6 +219,7 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	for _, credential := range []struct{ provider, path string }{
 		{"openai-compatible", openAIConfig.CredentialFile},
 		{"Cloudflare Workers AI", cloudflareConfig.CredentialFile},
+		{"Mistral", mistralConfig.CredentialFile},
 		{"DeepSeek", deepseekConfig.CredentialFile},
 		{"Gemini", geminiConfig.CredentialFile},
 		{"OpenAI Responses", openaiResponsesConfig.CredentialFile},
@@ -235,6 +241,13 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 		providerAdapter, providerErr := cloudflare.New(cloudflareConfig)
 		if providerErr != nil {
 			return nil, fmt.Errorf("open Cloudflare Workers AI provider adapter: %w", providerErr)
+		}
+		registeredAdapters = append(registeredAdapters, providerAdapter)
+	}
+	if mistralConfig.Enabled {
+		providerAdapter, providerErr := mistral.New(mistralConfig)
+		if providerErr != nil {
+			return nil, fmt.Errorf("open Mistral provider adapter: %w", providerErr)
 		}
 		registeredAdapters = append(registeredAdapters, providerAdapter)
 	}
