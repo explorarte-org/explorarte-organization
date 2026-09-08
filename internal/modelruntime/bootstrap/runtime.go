@@ -311,8 +311,8 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 			return nil, fmt.Errorf("MISTRAL_CREDIT_CEILING_USD: %w", ceilingErr)
 		}
 		if configured {
-			if _, walletErr := walletLedger.GetWallet(ctx, "mistral"); walletErr != nil {
-				if _, setErr := walletLedger.SetBalance(ctx, "mistral", modelpricing.USDNanos(ceilingNanos), time.Now().UTC()); setErr != nil {
+			if _, walletErr := walletLedger.GetWallet(context.Background(), "mistral"); walletErr != nil {
+				if _, setErr := walletLedger.SetBalance(context.Background(), "mistral", modelpricing.USDNanos(ceilingNanos), time.Now().UTC()); setErr != nil {
 					return nil, fmt.Errorf("provision mistral local credit ceiling wallet: %w", setErr)
 				}
 			}
