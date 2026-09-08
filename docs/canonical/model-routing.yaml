@@ -54,14 +54,14 @@ policies:
     - gemini/gemini-2.5-flash in prior routing revision
     - alibaba_token_plan_via_claude_code/qwen3.6-flash retired by owner
   research.worker:
-    provider: deepseek
-    model: deepseek-v4-flash
+    provider: cloudflare_workers_ai
+    model: "@cf/zai-org/glm-4.7-flash"
     transport: http_adapter
     schedule: hourly
-    source_of_decision: owner_conversation_r30
+    source_of_decision: owner_conversation_cloudflare_workers_ai_investigator_2026-09-08
     legacy_conflicts:
-    - gemini/gemini-2.5-flash in prior routing revision
     - deepseek/deepseek-v4-flash in prior routing revision
+    - gemini/gemini-2.5-flash in prior routing revision
 routing_invariants:
 - A role never selects its own model from request JSON.
 - The backend resolves a model from an approved policy and role registration.

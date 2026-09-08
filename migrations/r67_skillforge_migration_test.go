@@ -2,8 +2,11 @@ package migrations_test
 
 import (
 	"context"
+	"io/fs"
 	"os"
+	"strconv"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
@@ -27,18 +30,40 @@ func TestMigration67ForwardBackForward(t *testing.T) {
 	if err := testdbguard.RequireTestDatabase(ctx, dsn, pool); err != nil {
 		t.Fatal(err)
 	}
-	runner, err := platformmigrations.New(pool, rootmigrations.Files)
+	loaded, err := platformmigrations.Load(rootmigrations.Files)
 	if err != nil {
 		t.Fatal(err)
 	}
-	loaded, err := platformmigrations.Load(rootmigrations.Files)
+	if len(loaded) < 67 {
+		t.Fatalf("compiled migration count=%d, want at least 67", len(loaded))
+	}
+	legacyFiles := fstest.MapFS{}
+	entries, err := fs.ReadDir(rootmigrations.Files, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || len(entry.Name()) < 6 {
+			continue
+		}
+		version, err := strconv.ParseInt(entry.Name()[:6], 10, 64)
+		if err != nil || version > 67 {
+			continue
+		}
+		body, err := fs.ReadFile(rootmigrations.Files, entry.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		legacyFiles[entry.Name()] = &fstest.MapFile{Data: body}
+	}
+	runner, err := platformmigrations.New(pool, legacyFiles)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if runner.Tip() != 67 {
 		t.Fatalf("this rehearsal requires compiled tip 67, got %d", runner.Tip())
 	}
-	migration := loaded[len(loaded)-1]
+	migration := loaded[66]
 	tables := []string{"skill_provider_divergences", "skillforge_procedure_needs", "skill_source_materializations", "skillforge_runs", "skillforge_events", "skillforge_evaluations"}
 	assertTip := func(want int64) {
 		t.Helper()

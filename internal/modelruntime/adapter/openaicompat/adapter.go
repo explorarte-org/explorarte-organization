@@ -22,6 +22,7 @@ type Adapter struct {
 	config     Config
 	client     *http.Client
 	descriptor modelruntime.AdapterDescriptor
+	providerID string
 	breaker    *circuitbreaker.Breaker
 	now        func() time.Time
 }
@@ -199,7 +200,22 @@ func New(config Config) (*Adapter, error) {
 	return newAdapter(config, nil, time.Now)
 }
 
+// NewForProvider reuses the OpenAI Chat Completions transport for a provider
+// that exposes the same wire contract but must remain distinct in routing,
+// egress policy, and accounting.
+func NewForProvider(config Config, providerID string) (*Adapter, error) {
+	return newAdapterForProvider(config, nil, time.Now, providerID)
+}
+
 func newAdapter(config Config, client *http.Client, now func() time.Time) (*Adapter, error) {
+	return newAdapterForProvider(config, client, now, ProviderID)
+}
+
+func newAdapterForProvider(config Config, client *http.Client, now func() time.Time, providerID string) (*Adapter, error) {
+	providerID = strings.TrimSpace(providerID)
+	if providerID == "" {
+		return nil, errors.New("openai-compatible provider ID is empty")
+	}
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
@@ -224,7 +240,7 @@ func newAdapter(config Config, client *http.Client, now func() time.Time) (*Adap
 		now = time.Now
 	}
 	descriptor := modelruntime.AdapterDescriptor{
-		ProviderID: ProviderID, AdapterID: AdapterID, AdapterVersion: AdapterVersion,
+		ProviderID: providerID, AdapterID: AdapterID, AdapterVersion: AdapterVersion,
 		Transport: modelruntime.TransportHTTP, RequestSchemaVersion: RequestSchemaVersion,
 		ResponseSchemaVersion: ResponseSchemaVersion,
 		EndpointFingerprint:   modelruntime.SHA256Bytes([]byte(endpoint.String())),
@@ -234,17 +250,17 @@ func newAdapter(config Config, client *http.Client, now func() time.Time) (*Adap
 		return nil, err
 	}
 	config.EndpointURL = endpoint.String()
-	return &Adapter{config: config, client: client, descriptor: descriptor, breaker: circuitbreaker.New(config.FailureThreshold, config.OpenDuration), now: now}, nil
+	return &Adapter{config: config, client: client, providerID: providerID, descriptor: descriptor, breaker: circuitbreaker.New(config.FailureThreshold, config.OpenDuration), now: now}, nil
 }
 
-func (*Adapter) ProviderID() string                           { return ProviderID }
+func (a *Adapter) ProviderID() string                         { return a.providerID }
 func (a *Adapter) Descriptor() modelruntime.AdapterDescriptor { return a.descriptor }
 
 func (a *Adapter) Preflight(ctx context.Context, request modelruntime.ProviderPreflightRequest) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if request.ProviderID != ProviderID || strings.TrimSpace(request.ProviderModelID) == "" || request.Deadline.IsZero() {
+	if request.ProviderID != a.providerID || strings.TrimSpace(request.ProviderModelID) == "" || request.Deadline.IsZero() {
 		return &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureBeforeRequest, Outcome: a.notSentOutcome("invalid_request", "provider_scope_invalid", failureTelemetry{}), Cause: modelruntime.ErrInvalidRequest}
 	}
 	if !request.Deadline.After(a.now()) {
@@ -263,7 +279,7 @@ func (a *Adapter) Preflight(ctx context.Context, request modelruntime.ProviderPr
 
 func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRequest) (modelruntime.RawResponse, error) {
 	baseTelemetry := requestTelemetry(request)
-	body, err := encodeRequest(request)
+	body, err := encodeRequestForProvider(request, a.providerID)
 	if err != nil {
 		return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureBeforeRequest, Outcome: a.notSentOutcome("request_encoding", "request_encoding_failed", baseTelemetry), Cause: err}
 	}
@@ -397,7 +413,11 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 }
 
 func encodeRequest(request modelruntime.CanonicalRequest) ([]byte, error) {
-	if request.ProviderID != ProviderID || strings.TrimSpace(request.ProviderModelID) == "" || request.MaxOutputTokens <= 0 {
+	return encodeRequestForProvider(request, ProviderID)
+}
+
+func encodeRequestForProvider(request modelruntime.CanonicalRequest, providerID string) ([]byte, error) {
+	if request.ProviderID != providerID || strings.TrimSpace(request.ProviderModelID) == "" || request.MaxOutputTokens <= 0 {
 		return nil, modelruntime.ErrInvalidRequest
 	}
 	messages, tools, err := encodeModelInput(request)

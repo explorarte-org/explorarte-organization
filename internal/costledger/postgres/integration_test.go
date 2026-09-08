@@ -102,6 +102,7 @@ INSERT INTO provider_wallets (provider_id, balance_usd_nanos, reserved_usd_nanos
     -- suite joined the official harness manifest.
     ('mimo', 0, 0, NOW()),
     ('openai_responses', 9700000000, 0, NOW()),
+    ('cloudflare_workers_ai', 0, 0, NOW()),
     -- 000061 seeds this one once per database, same reason as the two
     -- above -- xai/grok-4.6 got real pricing in 000054 but no migration
     -- ever seeded its wallet until G2-001's remediation added 000061;
