@@ -17,10 +17,11 @@ var (
 	// never grants execution. Alibaba Token Plan is intentionally absent.
 	// Keep this map in exact sync with ProductiveLoadOptions.
 	productiveEgressAllowRules = map[string]map[string]struct{}{
-		"deepseek":          {"public": {}, "sanitized": {}, "organizational": {}},
-		"openai_compatible": {"public": {}, "sanitized": {}, "organizational": {}},
-		"openai_responses":  {"public": {}, "sanitized": {}, "organizational": {}},
-		"gemini":            {"public": {}, "sanitized": {}, "organizational": {}},
+		"deepseek":              {"public": {}, "sanitized": {}, "organizational": {}},
+		"cloudflare_workers_ai": {"public": {}, "sanitized": {}, "organizational": {}},
+		"openai_compatible":     {"public": {}, "sanitized": {}, "organizational": {}},
+		"openai_responses":      {"public": {}, "sanitized": {}, "organizational": {}},
+		"gemini":                {"public": {}, "sanitized": {}, "organizational": {}},
 		// xAI carries NO "organizational" entry, and that absence is the
 		// enforcement: an allow rule for xai/organizational fails canonical
 		// validation outright rather than relying on anyone remembering that

@@ -500,6 +500,8 @@ func compiledAdapterAvailability(policy routingPolicy) (AdapterStatus, bool) {
 		return AdapterAvailable, true
 	case policy.Transport == TransportHTTP && policy.Provider == "deepseek":
 		return AdapterAvailable, true
+	case policy.Transport == TransportHTTP && policy.Provider == "cloudflare_workers_ai":
+		return AdapterAvailable, true
 	case policy.Transport == TransportHTTP && policy.Provider == "gemini":
 		return AdapterAvailable, true
 	case policy.Transport == TransportHTTP && policy.Provider == "openai_responses":

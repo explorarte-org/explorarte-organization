@@ -136,7 +136,7 @@ func TestPolicyHashIgnoresRuleOrder(t *testing.T) {
 }
 
 func TestProductivePolicyAllowsOnlyCurrentAPIProviders(t *testing.T) {
-	providers := []string{"deepseek", "gemini", "openai_compatible"}
+	providers := []string{"deepseek", "gemini", "openai_compatible", "cloudflare_workers_ai"}
 	options := ProductiveLoadOptions(providers)
 	for _, provider := range providers {
 		for _, classification := range []string{"public", "sanitized", "organizational"} {
