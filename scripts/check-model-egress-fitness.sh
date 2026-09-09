@@ -104,8 +104,8 @@ for raw in text:
         current[key.strip()]=value.strip()
 if current:
     rules.append(current)
-if policy_version != 10:
-    raise SystemExit(f"API-only model egress policy_version must be 10, got {policy_version}")
+if policy_version != 11:
+    raise SystemExit(f"API-only model egress policy_version must be 11, got {policy_version}")
 allows={(r.get("provider_id"), r.get("data_classification")) for r in rules if r.get("effect") == "allow"}
 # The current policy has explicit chat-egress rows for the four supported
 # remote providers. xAI is intentionally limited to non-organizational data;
@@ -117,7 +117,7 @@ expected={
     ("openai_compatible", "public"), ("openai_compatible", "sanitized"), ("openai_compatible", "organizational"),
     ("openai_responses", "public"), ("openai_responses", "sanitized"), ("openai_responses", "organizational"),
     ("gemini", "public"), ("gemini", "sanitized"), ("gemini", "organizational"),
-    ("cloudflare_workers_ai", "public"), ("cloudflare_workers_ai", "sanitized"), ("cloudflare_workers_ai", "organizational"),
+    ("cloudflare_workers_ai", "public"), ("cloudflare_workers_ai", "sanitized"), ("mistral", "public"), ("mistral", "sanitized"), ("cloudflare_workers_ai", "organizational"),
     ("xai", "public"), ("xai", "sanitized"),
 }
 if allows != expected:
