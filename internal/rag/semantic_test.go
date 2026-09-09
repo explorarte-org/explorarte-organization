@@ -49,6 +49,9 @@ func (l *fakeEmbeddingLedger) GetWallet(context.Context, string) (costledger.Pro
 func (l *fakeEmbeddingLedger) SetBalance(context.Context, string, modelpricing.USDNanos, time.Time) (costledger.ProviderWallet, error) {
 	return costledger.ProviderWallet{}, nil
 }
+func (l *fakeEmbeddingLedger) ProvisionWalletIfAbsent(context.Context, string, modelpricing.USDNanos, time.Time) (bool, error) {
+	return false, nil
+}
 func (l *fakeEmbeddingLedger) Reserve(context.Context, string, int64, modelpricing.USDNanos, time.Time) error {
 	return nil
 }
@@ -184,10 +187,13 @@ func TestQuerySkipsEmbeddingWhenQueryTextIsClassifiedSecret(t *testing.T) {
 	adapter := &fakeOnlineAdapter{vector: []float32{0.1}, tokens: 5}
 	manager, repo := newSemanticQueryManager(t, testSemanticDeps(ledger, adapter, nil, t))
 
-	// AWS-style access key pattern — matched by contentpolicy as a
-	// secret. A query containing one must never reach the embedding
-	// provider, even though it's just a search string, not stored content.
-	secretQuery := "find the incident involving AKIAABCDEFGHIJKLMNOP"
+	// Database connection string with an embedded credential — matched by
+	// contentpolicy as a secret. A query containing one must never reach
+	// the embedding provider, even though it's just a search string, not
+	// stored content. (Deliberately not an AWS-style access key: that
+	// shape trips GitHub push protection as a false positive on this
+	// fixture-only string, even though it was never a real credential.)
+	secretQuery := "find the incident involving postgres://svc:not-a-real-secret-99@db.internal/prod"
 	if _, err := manager.Query(context.Background(), QueryRequest{OrganizationID: "org", ActorRoleID: "role", Scope: NamespaceOwn, QueryText: secretQuery}); err != nil {
 		t.Fatal(err)
 	}

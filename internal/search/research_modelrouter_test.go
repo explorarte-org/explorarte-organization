@@ -64,11 +64,11 @@ func newRouterFixture(t *testing.T, allowPaid bool) *routerFixture {
 		clock:   &clockStepper{now: time.Now().UTC().Truncate(time.Second), step: time.Second},
 	}
 	cfg := ResearchPoolConfig{
-		CloudflareModel: DefaultResearchCloudflareModel,
-		MistralModel:    "ministral-8b-latest",
+		CloudflareModel:         DefaultResearchCloudflareModel,
+		MistralModel:            "ministral-8b-latest",
 		MistralCreditCeilingUSD: "10",
-		OpenRouterPool:  []string{"google/gemma-4-31b-it:free", "nvidia/nemotron-3.5-lightning:free"},
-		AllowPaid:       allowPaid,
+		OpenRouterPool:          []string{"google/gemma-4-31b-it:free", "nvidia/nemotron-3.5-lightning:free"},
+		AllowPaid:               allowPaid,
 	}
 	factory := func(provider string) (ModelInvoker, bool) {
 		switch provider {

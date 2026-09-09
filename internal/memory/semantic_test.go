@@ -118,6 +118,9 @@ func (l *fakeEmbeddingLedger) GetWallet(context.Context, string) (costledger.Pro
 func (l *fakeEmbeddingLedger) SetBalance(context.Context, string, modelpricing.USDNanos, time.Time) (costledger.ProviderWallet, error) {
 	return costledger.ProviderWallet{}, nil
 }
+func (l *fakeEmbeddingLedger) ProvisionWalletIfAbsent(context.Context, string, modelpricing.USDNanos, time.Time) (bool, error) {
+	return false, nil
+}
 func (l *fakeEmbeddingLedger) Reserve(context.Context, string, int64, modelpricing.USDNanos, time.Time) error {
 	return nil
 }

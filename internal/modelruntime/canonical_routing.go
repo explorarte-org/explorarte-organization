@@ -509,7 +509,7 @@ func compiledAdapterAvailability(policy routingPolicy) (AdapterStatus, bool) {
 	case policy.Transport == TransportHTTP && policy.Provider == "mistral":
 		// Investigator capacity candidate -- internal/modelruntime/adapter/mistral.
 		return AdapterAvailable, true
-		case policy.Transport == TransportHTTP && policy.Provider == "xai":
+	case policy.Transport == TransportHTTP && policy.Provider == "xai":
 		// Adversarial reviewer provider -- internal/modelruntime/adapter/xai.
 		// Compiled and dispatchable does not mean reachable: the reviewer role
 		// is still disabled in the canonical catalog, the adapter is disabled
