@@ -1223,11 +1223,46 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 			{25, "000025_enforce_wallet_single_terminal.down.sql"},
 			{21, "000021_create_provider_wallets.down.sql"},
 			{18, "000018_make_provider_outcomes_transport_aware.down.sql"},
+			// 000066's memoryos_clusters table reuses the memoryos_reject_mutation()
+			// trigger function 000065 creates, so 000066 must come down
+			// before 000065's own down.sql tries to DROP FUNCTION
+			// memoryos_reject_mutation() -- otherwise that DROP fails with
+			// "other objects depend on it".
+			{66, "000066_create_memoryos_clusters.down.sql"},
+			// 000065's memoryos_episode_obligations/memoryos_episode_tools FK
+			// to decision_graph_runs(id, organization_id), and
+			// memoryos_episode_invocations FKs to model_invocations(id,
+			// organization_id) too -- so 000065 must come down before BOTH
+			// 000012 (which drops decision_graph_runs outright) and 000007
+			// (which drops model_invocations). Placing it here, immediately
+			// before 000012, satisfies both at once since 000012 already
+			// precedes 000007 in this list. Same omission class as every
+			// other comment in this list: a migration that adds a table
+			// referencing an existing one and never says how it comes back
+			// down is only found here, once a rollback can't complete --
+			// this one surfaced as "cannot drop table decision_graph_runs
+			// because other objects depend on it".
+			{65, "000065_create_memoryos_episodes.down.sql"},
 			{12, "000012_create_durable_decision_graph.down.sql"},
 			{11, "000011_create_model_provider_adapter.down.sql"},
 			{10, "000010_create_model_execution_identity.down.sql"},
 			{9, "000009_create_model_dispatcher_assignments.down.sql"},
 			{8, "000008_create_model_egress_authorization.down.sql"},
+			// 000070's routing_candidates FKs to
+			// model_profile_versions(id, organization_id, profile_id,
+			// provider_id, provider_model_id), so it must come down before
+			// 000007 drops that table -- same omission class again,
+			// surfaced as "cannot drop table model_profile_versions
+			// because other objects depend on it". 000071 only ALTERs
+			// model_invocations (adding columns 000070's own down.sql does
+			// not touch), so it has no FK ordering requirement of its own,
+			// but is rolled back alongside 000070 here since the two are
+			// one corrective unit (kernel/dynamic-canonical-model-routing)
+			// and this test's convention is to roll a connected feature
+			// back together rather than leave half of it silently
+			// unreverted (and therefore un-reapplied) by this cycle.
+			{71, "000071_routing_idempotency_intent_and_provenance.down.sql"},
+			{70, "000070_dynamic_canonical_model_routing.down.sql"},
 			{7, "000007_create_model_runtime_gateway.down.sql"},
 		}
 		for _, item := range versions {
