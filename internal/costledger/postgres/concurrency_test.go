@@ -1,3 +1,5 @@
+//go:build integration
+
 package postgres_test
 
 // Postgres concurrency proofs for the Mistral local credit gate:
