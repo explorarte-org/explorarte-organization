@@ -311,10 +311,11 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 			return nil, fmt.Errorf("MISTRAL_CREDIT_CEILING_USD: %w", ceilingErr)
 		}
 		if configured {
-			if _, walletErr := walletLedger.GetWallet(context.Background(), "mistral"); walletErr != nil {
-				if _, setErr := walletLedger.SetBalance(context.Background(), "mistral", modelpricing.USDNanos(ceilingNanos), time.Now().UTC()); setErr != nil {
-					return nil, fmt.Errorf("provision mistral local credit ceiling wallet: %w", setErr)
-				}
+			// Race-safe provisioning: one INSERT ... ON CONFLICT DO NOTHING.
+			// An existing wallet is NEVER auto-raised; a transient DB error
+			// fails startup with no mutation.
+			if _, provisionErr := walletLedger.ProvisionWalletIfAbsent(context.Background(), "mistral", modelpricing.USDNanos(ceilingNanos), time.Now().UTC()); provisionErr != nil {
+				return nil, fmt.Errorf("provision mistral local credit ceiling wallet: %w", provisionErr)
 			}
 		}
 	}

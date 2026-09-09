@@ -17,6 +17,14 @@ type Ledger interface {
 	Reserve(ctx context.Context, providerID string, invocationID int64, estimatedUSD modelpricing.USDNanos, now time.Time) error
 	Reconcile(ctx context.Context, providerID string, invocationID int64, actualUSD modelpricing.USDNanos, now time.Time) error
 	Release(ctx context.Context, providerID string, invocationID int64, now time.Time) error
+	// ProvisionWalletIfAbsent seeds a provider wallet with balanceUSD ONLY
+	// if no wallet row exists for the provider. It is the race-safe
+	// provisioning primitive for local credit ceilings: a single
+	// INSERT ... ON CONFLICT (provider_id) DO NOTHING statement, so two
+	// concurrent bootstraps produce one insert, the same final balance, and
+	// never an upward overwrite of an existing wallet. It returns whether
+	// THIS call created the row.
+	ProvisionWalletIfAbsent(ctx context.Context, providerID string, balanceUSD modelpricing.USDNanos, now time.Time) (bool, error)
 	// ListEvents returns a provider's most recent wallet events (reserved,
 	// committed, released), newest first, for auditing and the CLI.
 	ListEvents(ctx context.Context, providerID string, limit int) ([]WalletEvent, error)
