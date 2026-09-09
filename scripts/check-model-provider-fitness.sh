@@ -210,7 +210,7 @@ expected={
  ("openai_compatible", "public"), ("openai_compatible", "sanitized"), ("openai_compatible", "organizational"),
  ("openai_responses", "public"), ("openai_responses", "sanitized"), ("openai_responses", "organizational"),
  ("gemini", "public"), ("gemini", "sanitized"), ("gemini", "organizational"),
- ("cloudflare_workers_ai", "public"), ("cloudflare_workers_ai", "sanitized"), ("cloudflare_workers_ai", "organizational"),
+ ("cloudflare_workers_ai", "public"), ("cloudflare_workers_ai", "sanitized"), ("cloudflare_workers_ai", "organizational"), ("mistral", "public"), ("mistral", "sanitized"),
  ("xai", "public"), ("xai", "sanitized"),
 }
 if allows != expected: raise SystemExit(f"unexpected productive allow set: {allows}")
