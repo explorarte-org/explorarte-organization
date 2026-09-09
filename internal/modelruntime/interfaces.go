@@ -151,6 +151,21 @@ type RegistryStore interface {
 	RegistryStatus(context.Context, string, int64, string) (RegistryStatus, error)
 	ApplyRegistry(context.Context, RegistryPlan, int) (RegistrySyncResult, error)
 	GetBinding(context.Context, string, int64, string) (ResolvedBinding, error)
+
+	// GetRoutingPolicy returns the materialized routing_mode: pool policy
+	// for (organizationID, revisionID, policyID), and ok=false when no such
+	// row exists -- which is the normal, expected case for every static
+	// policy, not an error condition.
+	GetRoutingPolicy(ctx context.Context, organizationID string, revisionID int64, policyID string) (RoutingPolicy, bool, error)
+	// ListRoutingCandidates returns every candidate materialized for one
+	// pool policy, each already carrying its own real, FK-checked
+	// ProfileID/ModelProfileVersionID.
+	ListRoutingCandidates(ctx context.Context, organizationID string, revisionID int64, policyID string) ([]RoutingCandidate, error)
+	// GetCandidateRoute resolves one already-selected candidate's full
+	// binding (profile/version/capabilities/provider) the same way
+	// GetBinding does for a static role -- by profile id directly, since a
+	// pool candidate never has a role_model_bindings row.
+	GetCandidateRoute(ctx context.Context, organizationID string, revisionID int64, profileID string) (ResolvedBinding, error)
 }
 
 type InvocationStore interface {
@@ -191,6 +206,16 @@ type PreparedInvocation struct {
 	IdentityPolicy         modelidentity.ResolvedPolicy
 	Assignment             modeldispatch.ResolvedAssignment
 	ModelInput             PreparedModelInput
+	// RoutingMode/RoutingSelectorID/RoutingCandidateSetHash are Dynamic
+	// Canonical Model Routing provenance (Section 10): which routing
+	// policy/selector/candidate-set produced Binding, persisted on the
+	// invocation row for audit. Never read back to re-derive or re-check
+	// the route -- Binding.Version.ProviderID/ProviderModelID, already
+	// persisted as provider_id/provider_model_id, remain the sole frozen
+	// route identity (invariant #9/#10).
+	RoutingMode             string
+	RoutingSelectorID       string
+	RoutingCandidateSetHash string
 }
 type ClaimCommand struct {
 	InvocationID         int64
