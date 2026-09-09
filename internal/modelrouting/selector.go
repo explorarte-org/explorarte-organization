@@ -144,11 +144,27 @@ func (FreeCapacityV1) Select(candidates []Candidate, state map[string]CandidateS
 	}, nil
 }
 
-// Selectors is the closed registry of known selector implementations,
+// selectors is the closed registry of known selector implementations,
 // keyed by the selector_id docs/canonical/model-routing.yaml validates
 // against (validRoutingSelectors in internal/modelruntime). Kept here,
 // next to the implementations, so the two lists cannot drift silently --
 // a new Selector and its id are added in the same place.
-var Selectors = map[string]Selector{
+//
+// Deliberately unexported: what selector_id=free_capacity_v1 MEANS is
+// part of the canonical routing identity (it feeds
+// RoutingPolicy.CanonicalHash and, once resolved, the persisted
+// routing_selector_id provenance column) -- it must not be repointable
+// in a running process, including by a test. LookupSelector is the only
+// way to read it.
+var selectors = map[string]Selector{
 	"free_capacity_v1": FreeCapacityV1{},
+}
+
+// LookupSelector returns the registered Selector for id and whether one
+// exists. An unregistered id is a materialization bug (docs/canonical/
+// model-routing.yaml validation should have already rejected it) and must
+// fail closed at the caller -- LookupSelector never invents a fallback.
+func LookupSelector(id string) (Selector, bool) {
+	s, ok := selectors[id]
+	return s, ok
 }

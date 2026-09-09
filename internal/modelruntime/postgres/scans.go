@@ -7,14 +7,15 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
 )
 
-const invocationColumns = `id,organization_id,organization_revision_id,task_id,attempt_id,dispatch_actor_role_id,subject_role_id,dispatcher_assignment_id,execution_principal_id,context_snapshot_id,purpose,model_profile_id,model_profile_version_id,provider_id,provider_model_id,model_egress_policy_version_id,model_egress_policy_hash,execution_identity_policy_version_id,execution_identity_policy_hash,required_capabilities,output_mode,output_schema,max_output_tokens,temperature,thinking_mode,idempotency_key,request_hash,status,error_code,cancel_requested_at,deadline,correlation_id,causation_id,created_at,updated_at,terminal_at`
+const invocationColumns = `id,organization_id,organization_revision_id,task_id,attempt_id,dispatch_actor_role_id,subject_role_id,dispatcher_assignment_id,execution_principal_id,context_snapshot_id,purpose,model_profile_id,model_profile_version_id,provider_id,provider_model_id,model_egress_policy_version_id,model_egress_policy_hash,execution_identity_policy_version_id,execution_identity_policy_hash,required_capabilities,output_mode,output_schema,max_output_tokens,temperature,thinking_mode,idempotency_key,request_hash,status,error_code,cancel_requested_at,deadline,correlation_id,causation_id,created_at,updated_at,terminal_at,idempotency_intent_hash,routing_mode,routing_policy_id,routing_selector_id,routing_candidate_set_hash,routing_candidate_hash,routing_decision_reason`
 const attemptColumns = `id,invocation_id,attempt_number,status,claimed_by,execution_principal_id,execution_identity_key_id,identity_assertion_id,identity_verified_at,claimed_at,claim_expires_at,send_started_at,response_received_at,provider_request_id,retry_safety,outcome_classification,error_code,created_at,finished_at`
 
 func scanInvocation(row scanner) (modelruntime.Invocation, error) {
 	var v modelruntime.Invocation
 	var caps, schema []byte
 	var errorCode, correlationID, causationID, egressPolicyHash, identityPolicyHash *string
-	err := row.Scan(&v.ID, &v.OrganizationID, &v.OrganizationRevisionID, &v.TaskID, &v.AttemptID, &v.DispatchActorRoleID, &v.SubjectRoleID, &v.DispatcherAssignmentID, &v.ExecutionPrincipalID, &v.ContextSnapshotID, &v.Purpose, &v.ModelProfileID, &v.ModelProfileVersionID, &v.ProviderID, &v.ProviderModelID, &v.ModelEgressPolicyVersionID, &egressPolicyHash, &v.ExecutionIdentityPolicyVersionID, &identityPolicyHash, &caps, &v.OutputMode, &schema, &v.MaxOutputTokens, &v.Temperature, &v.ThinkingMode, &v.IdempotencyKey, &v.RequestHash, &v.Status, &errorCode, &v.CancelRequestedAt, &v.Deadline, &correlationID, &causationID, &v.CreatedAt, &v.UpdatedAt, &v.TerminalAt)
+	var idempotencyIntentHash, routingMode, routingPolicyID, routingSelectorID, routingCandidateSetHash, routingCandidateHash, routingDecisionReason *string
+	err := row.Scan(&v.ID, &v.OrganizationID, &v.OrganizationRevisionID, &v.TaskID, &v.AttemptID, &v.DispatchActorRoleID, &v.SubjectRoleID, &v.DispatcherAssignmentID, &v.ExecutionPrincipalID, &v.ContextSnapshotID, &v.Purpose, &v.ModelProfileID, &v.ModelProfileVersionID, &v.ProviderID, &v.ProviderModelID, &v.ModelEgressPolicyVersionID, &egressPolicyHash, &v.ExecutionIdentityPolicyVersionID, &identityPolicyHash, &caps, &v.OutputMode, &schema, &v.MaxOutputTokens, &v.Temperature, &v.ThinkingMode, &v.IdempotencyKey, &v.RequestHash, &v.Status, &errorCode, &v.CancelRequestedAt, &v.Deadline, &correlationID, &causationID, &v.CreatedAt, &v.UpdatedAt, &v.TerminalAt, &idempotencyIntentHash, &routingMode, &routingPolicyID, &routingSelectorID, &routingCandidateSetHash, &routingCandidateHash, &routingDecisionReason)
 	if err != nil {
 		return v, mapError(err)
 	}
@@ -23,6 +24,13 @@ func scanInvocation(row scanner) (modelruntime.Invocation, error) {
 	v.CausationID = nullableString(causationID)
 	v.ModelEgressPolicyHash = nullableString(egressPolicyHash)
 	v.ExecutionIdentityPolicyHash = nullableString(identityPolicyHash)
+	v.IdempotencyIntentHash = nullableString(idempotencyIntentHash)
+	v.RoutingMode = nullableString(routingMode)
+	v.RoutingPolicyID = nullableString(routingPolicyID)
+	v.RoutingSelectorID = nullableString(routingSelectorID)
+	v.RoutingCandidateSetHash = nullableString(routingCandidateSetHash)
+	v.RoutingCandidateHash = nullableString(routingCandidateHash)
+	v.RoutingDecisionReason = nullableString(routingDecisionReason)
 	if err = json.Unmarshal(caps, &v.RequiredCapabilities); err != nil {
 		return v, fmt.Errorf("decode invocation capabilities: %w", err)
 	}

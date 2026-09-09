@@ -666,6 +666,9 @@ func validatePoolPolicy(id string, p routingPolicy) error {
 		default:
 			return fmt.Errorf("%w: pool policy %q candidate %d has unsupported transport %q", ErrInvalidRequest, id, i, c.Transport)
 		}
+		if (c.Transport == TransportFake) != (c.Provider == "test.fake") {
+			return fmt.Errorf("%w: pool policy %q candidate %d: fake transport is restricted to provider test.fake", ErrInvalidRequest, id, i)
+		}
 		if !validCapacityClasses[c.CapacityClass] {
 			return fmt.Errorf("%w: pool policy %q candidate %d has unknown capacity_class %q", ErrInvalidRequest, id, i, c.CapacityClass)
 		}

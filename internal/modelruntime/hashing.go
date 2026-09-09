@@ -142,24 +142,72 @@ func canonicalNumberJSON(v any) ([]byte, error) {
 	}
 }
 
-// invocationRequestHash identifies the CALLER's logical request -- never
-// the route the kernel happened to resolve it to. Deliberately excludes
-// binding.Profile.ID/Version.ID/ProviderID/ProviderModelID: those are
-// RouteResolver's OUTPUT, not caller input, and for a routing_mode: pool
-// policy they can legitimately differ between two Create() calls carrying
-// the SAME idempotency key if capacity state drifted in between (Section 9).
-// The request identity a retry must match is already fully pinned by
-// subject_role_id (which policy this targets) plus task/attempt/context/
-// capabilities/output contract -- adding the resolved route on top would
-// make a capacity-state-driven retry fail closed with ErrConflict instead
-// of replaying the original invocation, silently breaking idempotency the
-// moment routing stopped being deterministic. Once persisted, the route on
-// row #1 is immutable regardless of what this hash contains (see
-// CreateInvocation: an ON CONFLICT never updates provider_id/profile_id);
-// this only fixes what governs whether a retry is treated as "the same
-// request" in the first place.
+// invocationRequestHash identifies the Invocation's COMPLETE materialized
+// identity, including the resolved route (binding.Profile.ID/Version.ID/
+// ProviderID/ProviderModelID). It changes if ANY of those change -- this is
+// what ActionDigest signs, what audit reads, and what the persisted row's
+// request_hash column has always meant: "this is exactly what happened."
+//
+// It is deliberately NOT what governs idempotency-conflict detection --
+// see idempotencyIntentHash below, and CreateInvocation's conflict path in
+// postgres/invocations.go, which compares IdempotencyIntentHash, never
+// this hash, to decide whether a retry may replay an existing row.
 func invocationRequestHash(c CreateInvocationCommand, revision int64, binding ResolvedBinding, caps []ModelCapability, schema []byte, modelInputDigest string, policyVersionID int64, policyHash string, identityPolicyVersionID int64, identityPolicyHash string, assignment modeldispatch.ResolvedAssignment) (string, error) {
-	_ = binding // resolution output, deliberately excluded -- see doc comment
+	value := map[string]any{
+		"organization_id":                      c.OrganizationID,
+		"organization_revision_id":             revision,
+		"task_id":                              c.TaskID,
+		"attempt_id":                           c.AttemptID,
+		"dispatcher_assignment_id":             assignment.Assignment.ID,
+		"dispatcher_assignment_hash":           assignment.Assignment.AssignmentHash,
+		"execution_principal_id":               assignment.Principal.ID,
+		"execution_principal_key":              assignment.Principal.PrincipalKey,
+		"dispatch_actor_role_id":               assignment.Principal.DispatchActorRoleID,
+		"subject_role_id":                      c.SubjectRoleID,
+		"context_snapshot_id":                  c.ContextSnapshotID,
+		"model_input_digest":                   modelInputDigest,
+		"purpose":                              strings.TrimSpace(c.Purpose),
+		"profile_id":                           binding.Profile.ID,
+		"profile_version_id":                   binding.Version.ID,
+		"provider_id":                          binding.Version.ProviderID,
+		"provider_model_id":                    binding.Version.ProviderModelID,
+		"required_capabilities":                caps,
+		"output_mode":                          c.OutputMode,
+		"output_schema":                        json.RawMessage(schema),
+		"max_output_tokens":                    c.MaxOutputTokens,
+		"temperature":                          c.Temperature,
+		"thinking_mode":                        c.ThinkingMode,
+		"deadline":                             c.Deadline.UTC().Format(time.RFC3339Nano),
+		"model_egress_policy_version_id":       policyVersionID,
+		"model_egress_policy_hash":             policyHash,
+		"execution_identity_policy_version_id": identityPolicyVersionID,
+		"execution_identity_policy_hash":       identityPolicyHash,
+	}
+	body, err := CanonicalJSON(value)
+	if err != nil {
+		return "", err
+	}
+	return SHA256Bytes(body), nil
+}
+
+// idempotencyIntentHash identifies the CALLER's logical request BEFORE
+// route resolution -- everything invocationRequestHash hashes EXCEPT the
+// four route-resolution outputs (profile_id, profile_version_id,
+// provider_id, provider_model_id), mutable capacity state, and the
+// selector's decision. It is the conservative choice named in the
+// corrective round: every field invocationRequestHash already protected,
+// minus only what RouteResolver produces rather than what the caller
+// supplied.
+//
+// This is what CreateInvocation's ON CONFLICT path compares to decide
+// whether a retry under the same idempotency key is "the same request"
+// (REUSE) or a genuinely different one (ErrConflict). A routing_mode:
+// pool policy's capacity state can legitimately pick a different
+// candidate between two calls carrying the same key; that must never look
+// like a different request. invocationRequestHash (which DOES include the
+// route) is intentionally never used for this comparison -- see its own
+// doc comment.
+func idempotencyIntentHash(c CreateInvocationCommand, revision int64, caps []ModelCapability, schema []byte, modelInputDigest string, policyVersionID int64, policyHash string, identityPolicyVersionID int64, identityPolicyHash string, assignment modeldispatch.ResolvedAssignment) (string, error) {
 	value := map[string]any{
 		"organization_id":                      c.OrganizationID,
 		"organization_revision_id":             revision,
