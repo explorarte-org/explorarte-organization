@@ -19,7 +19,7 @@ var (
 	productiveEgressAllowRules = map[string]map[string]struct{}{
 		"deepseek":              {"public": {}, "sanitized": {}, "organizational": {}},
 		"cloudflare_workers_ai": {"public": {}, "sanitized": {}, "organizational": {}},
-		"mistral": {"public": {}, "sanitized": {}},
+		"mistral":               {"public": {}, "sanitized": {}},
 		"openai_compatible":     {"public": {}, "sanitized": {}, "organizational": {}},
 		"openai_responses":      {"public": {}, "sanitized": {}, "organizational": {}},
 		"gemini":                {"public": {}, "sanitized": {}, "organizational": {}},
@@ -392,9 +392,22 @@ func (v *validator) validateModelEgressPolicy() {
 	if document.DefaultAction != "deny" {
 		v.addError("model_egress.default_action_invalid", "model-egress-policy.yaml:default_action", "model egress default_action must be deny")
 	}
+	// A policy's provider identity lives in Provider for a static policy,
+	// and in Candidates[*].Provider for a pool policy (routing_mode:
+	// pool) -- a pool policy has no top-level provider at all. Both
+	// contribute to the egress provider universe; neither implies
+	// selection/allow_paid/priority semantics, which stay exclusively
+	// internal/modelruntime's concern.
 	providers := make(map[string]struct{})
 	for _, policy := range v.documents.ModelRouting.Policies {
-		providers[policy.Provider] = struct{}{}
+		if policy.Provider != "" {
+			providers[policy.Provider] = struct{}{}
+		}
+		for _, candidate := range policy.Candidates {
+			if candidate.Provider != "" {
+				providers[candidate.Provider] = struct{}{}
+			}
+		}
 	}
 	hard := make(map[string]struct{})
 	for index, deny := range document.HardDenies {
