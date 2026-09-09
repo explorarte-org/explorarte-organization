@@ -123,6 +123,42 @@ type modelPolicyDoc struct {
 	DecisionStatus      string   `yaml:"decision_status" json:"decision_status,omitempty"`
 	ReasoningEffort     string   `yaml:"reasoning_effort" json:"reasoning_effort,omitempty"`
 	Schedule            string   `yaml:"schedule" json:"schedule,omitempty"`
+	// RoutingMode/Selector/AllowPaid/Capabilities/Candidates mirror Dynamic
+	// Canonical Model Routing's pool shape (internal/modelruntime's own
+	// routingPolicy/routingCandidate). This package does not re-implement
+	// routing selection or validation -- internal/modelruntime remains the
+	// sole authority for that (canonical_routing.go: validatePoolPolicy,
+	// BuildRegistryPlan). These fields exist here only so this package's
+	// own strict YAML decode (KnownFields(true)) and semantic hashing can
+	// represent a pool policy at all, and so model-egress-policy.yaml can
+	// be cross-validated against a pool's real provider set
+	// (Policies[*].Candidates[*].Provider), not just Policies[*].Provider.
+	//
+	// All five use json:",omitempty": a static policy (the overwhelming
+	// majority today) sets none of them, and must keep hashing to exactly
+	// the same JSON it always has -- {"provider":...,"model":...,
+	// "transport":...,...} -- never gaining artificial
+	// "routing_mode":"","selector":"","allow_paid":false,"capabilities":
+	// null,"candidates":null zero-value noise merely because this struct
+	// grew fields. See canonical_pool_test.go's static-hash-non-pollution
+	// test.
+	RoutingMode  string                    `yaml:"routing_mode" json:"routing_mode,omitempty"`
+	Selector     string                    `yaml:"selector" json:"selector,omitempty"`
+	AllowPaid    bool                      `yaml:"allow_paid" json:"allow_paid,omitempty"`
+	Capabilities []string                  `yaml:"capabilities" json:"capabilities,omitempty"`
+	Candidates   []modelPolicyCandidateDoc `yaml:"candidates" json:"candidates,omitempty"`
+}
+
+// modelPolicyCandidateDoc is one pool candidate's mirror shape -- the
+// registry-side counterpart of internal/modelruntime's routingCandidate.
+// Narrow and structural only: this package draws no conclusions from it
+// beyond parsing, hashing, and the egress provider-existence check.
+type modelPolicyCandidateDoc struct {
+	Provider      string `yaml:"provider" json:"provider"`
+	Model         string `yaml:"model" json:"model"`
+	Transport     string `yaml:"transport" json:"transport"`
+	CapacityClass string `yaml:"capacity_class" json:"capacity_class"`
+	Priority      int    `yaml:"priority" json:"priority"`
 }
 
 type modelEgressPolicyDocument struct {

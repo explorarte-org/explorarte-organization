@@ -213,6 +213,36 @@ func validateYAMLNode(node *yaml.Node, depth int, count *int) error {
 	return nil
 }
 
+// normalizeCapabilitySet treats a model policy's capabilities list as a
+// SET, not a sequence: trimmed, empty entries dropped, deduplicated,
+// sorted. Conceptually identical to modelruntime.NormalizeCapabilities,
+// reimplemented locally (not imported) because internal/modelruntime
+// already imports this package (organizationregistry) for the model
+// routing semantic hash -- importing back would be a cycle.
+func normalizeCapabilitySet(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		result = append(result, trimmed)
+	}
+	sort.Strings(result)
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
 func normalizeDocuments(documents *parsedDocuments) {
 	sort.Slice(documents.Organization.OperationalDepartments, func(i, j int) bool {
 		return documents.Organization.OperationalDepartments[i].ID < documents.Organization.OperationalDepartments[j].ID
@@ -240,6 +270,33 @@ func normalizeDocuments(documents *parsedDocuments) {
 	}
 	for key, policy := range documents.ModelRouting.Policies {
 		sort.Strings(policy.LegacyConflicts)
+		policy.RoutingMode = strings.TrimSpace(policy.RoutingMode)
+		policy.Selector = strings.TrimSpace(policy.Selector)
+		policy.Provider = strings.TrimSpace(policy.Provider)
+		policy.Model = strings.TrimSpace(policy.Model)
+		policy.Capabilities = normalizeCapabilitySet(policy.Capabilities)
+		for i := range policy.Candidates {
+			policy.Candidates[i].Provider = strings.TrimSpace(policy.Candidates[i].Provider)
+			policy.Candidates[i].Model = strings.TrimSpace(policy.Candidates[i].Model)
+			policy.Candidates[i].Transport = strings.TrimSpace(policy.Candidates[i].Transport)
+			policy.Candidates[i].CapacityClass = strings.TrimSpace(policy.Candidates[i].CapacityClass)
+		}
+		// Candidate order is not semantically meaningful (priority, a
+		// field, carries ranking -- not slice position), so two
+		// documents that list the same candidates in a different order
+		// must normalize to the same representation and hash.
+		// modelruntime.normalizeRouting sorts pool candidates by
+		// (Provider, Model) for exactly this reason; mirrored here so
+		// this package's semantic hash agrees with it. Duplicates are
+		// deliberately NOT removed here -- that is validation
+		// (internal/modelruntime.validatePoolPolicy's own duplicate
+		// check), not normalization.
+		sort.Slice(policy.Candidates, func(i, j int) bool {
+			if policy.Candidates[i].Provider != policy.Candidates[j].Provider {
+				return policy.Candidates[i].Provider < policy.Candidates[j].Provider
+			}
+			return policy.Candidates[i].Model < policy.Candidates[j].Model
+		})
 		documents.ModelRouting.Policies[key] = policy
 	}
 	sort.Strings(documents.ModelRouting.RoutingInvariants)
