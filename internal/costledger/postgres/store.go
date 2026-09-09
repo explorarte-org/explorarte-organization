@@ -253,6 +253,22 @@ FROM provider_wallets WHERE provider_id=$1`, providerID).
 	return wallet, nil
 }
 
+// ProvisionWalletIfAbsent implements the race-safe provisioning primitive:
+// one INSERT ... ON CONFLICT DO NOTHING. existed=false means THIS call
+// created the wallet; existed=true means a wallet already existed and was
+// left untouched (never auto-raised).
+func (s *Store) ProvisionWalletIfAbsent(ctx context.Context, providerID string, balanceUSD modelpricing.USDNanos, now time.Time) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		INSERT INTO provider_wallets (provider_id, balance_usd_nanos, reserved_usd_nanos, updated_at)
+		VALUES ($1, $2, 0, $3)
+		ON CONFLICT (provider_id) DO NOTHING`,
+		providerID, int64(balanceUSD), now)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 func (s *Store) SetBalance(ctx context.Context, providerID string, balanceUSD modelpricing.USDNanos, now time.Time) (costledger.ProviderWallet, error) {
 	now = now.UTC()
 	var wallet costledger.ProviderWallet
