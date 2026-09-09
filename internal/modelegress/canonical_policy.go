@@ -64,6 +64,9 @@ func ProductiveLoadOptions(knownProviders []string) LoadOptions {
 		ProductiveExplicitRules: map[string][]DataClassification{
 			"deepseek":              {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
 			"cloudflare_workers_ai": {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
+			// Mistral is deliberately narrower: no organizational
+			// classification without an explicit owner decision.
+			"mistral":              {ClassificationPublic, ClassificationSanitized},
 			"openai_compatible":     {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
 			"openai_responses":      {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
 			"gemini":                {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
