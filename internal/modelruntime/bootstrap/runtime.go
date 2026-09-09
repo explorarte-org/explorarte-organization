@@ -29,6 +29,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/cloudflare"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/deepseek"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/gemini"
+	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/mistral"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/openaicompat"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/openairesponses"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter/xai"
@@ -186,6 +187,10 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	if err != nil {
 		return nil, fmt.Errorf("load Cloudflare Workers AI provider config: %w", err)
 	}
+	mistralConfig, err := mistral.LoadConfig(os.LookupEnv, runtimeCfg.MaxResponseBytes)
+	if err != nil {
+		return nil, fmt.Errorf("load Mistral provider config: %w", err)
+	}
 	deepseekConfig, err := deepseek.LoadConfig(os.LookupEnv, runtimeCfg.MaxResponseBytes)
 	if err != nil {
 		return nil, fmt.Errorf("load DeepSeek provider config: %w", err)
@@ -214,6 +219,7 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	for _, credential := range []struct{ provider, path string }{
 		{"openai-compatible", openAIConfig.CredentialFile},
 		{"Cloudflare Workers AI", cloudflareConfig.CredentialFile},
+		{"Mistral", mistralConfig.CredentialFile},
 		{"DeepSeek", deepseekConfig.CredentialFile},
 		{"Gemini", geminiConfig.CredentialFile},
 		{"OpenAI Responses", openaiResponsesConfig.CredentialFile},
@@ -235,6 +241,13 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 		providerAdapter, providerErr := cloudflare.New(cloudflareConfig)
 		if providerErr != nil {
 			return nil, fmt.Errorf("open Cloudflare Workers AI provider adapter: %w", providerErr)
+		}
+		registeredAdapters = append(registeredAdapters, providerAdapter)
+	}
+	if mistralConfig.Enabled {
+		providerAdapter, providerErr := mistral.New(mistralConfig)
+		if providerErr != nil {
+			return nil, fmt.Errorf("open Mistral provider adapter: %w", providerErr)
 		}
 		registeredAdapters = append(registeredAdapters, providerAdapter)
 	}
@@ -287,6 +300,24 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	budgetLedger, err := agentbudgetpostgres.New(platformStore)
 	if err != nil {
 		return nil, fmt.Errorf("create agent budget ledger: %w", err)
+	}
+	// Mistral local credit ceiling (barrier 2, fail-closed): provision the
+	// mistral provider wallet with the EXPLICIT deployment ceiling. Missing
+	// or invalid ceiling never enables the candidate; an EXISTING wallet is
+	// never auto-raised by a config change.
+	if ceilingRaw, ceilingOK := os.LookupEnv("MISTRAL_CREDIT_CEILING_USD"); ceilingOK {
+		ceilingNanos, configured, ceilingErr := mistral.ParseCreditCeilingUSD(ceilingRaw)
+		if ceilingErr != nil {
+			return nil, fmt.Errorf("MISTRAL_CREDIT_CEILING_USD: %w", ceilingErr)
+		}
+		if configured {
+			// Race-safe provisioning: one INSERT ... ON CONFLICT DO NOTHING.
+			// An existing wallet is NEVER auto-raised; a transient DB error
+			// fails startup with no mutation.
+			if _, provisionErr := walletLedger.ProvisionWalletIfAbsent(context.Background(), "mistral", modelpricing.USDNanos(ceilingNanos), time.Now().UTC()); provisionErr != nil {
+				return nil, fmt.Errorf("provision mistral local credit ceiling wallet: %w", provisionErr)
+			}
+		}
 	}
 	gate, err := costgate.New(pricingService, walletLedger, budgetLedger, cloudflare.ProviderID)
 	if err != nil {

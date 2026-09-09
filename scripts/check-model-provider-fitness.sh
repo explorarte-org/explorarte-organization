@@ -51,7 +51,7 @@ git diff --exit-code "$TASK_BASE_SHA" -- cmd/orgd internal/app >/dev/null || fai
 
 if find internal/modelruntime/adapter -mindepth 1 -maxdepth 1 -type d \
   ! -name openaicompat ! -name alibabaclaude ! -name deepseek ! -name gemini \
-  ! -name xai ! -name openairesponses ! -name cloudflare -print | grep -q .; then
+  ! -name xai ! -name openairesponses ! -name cloudflare ! -name mistral -print | grep -q .; then
 	fail "an unknown real provider adapter was introduced"
 fi
 if rg -n '"net/http"' internal/modelruntime --glob '*.go' \
@@ -60,7 +60,7 @@ if rg -n '"net/http"' internal/modelruntime --glob '*.go' \
   --glob '!internal/modelruntime/adapter/gemini/**' \
   --glob '!internal/modelruntime/adapter/xai/**' \
   --glob '!internal/modelruntime/adapter/openairesponses/**' \
-  --glob '!internal/modelruntime/adapter/cloudflare/**'; then
+  --glob '!internal/modelruntime/adapter/cloudflare/**' --glob '!internal/modelruntime/adapter/mistral/**'; then
 	fail "HTTP client found outside the approved provider adapters"
 fi
 if rg -n --glob '!internal/modelruntime/adapter/alibabaclaude/**' '"os/exec"|exec\.Command|/bin/(sh|bash)|sh -c|bash -c' internal/modelruntime internal/secrets; then
@@ -105,6 +105,11 @@ allowed={
  "ORG_MODEL_PROVIDER_CLOUDFLARE_REQUEST_TIMEOUT",
  "ORG_MODEL_PROVIDER_CLOUDFLARE_CIRCUIT_FAILURE_THRESHOLD",
  "ORG_MODEL_PROVIDER_CLOUDFLARE_CIRCUIT_OPEN_DURATION",
+ "ORG_MODEL_PROVIDER_MISTRAL_ENABLED",
+ "ORG_MODEL_PROVIDER_MISTRAL_CREDENTIAL_FILE",
+ "ORG_MODEL_PROVIDER_MISTRAL_REQUEST_TIMEOUT",
+ "ORG_MODEL_PROVIDER_MISTRAL_CIRCUIT_FAILURE_THRESHOLD",
+ "ORG_MODEL_PROVIDER_MISTRAL_CIRCUIT_OPEN_DURATION",
 }
 seen=set()
 for root in (Path("internal/modelruntime"), Path(".env.example")):
@@ -118,7 +123,7 @@ for root in (Path("internal/modelruntime"), Path(".env.example")):
 if seen != allowed:
     print("provider env contract mismatch", "missing", sorted(allowed-seen), "extra", sorted(seen-allowed), file=sys.stderr)
     sys.exit(1)
-for adapter in ("openaicompat", "deepseek", "gemini", "xai", "openairesponses", "cloudflare"):
+for adapter in ("openaicompat", "deepseek", "gemini", "xai", "openairesponses", "cloudflare", "mistral"):
     for path in (Path("internal/modelruntime/adapter") / adapter).rglob("*.go"):
         if path.name.endswith("_test.go"):
             continue
@@ -205,7 +210,7 @@ expected={
  ("openai_compatible", "public"), ("openai_compatible", "sanitized"), ("openai_compatible", "organizational"),
  ("openai_responses", "public"), ("openai_responses", "sanitized"), ("openai_responses", "organizational"),
  ("gemini", "public"), ("gemini", "sanitized"), ("gemini", "organizational"),
- ("cloudflare_workers_ai", "public"), ("cloudflare_workers_ai", "sanitized"), ("cloudflare_workers_ai", "organizational"),
+ ("cloudflare_workers_ai", "public"), ("cloudflare_workers_ai", "sanitized"), ("cloudflare_workers_ai", "organizational"), ("mistral", "public"), ("mistral", "sanitized"),
  ("xai", "public"), ("xai", "sanitized"),
 }
 if allows != expected: raise SystemExit(f"unexpected productive allow set: {allows}")

@@ -62,6 +62,15 @@ policies:
     legacy_conflicts:
     - deepseek/deepseek-v4-flash in prior routing revision
     - gemini/gemini-2.5-flash in prior routing revision
+    - none in prior routing revision
+  mistral.worker:
+    provider: mistral
+    model: "ministral-8b-2512"
+    transport: http_adapter
+    schedule: hourly
+    source_of_decision: owner_conversation_mistral_investigator_pending_approval
+    legacy_conflicts:
+    - none in prior routing revision
 routing_invariants:
 - A role never selects its own model from request JSON.
 - The backend resolves a model from an approved policy and role registration.

@@ -19,6 +19,7 @@ var (
 	productiveEgressAllowRules = map[string]map[string]struct{}{
 		"deepseek":              {"public": {}, "sanitized": {}, "organizational": {}},
 		"cloudflare_workers_ai": {"public": {}, "sanitized": {}, "organizational": {}},
+		"mistral": {"public": {}, "sanitized": {}},
 		"openai_compatible":     {"public": {}, "sanitized": {}, "organizational": {}},
 		"openai_responses":      {"public": {}, "sanitized": {}, "organizational": {}},
 		"gemini":                {"public": {}, "sanitized": {}, "organizational": {}},

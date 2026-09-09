@@ -1,7 +1,7 @@
 schema_version: 0.1.0
 document_status: api_only_candidate
 policy_id: model-egress
-policy_version: 10
+policy_version: 11
 default_action: deny
 hard_denies:
 - data_classification: clinical
@@ -33,6 +33,14 @@ rules:
   data_classification: sanitized
   effect: allow
   reason_code: cloudflare_workers_ai_direct_rest_v1
+- provider_id: mistral
+  data_classification: public
+  effect: allow
+  reason_code: mistral_direct_rest_v1
+- provider_id: mistral
+  data_classification: sanitized
+  effect: allow
+  reason_code: mistral_direct_rest_v1
 - provider_id: openai_compatible
   data_classification: organizational
   effect: allow

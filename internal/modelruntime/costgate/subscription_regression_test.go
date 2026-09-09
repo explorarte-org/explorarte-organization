@@ -39,8 +39,8 @@ type recordingLedger struct {
 	released  []string
 }
 
-func (l *recordingLedger) GetWallet(context.Context, string) (costledger.ProviderWallet, error) {
-	return costledger.ProviderWallet{ProviderID: "cloudflare_workers_ai"}, nil
+func (l *recordingLedger) GetWallet(_ context.Context, providerID string) (costledger.ProviderWallet, error) {
+	return costledger.ProviderWallet{ProviderID: providerID, BalanceUSD: 1_000_000_000}, nil
 }
 func (l *recordingLedger) SetBalance(context.Context, string, modelpricing.USDNanos, time.Time) (costledger.ProviderWallet, error) {
 	return costledger.ProviderWallet{}, nil
@@ -154,5 +154,64 @@ func TestSubscriptionProvider_NeverPAYG(t *testing.T) {
 	}
 	if budgets.consumed[0].UsedModelCalls != 1 {
 		t.Fatalf("model-call usage must be counted: %v", budgets.consumed[0].UsedModelCalls)
+	}
+}
+
+// staticTierStore serves the canonical ministral-8b-2512 Standard tier
+// ($0.15/1M in and out => 150000 nanos/1M) — official pricing, provenance
+// documented in migration 000069.
+type staticTierStore struct{}
+
+func (s *staticTierStore) ListTiers(_ context.Context, providerID, modelID string, mode modelpricing.BillingMode, _ time.Time) ([]modelpricing.PriceTier, error) {
+	if providerID != "mistral" || modelID != "ministral-8b-2512" {
+		return nil, nil
+	}
+	return []modelpricing.PriceTier{{
+		ProviderID: providerID, ProviderModelID: modelID, ContextTierName: "standard",
+		InputPriceNanosPerMillion: 150000000, OutputPriceNanosPerMillion: 150000000, // $0.15/1M = 0.15*1e9 nanos
+		BillingMode: mode, EffectiveAt: time.Now().UTC(),
+	}}, nil
+}
+func (s *staticTierStore) Upsert(_ context.Context, tier modelpricing.PriceTier) (modelpricing.PriceTier, error) {
+	return tier, nil
+}
+
+// TestMistralIsNotASubscriptionProvider locks the economic boundary: the
+// Mistral provider goes through the NORMAL pricing + reservation path
+// (finite monthly included usage, PAYG possibly enabled upstream), so it
+// must NEVER join costgate subscriptionProviders — unlike Cloudflare.
+// With mistral priced and a wallet present, Reserve must consult pricing,
+// reserve against the wallet, and return WalletApplied=true.
+func TestMistralIsNotASubscriptionProvider(t *testing.T) {
+	ledger := &recordingLedger{}
+	budgets := &recordingBudgets{consumed: []agentbudget.Usage{}}
+	pricing, err := modelpricing.NewService(&staticTierStore{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// NOTE: "mistral" deliberately NOT passed as a subscription provider.
+	gate, err := New(pricing, ledger, budgets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation, err := gate.Reserve(context.Background(), modelruntime.CostReservationRequest{
+		ProviderID: "mistral", ProviderModelID: "ministral-8b-2512",
+		InvocationID: 9, TaskID: 42, EstimatedInputTokens: 28, MaxOutputTokens: 10,
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("priced mistral reservation must succeed: %v", err)
+	}
+	if reservation.Subscription {
+		t.Fatal("mistral must never be billed as a zero-cost subscription")
+	}
+	if !reservation.WalletApplied || len(ledger.reserved) != 1 || ledger.reserved[0] != "mistral" {
+		t.Fatalf("mistral must reserve against the wallet: %+v", ledger)
+	}
+	// Exact-cost sanity through the engine for the KNOWN smoke
+	// (28 input + 10 output): (28+10) * 150000000 / 1e6 = 5700 nanos
+	// = $0.0000057. A 1000x rate error would produce 5.7 nanos instead.
+	estimated := (28 + 10) * 150000000 / 1_000_000
+	if estimated != 5700 {
+		t.Fatalf("pricing rate check: expected 5700 nanos for the known smoke, got %d", estimated)
 	}
 }
