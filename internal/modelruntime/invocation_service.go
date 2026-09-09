@@ -122,13 +122,23 @@ func (s *InvocationService) Create(ctx context.Context, command CreateInvocation
 	if err = rejectCredentialBearingModelInput(modelInput, schema); err != nil {
 		return CreateInvocationResult{}, err
 	}
-	route, err := s.routes.Resolve(ctx, RouteResolutionRequest{
+	routeReq := RouteResolutionRequest{
 		OrganizationID:         prepared.OrganizationID,
 		OrganizationRevisionID: org.RevisionID,
 		SubjectRoleID:          prepared.SubjectRoleID,
 		PolicyID:               subject.ModelPolicy,
-	})
+	}
+	route, err := s.routes.Resolve(ctx, routeReq)
 	if err != nil {
+		return CreateInvocationResult{}, err
+	}
+	// Independent of which RouteResolver produced route (the default
+	// canonical one, or one installed via SetRouteResolver): re-derive and
+	// check it directly against the canonical registry before trusting it
+	// for anything downstream. A misconfigured or malicious RouteResolver
+	// cannot make CreateInvocation see a binding this call did not itself
+	// verify.
+	if err = ValidateResolvedRouteAgainstCanonical(ctx, s.store, routeReq, route); err != nil {
 		return CreateInvocationResult{}, err
 	}
 	binding := route.Binding
@@ -162,7 +172,18 @@ func (s *InvocationService) Create(ctx context.Context, command CreateInvocation
 	if err != nil {
 		return CreateInvocationResult{}, err
 	}
-	return s.store.CreateInvocation(ctx, PreparedInvocation{Command: prepared, OrganizationRevisionID: org.RevisionID, Binding: binding, RequestHash: hash, RequiredCapabilities: caps, OutputSchema: schema, EgressPolicy: policy, IdentityPolicy: identityPolicy, Assignment: resolved, ModelInput: modelInput, RoutingMode: route.RoutingMode, RoutingSelectorID: route.SelectorID, RoutingCandidateSetHash: route.CandidateSetHash}, s.outboxMaxAttempts)
+	intentHash, err := idempotencyIntentHash(prepared, org.RevisionID, caps, schema, modelInput.CanonicalDigest, policy.Version.ID, policy.CanonicalHash, identityPolicy.Version.ID, identityPolicy.Version.CanonicalHash, resolved)
+	if err != nil {
+		return CreateInvocationResult{}, err
+	}
+	return s.store.CreateInvocation(ctx, PreparedInvocation{
+		Command: prepared, OrganizationRevisionID: org.RevisionID, Binding: binding,
+		RequestHash: hash, IdempotencyIntentHash: intentHash,
+		RequiredCapabilities: caps, OutputSchema: schema, EgressPolicy: policy, IdentityPolicy: identityPolicy,
+		Assignment: resolved, ModelInput: modelInput,
+		RoutingMode: route.RoutingMode, RoutingPolicyID: route.PolicyID, RoutingSelectorID: route.SelectorID,
+		RoutingCandidateSetHash: route.CandidateSetHash, RoutingCandidateHash: route.CandidateHash, RoutingDecisionReason: route.DecisionReason,
+	}, s.outboxMaxAttempts)
 }
 
 // rejectCredentialBearingModelInput is the admission boundary for durable

@@ -199,23 +199,37 @@ type PreparedInvocation struct {
 	Command                CreateInvocationCommand
 	OrganizationRevisionID int64
 	Binding                ResolvedBinding
-	RequestHash            string
-	RequiredCapabilities   []ModelCapability
-	OutputSchema           []byte
-	EgressPolicy           modelegress.ResolvedPolicy
-	IdentityPolicy         modelidentity.ResolvedPolicy
-	Assignment             modeldispatch.ResolvedAssignment
-	ModelInput             PreparedModelInput
-	// RoutingMode/RoutingSelectorID/RoutingCandidateSetHash are Dynamic
-	// Canonical Model Routing provenance (Section 10): which routing
-	// policy/selector/candidate-set produced Binding, persisted on the
-	// invocation row for audit. Never read back to re-derive or re-check
-	// the route -- Binding.Version.ProviderID/ProviderModelID, already
-	// persisted as provider_id/provider_model_id, remain the sole frozen
-	// route identity (invariant #9/#10).
+	// RequestHash is the invocation's COMPLETE materialized identity,
+	// route included (hashing.go: invocationRequestHash) -- persisted
+	// verbatim, never compared for idempotency-conflict purposes (see
+	// IdempotencyIntentHash).
+	RequestHash string
+	// IdempotencyIntentHash is the caller's pre-route-resolution logical
+	// request identity (hashing.go: idempotencyIntentHash).
+	// CreateInvocation's ON CONFLICT path compares THIS to decide
+	// replay-vs-ErrConflict; RequestHash is never used for that decision.
+	IdempotencyIntentHash string
+	RequiredCapabilities  []ModelCapability
+	OutputSchema          []byte
+	EgressPolicy          modelegress.ResolvedPolicy
+	IdentityPolicy        modelidentity.ResolvedPolicy
+	Assignment            modeldispatch.ResolvedAssignment
+	ModelInput            PreparedModelInput
+	// RoutingMode/RoutingPolicyID/RoutingSelectorID/RoutingCandidateSetHash/
+	// RoutingCandidateHash/RoutingDecisionReason are Dynamic Canonical
+	// Model Routing provenance (Section 10): which routing policy/
+	// selector/candidate-set/candidate produced Binding, and why,
+	// persisted on the invocation row and readable back through
+	// Get/List. Never used to re-derive or re-check the route --
+	// Binding.Version.ProviderID/ProviderModelID, already persisted as
+	// provider_id/provider_model_id, remain the sole frozen route
+	// identity (invariant #9/#10).
 	RoutingMode             string
+	RoutingPolicyID         string
 	RoutingSelectorID       string
 	RoutingCandidateSetHash string
+	RoutingCandidateHash    string
+	RoutingDecisionReason   string
 }
 type ClaimCommand struct {
 	InvocationID         int64

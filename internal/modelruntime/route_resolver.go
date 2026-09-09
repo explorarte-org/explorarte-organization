@@ -43,11 +43,21 @@ type RouteResolutionRequest struct {
 // downstream capability/egress/hash/persistence step is unchanged code),
 // plus the provenance InvocationService persists for audit (Section 10).
 type ResolvedRoute struct {
-	Binding          ResolvedBinding
+	Binding ResolvedBinding
+	// PolicyID is the docs/canonical/model-routing.yaml policy key this
+	// route was resolved against (empty for a route resolved with no
+	// PolicyID request, which never happens through InvocationService.Create
+	// -- kept as a field, not inferred from Binding, since a static route
+	// has no routing_policies row to read it back from).
+	PolicyID         string
 	RoutingMode      string
 	SelectorID       string
 	CandidateSetHash string
-	DecisionReason   string
+	// CandidateHash is the SPECIFIC selected candidate's hash
+	// (RoutingCandidate.CandidateHash) -- distinct from CandidateSetHash,
+	// which digests the whole pool at decision time.
+	CandidateHash  string
+	DecisionReason string
 }
 
 // RouteResolver answers ONLY "where does this already-authorized
@@ -88,6 +98,14 @@ type DefaultRouteResolver struct {
 	Store    RegistryStore
 	Capacity CapacityStateReader
 	Clock    func() time.Time
+	// SelectorLookup resolves a selector_id to its implementation.
+	// Defaults to modelrouting.LookupSelector (the closed, immutable
+	// production registry). Overridable per-instance -- never via a
+	// package-level global -- so a test can exercise "Resolve() itself
+	// distrusts a misbehaving Selector" (TestRouteResolverDeniesNonCanonicalSelectorAnswer)
+	// without mutating any shared state another test or goroutine could
+	// observe.
+	SelectorLookup func(id string) (modelrouting.Selector, bool)
 }
 
 func NewDefaultRouteResolver(store RegistryStore, capacity CapacityStateReader, clock func() time.Time) (*DefaultRouteResolver, error) {
@@ -100,7 +118,7 @@ func NewDefaultRouteResolver(store RegistryStore, capacity CapacityStateReader, 
 	if clock == nil {
 		clock = time.Now
 	}
-	return &DefaultRouteResolver{Store: store, Capacity: capacity, Clock: clock}, nil
+	return &DefaultRouteResolver{Store: store, Capacity: capacity, Clock: clock, SelectorLookup: modelrouting.LookupSelector}, nil
 }
 
 func (r *DefaultRouteResolver) Resolve(ctx context.Context, req RouteResolutionRequest) (ResolvedRoute, error) {
@@ -115,12 +133,16 @@ func (r *DefaultRouteResolver) Resolve(ctx context.Context, req RouteResolutionR
 		if err != nil {
 			return ResolvedRoute{}, err
 		}
-		return ResolvedRoute{Binding: binding, RoutingMode: RoutingModeStatic, DecisionReason: "static binding"}, nil
+		return ResolvedRoute{Binding: binding, PolicyID: req.PolicyID, RoutingMode: RoutingModeStatic, DecisionReason: "static binding"}, nil
 	}
 	if policy.RoutingMode != RoutingModePool {
 		return ResolvedRoute{}, fmt.Errorf("%w: policy %q has routing_mode %q", ErrRoutingPolicyMalformed, req.PolicyID, policy.RoutingMode)
 	}
-	selector, ok := modelrouting.Selectors[policy.SelectorID]
+	lookup := r.SelectorLookup
+	if lookup == nil {
+		lookup = modelrouting.LookupSelector
+	}
+	selector, ok := lookup(policy.SelectorID)
 	if !ok {
 		return ResolvedRoute{}, fmt.Errorf("%w: policy %q names unknown selector %q", ErrRoutingPolicyMalformed, req.PolicyID, policy.SelectorID)
 	}
@@ -181,9 +203,64 @@ func (r *DefaultRouteResolver) Resolve(ctx context.Context, req RouteResolutionR
 
 	return ResolvedRoute{
 		Binding:          binding,
+		PolicyID:         req.PolicyID,
 		RoutingMode:      RoutingModePool,
 		SelectorID:       policy.SelectorID,
 		CandidateSetHash: policy.CanonicalHash,
+		CandidateHash:    approvedCandidate.CandidateHash,
 		DecisionReason:   decision.Reason,
 	}, nil
+}
+
+// ValidateResolvedRouteAgainstCanonical independently re-derives and
+// checks a ResolvedRoute directly against the canonical registry store --
+// regardless of which RouteResolver produced it. InvocationService.Create
+// calls this unconditionally after every Resolve(), so a RouteResolver
+// installed via SetRouteResolver -- misconfigured, buggy, or actively
+// malicious -- can never make CreateInvocation see a binding this function
+// did not independently verify against routing_policies/routing_candidates/
+// role_model_bindings itself. This is the same trust posture Resolve()
+// already applies to a pool Selector's answer (never trusted without
+// checking membership first), extended to cover the RouteResolver
+// boundary itself.
+func ValidateResolvedRouteAgainstCanonical(ctx context.Context, store RegistryStore, req RouteResolutionRequest, route ResolvedRoute) error {
+	policy, ok, err := store.GetRoutingPolicy(ctx, req.OrganizationID, req.OrganizationRevisionID, req.PolicyID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		if route.RoutingMode != RoutingModeStatic {
+			return fmt.Errorf("%w: policy %q is static but resolved route claims routing_mode %q", ErrRouteNotApproved, req.PolicyID, route.RoutingMode)
+		}
+		canonical, err := store.GetBinding(ctx, req.OrganizationID, req.OrganizationRevisionID, req.SubjectRoleID)
+		if err != nil {
+			return err
+		}
+		if route.Binding.Profile.ID != canonical.Profile.ID ||
+			route.Binding.Version.ID != canonical.Version.ID ||
+			route.Binding.Version.ProviderID != canonical.Version.ProviderID ||
+			route.Binding.Version.ProviderModelID != canonical.Version.ProviderModelID {
+			return fmt.Errorf("%w: resolved route does not match the canonical static binding for role %s", ErrRouteNotApproved, req.SubjectRoleID)
+		}
+		return nil
+	}
+	if route.RoutingMode != RoutingModePool {
+		return fmt.Errorf("%w: policy %q is a pool but resolved route claims routing_mode %q", ErrRouteNotApproved, req.PolicyID, route.RoutingMode)
+	}
+	if policy.RoutingMode != RoutingModePool {
+		return fmt.Errorf("%w: policy %q has routing_mode %q", ErrRoutingPolicyMalformed, req.PolicyID, policy.RoutingMode)
+	}
+	candidates, err := store.ListRoutingCandidates(ctx, req.OrganizationID, req.OrganizationRevisionID, req.PolicyID)
+	if err != nil {
+		return err
+	}
+	for _, c := range candidates {
+		if c.ProfileID == route.Binding.Profile.ID &&
+			c.ModelProfileVersionID == route.Binding.Version.ID &&
+			c.ProviderID == route.Binding.Version.ProviderID &&
+			c.ProviderModelID == route.Binding.Version.ProviderModelID {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: resolved route provider=%s model=%s is not a materialized candidate of policy %q", ErrRouteNotApproved, route.Binding.Version.ProviderID, route.Binding.Version.ProviderModelID, req.PolicyID)
 }

@@ -27,11 +27,12 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 	// wantCount was still 68 on canonical/mistral-provider HEAD 76cc3c1 --
 	// migration 000069 (mistral_ministral8b_pricing) was registered
 	// separately by the corrective Mistral integration candidate
-	// (integration/mistral-000069-rollback-fix), and 70
-	// (dynamic_canonical_model_routing) is this branch's own addition.
-	// Both are folded together here so the sequence check reflects the
-	// tree as it actually is on this integration projection.
-	const wantCount = 70
+	// (integration/mistral-000069-rollback-fix). 70
+	// (dynamic_canonical_model_routing) and 71
+	// (routing_idempotency_intent_and_provenance) are this branch's own
+	// additions. All three are folded together here so the sequence check
+	// reflects the tree as it actually is on this integration projection.
+	const wantCount = 71
 	if len(loaded) != wantCount {
 		t.Fatalf("migration count=%d want %d", len(loaded), wantCount)
 	}
@@ -109,6 +110,7 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		68: "seed_cloudflare_workers_ai_wallet",
 		69: "mistral_ministral8b_pricing",
 		70: "dynamic_canonical_model_routing",
+		71: "routing_idempotency_intent_and_provenance",
 	}
 	byVersion := make(map[int64]string, len(loaded))
 	for _, migration := range loaded {

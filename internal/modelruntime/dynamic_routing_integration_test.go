@@ -5,26 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/modelrouting"
 )
-
-func swapSelector(id string, s modelrouting.Selector) map[string]modelrouting.Selector {
-	orig := modelrouting.Selectors
-	replaced := make(map[string]modelrouting.Selector, len(orig))
-	for k, v := range orig {
-		replaced[k] = v
-	}
-	replaced[id] = s
-	modelrouting.Selectors = replaced
-	return orig
-}
-
-func restoreSelectors(orig map[string]modelrouting.Selector) {
-	modelrouting.Selectors = orig
-}
 
 // poolFakeStore wraps the existing fakeStore (service_test.go) instead of
 // modifying it, so these new tests carry zero risk to the ~30 existing
@@ -45,6 +31,12 @@ type poolFakeStore struct {
 	candidates []RoutingCandidate
 	routes     map[string]ResolvedBinding
 
+	// mu serializes CreateInvocation's check-then-insert exactly the way
+	// Postgres' single INSERT ... ON CONFLICT statement is atomic --
+	// without it, two concurrent Create() calls could both observe "no
+	// existing row" and both insert, which the real schema's UNIQUE
+	// (organization_id, idempotency_key) constraint makes impossible.
+	mu     sync.Mutex
 	byKey  map[string]Invocation
 	nextID int64
 }
@@ -74,11 +66,21 @@ func (f *poolFakeStore) GetCandidateRoute(_ context.Context, _ string, _ int64, 
 }
 
 func (f *poolFakeStore) CreateInvocation(_ context.Context, p PreparedInvocation, _ int) (CreateInvocationResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.created = true
 	f.prepared = p
 	if existing, ok := f.byKey[p.Command.IdempotencyKey]; ok {
-		if existing.RequestHash != p.RequestHash {
-			return CreateInvocationResult{}, fmt.Errorf("%w: idempotency key reused with different request", ErrConflict)
+		// Mirrors the real postgres/invocations.go contract exactly:
+		// conflict detection compares IdempotencyIntentHash (the pre-route
+		// logical request), never RequestHash (which includes the
+		// resolved route again and can legitimately differ under capacity
+		// drift). The winning row's RequestHash is never recomputed here.
+		if existing.IdempotencyIntentHash == "" {
+			return CreateInvocationResult{}, fmt.Errorf("%w: existing invocation has no idempotency intent hash to verify against", ErrConflict)
+		}
+		if existing.IdempotencyIntentHash != p.IdempotencyIntentHash {
+			return CreateInvocationResult{}, fmt.Errorf("%w: idempotency key reused with a different logical request", ErrConflict)
 		}
 		return CreateInvocationResult{Invocation: existing, Reused: true}, nil
 	}
@@ -86,10 +88,17 @@ func (f *poolFakeStore) CreateInvocation(_ context.Context, p PreparedInvocation
 	inv := f.invocation
 	inv.ID = f.nextID
 	inv.RequestHash = p.RequestHash
+	inv.IdempotencyIntentHash = p.IdempotencyIntentHash
 	inv.ModelProfileID = p.Binding.Profile.ID
 	inv.ModelProfileVersionID = p.Binding.Version.ID
 	inv.ProviderID = p.Binding.Version.ProviderID
 	inv.ProviderModelID = p.Binding.Version.ProviderModelID
+	inv.RoutingMode = p.RoutingMode
+	inv.RoutingPolicyID = p.RoutingPolicyID
+	inv.RoutingSelectorID = p.RoutingSelectorID
+	inv.RoutingCandidateSetHash = p.RoutingCandidateSetHash
+	inv.RoutingCandidateHash = p.RoutingCandidateHash
+	inv.RoutingDecisionReason = p.RoutingDecisionReason
 	f.byKey[p.Command.IdempotencyKey] = inv
 	return CreateInvocationResult{Invocation: inv}, nil
 }
@@ -255,6 +264,25 @@ func TestCreatePoolIdempotentRetryPreservesOriginalRouteDespiteCapacityDrift(t *
 	if !t1.Reused {
 		t.Fatal("expected the store to report this as a replay (Reused=true)")
 	}
+	if t1.Invocation.RequestHash != t0.Invocation.RequestHash {
+		t.Fatalf("the winning row's RequestHash must never be recomputed on replay: T0=%s T1=%s", t0.Invocation.RequestHash, t1.Invocation.RequestHash)
+	}
+	if t1.Invocation.IdempotencyIntentHash != t0.Invocation.IdempotencyIntentHash {
+		t.Fatal("IdempotencyIntentHash must be identical between T0 and T1 -- it is what made the replay possible")
+	}
+	// Prove the premise: had this been resolved as a genuinely fresh
+	// request at T1 (mistral preferred), its RequestHash WOULD differ from
+	// T0's -- the fix works precisely because conflict detection never
+	// looks at this value, not because it happens to match by accident.
+	freshT1Route, err := mustResolver(t, store, map[string]bool{"cloudflare_workers_ai|@cf/zai-org/glm-4.7-flash": true}).Resolve(context.Background(), RouteResolutionRequest{
+		OrganizationID: "explorarte", OrganizationRevisionID: 7, SubjectRoleID: "ingenieria_ia/code-runner", PolicyID: "research.worker",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if freshT1Route.Binding.Version.ProviderID == t0.Invocation.ProviderID {
+		t.Fatal("test premise broken: T1 capacity state must actually prefer a different candidate than T0")
+	}
 }
 
 // TestCreateStaticIdempotentRetrySameAsAlways is the invariant-#16 control
@@ -306,8 +334,21 @@ func TestCreatePoolNonCanonicalCandidateDeniedBeforeCreateInvocation(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	origSelectors := swapSelector("free_capacity_v1", evilSelector{})
-	defer restoreSelectors(origSelectors)
+	// evilSelector is installed via SelectorLookup on a per-instance
+	// DefaultRouteResolver, never by mutating any package-level registry
+	// (internal/modelrouting.LookupSelector's backing map is unexported
+	// and immutable at runtime -- Closure 3).
+	evilResolver, err := NewDefaultRouteResolver(store, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evilResolver.SelectorLookup = func(id string) (modelrouting.Selector, bool) {
+		if id == "free_capacity_v1" {
+			return evilSelector{}, true
+		}
+		return modelrouting.LookupSelector(id)
+	}
+	svc.SetRouteResolver(evilResolver)
 
 	_, err = svc.Create(context.Background(), poolCommand(now, "pool-evil-1"))
 	if !errors.Is(err, ErrRouteNotApproved) {
@@ -315,5 +356,128 @@ func TestCreatePoolNonCanonicalCandidateDeniedBeforeCreateInvocation(t *testing.
 	}
 	if store.created {
 		t.Fatal("CreateInvocation must never be called when the selector's answer is not approved")
+	}
+}
+
+// TestCreateDeniesMaliciousRouteResolverBypassingMembership is Blocker 2's
+// regression test: a RouteResolver that does NOT go through
+// DefaultRouteResolver at all -- so none of Resolve()'s own internal
+// membership checks run -- and simply fabricates a ResolvedRoute naming a
+// REAL provider/model that is nevertheless not a materialized candidate of
+// this policy. InvocationService.Create must catch this independently
+// (ValidateResolvedRouteAgainstCanonical), regardless of what produced
+// ResolvedRoute.
+type membershipBypassResolver struct{}
+
+func (membershipBypassResolver) Resolve(context.Context, RouteResolutionRequest) (ResolvedRoute, error) {
+	return ResolvedRoute{
+		RoutingMode: RoutingModePool,
+		Binding: ResolvedBinding{
+			Profile:      Profile{ID: "not-a-real-candidate-profile"},
+			Version:      ProfileVersion{ID: 999999, ProviderID: "mistral", ProviderModelID: "ministral-8b-2512", Transport: TransportHTTP},
+			Capabilities: CapabilitySnapshot{Capabilities: []ModelCapability{"structured.output"}},
+			Provider:     Provider{ID: "mistral", Transport: TransportHTTP},
+		},
+		DecisionReason: "fabricated by a malicious RouteResolver",
+	}, nil
+}
+
+func TestCreateDeniesMaliciousRouteResolverBypassingMembership(t *testing.T) {
+	store, catalog, task, contexts, assignments, now := poolFixture(t)
+	svc, err := NewInvocationService("explorarte", catalog, task, contexts, store, store, store, assignments, ClockFunc(func() time.Time { return now }), 10, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.SetRouteResolver(membershipBypassResolver{})
+
+	_, err = svc.Create(context.Background(), poolCommand(now, "pool-bypass-1"))
+	if !errors.Is(err, ErrRouteNotApproved) {
+		t.Fatalf("err = %v, want ErrRouteNotApproved", err)
+	}
+	if store.created {
+		t.Fatal("CreateInvocation must never be called when a RouteResolver's answer fails canonical membership validation")
+	}
+}
+
+// TestCreatePoolSameKeyDifferentLogicalRequestConflicts: the OTHER half of
+// Section 9's contract -- a genuinely different logical request (not just
+// a different route) reusing the same idempotency key must fail closed,
+// never silently reuse or silently create a second row.
+func TestCreatePoolSameKeyDifferentLogicalRequestConflicts(t *testing.T) {
+	store, catalog, task, contexts, assignments, now := poolFixture(t)
+	svc, err := NewInvocationService("explorarte", catalog, task, contexts, store, store, store, assignments, ClockFunc(func() time.Time { return now }), 10, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "pool-distinct-logical-K"
+	first, err := svc.Create(context.Background(), poolCommand(now, key))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	different := poolCommand(now, key)
+	different.Purpose = "a completely different logical request"
+	_, err = svc.Create(context.Background(), different)
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("err = %v, want ErrConflict", err)
+	}
+	if len(store.byKey) != 1 {
+		t.Fatalf("a rejected conflicting request must never create a second row: %d rows", len(store.byKey))
+	}
+	if store.byKey[key].ID != first.Invocation.ID {
+		t.Fatal("the original invocation must be untouched by the rejected conflicting request")
+	}
+}
+
+// TestCreatePoolConcurrentCreateSameKeyOneRowLoserReused: two concurrent
+// Create() calls under the SAME idempotency key, with capacity state
+// arranged so each would independently resolve a DIFFERENT candidate if
+// it ran alone. Exactly one row must be persisted; the loser must observe
+// Reused=true with the winner's route, never its own.
+func TestCreatePoolConcurrentCreateSameKeyOneRowLoserReused(t *testing.T) {
+	store, catalog, task, contexts, assignments, now := poolFixture(t)
+	key := "pool-concurrent-K"
+
+	svcCloudflare, err := NewInvocationService("explorarte", catalog, task, contexts, store, store, store, assignments, ClockFunc(func() time.Time { return now }), 10, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svcMistral, err := NewInvocationService("explorarte", catalog, task, contexts, store, store, store, assignments, ClockFunc(func() time.Time { return now }), 10, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svcMistral.SetRouteResolver(mustResolver(t, store, map[string]bool{"cloudflare_workers_ai|@cf/zai-org/glm-4.7-flash": true}))
+
+	var wg sync.WaitGroup
+	results := make([]CreateInvocationResult, 2)
+	errs := make([]error, 2)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		results[0], errs[0] = svcCloudflare.Create(context.Background(), poolCommand(now, key))
+	}()
+	go func() {
+		defer wg.Done()
+		results[1], errs[1] = svcMistral.Create(context.Background(), poolCommand(now, key))
+	}()
+	wg.Wait()
+
+	if errs[0] != nil || errs[1] != nil {
+		t.Fatalf("both concurrent calls must succeed (one fresh, one replay): %v / %v", errs[0], errs[1])
+	}
+	if len(store.byKey) != 1 {
+		t.Fatalf("exactly one row must exist for the shared idempotency key, got %d", len(store.byKey))
+	}
+	if results[0].Invocation.ID != results[1].Invocation.ID {
+		t.Fatalf("both calls must observe the SAME invocation ID: %d vs %d", results[0].Invocation.ID, results[1].Invocation.ID)
+	}
+	if results[0].Invocation.ProviderID != results[1].Invocation.ProviderID {
+		t.Fatalf("both calls must observe the SAME route: %s vs %s", results[0].Invocation.ProviderID, results[1].Invocation.ProviderID)
+	}
+	if !results[0].Reused && !results[1].Reused {
+		t.Fatal("exactly one of the two concurrent calls must be the loser (Reused=true)")
+	}
+	if results[0].Reused && results[1].Reused {
+		t.Fatal("exactly one call must be the winner (Reused=false) that actually inserted the row")
 	}
 }
