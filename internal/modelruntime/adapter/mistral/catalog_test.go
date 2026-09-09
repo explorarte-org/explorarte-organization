@@ -18,6 +18,10 @@ type fixedClock struct{ t time.Time }
 func (c fixedClock) Now() time.Time                 { return c.t }
 func (c fixedClock) Add(d time.Duration) fixedClock { return fixedClock{t: c.t.Add(d)} }
 
+// catalogBody builds a fixture matching the real GET /v1/models response
+// shape verified live against the Mistral account (2026-09): capabilities
+// is an object keyed by capability name, and there is no flat "archived"
+// field -- "deprecation" null/absent means active.
 func catalogBody(models ...string) string {
 	var b strings.Builder
 	b.WriteString(`{"data":[`)
@@ -25,7 +29,7 @@ func catalogBody(models ...string) string {
 		if i > 0 {
 			b.WriteString(",")
 		}
-		b.WriteString(`{"id":"` + m + `","archived":false,"capabilities":["completion_chat"]}`)
+		b.WriteString(`{"id":"` + m + `","deprecation":null,"capabilities":{"completion_chat":true}}`)
 	}
 	b.WriteString(`]}`)
 	return b.String()
@@ -105,10 +109,10 @@ func newTestCatalog(t *testing.T, tr *captureTransport, now func() time.Time, tt
 // TestCatalogInitialFetchSuccess: first Snapshot hits upstream once and
 // validates the configured model.
 func TestCatalogInitialFetchSuccess(t *testing.T) {
-	tr := &captureTransport{status: 200, body: catalogBody("ministral-8b-latest", "mistral-large-latest")}
+	tr := &captureTransport{status: 200, body: catalogBody("ministral-8b-2512", "mistral-large-latest")}
 	clk := fixedClock{t: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)}
 	c := newTestCatalog(t, tr, clk.Now, DefaultCatalogTTL)
-	if err := c.ValidateModel(context.Background(), "ministral-8b-latest"); err != nil {
+	if err := c.ValidateModel(context.Background(), "ministral-8b-2512"); err != nil {
 		t.Fatalf("ValidateModel: %v", err)
 	}
 	if got := atomic.LoadInt64(&tr.calls); got != 1 {
@@ -118,11 +122,11 @@ func TestCatalogInitialFetchSuccess(t *testing.T) {
 
 // TestCatalogCacheHit: a second validation inside TTL does not hit upstream.
 func TestCatalogCacheHit(t *testing.T) {
-	tr := &captureTransport{status: 200, body: catalogBody("ministral-8b-latest")}
+	tr := &captureTransport{status: 200, body: catalogBody("ministral-8b-2512")}
 	clk := fixedClock{t: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)}
 	c := newTestCatalog(t, tr, clk.Now, DefaultCatalogTTL)
-	_ = c.ValidateModel(context.Background(), "ministral-8b-latest")
-	_ = c.ValidateModel(context.Background(), "ministral-8b-latest")
+	_ = c.ValidateModel(context.Background(), "ministral-8b-2512")
+	_ = c.ValidateModel(context.Background(), "ministral-8b-2512")
 	if got := atomic.LoadInt64(&tr.calls); got != 1 {
 		t.Fatalf("upstream calls = %d, want 1 (cache hit expected)", got)
 	}
@@ -130,13 +134,13 @@ func TestCatalogCacheHit(t *testing.T) {
 
 // TestCatalogTTLExpiryRefresh: after TTL the next call refreshes upstream.
 func TestCatalogTTLExpiryRefresh(t *testing.T) {
-	tr := &captureTransport{status: 200, body: catalogBody("ministral-8b-latest")}
+	tr := &captureTransport{status: 200, body: catalogBody("ministral-8b-2512")}
 	base := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	cur := base
 	c := newTestCatalog(t, tr, func() time.Time { return cur }, DefaultCatalogTTL)
-	_ = c.ValidateModel(context.Background(), "ministral-8b-latest")
+	_ = c.ValidateModel(context.Background(), "ministral-8b-2512")
 	cur = base.Add(DefaultCatalogTTL + time.Minute)
-	_ = c.ValidateModel(context.Background(), "ministral-8b-latest")
+	_ = c.ValidateModel(context.Background(), "ministral-8b-2512")
 	if got := atomic.LoadInt64(&tr.calls); got != 2 {
 		t.Fatalf("upstream calls = %d, want 2 (refresh after TTL)", got)
 	}
@@ -145,7 +149,7 @@ func TestCatalogTTLExpiryRefresh(t *testing.T) {
 // TestCatalogConcurrentRefresh: many concurrent first-callers produce at
 // most one upstream refresh.
 func TestCatalogConcurrentRefresh(t *testing.T) {
-	tr := &captureTransport{status: 200, body: catalogBody("ministral-8b-latest")}
+	tr := &captureTransport{status: 200, body: catalogBody("ministral-8b-2512")}
 	clk := fixedClock{t: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)}
 	c := newTestCatalog(t, tr, clk.Now, DefaultCatalogTTL)
 	const n = 16
@@ -153,7 +157,7 @@ func TestCatalogConcurrentRefresh(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func() {
 			defer func() { done <- struct{}{} }()
-			_ = c.ValidateModel(context.Background(), "ministral-8b-latest")
+			_ = c.ValidateModel(context.Background(), "ministral-8b-2512")
 		}()
 	}
 	for i := 0; i < n; i++ {
@@ -167,16 +171,16 @@ func TestCatalogConcurrentRefresh(t *testing.T) {
 // TestCatalogTransientFailureWithValidCache: upstream failure inside TTL
 // still serves the cached snapshot.
 func TestCatalogTransientFailureWithValidCache(t *testing.T) {
-	tr := &captureTransport{status: 200, body: catalogBody("ministral-8b-latest")}
+	tr := &captureTransport{status: 200, body: catalogBody("ministral-8b-2512")}
 	base := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	cur := base
 	c := newTestCatalog(t, tr, func() time.Time { return cur }, DefaultCatalogTTL)
-	if err := c.ValidateModel(context.Background(), "ministral-8b-latest"); err != nil {
+	if err := c.ValidateModel(context.Background(), "ministral-8b-2512"); err != nil {
 		t.Fatalf("first: %v", err)
 	}
 	tr.status, tr.body = 503, "unavailable"
 	cur = base.Add(time.Minute)
-	if err := c.ValidateModel(context.Background(), "ministral-8b-latest"); err != nil {
+	if err := c.ValidateModel(context.Background(), "ministral-8b-2512"); err != nil {
 		t.Fatalf("cached serve after upstream failure: %v", err)
 	}
 }
@@ -187,7 +191,7 @@ func TestCatalogTransientFailureNoCache(t *testing.T) {
 	tr := &captureTransport{status: 503, body: "unavailable"}
 	clk := fixedClock{t: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)}
 	c := newTestCatalog(t, tr, clk.Now, DefaultCatalogTTL)
-	err := c.ValidateModel(context.Background(), "ministral-8b-latest")
+	err := c.ValidateModel(context.Background(), "ministral-8b-2512")
 	if !errors.Is(err, ErrCatalogUnavailable) {
 		t.Fatalf("err = %v, want ErrCatalogUnavailable", err)
 	}
@@ -198,7 +202,7 @@ func TestCatalogUnauthorized(t *testing.T) {
 	tr := &captureTransport{status: 401, body: `{"message":"unauthorized"}`}
 	clk := fixedClock{t: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)}
 	c := newTestCatalog(t, tr, clk.Now, DefaultCatalogTTL)
-	err := c.ValidateModel(context.Background(), "ministral-8b-latest")
+	err := c.ValidateModel(context.Background(), "ministral-8b-2512")
 	if !errors.Is(err, ErrCatalogUnauthorized) {
 		t.Fatalf("err = %v, want ErrCatalogUnauthorized", err)
 	}
@@ -235,7 +239,7 @@ func TestCatalogMalformedJSON(t *testing.T) {
 	tr := &captureTransport{status: 200, body: "<html>not json</html>"}
 	clk := fixedClock{t: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)}
 	c := newTestCatalog(t, tr, clk.Now, DefaultCatalogTTL)
-	err := c.ValidateModel(context.Background(), "ministral-8b-latest")
+	err := c.ValidateModel(context.Background(), "ministral-8b-2512")
 	if !errors.Is(err, ErrCatalogMalformed) {
 		t.Fatalf("err = %v, want ErrCatalogMalformed", err)
 	}
@@ -247,7 +251,7 @@ func TestCatalogOversized(t *testing.T) {
 	tr := &captureTransport{status: 200, body: huge}
 	clk := fixedClock{t: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)}
 	c := newTestCatalog(t, tr, clk.Now, DefaultCatalogTTL)
-	err := c.ValidateModel(context.Background(), "ministral-8b-latest")
+	err := c.ValidateModel(context.Background(), "ministral-8b-2512")
 	if !errors.Is(err, ErrCatalogOversized) {
 		t.Fatalf("err = %v, want ErrCatalogOversized", err)
 	}
@@ -258,32 +262,52 @@ func TestCatalogAbsentModel(t *testing.T) {
 	tr := &captureTransport{status: 200, body: catalogBody("mistral-large-latest")}
 	clk := fixedClock{t: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)}
 	c := newTestCatalog(t, tr, clk.Now, DefaultCatalogTTL)
-	err := c.ValidateModel(context.Background(), "ministral-8b-latest")
+	err := c.ValidateModel(context.Background(), "ministral-8b-2512")
 	if !errors.Is(err, ErrModelNotInCatalog) {
 		t.Fatalf("err = %v, want ErrModelNotInCatalog", err)
 	}
 }
 
-// TestCatalogArchivedModel: an archived model is ineligible.
+// TestCatalogArchivedModel: an archived model is ineligible. "Archived"
+// here means a non-null "deprecation" -- no account-visible model has one
+// live, so this fixture's exact value is illustrative, not observed.
 func TestCatalogArchivedModel(t *testing.T) {
-	body := `{"data":[{"id":"ministral-8b-latest","archived":true,"capabilities":["completion_chat"]}]}`
+	body := `{"data":[{"id":"ministral-8b-2512","deprecation":"2026-01-01T00:00:00Z","capabilities":{"completion_chat":true}}]}`
 	tr := &captureTransport{status: 200, body: body}
 	clk := fixedClock{t: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)}
 	c := newTestCatalog(t, tr, clk.Now, DefaultCatalogTTL)
-	err := c.ValidateModel(context.Background(), "ministral-8b-latest")
+	err := c.ValidateModel(context.Background(), "ministral-8b-2512")
 	if !errors.Is(err, ErrModelArchived) {
 		t.Fatalf("err = %v, want ErrModelArchived", err)
+	}
+}
+
+// TestCatalogRealAPIShapeRegression: verbatim GET /v1/models element for
+// ministral-8b-2512, captured live from api.mistral.ai (2026-09) with a
+// real account credential. It carries the full real field set (owned_by,
+// aliases, deprecation_replacement_model, per-capability booleans other
+// than completion_chat, etc.) that an earlier, unverified version of this
+// file's wire struct could not parse -- capabilities as a JSON object
+// unmarshaled into a Go []string errors, so every real catalog fetch
+// failed with ErrCatalogMalformed. This guards against that regressing.
+func TestCatalogRealAPIShapeRegression(t *testing.T) {
+	const body = `{"data": [{"id": "ministral-8b-2512", "object": "model", "created": 1788932302, "owned_by": "mistralai", "capabilities": {"completion_chat": true, "function_calling": true, "reasoning": false, "completion_fim": false, "fine_tuning": true, "vision": true, "ocr": false, "classification": false, "moderation": false, "audio": false, "audio_transcription": false, "audio_transcription_realtime": false, "audio_speech": false, "unified_resources": false}, "name": "ministral-8b-2512", "description": "Ministral 3 (a.k.a. Tinystral) 8B Instruct.", "max_context_length": 262144, "aliases": ["ministral-8b-latest"], "deprecation": null, "deprecation_replacement_model": null, "default_model_temperature": 0.3, "billing_model_name": "ministral-8b-2512", "type": "base"}]}`
+	tr := &captureTransport{status: 200, body: body}
+	clk := fixedClock{t: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)}
+	c := newTestCatalog(t, tr, clk.Now, DefaultCatalogTTL)
+	if err := c.ValidateModel(context.Background(), "ministral-8b-2512"); err != nil {
+		t.Fatalf("ValidateModel against real API shape: %v", err)
 	}
 }
 
 // TestCatalogCompletionChatFalse: a model without completion_chat is
 // ineligible.
 func TestCatalogCompletionChatFalse(t *testing.T) {
-	body := `{"data":[{"id":"ministral-8b-latest","archived":false,"capabilities":["embedding"]}]}`
+	body := `{"data":[{"id":"ministral-8b-2512","deprecation":null,"capabilities":{"completion_chat":false}}]}`
 	tr := &captureTransport{status: 200, body: body}
 	clk := fixedClock{t: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)}
 	c := newTestCatalog(t, tr, clk.Now, DefaultCatalogTTL)
-	err := c.ValidateModel(context.Background(), "ministral-8b-latest")
+	err := c.ValidateModel(context.Background(), "ministral-8b-2512")
 	if !errors.Is(err, ErrModelCapabilityMissing) {
 		t.Fatalf("err = %v, want ErrModelCapabilityMissing", err)
 	}

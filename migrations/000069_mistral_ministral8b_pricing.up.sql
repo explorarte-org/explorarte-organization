@@ -1,7 +1,17 @@
 -- Migration 000069: canonical Standard pricing for the Research pool's
--- Mistral model, verified from Mistral's official Standard price page
--- (verified 2026-09-08): USD 0.15 per 1M input tokens and USD 0.15 per 1M
--- output tokens for ministral-8b-latest (online billing).
+-- Mistral model, verified 2026-09-09 against:
+--   1. GET https://api.mistral.ai/v1/models with a real account credential
+--      -- ministral-8b-2512 exists, deprecation=null, capabilities.
+--      completion_chat=true. ministral-8b-latest is a live alias of the
+--      SAME model (aliases: ["ministral-8b-latest"]), not a distinct id.
+--   2. https://docs.mistral.ai/inference/pricing/ (official Standard price
+--      page) -- Ministral 3 8B: USD 0.15 / 1M input, USD 0.15 / 1M output.
+--
+-- Pinned to the versioned id ministral-8b-2512, not the mutable alias: an
+-- alias can be repointed by the provider at any time without notice, which
+-- would silently drift dispatch pricing away from what CostGate reserves
+-- against. The alias remains usable for RESEARCH_MISTRAL_MODEL config
+-- convenience but the priced, canonical identity is the versioned id.
 --
 -- Unlike migration 000068 (Cloudflare), this row carries REAL pricing:
 -- Mistral is NOT a subscription provider. Every dispatch resolves this
@@ -20,8 +30,8 @@ INSERT INTO model_pricing (
     input_price_nanos_per_million, output_price_nanos_per_million,
     billing_mode, effective_at
 ) VALUES (
-    'mistral', 'ministral-8b-latest', 'standard', 0,
+    'mistral', 'ministral-8b-2512', 'standard', 0,
     150000000, 150000000,
-    'online', '2026-09-08T00:00:00Z'::timestamptz
+    'online', '2026-09-09T00:00:00Z'::timestamptz
 )
 ON CONFLICT (provider_id, provider_model_id, context_tier_name, billing_mode, effective_at) DO NOTHING;

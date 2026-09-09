@@ -65,7 +65,7 @@ func newRouterFixture(t *testing.T, allowPaid bool) *routerFixture {
 	}
 	cfg := ResearchPoolConfig{
 		CloudflareModel:         DefaultResearchCloudflareModel,
-		MistralModel:            "ministral-8b-latest",
+		MistralModel:            "ministral-8b-2512",
 		MistralCreditCeilingUSD: "10",
 		OpenRouterPool:          []string{"google/gemma-4-31b-it:free", "nvidia/nemotron-3.5-lightning:free"},
 		AllowPaid:               allowPaid,
@@ -160,7 +160,7 @@ func TestModelRouter_NoEligibleCandidate_TypedError(t *testing.T) {
 		{ProviderCloudflareWorkersAI, DefaultResearchCloudflareModel},
 		{ProviderOpenRouter, "google/gemma-4-31b-it:free"},
 		{ProviderOpenRouter, "nvidia/nemotron-3.5-lightning:free"},
-		{ProviderMistral, "ministral-8b-latest"},
+		{ProviderMistral, "ministral-8b-2512"},
 	} {
 		fx.router.DisableCandidate(candidate.provider, candidate.model, "test")
 	}
@@ -180,7 +180,7 @@ func TestModelRouter_PaidClassGatedByDefault(t *testing.T) {
 	fx.router.DisableCandidate(ProviderCloudflareWorkersAI, DefaultResearchCloudflareModel, "test")
 	fx.router.DisableCandidate(ProviderOpenRouter, "google/gemma-4-31b-it:free", "test")
 	fx.router.DisableCandidate(ProviderOpenRouter, "nvidia/nemotron-3.5-lightning:free", "test")
-	fx.router.DisableCandidate(ProviderMistral, "ministral-8b-latest", "test")
+	fx.router.DisableCandidate(ProviderMistral, "ministral-8b-2512", "test")
 
 	// Register a paid candidate directly; it must NOT be selected.
 	extra := ModelCandidate{
@@ -363,7 +363,7 @@ func TestModelRouter_MistralCreditExhausted_NoFakeReset(t *testing.T) {
 	if _, err := fx.router.Invoke(context.Background(), requestFor()); !errors.Is(err, ErrNoModelCapacity) {
 		t.Fatalf("expected typed no-capacity, got %v", err)
 	}
-	state, _ := fx.router.State(ProviderMistral, "ministral-8b-latest")
+	state, _ := fx.router.State(ProviderMistral, "ministral-8b-2512")
 	if !state.QuotaExhausted {
 		t.Fatal("mistral credit exhaustion must set quota_exhausted")
 	}
@@ -383,8 +383,8 @@ func TestModelRouter_MistralCreditExhausted_NoFakeReset(t *testing.T) {
 func TestModelRouter_MistralUpstreamResetWins(t *testing.T) {
 	fx := newRouterFixture(t, false)
 	reset := fx.clock.now.Add(72 * time.Hour) // provider reports real renewal
-	fx.router.SetResetAt(ProviderMistral, "ministral-8b-latest", reset)
-	state, _ := fx.router.State(ProviderMistral, "ministral-8b-latest")
+	fx.router.SetResetAt(ProviderMistral, "ministral-8b-2512", reset)
+	state, _ := fx.router.State(ProviderMistral, "ministral-8b-2512")
 	if state.ResetAt == nil || !state.ResetAt.Equal(reset) {
 		t.Fatal("upstream-reported reset must be recorded")
 	}
@@ -484,7 +484,7 @@ func TestModelRouter_ConcurrentInvocationsRaceSafe(t *testing.T) {
 func TestModelRouter_PoolConfigFromEnv(t *testing.T) {
 	env := map[string]string{
 		"RESEARCH_CLOUDFLARE_MODEL": "@cf/zai-org/glm-4.7-flash",
-		"RESEARCH_MISTRAL_MODEL":    "ministral-8b-latest",
+		"RESEARCH_MISTRAL_MODEL":    "ministral-8b-2512",
 		"FREE_MODEL_ALLOW_PAID":     "false",
 	}
 	cfg := LoadResearchPoolConfig(func(key string) (string, bool) {
@@ -494,7 +494,7 @@ func TestModelRouter_PoolConfigFromEnv(t *testing.T) {
 	if cfg.CloudflareModel != "@cf/zai-org/glm-4.7-flash" {
 		t.Fatalf("cloudflare model default: %q", cfg.CloudflareModel)
 	}
-	if cfg.MistralModel != "ministral-8b-latest" {
+	if cfg.MistralModel != "ministral-8b-2512" {
 		t.Fatalf("mistral model from config: %q", cfg.MistralModel)
 	}
 	if cfg.AllowPaid {
@@ -571,7 +571,7 @@ func readSourceFile(t *testing.T, name string) string {
 // the pool router without touching the scheduler.
 func TestModelRouter_WorkerWiring(t *testing.T) {
 	t.Setenv("FREE_MODEL_ROUTER_ENABLED", "true")
-	t.Setenv("RESEARCH_MISTRAL_MODEL", "ministral-8b-latest")
+	t.Setenv("RESEARCH_MISTRAL_MODEL", "ministral-8b-2512")
 	fx := newRouterFixture(t, false)
 	cfg := DefaultWorkerConfig()
 	cfg.Enabled = true
