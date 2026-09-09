@@ -15,8 +15,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
 	search "github.com/Mireuz13/explorarte-organization/internal/search"
-	"github.com/Mireuz13/explorarte-organization/migrations"
+	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 )
 
 // requireTestDatabase returns a pool or skips the test.
@@ -35,7 +36,11 @@ func requireTestDatabase(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(pool.Close)
-	if _, err := migrations.Apply(context.Background(), pool); err != nil {
+	runner, err := platformmigrations.New(pool, rootmigrations.Files)
+	if err != nil {
+		t.Fatalf("create migration runner: %v", err)
+	}
+	if _, err := runner.Up(context.Background()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	truncate := func() {

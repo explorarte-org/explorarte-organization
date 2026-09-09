@@ -301,7 +301,7 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 	if err != nil {
 		return nil, fmt.Errorf("create agent budget ledger: %w", err)
 	}
-		// Mistral local credit ceiling (barrier 2, fail-closed): provision the
+	// Mistral local credit ceiling (barrier 2, fail-closed): provision the
 	// mistral provider wallet with the EXPLICIT deployment ceiling. Missing
 	// or invalid ceiling never enables the candidate; an EXISTING wallet is
 	// never auto-raised by a config change.
@@ -319,7 +319,7 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 			}
 		}
 	}
-gate, err := costgate.New(pricingService, walletLedger, budgetLedger, cloudflare.ProviderID)
+	gate, err := costgate.New(pricingService, walletLedger, budgetLedger, cloudflare.ProviderID)
 	if err != nil {
 		return nil, fmt.Errorf("create cost/budget gate: %w", err)
 	}

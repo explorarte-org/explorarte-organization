@@ -66,10 +66,10 @@ func ProductiveLoadOptions(knownProviders []string) LoadOptions {
 			"cloudflare_workers_ai": {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
 			// Mistral is deliberately narrower: no organizational
 			// classification without an explicit owner decision.
-			"mistral":              {ClassificationPublic, ClassificationSanitized},
-			"openai_compatible":     {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
-			"openai_responses":      {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
-			"gemini":                {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
+			"mistral":           {ClassificationPublic, ClassificationSanitized},
+			"openai_compatible": {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
+			"openai_responses":  {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
+			"gemini":            {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
 			// xAI is the adversarial reviewer's provider and is deliberately
 			// narrower than every other compiled adapter: no organizational
 			// classification, so a raw organizational dump can never become a
