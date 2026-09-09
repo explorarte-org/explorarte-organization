@@ -20,6 +20,7 @@ type InvocationService struct {
 	egress                 EgressPolicyCatalog
 	identity               ExecutionIdentityPolicyCatalog
 	assignments            modeldispatch.AssignmentResolver
+	routes                 RouteResolver
 	clock                  Clock
 	outboxMaxAttempts      int
 	singleProviderTestMode bool
@@ -32,7 +33,29 @@ func NewInvocationService(organizationID string, catalog OrganizationCatalog, ta
 	if clock == nil {
 		clock = ClockFunc(time.Now)
 	}
-	return &InvocationService{organizationID: organizationID, catalog: catalog, tasks: tasks, contexts: contexts, store: store, egress: egress, identity: identity, assignments: assignments, clock: clock, outboxMaxAttempts: outboxMaxAttempts, singleProviderTestMode: singleProviderTestMode}, nil
+	// DefaultRouteResolver wraps the SAME store every existing caller
+	// already passes in: for a static policy it calls store.GetBinding
+	// exactly as this constructor always has, byte for byte. Pool
+	// resolution only activates for a policy that actually has a
+	// routing_policies row -- every one of the 14 existing call sites of
+	// NewInvocationService keeps working unmodified.
+	routes, err := NewDefaultRouteResolver(store, nil, clock.Now)
+	if err != nil {
+		return nil, err
+	}
+	return &InvocationService{organizationID: organizationID, catalog: catalog, tasks: tasks, contexts: contexts, store: store, egress: egress, identity: identity, assignments: assignments, routes: routes, clock: clock, outboxMaxAttempts: outboxMaxAttempts, singleProviderTestMode: singleProviderTestMode}, nil
+}
+
+// SetRouteResolver overrides the default RouteResolver -- a deployment
+// that wires real capacity tracking (dispatch failure signals feeding a
+// CapacityStateReader), or a test that wants a fake RouteResolver without
+// a real Postgres routing_policies row, calls this after construction.
+// Never required: the zero-configuration default is always the exact
+// static behavior this service has always had.
+func (s *InvocationService) SetRouteResolver(r RouteResolver) {
+	if r != nil {
+		s.routes = r
+	}
 }
 
 func (s *InvocationService) Create(ctx context.Context, command CreateInvocationCommand) (CreateInvocationResult, error) {
@@ -99,10 +122,16 @@ func (s *InvocationService) Create(ctx context.Context, command CreateInvocation
 	if err = rejectCredentialBearingModelInput(modelInput, schema); err != nil {
 		return CreateInvocationResult{}, err
 	}
-	binding, err := s.store.GetBinding(ctx, prepared.OrganizationID, org.RevisionID, prepared.SubjectRoleID)
+	route, err := s.routes.Resolve(ctx, RouteResolutionRequest{
+		OrganizationID:         prepared.OrganizationID,
+		OrganizationRevisionID: org.RevisionID,
+		SubjectRoleID:          prepared.SubjectRoleID,
+		PolicyID:               subject.ModelPolicy,
+	})
 	if err != nil {
 		return CreateInvocationResult{}, err
 	}
+	binding := route.Binding
 	if !capabilitiesSatisfy(binding.Capabilities.Capabilities, caps) {
 		return CreateInvocationResult{}, fmt.Errorf("%w: profile lacks requested capabilities", ErrCapabilityMismatch)
 	}
@@ -133,7 +162,7 @@ func (s *InvocationService) Create(ctx context.Context, command CreateInvocation
 	if err != nil {
 		return CreateInvocationResult{}, err
 	}
-	return s.store.CreateInvocation(ctx, PreparedInvocation{Command: prepared, OrganizationRevisionID: org.RevisionID, Binding: binding, RequestHash: hash, RequiredCapabilities: caps, OutputSchema: schema, EgressPolicy: policy, IdentityPolicy: identityPolicy, Assignment: resolved, ModelInput: modelInput}, s.outboxMaxAttempts)
+	return s.store.CreateInvocation(ctx, PreparedInvocation{Command: prepared, OrganizationRevisionID: org.RevisionID, Binding: binding, RequestHash: hash, RequiredCapabilities: caps, OutputSchema: schema, EgressPolicy: policy, IdentityPolicy: identityPolicy, Assignment: resolved, ModelInput: modelInput, RoutingMode: route.RoutingMode, RoutingSelectorID: route.SelectorID, RoutingCandidateSetHash: route.CandidateSetHash}, s.outboxMaxAttempts)
 }
 
 // rejectCredentialBearingModelInput is the admission boundary for durable

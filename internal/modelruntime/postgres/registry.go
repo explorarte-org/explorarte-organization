@@ -93,8 +93,18 @@ WHERE v.organization_id=$1
 		); err != nil {
 			return modelruntime.RegistrySyncResult{}, mapError(err)
 		}
-		if existingProviders+existingProfiles+existingVersions+existingBindings > 0 {
-			if existingProviders != len(plan.Providers) || existingProfiles != len(plan.Profiles) || existingVersions != len(plan.Versions) || existingBindings != len(plan.Bindings) {
+		var existingRoutingPolicies, existingRoutingCandidates int
+		if err := tx.QueryRow(ctx, `
+SELECT
+  (SELECT COUNT(*) FROM routing_policies WHERE organization_id=$1 AND organization_revision_id=$2),
+  (SELECT COUNT(*) FROM routing_candidates WHERE organization_id=$1 AND organization_revision_id=$2)`,
+			plan.OrganizationID, plan.OrganizationRevisionID).Scan(&existingRoutingPolicies, &existingRoutingCandidates); err != nil {
+			return modelruntime.RegistrySyncResult{}, mapError(err)
+		}
+
+		if existingProviders+existingProfiles+existingVersions+existingBindings+existingRoutingPolicies+existingRoutingCandidates > 0 {
+			if existingProviders != len(plan.Providers) || existingProfiles != len(plan.Profiles) || existingVersions != len(plan.Versions) || existingBindings != len(plan.Bindings) ||
+				existingRoutingPolicies != len(plan.RoutingPolicies) || existingRoutingCandidates != len(plan.RoutingCandidates) {
 				return modelruntime.RegistrySyncResult{}, fmt.Errorf("%w: partial model registry materialization detected", modelruntime.ErrConflict)
 			}
 			return modelruntime.RegistrySyncResult{
@@ -105,6 +115,8 @@ WHERE v.organization_id=$1
 				Profiles:               len(plan.Profiles),
 				Versions:               len(plan.Versions),
 				Bindings:               len(plan.Bindings),
+				RoutingPolicies:        len(plan.RoutingPolicies),
+				RoutingCandidates:      len(plan.RoutingCandidates),
 			}, nil
 		}
 
@@ -224,6 +236,45 @@ INSERT INTO role_model_bindings(
 			}
 		}
 
+		routingPolicies := append([]modelruntime.RoutingPolicy(nil), plan.RoutingPolicies...)
+		sort.Slice(routingPolicies, func(i, j int) bool { return routingPolicies[i].PolicyID < routingPolicies[j].PolicyID })
+		for _, rp := range routingPolicies {
+			if _, err := tx.Exec(ctx, `
+INSERT INTO routing_policies(
+    organization_id,organization_revision_id,policy_id,routing_mode,
+    selector_id,allow_paid,canonical_hash
+) VALUES($1,$2,$3,$4,NULLIF($5,''),$6,$7)`,
+				rp.OrganizationID, rp.OrganizationRevisionID, rp.PolicyID, rp.RoutingMode,
+				rp.SelectorID, rp.AllowPaid, rp.CanonicalHash,
+			); err != nil {
+				return modelruntime.RegistrySyncResult{}, mapError(err)
+			}
+		}
+
+		routingCandidates := append([]modelruntime.RoutingCandidate(nil), plan.RoutingCandidates...)
+		sort.Slice(routingCandidates, func(i, j int) bool {
+			if routingCandidates[i].PolicyID != routingCandidates[j].PolicyID {
+				return routingCandidates[i].PolicyID < routingCandidates[j].PolicyID
+			}
+			return routingCandidates[i].ProfileID < routingCandidates[j].ProfileID
+		})
+		for _, rc := range routingCandidates {
+			versionID, ok := versionIDs[rc.ProfileID]
+			if !ok {
+				return modelruntime.RegistrySyncResult{}, fmt.Errorf("%w: routing candidate profile version missing", modelruntime.ErrConflict)
+			}
+			if _, err := tx.Exec(ctx, `
+INSERT INTO routing_candidates(
+    organization_id,organization_revision_id,policy_id,provider_id,provider_model_id,
+    transport,capacity_class,priority,profile_id,model_profile_version_id,candidate_hash
+) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+				rc.OrganizationID, rc.OrganizationRevisionID, rc.PolicyID, rc.ProviderID, rc.ProviderModelID,
+				rc.Transport, rc.CapacityClass, rc.Priority, rc.ProfileID, versionID, rc.CandidateHash,
+			); err != nil {
+				return modelruntime.RegistrySyncResult{}, mapError(err)
+			}
+		}
+
 		payload, err := json.Marshal(map[string]any{
 			"canonical_hash":           plan.CanonicalHash,
 			"organization_revision_id": plan.OrganizationRevisionID,
@@ -231,6 +282,8 @@ INSERT INTO role_model_bindings(
 			"profiles":                 len(plan.Profiles),
 			"versions":                 len(plan.Versions),
 			"bindings":                 len(plan.Bindings),
+			"routing_policies":         len(plan.RoutingPolicies),
+			"routing_candidates":       len(plan.RoutingCandidates),
 		})
 		if err != nil {
 			return modelruntime.RegistrySyncResult{}, err
@@ -248,6 +301,8 @@ VALUES($1,'system','orgctl','model_registry',$2,$3::jsonb)`, modelruntime.AuditR
 			Profiles:               len(plan.Profiles),
 			Versions:               len(plan.Versions),
 			Bindings:               len(plan.Bindings),
+			RoutingPolicies:        len(plan.RoutingPolicies),
+			RoutingCandidates:      len(plan.RoutingCandidates),
 		}, nil
 	})
 }
@@ -283,6 +338,96 @@ WHERE b.organization_id=$1 AND b.organization_revision_id=$2 AND b.role_id=$3 AN
 		return out, err
 	}
 	out.Capabilities.ProfileID = out.Profile.ID
+	return out, nil
+}
+
+// GetRoutingPolicy reports whether (organizationID, revisionID, policyID)
+// is a routing_mode: pool policy. ok=false (with a nil error) is the
+// expected, non-error result for every static policy -- there is
+// deliberately no row for those.
+func (s *Store) GetRoutingPolicy(ctx context.Context, organizationID string, revisionID int64, policyID string) (modelruntime.RoutingPolicy, bool, error) {
+	var out modelruntime.RoutingPolicy
+	err := s.pool.QueryRow(ctx, `
+SELECT organization_id,organization_revision_id,policy_id,routing_mode,COALESCE(selector_id,''),allow_paid,canonical_hash
+FROM routing_policies
+WHERE organization_id=$1 AND organization_revision_id=$2 AND policy_id=$3`,
+		organizationID, revisionID, policyID).Scan(
+		&out.OrganizationID, &out.OrganizationRevisionID, &out.PolicyID, &out.RoutingMode, &out.SelectorID, &out.AllowPaid, &out.CanonicalHash,
+	)
+	if err != nil {
+		mapped := mapError(err)
+		if errors.Is(mapped, modelruntime.ErrNotFound) {
+			return modelruntime.RoutingPolicy{}, false, nil
+		}
+		return modelruntime.RoutingPolicy{}, false, mapped
+	}
+	return out, true, nil
+}
+
+// ListRoutingCandidates returns every materialized candidate for one pool
+// policy, ordered deterministically (priority, then provider|model) so
+// callers that need a stable iteration order never have to re-sort.
+func (s *Store) ListRoutingCandidates(ctx context.Context, organizationID string, revisionID int64, policyID string) ([]modelruntime.RoutingCandidate, error) {
+	rows, err := s.pool.Query(ctx, `
+SELECT organization_id,organization_revision_id,policy_id,provider_id,provider_model_id,transport,capacity_class,priority,profile_id,model_profile_version_id,candidate_hash
+FROM routing_candidates
+WHERE organization_id=$1 AND organization_revision_id=$2 AND policy_id=$3
+ORDER BY priority ASC, provider_id ASC, provider_model_id ASC`,
+		organizationID, revisionID, policyID)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	var out []modelruntime.RoutingCandidate
+	for rows.Next() {
+		var c modelruntime.RoutingCandidate
+		if err := rows.Scan(&c.OrganizationID, &c.OrganizationRevisionID, &c.PolicyID, &c.ProviderID, &c.ProviderModelID, &c.Transport, &c.CapacityClass, &c.Priority, &c.ProfileID, &c.ModelProfileVersionID, &c.CandidateHash); err != nil {
+			return nil, mapError(err)
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, mapError(err)
+	}
+	return out, nil
+}
+
+// GetCandidateRoute resolves one pool candidate's full binding by profile
+// id directly -- the pool equivalent of GetBinding, since a candidate never
+// has a role_model_bindings row of its own. revisionID scopes the lookup so
+// a stale candidate from a superseded revision can never resolve.
+func (s *Store) GetCandidateRoute(ctx context.Context, organizationID string, revisionID int64, profileID string) (modelruntime.ResolvedBinding, error) {
+	var out modelruntime.ResolvedBinding
+	var caps []byte
+	err := s.pool.QueryRow(ctx, `
+SELECT p.organization_id,p.id,p.policy_id,p.created_at,
+       v.id,v.organization_id,v.profile_id,v.version_number,v.organization_revision_id,v.canonical_document_hash,v.version_hash,v.provider_id,v.provider_model_id,v.transport,COALESCE(v.reasoning_effort,''),COALESCE(v.decision_status,''),v.adapter_status,v.dispatch_enabled,v.created_at,
+       c.id,c.organization_id,c.model_profile_version_id,c.capabilities,c.capability_hash,c.created_at,
+       pr.organization_id,pr.id,pr.transport,pr.adapter_status,pr.dispatch_enabled,pr.direct_http_forbidden,pr.canonical_hash,pr.organization_revision_id,pr.created_at
+FROM model_profiles p
+JOIN model_profile_versions v ON v.organization_id=p.organization_id AND v.profile_id=p.id
+JOIN model_capability_snapshots c ON c.model_profile_version_id=v.id
+JOIN model_providers pr ON pr.organization_id=v.organization_id AND pr.id=v.provider_id AND pr.organization_revision_id=v.organization_revision_id
+WHERE p.organization_id=$1 AND v.organization_revision_id=$2 AND p.id=$3`, organizationID, revisionID, profileID).Scan(
+		&out.Profile.OrganizationID, &out.Profile.ID, &out.Profile.PolicyID, &out.Profile.CreatedAt,
+		&out.Version.ID, &out.Version.OrganizationID, &out.Version.ProfileID, &out.Version.VersionNumber, &out.Version.OrganizationRevisionID, &out.Version.CanonicalDocumentHash, &out.Version.VersionHash, &out.Version.ProviderID, &out.Version.ProviderModelID, &out.Version.Transport, &out.Version.ReasoningEffort, &out.Version.DecisionStatus, &out.Version.AdapterStatus, &out.Version.DispatchEnabled, &out.Version.CreatedAt,
+		&out.Capabilities.ID, &out.Capabilities.OrganizationID, &out.Capabilities.ModelProfileVersionID, &caps, &out.Capabilities.CapabilityHash, &out.Capabilities.CreatedAt,
+		&out.Provider.OrganizationID, &out.Provider.ID, &out.Provider.Transport, &out.Provider.AdapterStatus, &out.Provider.DispatchEnabled, &out.Provider.DirectHTTPForbidden, &out.Provider.CanonicalHash, &out.Provider.OrganizationRevisionID, &out.Provider.CreatedAt)
+	if err != nil {
+		mapped := mapError(err)
+		if errors.Is(mapped, modelruntime.ErrNotFound) {
+			return out, modelruntime.ErrBindingNotFound
+		}
+		return out, mapped
+	}
+	if err = json.Unmarshal(caps, &out.Capabilities.Capabilities); err != nil {
+		return out, err
+	}
+	out.Capabilities.ProfileID = out.Profile.ID
+	// Binding stays zero-valued: a pool candidate has no role_model_bindings
+	// row, and nothing downstream (invocationRequestHash, CreateInvocation)
+	// reads ResolvedBinding.Binding -- only .Profile/.Version/.Capabilities/
+	// .Provider. See invocation_service.go/route_resolver.go.
 	return out, nil
 }
 
