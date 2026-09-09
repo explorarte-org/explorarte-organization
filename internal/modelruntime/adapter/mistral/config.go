@@ -20,6 +20,7 @@ package mistral
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -104,6 +105,16 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.CredentialFile) == "" || !filepath.IsAbs(filepath.Clean(c.CredentialFile)) {
 		return fmt.Errorf("mistral credential file must be an absolute path")
+	}
+	// Defense in depth: parse the FIXED endpoint and enforce HTTPS with the
+	// same endpoint.Scheme guard the other adapters use. The endpoint is
+	// host-owned, but the transport contract stays explicit.
+	endpoint, err := url.Parse(fixedChatCompletionsEndpoint)
+	if err != nil {
+		return fmt.Errorf("parse mistral endpoint: %w", err)
+	}
+	if endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
+		return fmt.Errorf("mistral endpoint must be an absolute HTTPS URL without userinfo, query, or fragment")
 	}
 	return c.openAIConfig().Validate()
 }

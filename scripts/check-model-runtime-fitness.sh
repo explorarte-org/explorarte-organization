@@ -16,7 +16,7 @@ test -f migrations/000007_create_model_runtime_gateway.down.sql || fail "migrati
 # shell execution and background model daemons remain forbidden everywhere
 # outside the retired, unlinked Alibaba CLI package, which remains only for
 # historical source compatibility and is governed by its retirement check.
-if rg -n --glob '*.go' --glob '!internal/modelruntime/adapter/openaicompat/**' --glob '!internal/modelruntime/adapter/deepseek/**' --glob '!internal/modelruntime/adapter/gemini/**' --glob '!internal/modelruntime/adapter/mimo/**' --glob '!internal/modelruntime/adapter/xai/**' --glob '!internal/modelruntime/adapter/openairesponses/**' --glob '!internal/modelruntime/adapter/cloudflare/**' '"net/http"' internal/modelruntime; then
+if rg -n --glob '*.go' --glob '!internal/modelruntime/adapter/openaicompat/**' --glob '!internal/modelruntime/adapter/deepseek/**' --glob '!internal/modelruntime/adapter/gemini/**' --glob '!internal/modelruntime/adapter/mimo/**' --glob '!internal/modelruntime/adapter/xai/**' --glob '!internal/modelruntime/adapter/openairesponses/**' --glob '!internal/modelruntime/adapter/cloudflare/** --glob '!internal/modelruntime/adapter/mistral/**'' '"net/http"' internal/modelruntime; then
   fail "network client found outside the approved openai-compatible, DeepSeek, Gemini, MiMo, xAI, or OpenAI Responses adapters"
 fi
 # *_test.go is excluded: the umask permission test legitimately uses
@@ -33,7 +33,7 @@ fi
 if find internal/modelruntime/adapter -maxdepth 1 -type f -name '*.go' ! -name '*_test.go' ! -name 'fake.go' ! -name 'fake_test.go' ! -name 'registry.go' -print | grep -q .; then
   fail "unexpected top-level provider adapter implementation found"
 fi
-if find internal/modelruntime/adapter -mindepth 1 -maxdepth 1 -type d ! -name openaicompat ! -name alibabaclaude ! -name deepseek ! -name gemini ! -name xai ! -name openairesponses ! -name cloudflare -print | grep -q .; then
+if find internal/modelruntime/adapter -mindepth 1 -maxdepth 1 -type d ! -name openaicompat ! -name alibabaclaude ! -name deepseek ! -name gemini ! -name xai ! -name openairesponses ! -name cloudflare ! -name mistral -print | grep -q .; then
   fail "unexpected real provider adapter directory found"
 fi
 

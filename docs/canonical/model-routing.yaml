@@ -53,7 +53,6 @@ policies:
     legacy_conflicts:
     - gemini/gemini-2.5-flash in prior routing revision
     - alibaba_token_plan_via_claude_code/qwen3.6-flash retired by owner
-    - alibaba_token_plan_via_claude_code/qwen3.6-flash retired by owner
   research.worker:
     provider: cloudflare_workers_ai
     model: "@cf/zai-org/glm-4.7-flash"
@@ -63,13 +62,6 @@ policies:
     legacy_conflicts:
     - deepseek/deepseek-v4-flash in prior routing revision
     - gemini/gemini-2.5-flash in prior routing revision
-  mistral.worker:
-    provider: mistral
-    model: "ministral-8b-latest"
-    transport: http_adapter
-    schedule: hourly
-    source_of_decision: owner_conversation_mistral_investigator_pending_approval
-    legacy_conflicts:
     - none in prior routing revision
 routing_invariants:
 - A role never selects its own model from request JSON.
