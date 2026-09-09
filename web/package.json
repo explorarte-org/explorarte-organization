@@ -1,0 +1,21 @@
+{
+  "name": "explorarte-command-center",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/serve.js",
+    "build": "node scripts/build.js",
+    "preview": "node scripts/serve.js --dist",
+    "test": "node --test test/*.test.js",
+    "check": "node --check src/app.js && node --check src/api.js && node --check src/data.js",
+    "demo": "node scripts/serve-demo.js",
+    "demo:live": "node scripts/serve-live.js",
+    "serve:vps": "node scripts/serve-vps.mjs",
+    "test:demo": "node test/mission-demo.browser.mjs",
+    "test:demo:live": "node test/mission-demo.live.browser.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

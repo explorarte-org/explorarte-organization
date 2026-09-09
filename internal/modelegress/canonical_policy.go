@@ -62,10 +62,11 @@ func ProductiveLoadOptions(knownProviders []string) LoadOptions {
 	return LoadOptions{
 		KnownProviders: append([]string(nil), knownProviders...),
 		ProductiveExplicitRules: map[string][]DataClassification{
-			"deepseek":          {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
-			"openai_compatible": {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
-			"openai_responses":  {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
-			"gemini":            {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
+			"deepseek":              {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
+			"cloudflare_workers_ai": {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
+			"openai_compatible":     {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
+			"openai_responses":      {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
+			"gemini":                {ClassificationPublic, ClassificationSanitized, ClassificationOrganizational},
 			// xAI is the adversarial reviewer's provider and is deliberately
 			// narrower than every other compiled adapter: no organizational
 			// classification, so a raw organizational dump can never become a
