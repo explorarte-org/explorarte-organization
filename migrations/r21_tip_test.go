@@ -29,7 +29,9 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 	// registered in this fitness test by that branch. Both 69 and 70
 	// (this branch's dynamic_canonical_model_routing) are registered here
 	// together so the sequence check reflects the tree as it actually is.
-	const wantCount = 71
+	// 72 (model_routing_capacity_state) is kernel/model-capacity-state-v1,
+	// branched from kernel/dynamic-canonical-model-routing at 71.
+	const wantCount = 72
 	if len(loaded) != wantCount {
 		t.Fatalf("migration count=%d want %d", len(loaded), wantCount)
 	}
@@ -108,6 +110,8 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		69: "mistral_ministral8b_pricing",
 		70: "dynamic_canonical_model_routing",
 		71: "routing_idempotency_intent_and_provenance",
+		// Model Capacity State V1:
+		72: "model_routing_capacity_state",
 	}
 	byVersion := make(map[int64]string, len(loaded))
 	for _, migration := range loaded {
