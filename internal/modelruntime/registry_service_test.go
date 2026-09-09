@@ -73,7 +73,7 @@ func TestSyncFlagsAProviderWithNoWalletRow(t *testing.T) {
 
 	// A funded wallet for every dispatch-enabled provider in the plan
 	// clears the flag entirely.
-	service.SetWalletChecker(fakeWalletChecker{provisioned: map[string]bool{"gemini": true, "openai_responses": true, "xai": true, "deepseek": true, "openai_compatible": true, "cloudflare_workers_ai": true}})
+	service.SetWalletChecker(fakeWalletChecker{provisioned: map[string]bool{"gemini": true, "openai_responses": true, "xai": true, "deepseek": true, "openai_compatible": true, "cloudflare_workers_ai": true, "mistral": true}})
 	result, err = service.Sync(t.Context(), true, 10)
 	if err != nil {
 		t.Fatal(err)
