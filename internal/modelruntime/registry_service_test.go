@@ -61,7 +61,7 @@ func TestSyncFlagsAProviderWithNoWalletRow(t *testing.T) {
 	// binds -- so an empty wallet checker flags every one of them, a superset
 	// of this finding's own minimum bar ("bound to at least one enabled
 	// role"), never a subset.
-	wantMissing := map[string]bool{"gemini": true, "xai": true, "deepseek": true, "openai_compatible": true, "openai_responses": true, "cloudflare_workers_ai": true}
+	wantMissing := map[string]bool{"gemini": true, "xai": true, "deepseek": true, "openai_compatible": true, "openai_responses": true, "cloudflare_workers_ai": true, "mistral": true}
 	if len(result.MissingProviderWallets) != len(wantMissing) {
 		t.Fatalf("expected %d missing providers, got %v", len(wantMissing), result.MissingProviderWallets)
 	}
