@@ -109,7 +109,7 @@ func TestCrossProviderMatrix(t *testing.T) {
 		}
 	}
 	if err := mistralAdapter.Preflight(context.Background(), modelruntime.ProviderPreflightRequest{
-		ProviderID: ProviderID, ProviderModelID: "ministral-8b-latest", Deadline: deadline,
+		ProviderID: ProviderID, ProviderModelID: "ministral-8b-2512", Deadline: deadline,
 	}); err != nil {
 		t.Fatalf("own provider must pass identity: %v", err)
 	}

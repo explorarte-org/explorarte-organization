@@ -65,7 +65,7 @@ policies:
     - none in prior routing revision
   mistral.worker:
     provider: mistral
-    model: "ministral-8b-latest"
+    model: "ministral-8b-2512"
     transport: http_adapter
     schedule: hourly
     source_of_decision: owner_conversation_mistral_investigator_pending_approval

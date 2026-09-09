@@ -21,11 +21,10 @@ import (
 )
 
 const (
-	fixedModelsEndpoint      = "https://api.mistral.ai/v1/models"
-	DefaultCatalogTTL        = 30 * time.Minute
-	maxCatalogResponseBytes  = 4 << 20
-	catalogHTTPTimeout       = 15 * time.Second
-	capabilityCompletionChat = "completion_chat"
+	fixedModelsEndpoint     = "https://api.mistral.ai/v1/models"
+	DefaultCatalogTTL       = 30 * time.Minute
+	maxCatalogResponseBytes = 4 << 20
+	catalogHTTPTimeout      = 15 * time.Second
 )
 
 var (
@@ -38,10 +37,23 @@ var (
 	ErrCatalogOversized       = errors.New("mistral catalog response oversized")
 )
 
+// CatalogEntry is the host's normalized view of one live Mistral model.
+//
+// The real GET /v1/models response (verified live against the account,
+// 2026-09) does not carry a flat "archived" boolean or a "capabilities"
+// string array -- both were assumed, not observed, by an earlier version
+// of this file. The real shape is:
+//
+//	{"id": "...", "capabilities": {"completion_chat": true, ...}, "deprecation": null, ...}
+//
+// Archived is derived from "deprecation" being present and non-null: no
+// account-visible model currently has a non-null deprecation, so its
+// concrete shape (string date vs. object) has not been observed live.
+// Presence/nullness is the only fact this code depends on.
 type CatalogEntry struct {
-	ID           string   `json:"id"`
-	Archived     bool     `json:"archived"`
-	Capabilities []string `json:"capabilities"`
+	ID             string
+	Archived       bool
+	CompletionChat bool
 }
 
 type CatalogSnapshot struct {
@@ -116,12 +128,10 @@ func (c *Catalog) ValidateModel(ctx context.Context, modelID string) error {
 	if entry.Archived {
 		return fmt.Errorf("%w: %s", ErrModelArchived, modelID)
 	}
-	for _, c := range entry.Capabilities {
-		if c == capabilityCompletionChat {
-			return nil
-		}
+	if !entry.CompletionChat {
+		return fmt.Errorf("%w: %s", ErrModelCapabilityMissing, modelID)
 	}
-	return fmt.Errorf("%w: %s", ErrModelCapabilityMissing, modelID)
+	return nil
 }
 
 // Snapshot returns the current snapshot, refreshing upstream when absent or
@@ -220,9 +230,11 @@ func (c *Catalog) fetch(ctx context.Context) (*CatalogSnapshot, error) {
 	}
 	var wire struct {
 		Data []struct {
-			ID           string   `json:"id"`
-			Archived     bool     `json:"archived"`
-			Capabilities []string `json:"capabilities"`
+			ID           string          `json:"id"`
+			Deprecation  json.RawMessage `json:"deprecation"`
+			Capabilities struct {
+				CompletionChat bool `json:"completion_chat"`
+			} `json:"capabilities"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &wire); err != nil {
@@ -234,7 +246,8 @@ func (c *Catalog) fetch(ctx context.Context) (*CatalogSnapshot, error) {
 		if m.ID == "" {
 			continue
 		}
-		snap.Models = append(snap.Models, CatalogEntry{ID: m.ID, Archived: m.Archived, Capabilities: m.Capabilities})
+		archived := len(m.Deprecation) > 0 && string(m.Deprecation) != "null"
+		snap.Models = append(snap.Models, CatalogEntry{ID: m.ID, Archived: archived, CompletionChat: m.Capabilities.CompletionChat})
 	}
 	return snap, nil
 }

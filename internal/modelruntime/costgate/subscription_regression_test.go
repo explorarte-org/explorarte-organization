@@ -157,13 +157,13 @@ func TestSubscriptionProvider_NeverPAYG(t *testing.T) {
 	}
 }
 
-// staticTierStore serves the canonical ministral-8b-latest Standard tier
+// staticTierStore serves the canonical ministral-8b-2512 Standard tier
 // ($0.15/1M in and out => 150000 nanos/1M) — official pricing, provenance
 // documented in migration 000069.
 type staticTierStore struct{}
 
 func (s *staticTierStore) ListTiers(_ context.Context, providerID, modelID string, mode modelpricing.BillingMode, _ time.Time) ([]modelpricing.PriceTier, error) {
-	if providerID != "mistral" || modelID != "ministral-8b-latest" {
+	if providerID != "mistral" || modelID != "ministral-8b-2512" {
 		return nil, nil
 	}
 	return []modelpricing.PriceTier{{
@@ -195,7 +195,7 @@ func TestMistralIsNotASubscriptionProvider(t *testing.T) {
 		t.Fatal(err)
 	}
 	reservation, err := gate.Reserve(context.Background(), modelruntime.CostReservationRequest{
-		ProviderID: "mistral", ProviderModelID: "ministral-8b-latest",
+		ProviderID: "mistral", ProviderModelID: "ministral-8b-2512",
 		InvocationID: 9, TaskID: 42, EstimatedInputTokens: 28, MaxOutputTokens: 10,
 	}, time.Now().UTC())
 	if err != nil {
