@@ -12,14 +12,25 @@ import (
 )
 
 // insertProviderOutcome persists a ProviderOutcome, including its Gate F
-// (Provider Failure Telemetry) fields. phase records which of the three
-// modelruntime.AdapterFailurePhase stages this outcome was observed at --
-// it is the caller's responsibility (see each Store method below) since it
-// follows directly from which state transition is being persisted, not from
-// anything decodable off the outcome value itself. An empty phase is stored
-// as NULL; model_provider_outcomes.provider_reached is then a generated
-// column derived 1:1 from phase <> 'before_request' (NULL phase, i.e. the
-// ordinary success path via MarkResponseReceived, is treated as reached).
+// (Provider Failure Telemetry) fields, and -- in the SAME transaction --
+// projects it onto model_routing_capacity_state (Model Capacity State V1,
+// Section 5). phase records which of the three modelruntime.AdapterFailurePhase
+// stages this outcome was observed at -- it is the caller's responsibility
+// (see each Store method below) since it follows directly from which state
+// transition is being persisted, not from anything decodable off the
+// outcome value itself. An empty phase is stored as NULL;
+// model_provider_outcomes.provider_reached is then a generated column
+// derived 1:1 from phase <> 'before_request' (NULL phase, i.e. the ordinary
+// success path via MarkResponseReceived, is treated as reached).
+//
+// The capacity-state identity (organization_id/provider_id/
+// provider_model_id) comes exclusively from model_invocations -- the
+// FROZEN route this invocation actually took -- never from request JSON or
+// from the ProviderOutcome value itself, which carries no provider/model
+// fields at all. This is why the query below is a single statement (a
+// data-modifying CTE feeding a join against model_invocations): one round
+// trip both inserts the outcome and reads back the frozen identity to
+// project against, inside the one transaction the caller already opened.
 func insertProviderOutcome(ctx context.Context, tx pgx.Tx, invocationID, attemptID int64, outcome modelruntime.ProviderOutcome, phase modelruntime.AdapterFailurePhase) error {
 	if err := outcome.Validate(); err != nil {
 		return err
@@ -32,38 +43,48 @@ func insertProviderOutcome(ctx context.Context, tx pgx.Tx, invocationID, attempt
 	if outcome.RequestDuration != nil {
 		requestDurationMS = outcome.RequestDuration.Milliseconds()
 	}
-	tag, err := tx.Exec(ctx, `
-INSERT INTO model_provider_outcomes(
-    provider_request_record_id,organization_id,invocation_id,dispatch_attempt_id,
-    outcome_classification,provider_request_id,http_status,error_class,error_code,
-    retryable,response_hash,response_schema_version,cancellation_confirmed,
-    adapter_failure_phase,finish_reason,response_content_bytes,usage_available,
-    input_tokens,output_tokens,cache_hit_tokens,cache_miss_tokens,
-    response_format,max_output_tokens,request_duration_ms,
-    json_error_class,json_error_offset,starts_with_json_object,ends_with_json_object
+	var outcomeID int64
+	var organizationID, providerID, providerModelID string
+	err := tx.QueryRow(ctx, `
+WITH inserted AS (
+    INSERT INTO model_provider_outcomes(
+        provider_request_record_id,organization_id,invocation_id,dispatch_attempt_id,
+        outcome_classification,provider_request_id,http_status,error_class,error_code,
+        retryable,response_hash,response_schema_version,cancellation_confirmed,
+        adapter_failure_phase,finish_reason,response_content_bytes,usage_available,
+        input_tokens,output_tokens,cache_hit_tokens,cache_miss_tokens,
+        response_format,max_output_tokens,request_duration_ms,
+        json_error_class,json_error_offset,starts_with_json_object,ends_with_json_object
+    )
+    SELECT r.id,r.organization_id,r.invocation_id,r.dispatch_attempt_id,
+           $3,NULLIF($4,''),$5,NULLIF($6,''),NULLIF($7,''),$8,NULLIF($9,''),$10,$11,
+           NULLIF($12,''),NULLIF($13,''),$14,$15,
+           $16,$17,$18,$19,
+           NULLIF($20,''),$21,$22,
+           NULLIF($23,''),$24,$25,$26
+    FROM model_provider_requests r
+    WHERE r.invocation_id=$1 AND r.dispatch_attempt_id=$2
+    RETURNING id
 )
-SELECT r.id,r.organization_id,r.invocation_id,r.dispatch_attempt_id,
-       $3,NULLIF($4,''),$5,NULLIF($6,''),NULLIF($7,''),$8,NULLIF($9,''),$10,$11,
-       NULLIF($12,''),NULLIF($13,''),$14,$15,
-       $16,$17,$18,$19,
-       NULLIF($20,''),$21,$22,
-       NULLIF($23,''),$24,$25,$26
-FROM model_provider_requests r
-WHERE r.invocation_id=$1 AND r.dispatch_attempt_id=$2`,
+SELECT inserted.id, i.organization_id, i.provider_id, i.provider_model_id
+FROM inserted
+JOIN model_invocations i ON i.id = $1`,
 		invocationID, attemptID, outcome.OutcomeClassification, outcome.ProviderRequestID,
 		httpStatus, outcome.ErrorClass, outcome.ErrorCode, outcome.Retryable,
 		outcome.ResponseHash, outcome.ResponseSchemaVersion, outcome.CancellationConfirmed,
 		string(phase), outcome.FinishReason, outcome.ResponseContentBytes, outcome.UsageAvailable,
 		outcome.InputTokens, outcome.OutputTokens, outcome.CacheHitTokens, outcome.CacheMissTokens,
 		outcome.ResponseFormat, outcome.MaxOutputTokens, requestDurationMS,
-		outcome.JSONErrorClass, outcome.JSONErrorOffset, outcome.StartsWithJSONObject, outcome.EndsWithJSONObject)
+		outcome.JSONErrorClass, outcome.JSONErrorOffset, outcome.StartsWithJSONObject, outcome.EndsWithJSONObject,
+	).Scan(&outcomeID, &organizationID, &providerID, &providerModelID)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return modelruntime.ErrConflict
+		}
 		return mapError(err)
 	}
-	if tag.RowsAffected() != 1 {
-		return modelruntime.ErrConflict
-	}
-	return nil
+	feedback := modelruntime.ClassifyCapacityFeedback(outcome, phase)
+	return applyCapacityFeedback(ctx, tx, organizationID, providerID, providerModelID, outcomeID, invocationID, attemptID, outcome, feedback)
 }
 
 // insertRecoveredUsage persists a Usage row for an invocation that is being
