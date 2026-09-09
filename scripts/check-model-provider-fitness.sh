@@ -17,7 +17,6 @@ for path in \
   internal/modelruntime/adapter/openaicompat/adapter.go \
   internal/modelruntime/adapter/openaicompat/config.go \
   internal/modelruntime/adapter/cloudflare/config.go \
-  internal/modelruntime/adapter/mistral/config.go \
   internal/modelruntime/provider_adapter.go \
   internal/modelruntime/provider_request.go \
   internal/secrets/token_file.go \
@@ -106,11 +105,6 @@ allowed={
  "ORG_MODEL_PROVIDER_CLOUDFLARE_REQUEST_TIMEOUT",
  "ORG_MODEL_PROVIDER_CLOUDFLARE_CIRCUIT_FAILURE_THRESHOLD",
  "ORG_MODEL_PROVIDER_CLOUDFLARE_CIRCUIT_OPEN_DURATION",
- "ORG_MODEL_PROVIDER_MISTRAL_ENABLED",
- "ORG_MODEL_PROVIDER_MISTRAL_CREDENTIAL_FILE",
- "ORG_MODEL_PROVIDER_MISTRAL_REQUEST_TIMEOUT",
- "ORG_MODEL_PROVIDER_MISTRAL_CIRCUIT_FAILURE_THRESHOLD",
- "ORG_MODEL_PROVIDER_MISTRAL_CIRCUIT_OPEN_DURATION",
  "ORG_MODEL_PROVIDER_MISTRAL_ENABLED",
  "ORG_MODEL_PROVIDER_MISTRAL_CREDENTIAL_FILE",
  "ORG_MODEL_PROVIDER_MISTRAL_REQUEST_TIMEOUT",
