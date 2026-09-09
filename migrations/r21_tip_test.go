@@ -29,10 +29,13 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 	// separately by the corrective Mistral integration candidate
 	// (integration/mistral-000069-rollback-fix). 70
 	// (dynamic_canonical_model_routing) and 71
-	// (routing_idempotency_intent_and_provenance) are this branch's own
-	// additions. All three are folded together here so the sequence check
-	// reflects the tree as it actually is on this integration projection.
-	const wantCount = 71
+	// (routing_idempotency_intent_and_provenance) are kernel/dynamic-
+	// canonical-model-routing's own additions. 72
+	// (model_routing_capacity_state) is kernel/model-capacity-state-v1,
+	// branched from it at 71. All four are folded together here so the
+	// sequence check reflects the tree as it actually is on this
+	// integration projection.
+	const wantCount = 72
 	if len(loaded) != wantCount {
 		t.Fatalf("migration count=%d want %d", len(loaded), wantCount)
 	}
@@ -111,6 +114,8 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		69: "mistral_ministral8b_pricing",
 		70: "dynamic_canonical_model_routing",
 		71: "routing_idempotency_intent_and_provenance",
+		// Model Capacity State V1:
+		72: "model_routing_capacity_state",
 	}
 	byVersion := make(map[int64]string, len(loaded))
 	for _, migration := range loaded {
