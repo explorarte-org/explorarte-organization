@@ -302,14 +302,41 @@ func (s *DispatchService) Dispatch(ctx context.Context, invocationID int64) (Dis
 		return failBeforeSend("dispatcher_assignment_drift", ErrAssignmentRevisionDrift, AuditInvocationFailed)
 	}
 
-	binding, err := s.store.GetBinding(ctx, invocation.OrganizationID, invocation.OrganizationRevisionID, invocation.SubjectRoleID)
+	// A pool-routed invocation (Dynamic Canonical Model Routing,
+	// RoutingMode==pool) has no role_model_bindings row at all -- its
+	// candidate was resolved and frozen onto the invocation by
+	// RouteResolver at Create() time (Section 10 provenance) and never
+	// lives in role_model_bindings, which GetBinding queries by role_id.
+	// Re-derive the SAME real, FK-checked binding a different way instead:
+	// GetCandidateRoute resolves it by the invocation's own (already
+	// materialized) ModelProfileID, the pool equivalent of GetBinding.
+	var binding ResolvedBinding
+	if invocation.RoutingMode == RoutingModePool {
+		binding, err = s.store.GetCandidateRoute(ctx, invocation.OrganizationID, invocation.OrganizationRevisionID, invocation.ModelProfileID)
+	} else {
+		binding, err = s.store.GetBinding(ctx, invocation.OrganizationID, invocation.OrganizationRevisionID, invocation.SubjectRoleID)
+	}
 	if err != nil {
 		return failBeforeSend("binding_unavailable", err, AuditInvocationFailed)
 	}
 	if binding.Version.ID != invocation.ModelProfileVersionID || binding.Profile.ID != invocation.ModelProfileID || binding.Version.ProviderID != invocation.ProviderID || binding.Version.ProviderModelID != invocation.ProviderModelID {
 		return failBeforeSend("binding_drift", ErrBindingNotFound, AuditInvocationFailed)
 	}
-	if !binding.Binding.Active || !capabilitiesSatisfy(binding.Capabilities.Capabilities, invocation.RequiredCapabilities) {
+	// binding.Binding (a role_model_bindings row) stays zero-valued for a
+	// pool route -- GetCandidateRoute never populates it (see its own doc
+	// comment: nothing at Create() time reads it). A pool candidate has no
+	// independent active/inactive toggle the way a static role binding
+	// does; its liveness is that it is still a materialized member of
+	// routing_candidates for this exact policy/revision, which the
+	// binding-drift check just above (and, before this invocation ever
+	// existed, ValidateResolvedRouteAgainstCanonical at Create() time)
+	// already re-verifies independently. So Active is implicitly true here
+	// -- never read off the zero-valued binding.Binding for a pool route.
+	bindingActive := binding.Binding.Active
+	if invocation.RoutingMode == RoutingModePool {
+		bindingActive = true
+	}
+	if !bindingActive || !capabilitiesSatisfy(binding.Capabilities.Capabilities, invocation.RequiredCapabilities) {
 		return failBeforeSend("capability_mismatch", ErrCapabilityMismatch, AuditInvocationFailed)
 	}
 	if invocation.ModelEgressPolicyVersionID == nil || invocation.ModelEgressPolicyHash == "" {
