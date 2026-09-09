@@ -1612,7 +1612,17 @@ func resetModelSchema(t *testing.T, ctx context.Context, store *platformpostgres
 	if err := testdbguard.RequireDestructive(ctx, os.Getenv("ORG_TEST_DATABASE_URL"), store.Pool()); err != nil {
 		t.Fatalf("refusing destructive TRUNCATE: %v", err)
 	}
-	_, err := store.Pool().Exec(ctx, `TRUNCATE model_provider_outcomes,model_provider_requests,model_egress_evaluations,model_invocation_usage,model_invocation_results,model_dispatch_attempts,model_invocations,model_egress_revision_bindings,model_egress_rules,model_egress_policy_versions,routing_candidates,routing_policies,role_model_bindings,model_capability_snapshots,model_profile_versions,model_profiles,model_providers,context_segments,context_snapshots,authorization_uses,authorization_decisions,authorization_requests,staging_events,staging_reviews,staging_promotions,staging_checks,staging_workspace_artifacts,staging_artifacts,staging_workspaces,outbox_events,task_dead_letters,task_events,task_leases,task_attempts,task_evidence,task_requirements,task_dependencies,tasks,organization_reporting_lines,organization_registry_revision_documents,organization_roles,organizational_units,organizations,organization_registry_revisions,audit_events RESTART IDENTITY CASCADE`)
+	// model_routing_capacity_state (migration 000072) has no foreign key to
+	// or from anything else in this list -- deliberately, see the
+	// migration's own doc comment -- so it is safe anywhere here. It MUST
+	// be included: it is keyed by (organization_id, provider_id,
+	// provider_model_id), not by any revision-scoped id this TRUNCATE
+	// already clears, so a test that drives real cooldown/quota_exhausted
+	// state for test.fake/pool-candidate-a|b (e.g.
+	// capacity_routing_e2e_test.go) would otherwise leak that state into
+	// every later test in this same database that reuses the same
+	// provider/model identity.
+	_, err := store.Pool().Exec(ctx, `TRUNCATE model_provider_outcomes,model_provider_requests,model_egress_evaluations,model_invocation_usage,model_invocation_results,model_dispatch_attempts,model_invocations,model_routing_capacity_state,model_egress_revision_bindings,model_egress_rules,model_egress_policy_versions,routing_candidates,routing_policies,role_model_bindings,model_capability_snapshots,model_profile_versions,model_profiles,model_providers,context_segments,context_snapshots,authorization_uses,authorization_decisions,authorization_requests,staging_events,staging_reviews,staging_promotions,staging_checks,staging_workspace_artifacts,staging_artifacts,staging_workspaces,outbox_events,task_dead_letters,task_events,task_leases,task_attempts,task_evidence,task_requirements,task_dependencies,tasks,organization_reporting_lines,organization_registry_revision_documents,organization_roles,organizational_units,organizations,organization_registry_revisions,audit_events RESTART IDENTITY CASCADE`)
 	if err != nil {
 		t.Fatal(err)
 	}

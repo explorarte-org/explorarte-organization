@@ -39,7 +39,22 @@ func NewInvocationService(organizationID string, catalog OrganizationCatalog, ta
 	// resolution only activates for a policy that actually has a
 	// routing_policies row -- every one of the 14 existing call sites of
 	// NewInvocationService keeps working unmodified.
-	routes, err := NewDefaultRouteResolver(store, nil, clock.Now)
+	//
+	// Capability detection, not a required constructor parameter: a store
+	// that also implements CapacityStateReader (Model Capacity State V1 --
+	// postgres.Store does, backed by model_routing_capacity_state) is used
+	// automatically for real durable capacity tracking. Any store that
+	// does not (every fake/in-memory Store the test suite uses, and any
+	// future Store implementation with no capacity projection of its own)
+	// leaves capacity nil, and NewDefaultRouteResolver's own nil-check
+	// falls back to AlwaysAvailableCapacityState -- unchanged,
+	// zero-configuration, every-candidate-eligible behavior. No existing
+	// fake Store needed to change for this.
+	var capacity CapacityStateReader
+	if reader, ok := store.(CapacityStateReader); ok {
+		capacity = reader
+	}
+	routes, err := NewDefaultRouteResolver(store, capacity, clock.Now)
 	if err != nil {
 		return nil, err
 	}
