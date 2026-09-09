@@ -51,10 +51,10 @@ func (f *fakeRoutingStore) GetCandidateRoute(_ context.Context, _ string, _ int6
 	return b, nil
 }
 
-func poolBinding(provider, model, profileID string) ResolvedBinding {
+func poolBinding(provider, model, profileID string, versionID int64) ResolvedBinding {
 	return ResolvedBinding{
 		Profile:      Profile{ID: profileID, PolicyID: profileID},
-		Version:      ProfileVersion{ID: 100, ProfileID: profileID, ProviderID: provider, ProviderModelID: model, Transport: TransportHTTP, AdapterStatus: AdapterAvailable, DispatchEnabled: true},
+		Version:      ProfileVersion{ID: versionID, ProfileID: profileID, ProviderID: provider, ProviderModelID: model, Transport: TransportHTTP, AdapterStatus: AdapterAvailable, DispatchEnabled: true},
 		Capabilities: CapabilitySnapshot{Capabilities: []ModelCapability{"structured.output"}},
 		Provider:     Provider{ID: provider, Transport: TransportHTTP, AdapterStatus: AdapterAvailable, DispatchEnabled: true},
 	}
@@ -63,12 +63,12 @@ func poolBinding(provider, model, profileID string) ResolvedBinding {
 func twoCandidatePool() (RoutingPolicy, []RoutingCandidate, map[string]ResolvedBinding) {
 	policy := RoutingPolicy{PolicyID: "research.worker", RoutingMode: RoutingModePool, SelectorID: "free_capacity_v1", AllowPaid: false, CanonicalHash: "poolhash"}
 	candidates := []RoutingCandidate{
-		{PolicyID: "research.worker", ProviderID: "cloudflare_workers_ai", ProviderModelID: "@cf/zai-org/glm-4.7-flash", Transport: TransportHTTP, CapacityClass: "free_daily", Priority: 10, ProfileID: "research.worker~pool~0", ModelProfileVersionID: 100},
-		{PolicyID: "research.worker", ProviderID: "mistral", ProviderModelID: "ministral-8b-2512", Transport: TransportHTTP, CapacityClass: "credit_monthly", Priority: 20, ProfileID: "research.worker~pool~1", ModelProfileVersionID: 101},
+		{PolicyID: "research.worker", ProviderID: "cloudflare_workers_ai", ProviderModelID: "@cf/zai-org/glm-4.7-flash", Transport: TransportHTTP, CapacityClass: "free_daily", Priority: 10, ProfileID: "research.worker~pool~0", ModelProfileVersionID: 100, CandidateHash: "cand-cloudflare"},
+		{PolicyID: "research.worker", ProviderID: "mistral", ProviderModelID: "ministral-8b-2512", Transport: TransportHTTP, CapacityClass: "credit_monthly", Priority: 20, ProfileID: "research.worker~pool~1", ModelProfileVersionID: 101, CandidateHash: "cand-mistral"},
 	}
 	routes := map[string]ResolvedBinding{
-		"research.worker~pool~0": poolBinding("cloudflare_workers_ai", "@cf/zai-org/glm-4.7-flash", "research.worker~pool~0"),
-		"research.worker~pool~1": poolBinding("mistral", "ministral-8b-2512", "research.worker~pool~1"),
+		"research.worker~pool~0": poolBinding("cloudflare_workers_ai", "@cf/zai-org/glm-4.7-flash", "research.worker~pool~0", 100),
+		"research.worker~pool~1": poolBinding("mistral", "ministral-8b-2512", "research.worker~pool~1", 101),
 	}
 	return policy, candidates, routes
 }
@@ -78,7 +78,7 @@ func twoCandidatePool() (RoutingPolicy, []RoutingCandidate, map[string]ResolvedB
 // feature existed. Answers question A/D: no dynamic machinery is even
 // consulted for a static role.
 func TestRouteResolverStaticPassthrough(t *testing.T) {
-	binding := poolBinding("test.fake", "v1", "worker-default")
+	binding := poolBinding("test.fake", "v1", "worker-default", 9)
 	store := &fakeRoutingStore{staticBinding: binding}
 	resolver, err := NewDefaultRouteResolver(store, nil, nil)
 	if err != nil {
@@ -151,9 +151,16 @@ func TestRouteResolverDeniesNonCanonicalSelectorAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	origSelectors := modelrouting.Selectors
-	modelrouting.Selectors = map[string]modelrouting.Selector{"evil_selector": evilSelector{}}
-	defer func() { modelrouting.Selectors = origSelectors }()
+	// evilSelector is installed via SelectorLookup on this ONE resolver
+	// instance -- internal/modelrouting's production registry is
+	// unexported and immutable at runtime (Closure 3), so no test mutates
+	// shared state.
+	resolver.SelectorLookup = func(id string) (modelrouting.Selector, bool) {
+		if id == "evil_selector" {
+			return evilSelector{}, true
+		}
+		return modelrouting.LookupSelector(id)
+	}
 
 	_, err = resolver.Resolve(context.Background(), RouteResolutionRequest{OrganizationID: "explorarte", OrganizationRevisionID: 7, SubjectRoleID: "investigacion/research_worker_hourly", PolicyID: "research.worker"})
 	if !errors.Is(err, ErrRouteNotApproved) {
@@ -212,7 +219,7 @@ func TestRouteResolverNoMaterializedCandidatesFailsClosed(t *testing.T) {
 func TestRouteResolverAllowPaidFalseDeniesPaidOnlyPool(t *testing.T) {
 	policy := RoutingPolicy{PolicyID: "research.worker", RoutingMode: RoutingModePool, SelectorID: "free_capacity_v1", AllowPaid: false}
 	candidates := []RoutingCandidate{{PolicyID: "research.worker", ProviderID: "openai_compatible", ProviderModelID: "gpt-5", Transport: TransportHTTP, CapacityClass: "paid", Priority: 1, ProfileID: "research.worker~pool~0", ModelProfileVersionID: 100}}
-	routes := map[string]ResolvedBinding{"research.worker~pool~0": poolBinding("openai_compatible", "gpt-5", "research.worker~pool~0")}
+	routes := map[string]ResolvedBinding{"research.worker~pool~0": poolBinding("openai_compatible", "gpt-5", "research.worker~pool~0", 100)}
 	store := &fakeRoutingStore{policies: map[string]RoutingPolicy{"research.worker": policy}, candidates: map[string][]RoutingCandidate{"research.worker": candidates}, routes: routes}
 	resolver, err := NewDefaultRouteResolver(store, nil, nil)
 	if err != nil {
@@ -221,5 +228,51 @@ func TestRouteResolverAllowPaidFalseDeniesPaidOnlyPool(t *testing.T) {
 	_, err = resolver.Resolve(context.Background(), RouteResolutionRequest{OrganizationID: "explorarte", OrganizationRevisionID: 7, SubjectRoleID: "investigacion/research_worker_hourly", PolicyID: "research.worker"})
 	if !errors.Is(err, modelrouting.ErrNoCapacity) {
 		t.Fatalf("err = %v, want modelrouting.ErrNoCapacity", err)
+	}
+}
+
+// Direct unit tests of ValidateResolvedRouteAgainstCanonical itself
+// (Blocker 2: "testear directamente el validator de route membership"),
+// independent of any RouteResolver implementation.
+
+func TestValidateResolvedRouteAgainstCanonicalAcceptsMatchingStaticRoute(t *testing.T) {
+	binding := poolBinding("test.fake", "v1", "worker-default", 9)
+	store := &fakeRoutingStore{staticBinding: binding}
+	req := RouteResolutionRequest{OrganizationID: "explorarte", OrganizationRevisionID: 7, SubjectRoleID: "ingenieria_ia/arquitecto_software", PolicyID: "department.worker"}
+	route := ResolvedRoute{Binding: binding, RoutingMode: RoutingModeStatic}
+	if err := ValidateResolvedRouteAgainstCanonical(context.Background(), store, req, route); err != nil {
+		t.Fatalf("expected the canonical static binding to validate, got: %v", err)
+	}
+}
+
+func TestValidateResolvedRouteAgainstCanonicalRejectsMismatchedStaticRoute(t *testing.T) {
+	canonical := poolBinding("test.fake", "v1", "worker-default", 9)
+	store := &fakeRoutingStore{staticBinding: canonical}
+	req := RouteResolutionRequest{OrganizationID: "explorarte", OrganizationRevisionID: 7, SubjectRoleID: "ingenieria_ia/arquitecto_software", PolicyID: "department.worker"}
+	forged := poolBinding("evil_provider", "invented-model", "worker-default", 9)
+	route := ResolvedRoute{Binding: forged, RoutingMode: RoutingModeStatic}
+	if err := ValidateResolvedRouteAgainstCanonical(context.Background(), store, req, route); !errors.Is(err, ErrRouteNotApproved) {
+		t.Fatalf("err = %v, want ErrRouteNotApproved", err)
+	}
+}
+
+func TestValidateResolvedRouteAgainstCanonicalAcceptsMatchingPoolCandidate(t *testing.T) {
+	policy, candidates, routes := twoCandidatePool()
+	store := &fakeRoutingStore{policies: map[string]RoutingPolicy{"research.worker": policy}, candidates: map[string][]RoutingCandidate{"research.worker": candidates}, routes: routes}
+	req := RouteResolutionRequest{OrganizationID: "explorarte", OrganizationRevisionID: 7, SubjectRoleID: "investigacion/research_worker_hourly", PolicyID: "research.worker"}
+	route := ResolvedRoute{Binding: routes["research.worker~pool~1"], RoutingMode: RoutingModePool}
+	if err := ValidateResolvedRouteAgainstCanonical(context.Background(), store, req, route); err != nil {
+		t.Fatalf("expected the real mistral candidate to validate, got: %v", err)
+	}
+}
+
+func TestValidateResolvedRouteAgainstCanonicalRejectsNonMemberPoolRoute(t *testing.T) {
+	policy, candidates, routes := twoCandidatePool()
+	store := &fakeRoutingStore{policies: map[string]RoutingPolicy{"research.worker": policy}, candidates: map[string][]RoutingCandidate{"research.worker": candidates}, routes: routes}
+	req := RouteResolutionRequest{OrganizationID: "explorarte", OrganizationRevisionID: 7, SubjectRoleID: "investigacion/research_worker_hourly", PolicyID: "research.worker"}
+	forged := poolBinding("mistral", "ministral-8b-2512", "not-a-real-candidate-profile", 999)
+	route := ResolvedRoute{Binding: forged, RoutingMode: RoutingModePool}
+	if err := ValidateResolvedRouteAgainstCanonical(context.Background(), store, req, route); !errors.Is(err, ErrRouteNotApproved) {
+		t.Fatalf("err = %v, want ErrRouteNotApproved", err)
 	}
 }

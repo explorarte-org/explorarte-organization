@@ -209,15 +209,36 @@ type Invocation struct {
 	ThinkingMode                     ThinkingMode      `json:"thinking_mode"`
 	IdempotencyKey                   string            `json:"idempotency_key"`
 	RequestHash                      string            `json:"request_hash"`
-	Status                           InvocationStatus  `json:"status"`
-	ErrorCode                        string            `json:"error_code,omitempty"`
-	CancelRequestedAt                *time.Time        `json:"cancel_requested_at,omitempty"`
-	Deadline                         time.Time         `json:"deadline"`
-	CorrelationID                    string            `json:"correlation_id,omitempty"`
-	CausationID                      string            `json:"causation_id,omitempty"`
-	CreatedAt                        time.Time         `json:"created_at"`
-	UpdatedAt                        time.Time         `json:"updated_at"`
-	TerminalAt                       *time.Time        `json:"terminal_at,omitempty"`
+	// IdempotencyIntentHash is the caller's pre-route-resolution logical
+	// request identity (hashing.go: idempotencyIntentHash) -- what
+	// CreateInvocation's ON CONFLICT path actually compares to decide
+	// replay vs. ErrConflict. Empty for a row persisted before migration
+	// 000071 (never backfilled -- see that migration's own comment).
+	IdempotencyIntentHash string `json:"idempotency_intent_hash,omitempty"`
+	// RoutingMode/RoutingPolicyID/RoutingSelectorID/RoutingCandidateSetHash/
+	// RoutingCandidateHash/RoutingDecisionReason are Dynamic Canonical
+	// Model Routing provenance (migrations 000070/000071): which routing
+	// policy/selector/candidate-set/candidate produced ProviderID/
+	// ProviderModelID/ModelProfileVersionID above, and why. All empty for
+	// a static route or a row from before these columns existed.
+	// ProviderID/ProviderModelID/ModelProfileVersionID remain the sole
+	// frozen execution identity -- these fields are provenance, never a
+	// second source of truth for what was actually dispatched.
+	RoutingMode             string           `json:"routing_mode,omitempty"`
+	RoutingPolicyID         string           `json:"routing_policy_id,omitempty"`
+	RoutingSelectorID       string           `json:"routing_selector_id,omitempty"`
+	RoutingCandidateSetHash string           `json:"routing_candidate_set_hash,omitempty"`
+	RoutingCandidateHash    string           `json:"routing_candidate_hash,omitempty"`
+	RoutingDecisionReason   string           `json:"routing_decision_reason,omitempty"`
+	Status                  InvocationStatus `json:"status"`
+	ErrorCode               string           `json:"error_code,omitempty"`
+	CancelRequestedAt       *time.Time       `json:"cancel_requested_at,omitempty"`
+	Deadline                time.Time        `json:"deadline"`
+	CorrelationID           string           `json:"correlation_id,omitempty"`
+	CausationID             string           `json:"causation_id,omitempty"`
+	CreatedAt               time.Time        `json:"created_at"`
+	UpdatedAt               time.Time        `json:"updated_at"`
+	TerminalAt              *time.Time       `json:"terminal_at,omitempty"`
 }
 
 type DispatchAttempt struct {

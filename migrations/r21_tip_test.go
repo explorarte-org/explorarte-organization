@@ -29,7 +29,7 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 	// registered in this fitness test by that branch. Both 69 and 70
 	// (this branch's dynamic_canonical_model_routing) are registered here
 	// together so the sequence check reflects the tree as it actually is.
-	const wantCount = 70
+	const wantCount = 71
 	if len(loaded) != wantCount {
 		t.Fatalf("migration count=%d want %d", len(loaded), wantCount)
 	}
@@ -107,6 +107,7 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		68: "seed_cloudflare_workers_ai_wallet",
 		69: "mistral_ministral8b_pricing",
 		70: "dynamic_canonical_model_routing",
+		71: "routing_idempotency_intent_and_provenance",
 	}
 	byVersion := make(map[int64]string, len(loaded))
 	for _, migration := range loaded {

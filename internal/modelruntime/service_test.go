@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -61,7 +62,12 @@ type fakeContextReader struct {
 	rendered      []byte
 	validationErr error
 	renderErr     error
-	renderCalls   int
+	// mu guards renderCalls -- exercised concurrently for the first time
+	// by the Dynamic Canonical Model Routing concurrency tests
+	// (dynamic_routing_integration_test.go), which legitimately run
+	// multiple Create() calls against one shared fixture at once.
+	mu          sync.Mutex
+	renderCalls int
 }
 
 func (f *fakeContextReader) GetContextSnapshot(context.Context, int64) (ContextSnapshotRef, error) {
@@ -71,7 +77,9 @@ func (f *fakeContextReader) ValidateContextSnapshot(context.Context, int64) erro
 	return f.validationErr
 }
 func (f *fakeContextReader) RenderContextSnapshot(context.Context, int64) ([]byte, error) {
+	f.mu.Lock()
 	f.renderCalls++
+	f.mu.Unlock()
 	if f.renderErr != nil {
 		return nil, f.renderErr
 	}

@@ -17,7 +17,7 @@ func (s *Store) CreateInvocation(ctx context.Context, p modelruntime.PreparedInv
 		if len(p.OutputSchema) > 0 {
 			outputSchema = string(p.OutputSchema)
 		}
-		row := tx.QueryRow(ctx, `INSERT INTO model_invocations(organization_id,organization_revision_id,task_id,attempt_id,dispatch_actor_role_id,subject_role_id,dispatcher_assignment_id,execution_principal_id,context_snapshot_id,purpose,model_profile_id,model_profile_version_id,provider_id,provider_model_id,model_egress_policy_version_id,model_egress_policy_hash,execution_identity_policy_version_id,execution_identity_policy_hash,required_capabilities,output_mode,output_schema,max_output_tokens,temperature,thinking_mode,idempotency_key,request_hash,status,deadline,correlation_id,causation_id,routing_mode,routing_selector_id,routing_candidate_set_hash) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19::jsonb,$20,$21::jsonb,$22,$23,$24,$25,$26,'requested',$27,NULLIF($28,''),NULLIF($29,''),NULLIF($30,''),NULLIF($31,''),NULLIF($32,'')) ON CONFLICT(organization_id,idempotency_key) DO NOTHING RETURNING `+invocationColumns, p.Command.OrganizationID, p.OrganizationRevisionID, p.Command.TaskID, p.Command.AttemptID, p.Assignment.Principal.DispatchActorRoleID, p.Command.SubjectRoleID, p.Assignment.Assignment.ID, p.Assignment.Principal.ID, p.Command.ContextSnapshotID, p.Command.Purpose, p.Binding.Profile.ID, p.Binding.Version.ID, p.Binding.Version.ProviderID, p.Binding.Version.ProviderModelID, p.EgressPolicy.Version.ID, p.EgressPolicy.CanonicalHash, p.IdentityPolicy.Version.ID, p.IdentityPolicy.Version.CanonicalHash, caps, p.Command.OutputMode, outputSchema, p.Command.MaxOutputTokens, p.Command.Temperature, p.Command.ThinkingMode, p.Command.IdempotencyKey, p.RequestHash, p.Command.Deadline, p.Command.CorrelationID, p.Command.CausationID, p.RoutingMode, p.RoutingSelectorID, p.RoutingCandidateSetHash)
+		row := tx.QueryRow(ctx, `INSERT INTO model_invocations(organization_id,organization_revision_id,task_id,attempt_id,dispatch_actor_role_id,subject_role_id,dispatcher_assignment_id,execution_principal_id,context_snapshot_id,purpose,model_profile_id,model_profile_version_id,provider_id,provider_model_id,model_egress_policy_version_id,model_egress_policy_hash,execution_identity_policy_version_id,execution_identity_policy_hash,required_capabilities,output_mode,output_schema,max_output_tokens,temperature,thinking_mode,idempotency_key,request_hash,status,deadline,correlation_id,causation_id,routing_mode,routing_selector_id,routing_candidate_set_hash,idempotency_intent_hash,routing_policy_id,routing_candidate_hash,routing_decision_reason) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19::jsonb,$20,$21::jsonb,$22,$23,$24,$25,$26,'requested',$27,NULLIF($28,''),NULLIF($29,''),NULLIF($30,''),NULLIF($31,''),NULLIF($32,''),NULLIF($33,''),NULLIF($34,''),NULLIF($35,''),NULLIF($36,'')) ON CONFLICT(organization_id,idempotency_key) DO NOTHING RETURNING `+invocationColumns, p.Command.OrganizationID, p.OrganizationRevisionID, p.Command.TaskID, p.Command.AttemptID, p.Assignment.Principal.DispatchActorRoleID, p.Command.SubjectRoleID, p.Assignment.Assignment.ID, p.Assignment.Principal.ID, p.Command.ContextSnapshotID, p.Command.Purpose, p.Binding.Profile.ID, p.Binding.Version.ID, p.Binding.Version.ProviderID, p.Binding.Version.ProviderModelID, p.EgressPolicy.Version.ID, p.EgressPolicy.CanonicalHash, p.IdentityPolicy.Version.ID, p.IdentityPolicy.Version.CanonicalHash, caps, p.Command.OutputMode, outputSchema, p.Command.MaxOutputTokens, p.Command.Temperature, p.Command.ThinkingMode, p.Command.IdempotencyKey, p.RequestHash, p.Command.Deadline, p.Command.CorrelationID, p.Command.CausationID, p.RoutingMode, p.RoutingSelectorID, p.RoutingCandidateSetHash, p.IdempotencyIntentHash, p.RoutingPolicyID, p.RoutingCandidateHash, p.RoutingDecisionReason)
 		inv, err := scanInvocation(row)
 		if err == nil {
 			if err = insertModelInput(ctx, tx, inv.ID, p.ModelInput); err != nil {
@@ -35,8 +35,23 @@ func (s *Store) CreateInvocation(ctx context.Context, p modelruntime.PreparedInv
 		if err != nil {
 			return modelruntime.CreateInvocationResult{}, err
 		}
-		if inv.RequestHash != p.RequestHash {
-			return modelruntime.CreateInvocationResult{}, fmt.Errorf("%w: idempotency key reused with different request", modelruntime.ErrConflict)
+		// Idempotency-conflict detection compares IdempotencyIntentHash --
+		// the caller's PRE-route-resolution logical request identity --
+		// never RequestHash, which now includes the resolved route again
+		// and can legitimately differ between two calls under the same
+		// key once routing stopped being deterministic (a pool policy's
+		// capacity state can pick a different candidate). RequestHash on
+		// the winning row is never recomputed or compared here; it is
+		// exactly what the FIRST successful insert set, forever.
+		if inv.IdempotencyIntentHash == "" {
+			// A row from before migration 000071 (or any row that
+			// otherwise lacks this column) cannot be safely compared --
+			// fail closed rather than either trusting or silently
+			// overwriting an identity that was never computed.
+			return modelruntime.CreateInvocationResult{}, fmt.Errorf("%w: existing invocation has no idempotency intent hash to verify against (pre-migration row)", modelruntime.ErrConflict)
+		}
+		if inv.IdempotencyIntentHash != p.IdempotencyIntentHash {
+			return modelruntime.CreateInvocationResult{}, fmt.Errorf("%w: idempotency key reused with a different logical request", modelruntime.ErrConflict)
 		}
 		existingInput, err := getModelInput(ctx, tx, inv.ID)
 		if err != nil {
