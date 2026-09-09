@@ -142,7 +142,24 @@ func canonicalNumberJSON(v any) ([]byte, error) {
 	}
 }
 
+// invocationRequestHash identifies the CALLER's logical request -- never
+// the route the kernel happened to resolve it to. Deliberately excludes
+// binding.Profile.ID/Version.ID/ProviderID/ProviderModelID: those are
+// RouteResolver's OUTPUT, not caller input, and for a routing_mode: pool
+// policy they can legitimately differ between two Create() calls carrying
+// the SAME idempotency key if capacity state drifted in between (Section 9).
+// The request identity a retry must match is already fully pinned by
+// subject_role_id (which policy this targets) plus task/attempt/context/
+// capabilities/output contract -- adding the resolved route on top would
+// make a capacity-state-driven retry fail closed with ErrConflict instead
+// of replaying the original invocation, silently breaking idempotency the
+// moment routing stopped being deterministic. Once persisted, the route on
+// row #1 is immutable regardless of what this hash contains (see
+// CreateInvocation: an ON CONFLICT never updates provider_id/profile_id);
+// this only fixes what governs whether a retry is treated as "the same
+// request" in the first place.
 func invocationRequestHash(c CreateInvocationCommand, revision int64, binding ResolvedBinding, caps []ModelCapability, schema []byte, modelInputDigest string, policyVersionID int64, policyHash string, identityPolicyVersionID int64, identityPolicyHash string, assignment modeldispatch.ResolvedAssignment) (string, error) {
+	_ = binding // resolution output, deliberately excluded -- see doc comment
 	value := map[string]any{
 		"organization_id":                      c.OrganizationID,
 		"organization_revision_id":             revision,
@@ -157,10 +174,6 @@ func invocationRequestHash(c CreateInvocationCommand, revision int64, binding Re
 		"context_snapshot_id":                  c.ContextSnapshotID,
 		"model_input_digest":                   modelInputDigest,
 		"purpose":                              strings.TrimSpace(c.Purpose),
-		"profile_id":                           binding.Profile.ID,
-		"profile_version_id":                   binding.Version.ID,
-		"provider_id":                          binding.Version.ProviderID,
-		"provider_model_id":                    binding.Version.ProviderModelID,
 		"required_capabilities":                caps,
 		"output_mode":                          c.OutputMode,
 		"output_schema":                        json.RawMessage(schema),

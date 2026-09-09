@@ -230,6 +230,15 @@ func (f *fakeStore) ApplyRegistry(context.Context, RegistryPlan, int) (RegistryS
 func (f *fakeStore) GetBinding(context.Context, string, int64, string) (ResolvedBinding, error) {
 	return f.binding, nil
 }
+func (f *fakeStore) GetRoutingPolicy(context.Context, string, int64, string) (RoutingPolicy, bool, error) {
+	return RoutingPolicy{}, false, nil
+}
+func (f *fakeStore) ListRoutingCandidates(context.Context, string, int64, string) ([]RoutingCandidate, error) {
+	return nil, nil
+}
+func (f *fakeStore) GetCandidateRoute(context.Context, string, int64, string) (ResolvedBinding, error) {
+	return f.binding, nil
+}
 func fixtureEgressPolicy() modelegress.ResolvedPolicy {
 	return modelegress.ResolvedPolicy{Version: modelegress.PolicyVersion{ID: 17, Status: "materialized", OrganizationID: "explorarte", PolicyID: "model-egress", PolicyVersion: 1, CanonicalHash: SHA256Bytes([]byte("egress"))}, OrganizationRevisionID: 7, CanonicalHash: SHA256Bytes([]byte("egress")), DefaultAction: modelegress.EffectDeny, Rules: []modelegress.Rule{{ProviderID: "*", DataClassification: modelegress.ClassificationSecret, Effect: modelegress.EffectDeny, ReasonCode: "secret_egress_forbidden", HardDeny: true}, {ProviderID: "*", DataClassification: modelegress.ClassificationClinical, Effect: modelegress.EffectDeny, ReasonCode: "clinical_egress_forbidden", HardDeny: true}, {ProviderID: "test.fake", DataClassification: modelegress.ClassificationOrganizational, Effect: modelegress.EffectAllow, ReasonCode: "fixture_allow"}}}
 }

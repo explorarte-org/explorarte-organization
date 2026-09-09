@@ -1,0 +1,189 @@
+package modelruntime
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/Mireuz13/explorarte-organization/internal/modelrouting"
+)
+
+var (
+	// ErrRoutingPolicyMalformed means the materialized routing_policies/
+	// routing_candidates state for a policy is internally inconsistent
+	// (unknown selector, zero candidates, wrong mode) -- a materialization
+	// bug, never a caller problem. Fails closed before CreateInvocation.
+	ErrRoutingPolicyMalformed = errors.New("modelruntime: routing policy malformed")
+	// ErrRouteNotApproved means a Selector answered with something that is
+	// not, byte-for-byte, one of the candidates it was handed from the
+	// canonical materialized set. This is the DENY boundary for an
+	// invented/non-canonical candidate (Section 12.D) -- it fires before
+	// any capability/egress/pricing check ever runs, and before
+	// CreateInvocation is called.
+	ErrRouteNotApproved = errors.New("modelruntime: selected route is not part of the approved canonical candidate set")
+)
+
+// RouteResolutionRequest carries only host/kernel-authorized data: the
+// organization/revision this Create() call is already operating under, the
+// SubjectRoleID the assignment/binding checks already validated, and
+// PolicyID -- the subject role's own ModelPolicy, as already read from
+// OrganizationCatalog.GetRole by the caller. Nothing here is free-form
+// caller input; there is no field a request body, an LLM response, or a
+// scheduler could populate with an arbitrary provider/model.
+type RouteResolutionRequest struct {
+	OrganizationID         string
+	OrganizationRevisionID int64
+	SubjectRoleID          string
+	PolicyID               string
+}
+
+// ResolvedRoute is what RouteResolver hands back to InvocationService.Create:
+// the SAME ResolvedBinding shape GetBinding has always returned (so every
+// downstream capability/egress/hash/persistence step is unchanged code),
+// plus the provenance InvocationService persists for audit (Section 10).
+type ResolvedRoute struct {
+	Binding          ResolvedBinding
+	RoutingMode      string
+	SelectorID       string
+	CandidateSetHash string
+	DecisionReason   string
+}
+
+// RouteResolver answers ONLY "where does this already-authorized
+// invocation dispatch". It never answers "who may dispatch it" -- that
+// remains modeldispatch.AssignmentResolver, called earlier in Create() and
+// completely unaware this type exists.
+type RouteResolver interface {
+	Resolve(ctx context.Context, req RouteResolutionRequest) (ResolvedRoute, error)
+}
+
+// CapacityStateReader is the host-owned, mutable capacity picture a pool
+// Selector ranks against. A narrow port rather than a full
+// modelrouting.CandidateState struct so a deployment with no dynamic
+// capacity tracking of its own can supply a trivial always-eligible reader
+// and still get correct, deterministic pool selection by class/priority.
+type CapacityStateReader interface {
+	CapacityState(ctx context.Context, organizationID, providerID, providerModelID string) (modelrouting.CandidateState, error)
+}
+
+// AlwaysAvailableCapacityState is the default CapacityStateReader: every
+// candidate is eligible, none disabled/cooling down/exhausted. A
+// deployment that wires real capacity tracking (dispatch failures,
+// quota/rate-limit signals) replaces this with its own reader; nothing
+// else about RouteResolver changes.
+type AlwaysAvailableCapacityState struct{}
+
+func (AlwaysAvailableCapacityState) CapacityState(context.Context, string, string, string) (modelrouting.CandidateState, error) {
+	return modelrouting.CandidateState{}, nil
+}
+
+// DefaultRouteResolver is the canonical RouteResolver. Static policies
+// resolve through Store.GetBinding -- byte-for-byte the path every static
+// role has always taken (invariant: unchanged static semantics). Pool
+// policies resolve through Store.GetRoutingPolicy/ListRoutingCandidates
+// and a pure internal/modelrouting.Selector; the two paths converge on the
+// same ResolvedBinding shape before capability/egress/hash/persistence.
+type DefaultRouteResolver struct {
+	Store    RegistryStore
+	Capacity CapacityStateReader
+	Clock    func() time.Time
+}
+
+func NewDefaultRouteResolver(store RegistryStore, capacity CapacityStateReader, clock func() time.Time) (*DefaultRouteResolver, error) {
+	if store == nil {
+		return nil, fmt.Errorf("route resolver requires a registry store")
+	}
+	if capacity == nil {
+		capacity = AlwaysAvailableCapacityState{}
+	}
+	if clock == nil {
+		clock = time.Now
+	}
+	return &DefaultRouteResolver{Store: store, Capacity: capacity, Clock: clock}, nil
+}
+
+func (r *DefaultRouteResolver) Resolve(ctx context.Context, req RouteResolutionRequest) (ResolvedRoute, error) {
+	policy, ok, err := r.Store.GetRoutingPolicy(ctx, req.OrganizationID, req.OrganizationRevisionID, req.PolicyID)
+	if err != nil {
+		return ResolvedRoute{}, err
+	}
+	if !ok {
+		// No routing_policies row: this is a static policy, resolved
+		// exactly as every static policy has always been resolved.
+		binding, err := r.Store.GetBinding(ctx, req.OrganizationID, req.OrganizationRevisionID, req.SubjectRoleID)
+		if err != nil {
+			return ResolvedRoute{}, err
+		}
+		return ResolvedRoute{Binding: binding, RoutingMode: RoutingModeStatic, DecisionReason: "static binding"}, nil
+	}
+	if policy.RoutingMode != RoutingModePool {
+		return ResolvedRoute{}, fmt.Errorf("%w: policy %q has routing_mode %q", ErrRoutingPolicyMalformed, req.PolicyID, policy.RoutingMode)
+	}
+	selector, ok := modelrouting.Selectors[policy.SelectorID]
+	if !ok {
+		return ResolvedRoute{}, fmt.Errorf("%w: policy %q names unknown selector %q", ErrRoutingPolicyMalformed, req.PolicyID, policy.SelectorID)
+	}
+	stored, err := r.Store.ListRoutingCandidates(ctx, req.OrganizationID, req.OrganizationRevisionID, req.PolicyID)
+	if err != nil {
+		return ResolvedRoute{}, err
+	}
+	if len(stored) == 0 {
+		return ResolvedRoute{}, fmt.Errorf("%w: pool policy %q has no materialized candidates", ErrRoutingPolicyMalformed, req.PolicyID)
+	}
+
+	candidates := make([]modelrouting.Candidate, 0, len(stored))
+	approved := make(map[string]RoutingCandidate, len(stored))
+	state := make(map[string]modelrouting.CandidateState, len(stored))
+	for _, c := range stored {
+		mc := modelrouting.Candidate{
+			ProviderID: c.ProviderID, ProviderModelID: c.ProviderModelID,
+			Transport: string(c.Transport), CapacityClass: c.CapacityClass, Priority: c.Priority,
+			ProfileID: c.ProfileID, ModelProfileVersionID: c.ModelProfileVersionID,
+		}
+		candidates = append(candidates, mc)
+		key := c.ProviderID + "|" + c.ProviderModelID
+		approved[key] = c
+		cs, err := r.Capacity.CapacityState(ctx, req.OrganizationID, c.ProviderID, c.ProviderModelID)
+		if err != nil {
+			return ResolvedRoute{}, err
+		}
+		state[key] = cs
+	}
+
+	decision, err := selector.Select(candidates, state, modelrouting.Requirements{AllowPaid: policy.AllowPaid}, r.Clock())
+	if err != nil {
+		return ResolvedRoute{}, err
+	}
+
+	// Prove the selector's answer is one of the candidates it was actually
+	// given -- never trust a Selector's return value blindly, however
+	// trusted its implementation. This is what makes an invented/
+	// non-canonical candidate impossible to reach CreateInvocation with,
+	// independent of whether the Selector implementation is buggy,
+	// compromised, or simply new and unreviewed.
+	key := decision.Candidate.ProviderID + "|" + decision.Candidate.ProviderModelID
+	approvedCandidate, ok := approved[key]
+	if !ok || approvedCandidate.ProfileID != decision.Candidate.ProfileID || approvedCandidate.ModelProfileVersionID != decision.Candidate.ModelProfileVersionID {
+		return ResolvedRoute{}, fmt.Errorf("%w: selector returned provider=%s model=%s", ErrRouteNotApproved, decision.Candidate.ProviderID, decision.Candidate.ProviderModelID)
+	}
+
+	binding, err := r.Store.GetCandidateRoute(ctx, req.OrganizationID, req.OrganizationRevisionID, approvedCandidate.ProfileID)
+	if err != nil {
+		return ResolvedRoute{}, err
+	}
+	// Defense in depth: the freshly-read, FK-checked binding must itself
+	// agree with the approved candidate -- a second, independent read
+	// against the same canonical source, not a re-trust of the same value.
+	if binding.Version.ProviderID != approvedCandidate.ProviderID || binding.Version.ProviderModelID != approvedCandidate.ProviderModelID {
+		return ResolvedRoute{}, fmt.Errorf("%w: materialized route drifted from approved candidate", ErrRouteNotApproved)
+	}
+
+	return ResolvedRoute{
+		Binding:          binding,
+		RoutingMode:      RoutingModePool,
+		SelectorID:       policy.SelectorID,
+		CandidateSetHash: policy.CanonicalHash,
+		DecisionReason:   decision.Reason,
+	}, nil
+}
