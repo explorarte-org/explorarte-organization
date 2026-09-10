@@ -19,6 +19,8 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/config"
 	"github.com/Mireuz13/explorarte-organization/internal/modeldispatch"
 	dispatchpostgres "github.com/Mireuz13/explorarte-organization/internal/modeldispatch/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
+	modelruntimepostgres "github.com/Mireuz13/explorarte-organization/internal/modelruntime/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
@@ -259,7 +261,7 @@ func TestModelDispatcherAssignmentsPostgreSQL17(t *testing.T) {
 		if serviceErr != nil {
 			t.Fatal(serviceErr)
 		}
-		provisioner, provisionerErr := modeldispatch.NewAuthorizedAttemptProvisioner(assignments, reader, store, store, principal.PrincipalKey)
+		provisioner, provisionerErr := modeldispatch.NewAuthorizedAttemptProvisioner(assignments, reader, store, principal.PrincipalKey)
 		if provisionerErr != nil {
 			t.Fatal(provisionerErr)
 		}
@@ -373,11 +375,20 @@ func (a dispatchTaskReader) GetTaskLineage(ctx context.Context, taskID int64) (m
 	}, nil
 }
 
+// insertBindingFixture materializes a full static profile/version/binding
+// chain for roleID, using roleID's OWN organization_roles.model_policy
+// (already populated by syncDispatchCanonical from the real canonical
+// docs) as the policy_id everywhere -- GetRoleRoutingAuthority requires a
+// static binding's own policy_id to agree with the role's model_policy, the
+// same way real ApplyRegistry-materialized bindings always do.
 func insertBindingFixture(t *testing.T, ctx context.Context, store *platformpostgres.Store, revisionID int64, canonicalHash, roleID, suffix string) {
 	t.Helper()
 	providerID := "provider-" + suffix
 	profileID := "profile-" + suffix
-	policyID := "policy-" + suffix
+	var policyID string
+	if err := store.Pool().QueryRow(ctx, `SELECT model_policy FROM organization_roles WHERE organization_id=$1 AND id=$2`, dispatchIntegrationOrganization, roleID).Scan(&policyID); err != nil {
+		t.Fatalf("insertBindingFixture: load %q model_policy: %v", roleID, err)
+	}
 	if _, err := store.Pool().Exec(ctx, `
 INSERT INTO model_providers(organization_id,id,transport,adapter_status,dispatch_enabled,direct_http_forbidden,canonical_hash,organization_revision_id)
 VALUES($1,$2,'fake_adapter','available',true,true,$3,$4)`, dispatchIntegrationOrganization, providerID, canonicalHash, revisionID); err != nil {
@@ -563,4 +574,283 @@ func syncDispatchCanonical(t *testing.T, ctx context.Context, store *platformpos
 	if err != nil || !result.Applied {
 		t.Fatalf("sync=%+v err=%v", result, err)
 	}
+}
+
+const (
+	dispatchAuthorityPoolPolicyID      = "dispatch-authority-test.worker.pool"
+	dispatchAuthorityPoolRoleID        = "ingenieria_ia/qa"
+	dispatchAuthorityEmptyPoolPolicyID = "dispatch-authority-test.empty.pool"
+	dispatchAuthorityEmptyPoolRoleID   = "ingenieria_ia/frontend"
+)
+
+const dispatchAuthorityPoolPolicyYAML = `  dispatch-authority-test.worker.pool:
+    routing_mode: pool
+    selector: free_capacity_v1
+    allow_paid: false
+    candidates:
+      - provider: test.fake
+        model: dispatch-authority-a
+        transport: fake_adapter
+        capacity_class: free_daily
+        priority: 10
+`
+
+var dispatchAuthorityCanonicalDocumentNames = []string{
+	"organization.yaml", "role-catalog.yaml", "leader-worker-map.yaml",
+	"model-routing.yaml", "model-egress-policy.yaml", "capability-matrix.yaml",
+	"instruction-precedence.yaml", "decisions-required.yaml", "source-manifest.yaml",
+}
+
+// buildDispatchAuthorityPoolCanonicalDir copies the real docs/canonical
+// documents verbatim, then consistently rewrites BOTH role-catalog.yaml
+// (dispatchAuthorityPoolRoleID's own model_policy line, so a real
+// org-registry sync from this directory leaves organization_roles.model_policy
+// naming the new pool policy -- GetRoleRoutingAuthority reads that column
+// directly, no override mechanism exists) and model-routing.yaml (injecting
+// the pool policy that role now names). Unlike the retry-failover E2E
+// fixture (which could only ever touch ONE of routing/egress at a time,
+// because a different validator's hardcoded productive egress allow-rules
+// map has no test.fake entry), role-catalog.yaml and model-routing.yaml are
+// SUPPOSED to cross-reference each other, and LoadCanonicalRouting's own
+// validation is designed to confirm that agreement, not reject it -- so
+// both can be modified together here.
+func buildDispatchAuthorityPoolCanonicalDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	srcDir := filepath.Join("..", "..", "..", "docs", "canonical")
+	for _, name := range dispatchAuthorityCanonicalDocumentNames {
+		body, err := os.ReadFile(filepath.Join(srcDir, name))
+		if err != nil {
+			t.Fatalf("read real canonical document %s: %v", name, err)
+		}
+		switch name {
+		case "role-catalog.yaml":
+			text := string(body)
+			anchor := "- id: " + dispatchAuthorityPoolRoleID
+			idx := strings.Index(text, anchor)
+			if idx < 0 {
+				t.Fatalf("role %s not found in role-catalog.yaml", dispatchAuthorityPoolRoleID)
+			}
+			const old = "model_policy: department.worker"
+			rel := strings.Index(text[idx:], old)
+			if rel < 0 {
+				t.Fatalf("model_policy line not found for %s", dispatchAuthorityPoolRoleID)
+			}
+			abs := idx + rel
+			body = []byte(text[:abs] + "model_policy: " + dispatchAuthorityPoolPolicyID + text[abs+len(old):])
+		case "model-routing.yaml":
+			text := string(body)
+			const marker = "routing_invariants:"
+			mi := strings.Index(text, marker)
+			if mi < 0 {
+				t.Fatalf("routing_invariants marker not found in model-routing.yaml")
+			}
+			body = []byte(text[:mi] + dispatchAuthorityPoolPolicyYAML + text[mi:])
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), body, 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	return dir
+}
+
+// TestRoleRoutingAuthorityPostgreSQL17 exercises Store.GetRoleRoutingAuthority
+// directly against real Postgres: the pool happy path through the real
+// canonical pipeline (YAML -> LoadCanonicalRouting -> BuildRegistryPlan ->
+// ApplyRegistry, no manual routing_policies/routing_candidates rows), and
+// every fail-closed edge case A3 requires -- each exercised as its own
+// subtest against real rows, not a fake.
+func TestRoleRoutingAuthorityPostgreSQL17(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	platform := openDispatchStore(t, ctx)
+	defer platform.Close()
+	runner, err := platformmigrations.New(platform.Pool(), rootmigrations.Files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = runner.Up(ctx); err != nil {
+		t.Fatalf("migrations: %v", err)
+	}
+	resetDispatchSchema(t, ctx, platform)
+
+	tmpDir := buildDispatchAuthorityPoolCanonicalDir(t)
+
+	repo, err := registry.NewPostgresRepository(platform)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loader, err := registry.NewLoader(tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	regService, err := registry.NewService(loader, repo, dispatchIntegrationOrganization, 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	syncResult, err := regService.SynchronizeCanonical(ctx, true)
+	if err != nil || !syncResult.Applied {
+		t.Fatalf("org registry sync=%+v err=%v", syncResult, err)
+	}
+	revision, err := repo.GetCurrentRevision(ctx, dispatchIntegrationOrganization)
+	if err != nil || revision == nil {
+		t.Fatalf("revision=%+v err=%v", revision, err)
+	}
+
+	routing, err := modelruntime.LoadCanonicalRouting(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadCanonicalRouting: %v", err)
+	}
+	plan, err := modelruntime.BuildRegistryPlan(
+		[]modelruntime.RoleRef{{ID: dispatchAuthorityPoolRoleID, ModelPolicy: dispatchAuthorityPoolPolicyID, Enabled: true, Executable: true, UnitID: "ingenieria_ia"}},
+		modelruntime.OrganizationRef{ID: dispatchIntegrationOrganization, RevisionID: revision.ID},
+		routing,
+	)
+	if err != nil {
+		t.Fatalf("BuildRegistryPlan: %v", err)
+	}
+	modelStore, err := modelruntimepostgres.New(platform)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = modelStore.ApplyRegistry(ctx, plan, 10); err != nil {
+		t.Fatalf("ApplyRegistry: %v", err)
+	}
+
+	dispatchStore, err := dispatchpostgres.New(platform)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("pool happy path materialized through the real canonical pipeline", func(t *testing.T) {
+		authority, err := dispatchStore.GetRoleRoutingAuthority(ctx, dispatchIntegrationOrganization, revision.ID, dispatchAuthorityPoolRoleID)
+		if err != nil {
+			t.Fatalf("GetRoleRoutingAuthority: %v", err)
+		}
+		if authority.Kind != modeldispatch.RoleRoutingPoolPolicy {
+			t.Fatalf("kind=%v want pool", authority.Kind)
+		}
+		if authority.PolicyID != dispatchAuthorityPoolPolicyID {
+			t.Fatalf("policy id=%q want %q", authority.PolicyID, dispatchAuthorityPoolPolicyID)
+		}
+		if authority.ProfileID != "" || authority.ModelProfileVersionID != 0 {
+			t.Fatalf("pool authority carries a synthetic profile: %+v", authority)
+		}
+		var canonicalHash string
+		if scanErr := platform.Pool().QueryRow(ctx, `SELECT canonical_hash FROM routing_policies WHERE organization_id=$1 AND organization_revision_id=$2 AND policy_id=$3`, dispatchIntegrationOrganization, revision.ID, dispatchAuthorityPoolPolicyID).Scan(&canonicalHash); scanErr != nil {
+			t.Fatal(scanErr)
+		}
+		if authority.AuthorityHash != canonicalHash {
+			t.Fatalf("authority hash=%q want routing_policies.canonical_hash=%q", authority.AuthorityHash, canonicalHash)
+		}
+	})
+
+	t.Run("revision drift fails closed", func(t *testing.T) {
+		if _, err := dispatchStore.GetRoleRoutingAuthority(ctx, dispatchIntegrationOrganization, revision.ID+999, dispatchAuthorityPoolRoleID); err == nil {
+			t.Fatal("expected fail-closed rejection for a revision the role was not last synced at")
+		}
+	})
+
+	t.Run("disabled role fails closed", func(t *testing.T) {
+		if _, err := platform.Pool().Exec(ctx, `UPDATE organization_roles SET enabled=false, executable=false WHERE organization_id=$1 AND id=$2`, dispatchIntegrationOrganization, dispatchAuthorityPoolRoleID); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if _, err := platform.Pool().Exec(ctx, `UPDATE organization_roles SET enabled=true, executable=true WHERE organization_id=$1 AND id=$2`, dispatchIntegrationOrganization, dispatchAuthorityPoolRoleID); err != nil {
+				t.Fatal(err)
+			}
+		}()
+		if _, err := dispatchStore.GetRoleRoutingAuthority(ctx, dispatchIntegrationOrganization, revision.ID, dispatchAuthorityPoolRoleID); err == nil {
+			t.Fatal("expected fail-closed rejection for a disabled role")
+		}
+	})
+
+	t.Run("non-executable role fails closed", func(t *testing.T) {
+		if _, err := platform.Pool().Exec(ctx, `UPDATE organization_roles SET executable=false WHERE organization_id=$1 AND id=$2`, dispatchIntegrationOrganization, dispatchAuthorityPoolRoleID); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if _, err := platform.Pool().Exec(ctx, `UPDATE organization_roles SET executable=true WHERE organization_id=$1 AND id=$2`, dispatchIntegrationOrganization, dispatchAuthorityPoolRoleID); err != nil {
+				t.Fatal(err)
+			}
+		}()
+		if _, err := dispatchStore.GetRoleRoutingAuthority(ctx, dispatchIntegrationOrganization, revision.ID, dispatchAuthorityPoolRoleID); err == nil {
+			t.Fatal("expected fail-closed rejection for a non-executable role")
+		}
+	})
+
+	t.Run("missing model_policy fails closed", func(t *testing.T) {
+		if _, err := platform.Pool().Exec(ctx, `UPDATE organization_roles SET model_policy=NULL WHERE organization_id=$1 AND id=$2`, dispatchIntegrationOrganization, dispatchAuthorityPoolRoleID); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if _, err := platform.Pool().Exec(ctx, `UPDATE organization_roles SET model_policy=$3 WHERE organization_id=$1 AND id=$2`, dispatchIntegrationOrganization, dispatchAuthorityPoolRoleID, dispatchAuthorityPoolPolicyID); err != nil {
+				t.Fatal(err)
+			}
+		}()
+		if _, err := dispatchStore.GetRoleRoutingAuthority(ctx, dispatchIntegrationOrganization, revision.ID, dispatchAuthorityPoolRoleID); err == nil {
+			t.Fatal("expected fail-closed rejection for a role with no model_policy")
+		}
+	})
+
+	t.Run("static and pool simultaneously fails closed", func(t *testing.T) {
+		insertBindingFixture(t, ctx, platform, revision.ID, revision.CanonicalHash, dispatchAuthorityPoolRoleID, "authority-conflict")
+		defer func() {
+			if _, err := platform.Pool().Exec(ctx, `DELETE FROM role_model_bindings WHERE organization_id=$1 AND organization_revision_id=$2 AND role_id=$3`, dispatchIntegrationOrganization, revision.ID, dispatchAuthorityPoolRoleID); err != nil {
+				t.Fatal(err)
+			}
+		}()
+		if _, err := dispatchStore.GetRoleRoutingAuthority(ctx, dispatchIntegrationOrganization, revision.ID, dispatchAuthorityPoolRoleID); err == nil {
+			t.Fatal("expected fail-closed rejection when both a static binding and a pool policy exist")
+		}
+	})
+
+	t.Run("static binding whose own policy_id disagrees with model_policy fails closed", func(t *testing.T) {
+		// A deliberate scope violation: role_model_bindings.policy_id names a
+		// policy other than the one organization_roles.model_policy for this
+		// role actually points at -- unlike insertBindingFixture, which
+		// always derives a matching policy_id, this constructs the
+		// mismatch directly.
+		const mismatchedPolicyID = "authority-test.mismatched.policy"
+		const mismatchedProfileID = "authority-test-mismatched-profile"
+		const mismatchedProviderID = "authority-test-mismatched-provider"
+		if _, err := platform.Pool().Exec(ctx, `INSERT INTO model_providers(organization_id,id,transport,adapter_status,dispatch_enabled,direct_http_forbidden,canonical_hash,organization_revision_id) VALUES($1,$2,'fake_adapter','available',true,true,$3,$4)`, dispatchIntegrationOrganization, mismatchedProviderID, revision.CanonicalHash, revision.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := platform.Pool().Exec(ctx, `INSERT INTO model_profiles(organization_id,id,policy_id) VALUES($1,$2,$3)`, dispatchIntegrationOrganization, mismatchedProfileID, mismatchedPolicyID); err != nil {
+			t.Fatal(err)
+		}
+		var versionID int64
+		if err := platform.Pool().QueryRow(ctx, `INSERT INTO model_profile_versions(organization_id,profile_id,version_number,organization_revision_id,canonical_document_hash,version_hash,provider_id,provider_model_id,transport,adapter_status,dispatch_enabled) VALUES($1,$2,1,$3,$4,$5,$6,'fixture-v1','fake_adapter','available',true) RETURNING id`, dispatchIntegrationOrganization, mismatchedProfileID, revision.ID, revision.CanonicalHash, hexFixture("authority-mismatch-version"), mismatchedProviderID).Scan(&versionID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := platform.Pool().Exec(ctx, `INSERT INTO role_model_bindings(organization_id,organization_revision_id,role_id,policy_id,profile_id,model_profile_version_id,binding_hash,active) VALUES($1,$2,$3,$4,$5,$6,$7,true)`, dispatchIntegrationOrganization, revision.ID, dispatchAuthorityPoolRoleID, mismatchedPolicyID, mismatchedProfileID, versionID, hexFixture("authority-mismatch-binding")); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if _, err := platform.Pool().Exec(ctx, `DELETE FROM role_model_bindings WHERE organization_id=$1 AND organization_revision_id=$2 AND role_id=$3`, dispatchIntegrationOrganization, revision.ID, dispatchAuthorityPoolRoleID); err != nil {
+				t.Fatal(err)
+			}
+		}()
+		if _, err := dispatchStore.GetRoleRoutingAuthority(ctx, dispatchIntegrationOrganization, revision.ID, dispatchAuthorityPoolRoleID); err == nil {
+			t.Fatal("expected fail-closed rejection for a static binding whose own policy_id disagrees with the role's model_policy")
+		}
+	})
+
+	t.Run("pool policy with zero materialized candidates fails closed", func(t *testing.T) {
+		if _, err := platform.Pool().Exec(ctx, `UPDATE organization_roles SET model_policy=$3 WHERE organization_id=$1 AND id=$2`, dispatchIntegrationOrganization, dispatchAuthorityEmptyPoolRoleID, dispatchAuthorityEmptyPoolPolicyID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := platform.Pool().Exec(ctx, `INSERT INTO routing_policies(organization_id,organization_revision_id,policy_id,routing_mode,selector_id,allow_paid,canonical_hash) VALUES($1,$2,$3,'pool','free_capacity_v1',false,$4)`, dispatchIntegrationOrganization, revision.ID, dispatchAuthorityEmptyPoolPolicyID, hexFixture("authority-empty-pool")); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if _, err := platform.Pool().Exec(ctx, `DELETE FROM routing_policies WHERE organization_id=$1 AND organization_revision_id=$2 AND policy_id=$3`, dispatchIntegrationOrganization, revision.ID, dispatchAuthorityEmptyPoolPolicyID); err != nil {
+				t.Fatal(err)
+			}
+		}()
+		if _, err := dispatchStore.GetRoleRoutingAuthority(ctx, dispatchIntegrationOrganization, revision.ID, dispatchAuthorityEmptyPoolRoleID); err == nil {
+			t.Fatal("expected fail-closed rejection for a pool policy with zero materialized candidates")
+		}
+	})
 }

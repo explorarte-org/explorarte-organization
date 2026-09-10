@@ -631,7 +631,7 @@ WHERE o.id = $1`, retryOrganizationID).Scan(&originalRevisionID, &originalCanoni
 	if err != nil {
 		t.Fatal(err)
 	}
-	authorizedAssignments, err := modeldispatch.NewAuthorizedAttemptProvisioner(assignmentsService, dispatchTasks, h.dispatch, h.dispatch, executionKey)
+	authorizedAssignments, err := modeldispatch.NewAuthorizedAttemptProvisioner(assignmentsService, dispatchTasks, h.dispatch, executionKey)
 	if err != nil {
 		t.Fatal(err)
 	}

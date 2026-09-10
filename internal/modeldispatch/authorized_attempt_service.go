@@ -21,14 +21,13 @@ type AuthorizedAttemptProvisioner struct {
 	assignments           *AssignmentService
 	resourceAuthorizer    ResourceCapabilityAuthorizer
 	lineage               TaskLineageReader
-	bindings              RoleModelBindingReader
-	routing               RoutingPolicyReader
+	authority             RoleRoutingAuthorityReader
 	executionPrincipalKey string
 }
 
-func NewAuthorizedAttemptProvisioner(assignments *AssignmentService, lineage TaskLineageReader, bindings RoleModelBindingReader, routing RoutingPolicyReader, executionPrincipalKey string) (*AuthorizedAttemptProvisioner, error) {
+func NewAuthorizedAttemptProvisioner(assignments *AssignmentService, lineage TaskLineageReader, authority RoleRoutingAuthorityReader, executionPrincipalKey string) (*AuthorizedAttemptProvisioner, error) {
 	executionPrincipalKey = strings.TrimSpace(executionPrincipalKey)
-	if assignments == nil || lineage == nil || bindings == nil || routing == nil {
+	if assignments == nil || lineage == nil || authority == nil {
 		return nil, fmt.Errorf("authorized attempt provisioner dependencies are incomplete")
 	}
 	if len(executionPrincipalKey) < 1 || len(executionPrincipalKey) > 200 || !principalKeyPattern.MatchString(executionPrincipalKey) {
@@ -39,7 +38,7 @@ func NewAuthorizedAttemptProvisioner(assignments *AssignmentService, lineage Tas
 		return nil, fmt.Errorf("authorized attempt provisioner requires resource-scoped authorization")
 	}
 	return &AuthorizedAttemptProvisioner{
-		assignments: assignments, resourceAuthorizer: resourceAuthorizer, lineage: lineage, bindings: bindings, routing: routing,
+		assignments: assignments, resourceAuthorizer: resourceAuthorizer, lineage: lineage, authority: authority,
 		executionPrincipalKey: executionPrincipalKey,
 	}, nil
 }
@@ -105,45 +104,20 @@ func (s *AuthorizedAttemptProvisioner) EnsureAuthorizedAssignmentForRunningAttem
 	if !eligibleDispatchActorRole(dispatchRole) {
 		return CreateAssignmentResult{}, fmt.Errorf("%w: dispatch actor role must be enabled, executable and execution_service", ErrRoleNotEligible)
 	}
-	binding, err := s.bindings.GetActiveRoleModelBinding(ctx, attempt.OrganizationID, revision, attempt.AssignedRoleID)
-	switch {
-	case err == nil:
-		if !binding.Active || binding.OrganizationID != attempt.OrganizationID || binding.OrganizationRevisionID != revision ||
-			binding.RoleID != attempt.AssignedRoleID || binding.ModelProfileVersionID <= 0 || !sha256Pattern.MatchString(binding.BindingHash) {
-			return CreateAssignmentResult{}, fmt.Errorf("%w: active role-model binding scope mismatch", ErrTaskAttemptRejected)
-		}
-	case errors.Is(err, ErrNotFound):
-		// No static role_model_bindings row. This is the expected, ordinary
-		// shape for a role whose model_policy is routing_mode: pool (see
-		// migration 000070's comment on routing_policies): the candidate is
-		// resolved later, per-invocation, by RouteResolver inside
-		// internal/modelruntime -- modeldispatch never selects one. Here we
-		// only need to confirm the role really is pool-routed, using a
-		// binding-shaped stand-in (policy id as ProfileID, the policy's own
-		// canonical_hash as BindingHash, ModelProfileVersionID left at 0) so
-		// the digest/idempotency-key derivation below stays uniform across
-		// the static and pool cases without inventing a fake profile
-		// version. This stand-in is never persisted: DispatcherAssignment
-		// has no profile/version/binding-hash columns at all.
-		subjectRole, roleErr := s.assignments.catalog.GetRole(ctx, attempt.OrganizationID, attempt.AssignedRoleID)
-		if roleErr != nil {
-			return CreateAssignmentResult{}, fmt.Errorf("%w: active role-model binding: %v", ErrTaskAttemptRejected, err)
-		}
-		policy, found, policyErr := s.routing.GetRoutingPolicy(ctx, attempt.OrganizationID, revision, subjectRole.ModelPolicy)
-		if policyErr != nil || !found || policy.RoutingMode != "pool" ||
-			policy.OrganizationID != attempt.OrganizationID || policy.OrganizationRevisionID != revision {
-			return CreateAssignmentResult{}, fmt.Errorf("%w: active role-model binding: %v", ErrTaskAttemptRejected, err)
-		}
-		binding = RoleModelBindingRef{
-			OrganizationID: attempt.OrganizationID, OrganizationRevisionID: revision, RoleID: attempt.AssignedRoleID,
-			ProfileID: "pool:" + policy.PolicyID, ModelProfileVersionID: 0, BindingHash: policy.CanonicalHash, Active: true,
-		}
-	default:
-		return CreateAssignmentResult{}, fmt.Errorf("%w: active role-model binding: %v", ErrTaskAttemptRejected, err)
+	// GetRoleRoutingAuthority derives the role's model_policy itself and
+	// resolves exactly one authority for it -- static role_model_bindings
+	// XOR materialized pool routing_policies, both present or neither
+	// present fails closed (see the Postgres implementation's doc comment).
+	// No candidate, provider, or model crosses into modeldispatch here:
+	// RouteResolver alone picks one, per-invocation, at Invocation-creation
+	// time inside internal/modelruntime.
+	authority, err := s.authority.GetRoleRoutingAuthority(ctx, attempt.OrganizationID, revision, attempt.AssignedRoleID)
+	if err != nil {
+		return CreateAssignmentResult{}, fmt.Errorf("%w: role routing authority: %v", ErrTaskAttemptRejected, err)
 	}
 	resourceType := "model_dispatcher_assignment"
 	resourceID := fmt.Sprintf("task:%d/attempt:%d", taskID, attemptID)
-	actionDigest := authorizedAttemptActionDigest(root.TaskID, attempt, principal, binding, requesterRoleID)
+	actionDigest := authorizedAttemptActionDigest(root.TaskID, attempt, principal, authority, requesterRoleID)
 	// Technical authority permits only this derivation operation. It never
 	// receives model.dispatch_assignment.create and never impersonates the
 	// durable requester passed to AssignmentService.Create below.
@@ -156,7 +130,7 @@ func (s *AuthorizedAttemptProvisioner) EnsureAuthorizedAssignmentForRunningAttem
 		return CreateAssignmentResult{}, fmt.Errorf("%w: durable requester: %v", ErrAuthorizationDenied, err)
 	}
 
-	idempotencyKey := authorizedAttemptIdempotencyKey(root.TaskID, attempt, principal, binding)
+	idempotencyKey := authorizedAttemptIdempotencyKey(root.TaskID, attempt, principal, authority)
 	if existing, resolveErr := s.assignments.store.ResolveActive(ctx, attempt.OrganizationID, taskID, attemptID, attempt.AssignedRoleID); resolveErr == nil {
 		if err = validateAuthorizedAttemptReplay(existing.Assignment, attempt, revision, principal, requesterRoleID, idempotencyKey, now); err != nil {
 			return CreateAssignmentResult{}, err
@@ -240,23 +214,46 @@ func validOwnerRootCausation(value string) bool {
 	return len(suffix) >= 1 && len(value) <= 200 && principalKeyPattern.MatchString(suffix)
 }
 
-func authorizedAttemptIdempotencyKey(rootTaskID int64, attempt TaskAttemptRef, principal ExecutionPrincipal, binding RoleModelBindingRef) string {
-	body := strings.Join([]string{
+// authorityDigestFields is the authority-derived tail shared by
+// authorizedAttemptIdempotencyKey and authorizedAttemptActionDigest.
+//
+// STATIC reuses exactly the three fields the pre-authority-unification
+// binding carried (ProfileID, ModelProfileVersionID, its hash) in the same
+// order -- byte-for-byte identical digests for every existing static
+// assignment, so replay/idempotency for already-provisioned static attempts
+// is untouched by this change.
+//
+// POOL is explicitly domain-separated from STATIC with a literal
+// "pool_policy" tag ahead of PolicyID and AuthorityHash
+// (routing_policies.canonical_hash) -- never a candidate, provider, or
+// model, which RouteResolver alone selects later, per-invocation. Without
+// this tag a pool authority and a static authority that happened to reuse
+// the same string values in the same field positions could collide; the
+// tag makes that structurally impossible.
+func authorityDigestFields(authority RoleRoutingAuthorityRef) []string {
+	if authority.Kind == RoleRoutingPoolPolicy {
+		return []string{"pool_policy", authority.PolicyID, authority.AuthorityHash}
+	}
+	return []string{authority.ProfileID, strconv.FormatInt(authority.ModelProfileVersionID, 10), authority.AuthorityHash}
+}
+
+func authorizedAttemptIdempotencyKey(rootTaskID int64, attempt TaskAttemptRef, principal ExecutionPrincipal, authority RoleRoutingAuthorityRef) string {
+	fields := append([]string{
 		attempt.OrganizationID, strconv.FormatInt(attempt.OrganizationRevisionID, 10),
 		strconv.FormatInt(rootTaskID, 10), strconv.FormatInt(attempt.TaskID, 10), strconv.FormatInt(attempt.AttemptID, 10),
 		attempt.AssignedRoleID, strconv.FormatInt(principal.ID, 10), principal.PrincipalKey, principal.DispatchActorRoleID,
-		binding.ProfileID, strconv.FormatInt(binding.ModelProfileVersionID, 10), binding.BindingHash,
-	}, "\x00")
+	}, authorityDigestFields(authority)...)
+	body := strings.Join(fields, "\x00")
 	return fmt.Sprintf("authorized-attempt/%d/%d/%s", attempt.TaskID, attempt.AttemptID, sha256Hex([]byte(body))[:32])
 }
 
-func authorizedAttemptActionDigest(rootTaskID int64, attempt TaskAttemptRef, principal ExecutionPrincipal, binding RoleModelBindingRef, requesterRoleID string) string {
-	body := strings.Join([]string{
+func authorizedAttemptActionDigest(rootTaskID int64, attempt TaskAttemptRef, principal ExecutionPrincipal, authority RoleRoutingAuthorityRef, requesterRoleID string) string {
+	fields := append([]string{
 		"provision_authorized_attempt", attempt.OrganizationID, strconv.FormatInt(attempt.OrganizationRevisionID, 10),
 		strconv.FormatInt(rootTaskID, 10), requesterRoleID, strconv.FormatInt(attempt.TaskID, 10), strconv.FormatInt(attempt.AttemptID, 10),
 		attempt.AssignedRoleID, strconv.FormatInt(principal.ID, 10), principal.PrincipalKey, principal.DispatchActorRoleID,
-		binding.ProfileID, strconv.FormatInt(binding.ModelProfileVersionID, 10), binding.BindingHash,
-	}, "\x00")
+	}, authorityDigestFields(authority)...)
+	body := strings.Join(fields, "\x00")
 	return sha256Hex([]byte(body))
 }
 
