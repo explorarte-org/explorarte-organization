@@ -1811,6 +1811,13 @@ func availableAssignee(context.Context, taskdomain.Task) (taskdomain.AssigneeChe
 	return taskdomain.AssigneeCheck{Available: true}, nil
 }
 
+// alwaysCapacityAvailable mirrors availableAssignee for the capacity gate:
+// pool-capacity scheduling has its own coverage in the tasks/executive
+// packages, so this fixture just needs claims to proceed normally.
+func alwaysCapacityAvailable(context.Context, taskdomain.Task) (taskdomain.CapacityCheck, error) {
+	return taskdomain.CapacityCheck{Available: true}, nil
+}
+
 // claimModelExecutionFixture builds the Harness task through the productive
 // claim path instead of inserting task_leases by hand.
 //
@@ -1841,7 +1848,7 @@ func claimModelExecutionFixture(t *testing.T, ctx context.Context, store *platfo
 		HolderPrincipalID: holderPrincipalID,
 		AssignedRoleID:    roleID,
 		LeaseDuration:     30 * time.Minute,
-	}, availableAssignee, 10)
+	}, availableAssignee, alwaysCapacityAvailable, 10)
 	if err != nil {
 		t.Fatalf("productive claim: %v", err)
 	}

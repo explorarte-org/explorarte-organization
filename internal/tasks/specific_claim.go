@@ -7,7 +7,7 @@ import (
 )
 
 type SpecificClaimPersistence interface {
-	ClaimSpecific(context.Context, int64, ClaimRequest, AssigneeValidator, int) (ClaimedTask, error)
+	ClaimSpecific(context.Context, int64, ClaimRequest, AssigneeValidator, CapacityValidator, int) (ClaimedTask, error)
 }
 
 func (s *Service) ClaimTaskByID(ctx context.Context, taskID int64, request ClaimRequest) (ClaimedTask, error) {
@@ -43,5 +43,5 @@ func (s *Service) ClaimTaskByID(ctx context.Context, taskID int64, request Claim
 	if !ok {
 		return ClaimedTask{}, fmt.Errorf("%w: targeted claim persistence unavailable", ErrInvalidInput)
 	}
-	return claimer.ClaimSpecific(ctx, taskID, request, s.validateAssignee, s.cfg.OutboxMaxAttempts)
+	return claimer.ClaimSpecific(ctx, taskID, request, s.validateAssignee, s.checkCapacity, s.cfg.OutboxMaxAttempts)
 }
