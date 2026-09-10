@@ -59,7 +59,18 @@ if [[ ${#kernel_changes[@]} -eq 0 ]]; then
   exit 0
 fi
 
-if ! git log --format=%B "${BASE_COMMIT}..HEAD" | grep -Eq "$TRAILER"; then
+# Captured into a variable, not piped live into grep -q: under
+# `set -o pipefail`, grep -q closes its stdin the instant it finds a
+# match, and git log writing further output into that now-closed pipe
+# dies with SIGPIPE (128+13=141) -- pipefail then reports the WHOLE
+# pipeline as failed even though grep genuinely matched. A trailer added
+# near the tip of a long history (exactly how an owner approval commit
+# is added) hits this on effectively every real run, making the gate
+# fail closed even when a real approval trailer is present. Capturing
+# the log first removes the live pipe, so grep's own exit status is the
+# only one that decides this check.
+commit_messages="$(git log --format=%B "${BASE_COMMIT}..HEAD")"
+if ! grep -Eq "$TRAILER" <<<"$commit_messages"; then
   fail "kernel governance change without owner approval trailer (Kernel-Governance-Change-Approved-By: empresa/human): ${kernel_changes[*]}"
 fi
 
