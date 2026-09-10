@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func (s *Store) Reconcile(ctx context.Context, batch int, validate tasks.AssigneeValidator, policy tasks.RetryPolicy, outboxMaxAttempts int) (tasks.ReconcileResult, error) {
+func (s *Store) Reconcile(ctx context.Context, batch int, validate tasks.AssigneeValidator, checkCapacity tasks.CapacityValidator, policy tasks.RetryPolicy, outboxMaxAttempts int) (tasks.ReconcileResult, error) {
 	return withTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) (tasks.ReconcileResult, error) {
 		var result tasks.ReconcileResult
 		expired, err := reconcileExpiredLeases(ctx, tx, batch, policy, outboxMaxAttempts)
@@ -22,13 +22,14 @@ func (s *Store) Reconcile(ctx context.Context, batch int, validate tasks.Assigne
 			return tasks.ReconcileResult{}, err
 		}
 		result.RecoveredOutbox = recovered
-		promoted, blockedDependencies, blockedAssignees, err := reconcileTaskReadiness(ctx, tx, batch, validate, outboxMaxAttempts)
+		promoted, blockedDependencies, blockedAssignees, blockedCapacity, err := reconcileTaskReadiness(ctx, tx, batch, validate, checkCapacity, outboxMaxAttempts)
 		if err != nil {
 			return tasks.ReconcileResult{}, err
 		}
 		result.PromotedTasks = promoted
 		result.BlockedDependencies = blockedDependencies
 		result.BlockedAssignees = blockedAssignees
+		result.BlockedCapacity = blockedCapacity
 		return result, nil
 	})
 }
@@ -105,39 +106,39 @@ func reconcileExpiredLeases(ctx context.Context, tx pgx.Tx, batch int, policy ta
 	return processed, nil
 }
 
-func reconcileTaskReadiness(ctx context.Context, tx pgx.Tx, batch int, validate tasks.AssigneeValidator, outboxMaxAttempts int) (int, int, int, error) {
+func reconcileTaskReadiness(ctx context.Context, tx pgx.Tx, batch int, validate tasks.AssigneeValidator, checkCapacity tasks.CapacityValidator, outboxMaxAttempts int) (int, int, int, int, error) {
 	rows, err := tx.Query(ctx, `
 		SELECT `+taskColumns+` FROM tasks
 		WHERE available_at<=clock_timestamp()
 		  AND (
 		    status IN ('pending','retry_wait')
-		    OR (status='blocked' AND status_reason_code IN ('dependency_unsatisfied','dependency_terminal','assignee_unavailable'))
+		    OR (status='blocked' AND status_reason_code IN ('dependency_unsatisfied','dependency_terminal','assignee_unavailable','capacity'))
 		  )
 		ORDER BY available_at,created_at,id FOR UPDATE SKIP LOCKED LIMIT $1
 	`, batch)
 	if err != nil {
-		return 0, 0, 0, mapError(err)
+		return 0, 0, 0, 0, mapError(err)
 	}
 	candidates := make([]tasks.Task, 0, batch)
 	for rows.Next() {
 		task, scanErr := scanTask(rows)
 		if scanErr != nil {
 			rows.Close()
-			return 0, 0, 0, scanErr
+			return 0, 0, 0, 0, scanErr
 		}
 		candidates = append(candidates, task)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return 0, 0, 0, mapError(err)
+		return 0, 0, 0, 0, mapError(err)
 	}
 	rows.Close()
 
-	promoted, blockedDependencies, blockedAssignees := 0, 0, 0
+	promoted, blockedDependencies, blockedAssignees, blockedCapacity := 0, 0, 0, 0
 	for _, task := range candidates {
 		dependencies, err := inspectDependencies(ctx, tx, task.ID)
 		if err != nil {
-			return promoted, blockedDependencies, blockedAssignees, err
+			return promoted, blockedDependencies, blockedAssignees, blockedCapacity, err
 		}
 		if dependencies.TerminalFailure {
 			changed := task.Status != tasks.StatusBlocked || task.StatusReasonCode == nil || *task.StatusReasonCode != "dependency_terminal"
@@ -145,13 +146,13 @@ func reconcileTaskReadiness(ctx context.Context, tx pgx.Tx, batch int, validate 
 				if task.Status == tasks.StatusBlocked {
 					updated, err := updateBlockedReason(ctx, tx, task, "dependency_terminal", "a dependency ended without completed status")
 					if err != nil {
-						return promoted, blockedDependencies, blockedAssignees, err
+						return promoted, blockedDependencies, blockedAssignees, blockedCapacity, err
 					}
 					if err := appendTaskEvent(ctx, tx, updated, nil, nil, "task.dependency_blocked", "system", "orgd-reconciler", map[string]any{"reason_code": "dependency_terminal"}, outboxMaxAttempts); err != nil {
-						return promoted, blockedDependencies, blockedAssignees, err
+						return promoted, blockedDependencies, blockedAssignees, blockedCapacity, err
 					}
 				} else if _, err := transitionTask(ctx, tx, task, tasks.StatusBlocked, "task.blocked", "dependency_terminal", "a dependency ended without completed status", "system", "orgd-reconciler", nil, outboxMaxAttempts); err != nil {
-					return promoted, blockedDependencies, blockedAssignees, err
+					return promoted, blockedDependencies, blockedAssignees, blockedCapacity, err
 				}
 				blockedDependencies++
 			}
@@ -162,14 +163,14 @@ func reconcileTaskReadiness(ctx context.Context, tx pgx.Tx, batch int, validate 
 				continue
 			}
 			if _, err := transitionTask(ctx, tx, task, tasks.StatusBlocked, "task.blocked", "dependency_unsatisfied", "one or more dependencies are not completed", "system", "orgd-reconciler", nil, outboxMaxAttempts); err != nil {
-				return promoted, blockedDependencies, blockedAssignees, err
+				return promoted, blockedDependencies, blockedAssignees, blockedCapacity, err
 			}
 			blockedDependencies++
 			continue
 		}
 		check, err := validate(ctx, task)
 		if err != nil {
-			return promoted, blockedDependencies, blockedAssignees, err
+			return promoted, blockedDependencies, blockedAssignees, blockedCapacity, err
 		}
 		if !check.Available {
 			changed := task.Status != tasks.StatusBlocked || task.StatusReasonCode == nil || *task.StatusReasonCode != "assignee_unavailable"
@@ -177,16 +178,55 @@ func reconcileTaskReadiness(ctx context.Context, tx pgx.Tx, batch int, validate 
 				if task.Status == tasks.StatusBlocked {
 					updated, err := updateBlockedReason(ctx, tx, task, "assignee_unavailable", check.Reason)
 					if err != nil {
-						return promoted, blockedDependencies, blockedAssignees, err
+						return promoted, blockedDependencies, blockedAssignees, blockedCapacity, err
 					}
 					if err := appendTaskEvent(ctx, tx, updated, nil, nil, "task.assignee_blocked", "system", "orgd-reconciler", map[string]any{"reason_code": "assignee_unavailable"}, outboxMaxAttempts); err != nil {
-						return promoted, blockedDependencies, blockedAssignees, err
+						return promoted, blockedDependencies, blockedAssignees, blockedCapacity, err
 					}
 				} else if _, err := transitionTask(ctx, tx, task, tasks.StatusBlocked, "task.blocked", "assignee_unavailable", check.Reason, "system", "orgd-reconciler", nil, outboxMaxAttempts); err != nil {
-					return promoted, blockedDependencies, blockedAssignees, err
+					return promoted, blockedDependencies, blockedAssignees, blockedCapacity, err
 				}
 				blockedAssignees++
 			}
+			continue
+		}
+		// Capacity is re-checked the exact same way assignee was just
+		// above -- a task blocked earlier for capacity (Claim's own
+		// pre-claim check, Section CAPACITY_EXHAUSTION_SCHEDULING_V1) only
+		// ever reaches this candidate set once its persisted available_at
+		// (the RetryAt this same check produced last time) has passed, so
+		// this never busy-polls: the SQL WHERE clause above is the only
+		// gate, and it is the same durable, restart-surviving available_at
+		// column every other reconcile wake already relies on. If the
+		// candidate that was expected back is still unavailable (or a
+		// different one now is), this re-blocks with a freshly-derived
+		// RetryAt rather than blindly promoting a task whose capacity
+		// picture may have moved again since it was last blocked.
+		capCheck, err := checkCapacity(ctx, task)
+		if err != nil {
+			return promoted, blockedDependencies, blockedAssignees, blockedCapacity, err
+		}
+		if !capCheck.Available {
+			changed := task.Status != tasks.StatusBlocked || task.StatusReasonCode == nil || *task.StatusReasonCode != "capacity"
+			if changed {
+				if task.Status == tasks.StatusBlocked {
+					updated, err := updateBlockedReason(ctx, tx, task, "capacity", capCheck.Reason)
+					if err != nil {
+						return promoted, blockedDependencies, blockedAssignees, blockedCapacity, err
+					}
+					if err := appendTaskEvent(ctx, tx, updated, nil, nil, "task.capacity_blocked", "system", "orgd-reconciler", map[string]any{"reason_code": "capacity"}, outboxMaxAttempts); err != nil {
+						return promoted, blockedDependencies, blockedAssignees, blockedCapacity, err
+					}
+				} else if _, err := transitionTask(ctx, tx, task, tasks.StatusBlocked, "task.blocked", "capacity", capCheck.Reason, "system", "orgd-reconciler", nil, outboxMaxAttempts); err != nil {
+					return promoted, blockedDependencies, blockedAssignees, blockedCapacity, err
+				}
+			}
+			if !capCheck.RetryAt.IsZero() {
+				if _, err := tx.Exec(ctx, `UPDATE tasks SET available_at=$2 WHERE id=$1`, task.ID, capCheck.RetryAt); err != nil {
+					return promoted, blockedDependencies, blockedAssignees, blockedCapacity, mapError(err)
+				}
+			}
+			blockedCapacity++
 			continue
 		}
 		if task.AttemptCount >= task.MaxAttempts {
@@ -195,11 +235,11 @@ func reconcileTaskReadiness(ctx context.Context, tx pgx.Tx, batch int, validate 
 			continue
 		}
 		if _, err := transitionTask(ctx, tx, task, tasks.StatusReady, "task.ready", "", "", "system", "orgd-reconciler", nil, outboxMaxAttempts); err != nil {
-			return promoted, blockedDependencies, blockedAssignees, fmt.Errorf("promote task %d: %w", task.ID, err)
+			return promoted, blockedDependencies, blockedAssignees, blockedCapacity, fmt.Errorf("promote task %d: %w", task.ID, err)
 		}
 		promoted++
 	}
-	return promoted, blockedDependencies, blockedAssignees, nil
+	return promoted, blockedDependencies, blockedAssignees, blockedCapacity, nil
 }
 
 func updateBlockedReason(ctx context.Context, tx pgx.Tx, task tasks.Task, reasonCode, reason string) (tasks.Task, error) {

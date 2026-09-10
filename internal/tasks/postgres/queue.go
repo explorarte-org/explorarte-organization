@@ -20,7 +20,7 @@ type leaseRecord struct {
 	Now       time.Time
 }
 
-func (s *Store) Claim(ctx context.Context, request tasks.ClaimRequest, validate tasks.AssigneeValidator, outboxMaxAttempts int) ([]tasks.ClaimedTask, error) {
+func (s *Store) Claim(ctx context.Context, request tasks.ClaimRequest, validate tasks.AssigneeValidator, checkCapacity tasks.CapacityValidator, outboxMaxAttempts int) ([]tasks.ClaimedTask, error) {
 	return withTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) ([]tasks.ClaimedTask, error) {
 		query := `SELECT ` + taskColumns + ` FROM tasks
 			WHERE organization_id=$1 AND status='ready' AND attempt_count<max_attempts AND available_at<=clock_timestamp()`
@@ -59,6 +59,38 @@ func (s *Store) Claim(ctx context.Context, request tasks.ClaimRequest, validate 
 			if !check.Available {
 				if _, err := transitionTask(ctx, tx, candidate.Task, tasks.StatusBlocked, "task.blocked", "assignee_unavailable", check.Reason, "system", "orgd-reconciler", nil, outboxMaxAttempts); err != nil {
 					return nil, err
+				}
+				continue
+			}
+			// Capacity is checked immediately before claimOne, the exact
+			// point attempt_count increments (Section: CAPACITY_EXHAUSTION_
+			// SCHEDULING_V1) -- so a task whose pool has no eligible
+			// candidate right now never reaches claimOne at all: no attempt
+			// row, no lease, no attempt_count consumption, the same way an
+			// assignee_unavailable candidate above it never does either.
+			// checkCapacity is nil-safe (Service.checkCapacity) and reports
+			// Available:true for every non-pool-routed task, so this is a
+			// no-op for the overwhelming majority of claim candidates.
+			capCheck, err := checkCapacity(ctx, candidate.Task)
+			if err != nil {
+				return nil, err
+			}
+			if !capCheck.Available {
+				blocked, err := transitionTask(ctx, tx, candidate.Task, tasks.StatusBlocked, "task.blocked", "capacity", capCheck.Reason, "system", "orgd-reconciler", nil, outboxMaxAttempts)
+				if err != nil {
+					return nil, err
+				}
+				// RetryAt is the caller's own derivation from real capacity
+				// state (never fabricated here); persisting it as
+				// available_at is what lets reconcileTaskReadiness -- the
+				// existing durable, available_at-gated wake mechanism, not a
+				// new timer -- re-evaluate this task once it might have
+				// changed, surviving process restart because it is a plain
+				// row, not in-memory state.
+				if !capCheck.RetryAt.IsZero() {
+					if _, err := tx.Exec(ctx, `UPDATE tasks SET available_at=$2 WHERE id=$1`, blocked.ID, capCheck.RetryAt); err != nil {
+						return nil, mapError(err)
+					}
 				}
 				continue
 			}

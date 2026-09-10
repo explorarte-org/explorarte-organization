@@ -113,7 +113,7 @@ func (p *boundaryPersistence) ReleaseCoordinationHold(context.Context, tasks.Rel
 func (p *boundaryPersistence) Cancel(context.Context, tasks.CancelCommand, int) (tasks.Task, error) {
 	return tasks.Task{}, p.refuse()
 }
-func (p *boundaryPersistence) Claim(context.Context, tasks.ClaimRequest, tasks.AssigneeValidator, int) ([]tasks.ClaimedTask, error) {
+func (p *boundaryPersistence) Claim(context.Context, tasks.ClaimRequest, tasks.AssigneeValidator, tasks.CapacityValidator, int) ([]tasks.ClaimedTask, error) {
 	return nil, p.refuse()
 }
 func (p *boundaryPersistence) StartAttempt(context.Context, tasks.LeaseCommand, int) (tasks.Task, error) {
@@ -125,7 +125,7 @@ func (p *boundaryPersistence) Heartbeat(context.Context, tasks.LeaseCommand, tim
 func (p *boundaryPersistence) RecordAttemptResult(context.Context, tasks.RecordAttemptResultCommand, tasks.RetryPolicy, int) (tasks.Task, error) {
 	return tasks.Task{}, p.refuse()
 }
-func (p *boundaryPersistence) Reconcile(context.Context, int, tasks.AssigneeValidator, tasks.RetryPolicy, int) (tasks.ReconcileResult, error) {
+func (p *boundaryPersistence) Reconcile(context.Context, int, tasks.AssigneeValidator, tasks.CapacityValidator, tasks.RetryPolicy, int) (tasks.ReconcileResult, error) {
 	return tasks.ReconcileResult{}, p.refuse()
 }
 func (p *boundaryPersistence) ClaimOutbox(context.Context, tasks.OutboxClaimRequest) ([]tasks.ClaimedOutboxEvent, error) {

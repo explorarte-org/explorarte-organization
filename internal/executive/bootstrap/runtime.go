@@ -128,6 +128,16 @@ func Open(cfg config.Config, store *platformpostgres.Store, opts ...OpenOption) 
 	if err != nil {
 		return nil, fmt.Errorf("open executive model runtime: %w", err)
 	}
+	// CAPACITY_EXHAUSTION_SCHEDULING_V1: the Task Engine stays domain-
+	// agnostic (it has no knowledge of ModelPolicy or pool routing), so
+	// the capacity gate lives here, the one place that already holds both
+	// the role/policy registry and the Model Runtime's own routing store,
+	// and is injected as a plain function -- the same shape validateAssignee
+	// already has internally. Wiring nothing here (the pre-existing state
+	// for every other tasks.NewService caller) is exactly the old, always-
+	// available behavior; only this runtime's tasks.Service ever sees pool
+	// capacity at claim time.
+	taskService.SetCapacityGate(newCapacityGate(registryRepository, taskCatalog, modelRuntime.Store, cfg.Tasks.OrganizationID))
 	completionReader, err := completionpostgres.New(store, cfg.Tasks.OrganizationID)
 	if err != nil {
 		return nil, fmt.Errorf("create executive completion reader: %w", err)

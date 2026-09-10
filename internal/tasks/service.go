@@ -41,9 +41,10 @@ func (cfg Config) Validate() error {
 }
 
 type Service struct {
-	persistence Persistence
-	catalog     Catalog
-	cfg         Config
+	persistence  Persistence
+	catalog      Catalog
+	cfg          Config
+	capacityGate CapacityValidator
 }
 
 func NewService(persistence Persistence, catalog Catalog, cfg Config) (*Service, error) {
@@ -57,6 +58,24 @@ func NewService(persistence Persistence, catalog Catalog, cfg Config) (*Service,
 		return nil, err
 	}
 	return &Service{persistence: persistence, catalog: catalog, cfg: cfg}, nil
+}
+
+// SetCapacityGate wires an optional CapacityValidator, consulted for every
+// ready claim candidate the exact same way validateAssignee already is.
+// Unset (the default for every existing caller of NewService), Claim and
+// Reconcile behave exactly as before this type existed -- checkCapacity
+// below is the only thing that ever reads this field, and it treats nil
+// as always-available. Only a host that actually wires pool-routed model
+// capacity (internal/executive's bootstrap) ever calls this.
+func (s *Service) SetCapacityGate(gate CapacityValidator) {
+	s.capacityGate = gate
+}
+
+func (s *Service) checkCapacity(ctx context.Context, task Task) (CapacityCheck, error) {
+	if s.capacityGate == nil {
+		return CapacityCheck{Available: true}, nil
+	}
+	return s.capacityGate(ctx, task)
 }
 
 func (s *Service) GetTask(ctx context.Context, id int64) (TaskDetail, error) {
@@ -398,7 +417,7 @@ func (s *Service) ClaimTasks(ctx context.Context, request ClaimRequest) ([]Claim
 	if request.LeaseDuration <= 0 || request.LeaseDuration > s.cfg.MaxLeaseDuration {
 		return nil, fmt.Errorf("%w: lease duration is invalid", ErrInvalidInput)
 	}
-	return s.persistence.Claim(ctx, request, s.validateAssignee, s.cfg.OutboxMaxAttempts)
+	return s.persistence.Claim(ctx, request, s.validateAssignee, s.checkCapacity, s.cfg.OutboxMaxAttempts)
 }
 
 func (s *Service) StartAttempt(ctx context.Context, command LeaseCommand) (Task, error) {
@@ -517,7 +536,7 @@ func (s *Service) Reconcile(ctx context.Context, batch int) (ReconcileResult, er
 	if batch < 1 || batch > 1000 {
 		return ReconcileResult{}, fmt.Errorf("%w: reconcile batch must be between 1 and 1000", ErrInvalidInput)
 	}
-	return s.persistence.Reconcile(ctx, batch, s.validateAssignee, s.cfg.RetryPolicy, s.cfg.OutboxMaxAttempts)
+	return s.persistence.Reconcile(ctx, batch, s.validateAssignee, s.checkCapacity, s.cfg.RetryPolicy, s.cfg.OutboxMaxAttempts)
 }
 
 func (s *Service) ClaimOutbox(ctx context.Context, request OutboxClaimRequest) ([]ClaimedOutboxEvent, error) {
