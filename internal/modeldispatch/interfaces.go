@@ -24,6 +24,7 @@ type ResourceCapabilityAuthorizer interface {
 
 type RoleRef struct {
 	ID             string
+	ModelPolicy    string
 	Enabled        bool
 	Executable     bool
 	AuthorityClass string
@@ -63,6 +64,31 @@ type TaskLineageReader interface {
 // creation deliberately revalidates the binding later as a TOCTOU boundary.
 type RoleModelBindingReader interface {
 	GetActiveRoleModelBinding(ctx context.Context, organizationID string, revisionID int64, roleID string) (RoleModelBindingRef, error)
+}
+
+// RoutingPolicyRef is the narrow pool-routing awareness modeldispatch needs:
+// only enough to know a role's model_policy is a materialized routing_mode:
+// pool policy (mirroring internal/modelruntime.RoutingPolicy, kept as its
+// own minimal type here so modeldispatch never depends on modelruntime).
+// It never carries a candidate, provider, or model -- selecting one of
+// those stays exclusively RouteResolver's job, at Invocation-creation time,
+// inside internal/modelruntime.
+type RoutingPolicyRef struct {
+	OrganizationID         string
+	OrganizationRevisionID int64
+	PolicyID               string
+	RoutingMode            string
+	CanonicalHash          string
+}
+
+// RoutingPolicyReader is the provisioning-time pool-policy existence gate.
+// A role bound to a pool policy has no role_model_bindings row at all (see
+// migration 000070), so RoleModelBindingReader alone cannot tell a pool
+// role apart from a role with no binding at all. GetRoutingPolicy answers
+// exactly that: ok=false (nil error) is the expected, non-error result for
+// every static policy -- there is deliberately no row for those.
+type RoutingPolicyReader interface {
+	GetRoutingPolicy(ctx context.Context, organizationID string, revisionID int64, policyID string) (RoutingPolicyRef, bool, error)
 }
 
 type AuthorizedAssignmentProvisioner interface {

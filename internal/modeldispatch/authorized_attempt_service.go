@@ -22,12 +22,13 @@ type AuthorizedAttemptProvisioner struct {
 	resourceAuthorizer    ResourceCapabilityAuthorizer
 	lineage               TaskLineageReader
 	bindings              RoleModelBindingReader
+	routing               RoutingPolicyReader
 	executionPrincipalKey string
 }
 
-func NewAuthorizedAttemptProvisioner(assignments *AssignmentService, lineage TaskLineageReader, bindings RoleModelBindingReader, executionPrincipalKey string) (*AuthorizedAttemptProvisioner, error) {
+func NewAuthorizedAttemptProvisioner(assignments *AssignmentService, lineage TaskLineageReader, bindings RoleModelBindingReader, routing RoutingPolicyReader, executionPrincipalKey string) (*AuthorizedAttemptProvisioner, error) {
 	executionPrincipalKey = strings.TrimSpace(executionPrincipalKey)
-	if assignments == nil || lineage == nil || bindings == nil {
+	if assignments == nil || lineage == nil || bindings == nil || routing == nil {
 		return nil, fmt.Errorf("authorized attempt provisioner dependencies are incomplete")
 	}
 	if len(executionPrincipalKey) < 1 || len(executionPrincipalKey) > 200 || !principalKeyPattern.MatchString(executionPrincipalKey) {
@@ -38,7 +39,7 @@ func NewAuthorizedAttemptProvisioner(assignments *AssignmentService, lineage Tas
 		return nil, fmt.Errorf("authorized attempt provisioner requires resource-scoped authorization")
 	}
 	return &AuthorizedAttemptProvisioner{
-		assignments: assignments, resourceAuthorizer: resourceAuthorizer, lineage: lineage, bindings: bindings,
+		assignments: assignments, resourceAuthorizer: resourceAuthorizer, lineage: lineage, bindings: bindings, routing: routing,
 		executionPrincipalKey: executionPrincipalKey,
 	}, nil
 }
@@ -105,12 +106,40 @@ func (s *AuthorizedAttemptProvisioner) EnsureAuthorizedAssignmentForRunningAttem
 		return CreateAssignmentResult{}, fmt.Errorf("%w: dispatch actor role must be enabled, executable and execution_service", ErrRoleNotEligible)
 	}
 	binding, err := s.bindings.GetActiveRoleModelBinding(ctx, attempt.OrganizationID, revision, attempt.AssignedRoleID)
-	if err != nil {
+	switch {
+	case err == nil:
+		if !binding.Active || binding.OrganizationID != attempt.OrganizationID || binding.OrganizationRevisionID != revision ||
+			binding.RoleID != attempt.AssignedRoleID || binding.ModelProfileVersionID <= 0 || !sha256Pattern.MatchString(binding.BindingHash) {
+			return CreateAssignmentResult{}, fmt.Errorf("%w: active role-model binding scope mismatch", ErrTaskAttemptRejected)
+		}
+	case errors.Is(err, ErrNotFound):
+		// No static role_model_bindings row. This is the expected, ordinary
+		// shape for a role whose model_policy is routing_mode: pool (see
+		// migration 000070's comment on routing_policies): the candidate is
+		// resolved later, per-invocation, by RouteResolver inside
+		// internal/modelruntime -- modeldispatch never selects one. Here we
+		// only need to confirm the role really is pool-routed, using a
+		// binding-shaped stand-in (policy id as ProfileID, the policy's own
+		// canonical_hash as BindingHash, ModelProfileVersionID left at 0) so
+		// the digest/idempotency-key derivation below stays uniform across
+		// the static and pool cases without inventing a fake profile
+		// version. This stand-in is never persisted: DispatcherAssignment
+		// has no profile/version/binding-hash columns at all.
+		subjectRole, roleErr := s.assignments.catalog.GetRole(ctx, attempt.OrganizationID, attempt.AssignedRoleID)
+		if roleErr != nil {
+			return CreateAssignmentResult{}, fmt.Errorf("%w: active role-model binding: %v", ErrTaskAttemptRejected, err)
+		}
+		policy, found, policyErr := s.routing.GetRoutingPolicy(ctx, attempt.OrganizationID, revision, subjectRole.ModelPolicy)
+		if policyErr != nil || !found || policy.RoutingMode != "pool" ||
+			policy.OrganizationID != attempt.OrganizationID || policy.OrganizationRevisionID != revision {
+			return CreateAssignmentResult{}, fmt.Errorf("%w: active role-model binding: %v", ErrTaskAttemptRejected, err)
+		}
+		binding = RoleModelBindingRef{
+			OrganizationID: attempt.OrganizationID, OrganizationRevisionID: revision, RoleID: attempt.AssignedRoleID,
+			ProfileID: "pool:" + policy.PolicyID, ModelProfileVersionID: 0, BindingHash: policy.CanonicalHash, Active: true,
+		}
+	default:
 		return CreateAssignmentResult{}, fmt.Errorf("%w: active role-model binding: %v", ErrTaskAttemptRejected, err)
-	}
-	if !binding.Active || binding.OrganizationID != attempt.OrganizationID || binding.OrganizationRevisionID != revision ||
-		binding.RoleID != attempt.AssignedRoleID || binding.ModelProfileVersionID <= 0 || !sha256Pattern.MatchString(binding.BindingHash) {
-		return CreateAssignmentResult{}, fmt.Errorf("%w: active role-model binding scope mismatch", ErrTaskAttemptRejected)
 	}
 	resourceType := "model_dispatcher_assignment"
 	resourceID := fmt.Sprintf("task:%d/attempt:%d", taskID, attemptID)
