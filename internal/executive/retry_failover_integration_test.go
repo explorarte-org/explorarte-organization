@@ -236,6 +236,7 @@ func (c retryCatalog) ListRoles(context.Context, string) ([]modelruntime.RoleRef
 type retryFailoverAdapter struct {
 	mu             sync.Mutex
 	failCandidateA bool
+	failCandidateB bool
 	calls          []retryFailoverCall
 }
 
@@ -267,6 +268,12 @@ func (a *retryFailoverAdapter) setFailCandidateA(fail bool) {
 	a.failCandidateA = fail
 }
 
+func (a *retryFailoverAdapter) setFailCandidateB(fail bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.failCandidateB = fail
+}
+
 func (a *retryFailoverAdapter) callCount(providerModelID string) int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -294,10 +301,11 @@ func (a *retryFailoverAdapter) idempotencyKeysFor(providerModelID string) []stri
 func (a *retryFailoverAdapter) Dispatch(_ context.Context, req modelruntime.CanonicalRequest) (modelruntime.RawResponse, error) {
 	a.mu.Lock()
 	failA := a.failCandidateA
+	failB := a.failCandidateB
 	a.calls = append(a.calls, retryFailoverCall{ProviderModelID: req.ProviderModelID, IdempotencyKey: req.ProviderIdempotencyKey, InvocationID: req.InvocationID})
 	a.mu.Unlock()
 
-	if req.ProviderModelID == retryCandidateA && failA {
+	if (req.ProviderModelID == retryCandidateA && failA) || (req.ProviderModelID == retryCandidateB && failB) {
 		return modelruntime.RawResponse{}, &modelruntime.AdapterError{
 			Phase: modelruntime.AdapterFailureResponseReceived,
 			Outcome: modelruntime.ProviderOutcome{
@@ -307,7 +315,7 @@ func (a *retryFailoverAdapter) Dispatch(_ context.Context, req modelruntime.Cano
 				ResponseHash:          modelruntime.SHA256Bytes([]byte("retry-failover-503-" + strconv.FormatInt(req.InvocationID, 10))),
 				ResponseSchemaVersion: "test.fake.response.v1",
 			},
-			Cause: errors.New("retry failover test: candidate A confirmed 503"),
+			Cause: errors.New("retry failover test: candidate confirmed 503"),
 		}
 	}
 
@@ -339,10 +347,17 @@ func retryFailoverResponseBody(schema json.RawMessage) []byte {
 	switch {
 	case strings.Contains(s, "department_requests"):
 		return []byte(`{"schema_version":"executive-plan/v1","objective":"analyze","department_requests":[{"unit_id":"ingenieria_ia","objective":"inspect","deliverable":"report","priority":10,"constraints":[]}],"global_constraints":[],"success_criteria":["verified"],"owner_decisions_required":[]}`)
-	case strings.Contains(s, "assigned_role_id"):
-		return []byte(`{"schema_version":"department-plan/v2","department_id":"ingenieria_ia","tasks":[{"client_key":"inspect","assigned_role_id":"ingenieria_ia/qa","task_class":"general.work","title":"Inspect state","instructions":"Inspect the bounded task context and report findings.","acceptance_criteria":["return findings"],"dependencies":[],"requirements":[],"priority":5}],"review_criteria":["findings verified"],"unresolved":[],"revision_ownership":[]}`)
+	// department-review/v2's own schema (departmentReviewOutputSchema in
+	// schemas.go) embeds taskOutputSchemaJSON verbatim for
+	// proposed_followup_tasks.items, so its raw text ALSO contains
+	// "assigned_role_id" -- this case must be checked before that one, or
+	// every department-review call wrongly matches the department-plan
+	// body below (missing "verdict", which is what a real schema-mismatch
+	// error looked like before this reordering).
 	case strings.Contains(s, "unsatisfied_criteria"):
 		return []byte(`{"schema_version":"department-review/v2","verdict":"accept","findings":["criteria satisfied"],"unsatisfied_criteria":[],"evidence_refs":[],"proposed_followup_tasks":[],"revision_outcomes":[],"followup_ownership":[]}`)
+	case strings.Contains(s, "assigned_role_id"):
+		return []byte(`{"schema_version":"department-plan/v2","department_id":"ingenieria_ia","tasks":[{"client_key":"inspect","assigned_role_id":"ingenieria_ia/qa","task_class":"general.work","title":"Inspect state","instructions":"Inspect the bounded task context and report findings.","acceptance_criteria":["return findings"],"dependencies":[],"requirements":[],"priority":5}],"review_criteria":["findings verified"],"unresolved":[],"revision_ownership":[]}`)
 	case strings.Contains(s, "answer_to_owner"):
 		return []byte(`{"schema_version":"executive-closure/v1","status":"completed","answer_to_owner":"The requested area was analyzed with verified evidence.","completed_items":["engineering analysis"],"blocked_items":[],"unresolved_decisions":[],"evidence_refs":["integration:evidence:1"]}`)
 	default:
@@ -471,6 +486,31 @@ func newRetryFailoverRuntime(t *testing.T, h *integrationHarness) *retryFailover
 	t.Helper()
 	ctx := h.ctx
 
+	// newIntegrationHarness truncates the EXECUTIVE package's own tables
+	// (organizations, organization_roles, organization_registry_revisions,
+	// tasks, ...) but has no reason to know about the model-runtime/
+	// model-dispatch tables this fixture alone populates -- so with
+	// several retry-failover tests in this file, each running its own
+	// fresh newIntegrationHarness, rows this function creates in one test
+	// (routing_policies/routing_candidates/role_model_bindings/
+	// model_dispatcher_assignments/model_execution_principals/... keyed by
+	// an organization_revision_id that RESTART IDENTITY makes the NEXT
+	// test's own revision reuse) silently collide with the next test's
+	// attempt to materialize the same (organization, revision, policy)
+	// tuple. Confirmed empirically: running this file's tests together
+	// (not in isolation) broke on exactly this.
+	if _, err := h.store.Pool().Exec(ctx, `
+TRUNCATE model_dispatcher_assignment_uses,model_dispatcher_assignments,model_execution_principals,
+         model_egress_evaluations,model_invocation_usage,model_invocation_results,model_dispatch_attempts,
+         model_provider_outcomes,model_provider_requests,model_invocations,model_routing_capacity_state,
+         model_egress_revision_bindings,model_egress_rules,model_egress_policy_versions,
+         model_execution_identity_keys,routing_candidates,routing_policies,role_model_bindings,
+         model_capability_snapshots,model_profile_versions,model_profiles,model_providers,
+         execution_run_descriptors,context_segments,context_snapshots
+RESTART IDENTITY CASCADE`); err != nil {
+		t.Fatalf("reset model-runtime/model-dispatch schema: %v", err)
+	}
+
 	modelStore, err := modelpostgres.New(h.store)
 	if err != nil {
 		t.Fatal(err)
@@ -559,6 +599,41 @@ WHERE o.id = $1`, retryOrganizationID).Scan(&originalRevisionID, &originalCanoni
 	if _, err = h.store.Pool().Exec(ctx, `UPDATE organizations SET current_revision_id=$1,updated_at=clock_timestamp() WHERE id=$2`, revisionID, retryOrganizationID); err != nil {
 		t.Fatal(err)
 	}
+	// A real org-registry sync (internal/organization/registry's
+	// postgres_repository.go ApplyDiff) unconditionally upserts every
+	// role's source_revision_id to the new revision on every sync, whether
+	// or not that role's own data changed -- this fixture bumps
+	// organizations.current_revision_id by hand instead of running a real
+	// sync, so it must mirror that same unconditional bump here.
+	//
+	// This E2E intentionally substitutes test-only routing for the three
+	// cognitive roles it drives plus its technical dispatch actor. Keep the
+	// persisted authority equal to that substituted catalog: the dispatcher
+	// derives authority from organization_roles rather than trusting the
+	// catalog adapter's convenience override. A real canonical sync would
+	// establish the same agreement through role-catalog.yaml before model
+	// registry materialization. This is confined to the disposable test DB.
+	// modeldispatch.Store.GetRoleRoutingAuthority requires
+	// organization_roles.source_revision_id to equal the queried revision
+	// exactly (a real deployment's roles are never stale relative to the
+	// current revision), and without this every role would still show
+	// source_revision_id from before this fixture's revision bump.
+	if _, err = h.store.Pool().Exec(ctx, `
+UPDATE organization_roles
+SET source_revision_id=$1,
+    model_policy=CASE id
+        WHEN $3 THEN $4
+        WHEN $5 THEN $4
+        WHEN $6 THEN $7
+        WHEN $8 THEN $4
+        ELSE model_policy
+    END
+WHERE organization_id=$2`, revisionID, retryOrganizationID,
+		retryCEORoleID, retryFailoverStaticPolicyID,
+		retryLeaderRoleID, retryWorkerRoleID, retryFailoverPoolPolicyID,
+		retryDispatchActorRoleID); err != nil {
+		t.Fatal(err)
+	}
 
 	egressPlan := modelegress.RegistryPlan{
 		OrganizationID: retryOrganizationID, OrganizationRevisionID: revisionID,
@@ -580,6 +655,7 @@ WHERE o.id = $1`, retryOrganizationID).Scan(&originalRevisionID, &originalCanoni
 			{ID: retryCEORoleID, ModelPolicy: retryFailoverStaticPolicyID, Enabled: true, Executable: true},
 			{ID: retryLeaderRoleID, ModelPolicy: retryFailoverStaticPolicyID, Enabled: true, Executable: true},
 			{ID: retryWorkerRoleID, ModelPolicy: retryFailoverPoolPolicyID, Enabled: true, Executable: true},
+			{ID: retryDispatchActorRoleID, ModelPolicy: retryFailoverStaticPolicyID, Enabled: true, Executable: true},
 		},
 		modelruntime.OrganizationRef{ID: retryOrganizationID, RevisionID: revisionID},
 		routing,
@@ -882,7 +958,7 @@ func newRetryFailoverOrchestrator(t *testing.T, h *integrationHarness, runtime *
 // recurring sweep is operator/cron-invoked (see
 // internal/tasks/postgres/reconcile.go). The short sleep is real wall-clock
 // time elapsing for a real backoff delay, not a workaround.
-func driveRetryFailoverRun(t *testing.T, h *integrationHarness, orchestrator *executive.Orchestrator, rootID int64, max int) (executive.Run, error) {
+func driveRetryFailoverRun(t *testing.T, h *integrationHarness, runtime *retryFailoverRuntime, orchestrator *executive.Orchestrator, rootID int64, max int) (executive.Run, error) {
 	t.Helper()
 	var run executive.Run
 	var err error
@@ -891,6 +967,16 @@ func driveRetryFailoverRun(t *testing.T, h *integrationHarness, orchestrator *ex
 			t.Fatalf("reconcile: %v", reconcileErr)
 		}
 		run, err = orchestrator.Resume(h.ctx, rootID)
+		// Resume intentionally surfaces the causal failure even when
+		// ErrTaskRetryScheduled proves the Task Engine has durably moved this
+		// task to retry_wait. It is not a terminal campaign error: reconcile
+		// will make the next attempt ready, so keep driving this E2E. Every
+		// other error is still an immediate failure for the harness.
+		if errors.Is(err, executive.ErrTaskRetryScheduled) {
+			state, stateErr := runtime.store.CapacityState(h.ctx, retryOrganizationID, "test.fake", retryCandidateA)
+			t.Logf("retry scheduled at drive iteration %d; A capacity=%+v capacity_err=%v", i, state, stateErr)
+			err = nil
+		}
 		if err != nil || run.State == executive.StateCompleted || run.State == executive.StateFailed || run.State == executive.StateBlocked {
 			return run, err
 		}
@@ -970,32 +1056,10 @@ func invocationForAttempt(t *testing.T, h *integrationHarness, runtime *retryFai
 // Main E2E: candidate A fails retryable -> cooldown -> Attempt 2 -> B ->
 // success. Covers Sections 3-9 and 16.A/17 of the spec.
 //
-// KNOWN RESULT (documented finding, not a test bug): this test is expected
-// to FAIL at driveRetryFailoverRun, and that failure IS the finding.
-//
-// The task-engine-level retry mechanism works correctly in isolation:
-// RecordAttemptFailed(..., retryable=true) really does persist retryable=true
-// and the task transitions to retry_wait with a correct backoff (verified
-// directly against Postgres while debugging this test). But Executive's
-// campaign orchestration never gets to observe that retry happening: a
-// worker's model-invocation failure goes through failAttempt (orchestrator.go,
-// the ProcessTypedTask path around the ErrCompletionFailed/"model_invocation_failed"
-// sentinel), which correctly records retryable into the task engine but then
-// unconditionally returns an ErrCompletionFailed-wrapped error regardless of
-// the retryable value. That error reaches handlePhaseError, whose
-// isNonBlockingPhaseError allowlist covers only infrastructure-level
-// transience (lost lease, unavailable authority, ambiguous outcome, ...) --
-// it has no knowledge of the retryable bool and ErrCompletionFailed is not on
-// it -- so the very first retryable provider failure calls o.blockRoot(...)
-// and marks the ROOT task itself status=blocked. handlePhaseError's own
-// comment states ResumeDurable deliberately refuses to auto-reopen a blocked
-// root, so nothing ever calls Resume() again in a way that would observe the
-// task engine's own fresh attempt and let the campaign continue onto
-// candidate B. The retry engine and the failover routing are each
-// individually correct; they just never get exercised together through the
-// Executive campaign layer. This is a Section 21 STOP condition (changing
-// handlePhaseError/isNonBlockingPhaseError touches Executive orchestration
-// semantics) -- reported, not patched, per Section 23.
+// A retryable candidate-A rejection must leave the root executable while the
+// Task Engine owns retry_wait/backoff/attempt limits. The driver treats the
+// causal ErrTaskRetryScheduled as progress rather than terminal failure, then
+// reconciles and resumes until candidate B completes the campaign.
 // ============================================================
 
 func TestExecutiveRetryFailoverPostgreSQL17CandidateAToCandidateB(t *testing.T) {
@@ -1007,13 +1071,9 @@ func TestExecutiveRetryFailoverPostgreSQL17CandidateAToCandidateB(t *testing.T) 
 	orchestrator := newRetryFailoverOrchestrator(t, h, runtime, executive.DefaultLimits())
 	rootID := submitRetryFailoverGoal(t, h, orchestrator, "retry-failover-a-to-b")
 
-	run, err := driveRetryFailoverRun(t, h, orchestrator, rootID, 30)
+	run, err := driveRetryFailoverRun(t, h, runtime, orchestrator, rootID, 30)
 	if err != nil {
-		t.Fatalf("run did not converge -- EXPECTED per this test's doc comment above: "+
-			"Executive blocks the root campaign on the worker's first retryable "+
-			"model-invocation failure instead of letting the task engine's own "+
-			"retry (already confirmed durable and correctly retryable=true) carry "+
-			"the campaign to candidate B. %v run=%+v", err, run)
+		t.Fatalf("run did not converge: %v run=%+v", err, run)
 	}
 	if run.State != executive.StateCompleted || run.AnswerToOwner == "" {
 		t.Fatalf("run=%+v", run)
@@ -1100,6 +1160,35 @@ func TestExecutiveRetryFailoverPostgreSQL17CandidateAToCandidateB(t *testing.T) 
 		t.Fatalf("candidate B call count = %d, want 1", got)
 	}
 
+	// C1: Assignment 1 and 2 both authorize the same pool policy but are
+	// two distinct rows -- model_dispatcher_assignments carries no
+	// candidate/provider/model column at all (RouteResolver alone selects
+	// one, per-invocation, inside internal/modelruntime).
+	var assignmentID1, assignmentID2 int64
+	if err = h.store.Pool().QueryRow(h.ctx, `SELECT id FROM model_dispatcher_assignments WHERE organization_id=$1 AND task_id=$2 AND attempt_id=$3`, retryOrganizationID, worker.Task.ID, attempt1.ID).Scan(&assignmentID1); err != nil {
+		t.Fatal(err)
+	}
+	if err = h.store.Pool().QueryRow(h.ctx, `SELECT id FROM model_dispatcher_assignments WHERE organization_id=$1 AND task_id=$2 AND attempt_id=$3`, retryOrganizationID, worker.Task.ID, attempt2.ID).Scan(&assignmentID2); err != nil {
+		t.Fatal(err)
+	}
+	if assignmentID1 == assignmentID2 {
+		t.Fatal("Assignment 2 must differ from Assignment 1")
+	}
+
+	// C1: a new HarnessRun per attempt -- harnessRunID(org, taskID,
+	// attemptID, purpose) is a pure function of the attempt's own
+	// identity, so a new attempt always produces a distinct run.
+	var harnessRunID1, harnessRunID2 string
+	if err = h.store.Pool().QueryRow(h.ctx, `SELECT harness_run_id FROM execution_run_descriptors WHERE organization_id=$1 AND task_id=$2 AND attempt_id=$3`, retryOrganizationID, worker.Task.ID, attempt1.ID).Scan(&harnessRunID1); err != nil {
+		t.Fatal(err)
+	}
+	if err = h.store.Pool().QueryRow(h.ctx, `SELECT harness_run_id FROM execution_run_descriptors WHERE organization_id=$1 AND task_id=$2 AND attempt_id=$3`, retryOrganizationID, worker.Task.ID, attempt2.ID).Scan(&harnessRunID2); err != nil {
+		t.Fatal(err)
+	}
+	if harnessRunID1 == "" || harnessRunID2 == "" || harnessRunID1 == harnessRunID2 {
+		t.Fatalf("HarnessRunID must be distinct per attempt: attempt1=%q attempt2=%q", harnessRunID1, harnessRunID2)
+	}
+
 	// Section 16.A: reentering the SAME attempt (a second Resume once the
 	// run has already converged) must never create a second Invocation for
 	// either attempt.
@@ -1111,5 +1200,106 @@ func TestExecutiveRetryFailoverPostgreSQL17CandidateAToCandidateB(t *testing.T) 
 	}
 	if got := runtime.adapter.callCount(retryCandidateB); got != 1 {
 		t.Fatalf("re-resuming the completed run must not re-dispatch candidate B: calls=%d", got)
+	}
+}
+
+// ============================================================
+// Section D / C3: capacity-exhaustion + worker-terminal-isolation
+// characterization. Both are explicitly READ-ONLY per the spec ("NO
+// cambies todavía esa semántica" / "No lo arregles automáticamente") --
+// this test asserts nothing about what SHOULD happen, only logs exactly
+// what DOES, for the final report's CAPACITY_EXHAUSTION_* and
+// WORKER_TERMINAL_FAILURE_ISOLATION_GAP fields.
+// ============================================================
+
+func TestExecutiveRetryFailoverPostgreSQL17BothCandidatesExhausted(t *testing.T) {
+	h := newIntegrationHarness(t)
+	defer h.close()
+	runtime := newRetryFailoverRuntime(t, h)
+	runtime.adapter.setFailCandidateA(true)
+	runtime.adapter.setFailCandidateB(true)
+
+	orchestrator := newRetryFailoverOrchestrator(t, h, runtime, executive.DefaultLimits())
+	rootID := submitRetryFailoverGoal(t, h, orchestrator, "retry-failover-both-exhausted")
+
+	run, err := driveRetryFailoverRun(t, h, runtime, orchestrator, rootID, 30)
+	t.Logf("CAPACITY_EXHAUSTION_CURRENT_BEHAVIOR: run=%+v err=%v", run, err)
+
+	worker := workerTask(t, h, rootID)
+	var workerReasonCode, workerReason string
+	if worker.Task.StatusReasonCode != nil {
+		workerReasonCode = *worker.Task.StatusReasonCode
+	}
+	if worker.Task.StatusReason != nil {
+		workerReason = *worker.Task.StatusReason
+	}
+	t.Logf("worker task status=%q reason_code=%q reason=%q attempt_count=%d max_attempts=%d",
+		worker.Task.Status, workerReasonCode, workerReason, worker.Task.AttemptCount, worker.Task.MaxAttempts)
+	for i, at := range worker.Attempts {
+		var retryableStr string
+		if at.Retryable != nil {
+			retryableStr = strconv.FormatBool(*at.Retryable)
+		} else {
+			retryableStr = "<nil>"
+		}
+		var failureCode, resultSummary string
+		if at.FailureCode != nil {
+			failureCode = *at.FailureCode
+		}
+		if at.ResultSummary != nil {
+			resultSummary = *at.ResultSummary
+		}
+		t.Logf("attempt[%d]: id=%d state=%q failure_code=%q retryable=%s summary=%q", i, at.ID, at.State, failureCode, retryableStr, resultSummary)
+		if at.State == tasks.AttemptFinished {
+			invocations, invErr := runtime.models.FindTaskAttemptInvocations(h.ctx, worker.Task.ID, at.ID)
+			t.Logf("attempt[%d] invocations=%+v err=%v", i, invocations, invErr)
+		}
+	}
+
+	var reviewCount int
+	if scanErr := h.store.Pool().QueryRow(h.ctx, `SELECT COUNT(*) FROM tasks WHERE organization_id=$1 AND correlation_id=$2 AND idempotency_key LIKE '%leader-review:%'`, retryOrganizationID, run.CorrelationID).Scan(&reviewCount); scanErr != nil {
+		t.Fatal(scanErr)
+	}
+	t.Logf("WORKER_TERMINAL_FAILURE_ISOLATION_GAP check: department review tasks created for this correlation=%d (0 means the review phase was never reached)", reviewCount)
+
+	var rootStatus, rootReasonCode, rootReason string
+	if scanErr := h.store.Pool().QueryRow(h.ctx, `SELECT status, COALESCE(status_reason_code,''), COALESCE(status_reason,'') FROM tasks WHERE id=$1`, rootID).Scan(&rootStatus, &rootReasonCode, &rootReason); scanErr != nil {
+		t.Fatal(scanErr)
+	}
+	t.Logf("root task status=%q reason_code=%q reason=%q", rootStatus, rootReasonCode, rootReason)
+
+	stateA, errA := runtime.store.CapacityState(h.ctx, retryOrganizationID, "test.fake", retryCandidateA)
+	stateB, errB := runtime.store.CapacityState(h.ctx, retryOrganizationID, "test.fake", retryCandidateB)
+	t.Logf("capacity A=%+v err=%v", stateA, errA)
+	t.Logf("capacity B=%+v err=%v", stateB, errB)
+}
+
+// ============================================================
+// Section C2: a tight campaign-wide model-call budget must gate the
+// SECOND provider call the same way it gates the first -- a retryable
+// candidate-A failure must not bypass o.budget.AuthorizeModelCall on
+// Attempt 2. CEO-plan + department-plan consume the first two calls, so
+// MaxModelCalls=3 leaves exactly one more: Attempt 1 (candidate A).
+// ============================================================
+
+func TestExecutiveRetryFailoverPostgreSQL17BudgetPreventsSecondCall(t *testing.T) {
+	h := newIntegrationHarness(t)
+	defer h.close()
+	runtime := newRetryFailoverRuntime(t, h)
+	runtime.adapter.setFailCandidateA(true)
+
+	limits := executive.DefaultLimits()
+	limits.MaxModelCalls = 3
+	orchestrator := newRetryFailoverOrchestrator(t, h, runtime, limits)
+	rootID := submitRetryFailoverGoal(t, h, orchestrator, "retry-failover-budget-gate")
+
+	run, err := driveRetryFailoverRun(t, h, runtime, orchestrator, rootID, 30)
+	t.Logf("budget-gated run=%+v err=%v", run, err)
+
+	if got := runtime.adapter.callCount(retryCandidateA); got != 1 {
+		t.Fatalf("candidate A call count = %d, want exactly 1", got)
+	}
+	if got := runtime.adapter.callCount(retryCandidateB); got != 0 {
+		t.Fatalf("candidate B must never be called once the campaign-wide model-call budget is exhausted: calls=%d", got)
 	}
 }
