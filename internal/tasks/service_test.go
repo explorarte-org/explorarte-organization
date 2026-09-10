@@ -86,7 +86,7 @@ func (f *fakePersistence) ReleaseCoordinationHold(_ context.Context, _ ReleaseCo
 func (f *fakePersistence) Cancel(context.Context, CancelCommand, int) (Task, error) {
 	return f.created, nil
 }
-func (f *fakePersistence) Claim(_ context.Context, _ ClaimRequest, validate AssigneeValidator, _ int) ([]ClaimedTask, error) {
+func (f *fakePersistence) Claim(_ context.Context, _ ClaimRequest, validate AssigneeValidator, _ CapacityValidator, _ int) ([]ClaimedTask, error) {
 	check, err := validate(context.Background(), f.created)
 	f.check = check
 	return nil, err
@@ -100,7 +100,7 @@ func (f *fakePersistence) Heartbeat(context.Context, LeaseCommand, time.Duration
 func (f *fakePersistence) RecordAttemptResult(context.Context, RecordAttemptResultCommand, RetryPolicy, int) (Task, error) {
 	return f.created, nil
 }
-func (f *fakePersistence) Reconcile(_ context.Context, _ int, validate AssigneeValidator, _ RetryPolicy, _ int) (ReconcileResult, error) {
+func (f *fakePersistence) Reconcile(_ context.Context, _ int, validate AssigneeValidator, _ CapacityValidator, _ RetryPolicy, _ int) (ReconcileResult, error) {
 	check, err := validate(context.Background(), f.created)
 	f.check = check
 	return ReconcileResult{}, err

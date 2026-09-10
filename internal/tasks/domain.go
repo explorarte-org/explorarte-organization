@@ -447,6 +447,33 @@ type AssigneeCheck struct {
 
 type AssigneeValidator func(context.Context, Task) (AssigneeCheck, error)
 
+// CapacityCheck is the pre-claim answer to "can this task even be
+// attempted right now", for a task whose role routes through a pool
+// policy with every candidate temporarily unavailable. It is the capacity
+// analogue of AssigneeCheck, checked at the exact same point in Claim --
+// before claimOne ever runs, so a transient capacity gap never consumes
+// attempt_count the way a real, claimed, executed attempt does.
+//
+// RetryAt is meaningful only when Available is false, and must be the
+// caller's own derivation from real, durable capacity state (the earliest
+// known available-again time across the blocked candidates) -- never a
+// fabricated backoff. A caller that cannot derive a canonical RetryAt
+// must report Available true instead of inventing one, deferring to the
+// existing claim/attempt/RouteResolver path and its own fail-closed
+// handling.
+type CapacityCheck struct {
+	Available bool
+	RetryAt   time.Time
+	Reason    string
+}
+
+// CapacityValidator is consulted for every ready claim candidate, exactly
+// once per Claim() pass, the same way AssigneeValidator is. A nil
+// CapacityValidator (the default for a Service with no capacity gate
+// wired in) must behave as always-available -- every caller that has
+// nothing to do with pool routing is completely unaffected.
+type CapacityValidator func(context.Context, Task) (CapacityCheck, error)
+
 type ClaimedTask struct {
 	Task       Task    `json:"task"`
 	Attempt    Attempt `json:"attempt"`
@@ -604,6 +631,7 @@ type ReconcileResult struct {
 	PromotedTasks       int `json:"promoted_tasks"`
 	BlockedDependencies int `json:"blocked_dependencies"`
 	BlockedAssignees    int `json:"blocked_assignees"`
+	BlockedCapacity     int `json:"blocked_capacity"`
 }
 
 type OutboxClaimRequest struct {
