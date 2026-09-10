@@ -5,11 +5,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/modeldispatch"
 	"github.com/jackc/pgx/v5"
 )
+
+// sha256Pattern mirrors the CHECK constraint every hash column this file
+// reads already enforces (role_model_bindings.binding_hash,
+// routing_policies.canonical_hash); re-checked here purely as defense in
+// depth against a malformed row, never relied on to catch what the
+// database itself already guarantees.
+var sha256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func insertAssignmentAudit(ctx context.Context, tx pgx.Tx, eventType string, assignment modeldispatch.DispatcherAssignment, actorRoleID string, extra map[string]any) error {
 	payload := map[string]any{
@@ -185,53 +193,111 @@ func (s *Store) GetByID(ctx context.Context, organizationID string, assignmentID
 	return s.withPrincipal(ctx, assignment)
 }
 
-func (s *Store) GetActiveRoleModelBinding(ctx context.Context, organizationID string, revisionID int64, roleID string) (modeldispatch.RoleModelBindingRef, error) {
-	var binding modeldispatch.RoleModelBindingRef
+// GetRoleRoutingAuthority derives organization_roles.model_policy for
+// (organizationID, revisionID, roleID) and resolves it to exactly one
+// authority: a static role_model_bindings row XOR a materialized pool
+// routing_policies row (see migration 000070's own comment: a pool-routed
+// role has no role_model_bindings row at all). Every check here fails
+// closed -- role missing, revision-stale, retired, disabled,
+// non-executable, no model_policy, both authorities present, neither
+// authority present, a static binding whose own policy_id disagrees with
+// the role's model_policy, or a pool policy with zero materialized
+// candidates. No candidate/provider/model is ever read: RouteResolver
+// alone picks one, per-invocation, at Invocation-creation time inside
+// internal/modelruntime.
+func (s *Store) GetRoleRoutingAuthority(ctx context.Context, organizationID string, revisionID int64, roleID string) (modeldispatch.RoleRoutingAuthorityRef, error) {
+	var (
+		modelPolicy                       string
+		sourceRevisionID                  int64
+		retired, enabled, executable      bool
+		hasBinding                        bool
+		bindingPolicyID, bindingProfileID string
+		bindingModelProfileVersionID      int64
+		bindingHash                       string
+		hasPool                           bool
+		poolCanonicalHash                 string
+		hasCandidates                     bool
+	)
 	err := s.pool.QueryRow(ctx, `
-SELECT b.organization_id,b.organization_revision_id,b.role_id,b.profile_id,
-       b.model_profile_version_id,b.binding_hash,b.active
-FROM role_model_bindings b
-JOIN model_profile_versions v
-  ON v.id=b.model_profile_version_id
- AND v.organization_id=b.organization_id
- AND v.profile_id=b.profile_id
- AND v.organization_revision_id=b.organization_revision_id
-WHERE b.organization_id=$1
-  AND b.organization_revision_id=$2
-  AND b.role_id=$3
-  AND b.active`, organizationID, revisionID, roleID).Scan(
-		&binding.OrganizationID, &binding.OrganizationRevisionID, &binding.RoleID,
-		&binding.ProfileID, &binding.ModelProfileVersionID, &binding.BindingHash, &binding.Active,
+SELECT COALESCE(r.model_policy,''),
+       r.source_revision_id,
+       r.retired_at IS NOT NULL,
+       r.enabled,
+       r.executable,
+       b.role_id IS NOT NULL,
+       COALESCE(b.policy_id,''),
+       COALESCE(b.profile_id,''),
+       COALESCE(b.model_profile_version_id,0),
+       COALESCE(b.binding_hash,''),
+       p.policy_id IS NOT NULL,
+       COALESCE(p.canonical_hash,''),
+       EXISTS (
+           SELECT 1 FROM routing_candidates c
+           WHERE c.organization_id=r.organization_id
+             AND c.organization_revision_id=$2
+             AND c.policy_id=r.model_policy
+       )
+FROM organization_roles r
+LEFT JOIN role_model_bindings b
+  ON b.organization_id=r.organization_id
+ AND b.organization_revision_id=$2
+ AND b.role_id=r.id
+ AND b.active
+LEFT JOIN routing_policies p
+  ON p.organization_id=r.organization_id
+ AND p.organization_revision_id=$2
+ AND p.policy_id=r.model_policy
+ AND p.routing_mode='pool'
+WHERE r.organization_id=$1 AND r.id=$3`, organizationID, revisionID, roleID).Scan(
+		&modelPolicy, &sourceRevisionID, &retired, &enabled, &executable,
+		&hasBinding, &bindingPolicyID, &bindingProfileID, &bindingModelProfileVersionID, &bindingHash,
+		&hasPool, &poolCanonicalHash, &hasCandidates,
 	)
 	if err != nil {
-		return modeldispatch.RoleModelBindingRef{}, mapError(err)
+		return modeldispatch.RoleRoutingAuthorityRef{}, mapError(err)
 	}
-	return binding, nil
-}
-
-// GetRoutingPolicy reports whether (organizationID, revisionID, policyID) is
-// a materialized routing_mode: pool policy (mirrors
-// internal/modelruntime/postgres.Store.GetRoutingPolicy against the same
-// routing_policies table). ok=false (nil error) is the expected,
-// non-error result for every static policy -- there is deliberately no row
-// for those.
-func (s *Store) GetRoutingPolicy(ctx context.Context, organizationID string, revisionID int64, policyID string) (modeldispatch.RoutingPolicyRef, bool, error) {
-	var out modeldispatch.RoutingPolicyRef
-	err := s.pool.QueryRow(ctx, `
-SELECT organization_id,organization_revision_id,policy_id,routing_mode,canonical_hash
-FROM routing_policies
-WHERE organization_id=$1 AND organization_revision_id=$2 AND policy_id=$3`,
-		organizationID, revisionID, policyID).Scan(
-		&out.OrganizationID, &out.OrganizationRevisionID, &out.PolicyID, &out.RoutingMode, &out.CanonicalHash,
-	)
-	if err != nil {
-		mapped := mapError(err)
-		if errors.Is(mapped, modeldispatch.ErrNotFound) {
-			return modeldispatch.RoutingPolicyRef{}, false, nil
+	if sourceRevisionID != revisionID {
+		return modeldispatch.RoleRoutingAuthorityRef{}, fmt.Errorf("role %q organization revision drift: role source_revision_id=%d, want %d", roleID, sourceRevisionID, revisionID)
+	}
+	if retired {
+		return modeldispatch.RoleRoutingAuthorityRef{}, fmt.Errorf("role %q is retired", roleID)
+	}
+	if !enabled {
+		return modeldispatch.RoleRoutingAuthorityRef{}, fmt.Errorf("role %q is not enabled", roleID)
+	}
+	if !executable {
+		return modeldispatch.RoleRoutingAuthorityRef{}, fmt.Errorf("role %q is not executable", roleID)
+	}
+	if modelPolicy == "" {
+		return modeldispatch.RoleRoutingAuthorityRef{}, fmt.Errorf("role %q has no model_policy", roleID)
+	}
+	if hasBinding && hasPool {
+		return modeldispatch.RoleRoutingAuthorityRef{}, fmt.Errorf("role %q model_policy %q has both a static binding and a pool policy", roleID, modelPolicy)
+	}
+	switch {
+	case hasBinding:
+		if bindingPolicyID != modelPolicy {
+			return modeldispatch.RoleRoutingAuthorityRef{}, fmt.Errorf("role %q static binding policy_id %q does not match model_policy %q", roleID, bindingPolicyID, modelPolicy)
 		}
-		return modeldispatch.RoutingPolicyRef{}, false, mapped
+		if bindingModelProfileVersionID <= 0 || !sha256Pattern.MatchString(bindingHash) {
+			return modeldispatch.RoleRoutingAuthorityRef{}, fmt.Errorf("role %q static binding is malformed", roleID)
+		}
+		return modeldispatch.RoleRoutingAuthorityRef{
+			OrganizationID: organizationID, OrganizationRevisionID: revisionID, RoleID: roleID,
+			PolicyID: bindingPolicyID, Kind: modeldispatch.RoleRoutingStaticBinding, AuthorityHash: bindingHash,
+			ProfileID: bindingProfileID, ModelProfileVersionID: bindingModelProfileVersionID,
+		}, nil
+	case hasPool:
+		if !hasCandidates {
+			return modeldispatch.RoleRoutingAuthorityRef{}, fmt.Errorf("role %q pool policy %q has no materialized candidates", roleID, modelPolicy)
+		}
+		return modeldispatch.RoleRoutingAuthorityRef{
+			OrganizationID: organizationID, OrganizationRevisionID: revisionID, RoleID: roleID,
+			PolicyID: modelPolicy, Kind: modeldispatch.RoleRoutingPoolPolicy, AuthorityHash: poolCanonicalHash,
+		}, nil
+	default:
+		return modeldispatch.RoleRoutingAuthorityRef{}, fmt.Errorf("role %q model_policy %q has neither a static binding nor a pool policy", roleID, modelPolicy)
 	}
-	return out, true, nil
 }
 
 func (s *Store) withPrincipal(ctx context.Context, assignment modeldispatch.DispatcherAssignment) (modeldispatch.ResolvedAssignment, error) {

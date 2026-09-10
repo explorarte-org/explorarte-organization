@@ -60,7 +60,7 @@ func (r *Runtime) NewAuthorizedAttemptProvisioner(executionPrincipalKey string) 
 	if r == nil {
 		return nil, fmt.Errorf("model dispatch runtime is unavailable")
 	}
-	return modeldispatch.NewAuthorizedAttemptProvisioner(r.Assignments, r.lineage, r.Store, r.Store, executionPrincipalKey)
+	return modeldispatch.NewAuthorizedAttemptProvisioner(r.Assignments, r.lineage, r.Store, executionPrincipalKey)
 }
 
 type catalogAdapter struct{ reader registry.Reader }

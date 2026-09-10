@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -47,29 +49,28 @@ func (r *lineageReader) GetTaskLineage(_ context.Context, taskID int64) (TaskLin
 	return task, nil
 }
 
-type bindingReader struct {
-	binding RoleModelBindingRef
-	err     error
+// fakeAuthorityReader is the single fake standing in for
+// RoleRoutingAuthorityReader: the real Postgres implementation's business
+// rules (static-vs-pool derivation, fail-closed conflict/absence,
+// candidate materialization) are exercised against real Postgres in
+// postgres/integration_test.go, not re-implemented here. This fake just
+// hands back whatever result/err the fixture configured, so unit tests can
+// focus on what AuthorizedAttemptProvisioner itself does once it has an
+// authority: digest/idempotency-key derivation, error propagation, replay.
+type fakeAuthorityReader struct {
+	result RoleRoutingAuthorityRef
+	err    error
 }
 
-func (r *bindingReader) GetActiveRoleModelBinding(context.Context, string, int64, string) (RoleModelBindingRef, error) {
-	return r.binding, r.err
-}
-
-// routingPolicyReader always reports "not a pool policy": every fixture in
-// this file uses a static role_model_bindings row, so the pool branch of
-// EnsureAuthorizedAssignmentForRunningAttempt is exercised separately.
-type routingPolicyReader struct{}
-
-func (routingPolicyReader) GetRoutingPolicy(context.Context, string, int64, string) (RoutingPolicyRef, bool, error) {
-	return RoutingPolicyRef{}, false, nil
+func (r *fakeAuthorityReader) GetRoleRoutingAuthority(context.Context, string, int64, string) (RoleRoutingAuthorityRef, error) {
+	return r.result, r.err
 }
 
 type authorizedAttemptFixture struct {
 	service    *AuthorizedAttemptProvisioner
 	authorizer *recordingAuthorizer
 	lineage    *lineageReader
-	binding    *bindingReader
+	authority  *fakeAuthorityReader
 	store      *fakeAssignmentStore
 	now        time.Time
 	attempt    TaskAttemptRef
@@ -105,16 +106,17 @@ func newAuthorizedAttemptFixture(t *testing.T) *authorizedAttemptFixture {
 		12: {TaskID: 12, OrganizationID: "explorarte", OrganizationRevisionID: 7, RequestedByRoleID: "empresa/ceo", AssignedRoleID: "empresa/ceo", CorrelationID: "executive:campaign", CausationID: "task:4"},
 		4:  {TaskID: 4, OrganizationID: "explorarte", OrganizationRevisionID: 7, RequestedByRoleID: "empresa/human", AssignedRoleID: "empresa/ceo", CorrelationID: "executive:campaign", CausationID: "owner:campaign-r17"},
 	}}
-	binding := &bindingReader{binding: RoleModelBindingRef{
+	authority := &fakeAuthorityReader{result: RoleRoutingAuthorityRef{
 		OrganizationID: "explorarte", OrganizationRevisionID: 7, RoleID: "empresa/ceo",
+		PolicyID: "ceo-primary", Kind: RoleRoutingStaticBinding,
 		ProfileID: "ceo-primary", ModelProfileVersionID: 8,
-		BindingHash: "bf7b45e7e18cf02ff98a4562537c16b21767fb321bf6a87a48bc2ba5ab24f669", Active: true,
+		AuthorityHash: "bf7b45e7e18cf02ff98a4562537c16b21767fb321bf6a87a48bc2ba5ab24f669",
 	}}
-	service, err := NewAuthorizedAttemptProvisioner(assignments, lineage, binding, routingPolicyReader{}, principal.PrincipalKey)
+	service, err := NewAuthorizedAttemptProvisioner(assignments, lineage, authority, principal.PrincipalKey)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &authorizedAttemptFixture{service: service, authorizer: authorizer, lineage: lineage, binding: binding, store: store, now: now, attempt: attempt, principal: principal}
+	return &authorizedAttemptFixture{service: service, authorizer: authorizer, lineage: lineage, authority: authority, store: store, now: now, attempt: attempt, principal: principal}
 }
 
 func TestAuthorizedAttemptProvisionerDerivesAndSeparatesAuthorities(t *testing.T) {
@@ -184,7 +186,7 @@ func TestAuthorizedAttemptProvisionerRejectsBrokenOrForgedAncestry(t *testing.T)
 
 func TestAuthorizedAttemptProvisionerRejectsMissingBinding(t *testing.T) {
 	fixture := newAuthorizedAttemptFixture(t)
-	fixture.binding.err = ErrNotFound
+	fixture.authority.err = ErrNotFound
 	_, err := fixture.service.EnsureAuthorizedAssignmentForRunningAttempt(context.Background(), fixture.attempt.TaskID, fixture.attempt.AttemptID)
 	if !errors.Is(err, ErrTaskAttemptRejected) {
 		t.Fatalf("expected missing binding rejection, got %v", err)
@@ -205,8 +207,8 @@ func TestAuthorizedAttemptProvisionerReplayRequiresSameEffectiveBinding(t *testi
 		t.Fatalf("exact replay result=%+v err=%v creates=%d", second, err, len(fixture.store.created))
 	}
 
-	fixture.binding.binding.ModelProfileVersionID++
-	fixture.binding.binding.BindingHash = "af7b45e7e18cf02ff98a4562537c16b21767fb321bf6a87a48bc2ba5ab24f669"
+	fixture.authority.result.ModelProfileVersionID++
+	fixture.authority.result.AuthorityHash = "af7b45e7e18cf02ff98a4562537c16b21767fb321bf6a87a48bc2ba5ab24f669"
 	_, err = fixture.service.EnsureAuthorizedAssignmentForRunningAttempt(context.Background(), fixture.attempt.TaskID, fixture.attempt.AttemptID)
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("expected explicit binding replay conflict, got %v", err)
@@ -216,20 +218,105 @@ func TestAuthorizedAttemptProvisionerReplayRequiresSameEffectiveBinding(t *testi
 	}
 }
 
-// TestAuthorizedAttemptProvisionerRejectsInactiveBinding covers gap #5 from
-// the REVIEW GATE: a role-model binding that the reader returns without
-// error but that is not itself active/effective must deny provisioning,
-// distinctly from a binding lookup that fails outright (already covered by
-// TestAuthorizedAttemptProvisionerRejectsMissingBinding).
-func TestAuthorizedAttemptProvisionerRejectsInactiveBinding(t *testing.T) {
+// TestAuthorizedAttemptProvisionerPoolAuthorityWorksWithoutBinding proves
+// AuthorizedAttemptProvisioner provisions a running attempt for a
+// pool-routed role using only a RoleRoutingAuthorityRef of
+// Kind==RoleRoutingPoolPolicy -- no role_model_bindings row anywhere in
+// this fixture -- and that the ref it received carries no synthetic
+// profile: ProfileID/ModelProfileVersionID stay exactly zero-valued, never
+// a "pool:<policy>" stand-in.
+func TestAuthorizedAttemptProvisionerPoolAuthorityWorksWithoutBinding(t *testing.T) {
 	fixture := newAuthorizedAttemptFixture(t)
-	fixture.binding.binding.Active = false
-	_, err := fixture.service.EnsureAuthorizedAssignmentForRunningAttempt(context.Background(), fixture.attempt.TaskID, fixture.attempt.AttemptID)
-	if !errors.Is(err, ErrTaskAttemptRejected) {
-		t.Fatalf("expected inactive binding rejection, got %v", err)
+	fixture.authority.result = RoleRoutingAuthorityRef{
+		OrganizationID: "explorarte", OrganizationRevisionID: 7, RoleID: "empresa/ceo",
+		PolicyID: "research.worker.pool", Kind: RoleRoutingPoolPolicy,
+		AuthorityHash: "7c9e6679b5b0f7cf8e9a4b3d2c1a0f8e7d6c5b4a3928170695847362514031f",
 	}
-	if len(fixture.store.created) != 0 {
-		t.Fatal("inactive binding reached assignment creation")
+	if fixture.authority.result.ProfileID != "" || fixture.authority.result.ModelProfileVersionID != 0 {
+		t.Fatal("fixture setup error: pool authority must not carry a profile")
+	}
+	result, err := fixture.service.EnsureAuthorizedAssignmentForRunningAttempt(context.Background(), fixture.attempt.TaskID, fixture.attempt.AttemptID)
+	if err != nil || result.Reused || result.Assignment.ID == 0 {
+		t.Fatalf("pool authority provisioning failed: result=%+v err=%v", result, err)
+	}
+}
+
+// TestAuthorizedAttemptStaticDigestsAreByteCompatibleWithThePreUnification
+// Format locks authorizedAttemptIdempotencyKey/authorizedAttemptActionDigest
+// for Kind==RoleRoutingStaticBinding to the exact byte layout the binding-
+// shaped predecessor produced (ProfileID, decimal ModelProfileVersionID,
+// hash, NUL-joined, in that order, ahead of the shared
+// organization/revision/task/attempt/role/principal/dispatch-actor
+// prefix) -- so replay/idempotency for every already-provisioned static
+// assignment is unaffected by the pool-authority unification.
+func TestAuthorizedAttemptStaticDigestsAreByteCompatibleWithThePreUnificationFormat(t *testing.T) {
+	attempt := TaskAttemptRef{TaskID: 12, AttemptID: 34, OrganizationID: "explorarte", OrganizationRevisionID: 7, AssignedRoleID: "empresa/ceo"}
+	principal := ExecutionPrincipal{ID: 81, PrincipalKey: "oracle-01/model-runtime-01", DispatchActorRoleID: "ingenieria_ia/code-runner"}
+	authority := RoleRoutingAuthorityRef{
+		Kind: RoleRoutingStaticBinding, ProfileID: "ceo-primary", ModelProfileVersionID: 8,
+		AuthorityHash: "bf7b45e7e18cf02ff98a4562537c16b21767fb321bf6a87a48bc2ba5ab24f669",
+	}
+	const rootTaskID = int64(4)
+
+	wantIdemBody := strings.Join([]string{
+		attempt.OrganizationID, strconv.FormatInt(attempt.OrganizationRevisionID, 10),
+		strconv.FormatInt(rootTaskID, 10), strconv.FormatInt(attempt.TaskID, 10), strconv.FormatInt(attempt.AttemptID, 10),
+		attempt.AssignedRoleID, strconv.FormatInt(principal.ID, 10), principal.PrincipalKey, principal.DispatchActorRoleID,
+		authority.ProfileID, strconv.FormatInt(authority.ModelProfileVersionID, 10), authority.AuthorityHash,
+	}, "\x00")
+	wantIdem := fmt.Sprintf("authorized-attempt/%d/%d/%s", attempt.TaskID, attempt.AttemptID, sha256Hex([]byte(wantIdemBody))[:32])
+	if got := authorizedAttemptIdempotencyKey(rootTaskID, attempt, principal, authority); got != wantIdem {
+		t.Fatalf("static idempotency key changed shape: got %q want %q", got, wantIdem)
+	}
+
+	const requesterRoleID = "empresa/human"
+	wantDigestBody := strings.Join([]string{
+		"provision_authorized_attempt", attempt.OrganizationID, strconv.FormatInt(attempt.OrganizationRevisionID, 10),
+		strconv.FormatInt(rootTaskID, 10), requesterRoleID, strconv.FormatInt(attempt.TaskID, 10), strconv.FormatInt(attempt.AttemptID, 10),
+		attempt.AssignedRoleID, strconv.FormatInt(principal.ID, 10), principal.PrincipalKey, principal.DispatchActorRoleID,
+		authority.ProfileID, strconv.FormatInt(authority.ModelProfileVersionID, 10), authority.AuthorityHash,
+	}, "\x00")
+	wantDigest := sha256Hex([]byte(wantDigestBody))
+	if got := authorizedAttemptActionDigest(rootTaskID, attempt, principal, authority, requesterRoleID); got != wantDigest {
+		t.Fatalf("static action digest changed shape: got %q want %q", got, wantDigest)
+	}
+}
+
+// TestAuthorizedAttemptPoolDigestsAreDomainSeparatedFromStatic proves a
+// pool authority never collides with a static one even when every other
+// input (attempt, principal, requester) is identical: the pool body is
+// tagged "pool_policy" ahead of PolicyID/AuthorityHash, structurally
+// distinct from the static body's ProfileID/ModelProfileVersionID/hash
+// layout, and carries no candidate/provider/model.
+func TestAuthorizedAttemptPoolDigestsAreDomainSeparatedFromStatic(t *testing.T) {
+	attempt := TaskAttemptRef{TaskID: 12, AttemptID: 34, OrganizationID: "explorarte", OrganizationRevisionID: 7, AssignedRoleID: "empresa/ceo"}
+	principal := ExecutionPrincipal{ID: 81, PrincipalKey: "oracle-01/model-runtime-01", DispatchActorRoleID: "ingenieria_ia/code-runner"}
+	const rootTaskID = int64(4)
+	const requesterRoleID = "empresa/human"
+
+	pool := RoleRoutingAuthorityRef{
+		Kind: RoleRoutingPoolPolicy, PolicyID: "research.worker.pool",
+		AuthorityHash: "7c9e6679b5b0f7cf8e9a4b3d2c1a0f8e7d6c5b4a3928170695847362514031f",
+	}
+	// The closest a static authority's 3-field tail (ProfileID,
+	// ModelProfileVersionID, hash) can get to reusing pool's own field
+	// values: the domain-separation tag borrowed as a ProfileID, the same
+	// hash. ModelProfileVersionID is int64-typed and PolicyID is free-form
+	// text, so the two tails can never be literally identical -- the tag
+	// alone is what this test exists to prove matters regardless.
+	staticSameFields := RoleRoutingAuthorityRef{
+		Kind: RoleRoutingStaticBinding, ProfileID: "pool_policy", ModelProfileVersionID: 0, AuthorityHash: pool.AuthorityHash,
+	}
+
+	poolIdem := authorizedAttemptIdempotencyKey(rootTaskID, attempt, principal, pool)
+	staticIdem := authorizedAttemptIdempotencyKey(rootTaskID, attempt, principal, staticSameFields)
+	if poolIdem == staticIdem {
+		t.Fatal("pool and static idempotency keys collided despite the domain-separation tag")
+	}
+	poolDigest := authorizedAttemptActionDigest(rootTaskID, attempt, principal, pool, requesterRoleID)
+	staticDigest := authorizedAttemptActionDigest(rootTaskID, attempt, principal, staticSameFields, requesterRoleID)
+	if poolDigest == staticDigest {
+		t.Fatal("pool and static action digests collided despite the domain-separation tag")
 	}
 }
 

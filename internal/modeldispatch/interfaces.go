@@ -60,35 +60,51 @@ type TaskLineageReader interface {
 	GetTaskLineage(ctx context.Context, taskID int64) (TaskLineageRef, error)
 }
 
-// RoleModelBindingReader is the provisioning-time binding gate. Invocation
-// creation deliberately revalidates the binding later as a TOCTOU boundary.
-type RoleModelBindingReader interface {
-	GetActiveRoleModelBinding(ctx context.Context, organizationID string, revisionID int64, roleID string) (RoleModelBindingRef, error)
-}
+// RoleRoutingAuthorityKind is which of the two disjoint sources actually
+// authorizes a role's model calls at (organization, revision). A role
+// resolves to exactly one -- never both, never neither -- see
+// GetRoleRoutingAuthority.
+type RoleRoutingAuthorityKind string
 
-// RoutingPolicyRef is the narrow pool-routing awareness modeldispatch needs:
-// only enough to know a role's model_policy is a materialized routing_mode:
-// pool policy (mirroring internal/modelruntime.RoutingPolicy, kept as its
-// own minimal type here so modeldispatch never depends on modelruntime).
-// It never carries a candidate, provider, or model -- selecting one of
+const (
+	RoleRoutingStaticBinding RoleRoutingAuthorityKind = "static_binding"
+	RoleRoutingPoolPolicy    RoleRoutingAuthorityKind = "pool_policy"
+)
+
+// RoleRoutingAuthorityRef is the provisioning-time authority gate for a
+// role's model calls, unifying the two disjoint sources a role's
+// organization_roles.model_policy can name: a static role_model_bindings
+// row (routing_mode: static in docs/canonical/model-routing.yaml) or a
+// materialized routing_policies row (routing_mode: pool -- see migration
+// 000070's own comment: a pool-routed role has no role_model_bindings row
+// at all). It carries no candidate, provider, or model -- selecting one of
 // those stays exclusively RouteResolver's job, at Invocation-creation time,
-// inside internal/modelruntime.
-type RoutingPolicyRef struct {
+// inside internal/modelruntime. ProfileID/ModelProfileVersionID are
+// populated for Kind==RoleRoutingStaticBinding only; a pool authority is a
+// policy-level fact, not a materialized profile, so both stay zero-valued
+// for Kind==RoleRoutingPoolPolicy -- there is no "pool:<policy>" synthetic
+// profile.
+type RoleRoutingAuthorityRef struct {
 	OrganizationID         string
 	OrganizationRevisionID int64
+	RoleID                 string
 	PolicyID               string
-	RoutingMode            string
-	CanonicalHash          string
+	Kind                   RoleRoutingAuthorityKind
+	AuthorityHash          string
+
+	// STATIC only.
+	ProfileID             string
+	ModelProfileVersionID int64
 }
 
-// RoutingPolicyReader is the provisioning-time pool-policy existence gate.
-// A role bound to a pool policy has no role_model_bindings row at all (see
-// migration 000070), so RoleModelBindingReader alone cannot tell a pool
-// role apart from a role with no binding at all. GetRoutingPolicy answers
-// exactly that: ok=false (nil error) is the expected, non-error result for
-// every static policy -- there is deliberately no row for those.
-type RoutingPolicyReader interface {
-	GetRoutingPolicy(ctx context.Context, organizationID string, revisionID int64, policyID string) (RoutingPolicyRef, bool, error)
+// RoleRoutingAuthorityReader is the provisioning-time binding gate.
+// Invocation creation deliberately revalidates authority later as a TOCTOU
+// boundary. The caller never supplies a policyID: the reader derives
+// organization_roles.model_policy for (organizationID, revisionID, roleID)
+// itself and resolves exactly one authority for it, static XOR pool --
+// both present or neither present fails closed.
+type RoleRoutingAuthorityReader interface {
+	GetRoleRoutingAuthority(ctx context.Context, organizationID string, revisionID int64, roleID string) (RoleRoutingAuthorityRef, error)
 }
 
 type AuthorizedAssignmentProvisioner interface {
