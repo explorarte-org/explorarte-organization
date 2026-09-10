@@ -259,7 +259,7 @@ func TestModelDispatcherAssignmentsPostgreSQL17(t *testing.T) {
 		if serviceErr != nil {
 			t.Fatal(serviceErr)
 		}
-		provisioner, provisionerErr := modeldispatch.NewAuthorizedAttemptProvisioner(assignments, reader, store, principal.PrincipalKey)
+		provisioner, provisionerErr := modeldispatch.NewAuthorizedAttemptProvisioner(assignments, reader, store, store, principal.PrincipalKey)
 		if provisionerErr != nil {
 			t.Fatal(provisionerErr)
 		}

@@ -60,7 +60,7 @@ func (r *Runtime) NewAuthorizedAttemptProvisioner(executionPrincipalKey string) 
 	if r == nil {
 		return nil, fmt.Errorf("model dispatch runtime is unavailable")
 	}
-	return modeldispatch.NewAuthorizedAttemptProvisioner(r.Assignments, r.lineage, r.Store, executionPrincipalKey)
+	return modeldispatch.NewAuthorizedAttemptProvisioner(r.Assignments, r.lineage, r.Store, r.Store, executionPrincipalKey)
 }
 
 type catalogAdapter struct{ reader registry.Reader }
@@ -81,7 +81,11 @@ func (a catalogAdapter) GetRole(ctx context.Context, organizationID, roleID stri
 	if err != nil {
 		return modeldispatch.RoleRef{}, err
 	}
-	return modeldispatch.RoleRef{ID: r.ID, Enabled: r.Enabled, Executable: r.Executable, AuthorityClass: r.AuthorityClass}, nil
+	var policy string
+	if r.ModelPolicy != nil {
+		policy = *r.ModelPolicy
+	}
+	return modeldispatch.RoleRef{ID: r.ID, ModelPolicy: policy, Enabled: r.Enabled, Executable: r.Executable, AuthorityClass: r.AuthorityClass}, nil
 }
 
 type taskAdapter struct{ reader tasks.TaskReader }
