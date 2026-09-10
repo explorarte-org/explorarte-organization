@@ -2167,7 +2167,19 @@ func (o *Orchestrator) failAttempt(ctx context.Context, task TaskRecord, lease L
 	if recErr != nil {
 		return task, recErr
 	}
-	return failed, fmt.Errorf("%w: %s", sentinel, code)
+	err := fmt.Errorf("%w: %s", sentinel, code)
+	// failed.Status is the Task Engine's own durable decision, read back
+	// after RecordAttemptFailed -- never the retryable bool this call
+	// passed in. The two agree whenever an attempt remains, but a
+	// retryable failure on the last attempt lands the task in dead_letter,
+	// not retry_wait, and that case must reach handlePhaseError's normal
+	// blocking path unchanged: a task the Task Engine has already given up
+	// on is a terminal worker failure a department review needs to see,
+	// not something to silently step back from.
+	if failed.Status == "retry_wait" {
+		err = fmt.Errorf("%w: %w", ErrTaskRetryScheduled, err)
+	}
+	return failed, err
 }
 
 // recordHarnessSuccess validates the durable result the run produced. Every
@@ -2568,7 +2580,8 @@ func (o *Orchestrator) handlePhaseError(ctx context.Context, root, task TaskReco
 // with a more precise reason, or that must stay retryable.
 func isNonBlockingPhaseError(err error) bool {
 	switch {
-	case errors.Is(err, ErrDispatchAssignmentRequired),
+	case errors.Is(err, ErrTaskRetryScheduled),
+		errors.Is(err, ErrDispatchAssignmentRequired),
 		errors.Is(err, ErrModelOutcomeAmbiguous),
 		errors.Is(err, ErrIndeterminateToolExecution),
 		errors.Is(err, ErrLeaseLost),
