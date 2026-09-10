@@ -501,7 +501,16 @@ services:
       # BaseSHA (internal/coderunner/staging_adapter.go:Open), never this
       # static value. Confirmed by reading that resolution path before
       # setting these.
-      ORG_CODE_RUNNER_PRINCIPAL_ID: "22"
+      #
+      # PRINCIPAL_ID corrected 22 -> 1 (LOCAL_PRODUCTION_HISTORY_RECONCILIATION_AUDIT_V1):
+      # id=22 was never registered in model_execution_principals -- GetPrincipal(22)
+      # returns not-found, so code-runner would refuse to start (exitDenied) against
+      # it. id=1 (principal_key=oracle-org-01/model-runtime-01, dispatch_actor_role_id=
+      # ingenieria_ia/code-runner, status=active, registered_by=empresa/human) is the
+      # only principal carrying the code-runner role and is what production already
+      # runs against. Verified read-only against the live model_execution_principals
+      # table before this change.
+      ORG_CODE_RUNNER_PRINCIPAL_ID: "1"
       ORG_CODE_RUNNER_WORKER_ID: code-runner-01
       ORG_CODE_RUNNER_REPOSITORY_ID: explorarte-organization
       ORG_CODE_RUNNER_BASE_COMMIT: 599e5d78a5280b31dbdd37fb7e172270609148c8
