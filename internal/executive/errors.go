@@ -48,6 +48,21 @@ var (
 	ErrRunBlocked             = errors.New("executive run blocked")
 	ErrRunTerminal            = errors.New("executive run is terminal")
 
+	// ErrTaskRetryScheduled marks a failAttempt outcome where the Task
+	// Engine's own durable result -- not the retryable input this attempt
+	// reported -- left the task in retry_wait. It is the one signal
+	// isNonBlockingPhaseError trusts to skip blocking the root: a retryable
+	// failure whose attempt budget is exhausted lands the task in
+	// dead_letter instead, and that case must NOT carry this sentinel, so a
+	// worker's terminal failure still reaches handlePhaseError's normal
+	// blocking path (and, from there, the department review that is
+	// supposed to judge it). failAttempt always wraps the original sentinel
+	// alongside this one (fmt.Errorf("%w: %w", ...)), so
+	// errors.Is(err, ErrCompletionFailed) (or whichever failure sentinel
+	// applies) still holds for a caller that cares which failure this was,
+	// not just that it will retry.
+	ErrTaskRetryScheduled = errors.New("executive task attempt retry scheduled by the task engine")
+
 	// ErrExecutionPrincipalUnavailable means the canonical role-bound
 	// principal could not be consulted. It is not a statement about the
 	// principal: the attempt is left alone and the same work is retried later.
