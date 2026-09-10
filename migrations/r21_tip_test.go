@@ -24,7 +24,7 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const wantCount = 68
+	const wantCount = 69
 	if len(loaded) != wantCount {
 		t.Fatalf("migration count=%d want %d", len(loaded), wantCount)
 	}
@@ -100,6 +100,7 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		66: "create_memoryos_clusters",
 		67: "create_skillforge",
 		68: "seed_cloudflare_workers_ai_wallet",
+		69: "mistral_ministral8b_pricing",
 	}
 	byVersion := make(map[int64]string, len(loaded))
 	for _, migration := range loaded {
