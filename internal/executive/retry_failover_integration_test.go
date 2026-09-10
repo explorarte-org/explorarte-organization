@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -33,7 +34,6 @@ import (
 	identitypostgres "github.com/Mireuz13/explorarte-organization/internal/modelidentity/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/modelrouting"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
-	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter"
 	modelpostgres "github.com/Mireuz13/explorarte-organization/internal/modelruntime/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
@@ -144,6 +144,41 @@ var retryCanonicalDocumentNames = []string{
 // this test controls) and never touches internal/organization/registry at
 // all, so loading it from a directory where ONLY the egress document is
 // modified is safe.
+// providerIDLinePattern matches a "provider_id: X" line in the real
+// canonical egress document, however it is indented in its YAML block
+// sequence.
+var providerIDLinePattern = regexp.MustCompile(`(?m)^\s*-?\s*provider_id:\s*(\S+)\s*$`)
+
+// knownProvidersFromEgressDocument reads the distinct provider_id values
+// the real canonical egress document actually declares, instead of this
+// fixture spelling out provider identifiers itself. Executive's own
+// fitness boundary (scripts/check-executive-fitness.sh) treats a literal
+// provider name appearing in this directory's source as concrete-provider
+// coupling; deriving the list from the canonical document Executive
+// already trusts satisfies ProductiveLoadOptions's real contract (the
+// list must still match what the document declares) without hand-
+// maintaining a copy of it here.
+func knownProvidersFromEgressDocument(t *testing.T, path string) []string {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	var ids []string
+	for _, m := range providerIDLinePattern.FindAllSubmatch(body, -1) {
+		id := string(m[1])
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		t.Fatalf("no provider_id entries found in %s", path)
+	}
+	return ids
+}
+
 func buildRetryFailoverCanonicalDir(t *testing.T, modifyRouting, modifyEgress bool) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -273,6 +308,26 @@ type retryFailoverCall struct {
 }
 
 func (a *retryFailoverAdapter) ProviderID() string { return "test.fake" }
+
+// retryFailoverAdapterRegistry satisfies modelruntime.AdapterRegistry with
+// exactly the one test.fake in-process adapter this fixture ever needs.
+// Executive's own fitness boundary (scripts/check-executive-fitness.sh)
+// keeps this package from importing the concrete provider-adapter
+// registry package, even from a test file: Executive must never be able
+// to reach a real provider client, and the boundary is enforced on the
+// import itself, not on what a given test happens to instantiate. This
+// type is the minimal thing satisfying DispatchService's own
+// AdapterRegistry interface without that import.
+type retryFailoverAdapterRegistry struct {
+	adapter modelruntime.ProviderAdapter
+}
+
+func (r retryFailoverAdapterRegistry) Get(id string) (modelruntime.ProviderAdapter, bool) {
+	if r.adapter != nil && r.adapter.ProviderID() == id {
+		return r.adapter, true
+	}
+	return nil, false
+}
 
 func (a *retryFailoverAdapter) Descriptor() modelruntime.AdapterDescriptor {
 	return modelruntime.AdapterDescriptor{
@@ -619,7 +674,7 @@ RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatalf("LoadCanonicalRouting: %v", err)
 	}
 	tmpEgress := buildRetryFailoverCanonicalDir(t, false, true)
-	egressOptions := modelegress.ProductiveLoadOptions([]string{"deepseek", "openai_compatible", "openai_responses", "gemini", "cloudflare_workers_ai", "xai", "mistral"})
+	egressOptions := modelegress.ProductiveLoadOptions(knownProvidersFromEgressDocument(t, filepath.Join(tmpEgress, "model-egress-policy.yaml")))
 	// test.fake is added directly (not through ProductiveLoadOptions, whose
 	// callers are all production providers) -- this document is the ONLY
 	// place the fixture asserts test.fake may answer organizational/public/
@@ -852,7 +907,7 @@ WHERE organization_id=$2`, revisionID, retryOrganizationID,
 		ReconcileBatchSize: 100, OutboxMaxAttempts: 10,
 		ExecutionPrincipalKey: executionKey, ExecutionIdentityEnabled: true, ExecutionIdentityKeyFile: identityKeyFile,
 	}
-	dispatchService, err := modelruntime.NewDispatchService(retryOrganizationID, cfg, catalog, tasksAdapter, contexts, retryAllowEvaluator{matrixHash: capabilityHash}, egressStore, modelegress.NewEvaluator(), modelStore, h.dispatch, h.dispatch, identityService, modelStore, adapter.NewRegistry(providerAdapter), modelruntime.ClockFunc(time.Now))
+	dispatchService, err := modelruntime.NewDispatchService(retryOrganizationID, cfg, catalog, tasksAdapter, contexts, retryAllowEvaluator{matrixHash: capabilityHash}, egressStore, modelegress.NewEvaluator(), modelStore, h.dispatch, h.dispatch, identityService, modelStore, retryFailoverAdapterRegistry{adapter: providerAdapter}, modelruntime.ClockFunc(time.Now))
 	if err != nil {
 		t.Fatal(err)
 	}
