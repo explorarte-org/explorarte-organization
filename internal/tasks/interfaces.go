@@ -68,10 +68,10 @@ type Persistence interface {
 	Unblock(context.Context, UnblockCommand, AssigneeCheck, int) (Task, error)
 	ReleaseCoordinationHold(context.Context, ReleaseCoordinationHoldCommand, AssigneeCheck, int) (Task, error)
 	Cancel(context.Context, CancelCommand, int) (Task, error)
-	Claim(context.Context, ClaimRequest, AssigneeValidator, int) ([]ClaimedTask, error)
+	Claim(context.Context, ClaimRequest, AssigneeValidator, CapacityValidator, int) ([]ClaimedTask, error)
 	StartAttempt(context.Context, LeaseCommand, int) (Task, error)
 	Heartbeat(context.Context, LeaseCommand, time.Duration) (Lease, error)
 	RecordAttemptResult(context.Context, RecordAttemptResultCommand, RetryPolicy, int) (Task, error)
-	Reconcile(context.Context, int, AssigneeValidator, RetryPolicy, int) (ReconcileResult, error)
+	Reconcile(context.Context, int, AssigneeValidator, CapacityValidator, RetryPolicy, int) (ReconcileResult, error)
 	OutboxStore
 }
