@@ -2315,3 +2315,60 @@ func rootCorrelationID(t *testing.T, h *integrationHarness, rootID int64) string
 	}
 	return *detail.Task.CorrelationID
 }
+
+// ============================================================
+// CASE L (DYNAMIC_ROUTING_STACK_FINAL_INTEGRATION_REVIEW, FASE 14):
+// structural no-route must never be mistaken for a transient capacity
+// gap. A pool policy with zero materialized candidates is exactly the
+// kind of malformed-policy condition RouteResolver.Resolve already fails
+// closed on (ErrRoutingPolicyMalformed) -- the capacity gate must defer
+// (Available:true) rather than invent a capacity_wait with no real,
+// determinable RetryAt, letting that existing fail-closed path surface
+// unchanged.
+// ============================================================
+
+func TestExecutiveRetryFailoverPostgreSQL17StructuralNoRouteFailsClosed(t *testing.T) {
+	h := newIntegrationHarness(t)
+	defer h.close()
+	runtime := newRetryFailoverRuntime(t, h)
+
+	if _, err := h.store.Pool().Exec(h.ctx, `DELETE FROM routing_candidates WHERE organization_id=$1 AND policy_id=$2`, retryOrganizationID, retryFailoverPoolPolicyID); err != nil {
+		t.Fatal(err)
+	}
+
+	orchestrator := newRetryFailoverOrchestrator(t, h, runtime, executive.DefaultLimits())
+	rootID := submitRetryFailoverGoal(t, h, orchestrator, "retry-failover-structural-no-route")
+
+	run, err := driveRetryFailoverRunThroughCapacityWait(t, h, runtime, orchestrator, rootID, 30, false)
+	t.Logf("CASE L structural no-route: run=%+v err=%v", run, err)
+
+	worker := workerTask(t, h, rootID)
+	var reasonCode, reasonText string
+	if worker.Task.StatusReasonCode != nil {
+		reasonCode = *worker.Task.StatusReasonCode
+	}
+	if worker.Task.StatusReason != nil {
+		reasonText = *worker.Task.StatusReason
+	}
+	t.Logf("CASE L worker: status=%q reason_code=%q reason=%q attempt_count=%d", worker.Task.Status, reasonCode, reasonText, worker.Task.AttemptCount)
+	for i, at := range worker.Attempts {
+		var fc, rs string
+		if at.FailureCode != nil {
+			fc = *at.FailureCode
+		}
+		if at.ResultSummary != nil {
+			rs = *at.ResultSummary
+		}
+		t.Logf("CASE L attempt[%d]: state=%q failure_code=%q summary=%q", i, at.State, fc, rs)
+	}
+
+	if reasonCode == "capacity" {
+		t.Fatalf("CASE_L: a structurally malformed pool policy must never produce a capacity wait, got status=%q reason_code=%q", worker.Task.Status, reasonCode)
+	}
+	if got := runtime.adapter.callCount(retryCandidateA); got != 0 {
+		t.Fatalf("CASE_L: no provider call should happen for a structurally malformed policy, got %d calls to A", got)
+	}
+	if got := runtime.adapter.callCount(retryCandidateB); got != 0 {
+		t.Fatalf("CASE_L: no provider call should happen for a structurally malformed policy, got %d calls to B", got)
+	}
+}
