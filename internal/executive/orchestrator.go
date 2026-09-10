@@ -895,16 +895,41 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 		workerTasks := departmentWorkerTasks(all, root.ID, req.UnitID)
 		sort.Slice(workerTasks, func(i, j int) bool { return workerTasks[i].ID < workerTasks[j].ID })
 		for _, wt := range workerTasks {
-			if wt.Status == "completed" || wt.Status == "no_action" {
+			if isTerminalTask(wt.Status) {
 				continue
 			}
-			_, e = o.driveTypedTask(ctx, root, wt, WorkerResultOutputSchemaFor(o.limits), PurposeDepartmentWorker, func(result InvocationResult) error {
+			driven, workerErr := o.driveTypedTask(ctx, root, wt, WorkerResultOutputSchemaFor(o.limits), PurposeDepartmentWorker, func(result InvocationResult) error {
 				_, pErr := ParseWorkerResult(result.JSONOutput, o.limits)
 				return pErr
 			})
-			if e != nil {
-				return Run{}, false, e
+			if workerErr != nil && !isTerminalTask(driven.Status) {
+				// The Task Engine has NOT durably finished this worker --
+				// retry_wait (a fresh attempt is coming), an ambiguityGuard/
+				// priorExecutionBarrier block, a lease/authority outage, or
+				// anything else that leaves the attempt unresolved. None of
+				// that is evidence about the worker's own work, only about
+				// whether this attempt got to run at all, so the existing
+				// fail-closed path (propagate, let handlePhaseError decide)
+				// is unchanged.
+				return Run{}, false, workerErr
 			}
+			// Either this worker finished cleanly, or the Task Engine
+			// already left it in one of isTerminalTask's terminal states --
+			// completed, no_action, but also failed/dead_letter/rejected/
+			// cancelled. A worker's own failure belongs to the worker that
+			// had it (see allDepartmentWorkersTerminal's doc comment): it is
+			// INPUT for Department Review, never by itself authority to
+			// abort the whole campaign. Falling through here (instead of
+			// propagating workerErr) is exactly what a successful worker
+			// already does -- the next Resume() re-lists this department's
+			// workers, skips every terminal one (this one included,
+			// regardless of outcome), and once all of them are terminal
+			// reaches the allDepartmentWorkersTerminal gate below, which
+			// creates and drives the review that is supposed to judge this
+			// failure. The failure itself is never hidden, converted to
+			// success, or replaced with a synthetic result: RecordAttemptFailed
+			// already persisted it durably, and driven.Status/ReasonCode/Reason
+			// read back exactly what the Task Engine recorded.
 			return o.driveInProgress(ctx, root)
 		}
 

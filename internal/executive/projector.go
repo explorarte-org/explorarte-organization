@@ -34,6 +34,7 @@ func ProjectRun(root TaskRecord, children []TaskRecord) Run {
 	reviewsDone = true
 	for _, t := range children {
 		k := t.IdempotencyKey
+		isWorker := strings.Contains(k, keyWorkerMarker)
 		switch {
 		case strings.Contains(k, keyCEOPlanMarker):
 			hasCEOPlan = true
@@ -43,9 +44,15 @@ func ProjectRun(root TaskRecord, children []TaskRecord) Run {
 			if t.Status != "completed" {
 				leaderPlanDone = false
 			}
-		case strings.Contains(k, keyWorkerMarker):
+		case isWorker:
 			hasWorker = true
-			if t.Status != "completed" && t.Status != "no_action" {
+			// A worker's own terminal failure (failed/dead_letter/rejected/
+			// cancelled) still means it is DONE -- mirrors
+			// allDepartmentWorkersTerminal's use of isTerminalTask, not the
+			// narrower completed/no_action check this used to be: a failed
+			// sibling must not hold its department's phase open any more
+			// here than it does in driveDepartments.
+			if !isTerminalTask(t.Status) {
 				workersDone = false
 			}
 		case strings.Contains(k, keyReviewMarker):
@@ -68,7 +75,14 @@ func ProjectRun(root TaskRecord, children []TaskRecord) Run {
 			run.Reason = t.Reason
 			return run
 		}
-		if isFailedTask(t.Status) {
+		// A worker's own failure is evidence for Department Review to weigh
+		// (driveDepartments' PurposeDepartmentWorker handling already lets
+		// the campaign continue past it for exactly this reason); it must
+		// not, by itself, report the WHOLE run as failed the way a failed
+		// CEO-plan, leader-plan, review, or closure genuinely does. Skipping
+		// this generic classification for a worker is the read-side of the
+		// same invariant driveDepartments enforces on the write side.
+		if !isWorker && isFailedTask(t.Status) {
 			run.State = StateFailed
 			run.ReasonCode = t.ReasonCode
 			run.Reason = t.Reason
