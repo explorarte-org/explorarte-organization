@@ -21,6 +21,11 @@ var (
 	ErrDependencyUnsatisfied   = errors.New("task dependencies are not satisfied")
 	ErrRequirementsUnsatisfied = errors.New("task requirements are not satisfied")
 	ErrAssigneeUnavailable     = errors.New("task assignee is unavailable")
+	// ErrNoCapacity means ClaimSpecific found the task's pool has no
+	// eligible candidate right now (CAPACITY_EXHAUSTION_SCHEDULING_V1) --
+	// the task was durably blocked with status_reason_code=capacity
+	// before claimOne ran, the same pre-claim shape as ErrAssigneeUnavailable.
+	ErrNoCapacity              = errors.New("task pool has no eligible capacity right now")
 	ErrLeaseMismatch           = errors.New("task lease token does not match")
 	ErrLeaseExpired            = errors.New("task lease has expired")
 	ErrRequirementResolved     = errors.New("task requirement is already resolved")
