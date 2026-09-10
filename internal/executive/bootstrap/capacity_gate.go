@@ -38,7 +38,7 @@ type capacityStore interface {
 	modelruntime.CapacityStateReader
 }
 
-func newCapacityGate(registryRepository *registry.PostgresRepository, taskCatalog tasks.Catalog, store capacityStore, organizationID string) tasks.CapacityValidator {
+func newCapacityGate(registryRepository *registry.PostgresRepository, store capacityStore, organizationID string) tasks.CapacityValidator {
 	return func(ctx context.Context, task tasks.Task) (tasks.CapacityCheck, error) {
 		role, err := registryRepository.GetRole(ctx, organizationID, task.AssignedRoleID)
 		if err != nil || role.ModelPolicy == nil || *role.ModelPolicy == "" {
@@ -46,8 +46,8 @@ func newCapacityGate(registryRepository *registry.PostgresRepository, taskCatalo
 			// nothing for this gate to say. Defer.
 			return tasks.CapacityCheck{Available: true}, nil
 		}
-		revision, err := taskCatalog.CurrentRevision(ctx, organizationID)
-		if err != nil {
+		revision, err := registryRepository.GetCurrentRevision(ctx, organizationID)
+		if err != nil || revision == nil {
 			return tasks.CapacityCheck{Available: true}, nil
 		}
 		policy, ok, err := store.GetRoutingPolicy(ctx, organizationID, revision.ID, *role.ModelPolicy)

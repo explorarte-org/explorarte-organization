@@ -137,7 +137,7 @@ func Open(cfg config.Config, store *platformpostgres.Store, opts ...OpenOption) 
 	// for every other tasks.NewService caller) is exactly the old, always-
 	// available behavior; only this runtime's tasks.Service ever sees pool
 	// capacity at claim time.
-	taskService.SetCapacityGate(newCapacityGate(registryRepository, taskCatalog, modelRuntime.Store, cfg.Tasks.OrganizationID))
+	taskService.SetCapacityGate(newCapacityGate(registryRepository, modelRuntime.Store, cfg.Tasks.OrganizationID))
 	completionReader, err := completionpostgres.New(store, cfg.Tasks.OrganizationID)
 	if err != nil {
 		return nil, fmt.Errorf("create executive completion reader: %w", err)
