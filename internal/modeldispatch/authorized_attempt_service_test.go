@@ -56,6 +56,15 @@ func (r *bindingReader) GetActiveRoleModelBinding(context.Context, string, int64
 	return r.binding, r.err
 }
 
+// routingPolicyReader always reports "not a pool policy": every fixture in
+// this file uses a static role_model_bindings row, so the pool branch of
+// EnsureAuthorizedAssignmentForRunningAttempt is exercised separately.
+type routingPolicyReader struct{}
+
+func (routingPolicyReader) GetRoutingPolicy(context.Context, string, int64, string) (RoutingPolicyRef, bool, error) {
+	return RoutingPolicyRef{}, false, nil
+}
+
 type authorizedAttemptFixture struct {
 	service    *AuthorizedAttemptProvisioner
 	authorizer *recordingAuthorizer
@@ -101,7 +110,7 @@ func newAuthorizedAttemptFixture(t *testing.T) *authorizedAttemptFixture {
 		ProfileID: "ceo-primary", ModelProfileVersionID: 8,
 		BindingHash: "bf7b45e7e18cf02ff98a4562537c16b21767fb321bf6a87a48bc2ba5ab24f669", Active: true,
 	}}
-	service, err := NewAuthorizedAttemptProvisioner(assignments, lineage, binding, principal.PrincipalKey)
+	service, err := NewAuthorizedAttemptProvisioner(assignments, lineage, binding, routingPolicyReader{}, principal.PrincipalKey)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -209,6 +209,31 @@ WHERE b.organization_id=$1
 	return binding, nil
 }
 
+// GetRoutingPolicy reports whether (organizationID, revisionID, policyID) is
+// a materialized routing_mode: pool policy (mirrors
+// internal/modelruntime/postgres.Store.GetRoutingPolicy against the same
+// routing_policies table). ok=false (nil error) is the expected,
+// non-error result for every static policy -- there is deliberately no row
+// for those.
+func (s *Store) GetRoutingPolicy(ctx context.Context, organizationID string, revisionID int64, policyID string) (modeldispatch.RoutingPolicyRef, bool, error) {
+	var out modeldispatch.RoutingPolicyRef
+	err := s.pool.QueryRow(ctx, `
+SELECT organization_id,organization_revision_id,policy_id,routing_mode,canonical_hash
+FROM routing_policies
+WHERE organization_id=$1 AND organization_revision_id=$2 AND policy_id=$3`,
+		organizationID, revisionID, policyID).Scan(
+		&out.OrganizationID, &out.OrganizationRevisionID, &out.PolicyID, &out.RoutingMode, &out.CanonicalHash,
+	)
+	if err != nil {
+		mapped := mapError(err)
+		if errors.Is(mapped, modeldispatch.ErrNotFound) {
+			return modeldispatch.RoutingPolicyRef{}, false, nil
+		}
+		return modeldispatch.RoutingPolicyRef{}, false, mapped
+	}
+	return out, true, nil
+}
+
 func (s *Store) withPrincipal(ctx context.Context, assignment modeldispatch.DispatcherAssignment) (modeldispatch.ResolvedAssignment, error) {
 	principal, err := s.GetPrincipal(ctx, assignment.ExecutionPrincipalID)
 	if err != nil {
