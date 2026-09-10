@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -238,6 +239,17 @@ type retryFailoverAdapter struct {
 	failCandidateA bool
 	failCandidateB bool
 	calls          []retryFailoverCall
+	// departmentPlanOverride, when set, replaces the single hardcoded
+	// worker task retryFailoverResponseBody's department-plan case
+	// produces -- used only by the mixed-workers test, which needs two
+	// worker tasks in the same department instead of one. Every other
+	// test leaves this nil and gets the shared single-worker body.
+	departmentPlanOverride []byte
+	// failTaskID, when non-zero, makes Dispatch fail non-retryably any
+	// call whose CanonicalRequest.TaskID matches it -- a deterministic
+	// way to fail exactly one of several worker tasks in the same
+	// department once its real, database-assigned task ID is known.
+	failTaskID int64
 }
 
 type retryFailoverCall struct {
@@ -274,6 +286,18 @@ func (a *retryFailoverAdapter) setFailCandidateB(fail bool) {
 	a.failCandidateB = fail
 }
 
+func (a *retryFailoverAdapter) setDepartmentPlanOverride(body []byte) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.departmentPlanOverride = body
+}
+
+func (a *retryFailoverAdapter) setFailTaskID(taskID int64) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.failTaskID = taskID
+}
+
 func (a *retryFailoverAdapter) callCount(providerModelID string) int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -302,6 +326,8 @@ func (a *retryFailoverAdapter) Dispatch(_ context.Context, req modelruntime.Cano
 	a.mu.Lock()
 	failA := a.failCandidateA
 	failB := a.failCandidateB
+	planOverride := a.departmentPlanOverride
+	failTaskID := a.failTaskID
 	a.calls = append(a.calls, retryFailoverCall{ProviderModelID: req.ProviderModelID, IdempotencyKey: req.ProviderIdempotencyKey, InvocationID: req.InvocationID})
 	a.mu.Unlock()
 
@@ -317,6 +343,36 @@ func (a *retryFailoverAdapter) Dispatch(_ context.Context, req modelruntime.Cano
 			},
 			Cause: errors.New("retry failover test: candidate confirmed 503"),
 		}
+	}
+
+	if failTaskID != 0 && req.TaskID == failTaskID {
+		return modelruntime.RawResponse{}, &modelruntime.AdapterError{
+			Phase: modelruntime.AdapterFailureResponseReceived,
+			Outcome: modelruntime.ProviderOutcome{
+				OutcomeClassification: modelruntime.ProviderOutcomeRejected,
+				HTTPStatus:            400, ErrorClass: "policy", ErrorCode: "rejected",
+				Retryable:             false,
+				ResponseHash:          modelruntime.SHA256Bytes([]byte("retry-failover-400-" + strconv.FormatInt(req.InvocationID, 10))),
+				ResponseSchemaVersion: "test.fake.response.v1",
+			},
+			Cause: errors.New("retry failover test: marked worker task confirmed non-retryable 400"),
+		}
+	}
+
+	if planOverride != nil && strings.Contains(string(req.OutputSchema), "assigned_role_id") && !strings.Contains(string(req.OutputSchema), "unsatisfied_criteria") {
+		hash := modelruntime.SHA256Bytes(planOverride)
+		return modelruntime.RawResponse{
+			ProviderRequestID: "retry-failover-" + hash[:16],
+			InputTokens:       int64(len(req.RenderedContext) / 4),
+			OutputTokens:      16,
+			Content:           planOverride,
+			ProviderOutcome: modelruntime.ProviderOutcome{
+				OutcomeClassification: modelruntime.ProviderOutcomeResponseReceived,
+				ProviderRequestID:     "retry-failover-" + hash[:16], HTTPStatus: 200,
+				ResponseHash:          hash,
+				ResponseSchemaVersion: "test.fake.response.v1",
+			},
+		}, nil
 	}
 
 	body := retryFailoverResponseBody(req.OutputSchema)
@@ -1032,6 +1088,36 @@ func workerTask(t *testing.T, h *integrationHarness, rootID int64) tasks.TaskDet
 	return tasks.TaskDetail{}
 }
 
+// workerTasksFor returns EVERY department-worker task (retryWorkerRoleID)
+// among the campaign's correlated tasks, for scenarios with more than one
+// worker in the same department (workerTask only ever returns the first).
+func workerTasksFor(t *testing.T, h *integrationHarness, rootID int64) []tasks.TaskDetail {
+	t.Helper()
+	root, err := h.tasks.GetTask(h.ctx, rootID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root.Task.CorrelationID == nil {
+		t.Fatalf("root task %d has no correlation id", rootID)
+	}
+	correlated, err := h.tasks.ListTasks(h.ctx, tasks.TaskFilter{OrganizationID: retryOrganizationID, CorrelationID: *root.Task.CorrelationID, Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []tasks.TaskDetail
+	for _, task := range correlated {
+		if task.AssignedRoleID == retryWorkerRoleID {
+			detail, err := h.tasks.GetTask(h.ctx, task.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, detail)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Task.ID < out[j].Task.ID })
+	return out
+}
+
 // invocationForAttempt returns the single durable Invocation Model Runtime
 // recorded for one task attempt, read back through the SAME real
 // modelruntime.InvocationService this test's Harness dispatches through --
@@ -1301,5 +1387,100 @@ func TestExecutiveRetryFailoverPostgreSQL17BudgetPreventsSecondCall(t *testing.T
 	}
 	if got := runtime.adapter.callCount(retryCandidateB); got != 0 {
 		t.Fatalf("candidate B must never be called once the campaign-wide model-call budget is exhausted: calls=%d", got)
+	}
+}
+
+// ============================================================
+// CASE 6: mixed workers. One department, two workers: A completes
+// normally, B fails non-retryably on its own first attempt. Neither
+// worker's outcome may contaminate the other's, and the department must
+// still reach review once both are terminal.
+// ============================================================
+
+var mixedWorkersDepartmentPlan = []byte(`{"schema_version":"department-plan/v2","department_id":"ingenieria_ia","tasks":[` +
+	`{"client_key":"inspect-a","assigned_role_id":"ingenieria_ia/qa","task_class":"general.work","title":"Inspect state A","instructions":"Inspect the bounded task context and report findings for area A.","acceptance_criteria":["return findings"],"dependencies":[],"requirements":[],"priority":5},` +
+	`{"client_key":"inspect-b","assigned_role_id":"ingenieria_ia/qa","task_class":"general.work","title":"Inspect state B","instructions":"Inspect the bounded task context and report findings for area B.","acceptance_criteria":["return findings"],"dependencies":[],"requirements":[],"priority":5}` +
+	`],"review_criteria":["findings verified"],"unresolved":[],"revision_ownership":[]}`)
+
+func TestExecutiveRetryFailoverPostgreSQL17MixedWorkersReachReview(t *testing.T) {
+	h := newIntegrationHarness(t)
+	defer h.close()
+	runtime := newRetryFailoverRuntime(t, h)
+	runtime.adapter.setDepartmentPlanOverride(mixedWorkersDepartmentPlan)
+
+	orchestrator := newRetryFailoverOrchestrator(t, h, runtime, executive.DefaultLimits())
+	rootID := submitRetryFailoverGoal(t, h, orchestrator, "retry-failover-mixed-workers")
+
+	// Drive one step at a time until both worker tasks exist and exactly
+	// one of them is still un-attempted, then target THAT one's real,
+	// database-assigned task ID for a non-retryable failure -- learning
+	// it this way (rather than guessing an order) is what proves the two
+	// workers' outcomes are independent regardless of which one runs
+	// first.
+	var targeted bool
+	for i := 0; i < 30 && !targeted; i++ {
+		if _, reconcileErr := h.tasks.Reconcile(h.ctx, 50); reconcileErr != nil {
+			t.Fatalf("reconcile: %v", reconcileErr)
+		}
+		if _, err := orchestrator.Resume(h.ctx, rootID); err != nil && !errors.Is(err, executive.ErrTaskRetryScheduled) {
+			t.Fatalf("resume step %d: %v", i, err)
+		}
+		for _, w := range workerTasksFor(t, h, rootID) {
+			if w.Task.Status != "completed" && w.Task.Status != "failed" {
+				runtime.adapter.setFailTaskID(w.Task.ID)
+				targeted = true
+				break
+			}
+		}
+		if !targeted {
+			time.Sleep(1100 * time.Millisecond)
+		}
+	}
+	if !targeted {
+		t.Fatal("never observed a second, un-attempted worker task to target")
+	}
+
+	run, err := driveRetryFailoverRun(t, h, runtime, orchestrator, rootID, 30)
+	t.Logf("mixed-workers run=%+v err=%v", run, err)
+	if err != nil {
+		t.Fatalf("run did not converge: %v run=%+v", err, run)
+	}
+
+	workers := workerTasksFor(t, h, rootID)
+	if len(workers) != 2 {
+		t.Fatalf("expected exactly 2 department workers, got %d: %+v", len(workers), workers)
+	}
+	var completed, failed *tasks.TaskDetail
+	for i := range workers {
+		switch workers[i].Task.Status {
+		case "completed":
+			completed = &workers[i]
+		case "failed":
+			failed = &workers[i]
+		}
+	}
+	if completed == nil {
+		t.Fatalf("expected one worker completed, got statuses: %q, %q", workers[0].Task.Status, workers[1].Task.Status)
+	}
+	if failed == nil {
+		t.Fatalf("expected one worker failed, got statuses: %q, %q", workers[0].Task.Status, workers[1].Task.Status)
+	}
+
+	// The failed worker's own failure must stay exactly what it was --
+	// never converted into a synthetic success -- while the completed
+	// worker's own outcome is untouched by its sibling's failure.
+	if len(failed.Attempts) != 1 || failed.Attempts[0].State != tasks.AttemptFailed || failed.Attempts[0].Retryable == nil || *failed.Attempts[0].Retryable {
+		t.Fatalf("failed worker's attempt must be a single non-retryable failure: %+v", failed.Attempts)
+	}
+	if len(completed.Attempts) != 1 || completed.Attempts[0].State != tasks.AttemptFinished {
+		t.Fatalf("completed worker's attempt must have finished normally: %+v", completed.Attempts)
+	}
+
+	var reviewCount int
+	if scanErr := h.store.Pool().QueryRow(h.ctx, `SELECT COUNT(*) FROM tasks WHERE organization_id=$1 AND correlation_id=$2 AND idempotency_key LIKE '%leader-review:%'`, retryOrganizationID, run.CorrelationID).Scan(&reviewCount); scanErr != nil {
+		t.Fatal(scanErr)
+	}
+	if reviewCount == 0 {
+		t.Fatal("mixed department (one completed, one failed worker) never reached department review")
 	}
 }
