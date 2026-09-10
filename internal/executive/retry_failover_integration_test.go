@@ -31,6 +31,7 @@ import (
 	egresspostgres "github.com/Mireuz13/explorarte-organization/internal/modelegress/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/modelidentity"
 	identitypostgres "github.com/Mireuz13/explorarte-organization/internal/modelidentity/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/modelrouting"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter"
 	modelpostgres "github.com/Mireuz13/explorarte-organization/internal/modelruntime/postgres"
@@ -698,6 +699,16 @@ WHERE organization_id=$2`, revisionID, retryOrganizationID,
 	if _, err = egressStore.Apply(ctx, egressPlan); err != nil {
 		t.Fatalf("apply fixture egress policy: %v", err)
 	}
+
+	// CAPACITY_EXHAUSTION_SCHEDULING_V1: wire the SAME kind of capacity
+	// gate internal/executive/bootstrap wires in production
+	// (newCapacityGate there), reimplemented here only because
+	// package executive_test importing internal/executive/bootstrap's
+	// unexported constructor is not possible across the package boundary
+	// -- the logic itself is not a second retry engine, it is a read-only
+	// peek that reuses modelrouting.LookupSelector(...).Select, the exact
+	// function RouteResolver itself calls.
+	h.tasks.SetCapacityGate(newTestCapacityGate(h.registry, modelStore, retryOrganizationID))
 	identityCanonical, err := modelidentity.LoadCanonicalPolicy(filepath.Join("..", "..", "docs", "canonical"))
 	if err != nil {
 		t.Fatal(err)
@@ -1482,5 +1493,378 @@ func TestExecutiveRetryFailoverPostgreSQL17MixedWorkersReachReview(t *testing.T)
 	}
 	if reviewCount == 0 {
 		t.Fatal("mixed department (one completed, one failed worker) never reached department review")
+	}
+}
+
+// ============================================================
+// CAPACITY_EXHAUSTION_SCHEDULING_V1 (FASE G/I): both pool candidates
+// confirm a real, retryable 503 (consuming the two real attempts the
+// existing MODEL_RETRY_FAILOVER_V1 A->B failover mechanism already uses),
+// then both cool down at the same time. The NEXT claim attempt must not
+// consume the campaign's third and final MaxAttempts slot on a fictitious
+// invocation -- it must durably wait for capacity instead, then wake and
+// complete for real once a candidate recovers, with no DB recreation, no
+// in-process timer, and no ad-hoc polling anywhere in Executive.
+// ============================================================
+
+// driveRetryFailoverRunThroughCapacityWait is driveRetryFailoverRun without
+// the StateBlocked-means-stop assumption baked into that helper: every
+// OTHER blocked reason this suite exercises (assignee_unavailable,
+// dependency_unsatisfied/terminal) genuinely cannot resolve itself without
+// an external actor, so stopping there was correct for those tests. A
+// capacity wait is different -- Task Engine's own Reconcile cycle, called
+// here exactly like production would call it, resolves it on its own once
+// available_at passes. Nothing here is a bespoke timer or sleep loop
+// standing in for Executive: this is the same Reconcile+Resume pair every
+// other test in this file already drives with.
+func driveRetryFailoverRunThroughCapacityWait(t *testing.T, h *integrationHarness, runtime *retryFailoverRuntime, orchestrator *executive.Orchestrator, rootID int64, max int, stopOnBlocked bool) (executive.Run, error) {
+	t.Helper()
+	var run executive.Run
+	var err error
+	for i := 0; i < max; i++ {
+		if _, reconcileErr := h.tasks.Reconcile(h.ctx, 50); reconcileErr != nil {
+			t.Fatalf("reconcile: %v", reconcileErr)
+		}
+		run, err = orchestrator.Resume(h.ctx, rootID)
+		if errors.Is(err, executive.ErrTaskRetryScheduled) {
+			err = nil
+		}
+		if err != nil || run.State == executive.StateCompleted || run.State == executive.StateFailed {
+			return run, err
+		}
+		if run.State == executive.StateBlocked && stopOnBlocked {
+			return run, err
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return run, fmt.Errorf("executive run did not converge after %d resumes (last state=%q)", max, run.State)
+}
+
+func TestExecutiveRetryFailoverPostgreSQL17CapacityExhaustionDurableWait(t *testing.T) {
+	h := newIntegrationHarness(t)
+	defer h.close()
+	runtime := newRetryFailoverRuntime(t, h)
+	runtime.adapter.setFailCandidateA(true)
+	runtime.adapter.setFailCandidateB(true)
+
+	orchestrator := newRetryFailoverOrchestrator(t, h, runtime, executive.DefaultLimits())
+	rootID := submitRetryFailoverGoal(t, h, orchestrator, "retry-failover-capacity-wait")
+
+	// Drive until BOTH candidates have been tried for real (A then B, per
+	// the existing MODEL_RETRY_FAILOVER_V1 failover order) and cool down,
+	// which must durably block the worker on capacity rather than consume
+	// its third and final attempt. Never stop early on StateBlocked here --
+	// that is exactly the condition under test.
+	run, err := driveRetryFailoverRunThroughCapacityWait(t, h, runtime, orchestrator, rootID, 40, false)
+	if err != nil {
+		if run.State != executive.StateBlocked {
+			t.Fatalf("run did not reach a capacity wait: run=%+v err=%v", run, err)
+		}
+	}
+
+	worker := workerTask(t, h, rootID)
+	var reasonCode string
+	if worker.Task.StatusReasonCode != nil {
+		reasonCode = *worker.Task.StatusReasonCode
+	}
+	t.Logf("worker after both-exhausted: status=%q reason_code=%q attempt_count=%d max_attempts=%d",
+		worker.Task.Status, reasonCode, worker.Task.AttemptCount, worker.Task.MaxAttempts)
+
+	if worker.Task.Status != "blocked" || reasonCode != "capacity" {
+		t.Fatalf("worker must be durably capacity-blocked (status=blocked, reason_code=capacity), got status=%q reason_code=%q", worker.Task.Status, reasonCode)
+	}
+	// NO_MAX_ATTEMPTS_CONSUMPTION_FROM_WAIT: A and B each got exactly one
+	// real attempt (2 total); the wait itself must not have claimed a
+	// third, even though MaxAttempts=3 would have allowed one more claim.
+	if worker.Task.AttemptCount != 2 {
+		t.Fatalf("capacity wait must not consume MaxAttempts: attempt_count=%d, want exactly 2 (one real try per candidate, zero for the wait)", worker.Task.AttemptCount)
+	}
+	if worker.Task.MaxAttempts != 3 {
+		t.Fatalf("MaxAttempts must be untouched by capacity handling, got %d", worker.Task.MaxAttempts)
+	}
+	for _, at := range worker.Attempts {
+		if at.State != tasks.AttemptFailed {
+			t.Fatalf("every real attempt here must be the genuine A/B provider failure, got state=%q", at.State)
+		}
+	}
+
+	// NO_INVOCATION_WHILE_WAITING / NO_PROVIDER_CALL_WHILE_WAITING: exactly
+	// one real dispatch per candidate so far -- the capacity wait itself
+	// must not have produced a third dispatch to either.
+	if got := runtime.adapter.callCount(retryCandidateA); got != 1 {
+		t.Fatalf("candidate A provider call count = %d, want exactly 1 (the capacity wait must not call the provider)", got)
+	}
+	if got := runtime.adapter.callCount(retryCandidateB); got != 1 {
+		t.Fatalf("candidate B provider call count = %d, want exactly 1 (the capacity wait must not call the provider)", got)
+	}
+
+	// DEPARTMENT_REVIEW_NOT_PREMATURE
+	var reviewCount int
+	if scanErr := h.store.Pool().QueryRow(h.ctx, `SELECT COUNT(*) FROM tasks WHERE organization_id=$1 AND correlation_id=$2 AND idempotency_key LIKE '%leader-review:%'`, retryOrganizationID, run.CorrelationID).Scan(&reviewCount); scanErr != nil {
+		t.Fatal(scanErr)
+	}
+	if reviewCount != 0 {
+		t.Fatalf("department review must not be created while the only worker is capacity-waiting, got %d review task(s)", reviewCount)
+	}
+
+	// RETRY_AT_CAPACITY_DERIVED / CAPACITY_WAIT_DURABLE: available_at must
+	// be a real, future, capacity-derived timestamp, persisted on the row
+	// itself (not process-local state).
+	var availableAt time.Time
+	if scanErr := h.store.Pool().QueryRow(h.ctx, `SELECT available_at FROM tasks WHERE id=$1`, worker.Task.ID).Scan(&availableAt); scanErr != nil {
+		t.Fatal(scanErr)
+	}
+	stateA, errA := runtime.store.CapacityState(h.ctx, retryOrganizationID, "test.fake", retryCandidateA)
+	stateB, errB := runtime.store.CapacityState(h.ctx, retryOrganizationID, "test.fake", retryCandidateB)
+	if errA != nil || errB != nil {
+		t.Fatalf("capacity state read: errA=%v errB=%v", errA, errB)
+	}
+	if stateA.CooldownUntil == nil || stateB.CooldownUntil == nil {
+		t.Fatalf("both candidates must carry a real cooldown_until: A=%+v B=%+v", stateA, stateB)
+	}
+	earliest := *stateA.CooldownUntil
+	if stateB.CooldownUntil.Before(earliest) {
+		earliest = *stateB.CooldownUntil
+	}
+	if availableAt.Sub(earliest).Abs() > 2*time.Second {
+		t.Fatalf("persisted available_at=%s must track the earliest candidate cooldown=%s (CASE 1: earliest candidate wins retry_at)", availableAt, earliest)
+	}
+
+	// EARLY_RESUME_NOOP / NO_BUSY_POLLING (CASE 2): calling Reconcile+Resume
+	// again immediately, before that cooldown has elapsed, must be a
+	// complete no-op -- zero additional provider calls, unchanged attempt
+	// count, worker still blocked on capacity.
+	for i := 0; i < 3; i++ {
+		if _, reconcileErr := h.tasks.Reconcile(h.ctx, 50); reconcileErr != nil {
+			t.Fatalf("early reconcile: %v", reconcileErr)
+		}
+		if _, resumeErr := orchestrator.Resume(h.ctx, rootID); resumeErr != nil && !errors.Is(resumeErr, executive.ErrTaskRetryScheduled) {
+			t.Fatalf("early resume: %v", resumeErr)
+		}
+	}
+	if got := runtime.adapter.callCount(retryCandidateA); got != 1 {
+		t.Fatalf("early Resume/Reconcile before retry_at must not call candidate A again, got %d calls", got)
+	}
+	if got := runtime.adapter.callCount(retryCandidateB); got != 1 {
+		t.Fatalf("early Resume/Reconcile before retry_at must not call candidate B again, got %d calls", got)
+	}
+	worker = workerTask(t, h, rootID)
+	if worker.Task.AttemptCount != 2 {
+		t.Fatalf("early Resume/Reconcile must not consume another attempt, got attempt_count=%d", worker.Task.AttemptCount)
+	}
+	if worker.Task.Status != "blocked" {
+		t.Fatalf("early Resume/Reconcile must leave the worker still capacity-blocked, got status=%q", worker.Task.Status)
+	}
+
+	// Let candidate A recover, then wait past the earliest cooldown and
+	// keep driving -- this must wake through the normal Reconcile cycle,
+	// re-evaluate routing for real, and produce exactly one real successful
+	// Invocation, with no DB recreation and no code path other than the
+	// same Reconcile+Resume pair used throughout this test.
+	runtime.adapter.setFailCandidateA(false)
+	for time.Now().Before(earliest.Add(300 * time.Millisecond)) {
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	run, err = driveRetryFailoverRunThroughCapacityWait(t, h, runtime, orchestrator, rootID, 40, false)
+	if err != nil {
+		t.Fatalf("run did not converge after capacity recovery: run=%+v err=%v", run, err)
+	}
+	if run.State != executive.StateCompleted {
+		t.Fatalf("run must complete after capacity recovers, got state=%q", run.State)
+	}
+
+	worker = workerTask(t, h, rootID)
+	if worker.Task.Status != "completed" {
+		t.Fatalf("worker must complete for real after waking from capacity wait, got status=%q", worker.Task.Status)
+	}
+	// REAL_INVOCATION_AFTER_WAKE / PROVIDER_CALLED_ONCE_AFTER_WAKE: exactly
+	// one more real call to A (the recovered candidate) after wake, none to
+	// B (still failing, and no longer the earliest/best-ranked candidate
+	// once A recovered).
+	if got := runtime.adapter.callCount(retryCandidateA); got != 2 {
+		t.Fatalf("candidate A must be called exactly once more after waking from the capacity wait, want 2 total calls, got %d", got)
+	}
+	if got := runtime.adapter.callCount(retryCandidateB); got != 1 {
+		t.Fatalf("candidate B must not be called again after wake, want 1 total call, got %d", got)
+	}
+	if worker.Task.AttemptCount != 3 {
+		t.Fatalf("the wake must consume exactly one more real attempt (the third and final one), got attempt_count=%d", worker.Task.AttemptCount)
+	}
+
+	var reviewCountAfter int
+	if scanErr := h.store.Pool().QueryRow(h.ctx, `SELECT COUNT(*) FROM tasks WHERE organization_id=$1 AND correlation_id=$2 AND idempotency_key LIKE '%leader-review:%'`, retryOrganizationID, run.CorrelationID).Scan(&reviewCountAfter); scanErr != nil {
+		t.Fatal(scanErr)
+	}
+	if reviewCountAfter == 0 {
+		t.Fatal("department review must be created normally once the capacity-waiting worker completes")
+	}
+}
+
+// newTestCapacityGate mirrors internal/executive/bootstrap's own
+// (unexported) newCapacityGate exactly: a read-only peek that reuses
+// modelrouting.LookupSelector(...).Select -- the same function
+// RouteResolver itself calls -- to decide whether a pool-routed task's
+// claim candidate has any eligible candidate right now. It never creates
+// an Invocation, calls a provider, or mutates capacity state, and defers
+// (Available:true) for every case it cannot resolve as a clean, timed,
+// transient gap.
+func newTestCapacityGate(registryRepository *registry.PostgresRepository, store *modelpostgres.Store, organizationID string) tasks.CapacityValidator {
+	return func(ctx context.Context, task tasks.Task) (tasks.CapacityCheck, error) {
+		role, err := registryRepository.GetRole(ctx, organizationID, task.AssignedRoleID)
+		if err != nil || role.ModelPolicy == nil || *role.ModelPolicy == "" {
+			return tasks.CapacityCheck{Available: true}, nil
+		}
+		revision, err := registryRepository.GetCurrentRevision(ctx, organizationID)
+		if err != nil || revision == nil {
+			return tasks.CapacityCheck{Available: true}, nil
+		}
+		policy, ok, err := store.GetRoutingPolicy(ctx, organizationID, revision.ID, *role.ModelPolicy)
+		if err != nil || !ok || policy.RoutingMode != modelruntime.RoutingModePool {
+			return tasks.CapacityCheck{Available: true}, nil
+		}
+		selector, ok := modelrouting.LookupSelector(policy.SelectorID)
+		if !ok {
+			return tasks.CapacityCheck{Available: true}, nil
+		}
+		stored, err := store.ListRoutingCandidates(ctx, organizationID, revision.ID, *role.ModelPolicy)
+		if err != nil || len(stored) == 0 {
+			return tasks.CapacityCheck{Available: true}, nil
+		}
+		candidates := make([]modelrouting.Candidate, 0, len(stored))
+		state := make(map[string]modelrouting.CandidateState, len(stored))
+		for _, c := range stored {
+			mc := modelrouting.Candidate{
+				ProviderID: c.ProviderID, ProviderModelID: c.ProviderModelID,
+				Transport: string(c.Transport), CapacityClass: c.CapacityClass, Priority: c.Priority,
+				ProfileID: c.ProfileID, ModelProfileVersionID: c.ModelProfileVersionID,
+			}
+			candidates = append(candidates, mc)
+			cs, err := store.CapacityState(ctx, organizationID, c.ProviderID, c.ProviderModelID)
+			if err != nil {
+				return tasks.CapacityCheck{Available: true}, nil
+			}
+			state[c.ProviderID+"|"+c.ProviderModelID] = cs
+		}
+		now := time.Now()
+		if _, err := selector.Select(candidates, state, modelrouting.Requirements{AllowPaid: policy.AllowPaid}, now); err == nil {
+			return tasks.CapacityCheck{Available: true}, nil
+		} else if !errors.Is(err, modelrouting.ErrNoCapacity) {
+			return tasks.CapacityCheck{Available: true}, nil
+		}
+		var retryAt time.Time
+		for _, cs := range state {
+			if cs.CooldownUntil == nil {
+				continue
+			}
+			if retryAt.IsZero() || cs.CooldownUntil.Before(retryAt) {
+				retryAt = *cs.CooldownUntil
+			}
+		}
+		if retryAt.IsZero() || !retryAt.After(now) {
+			return tasks.CapacityCheck{Available: true}, nil
+		}
+		return tasks.CapacityCheck{Available: false, RetryAt: retryAt, Reason: "transient_no_capacity: every pool candidate is temporarily unavailable"}, nil
+	}
+}
+
+// ============================================================
+// FASE H: restart durability. A capacity wait must be readable and
+// re-enterable by a BRAND NEW Orchestrator instance built on the same
+// Postgres -- proving re-entry depends on nothing but the durable rows
+// (tasks.status/status_reason_code/available_at,
+// model_routing_capacity_state), never an in-memory timer, goroutine, map,
+// or closure captured by the original Orchestrator.
+// ============================================================
+
+func TestExecutiveRetryFailoverPostgreSQL17CapacityWaitSurvivesRestart(t *testing.T) {
+	h := newIntegrationHarness(t)
+	defer h.close()
+	runtime := newRetryFailoverRuntime(t, h)
+	runtime.adapter.setFailCandidateA(true)
+	runtime.adapter.setFailCandidateB(true)
+
+	limits := executive.DefaultLimits()
+	orchestrator1 := newRetryFailoverOrchestrator(t, h, runtime, limits)
+	rootID := submitRetryFailoverGoal(t, h, orchestrator1, "retry-failover-capacity-restart")
+
+	if _, err := driveRetryFailoverRunThroughCapacityWait(t, h, runtime, orchestrator1, rootID, 40, false); err != nil {
+		worker := workerTask(t, h, rootID)
+		if worker.Task.Status != "blocked" {
+			t.Fatalf("run did not reach a capacity wait before restart: %v (worker status=%q)", err, worker.Task.Status)
+		}
+	}
+	worker := workerTask(t, h, rootID)
+	var reasonCode string
+	if worker.Task.StatusReasonCode != nil {
+		reasonCode = *worker.Task.StatusReasonCode
+	}
+	if worker.Task.Status != "blocked" || reasonCode != "capacity" {
+		t.Fatalf("must be capacity-blocked before simulating restart, got status=%q reason_code=%q", worker.Task.Status, reasonCode)
+	}
+	attemptsBeforeRestart := worker.Task.AttemptCount
+	callsABeforeRestart := runtime.adapter.callCount(retryCandidateA)
+	callsBBeforeRestart := runtime.adapter.callCount(retryCandidateB)
+
+	stateA, errA := runtime.store.CapacityState(h.ctx, retryOrganizationID, "test.fake", retryCandidateA)
+	stateB, errB := runtime.store.CapacityState(h.ctx, retryOrganizationID, "test.fake", retryCandidateB)
+	if errA != nil || errB != nil || stateA.CooldownUntil == nil || stateB.CooldownUntil == nil {
+		t.Fatalf("expected real cooldowns on both candidates: A=%+v/%v B=%+v/%v", stateA, errA, stateB, errB)
+	}
+	earliest := *stateA.CooldownUntil
+	if stateB.CooldownUntil.Before(earliest) {
+		earliest = *stateB.CooldownUntil
+	}
+
+	// Simulate a process restart: discard orchestrator1 entirely (it is
+	// never referenced again) and build a completely new *executive.
+	// Orchestrator from scratch, reusing only the same underlying Postgres
+	// (runtime/h) -- never any Go value orchestrator1 held.
+	orchestrator1 = nil
+	_ = orchestrator1
+	orchestrator2 := newRetryFailoverOrchestrator(t, h, runtime, limits)
+
+	// Before retry_at: the new instance's own first Resume/Reconcile must
+	// still treat this as a no-op capacity wait -- no provider call, no
+	// new attempt, capacity_wait preserved -- purely from the durable rows
+	// it reads fresh, with zero in-memory state carried over from
+	// orchestrator1 (there is none to carry; it is a new instance).
+	if _, reconcileErr := h.tasks.Reconcile(h.ctx, 50); reconcileErr != nil {
+		t.Fatalf("post-restart reconcile: %v", reconcileErr)
+	}
+	if _, resumeErr := orchestrator2.Resume(h.ctx, rootID); resumeErr != nil && !errors.Is(resumeErr, executive.ErrTaskRetryScheduled) {
+		t.Fatalf("post-restart resume before retry_at: %v", resumeErr)
+	}
+	worker = workerTask(t, h, rootID)
+	if worker.Task.Status != "blocked" || worker.Task.AttemptCount != attemptsBeforeRestart {
+		t.Fatalf("new orchestrator instance must not act before retry_at: status=%q attempt_count=%d (want blocked/%d)", worker.Task.Status, worker.Task.AttemptCount, attemptsBeforeRestart)
+	}
+	if got := runtime.adapter.callCount(retryCandidateA); got != callsABeforeRestart {
+		t.Fatalf("new orchestrator instance must not call candidate A before retry_at: got %d calls, want %d", got, callsABeforeRestart)
+	}
+	if got := runtime.adapter.callCount(retryCandidateB); got != callsBBeforeRestart {
+		t.Fatalf("new orchestrator instance must not call candidate B before retry_at: got %d calls, want %d", got, callsBBeforeRestart)
+	}
+
+	// After retry_at: the new instance must reactivate the task correctly
+	// through the same Reconcile+Resume cycle, with no restart-specific
+	// code path anywhere.
+	runtime.adapter.setFailCandidateA(false)
+	for time.Now().Before(earliest.Add(300 * time.Millisecond)) {
+		time.Sleep(200 * time.Millisecond)
+	}
+	run, err := driveRetryFailoverRunThroughCapacityWait(t, h, runtime, orchestrator2, rootID, 40, false)
+	if err != nil {
+		t.Fatalf("new orchestrator instance did not converge after capacity recovery: run=%+v err=%v", run, err)
+	}
+	if run.State != executive.StateCompleted {
+		t.Fatalf("new orchestrator instance must complete the run after capacity recovers, got state=%q", run.State)
+	}
+	worker = workerTask(t, h, rootID)
+	if worker.Task.Status != "completed" {
+		t.Fatalf("worker must complete for real under the new orchestrator instance, got status=%q", worker.Task.Status)
+	}
+	if worker.Task.AttemptCount != attemptsBeforeRestart+1 {
+		t.Fatalf("wake must consume exactly one more real attempt, got attempt_count=%d (was %d before restart)", worker.Task.AttemptCount, attemptsBeforeRestart)
 	}
 }
