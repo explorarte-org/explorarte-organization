@@ -5,3 +5,4 @@
 - [HANDOFF-knowledge-ingestion-phase1.md](HANDOFF-knowledge-ingestion-phase1.md) — fase inicial de ingesta de conocimiento.
 - [HANDOFF-rag-canary.md](HANDOFF-rag-canary.md) — resultados y continuidad del canario RAG.
 - [POST_INCIDENT_VALIDATION.md](POST_INCIDENT_VALIDATION.md) — validación posterior al incidente de integración.
+- [HANDOFF-mistral-canonical-approval.md](HANDOFF-mistral-canonical-approval.md) — decisión del owner aprobando la incorporación canónica de Mistral (código + política, sin activación productiva).
