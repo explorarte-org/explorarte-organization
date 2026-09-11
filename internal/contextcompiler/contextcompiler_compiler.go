@@ -31,7 +31,11 @@ func BuildSelector(canonical contextengine.Snapshot) SemanticSelector {
 // the source of truth, unchanged in the DB) and NEVER reorders segments
 // or changes AuthorityPriority/RenderOrdinal -- only per-segment Content
 // can shrink, via a registered ProjectionFunc, and only for segments
-// whose SourceReference matches one.
+// whose SourceReference matches one; or a segment can be fully omitted
+// (Included=false, Content cleared), only for segments whose
+// SourceReference is named in profile.ExcludedSources. Neither path can
+// ever ADD a segment, widen one, or change its Tier/Class/Trust/DataClass/
+// MayGrantCapabilities -- see ContextProfile.ExcludedSources.
 //
 // Fallback (R10_DESIGN_AUDIT.md section M): if profile.TaskClass does
 // not match how this snapshot was built, or any RequiredTiers segment is
@@ -73,6 +77,23 @@ func Compile(profile ContextProfile, canonical contextengine.Snapshot) (Compilat
 			ProjectedBytes:       seg.ByteCount,
 			OriginalContentHash:  seg.ContentHash,
 			ProjectedContentHash: seg.ContentHash,
+		}
+		if seg.Included && profile.ExcludedSources[seg.SourceReference] {
+			// Source-level exclusion (see ContextProfile.ExcludedSources):
+			// mirrors exactly how contextengine's own assembler represents
+			// an omitted segment (assembler.go) -- Content/ByteCount are
+			// cleared, ContentHash is KEPT for provenance (what this
+			// segment would have hashed to had it been included), and
+			// OmissionReason records why. No projection runs for an
+			// excluded segment; there is nothing left to shrink.
+			projectedSegments[i].Included = false
+			projectedSegments[i].Content = nil
+			projectedSegments[i].ByteCount = 0
+			projectedSegments[i].OmissionReason = "excluded_by_profile:" + profile.ID
+			diff.Reason = "excluded_by_profile:" + profile.ID
+			diff.ProjectedBytes = 0
+			diffs = append(diffs, diff)
+			continue
 		}
 		if seg.Included {
 			if fn, ok := profile.Projections[seg.SourceReference]; ok {
