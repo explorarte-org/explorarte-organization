@@ -37,6 +37,38 @@ import (
 // integrationModelRuntime) are used. No real provider is ever called.
 // ============================================================
 
+// advanceOrganizationRevisionSQL inserts a new organization_registry_revisions
+// row and repoints organizations.current_revision_id at it, exactly the two
+// writes a real `registry sync --apply` performs (see
+// internal/organization/registry/postgres_repository.go). Used only to
+// reproduce, deterministically, the exact durable shape
+// PRODUCTION_CANONICAL_MATERIALIZATION_V1 left behind: an organization on a
+// newer revision than a specific historical root was pinned to. No canonical
+// document content is exercised here -- this test is entirely about what
+// Resume does when the two revision IDs differ, not about what changed
+// between them.
+func advanceOrganizationRevision(t *testing.T, h *integrationHarness) int64 {
+	t.Helper()
+	var currentID int64
+	if err := h.store.Pool().QueryRow(h.ctx, `SELECT current_revision_id FROM organizations WHERE id=$1`, "explorarte").Scan(&currentID); err != nil {
+		t.Fatalf("read current revision: %v", err)
+	}
+	var newID int64
+	// canonical_hash only needs to satisfy the table's ^[0-9a-f]{64}$ check;
+	// its content is never read by the revision-boundary comparison this
+	// test exercises.
+	const fixtureHash = "1111111111111111111111111111111111111111111111111111111111111111"
+	if err := h.store.Pool().QueryRow(h.ctx,
+		`INSERT INTO organization_registry_revisions (canonical_hash, previous_revision_id, status) VALUES ($1,$2,'applied') RETURNING id`,
+		fixtureHash, currentID).Scan(&newID); err != nil {
+		t.Fatalf("insert revision: %v", err)
+	}
+	if _, err := h.store.Pool().Exec(h.ctx, `UPDATE organizations SET current_revision_id=$1, updated_at=clock_timestamp() WHERE id=$2`, newID, "explorarte"); err != nil {
+		t.Fatalf("advance current revision: %v", err)
+	}
+	return newID
+}
+
 func submitRediscoveryGoal(t *testing.T, h *integrationHarness, orchestrator *executive.Orchestrator, idempotencyKey string) int64 {
 	t.Helper()
 	run, reused, err := orchestrator.Submit(h.ctx, executive.SubmitRequest{
@@ -337,15 +369,24 @@ func TestListExecutableRootsExcludesStandaloneAndNonCEO(t *testing.T) {
 	}
 }
 
-// TestExecutiveBlockedRootRediscoveryEndToEnd is the full incident
-// regression (AUTONOMOUS-E2E-002 / production roots 614, 616): a root
-// blocks for real via a failing DispatchProvisioner, is confirmed excluded
-// from the OLD behavior's shape (durably blocked), then a second
-// orchestrator over the SAME durable state -- standing in for the
-// persistent worker's next poll after the external condition (missing
-// role-model binding) was corrected -- discovers and resumes it through
+// TestExecutiveBlockedRootRediscoveryEndToEnd is the SAME-REVISION recovery
+// control (SAME_REVISION_TRANSIENT_RECOVERY): a root blocks for real via a
+// failing DispatchProvisioner, is confirmed durably blocked, then a second
+// orchestrator over the SAME durable state and the SAME organization
+// revision -- standing in for the persistent worker's next poll after the
+// external condition (missing role-model binding) was corrected, with
+// nothing else having changed -- discovers and resumes it through
 // ResumeDurable exactly as explorarte-executive-worker.service would, with
 // no duplicate provider call and no stale-lease adoption.
+//
+// This is deliberately NOT a claim about production roots 614/616, which
+// blocked under organization_revision_id=3 while the organization is now
+// on revision 4: see
+// TestExecutiveResumeFailsClosedAcrossOrganizationRevisionBoundary below for
+// what actually happens to a root whose pinned revision no longer matches
+// current. PR #203 lets the persistent worker inspect a historical blocked
+// root again; it does not, and must not, let that inspection reinterpret
+// the campaign under a canonical that was not the one it was built against.
 func TestExecutiveBlockedRootRediscoveryEndToEnd(t *testing.T) {
 	h := newIntegrationHarness(t)
 	defer h.close()
@@ -468,5 +509,140 @@ func TestExecutiveBlockedRootRediscoveryEndToEnd(t *testing.T) {
 	// second provider call for work that never actually happened.
 	if models.ensureCalls <= preFixCallCount {
 		t.Fatalf("recovered campaign made no real dispatch progress: ensureCalls before=%d after=%d", preFixCallCount, models.ensureCalls)
+	}
+}
+
+// TestExecutiveResumeFailsClosedAcrossOrganizationRevisionBoundary is
+// CROSS_REVISION_FAIL_CLOSED: the direct answer to whether PR #203 lets a
+// rediscovered blocked root execute cognitively under a canonical newer
+// than the one it was pinned to. It must not, and this proves it does not
+// -- reproducing, exactly, what production roots 614 and 616 will actually
+// do once this fix is deployed (they are pinned to organization_revision_id
+// 3; the organization is now on revision 4).
+//
+// Sequence: root created and blocked with dispatch_assignment_required
+// under revision N (same technique as the incident regression above) -->
+// organization revision advances to N+1, exactly like
+// PRODUCTION_CANONICAL_MATERIALIZATION_V1 did in production, without
+// touching the already-blocked row --> a fresh orchestrator (the
+// persistent worker's next poll) rediscovers the root via
+// ListExecutableRoots (dispatch_assignment_required is still, correctly,
+// autonomously reconsiderable at the DISCOVERY layer -- discovery has no
+// opinion about canonical revisions) --> ResumeDurable unblocks it and
+// calls Resume --> Resume's own revision check
+// (orchestrator.go: `if revision.ID != root.OrganizationRevisionID`) fires
+// before any new attempt, claim, or model dispatch --> the root ends up
+// blocked with organization_revision_drift, not completed, not re-executed
+// under the new canonical.
+func TestExecutiveResumeFailsClosedAcrossOrganizationRevisionBoundary(t *testing.T) {
+	h := newIntegrationHarness(t)
+	defer h.close()
+	models := newIntegrationModelRuntime()
+
+	failing := newOrchestrator(t, h, models, integrationAssignments{fail: true}, h.completion)
+	rootID := submitRediscoveryGoal(t, h, failing, "revision-boundary-incident")
+	if _, err := h.tasks.Reconcile(h.ctx, 50); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if _, err := failing.ResumeDurable(h.ctx, rootID); !errors.Is(err, executive.ErrDispatchAssignmentRequired) {
+		t.Fatalf("expected ErrDispatchAssignmentRequired reproducing the incident, got %v", err)
+	}
+
+	blockedRoot, err := h.tasks.GetTask(h.ctx, rootID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if blockedRoot.Task.Status != tasks.StatusBlocked || blockedRoot.Task.StatusReasonCode == nil || *blockedRoot.Task.StatusReasonCode != executive.ReasonDispatchAssignmentRequired {
+		t.Fatalf("root %d did not durably block with dispatch_assignment_required: status=%s reason=%v", rootID, blockedRoot.Task.Status, blockedRoot.Task.StatusReasonCode)
+	}
+	pinnedRevision := blockedRoot.Task.OrganizationRevisionID
+	preAttemptCallCount := models.ensureCalls
+
+	// Same lease-expiry fixture as the same-revision control above -- an
+	// unrelated barrier (stale local lease token) must not be what makes
+	// this test's root unreachable; only the revision check should.
+	if blockedRoot.Task.CorrelationID != nil && *blockedRoot.Task.CorrelationID != "" {
+		correlation := *blockedRoot.Task.CorrelationID
+		children, err := (runtimeadapter.Tasks{Service: h.tasks, OrganizationID: "explorarte"}).ListByCorrelation(h.ctx, correlation)
+		if err != nil {
+			t.Fatalf("list children: %v", err)
+		}
+		for _, child := range children {
+			if child.ID == rootID {
+				continue
+			}
+			lease, ok := readActiveLease(t, h, child.ID)
+			if !ok {
+				continue
+			}
+			if _, err := h.store.Pool().Exec(h.ctx, expireLeaseSQL, lease.id); err != nil {
+				t.Fatalf("expire lease: %v", err)
+			}
+		}
+	}
+
+	newRevision := advanceOrganizationRevision(t, h)
+	if newRevision == pinnedRevision {
+		t.Fatalf("fixture did not actually advance the revision: pinned=%d new=%d", pinnedRevision, newRevision)
+	}
+
+	// The persistent worker's next poll: a fresh orchestrator, assignment
+	// resolution now succeeding (the underlying condition IS fixed, exactly
+	// like production), but over an organization now on a newer revision
+	// than this root.
+	recovered := newOrchestrator(t, h, models, integrationAssignments{fail: false}, h.completion)
+
+	roots := executiveRoots(t, h)
+	if !containsRoot(roots, rootID) {
+		t.Fatalf("root %d excluded from discovery -- discovery must not gate on revision, only ResumeDurable's own guards should: roots=%v", rootID, roots)
+	}
+
+	if _, err := h.tasks.Reconcile(h.ctx, 50); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	run, err := recovered.ResumeDurable(h.ctx, rootID)
+	if err != nil {
+		t.Fatalf("ResumeDurable returned an error instead of converging to blocked/organization_revision_drift: %v", err)
+	}
+	if run.State != executive.StateBlocked {
+		t.Fatalf("expected the run to stay blocked at the revision boundary, got state=%s", run.State)
+	}
+
+	afterRoot, err := h.tasks.GetTask(h.ctx, rootID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if afterRoot.Task.Status != tasks.StatusBlocked || afterRoot.Task.StatusReasonCode == nil || *afterRoot.Task.StatusReasonCode != "organization_revision_drift" {
+		t.Fatalf("root %d did not converge to blocked/organization_revision_drift: status=%s reason=%v", rootID, afterRoot.Task.Status, afterRoot.Task.StatusReasonCode)
+	}
+	// The row's own pin is immutable -- Resume records drift as a NEW block
+	// reason, it does not, and must not, rewrite which revision this root
+	// was originally built against.
+	if afterRoot.Task.OrganizationRevisionID != pinnedRevision {
+		t.Fatalf("root %d's organization_revision_id changed from %d to %d -- a blocked/drift root must keep its original pin", rootID, pinnedRevision, afterRoot.Task.OrganizationRevisionID)
+	}
+
+	// Invariant: no cognitive execution happened under the new revision --
+	// zero NEW model dispatch beyond whatever the failing pass already
+	// accounted for (which is also zero: it never got past assignment
+	// resolution).
+	if models.ensureCalls != preAttemptCallCount {
+		t.Fatalf("a model call was made across the revision boundary: before=%d after=%d", preAttemptCallCount, models.ensureCalls)
+	}
+
+	// Invariant: no inappropriate duplicate attempt. Resume's revision check
+	// returns before any new attempt/claim logic, so the attempt count on
+	// the child this incident already created must not have grown.
+	children, err := (runtimeadapter.Tasks{Service: h.tasks, OrganizationID: "explorarte"}).ListByCorrelation(h.ctx, *afterRoot.Task.CorrelationID)
+	if err != nil {
+		t.Fatalf("list children: %v", err)
+	}
+	for _, child := range children {
+		if child.ID == rootID {
+			continue
+		}
+		if len(child.Attempts) > 1 {
+			t.Fatalf("child task %d has %d attempts after a revision-boundary block -- expected at most 1, no duplicate attempt should have been created", child.ID, len(child.Attempts))
+		}
 	}
 }
