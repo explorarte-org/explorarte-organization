@@ -89,6 +89,174 @@ func TestCompile_RequiredTierMissingFallsBackToCanonical(t *testing.T) {
 	}
 }
 
+// TestCompileFallsBackWhenExclusionRemovesRequiredTier is the blocker test
+// for EXECUTIVE_CONTEXT_PROFILE_SCOPING_REQUIRED_TIERS_FIX_V1 (round
+// EXECUTIVE_CONTEXT_PROFILE_SCOPING_CODE_REVIEW_V1, adversarial case E):
+// a profile that requires TierImmutableSafety but excludes
+// cell-boundaries.yaml -- that tier's ONLY source in this fixture -- must
+// fail closed to the full canonical view, never report success with the
+// required tier silently missing. This test is RED on
+// 3ccbcf49d04062ac42edb635170aa69058d44b85 (RequiredTiers was validated
+// against canonical, before ExcludedSources ran) and GREEN after the fix
+// (RequiredTiers validated against the post-exclusion/post-projection
+// view).
+func TestCompileFallsBackWhenExclusionRemovesRequiredTier(t *testing.T) {
+	snap := testSnapshot("empresa/ceo", roleCatalogYAML())
+	profile := ContextProfile{
+		ID:            "test.excludes_sole_required_tier_source",
+		Version:       "v1",
+		RequiredTiers: []contextengine.AuthorityTier{contextengine.TierImmutableSafety},
+		ExcludedSources: map[string]bool{
+			"docs/canonical/cell-boundaries.yaml": true,
+		},
+	}
+	result, err := Compile(profile, snap)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if !result.FellBackToCanonical {
+		t.Fatal("excluding the only source of a required tier must fail closed to canonical, never report a successful profiled context")
+	}
+	if len(result.Projected.Segments) != len(snap.Segments) {
+		t.Fatalf("canonical fallback must carry every segment, got %d want %d", len(result.Projected.Segments), len(snap.Segments))
+	}
+	var safety contextengine.Segment
+	found := false
+	for _, seg := range result.Projected.Segments {
+		if seg.SourceReference == "docs/canonical/cell-boundaries.yaml" {
+			safety = seg
+			found = true
+		}
+	}
+	if !found || !safety.Included || len(safety.Content) == 0 {
+		t.Fatalf("fallback must restore cell-boundaries.yaml fully included with content, got found=%v included=%v content_len=%d", found, safety.Included, len(safety.Content))
+	}
+}
+
+// TestCompileSucceedsWhenOtherSourceSatisfiesRequiredTier pins the
+// complementary rule: excluding ONE of several sources sharing a required
+// tier must NOT trip the fallback, as long as another included/projected
+// segment still satisfies that tier. This guards against accidentally
+// over-correcting the blocker fix into "excluding ANY source in a
+// required tier forces fallback".
+func TestCompileSucceedsWhenOtherSourceSatisfiesRequiredTier(t *testing.T) {
+	snap := testSnapshot("empresa/ceo", roleCatalogYAML())
+	// snap already carries two TierCanonicalPolicies-ish segments in
+	// spirit (role-catalog + would-be others); build an explicit fixture
+	// with two sources sharing one required tier to make the rule exact.
+	snap.Segments = append(snap.Segments, contextengine.Segment{
+		Ordinal: 8, RenderOrdinal: 8, AuthorityTier: contextengine.TierCanonicalPolicies,
+		SourceReference: "docs/canonical/source-b.yaml", Included: true, Content: []byte("b"), ByteCount: 1, ContentHash: "hb",
+	})
+	profile := ContextProfile{
+		ID:            "test.excludes_one_of_two_required_tier_sources",
+		Version:       "v1",
+		RequiredTiers: []contextengine.AuthorityTier{contextengine.TierCanonicalPolicies},
+		ExcludedSources: map[string]bool{
+			RoleCatalogSourceReference: true, // source-a, in spirit
+		},
+	}
+	result, err := Compile(profile, snap)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if result.FellBackToCanonical {
+		t.Fatal("excluding one of several sources sharing a required tier must not force canonical fallback while another source still satisfies it")
+	}
+	var roleSeg, sourceB contextengine.Segment
+	for _, seg := range result.Projected.Segments {
+		switch seg.SourceReference {
+		case RoleCatalogSourceReference:
+			roleSeg = seg
+		case "docs/canonical/source-b.yaml":
+			sourceB = seg
+		}
+	}
+	if roleSeg.Included {
+		t.Fatal("role-catalog.yaml must be excluded as configured")
+	}
+	if !sourceB.Included {
+		t.Fatal("source-b.yaml must remain included, satisfying TierCanonicalPolicies on its own")
+	}
+}
+
+// TestCompileProjectedSegmentStillSatisfiesRequiredTier pins that a
+// shrunk-but-nonempty ProjectionFunc result still counts as the tier
+// being present -- projection is not exclusion, and the required-tier fix
+// must not conflate "bytes changed" with "tier lost".
+func TestCompileProjectedSegmentStillSatisfiesRequiredTier(t *testing.T) {
+	profile := ResearchCorpusCurateV1()
+	snap := testSnapshot("investigacion/research_worker_hourly", roleCatalogYAML())
+	result, err := Compile(profile, snap)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if result.FellBackToCanonical {
+		t.Fatal("a valid shrink-only projection of a required-tier source must not trigger fallback")
+	}
+	var roleSeg contextengine.Segment
+	for _, seg := range result.Projected.Segments {
+		if seg.SourceReference == RoleCatalogSourceReference {
+			roleSeg = seg
+		}
+	}
+	if !roleSeg.Included || len(roleSeg.Content) == 0 {
+		t.Fatal("projected role-catalog.yaml segment must remain Included with nonempty content, still satisfying TierCanonicalPolicies")
+	}
+	if roleSeg.ByteCount >= len(roleCatalogYAML()) {
+		t.Fatal("sanity check: the segment must actually have been shrunk by the projection")
+	}
+}
+
+// TestCompileExcludingNonRequiredSourceStillSucceeds pins that excluding a
+// source whose tier is not required at all (department profiles exclude
+// model-routing.yaml without requiring TierCanonicalPolicies exclusively
+// through it) never trips the fallback.
+func TestCompileExcludingNonRequiredSourceStillSucceeds(t *testing.T) {
+	snap := testSnapshot("empresa/ceo", roleCatalogYAML())
+	profile := ContextProfile{
+		ID:            "test.excludes_source_whose_tier_is_not_required",
+		Version:       "v1",
+		RequiredTiers: []contextengine.AuthorityTier{contextengine.TierImmutableSafety},
+		ExcludedSources: map[string]bool{
+			"docs/canonical/decisions-required.yaml": true, // TierOwnerDecisions, not required here
+		},
+	}
+	result, err := Compile(profile, snap)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if result.FellBackToCanonical {
+		t.Fatal("excluding a source whose tier the profile never required must not trigger fallback")
+	}
+}
+
+// TestCompile_CanonicalSnapshotUnmutatedOnFailedRequiredTier confirms
+// Compile never mutates the caller's canonical.Segments in place, even
+// when it takes the required-tier fallback path -- the fallback must read
+// from a pristine canonical, not a partially-excluded working copy.
+func TestCompile_CanonicalSnapshotUnmutatedOnFailedRequiredTier(t *testing.T) {
+	snap := testSnapshot("empresa/ceo", roleCatalogYAML())
+	originalSafety := snap.Segments[0]
+	if originalSafety.SourceReference != "docs/canonical/cell-boundaries.yaml" {
+		t.Fatalf("fixture assumption broken: segment 0 is %s", originalSafety.SourceReference)
+	}
+	profile := ContextProfile{
+		ID:            "test.mutation_safety",
+		Version:       "v1",
+		RequiredTiers: []contextengine.AuthorityTier{contextengine.TierImmutableSafety},
+		ExcludedSources: map[string]bool{
+			"docs/canonical/cell-boundaries.yaml": true,
+		},
+	}
+	if _, err := Compile(profile, snap); err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if !snap.Segments[0].Included || string(snap.Segments[0].Content) != string(originalSafety.Content) || snap.Segments[0].ContentHash != originalSafety.ContentHash {
+		t.Fatalf("Compile must never mutate the caller's canonical snapshot in place: got %+v want %+v", snap.Segments[0], originalSafety)
+	}
+}
+
 func TestCompileForTaskClass_UnknownActorFallsBackNeverMinimal(t *testing.T) {
 	snap := testSnapshot("empresa/ceo", roleCatalogYAML())
 	result, err := CompileForTaskClass(snap)
