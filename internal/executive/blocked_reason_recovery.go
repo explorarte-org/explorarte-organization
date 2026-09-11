@@ -4,7 +4,7 @@ package executive
 // named here are ones ResumeDurable is willing to reconsider on its own --
 // see ResumeDurable's blocked-status switch in recovery.go, which is the
 // authority this list is derived from, not the other way around. Every
-// other reason (owner_decision_required, indeterminate_tool_execution,
+// other reason (ReasonOwnerDecisionRequired, indeterminate_tool_execution,
 // orphaned_model_result, completion_verification_inconclusive,
 // organization_revision_drift, and any evidence/context/design/department
 // reason not listed here) requires a human, new evidence, or an explicit
@@ -13,6 +13,15 @@ package executive
 const (
 	ReasonDispatchAssignmentRequired = "dispatch_assignment_required"
 	ReasonModelOutcomeAmbiguous      = "model_outcome_ambiguous"
+
+	// ReasonOwnerDecisionRequired marks a root blocked because a completed,
+	// structurally valid CEO plan named at least one owner_decisions_required
+	// entry. This is a lifecycle decision, not a contract defect: the model
+	// answered correctly and asked the owner a question the plan itself
+	// cannot resolve. It must never become autonomously reconsiderable --
+	// see IsAutonomouslyReconsiderableBlockedReason below -- because
+	// nothing about polling again changes whether the owner has decided.
+	ReasonOwnerDecisionRequired = "owner_decision_required"
 )
 
 // IsAutonomouslyReconsiderableBlockedReason reports whether a blocked

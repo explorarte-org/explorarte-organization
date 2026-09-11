@@ -22,6 +22,12 @@ func TestIsAutonomouslyReconsiderableBlockedReason(t *testing.T) {
 		// immediately, and every other reason this codebase actually
 		// produces via BlockTask -- none may be reconsidered autonomously.
 		{"owner_decision_required", false},
+		// ReasonOwnerDecisionRequired by its constant, not just its literal
+		// above: a structurally valid CEO plan that names an owner decision
+		// must stay excluded from autonomous rediscovery forever -- polling
+		// again cannot answer a question only the owner can answer. Root 618
+		// blocked on this exact reason.
+		{ReasonOwnerDecisionRequired, false},
 		{"indeterminate_tool_execution", false},
 		{"orphaned_model_result", false},
 		{"completion_verification_inconclusive", false},

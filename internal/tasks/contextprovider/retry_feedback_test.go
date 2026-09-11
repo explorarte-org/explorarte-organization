@@ -42,4 +42,40 @@ func TestMeasuredContractRejectionReachesTheNextAttemptContext(t *testing.T) {
 	}
 }
 
+// CODE-RUNNER CEO PLAN CONTRACT REJECTION SURVIVES RETRY (root 618, ROOT618_CASE_B).
+//
+// Root 618's third attempt widened a bounded CodeRunner audit into two
+// department_requests; the host's validateCodeRunnerExecutivePlan rejected it
+// with "code-runner audit requires exactly one department, got 2" and the
+// orchestrator persisted that exact detail via RecordAttemptFailed(...,
+// "model_result_contract_rejected", detail, true). This is the SAME transport
+// TestMeasuredContractRejectionReachesTheNextAttemptContext already proves
+// generically -- this guard pins it against the specific, real production
+// wording so a future attempt at the CEO-plan layer can act on precisely what
+// was wrong instead of retrying blind. No new history, no new
+// visible_history, no second transport: exactly the existing mechanism.
+func TestCodeRunnerContractRejectionReachesTheNextCEOPlanAttemptContext(t *testing.T) {
+	reason := "code-runner execution evidence is invalid: code-runner audit requires exactly one department, got 2"
+	detail := tasks.TaskDetail{Task: tasks.Task{
+		ID: 619, OrganizationID: "explorarte", OrganizationRevisionID: 4,
+		AssignedRoleID: "empresa/ceo", AssignedUnitID: "empresa",
+		Title: "CEO executive planning", Instructions: "plan", Status: tasks.StatusReady,
+		Version: 1, RequestHash: "hash",
+	}}
+	detail.Attempts = []tasks.Attempt{{
+		ID: 1, TaskID: 619, Ordinal: 3, State: tasks.AttemptFailed, WorkerID: "service",
+		ResultSummary: &reason, FailureCode: strPtr("model_result_contract_rejected"),
+	}}
+	record, err := sourceRecord(detail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(record.Content)
+	for _, want := range []string{"result_summary", "exactly one department, got 2", "model_result_contract_rejected"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("next CEO-plan attempt's context must carry the precise code-runner rejection (%q missing): %s", want, body)
+		}
+	}
+}
+
 func strPtr(v string) *string { return &v }
