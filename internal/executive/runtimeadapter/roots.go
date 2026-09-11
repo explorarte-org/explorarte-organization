@@ -17,6 +17,7 @@ func (a Tasks) ListExecutableRoots(ctx context.Context, limit int) ([]int64, err
 			tasks.StatusReady,
 			tasks.StatusPending,
 			tasks.StatusAwaitingVerification,
+			tasks.StatusBlocked,
 		},
 		AssignedRoleID: executive.CEORoleID,
 		Limit:          limit * 4,
@@ -32,6 +33,20 @@ func (a Tasks) ListExecutableRoots(ctx context.Context, limit int) ([]int64, err
 		}
 		if !isExecutiveRoot(detail) {
 			continue
+		}
+		// A blocked root only goes back to ResumeDurable if the reason it
+		// blocked is one ResumeDurable itself is willing to reconsider (see
+		// IsAutonomouslyReconsiderableBlockedReason). Every other blocked
+		// reason -- a human decision, missing evidence, an unresolved
+		// design/department review, an ambiguity with no policy resolution
+		// yet -- must stay excluded here exactly as it always has: this is
+		// discovery, not a second authority that decides what "blocked"
+		// means. ResumeDurable still runs its own guards on every
+		// reconsidered root and can leave it, or put it back, blocked.
+		if detail.Task.Status == tasks.StatusBlocked {
+			if detail.Task.StatusReasonCode == nil || !executive.IsAutonomouslyReconsiderableBlockedReason(*detail.Task.StatusReasonCode) {
+				continue
+			}
 		}
 		roots = append(roots, value.ID)
 		if len(roots) == limit {

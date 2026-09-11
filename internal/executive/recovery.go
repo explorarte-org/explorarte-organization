@@ -43,7 +43,7 @@ func (o *Orchestrator) ResumeDurable(ctx context.Context, rootTaskID int64) (Run
 	// explicit intervention.
 	if root.Status == "blocked" {
 		switch root.ReasonCode {
-		case "model_outcome_ambiguous":
+		case ReasonModelOutcomeAmbiguous:
 			children, listErr := o.tasks.ListByCorrelation(ctx, root.CorrelationID)
 			if listErr != nil {
 				return Run{}, listErr
@@ -67,7 +67,7 @@ func (o *Orchestrator) ResumeDurable(ctx context.Context, rootTaskID int64) (Run
 		case "completion_verification_inconclusive":
 			run, _ := o.Status(ctx, rootTaskID)
 			return run, ErrCompletionInconclusive
-		case "dispatch_assignment_required":
+		case ReasonDispatchAssignmentRequired:
 			// handled below after checking whether a prior-process lease or
 			// succeeded invocation makes reopening unsafe.
 		default:
@@ -111,7 +111,7 @@ func (o *Orchestrator) ResumeDurable(ctx context.Context, rootTaskID int64) (Run
 			return run, inspectErr
 		}
 		run, _ := o.Status(ctx, rootTaskID)
-		if root.Status == "blocked" && root.ReasonCode == "dispatch_assignment_required" {
+		if root.Status == "blocked" && root.ReasonCode == ReasonDispatchAssignmentRequired {
 			return run, ErrDispatchAssignmentRequired
 		}
 		return run, ErrRunBlocked
@@ -130,7 +130,7 @@ func (o *Orchestrator) ResumeDurable(ctx context.Context, rootTaskID int64) (Run
 		return run, ErrOrphanedModelResult
 	}
 
-	if root.Status == "blocked" && root.ReasonCode == "dispatch_assignment_required" {
+	if root.Status == "blocked" && root.ReasonCode == ReasonDispatchAssignmentRequired {
 		// With no unrecoverable active lease and no orphaned succeeded invocation,
 		// it is safe to reopen the root. The next exact child claim creates a fresh
 		// attempt and therefore requires a fresh assignment.
@@ -169,9 +169,9 @@ func (o *Orchestrator) inspectUnadoptableAttempt(ctx context.Context, root, chil
 		if invocation.Status != "ambiguous" {
 			continue
 		}
-		if root.Status != "blocked" || root.ReasonCode != "model_outcome_ambiguous" {
+		if root.Status != "blocked" || root.ReasonCode != ReasonModelOutcomeAmbiguous {
 			reason := fmt.Sprintf("task=%d attempt=%d invocation=%d requires explicit inspection", child.ID, child.ActiveLease.AttemptID, invocation.ID)
-			if _, blockErr := o.tasks.BlockTask(ctx, root.ID, "model_outcome_ambiguous", reason, "service", orchestratorWorkerID); blockErr != nil {
+			if _, blockErr := o.tasks.BlockTask(ctx, root.ID, ReasonModelOutcomeAmbiguous, reason, "service", orchestratorWorkerID); blockErr != nil {
 				return Run{}, true, blockErr
 			}
 		}
