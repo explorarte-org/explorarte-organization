@@ -39,6 +39,20 @@ type codeRunnerFixture struct {
 
 func newCodeRunnerFixture(t *testing.T, ceoPlanBody string) *codeRunnerFixture {
 	t.Helper()
+	return buildCodeRunnerFixture(t, ceoPlanBody, true)
+}
+
+// newNormalCampaignFixture is identical to newCodeRunnerFixture except the
+// root never carries CodeRunnerExecutionEvidenceRequirementKey -- an
+// ordinary campaign, used to pin that it receives no code-runner-specific
+// guidance at either the CEO-plan or department-plan layer.
+func newNormalCampaignFixture(t *testing.T, ceoPlanBody string) *codeRunnerFixture {
+	t.Helper()
+	return buildCodeRunnerFixture(t, ceoPlanBody, false)
+}
+
+func buildCodeRunnerFixture(t *testing.T, ceoPlanBody string, requireCodeRunner bool) *codeRunnerFixture {
+	t.Helper()
 	tasksPort := newMemoryTasks()
 	acceptance := newMemoryAcceptance()
 	models := newFakeModels()
@@ -78,6 +92,13 @@ func newCodeRunnerFixture(t *testing.T, ceoPlanBody string) *codeRunnerFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	requirements := []RequirementProposal{}
+	if requireCodeRunner {
+		requirements = append(requirements, RequirementProposal{
+			Key: CodeRunnerExecutionEvidenceRequirementKey, Type: "result",
+			Description: "real CodeRunner evidence with all host gates", Required: true,
+		})
+	}
 	run, _, err := orchestrator.Submit(context.Background(), SubmitRequest{
 		ActorRoleID: OwnerRoleID, IdempotencyKey: "root618-fixture-" + t.Name(),
 		Goal: OwnerGoal{
@@ -86,10 +107,7 @@ func newCodeRunnerFixture(t *testing.T, ceoPlanBody string) *codeRunnerFixture {
 				{Text: "the daily cycle design is frozen", Phase: AcceptanceDesign},
 				{Text: "code-runner audit evidence recorded", Phase: AcceptanceImplementation},
 			},
-			Requirements: []RequirementProposal{{
-				Key: CodeRunnerExecutionEvidenceRequirementKey, Type: "result",
-				Description: "real CodeRunner evidence with all host gates", Required: true,
-			}},
+			Requirements: requirements,
 		},
 	})
 	if err != nil {
@@ -270,15 +288,25 @@ func TestCodeRunnerConstraintIsVisibleToTheCEOBeforeGeneration(t *testing.T) {
 
 // NORMAL_CAMPAIGN_RECEIVES_CODE_RUNNER_CONSTRAINT = NO: a root without
 // CodeRunnerExecutionEvidenceRequirementKey must never receive audit-only
-// guidance -- codeRunnerExecutivePlanConstraintGuidance is a fact about
-// THIS root's own requirement, not a global CEO instruction.
+// guidance, for either purpose the contract covers -- and a purpose the
+// contract has nothing to say about must stay silent even for a root that
+// DOES carry the requirement.
 func TestNormalCampaignDoesNotReceiveCodeRunnerConstraint(t *testing.T) {
-	if got := codeRunnerExecutivePlanConstraintGuidance(TaskRecord{}); got != "" {
-		t.Fatalf("a root with no requirements must get no guidance, got %q", got)
+	for _, purpose := range []ExecutionPurpose{PurposeCEOPlan, PurposeDepartmentPlan} {
+		if got := codeRunnerExecutionConstraintGuidance(TaskRecord{}, purpose); got != "" {
+			t.Fatalf("purpose=%q: a root with no requirements must get no guidance, got %q", purpose, got)
+		}
+		root := TaskRecord{Requirements: []RequirementRecord{{Key: "some-other-requirement", Required: true}}}
+		if got := codeRunnerExecutionConstraintGuidance(root, purpose); got != "" {
+			t.Fatalf("purpose=%q: a root without the code-runner requirement must get no guidance, got %q", purpose, got)
+		}
 	}
-	root := TaskRecord{Requirements: []RequirementRecord{{Key: "some-other-requirement", Required: true}}}
-	if got := codeRunnerExecutivePlanConstraintGuidance(root); got != "" {
-		t.Fatalf("a root without the code-runner requirement must get no guidance, got %q", got)
+
+	codeRunnerRoot := TaskRecord{Requirements: []RequirementRecord{
+		{Key: CodeRunnerExecutionEvidenceRequirementKey, Required: true},
+	}}
+	if got := codeRunnerExecutionConstraintGuidance(codeRunnerRoot, PurposeDepartmentReview); got != "" {
+		t.Fatalf("a purpose the contract has no guidance for must stay silent even on a code-runner root, got %q", got)
 	}
 }
 
@@ -303,4 +331,161 @@ func findCEOPlanTask(t *testing.T, tasksPort *memoryTasks, correlation string) T
 	}
 	t.Fatal("no CEO plan task found")
 	return TaskRecord{}
+}
+
+func findDepartmentPlanTask(t *testing.T, tasksPort *memoryTasks, correlation string) TaskRecord {
+	t.Helper()
+	for _, task := range mustListByCorrelation(t, tasksPort, correlation) {
+		if task.TaskClass == TaskClassCoordinationDeptPlan {
+			return task
+		}
+	}
+	t.Fatal("no department plan task found")
+	return TaskRecord{}
+}
+
+// CODE_RUNNER_DEPARTMENT_PLAN_VISIBLE_CONSTRAINT_FIX_V1.
+//
+// validateCodeRunnerDepartmentPlan enforces departmentID=="ingenieria_ia"
+// and exactly one task, but -- before this fix -- nothing projected "exactly
+// ONE task" to the model producing DepartmentPlan, the same shape of gap
+// PR #204 closed for the CEO-plan layer. The tests below reproduce and pin
+// the department-plan half.
+
+const departmentPlanCaseTwoTasks = `{"schema_version":"department-plan/v1","department_id":"ingenieria_ia",` +
+	`"tasks":[` +
+	`{"client_key":"audit-1","assigned_role_id":"ingenieria_ia/qa","task_class":"engineering.design",` +
+	`"title":"Run the code-runner audit","instructions":"Execute the bounded audit.",` +
+	`"acceptance_criteria":["audit evidence recorded"],"dependencies":[],"requirements":[],"priority":50},` +
+	`{"client_key":"audit-2","assigned_role_id":"ingenieria_ia/qa","task_class":"engineering.design",` +
+	`"title":"A second, parallel task","instructions":"Do more in parallel.",` +
+	`"acceptance_criteria":["audit evidence recorded"],"dependencies":[],"requirements":[],"priority":50}` +
+	`],"review_criteria":["audit evidence recorded"],"unresolved":[]}`
+
+// PROVE_THE_GAP: before this fix, PurposeDepartmentPlan's ExecutionContract
+// carried no code-runner-specific text at all, even though
+// validateCodeRunnerDepartmentPlan was already enforcing "exactly one task"
+// host-side. This is the provider-visible assertion the round requires --
+// not a helper-string test -- inspecting the real HarnessRunCommand the
+// department leader would receive.
+func TestCodeRunnerDepartmentPlanConstraintIsVisibleBeforeGeneration(t *testing.T) {
+	fixture := newCodeRunnerFixture(t, ceoPlanCaseCCleanSingleDepartment)
+	for i := 0; i < 4; i++ {
+		fixture.orchestrator.Resume(context.Background(), fixture.root) //nolint:errcheck
+	}
+	var command HarnessRunCommand
+	found := false
+	for _, c := range fixture.harness.commands {
+		if c.Purpose == PurposeDepartmentPlan {
+			command = c
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("no PurposeDepartmentPlan command was ever issued")
+	}
+	if !strings.Contains(command.ExecutionContract, "CODE_RUNNER_DEPARTMENT_PLAN_CONSTRAINTS") {
+		t.Fatalf("ExecutionContract=%q must carry the code-runner department-plan guidance", command.ExecutionContract)
+	}
+	if !strings.Contains(command.ExecutionContract, "exactly ONE task") {
+		t.Fatalf("ExecutionContract=%q must state the exactly-one-task cardinality", command.ExecutionContract)
+	}
+	if !strings.Contains(command.ExecutionContract, "ingenieria_ia") {
+		t.Fatal("ExecutionContract must name the required department")
+	}
+}
+
+// DEPARTMENT_PLAN / CodeRunner, invalid shape: two tasks must be a precise,
+// retryable contract rejection -- the department-plan mirror of ROOT618_CASE_B.
+func TestDepartmentPlanCaseTwoTasksIsPreciseContractRejection(t *testing.T) {
+	fixture := newCodeRunnerFixture(t, ceoPlanCaseCCleanSingleDepartment)
+	fixture.harness.bodies[PurposeDepartmentPlan] = departmentPlanCaseTwoTasks
+
+	var lastErr error
+	for i := 0; i < 4; i++ {
+		_, err := fixture.orchestrator.Resume(context.Background(), fixture.root)
+		if err != nil {
+			lastErr = err
+		}
+		root := fixture.rootRecord(t)
+		if root.Status == "blocked" {
+			t.Fatalf("a retryable contract rejection must not block the root, got blocked: %s", root.Reason)
+		}
+		deptTask := findDepartmentPlanTask(t, fixture.tasks, root.CorrelationID)
+		if deptTask.ReasonCode == "model_result_contract_rejected" {
+			if !strings.Contains(deptTask.Reason, "exactly one department task, got 2") {
+				t.Fatalf("department plan task reason=%q must carry the precise detail", deptTask.Reason)
+			}
+			return
+		}
+	}
+	t.Fatalf("a two-task code-runner department plan must be rejected; last err=%v", lastErr)
+}
+
+// ROOT618_SUCCESSOR_DEPARTMENT_CASE: extends CASE C past "the department
+// planning task exists" into "the department leader actually saw the
+// constraint and produced a plan the host validated" -- the campaign
+// advances beyond department planning. Closing the whole campaign is out of
+// scope; reaching a completed department-plan task is the advancement this
+// fix is responsible for.
+func TestRoot618SuccessorDepartmentCase_CleanDepartmentPlanAdvancesCampaign(t *testing.T) {
+	fixture := newCodeRunnerFixture(t, ceoPlanCaseCCleanSingleDepartment)
+	// departmentPlanCaseCleanSingleTask: the fixture's default scripted body
+	// already matches this shape (one task, ingenieria_ia/qa), see
+	// newCodeRunnerFixture/buildCodeRunnerFixture above.
+	var deptTask TaskRecord
+	for i := 0; i < 6; i++ {
+		if _, err := fixture.orchestrator.Resume(context.Background(), fixture.root); err != nil &&
+			!errors.Is(err, ErrRunBlocked) && !errors.Is(err, ErrTaskRetryScheduled) &&
+			!errors.Is(err, ErrModelResultContractRejected) && !errors.Is(err, ErrCompletionFailed) {
+			t.Fatalf("resume %d: %v", i, err)
+		}
+		root := fixture.rootRecord(t)
+		if root.ReasonCode == ReasonOwnerDecisionRequired {
+			t.Fatal("a clean plan must never block as owner_decision_required")
+		}
+		all := mustListByCorrelation(t, fixture.tasks, root.CorrelationID)
+		hasDeptPlanTask := false
+		for _, task := range all {
+			if task.TaskClass == TaskClassCoordinationDeptPlan {
+				hasDeptPlanTask = true
+			}
+		}
+		if !hasDeptPlanTask {
+			continue
+		}
+		deptTask = findDepartmentPlanTask(t, fixture.tasks, root.CorrelationID)
+		if deptTask.Status == "completed" {
+			break
+		}
+	}
+	if deptTask.Status != "completed" {
+		t.Fatalf("department plan task status=%q, want completed -- a clean, constraint-compliant plan must validate and advance", deptTask.Status)
+	}
+}
+
+// NORMAL_DEPARTMENT_CAMPAIGN_UNCHANGED / NORMAL_CEO_CAMPAIGN_UNCHANGED,
+// provider-visible: a root that never opted into the code-runner audit must
+// never see CODE_RUNNER guidance in EITHER purpose's real ExecutionContract.
+func TestNormalCampaignExecutionContractNeverCarriesCodeRunnerGuidance(t *testing.T) {
+	fixture := newNormalCampaignFixture(t, ceoPlanCaseCCleanSingleDepartment)
+	for i := 0; i < 4; i++ {
+		fixture.orchestrator.Resume(context.Background(), fixture.root) //nolint:errcheck
+	}
+	sawCEOPlan, sawDepartmentPlan := false, false
+	for _, command := range fixture.harness.commands {
+		if strings.Contains(command.ExecutionContract, "CODE_RUNNER") {
+			t.Fatalf("purpose=%q: a normal campaign must never receive code-runner guidance, got %q", command.Purpose, command.ExecutionContract)
+		}
+		if command.Purpose == PurposeCEOPlan {
+			sawCEOPlan = true
+		}
+		if command.Purpose == PurposeDepartmentPlan {
+			sawDepartmentPlan = true
+		}
+	}
+	if !sawCEOPlan || !sawDepartmentPlan {
+		t.Fatalf("test did not actually exercise both purposes: ceo=%v department=%v", sawCEOPlan, sawDepartmentPlan)
+	}
 }

@@ -1927,7 +1927,7 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		Context:              snapshot,
 		Purpose:              purpose,
 		OutputSchema:         schema,
-		ExecutionContract:    executionContractForCEOPlan(purpose, root, executionContractForWithSupply(purpose, required, proofs, available)),
+		ExecutionContract:    executionContractForCodeRunnerConstraint(purpose, root, executionContractForWithSupply(purpose, required, proofs, available)),
 		MaxOutputTokens:      o.limits.MaxOutputTokensFor(purpose),
 		CorrelationID:        root.CorrelationID,
 		CausationID:          attemptCausation(task.ID, lease.AttemptID),
@@ -2085,20 +2085,18 @@ func executionContractForWithProofs(purpose ExecutionPurpose, required []Evidenc
 // ones the validator will accept. It is rendered LAST, after every other
 // guidance, so the most consequential copy-exactly instruction is also the
 // most recent thing the model reads before the schema.
-// executionContractForCEOPlan appends the code-runner audit's own
-// provider-visible constraints to an already-built contract, but ONLY for
-// PurposeCEOPlan and ONLY when root actually carries a required
-// CodeRunnerExecutionEvidenceRequirementKey requirement.
-// codeRunnerExecutivePlanConstraintGuidance (mission_execution.go) is the
-// single source both this guidance and validateCodeRunnerExecutivePlan's
-// host-side enforcement read from, so the two can never describe different
-// rules. An ordinary campaign -- one without that requirement -- gets back
-// contract unchanged.
-func executionContractForCEOPlan(purpose ExecutionPurpose, root TaskRecord, contract string) string {
-	if purpose != PurposeCEOPlan {
-		return contract
-	}
-	guidance := codeRunnerExecutivePlanConstraintGuidance(root)
+// executionContractForCodeRunnerConstraint appends the code-runner audit's
+// own provider-visible constraints to an already-built contract, for every
+// purpose codeRunnerExecutionConstraintGuidance (mission_execution.go) has
+// guidance for -- currently PurposeCEOPlan and PurposeDepartmentPlan,
+// mirroring validateCodeRunnerExecutivePlan and
+// validateCodeRunnerDepartmentPlan's host-side enforcement. That function is
+// the single source both this guidance and the host validators read from,
+// so provider text and host enforcement can never describe different rules.
+// An ordinary campaign, or a purpose this contract has nothing to say about,
+// gets back contract unchanged.
+func executionContractForCodeRunnerConstraint(purpose ExecutionPurpose, root TaskRecord, contract string) string {
+	guidance := codeRunnerExecutionConstraintGuidance(root, purpose)
 	if guidance == "" {
 		return contract
 	}

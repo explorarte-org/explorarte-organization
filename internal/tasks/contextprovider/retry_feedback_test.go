@@ -78,4 +78,36 @@ func TestCodeRunnerContractRejectionReachesTheNextCEOPlanAttemptContext(t *testi
 	}
 }
 
+// CODE-RUNNER DEPARTMENT PLAN CONTRACT REJECTION SURVIVES RETRY
+// (CODE_RUNNER_DEPARTMENT_PLAN_VISIBLE_CONSTRAINT_FIX_V1, section 9).
+//
+// validateCodeRunnerDepartmentPlan rejects a department leader's plan with
+// "code-runner audit requires exactly one department task, got 2" the same
+// way validateCodeRunnerExecutivePlan rejects the CEO's. Same transport, same
+// guard shape as the CEO-plan case above: no second history, no new
+// visible_history, exactly the existing result_summary/failure_code channel.
+func TestCodeRunnerContractRejectionReachesTheNextDepartmentPlanAttemptContext(t *testing.T) {
+	reason := "code-runner execution evidence is invalid: code-runner audit requires exactly one department task, got 2"
+	detail := tasks.TaskDetail{Task: tasks.Task{
+		ID: 900, OrganizationID: "explorarte", OrganizationRevisionID: 4,
+		AssignedRoleID: "ingenieria_ia/orquestador", AssignedUnitID: "ingenieria_ia",
+		Title: "Department planning: ingenieria_ia", Instructions: "plan", Status: tasks.StatusReady,
+		Version: 1, RequestHash: "hash",
+	}}
+	detail.Attempts = []tasks.Attempt{{
+		ID: 1, TaskID: 900, Ordinal: 1, State: tasks.AttemptFailed, WorkerID: "service",
+		ResultSummary: &reason, FailureCode: strPtr("model_result_contract_rejected"),
+	}}
+	record, err := sourceRecord(detail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(record.Content)
+	for _, want := range []string{"result_summary", "exactly one department task, got 2", "model_result_contract_rejected"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("next department-plan attempt's context must carry the precise code-runner rejection (%q missing): %s", want, body)
+		}
+	}
+}
+
 func strPtr(v string) *string { return &v }
