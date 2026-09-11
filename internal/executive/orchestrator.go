@@ -464,6 +464,22 @@ func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error
 		}
 	}
 	if planTask.Status != "completed" {
+		// This callback decides whether the MODEL OUTPUT is a valid
+		// ExecutivePlan -- parse, code-runner contract, unit/role
+		// resolution -- and, only for a plan that names no owner decision,
+		// seeds round 1's department-planning tasks (driveDepartments does
+		// not create these lazily for round 1; only a revise's later round
+		// does, via openDesignRoundPlan). It must never turn
+		// OwnerDecisionsRequired itself into an error: a plan that names an
+		// owner decision is still a VALID plan, and folding that lifecycle
+		// question into this callback misclassified it as
+		// model_result_contract_rejected/retryable (root 618's actual
+		// failure -- a compliant plan asking the owner a real question was
+		// retried twice against the same question before the run gave up).
+		// The completed-task branch below reads the persisted plan back and
+		// blocks the root for the owner exactly once, before driveDepartments
+		// ever runs, so no department task is created for that plan either
+		// way.
 		if _, err = o.driveTypedTask(ctx, root, planTask, executivePlanOutputSchema, PurposeCEOPlan, func(result InvocationResult) error {
 			plan, parseErr := ParseExecutivePlan(result.JSONOutput, o.limits)
 			if parseErr != nil {
@@ -477,7 +493,7 @@ func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error
 				return validateErr
 			}
 			if len(plan.OwnerDecisionsRequired) > 0 {
-				return fmt.Errorf("%w: owner_decision_required", ErrRunBlocked)
+				return nil
 			}
 			for _, req := range plan.DepartmentRequests {
 				leader := leaders[req.UnitID]
@@ -506,6 +522,16 @@ func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error
 	leaders, err := o.validator.ValidateExecutivePlan(ctx, revision.ID, plan)
 	if err != nil {
 		return o.blockRoot(ctx, root, "executive_plan_invalid", err.Error())
+	}
+	// The plan is durable and structurally valid. An owner decision named
+	// here is not a contract defect the model could fix by trying again --
+	// it is the CEO formally asking the owner something the plan cannot
+	// resolve on its own authority. Fail closed for a human: no department
+	// task is created, and this reason is deliberately absent from
+	// IsAutonomouslyReconsiderableBlockedReason, so ResumeDurable's next
+	// poll leaves it exactly as a human left it.
+	if len(plan.OwnerDecisionsRequired) > 0 {
+		return o.blockRoot(ctx, root, ReasonOwnerDecisionRequired, ownerDecisionRequiredReason(planTask.ID, len(plan.OwnerDecisionsRequired), planResult.InvocationID))
 	}
 
 	if run, done, phaseErr := o.driveDepartments(ctx, root, revision, plan, leaders); done || phaseErr != nil {
@@ -1901,7 +1927,7 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		Context:              snapshot,
 		Purpose:              purpose,
 		OutputSchema:         schema,
-		ExecutionContract:    executionContractForWithSupply(purpose, required, proofs, available),
+		ExecutionContract:    executionContractForCEOPlan(purpose, root, executionContractForWithSupply(purpose, required, proofs, available)),
 		MaxOutputTokens:      o.limits.MaxOutputTokensFor(purpose),
 		CorrelationID:        root.CorrelationID,
 		CausationID:          attemptCausation(task.ID, lease.AttemptID),
@@ -2059,6 +2085,29 @@ func executionContractForWithProofs(purpose ExecutionPurpose, required []Evidenc
 // ones the validator will accept. It is rendered LAST, after every other
 // guidance, so the most consequential copy-exactly instruction is also the
 // most recent thing the model reads before the schema.
+// executionContractForCEOPlan appends the code-runner audit's own
+// provider-visible constraints to an already-built contract, but ONLY for
+// PurposeCEOPlan and ONLY when root actually carries a required
+// CodeRunnerExecutionEvidenceRequirementKey requirement.
+// codeRunnerExecutivePlanConstraintGuidance (mission_execution.go) is the
+// single source both this guidance and validateCodeRunnerExecutivePlan's
+// host-side enforcement read from, so the two can never describe different
+// rules. An ordinary campaign -- one without that requirement -- gets back
+// contract unchanged.
+func executionContractForCEOPlan(purpose ExecutionPurpose, root TaskRecord, contract string) string {
+	if purpose != PurposeCEOPlan {
+		return contract
+	}
+	guidance := codeRunnerExecutivePlanConstraintGuidance(root)
+	if guidance == "" {
+		return contract
+	}
+	if contract != "" {
+		contract += "\n\n"
+	}
+	return contract + guidance
+}
+
 func executionContractForWithSupply(purpose ExecutionPurpose, required []EvidenceRequirement, proofs map[EvidenceSlot]EvidenceProof, available map[EvidenceSlot][]string) string {
 	contract := executionContractForWithProofs(purpose, required, available, proofs)
 	if purpose != PurposeDepartmentWorker {
@@ -2641,6 +2690,16 @@ func (o *Orchestrator) blockRoot(ctx context.Context, root TaskRecord, code, rea
 		return Run{}, err
 	}
 	return o.Status(ctx, root.ID)
+}
+
+// ownerDecisionRequiredReason is deliberately bounded and does not copy any
+// owner_decisions_required text into the block reason: the durable plan
+// (model-invocation:<id>) already carries every decision's full text, and an
+// operator or UI reading the block reason can follow that reference to it.
+// Duplicating the text here would grow status_reason without adding any
+// provenance the durable result does not already have.
+func ownerDecisionRequiredReason(planTaskID int64, count int, invocationID int64) string {
+	return fmt.Sprintf("CEO plan task %d requires %d owner decision(s); durable result model-invocation:%d", planTaskID, count, invocationID)
 }
 
 func (o *Orchestrator) anyProvisionedLeasedTask(ctx context.Context, correlation string) bool {
