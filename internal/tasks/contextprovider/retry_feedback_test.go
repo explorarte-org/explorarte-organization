@@ -110,4 +110,39 @@ func TestCodeRunnerContractRejectionReachesTheNextDepartmentPlanAttemptContext(t
 	}
 }
 
+// CEO CLOSURE CONTRADICTION SURVIVES RETRY
+// (CEO_CLOSURE_DECISION_CONTEXT_FIX_V1, TEST 6).
+//
+// A closure claiming status="completed" while also reporting non-empty
+// blocked_items or unresolved_decisions is rejected inside the attempt (FIX
+// B) with "closure status \"completed\" is incompatible with non-empty
+// blocked_items or unresolved_decisions", via RecordAttemptFailed(...,
+// "model_result_contract_rejected", detail, true) -- the SAME transport the
+// three guards above already prove generically and against real production
+// wording. No new history, no new visible_history, no second transport:
+// exactly the existing mechanism, now exercised for CEO-closure.
+func TestClosureContradictionReachesTheNextCEOClosureAttemptContext(t *testing.T) {
+	reason := "executive model result contract rejected: closure status \"completed\" is incompatible with non-empty blocked_items or unresolved_decisions"
+	detail := tasks.TaskDetail{Task: tasks.Task{
+		ID: 636, OrganizationID: "explorarte", OrganizationRevisionID: 4,
+		AssignedRoleID: "empresa/ceo", AssignedUnitID: "empresa",
+		Title: "CEO executive closure", Instructions: "close", Status: tasks.StatusReady,
+		Version: 1, RequestHash: "hash",
+	}}
+	detail.Attempts = []tasks.Attempt{{
+		ID: 1, TaskID: 636, Ordinal: 1, State: tasks.AttemptFailed, WorkerID: "service",
+		ResultSummary: &reason, FailureCode: strPtr("model_result_contract_rejected"),
+	}}
+	record, err := sourceRecord(detail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(record.Content)
+	for _, want := range []string{"result_summary", "incompatible with non-empty blocked_items or unresolved_decisions", "model_result_contract_rejected"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("next CEO-closure attempt's context must carry the precise contradiction detail (%q missing): %s", want, body)
+		}
+	}
+}
+
 func strPtr(v string) *string { return &v }
