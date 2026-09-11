@@ -594,6 +594,25 @@ func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error
 				return parseErr
 			}
 			if closure.Status == ClosureCompleted {
+				// A closure cannot claim completion while ALSO reporting
+				// items that, by definition, mean the root is not done:
+				// that combination is not a legitimate terminal shape, it is
+				// a self-contradictory model result. Rejecting it HERE --
+				// inside the attempt, before the task is ever marked
+				// completed -- routes it through the same
+				// model_result_contract_rejected/retryable path proven live
+				// by the department-plan role-reference retry (V3): the next
+				// attempt sees the precise contradiction and can correct it
+				// within its own retry budget, instead of the root falling
+				// straight through to a permanent human-required block.
+				//
+				// A NON-completed status reporting blocked_items or
+				// unresolved_decisions is untouched by this check and stays
+				// valid -- that is the closure correctly saying the root
+				// isn't done yet, which is exactly what those fields are for.
+				if len(closure.BlockedItems) > 0 || len(closure.UnresolvedDecisions) > 0 {
+					return fmt.Errorf("%w: closure status %q is incompatible with non-empty blocked_items or unresolved_decisions", ErrContractRejected, closure.Status)
+				}
 				if evidenceErr := o.validateRunCompletionEvidence(ctx, root, plan); evidenceErr != nil {
 					return evidenceErr
 				}
@@ -624,16 +643,33 @@ func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error
 	return o.Status(ctx, root.ID)
 }
 
+// decisionApplicabilityPolicy is the single source of truth for when an
+// open canonical or organization-global decision may be reported as a
+// blocker of THIS root's own goal -- by CEO-plan (owner_decisions_required)
+// or by CEO-closure (blocked_items, unresolved_decisions) alike. Both
+// prompts state their own field names and then include this paragraph
+// verbatim, so the invariant can never drift between planning and closure.
+//
+// CEO_CLOSURE_DECISION_CONTEXT_CONTAMINATION_FORENSICS_V1 traced a real
+// closure (root 629, invocation 123) reactivating three unrelated canonical
+// decisions (a 24-hour-cycle timing question, a cell-gateway question, a
+// repository-topology question -- none touched by that root's own
+// audit-only goal) straight out of docs/canonical/decisions-required.yaml,
+// which sits in EVERY executive invocation's context unfiltered by
+// ExecutionPurpose. CEO-plan already carried this policy; CEO-closure
+// carried none at all.
+const decisionApplicabilityPolicy = `- Only a decision that is strictly required to continue THIS root's own goal safely may be reported here.
+- Every reported item must be directly grounded in the authoritative goal below, or in a concrete blocker actually discovered while executing THIS root's own work.
+- Do NOT copy, inherit, summarize, or reactivate historical, canonical, organization-global, or unrelated pending decisions merely because they appear in context -- their presence in canonical documents, memory, RAG, prior tasks, or previous executive runs does not make them applicable here.
+- A historical or organization-global decision may be reported only when THIS root's own goal explicitly depends on it and cannot safely continue without the owner's choice.
+- Existing unresolved decisions concerning unrelated models, schedules, cells, repositories, profiles, skills, products, or previous milestones are not blockers for this goal unless this goal explicitly depends on them.
+- If this goal can proceed under existing authority, budget, safety constraints, and registered capabilities, leave the relevant field empty.`
+
 const ceoPlanInstructionPrefix = `Produce only the ExecutivePlan JSON contract for the authoritative owner goal below. Propose operational departments; do not select providers, models, capabilities, tools, authority, credentials, or egress.
 
-OWNER_DECISION_POLICY:
-- owner_decisions_required is reserved ONLY for a human decision that is strictly required to continue THIS owner goal safely.
-- Every requested owner decision must be directly grounded in the authoritative owner goal below or in a concrete blocker discovered while executing that goal.
-- Do NOT copy, inherit, summarize, or reactivate historical pending decisions from memory, RAG, prior tasks, canonical documents, previous executive runs, or unrelated organizational work merely because they appear in context.
-- A historical decision may be requested only when the current owner goal explicitly depends on it and cannot safely continue without the owner's choice.
+OWNER_DECISION_POLICY (applies to owner_decisions_required):
+` + decisionApplicabilityPolicy + `
 - Optional unavailable integrations that the current owner goal explicitly declares non-blocking must NOT become owner decisions.
-- Existing unresolved decisions concerning unrelated models, schedules, cells, repositories, profiles, skills, products, or previous milestones are not blockers for this goal.
-- If this owner goal can proceed under existing authority, budget, safety constraints, and registered capabilities, owner_decisions_required MUST be [].
 - Never suppress a genuine current-goal security, data-corruption, budget-escape, irreversible-data-loss, or real-execution blocker merely to keep owner_decisions_required empty.
 
 AUTHORITATIVE_OWNER_GOAL_JSON=`
@@ -1374,9 +1410,20 @@ func (o *Orchestrator) createReviewTask(ctx context.Context, root TaskRecord, re
 	return task, reused, nil
 }
 
+// ceoClosureInstructionPrefix carries decisionApplicabilityPolicy into the
+// closure prompt, scoped to blocked_items and unresolved_decisions -- the
+// closure's own equivalent of owner_decisions_required. See
+// decisionApplicabilityPolicy's doc comment for why this exists.
+const ceoClosureInstructionPrefix = `Synthesize only from this bounded durable summary and return ExecutiveClosure JSON. A completed claim cannot override backend verification.
+
+CLOSURE_DECISION_POLICY (applies to blocked_items and unresolved_decisions):
+` + decisionApplicabilityPolicy + `
+
+BOUNDED_DURABLE_SUMMARY=`
+
 func (o *Orchestrator) createClosureTask(ctx context.Context, root TaskRecord, plan ExecutivePlan, all []TaskRecord) (TaskRecord, bool, error) {
 	summary := boundedClosureSummary(plan, all, root.ID, o.limits.MaxInstructionsBytes)
-	task, reused, err := o.coordinatedChildren().Materialize(ctx, childRequest{Root: root, Sender: root, Depth: 1, Command: CreateTaskCommand{RequestedByRoleID: OwnerRoleID, AssignedRoleID: CEORoleID, TaskClass: TaskClassCoordinationCEOClosure, IdempotencyKey: childKey(root.ID, "ceo-closure"), Title: "CEO executive closure", Instructions: "Synthesize only from this bounded durable summary and return ExecutiveClosure JSON. A completed claim cannot override backend verification: " + summary, AcceptanceCriteria: []string{"Return strict ExecutiveClosure JSON", "Cite only supplied evidence refs", "Report blockers and unresolved owner decisions explicitly"}, Priority: 100, MaxAttempts: o.maxAttempts(3), CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID), Requirements: []RequirementProposal{{Key: "typed_closure", Type: "result", Description: "Validated ExecutiveClosure invocation result", Required: true}}}})
+	task, reused, err := o.coordinatedChildren().Materialize(ctx, childRequest{Root: root, Sender: root, Depth: 1, Command: CreateTaskCommand{RequestedByRoleID: OwnerRoleID, AssignedRoleID: CEORoleID, TaskClass: TaskClassCoordinationCEOClosure, IdempotencyKey: childKey(root.ID, "ceo-closure"), Title: "CEO executive closure", Instructions: ceoClosureInstructionPrefix + summary, AcceptanceCriteria: []string{"Return strict ExecutiveClosure JSON", "Cite only supplied evidence refs", "Report only blockers and unresolved decisions strictly grounded in this root's own goal, per CLOSURE_DECISION_POLICY"}, Priority: 100, MaxAttempts: o.maxAttempts(3), CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID), Requirements: []RequirementProposal{{Key: "typed_closure", Type: "result", Description: "Validated ExecutiveClosure invocation result", Required: true}}}})
 	if err != nil {
 		return TaskRecord{}, false, err
 	}
