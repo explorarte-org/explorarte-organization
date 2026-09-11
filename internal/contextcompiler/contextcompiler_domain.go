@@ -43,6 +43,33 @@ type ContextProfile struct {
 	// (still included, per the conservative-inclusion rule -- see
 	// R10_DESIGN_AUDIT.md section G).
 	Projections map[string]ProjectionFunc
+
+	// ExcludedSources names segments, by exact SourceReference, that this
+	// profile omits entirely (EXECUTIVE_CONTEXT_PROFILE_SCOPING_FIX_V1).
+	// This is a source-level exclusion, deliberately finer-grained than
+	// RequiredTiers: several canonical documents share one AuthorityTier
+	// (e.g. TierCanonicalPolicies covers organization.yaml AND
+	// model-routing.yaml alike), so a profile that must keep one while
+	// dropping another cannot express that at the tier level.
+	//
+	// A ProjectionFunc can only SHRINK a segment's content -- Compile
+	// rejects an empty projection and keeps the original (see
+	// contextcompiler_compiler.go, and RoleCatalogSelfEntry's own
+	// fail-closed branch), so it was structurally impossible to remove a
+	// segment through Projections alone. ExcludedSources is the minimal,
+	// explicit completion of that gap: Compile sets the matching
+	// segment's Included=false and OmissionReason, exactly mirroring how
+	// contextengine's own assembler already represents an omitted
+	// segment (see assembler.go) -- renderer.go and providerrender.go
+	// already skip !Included segments unconditionally, so no downstream
+	// consumer needs to change.
+	//
+	// RequiredTiers is checked against the CANONICAL snapshot's own
+	// segment inclusion, before any profile is applied (see Compile) --
+	// excluding one source from a tier that other, still-included
+	// sources also belong to never fails a RequiredTiers check for that
+	// tier.
+	ExcludedSources map[string]bool
 }
 
 // ProjectionFunc deterministically derives a smaller byte payload from a
