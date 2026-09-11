@@ -4,6 +4,7 @@ package executive_test
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -56,7 +57,7 @@ func submitRediscoveryGoal(t *testing.T, h *integrationHarness, orchestrator *ex
 
 func executiveRoots(t *testing.T, h *integrationHarness) []int64 {
 	t.Helper()
-	roots, err := (runtimeadapter.Tasks{Service: h.tasks, OrganizationID: "explorarte"}).ListExecutableRoots(h.ctx, 64)
+	roots, err := (runtimeadapter.Tasks{Service: h.tasks, OrganizationID: "explorarte"}).ListExecutableRoots(h.ctx, 16) // matches production explorarte-executive-worker.service --batch 16
 	if err != nil {
 		t.Fatalf("ListExecutableRoots: %v", err)
 	}
@@ -144,6 +145,112 @@ func TestListExecutableRootsRediscoversDispatchAssignmentRequired(t *testing.T) 
 	roots := executiveRoots(t, h)
 	if !containsRoot(roots, rootID) {
 		t.Fatalf("blocked+dispatch_assignment_required root %d excluded from discovery: roots=%v", rootID, roots)
+	}
+}
+
+// TestListExecutableRootsDoesNotStarveOlderRecoverableBlockedRoot is the
+// regression test for the discovery-window starvation edge case found in
+// independent review before merge: ListTasks orders by created_at DESC and
+// used to apply LIMIT before runtimeadapter discarded non-recoverable
+// blocked rows, so enough recent, non-recoverable blocked CEO tasks could
+// fill the entire fetch window and permanently hide an older, genuinely
+// recoverable one. The older root here is never made artificially recent --
+// it is created FIRST, then more than one page's worth of newer decoys are
+// created after it, exactly the ordering that exposed the bug.
+func TestListExecutableRootsDoesNotStarveOlderRecoverableBlockedRoot(t *testing.T) {
+	h := newIntegrationHarness(t)
+	defer h.close()
+	models := newIntegrationModelRuntime()
+	adapter := runtimeadapter.Tasks{Service: h.tasks, OrganizationID: "explorarte"}
+
+	// The older, genuinely recoverable root -- created first, via a real
+	// failing DispatchProvisioner exactly like the direct regression test
+	// above, never a hand-edited row.
+	failing := newOrchestrator(t, h, models, integrationAssignments{fail: true}, h.completion)
+	olderRootID := submitRediscoveryGoal(t, h, failing, "starvation-older-recoverable-root")
+	if _, err := h.tasks.Reconcile(h.ctx, 50); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if _, err := failing.ResumeDurable(h.ctx, olderRootID); !errors.Is(err, executive.ErrDispatchAssignmentRequired) {
+		t.Fatalf("expected ErrDispatchAssignmentRequired reproducing the incident, got %v", err)
+	}
+	olderRoot, err := h.tasks.GetTask(h.ctx, olderRootID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if olderRoot.Task.Status != tasks.StatusBlocked || olderRoot.Task.StatusReasonCode == nil || *olderRoot.Task.StatusReasonCode != executive.ReasonDispatchAssignmentRequired {
+		t.Fatalf("older root %d did not durably block with dispatch_assignment_required: status=%s reason=%v", olderRootID, olderRoot.Task.Status, olderRoot.Task.StatusReasonCode)
+	}
+
+	// More than one discovery page's worth of strictly newer, structurally
+	// valid CEO roots, blocked with a reason that must stay excluded. Every
+	// one of these is created AFTER olderRootID, so ListTasks' created_at
+	// DESC ordering puts every single one of them ahead of it.
+	const decoyCount = 70 // > executiveRootDiscoveryPage (64)
+	for i := 0; i < decoyCount; i++ {
+		decoy, _, err := adapter.CreateTask(h.ctx, executive.CreateTaskCommand{
+			RequestedByRoleID:  executive.OwnerRoleID,
+			AssignedRoleID:     executive.CEORoleID,
+			TaskClass:          "owner.goal",
+			IdempotencyKey:     fmt.Sprintf("starvation-decoy-%03d", i),
+			Title:              "starvation decoy",
+			Instructions:       "structurally valid but never recoverable",
+			AcceptanceCriteria: []string{"n/a"},
+			MaxAttempts:        1,
+			Requirements: []executive.RequirementProposal{
+				{Key: "executive_closure_verified", Type: "result", Description: "structurally a real root", Required: true},
+			},
+		})
+		if err != nil {
+			t.Fatalf("create decoy %d: %v", i, err)
+		}
+		if _, err := adapter.BlockTask(h.ctx, decoy.ID, "owner_decision_required", "starvation fixture: never recoverable", "service", "test"); err != nil {
+			t.Fatalf("block decoy %d: %v", i, err)
+		}
+	}
+
+	roots := executiveRoots(t, h)
+	if !containsRoot(roots, olderRootID) {
+		t.Fatalf("older recoverable root %d starved out by %d newer non-recoverable blocked roots: roots=%v", olderRootID, decoyCount, roots)
+	}
+}
+
+// TestListExecutableRootsDoesNotStarveOlderReadyRoot is the analogous
+// preexisting-architecture check (independent review section 3): the same
+// created_at-DESC/LIMIT-before-Go-filter shape existed before this round
+// for the ready/pending/awaiting_verification statuses too, via
+// isExecutiveRoot discarding CEO-assigned tasks that are not structurally
+// valid roots (no executive_closure_verified requirement). The pagination
+// fix in ListExecutableRoots closes this the same way, as one mechanism,
+// not a second one.
+func TestListExecutableRootsDoesNotStarveOlderReadyRoot(t *testing.T) {
+	h := newIntegrationHarness(t)
+	defer h.close()
+	models := newIntegrationModelRuntime()
+	orchestrator := newOrchestrator(t, h, models, integrationAssignments{}, h.completion)
+	adapter := runtimeadapter.Tasks{Service: h.tasks, OrganizationID: "explorarte"}
+
+	olderRootID := submitRediscoveryGoal(t, h, orchestrator, "starvation-older-ready-root")
+
+	const decoyCount = 70
+	for i := 0; i < decoyCount; i++ {
+		if _, _, err := adapter.CreateTask(h.ctx, executive.CreateTaskCommand{
+			RequestedByRoleID:  executive.OwnerRoleID,
+			AssignedRoleID:     executive.CEORoleID,
+			TaskClass:          "owner.goal",
+			IdempotencyKey:     fmt.Sprintf("starvation-ready-decoy-%03d", i),
+			Title:              "starvation decoy without closure requirement",
+			Instructions:       "CEO-assigned, owner-requested, but not a structural root",
+			AcceptanceCriteria: []string{"n/a"},
+			MaxAttempts:        1,
+		}); err != nil {
+			t.Fatalf("create decoy %d: %v", i, err)
+		}
+	}
+
+	roots := executiveRoots(t, h)
+	if !containsRoot(roots, olderRootID) {
+		t.Fatalf("older ready root %d starved out by %d newer non-root CEO tasks: roots=%v", olderRootID, decoyCount, roots)
 	}
 }
 
