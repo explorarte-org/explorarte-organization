@@ -354,26 +354,42 @@ func validateCodeRunnerDepartmentPlan(root TaskRecord, departmentID string, plan
 	return nil
 }
 
-// codeRunnerExecutivePlanConstraintGuidance is the provider-visible half of
-// the same contract validateCodeRunnerExecutivePlan enforces host-side. Both
-// read requiredRootRequirement for CodeRunnerExecutionEvidenceRequirementKey,
-// so the CEO is shown exactly the rule its plan will be judged against --
-// never a stricter or looser one, and never a rule that exists only in this
-// file's history.
+// codeRunnerExecutionConstraintGuidance is the provider-visible half of the
+// same host contract validateCodeRunnerExecutivePlan and
+// validateCodeRunnerDepartmentPlan enforce -- one function, one activation
+// condition (requiredRootRequirement for
+// CodeRunnerExecutionEvidenceRequirementKey), covering every purpose that
+// carries a model-generated, code-runner-bounded contract, so the CEO and
+// the department leader are each shown exactly the rule their own output
+// will be judged against, never a stricter or looser one, and never a rule
+// that exists only in a validator's history.
 //
-// Root 618 answered three times without ever seeing this text: attempt three
-// widened a bounded CodeRunner audit into two department_requests and was
-// rejected by validateCodeRunnerExecutivePlan for a rule it had no way to
-// have known. Returns "" for a root that does not carry the requirement, so
-// an ordinary campaign never receives audit-only constraints.
-func codeRunnerExecutivePlanConstraintGuidance(root TaskRecord) string {
+// Root 618 answered three times without ever seeing the CEO-plan half of
+// this text (fixed in PR #204); the department-plan half has the same gap --
+// validateCodeRunnerDepartmentPlan's "exactly one task" cardinality was never
+// projected to the model that produces DepartmentPlan. Returns "" for a
+// root that does not carry the requirement, or for a purpose this contract
+// says nothing about, so an ordinary campaign -- and every unrelated
+// purpose -- never receives audit-only constraints.
+func codeRunnerExecutionConstraintGuidance(root TaskRecord, purpose ExecutionPurpose) string {
 	requirement, required := requiredRootRequirement(root, CodeRunnerExecutionEvidenceRequirementKey)
 	if !required || !requirement.Required {
 		return ""
 	}
-	return "CODE_RUNNER_EXECUTIVE_PLAN_CONSTRAINTS:\n" +
-		"- This campaign is a bounded CodeRunner audit.\n" +
-		"- Return exactly ONE department_request.\n" +
-		"- Its unit_id MUST be \"ingenieria_ia\".\n" +
-		"- Do not widen the campaign to additional departments."
+	switch purpose {
+	case PurposeCEOPlan:
+		return "CODE_RUNNER_EXECUTIVE_PLAN_CONSTRAINTS:\n" +
+			"- This campaign is a bounded CodeRunner audit.\n" +
+			"- Return exactly ONE department_request.\n" +
+			"- Its unit_id MUST be \"ingenieria_ia\".\n" +
+			"- Do not widen the campaign to additional departments."
+	case PurposeDepartmentPlan:
+		return "CODE_RUNNER_DEPARTMENT_PLAN_CONSTRAINTS:\n" +
+			"- This is the single bounded CodeRunner implementation line.\n" +
+			"- Return exactly ONE task.\n" +
+			"- Do not fan out into parallel tasks.\n" +
+			"- The department must remain \"ingenieria_ia\"."
+	default:
+		return ""
+	}
 }
