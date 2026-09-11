@@ -38,32 +38,21 @@ func BuildSelector(canonical contextengine.Snapshot) SemanticSelector {
 // MayGrantCapabilities -- see ContextProfile.ExcludedSources.
 //
 // Fallback (R10_DESIGN_AUDIT.md section M): if profile.TaskClass does
-// not match how this snapshot was built, or any RequiredTiers segment is
-// missing/excluded in the canonical snapshot, Compile returns the
-// canonical snapshot's segments byte-for-byte, FellBackToCanonical=true.
-// A missing required tier is never silently tolerated by proceeding with
-// a partial view.
+// not match how this snapshot was built, or any RequiredTiers tier is
+// missing from the FINAL view this profile produces -- whether because
+// canonical never carried it, or because this same profile's own
+// ExcludedSources/Projections removed the last segment that satisfied
+// it -- Compile returns the canonical snapshot's segments byte-for-byte,
+// FellBackToCanonical=true. A missing required tier is never silently
+// tolerated by proceeding with a partial view (EXECUTIVE_CONTEXT_PROFILE_SCOPING_REQUIRED_TIERS_FIX_V1:
+// RequiredTiers is validated against the post-exclusion/post-projection
+// view, not against canonical alone -- see the presentTiers computation
+// below, which runs AFTER the segment loop for exactly this reason).
 func Compile(profile ContextProfile, canonical contextengine.Snapshot) (CompilationResult, error) {
 	result := CompilationResult{
 		ContextSnapshotID:     canonical.ID,
 		ContextProfileID:      profile.ID,
 		ContextProfileVersion: profile.Version,
-	}
-
-	presentTiers := make(map[contextengine.AuthorityTier]bool, len(canonical.Segments))
-	for _, seg := range canonical.Segments {
-		if seg.Included {
-			presentTiers[seg.AuthorityTier] = true
-		}
-	}
-	for _, required := range profile.RequiredTiers {
-		if !presentTiers[required] {
-			// Fail closed to the canonical, unprojected view rather
-			// than silently proceeding with a required tier missing.
-			result.Projected = canonical
-			result.FellBackToCanonical = true
-			return finalize(result, canonical)
-		}
 	}
 
 	projectedSegments := make([]contextengine.Segment, len(canonical.Segments))
@@ -116,6 +105,33 @@ func Compile(profile ContextProfile, canonical contextengine.Snapshot) (Compilat
 			}
 		}
 		diffs = append(diffs, diff)
+	}
+
+	// RequiredTiers must hold in the view the model will actually
+	// receive, so presence is derived from projectedSegments -- the
+	// exact post-exclusion/post-projection slice about to become
+	// result.Projected.Segments on success -- never from canonical
+	// alone. Excluding the only segment that satisfied a required tier
+	// must fail closed exactly like a tier canonical never carried in
+	// the first place; a shrunk-but-nonempty projected segment still has
+	// Included=true and still satisfies its tier (only the exclusion
+	// branch above ever sets Included=false).
+	presentTiers := make(map[contextengine.AuthorityTier]bool, len(projectedSegments))
+	for _, seg := range projectedSegments {
+		if seg.Included {
+			presentTiers[seg.AuthorityTier] = true
+		}
+	}
+	for _, required := range profile.RequiredTiers {
+		if !presentTiers[required] {
+			// Fail closed to the canonical, unprojected view -- restore
+			// the pristine canonical snapshot, never the partially
+			// mutated projectedSegments computed above. A required-tier
+			// failure must never leak a partial profiled context.
+			result.Projected = canonical
+			result.FellBackToCanonical = true
+			return finalize(result, canonical)
+		}
 	}
 
 	result.Projected = canonical
