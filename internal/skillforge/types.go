@@ -140,7 +140,7 @@ type Event struct {
 	Sequence       int64             `json:"sequence"`
 	OrganizationID string            `json:"organization_id"`
 	EventType      string            `json:"event_type"`
-	Refs       map[string]string `json:"refs,omitempty"`
-	Digest     string            `json:"digest"`
-	RecordedAt time.Time         `json:"recorded_at"`
+	Refs           map[string]string `json:"refs,omitempty"`
+	Digest         string            `json:"digest"`
+	RecordedAt     time.Time         `json:"recorded_at"`
 }
