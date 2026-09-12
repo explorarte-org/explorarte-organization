@@ -35,7 +35,11 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 	// branched from it at 71. All four are folded together here so the
 	// sequence check reflects the tree as it actually is on this
 	// integration projection.
-	const wantCount = 72
+	// 73 (seed_mistral_zero_wallet_anchor) is
+	// INTEGRATION_BASELINE_FAILURES_FORENSICS_V1's own remediation, the
+	// exact same class of gap 61 (seed_xai_wallet) closed: pricing without
+	// a provider_wallets row.
+	const wantCount = 73
 	if len(loaded) != wantCount {
 		t.Fatalf("migration count=%d want %d", len(loaded), wantCount)
 	}
@@ -116,6 +120,8 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		71: "routing_idempotency_intent_and_provenance",
 		// Model Capacity State V1:
 		72: "model_routing_capacity_state",
+		// INTEGRATION_BASELINE_FAILURES_FORENSICS_V1 / CLOSURE_FIX_V1:
+		73: "seed_mistral_zero_wallet_anchor",
 	}
 	byVersion := make(map[int64]string, len(loaded))
 	for _, migration := range loaded {

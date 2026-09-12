@@ -110,7 +110,19 @@ INSERT INTO provider_wallets (provider_id, balance_usd_nanos, reserved_usd_nanos
     -- second time, caught only once RegistryService.Sync started
     -- checking for it (cli-smoke, which shares this database, runs
     -- after this suite in the harness).
-    ('xai', 1000000000, 0, NOW())`); err != nil {
+    ('xai', 1000000000, 0, NOW()),
+    -- 000073 seeds this one once per database, the SAME root cause a
+    -- third time: INTEGRATION_BASELINE_FAILURES_FORENSICS_V1 traced
+    -- modelpricing-postgres's and cli-smoke's "mistral" wallet failures
+    -- to this list, not to the migration -- 000073 seeds the row
+    -- correctly on a fresh database, but this suite's own TRUNCATE
+    -- above wipes it before modelpricing-postgres and cli-smoke run.
+    -- Balance stays 0 here on purpose: 000073 is a provisioning anchor
+    -- only (zero spending authority), not a funded wallet like the
+    -- providers above -- reseeding it at any positive balance would
+    -- quietly grant Mistral spending authority this round never
+    -- authorized.
+    ('mistral', 0, 0, NOW())`); err != nil {
 		t.Fatalf("reseed wallets: %v", err)
 	}
 
