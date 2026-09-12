@@ -25,10 +25,10 @@ var (
 	// eligible candidate right now (CAPACITY_EXHAUSTION_SCHEDULING_V1) --
 	// the task was durably blocked with status_reason_code=capacity
 	// before claimOne ran, the same pre-claim shape as ErrAssigneeUnavailable.
-	ErrNoCapacity              = errors.New("task pool has no eligible capacity right now")
-	ErrLeaseMismatch           = errors.New("task lease token does not match")
-	ErrLeaseExpired            = errors.New("task lease has expired")
-	ErrRequirementResolved     = errors.New("task requirement is already resolved")
-	ErrActiveLease             = errors.New("task has an active lease")
-	ErrDatabaseUnavailable     = errors.New("task engine database unavailable")
+	ErrNoCapacity          = errors.New("task pool has no eligible capacity right now")
+	ErrLeaseMismatch       = errors.New("task lease token does not match")
+	ErrLeaseExpired        = errors.New("task lease has expired")
+	ErrRequirementResolved = errors.New("task requirement is already resolved")
+	ErrActiveLease         = errors.New("task has an active lease")
+	ErrDatabaseUnavailable = errors.New("task engine database unavailable")
 )

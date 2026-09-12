@@ -69,7 +69,7 @@ type Role struct {
 	ID        string  `json:"id"`
 	Name      string  `json:"name"`
 	Activity  string  `json:"activity"`
-	Status    string  `json:"status"` // "working", "reviewing", "idle", "blocked"
+	Status    string  `json:"status"`   // "working", "reviewing", "idle", "blocked"
 	Progress  float64 `json:"progress"` // 0 to 100
 	MissionID string  `json:"missionId,omitempty"`
 }
