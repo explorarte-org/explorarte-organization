@@ -51,6 +51,96 @@ import (
 
 const modelIntegrationOrganization = "explorarte"
 
+// TestMain is D-HARNESS-002's other half (see resetModelSchema's doc
+// comment): narrowing resetModelSchema's TRUNCATE list stops this package
+// from destroying state other domains own, but it does not, by itself,
+// guarantee this package's OWN model registry tables (model_providers,
+// model_profiles, model_profile_versions, role_model_bindings) are left
+// synced to the real canonical routing document when the package is done.
+// Every test in this file resets and re-seeds those tables with whatever
+// fixture -- often a narrow, synthetic test.fake/pool-candidate one -- that
+// specific test needs, repeatedly, over the course of the package's run.
+// Whichever test happens to run last leaves ITS OWN fixture behind, not
+// necessarily the real canonical one -- confirmed empirically: after this
+// package's tests finish, role_model_bindings/model_profiles/model_providers
+// were found completely empty, which is exactly what left executive-postgres
+// unable to dispatch any real role's model.invoke when it ran next in the
+// shared harness database.
+//
+// This is the one re-seed this fix does perform, and it is deliberately
+// scoped to only this package's own domain (the model registry), run
+// exactly once, after every test in the package has already finished --
+// never a substitute for the ownership-scoped TRUNCATE above, which still
+// does the real per-test isolation work.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if err := restoreCanonicalModelRegistryAfterPackageTests(); err != nil {
+		fmt.Fprintf(os.Stderr, "modelruntime/postgres: TestMain: failed to restore canonical model registry after package tests: %v\n", err)
+		if code == 0 {
+			code = 1
+		}
+	}
+	os.Exit(code)
+}
+
+func restoreCanonicalModelRegistryAfterPackageTests() error {
+	url := os.Getenv("ORG_TEST_DATABASE_URL")
+	if url == "" {
+		// Not an integration run against a real database -- nothing this
+		// package could have left behind for another suite to inherit.
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cfg := config.DatabaseConfig{URL: url, SSLMode: "disable", MaxConns: 5, MinConns: 0, MaxConnLifetime: time.Minute, MaxConnIdleTime: time.Minute, HealthCheckPeriod: time.Second, ConnectTimeout: 5 * time.Second, PingTimeout: 5 * time.Second, StatementTimeout: 30 * time.Second, LockTimeout: 5 * time.Second, AutoMigrate: false, MigrationTimeout: 45 * time.Second, MigrationRetry: time.Second}
+	store, err := platformpostgres.Open(ctx, cfg, "model-runtime-registry-restore")
+	if err != nil {
+		return fmt.Errorf("open store: %w", err)
+	}
+	defer store.Close()
+
+	repo, err := registry.NewPostgresRepository(store)
+	if err != nil {
+		return fmt.Errorf("organization registry repository: %w", err)
+	}
+	revision, err := repo.GetCurrentRevision(ctx, modelIntegrationOrganization)
+	if err != nil {
+		return fmt.Errorf("get current organization revision: %w", err)
+	}
+	if revision == nil {
+		// This package's own tests never reached the point of synchronizing
+		// the organization registry at all (e.g. every test failed before
+		// resetModelSchema/syncModelCanonical ran) -- nothing to restore.
+		return nil
+	}
+	roles, err := repo.ListRoles(ctx, modelIntegrationOrganization, registry.RoleFilter{})
+	if err != nil {
+		return fmt.Errorf("list roles: %w", err)
+	}
+	catalog := catalogFixture{
+		organization: modelruntime.OrganizationRef{
+			ID:                    modelIntegrationOrganization,
+			RevisionID:            revision.ID,
+			ModelRoutingHash:      revision.DocumentHashes["model-routing.yaml"],
+			ModelEgressPolicyHash: revision.DocumentHashes["model-egress-policy.yaml"],
+			CapabilityMatrixHash:  revision.DocumentHashes["capability-matrix.yaml"],
+		},
+		roles: convertRoles(roles),
+	}
+	modelStore, err := modelpostgres.New(store)
+	if err != nil {
+		return fmt.Errorf("open model registry store: %w", err)
+	}
+	service, err := modelruntime.NewRegistryService(filepath.Join("..", "..", "..", "docs", "canonical"), modelIntegrationOrganization, catalog, modelStore)
+	if err != nil {
+		return fmt.Errorf("new model registry service: %w", err)
+	}
+	if _, err := service.Sync(ctx, true, 10); err != nil {
+		return fmt.Errorf("sync canonical model registry: %w", err)
+	}
+	return nil
+}
+
 type allowHarnessAuthority struct{}
 
 func (allowHarnessAuthority) AuthorizeExecution(context.Context, executionharness.AuthorityRequest) error {
@@ -1169,7 +1259,17 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 			{44, "000044_make_egress_revision_ownership_restorable.down.sql"},
 			// 000047 seeds a provider_wallets row; it must come down before
 			// 000021 drops that table outright, same rule as everything else
-			// in this list.
+			// in this list. 000068/000061/000073 do the exact same thing for
+			// cloudflare_workers_ai/xai/mistral and were simply never added
+			// here when they landed -- the SAME omission class as
+			// 000037/000039/000047 below, this time caught because
+			// modelpricing-postgres and cli-smoke started failing with
+			// "provider wallet not provisioned" for a provider whose own
+			// migration DID seed it, right after this suite ran first in the
+			// shared harness database.
+			{73, "000073_seed_mistral_zero_wallet_anchor.down.sql"},
+			{68, "000068_seed_cloudflare_workers_ai_wallet.down.sql"},
+			{61, "000061_seed_xai_wallet.down.sql"},
 			{47, "000047_seed_openai_responses_pricing_and_wallet.down.sql"},
 			// 000053 and 000052 both ALTER model_invocation_render_telemetry
 			// (000053 also alters execution_context_views/tasks/
@@ -1195,6 +1295,21 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 			// silently missing, even though a standalone fresh migrate-up (and
 			// this very test's own PASS) never showed anything wrong.
 			{39, "000039_add_subscription_billing_provenance.down.sql"},
+			// 000038 ALTERs model_provider_outcomes to add
+			// adapter_failure_phase/provider_reached/finish_reason/usage and
+			// JSON-diagnostic columns; 000011 creates that table and 000018
+			// also alters it, so 000038 must come down before both or this
+			// cycle silently drops those columns forever -- the exact same
+			// omission class as every other entry in this list, this time
+			// caught only once INTEGRATION_BASELINE_FAILURES_FORENSICS_V1
+			// traced executive-postgres's retry-failover suite failing with
+			// "column adapter_failure_phase of relation
+			// model_provider_outcomes does not exist" back to this suite
+			// having run first in the shared harness database: 000011's down
+			// (below) DROPs the table outright, Up()'s reapply recreates it
+			// via 000011 alone since 000038's schema_migrations row was never
+			// deleted, and the ALTER TABLE that adds the column never reruns.
+			{38, "000038_add_provider_failure_telemetry.down.sql"},
 			{37, "000037_add_cost_settlement_provenance.down.sql"},
 			// 000034 widens embedding_invocations_operation_check (adds
 			// memory_backfill); 000030's down.sql DROPs embedding_invocations
@@ -1647,19 +1762,100 @@ func resetModelSchema(t *testing.T, ctx context.Context, store *platformpostgres
 	if err := testdbguard.RequireDestructive(ctx, os.Getenv("ORG_TEST_DATABASE_URL"), store.Pool()); err != nil {
 		t.Fatalf("refusing destructive TRUNCATE: %v", err)
 	}
-	// model_routing_capacity_state (migration 000072) has no foreign key to
-	// or from anything else in this list -- deliberately, see the
-	// migration's own doc comment -- so it is safe anywhere here. It MUST
-	// be included: it is keyed by (organization_id, provider_id,
-	// provider_model_id), not by any revision-scoped id this TRUNCATE
-	// already clears, so a test that drives real cooldown/quota_exhausted
-	// state for test.fake/pool-candidate-a|b (e.g.
-	// capacity_routing_e2e_test.go) would otherwise leak that state into
-	// every later test in this same database that reuses the same
-	// provider/model identity.
-	_, err := store.Pool().Exec(ctx, `TRUNCATE model_provider_outcomes,model_provider_requests,model_egress_evaluations,model_invocation_usage,model_invocation_results,model_dispatch_attempts,model_invocations,model_routing_capacity_state,model_egress_revision_bindings,model_egress_rules,model_egress_policy_versions,routing_candidates,routing_policies,role_model_bindings,model_capability_snapshots,model_profile_versions,model_profiles,model_providers,context_segments,context_snapshots,authorization_uses,authorization_decisions,authorization_requests,staging_events,staging_reviews,staging_promotions,staging_checks,staging_workspace_artifacts,staging_artifacts,staging_workspaces,outbox_events,task_dead_letters,task_events,task_leases,task_attempts,task_evidence,task_requirements,task_dependencies,tasks,organization_reporting_lines,organization_registry_revision_documents,organization_roles,organizational_units,organizations,organization_registry_revisions,audit_events RESTART IDENTITY CASCADE`)
+	// Ownership-scoped reset (D-HARNESS-002): this list must contain only
+	// tables the modelruntime/model-egress/model-dispatch/model-identity
+	// domain actually owns and re-seeds itself, immediately below, via
+	// syncModelCanonical -- context_segments/context_snapshots are the one
+	// exception, included because model_invocations references a snapshot
+	// and this package's own fixtures create/consume them directly.
+	//
+	// This list previously also TRUNCATEd organizations, organization_registry_revisions,
+	// organization_roles, organizational_units, organization_reporting_lines,
+	// organization_registry_revision_documents, tasks and every task_* table,
+	// every staging_* table, every authorization_* table, outbox_events and
+	// audit_events -- none of which belong to this package. syncModelCanonical
+	// (called immediately after this, in every real caller) does re-sync the
+	// organization/role registry itself (organizations/organization_roles/
+	// organizational_units/organization_registry_revisions) through the real
+	// internal/organization/registry service, so that part came back. But
+	// nothing re-seeds task-engine state (tasks/task_attempts/task_leases/
+	// outbox_events/etc.) or staging/authorization state -- there is no
+	// canonical source to resync those from, they are pure runtime data. A
+	// suite running after this one in the shared harness database that
+	// depends on task-engine state an earlier suite created found it gone,
+	// with no way for this package to have restored it. Bisection in
+	// INTEGRATION_BASELINE_FAILURES_FORENSICS_V1 identified modelruntime-postgres
+	// as the exact causal predecessor for executive-postgres's failure when
+	// run in the full suite; see TestResetModelSchemaDoesNotTruncateForeignDomainState
+	// below for the regression coverage.
+	_, err := store.Pool().Exec(ctx, `TRUNCATE model_provider_outcomes,model_provider_requests,model_egress_evaluations,model_invocation_usage,model_invocation_results,model_dispatch_attempts,model_invocations,model_routing_capacity_state,model_egress_revision_bindings,model_egress_rules,model_egress_policy_versions,routing_candidates,routing_policies,role_model_bindings,model_capability_snapshots,model_profile_versions,model_profiles,model_providers,context_segments,context_snapshots RESTART IDENTITY CASCADE`)
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestResetModelSchemaDoesNotTruncateForeignDomainState is the regression
+// coverage for D-HARNESS-002 (see resetModelSchema's own doc comment
+// above): resetModelSchema must TRUNCATE only tables this package owns and
+// re-seeds itself, never state durably owned by another domain sharing the
+// same integration harness database. This is deliberately not a
+// tautological check of the TRUNCATE statement's own table list -- it
+// proves the two real, observable outcomes that matter: a task the task
+// engine owns survives the reset untouched, while a row in a table this
+// package genuinely owns (model_providers) is still actually cleared, so
+// the fix narrows the reset's scope without disabling it.
+func TestResetModelSchemaDoesNotTruncateForeignDomainState(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	platform := openModelStore(t, ctx)
+	defer platform.Close()
+	runner, err := platformmigrations.New(platform.Pool(), rootmigrations.Files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = runner.Up(ctx); err != nil {
+		t.Fatalf("migrations: %v", err)
+	}
+	resetModelSchema(t, ctx, platform)
+	syncModelCanonical(t, ctx, platform)
+
+	repo, err := registry.NewPostgresRepository(platform)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision, err := repo.GetCurrentRevision(ctx, modelIntegrationOrganization)
+	if err != nil || revision == nil {
+		t.Fatalf("revision=%+v err=%v", revision, err)
+	}
+
+	// Sentinel A: foreign-domain state (the task engine's own tables, via
+	// the same fixture helper every real caller in this file uses) that
+	// resetModelSchema must never touch.
+	sentinelTask, _ := insertModelExecutionFixture(t, ctx, platform, revision.ID, "ingenieria_ia/qa", "reset-isolation-sentinel")
+
+	// Sentinel B: state this package genuinely owns, which resetModelSchema
+	// MUST still clear.
+	sentinelHash := modelruntime.SHA256Bytes([]byte("reset-isolation-sentinel-provider"))
+	if _, err := platform.Pool().Exec(ctx, `INSERT INTO model_providers(organization_id,id,transport,adapter_status,dispatch_enabled,direct_http_forbidden,canonical_hash,organization_revision_id) VALUES($1,'reset-isolation-sentinel-provider',$2,'available',true,false,$3,$4)`, modelIntegrationOrganization, modelruntime.TransportFake, sentinelHash, revision.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	resetModelSchema(t, ctx, platform)
+
+	var taskCount int
+	if err := platform.Pool().QueryRow(ctx, `SELECT count(*) FROM tasks WHERE id=$1`, sentinelTask.TaskID).Scan(&taskCount); err != nil {
+		t.Fatal(err)
+	}
+	if taskCount != 1 {
+		t.Fatalf("foreign-domain task %d was destroyed by resetModelSchema (count=%d) -- reset is not ownership-scoped", sentinelTask.TaskID, taskCount)
+	}
+
+	var providerCount int
+	if err := platform.Pool().QueryRow(ctx, `SELECT count(*) FROM model_providers WHERE id='reset-isolation-sentinel-provider'`).Scan(&providerCount); err != nil {
+		t.Fatal(err)
+	}
+	if providerCount != 0 {
+		t.Fatal("resetModelSchema no longer clears its own model_providers state -- the fix must narrow scope, not disable the reset")
 	}
 }
 
@@ -1678,7 +1874,16 @@ func syncModelCanonical(t *testing.T, ctx context.Context, store *platformpostgr
 		t.Fatal(err)
 	}
 	result, err := service.SynchronizeCanonical(ctx, true)
-	if err != nil || !result.Applied {
+	// D-HARNESS-002: resetModelSchema no longer TRUNCATEs organizations/
+	// organization_registry_revisions (they belong to the organization
+	// registry domain, not this package -- see resetModelSchema's own doc
+	// comment), so a caller within the same `go test` process that already
+	// synchronized this organization earlier in the run correctly gets
+	// NoOp=true here, not Applied=true again. Both are the successful
+	// outcome this helper exists to guarantee -- "the canonical registry is
+	// synchronized" -- only a real error or neither flag set (drift left
+	// unreconciled) is a failure.
+	if err != nil || (!result.Applied && !result.NoOp) {
 		t.Fatalf("sync=%+v err=%v", result, err)
 	}
 }
