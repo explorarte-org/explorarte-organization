@@ -3,14 +3,21 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/config"
+	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/skillforge"
 	skillforgebootstrap "github.com/Mireuz13/explorarte-organization/internal/skillforge/bootstrap"
+	skillforgepostgres "github.com/Mireuz13/explorarte-organization/internal/skillforge/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/testdbguard"
 )
 
@@ -89,13 +96,96 @@ func TestSkillForgeReadOnlyWhenDisabled(t *testing.T) {
 	// When ORG_SKILLFORGE_ENABLED=false, read-only inspection commands (status, need list/get) remain available.
 	t.Setenv("ORG_SKILLFORGE_ENABLED", "false")
 
-	// 1. status is operational and returns exitOK
+	// 1. status is operational and returns exitOK.
+	//
+	// runSkillForgeStatus (cmd/orgctl/skillforge.go) takes one of two
+	// genuinely different paths depending on whether a database is
+	// configured: with none, it returns a synthetic {"run_id":...,
+	// "status":"operational"} response for ANY run id, without ever
+	// querying anything -- that is the path this test exercised when no
+	// ORG_DATABASE_URL/ORG_TEST_DATABASE_URL is set (plain `go test
+	// ./cmd/orgctl`, no build tag). With a database configured -- which
+	// compose.integration.yaml always sets for every test in this package
+	// under `-tags=integration` -- it takes the OTHER path: a real lookup
+	// against skillforge_runs for the given id. "run-123" was never a
+	// fixture anything created; it was a magic literal that happened to
+	// return exitOK only because the no-database path was the only one
+	// this test had ever actually exercised. This now creates a real
+	// ForgeRun through the official store whenever a database is
+	// configured, and asserts against the real shape "status" returns for
+	// that path -- {"run": {"id": ..., ...}, "events": [...]}, not the
+	// no-database synthetic shape.
+	targetRunID := "run-123"
+	wantIDInOutput := `"run_id": "run-123"`
+	if databaseURL := os.Getenv("ORG_TEST_DATABASE_URL"); databaseURL != "" {
+		ctx := context.Background()
+		cfg, err := config.LoadFrom(func(key string) (string, bool) {
+			values := map[string]string{"ORG_ENVIRONMENT": "test", "ORG_DATABASE_URL": databaseURL, "ORG_DATABASE_MAX_CONNS": "4", "ORG_DATABASE_MIN_CONNS": "0"}
+			v, ok := values[key]
+			return v, ok
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		platformStore, err := platformpostgres.Open(ctx, cfg.Database, "skillforge-status-fixture")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer platformStore.Close()
+		if err := testdbguard.RequireTestDatabase(ctx, databaseURL, platformStore.Pool()); err != nil {
+			t.Fatalf("testdbguard: %v", err)
+		}
+		// skillforge_runs.organization_id REFERENCES organizations(id); this
+		// package's tests do not otherwise guarantee the canonical
+		// organization exists yet when this test runs, so synchronize it
+		// through the real organization registry service first -- the same
+		// official sync path TestSkillForgeOperatorEntrypointSafe already
+		// depends on, not a raw INSERT into a table this test is not about.
+		canonicalDir := filepath.Join("..", "..", "docs", "canonical")
+		if _, statErr := os.Stat(canonicalDir); os.IsNotExist(statErr) {
+			canonicalDir = filepath.Join("docs", "canonical")
+		}
+		orgRepo, err := registry.NewPostgresRepository(platformStore)
+		if err != nil {
+			t.Fatal(err)
+		}
+		loader, err := registry.NewLoader(canonicalDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		orgService, err := registry.NewService(loader, orgRepo, cfg.Tasks.OrganizationID, 30*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := orgService.SynchronizeCanonical(ctx, true); err != nil {
+			t.Fatalf("synchronize organization registry: %v", err)
+		}
+		runStore, err := skillforgepostgres.NewRunStore(platformStore, cfg.Tasks.OrganizationID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		digest := sha256.Sum256([]byte("skillforge-status-read-only-fixture"))
+		created, err := runStore.CreateRun(ctx, skillforge.ForgeRun{
+			ID:          "run:skillforge-status-read-only-fixture",
+			NeedID:      "need-skillforge-status-read-only-fixture",
+			Status:      skillforge.StatusCreated,
+			CurrentStep: skillforge.StepSearch,
+			InputDigest: hex.EncodeToString(digest[:]),
+		})
+		if err != nil {
+			t.Fatalf("create real ForgeRun fixture: %v", err)
+		}
+		targetRunID = created.ID
+		wantIDInOutput = fmt.Sprintf(`"id": %q`, created.ID)
+		t.Setenv("ORG_DATABASE_URL", databaseURL)
+	}
+
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"skillforge", "status", "run-123", "--json"}, &stdout, &stderr)
+	code := run([]string{"skillforge", "status", targetRunID, "--json"}, &stdout, &stderr)
 	if code != exitOK {
 		t.Fatalf("expected status to be accessible when disabled, got %d; stderr=%s", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), `"run_id": "run-123"`) {
+	if !strings.Contains(stdout.String(), wantIDInOutput) {
 		t.Fatalf("unexpected status output: %s", stdout.String())
 	}
 
