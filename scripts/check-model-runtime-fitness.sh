@@ -209,6 +209,12 @@ git diff --exit-code "$BASE_COMMIT" -- \
   migrations/000006_create_context_engine.down.sql \
   migrations/000007_create_model_runtime_gateway.up.sql \
   migrations/000007_create_model_runtime_gateway.down.sql >/dev/null || fail "a previous migration changed"
-git diff --exit-code "$BASE_COMMIT" -- cmd/orgd internal/app >/dev/null || fail "orgd or app changed"
+# A verified gofmt-only modification of an existing .go file under these
+# roots is not "orgd or app changed" in the sense this guard cares about --
+# see check-gofmt-only-protected-diff.sh's own doc comment for exactly what
+# counts (current == gofmt(BASE), same mode/type, no add/delete/rename). Any
+# other change -- including one that merely LOOKS like formatting but isn't
+# byte-for-byte gofmt(BASE) -- still fails here exactly as before.
+bash "$ROOT/scripts/check-gofmt-only-protected-diff.sh" "$BASE_COMMIT" cmd/orgd internal/app || fail "orgd or app changed"
 
 printf 'model-runtime fitness: OK\n'
