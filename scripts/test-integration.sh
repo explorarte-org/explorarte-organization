@@ -32,6 +32,21 @@ export ORG_POSTGRES_PASSWORD=integration-app-password
 # belt-and-suspenders documentation of the same deliberate assertion, not
 # strictly required for this script to keep working.
 export ORG_TEST_DESTRUCTIVE_DATABASE=explorarte_test
+# compose.yaml requires CLOUDFLARE_ACCOUNT_ID (${CLOUDFLARE_ACCOUNT_ID:?...})
+# to interpolate model-worker's environment block -- Compose parses and
+# interpolates the WHOLE merged config before this script ever selects
+# which service to start, so the requirement applies even though this
+# harness only ever brings up postgres and never starts model-worker (see
+# assert_postgres_healthy below and the "no model-worker" check this fix
+# adds). A forced `export` here -- never `${CLOUDFLARE_ACCOUNT_ID:-...}` --
+# always wins over both an unset shell variable and any real value a
+# developer's own .env happens to carry (Compose resolves an actually
+# exported shell variable before its own .env file), so this synthetic,
+# syntactically valid but non-functional value is what Compose interpolates
+# everywhere, on every machine, regardless of what .env contains. It is
+# never sent anywhere: model-worker is never started by this script, so no
+# process ever reads it as a real account id.
+export CLOUDFLARE_ACCOUNT_ID=00000000000000000000000000000000
 
 compose=(docker compose --project-name "$PROJECT_NAME" -f compose.yaml -f compose.integration.yaml --profile integration)
 
