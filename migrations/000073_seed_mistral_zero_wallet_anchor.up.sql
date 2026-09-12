@@ -1,0 +1,47 @@
+-- Migration 000073: provisioning anchor for the mistral provider wallet.
+--
+-- INTEGRATION_BASELINE_FAILURES_FORENSICS_V1 traced
+-- TestEveryRoutedNonSubscriptionProviderHasPricingAndAWallet's
+-- modelpricing-postgres failure (and cli-smoke's "provider wallet not
+-- provisioned: mistral") to this exact gap: migration 000069 seeded
+-- mistral's model_pricing row but never seeded a provider_wallets row,
+-- unlike its own precedent (000047, openai_responses) which seeded both
+-- in the same migration. docs/canonical/model-routing.yaml routes
+-- mistral.worker with transport=http_adapter, so
+-- internal/modelruntime.compiledAdapterAvailability marks it
+-- DispatchEnabled=true purely from that (provider, transport) pair --
+-- independent of ORG_MODEL_PROVIDER_MISTRAL_ENABLED -- which is exactly
+-- why the registry's own wallet-provisioning check (G2-001,
+-- cmd/orgctl/models.go) correctly flags it as missing.
+--
+-- This row is a provisioning ANCHOR ONLY:
+--   * balance_usd_nanos = 0, reserved_usd_nanos = 0.
+--   * A zero balance grants ZERO spending authority: costgate.Reserve
+--     (internal/costledger/postgres/store.go) fails closed with
+--     ErrInsufficientBalance for any estimated cost greater than zero,
+--     exactly the same fail-closed behavior a missing wallet row would
+--     have produced, except now the registry's own provisioning check
+--     passes instead of blocking sync/cli-smoke on a provider the owner
+--     has already canonically approved (see
+--     docs/handoffs/HANDOFF-mistral-canonical-approval.md, 2026-09-10).
+--   * This does NOT represent MISTRAL_CREDIT_CEILING_USD. Migration
+--     000069's own comment describes a future, separate, owner-configured
+--     credit-ceiling seed ("idempotent provisioning, never auto-raised")
+--     -- that is a deliberately different, later step, not this one. This
+--     migration seeds nothing beyond the zero anchor and does not
+--     pre-empt that decision.
+--   * This does NOT enable production traffic: ORG_MODEL_PROVIDER_MISTRAL_ENABLED
+--     stays false, the adapter is not registered/wired at the runtime
+--     bootstrap layer regardless of this row, and no routing, egress, or
+--     credential configuration changes here.
+--   * Production activation of Mistral (ENABLED=true, a real credit
+--     ceiling, real traffic, moving research.worker, any productive pool)
+--     remains a fully separate decision and round, not authorized by this
+--     migration.
+--
+-- ON CONFLICT DO NOTHING: if a wallet for 'mistral' already exists (in any
+-- environment, seeded by any other means, at any balance), this migration
+-- must never touch it -- same reasoning as 000047's own guard.
+INSERT INTO provider_wallets (provider_id, balance_usd_nanos, reserved_usd_nanos, updated_at) VALUES
+    ('mistral', 0, 0, NOW())
+ON CONFLICT (provider_id) DO NOTHING;
