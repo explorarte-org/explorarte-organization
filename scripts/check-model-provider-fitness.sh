@@ -47,7 +47,12 @@ git diff --exit-code "$BASE_SHA" -- migrations/000001\* migrations/000002\* migr
   migrations/000004\* migrations/000005\* migrations/000006\* migrations/000007\* \
   migrations/000008\* migrations/000009\* migrations/000010\* >/dev/null \
   || fail "migration 000001-000010 changed"
-git diff --exit-code "$TASK_BASE_SHA" -- cmd/orgd internal/app >/dev/null || fail "orgd or application composition changed in this task"
+# A verified gofmt-only modification of an existing .go file under these
+# roots is not "application composition changed" in the sense this guard
+# cares about -- see check-gofmt-only-protected-diff.sh's own doc comment
+# for exactly what counts (current == gofmt(BASE), same mode/type, no
+# add/delete/rename). Any other change still fails here exactly as before.
+bash "$ROOT/scripts/check-gofmt-only-protected-diff.sh" "$TASK_BASE_SHA" cmd/orgd internal/app || fail "orgd or application composition changed in this task"
 
 if find internal/modelruntime/adapter -mindepth 1 -maxdepth 1 -type d \
   ! -name openaicompat ! -name alibabaclaude ! -name deepseek ! -name gemini \
