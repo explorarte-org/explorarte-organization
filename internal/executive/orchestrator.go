@@ -1677,7 +1677,7 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 	}
 	if task.Status == "leased" {
 		if !haveLease {
-			return task, fmt.Errorf("%w: active task lease token unavailable after process restart", ErrRunBlocked)
+			return task, fmt.Errorf("%w: leased task's active lease is not owned by this process", ErrActiveLeaseBarrier)
 		}
 
 		// ModelDispatch intentionally allows creation of an assignment only
@@ -1697,7 +1697,7 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 
 	if task.Status == "running" {
 		if !haveLease {
-			return task, fmt.Errorf("%w: running task lease token unavailable after process restart", ErrRunBlocked)
+			return task, fmt.Errorf("%w: running task's active lease is not owned by this process", ErrActiveLeaseBarrier)
 		}
 
 		// The automatic boundary receives no role assertion: ModelDispatch
@@ -1750,7 +1750,7 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		return task, nil
 	}
 	if !haveLease {
-		return task, fmt.Errorf("%w: running task lease token unavailable after process restart", ErrRunBlocked)
+		return task, fmt.Errorf("%w: running task's active lease is not owned by this process", ErrActiveLeaseBarrier)
 	}
 	// One task attempt still means at most one model invocation. The Harness
 	// enforces one turn per run through MaxTurns; this is the durable check
@@ -2658,6 +2658,19 @@ func (o *Orchestrator) resultForCompletedTask(ctx context.Context, task TaskReco
 // reconciles the attempt and produces a fresh one -- so the correct response
 // is to report and step back, not to record a verdict.
 func (o *Orchestrator) handlePhaseError(ctx context.Context, root, task TaskRecord, err error) (Run, error) {
+	// ErrActiveLeaseBarrier is checked before the noRetries gate below and
+	// unconditionally: waiting for an attempt that already exists under a
+	// lease this process cannot prove it holds is not "retrying" anything,
+	// under any run mode. There is nothing here to fail closed against --
+	// no attempt this process could create is in doubt, because none is
+	// created. See ErrActiveLeaseBarrier's own doc comment (errors.go) for
+	// why this is durably safe: the root records no verdict, and a later
+	// resume re-evaluates the same task fresh once the legitimate holder
+	// finishes or the Task Engine reconciles the lease's expiry.
+	if errors.Is(err, ErrActiveLeaseBarrier) {
+		run, _ := o.Status(ctx, root.ID)
+		return run, err
+	}
 	// One-shot/operator runs deliberately pin every task to one attempt.
 	// In that mode a non-blocking error cannot be retried by this orchestrator
 	// instance, so leaving the root executable would create a projected
@@ -2704,6 +2717,7 @@ func isNonBlockingPhaseError(err error) bool {
 		errors.Is(err, ErrModelOutcomeAmbiguous),
 		errors.Is(err, ErrIndeterminateToolExecution),
 		errors.Is(err, ErrLeaseLost),
+		errors.Is(err, ErrActiveLeaseBarrier),
 		errors.Is(err, ErrExecutionAuthorityUnavailable),
 		errors.Is(err, ErrExecutionPrincipalUnavailable),
 		errors.Is(err, ErrPriorExecutionUnresolved),
