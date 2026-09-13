@@ -76,6 +76,30 @@ var (
 	// alive, so nothing this run produced may be recorded under it. The task
 	// engine's own expiry/reconcile path creates the next attempt.
 	ErrLeaseLost = errors.New("executive task lease was lost during execution")
+	// ErrActiveLeaseBarrier means a durable active lease exists on this
+	// attempt and this process holds no local, opaque proof that it is the
+	// one who issued it (o.localLease returns no token for the task). This
+	// is deliberately NOT ErrLeaseLost: ErrLeaseLost is about a process that
+	// DID hold a lease and lost the ability to keep it; this sentinel is
+	// about a process that never demonstrated possession of the active
+	// lease it is looking at in the first place -- whether because another
+	// process/Orchestrator instance legitimately claimed it moments ago, or
+	// because this process itself restarted and its in-memory map is empty.
+	// It is also deliberately NOT ErrRunBlocked: ErrRunBlocked covers many
+	// genuinely permanent, human-gated conditions (a rejected design, an
+	// exhausted review bound, a model authority violation, ...) that must
+	// stay durably blocked forever. This condition is the opposite --
+	// transient by construction. The attempt this barrier describes is
+	// either still running under its legitimate holder, or waiting for the
+	// Task Engine's own expiry/reconciliation to move it out of
+	// leased/running, at which point a later resume sees a different task
+	// state and this sentinel no longer applies. Reaching this sentinel
+	// must never: adopt the lease, derive or recover its opaque token,
+	// infer ownership from HolderID/WorkerID/principal ID, heartbeat, start
+	// a second attempt, or call the Harness. It carries no verdict about
+	// the root and must never durably block it (see handlePhaseError) or
+	// consume retry budget (see isNonBlockingPhaseError and WithNoRetries).
+	ErrActiveLeaseBarrier = errors.New("executive active task lease is not owned by this process")
 	// ErrExecutionAuthorityUnavailable means Harness authority could not be
 	// evaluated. The run was left resumable and is not a denial.
 	ErrExecutionAuthorityUnavailable = errors.New("executive execution authority unavailable")

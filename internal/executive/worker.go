@@ -189,6 +189,11 @@ func resolvesItself(err error) bool {
 		// The lease will expire, the task engine will reconcile the attempt,
 		// and the next pass claims a fresh one.
 		errors.Is(err, ErrLeaseLost),
+		// An active lease this process does not hold resolves itself once
+		// its legitimate holder finishes or the task engine reconciles the
+		// lease's expiry -- there is nothing durable here for the failure
+		// observer to report on, and no retry for the worker to schedule.
+		errors.Is(err, ErrActiveLeaseBarrier),
 		errors.Is(err, ErrExecutionAuthorityUnavailable),
 		errors.Is(err, ErrExecutionPrincipalUnavailable),
 		// An unresolved provider-side execution resolves itself once Model

@@ -58,7 +58,7 @@ func TestOnlySelfResolvingFailuresAreSkipped(t *testing.T) {
 	for _, err := range []error{
 		ErrDispatchAssignmentRequired, ErrModelOutcomeAmbiguous,
 		ErrIndeterminateToolExecution, ErrCompletionInconclusive,
-		ErrRunBlocked, ErrLeaseLost, ErrExecutionAuthorityUnavailable,
+		ErrRunBlocked, ErrLeaseLost, ErrActiveLeaseBarrier, ErrExecutionAuthorityUnavailable,
 		ErrExecutionPrincipalUnavailable, ErrPriorExecutionUnresolved,
 		ErrExecutionInterrupted,
 	} {

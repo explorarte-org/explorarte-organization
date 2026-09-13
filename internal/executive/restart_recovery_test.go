@@ -64,8 +64,11 @@ func TestActiveLeaseWithoutLocalTokenIsInadoptableWhoeverHoldsIt(t *testing.T) {
 		t.Run("holder="+holder, func(t *testing.T) {
 			fixture := newRestartFixture(t, holder)
 			run, err := fixture.orch.ResumeDurable(context.Background(), fixture.root.ID)
-			if !errors.Is(err, ErrRunBlocked) {
-				t.Fatalf("err=%v want the active lease to be an impassable barrier", err)
+			if !errors.Is(err, ErrActiveLeaseBarrier) {
+				t.Fatalf("err=%v want ErrActiveLeaseBarrier: this process never proved possession of the active lease it observed", err)
+			}
+			if errors.Is(err, ErrRunBlocked) {
+				t.Fatalf("err=%v must not also be ErrRunBlocked: an unowned active lease is a transient barrier, not the same class as a durable, human-gated block", err)
 			}
 			if fixture.harness.callCount() != 0 {
 				t.Fatalf("harness runs=%d: a restarted process executed beside an active lease", fixture.harness.callCount())
@@ -102,6 +105,9 @@ func TestLocalTokenLetsTheSameProcessContinue(t *testing.T) {
 	_, err := fixture.orch.ResumeDurable(context.Background(), fixture.root.ID)
 	if errors.Is(err, ErrRunBlocked) {
 		t.Fatal("a process holding the lease token must not be blocked by its own lease")
+	}
+	if errors.Is(err, ErrActiveLeaseBarrier) {
+		t.Fatal("a process holding the lease token must never see its own claim as an unowned active lease")
 	}
 	if !errors.Is(err, ErrExecutionAuthorityUnavailable) {
 		t.Fatalf("err=%v want the run to have reached execution", err)
@@ -153,8 +159,8 @@ func TestDurableResultSurvivesRestartAndBecomesOrphanAfterExpiry(t *testing.T) {
 	fixture.models.setResult(772, InvocationResult{InvocationID: 772, JSONOutput: defaultHarnessBody})
 
 	_, err := fixture.orch.ResumeDurable(context.Background(), fixture.root.ID)
-	if !errors.Is(err, ErrRunBlocked) {
-		t.Fatalf("err=%v want the active lease to remain a barrier", err)
+	if !errors.Is(err, ErrActiveLeaseBarrier) {
+		t.Fatalf("err=%v want ErrActiveLeaseBarrier while the lease is still active, even though a durable succeeded result already exists", err)
 	}
 	if fixture.harness.callCount() != 0 {
 		t.Fatalf("harness runs=%d: a durable result was recomputed", fixture.harness.callCount())

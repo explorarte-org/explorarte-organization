@@ -114,7 +114,13 @@ func (o *Orchestrator) ResumeDurable(ctx context.Context, rootTaskID int64) (Run
 		if root.Status == "blocked" && root.ReasonCode == ReasonDispatchAssignmentRequired {
 			return run, ErrDispatchAssignmentRequired
 		}
-		return run, ErrRunBlocked
+		// The pure case: a durable active lease exists, this process has no
+		// local proof it issued it, and nothing more specific applied above
+		// (no ambiguous outcome, no dispatch-assignment reopening). This is
+		// ErrActiveLeaseBarrier, not ErrRunBlocked -- see its doc comment in
+		// errors.go. No durable state changes here; the caller must not
+		// treat this as a verdict on root.
+		return run, fmt.Errorf("%w: root %d's child %d has an active lease this process does not hold", ErrActiveLeaseBarrier, root.ID, child.ID)
 	}
 
 	if orphan, ok, detectErr := o.findOrphanedSucceededInvocation(ctx, root, children); detectErr != nil {
