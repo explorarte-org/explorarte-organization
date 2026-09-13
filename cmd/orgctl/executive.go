@@ -183,7 +183,7 @@ func runExecutiveResume(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("executive resume", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	jsonOutput := flags.Bool("json", false, "emit JSON")
-	if err := flags.Parse(args); err != nil || flags.NArg() != 1 {
+	if err := parseInterspersed(flags, args); err != nil || flags.NArg() != 1 {
 		fmt.Fprintln(stderr, "usage: orgctl executive resume ROOT_TASK_ID [--json]")
 		return exitUsage
 	}
