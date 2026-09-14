@@ -214,7 +214,7 @@ func TestCEOChatTwoTurnToolTrajectory(t *testing.T) {
 		t.Fatalf("model invoke calls=%d want 2", model.calls)
 	}
 
-	history, err := service.History(ctx, ceochat.HistoryRequest{ConversationID: conversation.ID})
+	history, err := service.History(ctx, ceochat.HistoryRequest{ConversationID: conversation.ID, ActorRoleID: "empresa/human"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +310,7 @@ func TestCEOChatSendIsIdempotentAcrossRuntimes(t *testing.T) {
 		t.Fatalf("replay must return the ORIGINAL owner message: first=%d second=%d", first.OwnerMessage.ID, second.OwnerMessage.ID)
 	}
 
-	history, err := secondService.History(ctx, ceochat.HistoryRequest{ConversationID: conversation.ID})
+	history, err := secondService.History(ctx, ceochat.HistoryRequest{ConversationID: conversation.ID, ActorRoleID: "empresa/human"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -472,7 +472,7 @@ func TestCEOChatDuplicateToolCallIDIsDeniedAtCompositionBoundary(t *testing.T) {
 		t.Fatalf("model turns=%d want exactly 2 (one legitimate call, one replay attempt, then deny -- no third turn)", model.calls)
 	}
 
-	history, err := service.History(ctx, ceochat.HistoryRequest{ConversationID: conversation.ID})
+	history, err := service.History(ctx, ceochat.HistoryRequest{ConversationID: conversation.ID, ActorRoleID: "empresa/human"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -597,7 +597,7 @@ func TestCEOChatAuthorityLossBeforeToolExecutionLeavesNoSideEffect(t *testing.T)
 		t.Fatalf("tool side effects=%d want 0 (authority failed before the executor was ever entered)", topics.calls)
 	}
 
-	history, err := service.History(ctx, ceochat.HistoryRequest{ConversationID: conversation.ID})
+	history, err := service.History(ctx, ceochat.HistoryRequest{ConversationID: conversation.ID, ActorRoleID: "empresa/human"})
 	if err != nil {
 		t.Fatal(err)
 	}

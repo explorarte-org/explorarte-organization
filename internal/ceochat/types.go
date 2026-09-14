@@ -123,6 +123,12 @@ type SendResult struct {
 type HistoryRequest struct {
 	OrganizationID string
 	ConversationID int64
+	// ActorRoleID is the caller reading this history. It must equal the
+	// conversation's OwnerRoleID -- exactly the same boundary Send already
+	// enforces before recording an owner message -- or History returns
+	// ErrUnauthorizedActor before any message is read. A conversation's
+	// transcript is no less sensitive than the ability to add to it.
+	ActorRoleID string
 	// Limit bounds the number of most-recent messages returned. <=0 means
 	// the service's own default bound (see DefaultHistoryMessageLimit).
 	Limit int

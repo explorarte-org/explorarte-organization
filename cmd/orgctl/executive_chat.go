@@ -49,7 +49,7 @@ func printExecutiveChatUsage(out io.Writer) {
 commands:
   create --actor-role empresa/human --owner-role empresa/human [--json]
   send CONVERSATION_ID --actor-role empresa/human --idempotency-key KEY [--file message.txt] [--json]
-  history CONVERSATION_ID [--limit 32] [--json]`)
+  history CONVERSATION_ID --actor-role empresa/human [--limit 32] [--json]`)
 }
 
 func runExecutiveChatCreate(args []string, stdout, stderr io.Writer) int {
@@ -125,10 +125,11 @@ func runExecutiveChatSend(args []string, stdout, stderr io.Writer) int {
 func runExecutiveChatHistory(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("executive chat history", flag.ContinueOnError)
 	flags.SetOutput(stderr)
+	actorRole := flags.String("actor-role", "", "requesting owner role (must be the conversation's owner)")
 	limit := flags.Int("limit", ceochat.DefaultHistoryMessageLimit, "maximum messages to return")
 	jsonOutput := flags.Bool("json", false, "emit JSON")
-	if err := parseInterspersed(flags, args); err != nil || flags.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: orgctl executive chat history CONVERSATION_ID [--limit 32] [--json]")
+	if err := parseInterspersed(flags, args); err != nil || flags.NArg() != 1 || *actorRole == "" {
+		fmt.Fprintln(stderr, "usage: orgctl executive chat history CONVERSATION_ID --actor-role empresa/human [--limit 32] [--json]")
 		return exitUsage
 	}
 	conversationID, err := positiveID(flags.Arg(0), "CONVERSATION_ID")
@@ -142,7 +143,7 @@ func runExecutiveChatHistory(args []string, stdout, stderr io.Writer) int {
 	}
 	defer cancel()
 	defer store.Close()
-	messages, err := runtime.Service.History(ctx, ceochat.HistoryRequest{ConversationID: conversationID, Limit: *limit})
+	messages, err := runtime.Service.History(ctx, ceochat.HistoryRequest{ConversationID: conversationID, ActorRoleID: *actorRole, Limit: *limit})
 	if err != nil {
 		fmt.Fprintf(stderr, "chat history: %v\n", err)
 		return chatExitCode(err)

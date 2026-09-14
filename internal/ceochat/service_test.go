@@ -135,6 +135,28 @@ func TestValidateSendRequestBounds(t *testing.T) {
 	}
 }
 
+// TestHistoryDeniesAnActorThatIsNotTheConversationOwner is a regression
+// test: History must enforce the same owner boundary Send already does
+// (request.ActorRoleID == conversation.OwnerRoleID) before reading any
+// message. A conversation's transcript is no less sensitive than the
+// ability to add to it.
+func TestHistoryDeniesAnActorThatIsNotTheConversationOwner(t *testing.T) {
+	store := newMemoryStore()
+	service := &Service{Store: store, OrganizationID: "explorarte"}
+	conversation, err := service.CreateConversation(context.Background(), CreateConversationRequest{
+		ActorRoleID: "empresa/human", OwnerRoleID: "empresa/human",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.History(context.Background(), HistoryRequest{ConversationID: conversation.ID, ActorRoleID: "empresa/ceo"}); !errors.Is(err, ErrUnauthorizedActor) {
+		t.Fatalf("err=%v want ErrUnauthorizedActor for a non-owner reader", err)
+	}
+	if _, err = service.History(context.Background(), HistoryRequest{ConversationID: conversation.ID, ActorRoleID: "empresa/human"}); err != nil {
+		t.Fatalf("the real owner must still be able to read: %v", err)
+	}
+}
+
 // Negative test D: same idempotency key with a different owner message must
 // be a durable conflict, never a silent overwrite.
 func TestRecordOwnerMessageConflictOnDifferentContent(t *testing.T) {

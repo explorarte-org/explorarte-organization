@@ -288,7 +288,7 @@ func TestCEOChatAuthorityLossBeforeTaskListToolExecutionLeavesNoSideEffect(t *te
 		t.Fatalf("tool side effects=%d want 0 (authority failed before the executor was ever entered)", reader.calls)
 	}
 
-	history, err := service.History(ctx, ceochat.HistoryRequest{ConversationID: conversation.ID})
+	history, err := service.History(ctx, ceochat.HistoryRequest{ConversationID: conversation.ID, ActorRoleID: "empresa/human"})
 	if err != nil {
 		t.Fatal(err)
 	}

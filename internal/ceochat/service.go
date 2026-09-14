@@ -144,6 +144,9 @@ func (s *Service) History(ctx context.Context, request HistoryRequest) ([]Messag
 	if err != nil {
 		return nil, err
 	}
+	if request.ActorRoleID != conversation.OwnerRoleID {
+		return nil, fmt.Errorf("%w: actor %q is not the owner of conversation %d", ErrUnauthorizedActor, request.ActorRoleID, conversation.ID)
+	}
 	limit := request.Limit
 	if limit <= 0 {
 		limit = DefaultHistoryMessageLimit
