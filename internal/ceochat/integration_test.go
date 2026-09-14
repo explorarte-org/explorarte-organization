@@ -376,3 +376,271 @@ func (m *scriptedModelAdapter) Invoke(_ context.Context, _ executionharness.RunI
 		InvocationRef: "denial-1",
 	}, nil
 }
+
+// ==================================================
+// CEO_CONVERSATIONAL_TOOL_RUNTIME_FOUNDATION_CLOSURE_V1
+// ==================================================
+
+// countingTopicLister counts every real ListTopics call so a test can prove
+// a denied/replayed tool request never reached the executor.
+type countingTopicLister struct{ calls int }
+
+func (c *countingTopicLister) ListTopics(context.Context, string) ([]search.ResearchTopic, error) {
+	c.calls++
+	return []search.ResearchTopic{{ID: "t1", DepartmentID: "ingenieria_ia", Title: "topic one"}}, nil
+}
+
+// replayToolModel requests the SAME tool_call_id on two separate turns: the
+// first is a legitimate call, the second is a replay of an ID the Harness
+// already resolved. It is scripted, not adversarial by accident -- the
+// point of this test is to prove ceochat's own composition of the Harness
+// (its RunSpec, its tool catalog, its run identity) does not accidentally
+// widen or bypass the Harness's own replay guard.
+type replayToolModel struct {
+	toolCallID string
+	toolName   string
+	calls      int
+}
+
+func (m *replayToolModel) Invoke(_ context.Context, _ executionharness.RunIdentity, request executionharness.NormalizedModelRequest) (executionharness.ModelResult, error) {
+	m.calls++
+	switch m.calls {
+	case 1:
+		return executionharness.ModelResult{
+			FinishReason:  executionharness.FinishTools,
+			ToolRequests:  []executionharness.ToolRequest{{ToolCallID: m.toolCallID, ToolName: m.toolName, Arguments: json.RawMessage(`{}`)}},
+			InvocationRef: "replay-1",
+		}, nil
+	case 2:
+		found := false
+		for _, message := range request.VisibleHistory {
+			if message.Role == "tool" && message.ToolCallID == m.toolCallID && len(message.ToolResult) > 0 {
+				found = true
+			}
+		}
+		if !found {
+			return executionharness.ModelResult{}, fmt.Errorf("turn 2: original tool result for %s not visible", m.toolCallID)
+		}
+		// Deliberately replay the SAME call ID. A well-behaved model never
+		// does this; the point of the test is that the Harness must refuse
+		// it anyway.
+		return executionharness.ModelResult{
+			FinishReason:  executionharness.FinishTools,
+			ToolRequests:  []executionharness.ToolRequest{{ToolCallID: m.toolCallID, ToolName: m.toolName, Arguments: json.RawMessage(`{}`)}},
+			InvocationRef: "replay-2",
+		}, nil
+	default:
+		return executionharness.ModelResult{}, fmt.Errorf("unexpected turn %d", m.calls)
+	}
+}
+
+// TestCEOChatDuplicateToolCallIDIsDeniedAtCompositionBoundary is CLOSURE_V1
+// item A: prove -- at the ceochat composition boundary, with a real
+// conversation/task/attempt/lease and real Postgres -- that a replayed
+// tool_call_id is denied, executes the underlying tool exactly once, and
+// never derives a completed assistant answer from the replay.
+func TestCEOChatDuplicateToolCallIDIsDeniedAtCompositionBoundary(t *testing.T) {
+	f := newChatFixture(t)
+	defer f.cleanup()
+	ctx := context.Background()
+
+	model := &replayToolModel{toolCallID: "call-123", toolName: ceochat.ToolListTopics}
+	topics := &countingTopicLister{}
+	service := f.withScriptedModelAndTools(t, model, topics, &fakeFindingsOnly{})
+
+	conversation, err := service.CreateConversation(ctx, ceochat.CreateConversationRequest{ActorRoleID: "empresa/human", OwnerRoleID: "empresa/human"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Send(ctx, ceochat.SendRequest{
+		ConversationID: conversation.ID, ActorRoleID: "empresa/human",
+		IdempotencyKey: "replay-turn", Content: "list topics, then (a well-behaved model would not) list them again",
+	})
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if result.Outcome != ceochat.RunOutcomeIncomplete {
+		t.Fatalf("outcome=%s want incomplete (the replayed call must deny the run, not complete it)", result.Outcome)
+	}
+	if result.AssistantMessage != nil {
+		t.Fatal("no assistant message may be derived from a run a tool-call replay denied")
+	}
+	if topics.calls != 1 {
+		t.Fatalf("toolExecutions=%d want exactly 1 (the replay must never reach the executor a second time)", topics.calls)
+	}
+	if model.calls != 2 {
+		t.Fatalf("model turns=%d want exactly 2 (one legitimate call, one replay attempt, then deny -- no third turn)", model.calls)
+	}
+
+	history, err := service.History(ctx, ceochat.HistoryRequest{ConversationID: conversation.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range history {
+		if message.Role == ceochat.MessageAssistant {
+			t.Fatalf("no assistant message should have been persisted: %+v", message)
+		}
+	}
+}
+
+// authorityFailAfter delegates to a real ExecutionAuthorityPort for its
+// first `allowed` calls, then reports authority as unavailable. It is used
+// to put the Harness's SECOND authority check -- the one immediately before
+// a tool executes -- in the failure state, simulating a lease/authority
+// that was valid when the model was asked but has disappeared by the time
+// the host is about to act on the model's tool request.
+type authorityFailAfter struct {
+	real    executionharness.ExecutionAuthorityPort
+	allowed int
+	calls   int
+}
+
+func (a *authorityFailAfter) AuthorizeExecution(ctx context.Context, request executionharness.AuthorityRequest) error {
+	a.calls++
+	if a.calls > a.allowed {
+		return executionharness.ErrAuthorityUnavailable
+	}
+	return a.real.AuthorizeExecution(ctx, request)
+}
+
+// authorityLossModel requests exactly one tool call on its first (and only
+// expected) turn. Authority is expected to fail before that tool ever
+// executes, so a second model turn must never happen.
+type authorityLossModel struct{ calls int }
+
+func (m *authorityLossModel) Invoke(_ context.Context, _ executionharness.RunIdentity, _ executionharness.NormalizedModelRequest) (executionharness.ModelResult, error) {
+	m.calls++
+	if m.calls > 1 {
+		return executionharness.ModelResult{}, fmt.Errorf("unexpected second model turn after authority loss")
+	}
+	return executionharness.ModelResult{
+		FinishReason:  executionharness.FinishTools,
+		ToolRequests:  []executionharness.ToolRequest{{ToolCallID: "call-1", ToolName: ceochat.ToolListTopics, Arguments: json.RawMessage(`{}`)}},
+		InvocationRef: "authority-loss-1",
+	}, nil
+}
+
+// withScriptedModelAndTools is withScriptedModel generalized to accept
+// explicit tool listers (so a test can count real executor calls) and,
+// via withAuthority below, an overridden authority port.
+func (f *chatFixture) withScriptedModelAndTools(t *testing.T, model executionharness.ModelExecutor, topics ceochat.TopicLister, findings ceochat.FindingLister) *ceochat.Service {
+	t.Helper()
+	base := *f.runtime.Service
+	base.NewModelExecutor = func(modelruntimeadapter.Config) (executionharness.ModelExecutor, error) { return model, nil }
+	base.ToolExecutor = ceochat.ToolExecutor{Topics: topics, Findings: findings}
+	service, err := ceochat.Open(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return service
+}
+
+// withAuthorityFailingAfter builds a *ceochat.Service identical to the
+// fixture's bootstrapped one, wired to the SAME real, live Task Engine
+// authority (real lease/principal verification for the calls it allows),
+// except that authority itself is wrapped to fail starting at call
+// `allowed+1`. Everything else -- Store, Tasks, Principals, Contexts,
+// HarnessHistory, DescriptorStore -- is the real, unmodified production
+// wiring: only the authority PORT's answer is manipulated, nothing about
+// how ceochat calls it.
+func (f *chatFixture) withAuthorityFailingAfter(t *testing.T, model executionharness.ModelExecutor, allowed int) (*ceochat.Service, *authorityFailAfter) {
+	t.Helper()
+	base := *f.runtime.Service
+	wrapped := &authorityFailAfter{real: base.Authority, allowed: allowed}
+	base.Authority = wrapped
+	base.NewModelExecutor = func(modelruntimeadapter.Config) (executionharness.ModelExecutor, error) { return model, nil }
+	base.ToolExecutor = ceochat.ToolExecutor{Topics: &countingTopicLister{}, Findings: &fakeFindingsOnly{}}
+	service, err := ceochat.Open(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return service, wrapped
+}
+
+// TestCEOChatAuthorityLossBeforeToolExecutionLeavesNoSideEffect is
+// CLOSURE_V1 item B: prove that authority disappearing between "the model
+// requested a tool" and "the host is about to execute it" leaves zero tool
+// side effects, persists no assistant message, and does not convert the
+// turn into a durable failure -- the task attempt stays open for a future
+// retry rather than being finalized against a transient outage.
+func TestCEOChatAuthorityLossBeforeToolExecutionLeavesNoSideEffect(t *testing.T) {
+	f := newChatFixture(t)
+	defer f.cleanup()
+	ctx := context.Background()
+
+	model := &authorityLossModel{}
+	// allowed=1: the FIRST AuthorizeExecution call (immediately before the
+	// turn-1 model invocation) is real and succeeds; the SECOND call (the
+	// Harness's pre-tool-execution check, once the model has asked for
+	// research.list_topics) is where authority reports unavailable.
+	service, authority := f.withAuthorityFailingAfter(t, model, 1)
+
+	conversation, err := service.CreateConversation(ctx, ceochat.CreateConversationRequest{ActorRoleID: "empresa/human", OwnerRoleID: "empresa/human"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.Send(ctx, ceochat.SendRequest{
+		ConversationID: conversation.ID, ActorRoleID: "empresa/human",
+		IdempotencyKey: "authority-loss", Content: "list topics please",
+	})
+	if !errors.Is(err, ceochat.ErrRunNotReady) {
+		t.Fatalf("err=%v want ErrRunNotReady", err)
+	}
+	if authority.calls < 2 {
+		t.Fatalf("authority calls=%d want at least 2 (pre-turn, then pre-tool-execution)", authority.calls)
+	}
+	if model.calls != 1 {
+		t.Fatalf("model turns=%d want exactly 1 (no second turn after authority loss)", model.calls)
+	}
+	toolCounter, ok := service.ToolExecutor.Topics.(*countingTopicLister)
+	if !ok {
+		t.Fatal("test wiring error: expected a *countingTopicLister")
+	}
+	if toolCounter.calls != 0 {
+		t.Fatalf("tool side effects=%d want 0 (authority failed before the executor was ever entered)", toolCounter.calls)
+	}
+
+	history, err := service.History(ctx, ceochat.HistoryRequest{ConversationID: conversation.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerCount, assistantCount := 0, 0
+	for _, message := range history {
+		switch message.Role {
+		case ceochat.MessageOwner:
+			ownerCount++
+		case ceochat.MessageAssistant:
+			assistantCount++
+		}
+	}
+	if ownerCount != 1 {
+		t.Fatalf("owner messages=%d want 1 (the owner's message is still durably recorded)", ownerCount)
+	}
+	if assistantCount != 0 {
+		t.Fatal("no assistant message may be persisted when authority was lost mid-run")
+	}
+
+	// The durable task must remain open for a future retry: not completed,
+	// not dead_letter/failed, not cancelled. RecordAttemptResult/FinalizeTask
+	// were never called for this path (see driveTurn's StatusAuthorityUnavailable
+	// branch), so the attempt the real ClaimTaskByID/StartAttempt call made is
+	// still exactly where it was -- "running", under its own active lease --
+	// which is what makes it resumable rather than a recorded failure. This
+	// test proves that non-terminal, resumable durable state directly; it
+	// does not re-claim within this same process (ceochat holds no
+	// process-local lease-token map to re-enter with mid-test, the same
+	// restart-safety boundary Executive's own Orchestrator draws), so a
+	// literal successful second Send() is left to the Task Engine's own
+	// reconciliation/expiry path, exactly as it already is for Executive.
+	detail, err := f.runtime.Tasks.GetTask(ctx, history[0].TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	switch detail.Task.Status {
+	case "completed", "failed", "dead_letter", "cancelled", "rejected", "no_action":
+		t.Fatalf("task status=%q must NOT be terminal after an authority-loss turn", detail.Task.Status)
+	}
+	if detail.ActiveLease == nil {
+		t.Fatal("the attempt's lease must still be active -- authority loss must not release or escalate it")
+	}
+}
