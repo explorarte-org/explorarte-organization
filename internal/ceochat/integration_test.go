@@ -543,18 +543,19 @@ func (f *chatFixture) withScriptedModelAndTools(t *testing.T, model executionhar
 // HarnessHistory, DescriptorStore -- is the real, unmodified production
 // wiring: only the authority PORT's answer is manipulated, nothing about
 // how ceochat calls it.
-func (f *chatFixture) withAuthorityFailingAfter(t *testing.T, model executionharness.ModelExecutor, allowed int) (*ceochat.Service, *authorityFailAfter) {
+func (f *chatFixture) withAuthorityFailingAfter(t *testing.T, model executionharness.ModelExecutor, allowed int) (*ceochat.Service, *authorityFailAfter, *countingTopicLister) {
 	t.Helper()
 	base := *f.runtime.Service
 	wrapped := &authorityFailAfter{real: base.Authority, allowed: allowed}
 	base.Authority = wrapped
 	base.NewModelExecutor = func(modelruntimeadapter.Config) (executionharness.ModelExecutor, error) { return model, nil }
-	base.ToolExecutor = ceochat.ToolExecutor{Topics: &countingTopicLister{}, Findings: &fakeFindingsOnly{}}
+	topics := &countingTopicLister{}
+	base.ToolExecutor = ceochat.ToolExecutor{Topics: topics, Findings: &fakeFindingsOnly{}}
 	service, err := ceochat.Open(base)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return service, wrapped
+	return service, wrapped, topics
 }
 
 // TestCEOChatAuthorityLossBeforeToolExecutionLeavesNoSideEffect is
@@ -573,7 +574,7 @@ func TestCEOChatAuthorityLossBeforeToolExecutionLeavesNoSideEffect(t *testing.T)
 	// turn-1 model invocation) is real and succeeds; the SECOND call (the
 	// Harness's pre-tool-execution check, once the model has asked for
 	// research.list_topics) is where authority reports unavailable.
-	service, authority := f.withAuthorityFailingAfter(t, model, 1)
+	service, authority, topics := f.withAuthorityFailingAfter(t, model, 1)
 
 	conversation, err := service.CreateConversation(ctx, ceochat.CreateConversationRequest{ActorRoleID: "empresa/human", OwnerRoleID: "empresa/human"})
 	if err != nil {
@@ -592,12 +593,8 @@ func TestCEOChatAuthorityLossBeforeToolExecutionLeavesNoSideEffect(t *testing.T)
 	if model.calls != 1 {
 		t.Fatalf("model turns=%d want exactly 1 (no second turn after authority loss)", model.calls)
 	}
-	toolCounter, ok := service.ToolExecutor.Topics.(*countingTopicLister)
-	if !ok {
-		t.Fatal("test wiring error: expected a *countingTopicLister")
-	}
-	if toolCounter.calls != 0 {
-		t.Fatalf("tool side effects=%d want 0 (authority failed before the executor was ever entered)", toolCounter.calls)
+	if topics.calls != 0 {
+		t.Fatalf("tool side effects=%d want 0 (authority failed before the executor was ever entered)", topics.calls)
 	}
 
 	history, err := service.History(ctx, ceochat.HistoryRequest{ConversationID: conversation.ID})
