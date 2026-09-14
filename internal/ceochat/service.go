@@ -204,15 +204,15 @@ func (s *Service) Send(ctx context.Context, request SendRequest) (SendResult, er
 			return SendResult{}, err
 		} else if found {
 			// The answer is durable, but that alone does not mean the turn
-			// is DONE: RecordAttemptResult (the Task Engine's own
-			// authoritative lease/token/holder check) and FinalizeTask both
-			// run AFTER the message is appended (see driveTurn), so a prior
-			// attempt could have appended this message and then crashed, or
-			// had FinalizeTask itself fail, leaving the task short of its
-			// terminal Completed state. Only report Completed once the task
-			// has actually converged there; otherwise fall through so
-			// driveTurn's StatusAwaitingVerification recovery can finish the
-			// job instead of this call silently declaring victory while the
+			// is DONE: driveTurn appends the message only AFTER
+			// RecordAttemptResult (the Task Engine's own authoritative
+			// lease/token/holder check) has already succeeded, but
+			// FinalizeTask still runs after that append and can itself
+			// fail, leaving the task short of its terminal Completed state.
+			// Only report Completed once the task has actually converged
+			// there; otherwise fall through so driveTurn's
+			// StatusAwaitingVerification recovery can finish the job
+			// instead of this call silently declaring victory while the
 			// task is stuck.
 			current, err := s.Tasks.GetTask(ctx, createdTask.ID)
 			if err != nil {
