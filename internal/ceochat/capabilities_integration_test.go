@@ -744,36 +744,54 @@ func (m *singleToolProbeModel) Invoke(_ context.Context, _ executionharness.RunI
 	}
 }
 
-// finalizeFailsOnce wraps a real ceochat.TaskCoordinator and fails exactly
-// the FIRST FinalizeTask call, simulating a crash AFTER the assistant
-// message would already have been durably appended (Send now appends it
-// before calling RecordAttemptResult/FinalizeTask -- see service.go) but
-// BEFORE the task itself reaches its terminal Completed state. Every other
-// method, including later FinalizeTask calls, delegates to the real
-// coordinator untouched.
-type finalizeFailsOnce struct {
+// taskCoordinatorFailsOnceOn wraps a real ceochat.TaskCoordinator and fails
+// exactly the FIRST call to whichever method name it is configured for,
+// simulating a crash at that exact point in driveTurn's authority ->
+// answer -> terminal-state sequence. Every other call, including later
+// calls to the failing method itself, delegates to the real coordinator
+// untouched.
+type taskCoordinatorFailsOnceOn struct {
 	ceochat.TaskCoordinator
-	finalizeCalls int
+	method string
+	calls  int
 }
 
-func (f *finalizeFailsOnce) FinalizeTask(ctx context.Context, command tasks.FinalizeCommand) (tasks.Task, error) {
-	f.finalizeCalls++
-	if f.finalizeCalls == 1 {
-		return tasks.Task{}, errors.New("simulated crash: process died before FinalizeTask committed")
+func (f *taskCoordinatorFailsOnceOn) RecordAttemptResult(ctx context.Context, command tasks.RecordAttemptResultCommand) (tasks.Task, error) {
+	if f.method == "RecordAttemptResult" {
+		f.calls++
+		if f.calls == 1 {
+			return tasks.Task{}, errors.New("simulated crash: process died before RecordAttemptResult committed")
+		}
+	}
+	return f.TaskCoordinator.RecordAttemptResult(ctx, command)
+}
+
+func (f *taskCoordinatorFailsOnceOn) FinalizeTask(ctx context.Context, command tasks.FinalizeCommand) (tasks.Task, error) {
+	if f.method == "FinalizeTask" {
+		f.calls++
+		if f.calls == 1 {
+			return tasks.Task{}, errors.New("simulated crash: process died before FinalizeTask committed")
+		}
 	}
 	return f.TaskCoordinator.FinalizeTask(ctx, command)
 }
 
-// TestCEOChatCrashBetweenAppendAndFinalizeNeverLosesTheAnswer is a
-// regression test for the exact crash window a PR review identified: if
-// the process dies between recording the assistant's answer and finalizing
-// the task, the answer must not be lost. This test simulates that crash by
-// failing the real FinalizeTask call once, then proves (1) the assistant
-// message is ALREADY durable despite Send returning an error, and (2) a
-// retry with the identical idempotency key recovers it via Send's own
-// FindAssistantReply fast path -- completed, Reused=true, no task-state
-// dependency -- rather than the turn being permanently unrecoverable.
-func TestCEOChatCrashBetweenAppendAndFinalizeNeverLosesTheAnswer(t *testing.T) {
+// TestCEOChatCrashBetweenAppendAndFinalizeConvergesOnRetry is a regression
+// test for the exact crash window a PR review identified: RecordAttemptResult
+// is the Task Engine's own authoritative lease/token/holder check and must
+// run before any durable answer is persisted, but persisting the answer and
+// then failing to finalize must not leave the task stuck short of its
+// terminal Completed state forever -- durable answer, confirmed authority,
+// and terminal task state must all converge, not just the first two. This
+// test fails the real FinalizeTask call once (after RecordAttemptResult has
+// already succeeded, so authority was genuinely confirmed first), then
+// proves (1) the assistant message is already durable, (2) the task is
+// awaiting_verification, not stuck anywhere worse, (3) a retry with the
+// identical idempotency key recovers via driveTurn's
+// StatusAwaitingVerification path -- never re-invoking the model -- and (4)
+// the task actually reaches StatusCompleted, not merely "an answer exists
+// somewhere."
+func TestCEOChatCrashBetweenAppendAndFinalizeConvergesOnRetry(t *testing.T) {
 	f := newChatFixture(t)
 	defer f.cleanup()
 	ctx := context.Background()
@@ -782,7 +800,7 @@ func TestCEOChatCrashBetweenAppendAndFinalizeNeverLosesTheAnswer(t *testing.T) {
 	base := *f.runtime.Service
 	base.NewModelExecutor = func(modelruntimeadapter.Config) (executionharness.ModelExecutor, error) { return model, nil }
 	base.ToolExecutor = ceochat.ToolExecutor{Topics: fakeTopicsOnly{}, Findings: &fakeFindingsOnly{}}
-	wrappedTasks := &finalizeFailsOnce{TaskCoordinator: base.Tasks}
+	wrappedTasks := &taskCoordinatorFailsOnceOn{TaskCoordinator: base.Tasks, method: "FinalizeTask"}
 	base.Tasks = wrappedTasks
 	service, err := ceochat.Open(base)
 	if err != nil {
@@ -800,35 +818,56 @@ func TestCEOChatCrashBetweenAppendAndFinalizeNeverLosesTheAnswer(t *testing.T) {
 	if err == nil {
 		t.Fatal("want the simulated FinalizeTask failure to surface as an error")
 	}
-	if wrappedTasks.finalizeCalls != 1 {
-		t.Fatalf("finalizeCalls=%d want exactly 1 before this assertion point", wrappedTasks.finalizeCalls)
+	if wrappedTasks.calls != 1 {
+		t.Fatalf("finalizeCalls=%d want exactly 1 before this assertion point", wrappedTasks.calls)
 	}
 
 	// The assistant's answer must ALREADY be durable, despite Send having
-	// just returned an error -- this is the property the reordering fixes.
+	// just returned an error -- RecordAttemptResult (authority) already
+	// committed before this append ran. Send's own error path returns an
+	// empty SendResult, so the task ID is read back from the owner
+	// message History already durably carries.
 	history, err := service.History(ctx, ceochat.HistoryRequest{ConversationID: conversation.ID, ActorRoleID: "empresa/human"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	var taskID int64
 	foundAssistant := false
 	for _, message := range history {
+		if message.Role == ceochat.MessageOwner {
+			taskID = message.TaskID
+		}
 		if message.Role == ceochat.MessageAssistant {
 			foundAssistant = true
 		}
+	}
+	if taskID == 0 {
+		t.Fatal("owner message must carry the durable task ID")
 	}
 	if !foundAssistant {
 		t.Fatal("the assistant's answer must be durable even though FinalizeTask failed afterward")
 	}
 
-	// A retry with the SAME idempotency key must recover via
-	// FindAssistantReply, without needing the task to have reached a
-	// terminal state.
+	// The task must be awaiting_verification -- authority confirmed
+	// (RecordAttemptResult succeeded), answer durable, but not yet
+	// terminal -- never left in some worse or ambiguous state.
+	stuck, err := f.runtime.Tasks.GetTask(ctx, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stuck.Task.Status != tasks.StatusAwaitingVerification {
+		t.Fatalf("task status=%q want awaiting_verification", stuck.Task.Status)
+	}
+
+	// A retry with the SAME idempotency key must recover via driveTurn's
+	// StatusAwaitingVerification path, converging the task to Completed --
+	// not just returning an answer while the task stays stuck.
 	retry, err := service.Send(ctx, ceochat.SendRequest{
 		ConversationID: conversation.ID, ActorRoleID: "empresa/human",
 		IdempotencyKey: "crash-window-turn", Content: "¿Qué hallazgos recientes tenemos?",
 	})
 	if err != nil {
-		t.Fatalf("retry after the crash window must recover the answer, got error: %v", err)
+		t.Fatalf("retry after the crash window must converge the turn, got error: %v", err)
 	}
 	if !retry.Reused {
 		t.Fatal("retry must report Reused=true: the answer was already durable")
@@ -841,5 +880,66 @@ func TestCEOChatCrashBetweenAppendAndFinalizeNeverLosesTheAnswer(t *testing.T) {
 	}
 	if model.calls != 2 {
 		t.Fatalf("the retry must not re-invoke the model: calls=%d want 2 (from the original turn only)", model.calls)
+	}
+	if wrappedTasks.calls != 2 {
+		t.Fatalf("FinalizeTask must be retried, calls=%d want 2", wrappedTasks.calls)
+	}
+	converged, err := f.runtime.Tasks.GetTask(ctx, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if converged.Task.Status != tasks.StatusCompleted {
+		t.Fatalf("task status=%q want completed -- the retry must converge the task, not just return an answer", converged.Task.Status)
+	}
+}
+
+// TestCEOChatNeverPersistsAnAnswerBeforeAuthorityIsConfirmed is a
+// regression test for the other half of the same review finding:
+// RecordAttemptResult is the Task Engine's own authoritative check that
+// this attempt's lease is still active, its token matches, and its holder
+// is the actor -- it must run and succeed BEFORE any durable answer is
+// persisted, never after. This test fails RecordAttemptResult itself once
+// and proves NO assistant message was ever appended as a result -- the
+// turn fails closed, with authority never confirmed and no answer
+// persisted on its behalf.
+func TestCEOChatNeverPersistsAnAnswerBeforeAuthorityIsConfirmed(t *testing.T) {
+	f := newChatFixture(t)
+	defer f.cleanup()
+	ctx := context.Background()
+
+	model := &scriptedModel{}
+	base := *f.runtime.Service
+	base.NewModelExecutor = func(modelruntimeadapter.Config) (executionharness.ModelExecutor, error) { return model, nil }
+	base.ToolExecutor = ceochat.ToolExecutor{Topics: fakeTopicsOnly{}, Findings: &fakeFindingsOnly{}}
+	wrappedTasks := &taskCoordinatorFailsOnceOn{TaskCoordinator: base.Tasks, method: "RecordAttemptResult"}
+	base.Tasks = wrappedTasks
+	service, err := ceochat.Open(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	conversation, err := service.CreateConversation(ctx, ceochat.CreateConversationRequest{ActorRoleID: "empresa/human", OwnerRoleID: "empresa/human"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.Send(ctx, ceochat.SendRequest{
+		ConversationID: conversation.ID, ActorRoleID: "empresa/human",
+		IdempotencyKey: "authority-first-turn", Content: "¿Qué hallazgos recientes tenemos?",
+	})
+	if err == nil {
+		t.Fatal("want the simulated RecordAttemptResult failure to surface as an error")
+	}
+	if wrappedTasks.calls != 1 {
+		t.Fatalf("recordAttemptResultCalls=%d want exactly 1", wrappedTasks.calls)
+	}
+
+	history, err := service.History(ctx, ceochat.HistoryRequest{ConversationID: conversation.ID, ActorRoleID: "empresa/human"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range history {
+		if message.Role == ceochat.MessageAssistant {
+			t.Fatalf("no assistant message may be persisted before RecordAttemptResult confirms authority: %+v", message)
+		}
 	}
 }

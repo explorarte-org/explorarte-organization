@@ -203,7 +203,24 @@ func (s *Service) Send(ctx context.Context, request SendRequest) (SendResult, er
 		if reply, found, err := s.Store.FindAssistantReply(ctx, ownerMessage.ID); err != nil {
 			return SendResult{}, err
 		} else if found {
-			return SendResult{Reused: true, Outcome: RunOutcomeCompleted, OwnerMessage: ownerMessage, AssistantMessage: &reply}, nil
+			// The answer is durable, but that alone does not mean the turn
+			// is DONE: RecordAttemptResult (the Task Engine's own
+			// authoritative lease/token/holder check) and FinalizeTask both
+			// run AFTER the message is appended (see driveTurn), so a prior
+			// attempt could have appended this message and then crashed, or
+			// had FinalizeTask itself fail, leaving the task short of its
+			// terminal Completed state. Only report Completed once the task
+			// has actually converged there; otherwise fall through so
+			// driveTurn's StatusAwaitingVerification recovery can finish the
+			// job instead of this call silently declaring victory while the
+			// task is stuck.
+			current, err := s.Tasks.GetTask(ctx, createdTask.ID)
+			if err != nil {
+				return SendResult{}, fmt.Errorf("read ceochat turn task: %w", err)
+			}
+			if current.Task.Status == tasks.StatusCompleted {
+				return SendResult{Reused: true, Outcome: RunOutcomeCompleted, OwnerMessage: ownerMessage, AssistantMessage: &reply}, nil
+			}
 		}
 	}
 
@@ -276,6 +293,15 @@ func (s *Service) driveTurn(ctx context.Context, conversation Conversation, task
 		// Nothing more to drive; report the outcome honestly instead of
 		// re-claiming a task that cannot be claimed again.
 		return SendResult{Reused: isReplay, Outcome: RunOutcomeIncomplete, OwnerMessage: ownerMessage}, nil
+	case tasks.StatusAwaitingVerification:
+		// RecordAttemptResult already succeeded on a prior attempt -- the
+		// Task Engine has already confirmed that attempt's lease/token/
+		// holder were valid -- but the turn did not converge any further
+		// (the process crashed, or FinalizeTask itself failed). Recover
+		// without re-claiming, without re-invoking the model, and without
+		// re-running any tool: the Harness's own durable history already
+		// has the answer that authoritative result was recorded for.
+		return s.recoverAwaitingVerificationTurn(ctx, conversation, current, ownerMessage, correlationID, isReplay)
 	case tasks.StatusLeased, tasks.StatusRunning:
 		// A prior process claimed this attempt and this one holds no local
 		// proof it owns that lease. Waiting for it is the correct answer --
@@ -393,21 +419,28 @@ func (s *Service) driveTurn(ctx context.Context, conversation Conversation, task
 		return SendResult{Reused: isReplay, Outcome: RunOutcomeIncomplete, OwnerMessage: ownerMessage, TurnsUsed: result.TurnsUsed, ToolCallsUsed: result.ToolCallsUsed}, nil
 	}
 
-	// The assistant message is appended BEFORE the task is recorded/
-	// finalized, deliberately. If the process crashes between this append
-	// and the two Task Engine calls below, the task is left non-terminal
-	// (Running, lease eventually expiring) -- a pre-existing, understood
-	// failure mode the Task Engine's own reclaim path already handles for
-	// any mid-run crash, not something new this ordering introduces. What
-	// this ordering PREVENTS is the answer itself ever being computed and
-	// then lost: a retry with the same idempotency key finds this message
-	// via Send's own FindAssistantReply check (which runs before driveTurn
-	// is ever reached) and returns it directly, without touching task
-	// state at all. The reverse order -- finalize, then append -- has no
-	// equivalent recovery: a crash between them would leave the task
-	// permanently Completed with no reply and no way to derive one, since
-	// driveTurn's terminal-status branch has no route back into a task
-	// that already finished without a durable answer.
+	// RecordAttemptResult runs FIRST, deliberately: it is the Task Engine's
+	// own authoritative check that this attempt's lease is still active,
+	// its token matches, and its holder is the actor -- exactly the check
+	// that must gate any durable answer, not follow it. Only once that
+	// authority is confirmed durable is it safe to persist the answer.
+	if _, err = s.Tasks.RecordAttemptResult(ctx, tasks.RecordAttemptResultCommand{
+		LeaseCommand: tasks.LeaseCommand{TaskID: claimed.Task.ID, AttemptID: claimed.Attempt.ID, LeaseToken: claimed.LeaseToken, ActorID: principalID},
+		Result:       tasks.AttemptResult{Outcome: tasks.OutcomeSucceeded, Summary: "ceo chat turn answered"},
+	}); err != nil {
+		return SendResult{}, fmt.Errorf("record ceochat turn result: %w", err)
+	}
+
+	// The task is now durably awaiting_verification with a confirmed
+	// authoritative result. If the process crashes at any point from here
+	// on -- before this append, or before FinalizeTask below -- a retry
+	// lands in driveTurn's StatusAwaitingVerification case, which recovers
+	// this exact answer from the Harness's own durable history (never
+	// re-invoking the model) and completes whichever of append/finalize is
+	// still outstanding. Neither step is skipped on a crash: retrying
+	// converges the durable answer, the confirmed authority, and the
+	// task's terminal state together, rather than leaving any one of them
+	// behind.
 	assistantMessage, err := s.Store.AppendMessage(ctx, Message{
 		ConversationID: conversation.ID,
 		OrganizationID: s.OrganizationID,
@@ -422,13 +455,6 @@ func (s *Service) driveTurn(ctx context.Context, conversation Conversation, task
 	if err != nil {
 		return SendResult{}, fmt.Errorf("persist ceochat assistant message: %w", err)
 	}
-
-	if _, err = s.Tasks.RecordAttemptResult(ctx, tasks.RecordAttemptResultCommand{
-		LeaseCommand: tasks.LeaseCommand{TaskID: claimed.Task.ID, AttemptID: claimed.Attempt.ID, LeaseToken: claimed.LeaseToken, ActorID: principalID},
-		Result:       tasks.AttemptResult{Outcome: tasks.OutcomeSucceeded, Summary: "ceo chat turn answered"},
-	}); err != nil {
-		return SendResult{}, fmt.Errorf("record ceochat turn result: %w", err)
-	}
 	if _, err = s.Tasks.FinalizeTask(ctx, tasks.FinalizeCommand{
 		TaskID: claimed.Task.ID, Outcome: tasks.FinalCompleted, ActorType: "service", ActorID: ceoChatActorID,
 	}); err != nil {
@@ -439,6 +465,82 @@ func (s *Service) driveTurn(ctx context.Context, conversation Conversation, task
 		Reused: isReplay, Outcome: RunOutcomeCompleted, OwnerMessage: ownerMessage, AssistantMessage: &assistantMessage,
 		TurnsUsed: result.TurnsUsed, ToolCallsUsed: result.ToolCallsUsed,
 	}, nil
+}
+
+// recoverAwaitingVerificationTurn completes a turn whose authoritative
+// RecordAttemptResult already succeeded (the task is awaiting_verification)
+// but did not converge any further -- AppendMessage and/or FinalizeTask are
+// still outstanding, most likely because the process crashed between them
+// or FinalizeTask itself failed transiently. It recovers the final answer
+// from the Harness's own durable event history (the ModelResult of the
+// last EventModelResponseRecorded before EventRunCompleted), never
+// re-invoking the model or a tool, appends it only if not already durable,
+// and always retries FinalizeTask so the task keeps converging to
+// Completed on every call until it actually gets there.
+func (s *Service) recoverAwaitingVerificationTurn(ctx context.Context, conversation Conversation, task tasks.Task, ownerMessage Message, correlationID string, isReplay bool) (SendResult, error) {
+	runID := turnRunID(task.ID)
+	events, err := s.HarnessHistory.Read(ctx, runID)
+	if err != nil {
+		return SendResult{}, fmt.Errorf("read ceochat harness history for recovery: %w", err)
+	}
+	finalOutput, attemptID, ok := recoverCompletedFinalOutput(events)
+	if !ok {
+		// RecordAttemptResult(Succeeded) was called, which driveTurn only
+		// ever does after observing StatusCompleted for this exact run --
+		// so the Harness history not agreeing is a genuine inconsistency
+		// this service cannot resolve on its own. Surface it rather than
+		// fabricate a completion.
+		return SendResult{}, fmt.Errorf("%w: task %d is awaiting_verification with no recoverable final answer in its Harness history", ErrRunNotReady, task.ID)
+	}
+
+	assistantMessage, found, err := s.Store.FindAssistantReply(ctx, ownerMessage.ID)
+	if err != nil {
+		return SendResult{}, err
+	}
+	if !found {
+		assistantMessage, err = s.Store.AppendMessage(ctx, Message{
+			ConversationID: conversation.ID,
+			OrganizationID: s.OrganizationID,
+			Role:           MessageAssistant,
+			Content:        finalOutput,
+			TaskID:         task.ID,
+			AttemptID:      attemptID,
+			RunID:          runID,
+			CorrelationID:  correlationID,
+			CausationID:    ownerMessage.IdempotencyKey,
+		})
+		if err != nil {
+			return SendResult{}, fmt.Errorf("persist recovered ceochat assistant message: %w", err)
+		}
+	}
+
+	if _, err = s.Tasks.FinalizeTask(ctx, tasks.FinalizeCommand{
+		TaskID: task.ID, Outcome: tasks.FinalCompleted, ActorType: "service", ActorID: ceoChatActorID,
+	}); err != nil {
+		return SendResult{}, fmt.Errorf("finalize recovered ceochat turn: %w", err)
+	}
+
+	return SendResult{Reused: isReplay, Outcome: RunOutcomeCompleted, OwnerMessage: ownerMessage, AssistantMessage: &assistantMessage}, nil
+}
+
+// recoverCompletedFinalOutput scans a run's durable event history for its
+// final answer: the ModelResult of the last EventModelResponseRecorded
+// whose FinishReason is FinishFinal, confirmed by an EventRunCompleted
+// event with TerminalStatus=StatusCompleted also being present. ok is
+// false if the history does not actually show a completed run -- a
+// deliberately conservative signal, never a best-effort guess.
+func recoverCompletedFinalOutput(events []executionharness.Event) (finalOutput string, attemptID int64, ok bool) {
+	completed := false
+	for _, event := range events {
+		if event.Type == executionharness.EventRunCompleted && event.TerminalStatus == executionharness.StatusCompleted {
+			completed = true
+		}
+		if event.Type == executionharness.EventModelResponseRecorded && event.ModelResult != nil && event.ModelResult.FinishReason == executionharness.FinishFinal {
+			finalOutput = event.ModelResult.FinalOutput
+			attemptID = event.AttemptID
+		}
+	}
+	return finalOutput, attemptID, completed && finalOutput != ""
 }
 
 func excludeMessage(messages []Message, id int64) []Message {
