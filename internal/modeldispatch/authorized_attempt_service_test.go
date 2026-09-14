@@ -246,9 +246,22 @@ func TestAuthorizedAttemptProvisionerPoolAuthorityWorksWithoutBinding(t *testing
 // for Kind==RoleRoutingStaticBinding to the exact byte layout the binding-
 // shaped predecessor produced (ProfileID, decimal ModelProfileVersionID,
 // hash, NUL-joined, in that order, ahead of the shared
-// organization/revision/task/attempt/role/principal/dispatch-actor
-// prefix) -- so replay/idempotency for every already-provisioned static
-// assignment is unaffected by the pool-authority unification.
+// organization/revision/task/attempt/role/principal/dispatch-actor/
+// max-invocations prefix) -- so replay/idempotency for every
+// already-provisioned static assignment is unaffected by the pool-authority
+// unification.
+//
+// The max-invocations field (decimal, immediately after DispatchActorRoleID
+// and ahead of the authority tail) was added by
+// CEO_CONVERSATIONAL_DISPATCH_ASSIGNMENT_BOUNDARY_V1: a grant of 1
+// invocation and a grant of 8 is materially different authority even for an
+// otherwise identical tuple, so it must be part of this identity (see
+// TestAuthorizedAttemptDigestsAreDomainSeparatedByMaxInvocations). This is a
+// deliberate, intentional digest-format change, not a regression the way an
+// accidental one would be: any assignment an older binary provisioned under
+// the pre-quota digest is short-lived (bounded by its own lease-derived
+// ValidUntil), so it simply expires and gets re-provisioned under the
+// current format rather than requiring any migration.
 func TestAuthorizedAttemptStaticDigestsAreByteCompatibleWithThePreUnificationFormat(t *testing.T) {
 	attempt := TaskAttemptRef{TaskID: 12, AttemptID: 34, OrganizationID: "explorarte", OrganizationRevisionID: 7, AssignedRoleID: "empresa/ceo"}
 	principal := ExecutionPrincipal{ID: 81, PrincipalKey: "oracle-01/model-runtime-01", DispatchActorRoleID: "ingenieria_ia/code-runner"}
@@ -257,15 +270,17 @@ func TestAuthorizedAttemptStaticDigestsAreByteCompatibleWithThePreUnificationFor
 		AuthorityHash: "bf7b45e7e18cf02ff98a4562537c16b21767fb321bf6a87a48bc2ba5ab24f669",
 	}
 	const rootTaskID = int64(4)
+	const maxInvocations = 1
 
 	wantIdemBody := strings.Join([]string{
 		attempt.OrganizationID, strconv.FormatInt(attempt.OrganizationRevisionID, 10),
 		strconv.FormatInt(rootTaskID, 10), strconv.FormatInt(attempt.TaskID, 10), strconv.FormatInt(attempt.AttemptID, 10),
 		attempt.AssignedRoleID, strconv.FormatInt(principal.ID, 10), principal.PrincipalKey, principal.DispatchActorRoleID,
+		strconv.Itoa(maxInvocations),
 		authority.ProfileID, strconv.FormatInt(authority.ModelProfileVersionID, 10), authority.AuthorityHash,
 	}, "\x00")
 	wantIdem := fmt.Sprintf("authorized-attempt/%d/%d/%s", attempt.TaskID, attempt.AttemptID, sha256Hex([]byte(wantIdemBody))[:32])
-	if got := authorizedAttemptIdempotencyKey(rootTaskID, attempt, principal, authority); got != wantIdem {
+	if got := authorizedAttemptIdempotencyKey(rootTaskID, attempt, principal, authority, maxInvocations); got != wantIdem {
 		t.Fatalf("static idempotency key changed shape: got %q want %q", got, wantIdem)
 	}
 
@@ -274,11 +289,40 @@ func TestAuthorizedAttemptStaticDigestsAreByteCompatibleWithThePreUnificationFor
 		"provision_authorized_attempt", attempt.OrganizationID, strconv.FormatInt(attempt.OrganizationRevisionID, 10),
 		strconv.FormatInt(rootTaskID, 10), requesterRoleID, strconv.FormatInt(attempt.TaskID, 10), strconv.FormatInt(attempt.AttemptID, 10),
 		attempt.AssignedRoleID, strconv.FormatInt(principal.ID, 10), principal.PrincipalKey, principal.DispatchActorRoleID,
+		strconv.Itoa(maxInvocations),
 		authority.ProfileID, strconv.FormatInt(authority.ModelProfileVersionID, 10), authority.AuthorityHash,
 	}, "\x00")
 	wantDigest := sha256Hex([]byte(wantDigestBody))
-	if got := authorizedAttemptActionDigest(rootTaskID, attempt, principal, authority, requesterRoleID); got != wantDigest {
+	if got := authorizedAttemptActionDigest(rootTaskID, attempt, principal, authority, requesterRoleID, maxInvocations); got != wantDigest {
 		t.Fatalf("static action digest changed shape: got %q want %q", got, wantDigest)
+	}
+}
+
+// TestAuthorizedAttemptDigestsAreDomainSeparatedByMaxInvocations proves a
+// grant of 1 invocation and a grant of 8 invocations never share an identity
+// for the exact same task/attempt/principal/authority/requester tuple --
+// required by CEO_CONVERSATIONAL_DISPATCH_ASSIGNMENT_BOUNDARY_V1, since a
+// silently-widened quota would otherwise be indistinguishable from the
+// original grant at the identity layer.
+func TestAuthorizedAttemptDigestsAreDomainSeparatedByMaxInvocations(t *testing.T) {
+	attempt := TaskAttemptRef{TaskID: 12, AttemptID: 34, OrganizationID: "explorarte", OrganizationRevisionID: 7, AssignedRoleID: "empresa/ceo"}
+	principal := ExecutionPrincipal{ID: 81, PrincipalKey: "oracle-01/model-runtime-01", DispatchActorRoleID: "ingenieria_ia/code-runner"}
+	authority := RoleRoutingAuthorityRef{
+		Kind: RoleRoutingStaticBinding, ProfileID: "ceo-primary", ModelProfileVersionID: 8,
+		AuthorityHash: "bf7b45e7e18cf02ff98a4562537c16b21767fb321bf6a87a48bc2ba5ab24f669",
+	}
+	const rootTaskID = int64(4)
+	const requesterRoleID = "empresa/human"
+
+	idem1 := authorizedAttemptIdempotencyKey(rootTaskID, attempt, principal, authority, 1)
+	idem8 := authorizedAttemptIdempotencyKey(rootTaskID, attempt, principal, authority, 8)
+	if idem1 == idem8 {
+		t.Fatal("idempotency key is identical for max_invocations=1 and max_invocations=8")
+	}
+	digest1 := authorizedAttemptActionDigest(rootTaskID, attempt, principal, authority, requesterRoleID, 1)
+	digest8 := authorizedAttemptActionDigest(rootTaskID, attempt, principal, authority, requesterRoleID, 8)
+	if digest1 == digest8 {
+		t.Fatal("action digest is identical for max_invocations=1 and max_invocations=8")
 	}
 }
 
@@ -308,13 +352,13 @@ func TestAuthorizedAttemptPoolDigestsAreDomainSeparatedFromStatic(t *testing.T) 
 		Kind: RoleRoutingStaticBinding, ProfileID: "pool_policy", ModelProfileVersionID: 0, AuthorityHash: pool.AuthorityHash,
 	}
 
-	poolIdem := authorizedAttemptIdempotencyKey(rootTaskID, attempt, principal, pool)
-	staticIdem := authorizedAttemptIdempotencyKey(rootTaskID, attempt, principal, staticSameFields)
+	poolIdem := authorizedAttemptIdempotencyKey(rootTaskID, attempt, principal, pool, 1)
+	staticIdem := authorizedAttemptIdempotencyKey(rootTaskID, attempt, principal, staticSameFields, 1)
 	if poolIdem == staticIdem {
 		t.Fatal("pool and static idempotency keys collided despite the domain-separation tag")
 	}
-	poolDigest := authorizedAttemptActionDigest(rootTaskID, attempt, principal, pool, requesterRoleID)
-	staticDigest := authorizedAttemptActionDigest(rootTaskID, attempt, principal, staticSameFields, requesterRoleID)
+	poolDigest := authorizedAttemptActionDigest(rootTaskID, attempt, principal, pool, requesterRoleID, 1)
+	staticDigest := authorizedAttemptActionDigest(rootTaskID, attempt, principal, staticSameFields, requesterRoleID, 1)
 	if poolDigest == staticDigest {
 		t.Fatal("pool and static action digests collided despite the domain-separation tag")
 	}

@@ -297,6 +297,149 @@ func TestModelDispatcherAssignmentsPostgreSQL17(t *testing.T) {
 			t.Fatalf("rejected attempts wrote assignments: count=%d err=%v", unexpected, countErr)
 		}
 	})
+
+	// The four t.Run blocks below cover
+	// CEO_CONVERSATIONAL_DISPATCH_ASSIGNMENT_BOUNDARY_V1's own test matrix
+	// (A/B/C invalid-policy, D/E policy conflict) against REAL Postgres,
+	// through AuthorizedAttemptProvisioner exactly as production wires it
+	// -- complementing (not duplicating) the fake-store unit tests in
+	// internal/modeldispatch/authorized_attempt_service_test.go (which
+	// prove the provisioner's own digest/replay logic in isolation) and
+	// the pre-existing "quota concurrency never exceeds max_invocations"
+	// test above (which proves N>1 consumption is race-safe at the store
+	// layer, independent of who chose N). ingenieria_ia/orquestador is
+	// used as the subject role specifically so a fresh role_model_binding
+	// can be inserted without depending on execution order relative to
+	// the "authorized attempt boundary..." block above, which already
+	// bound empresa/ceo at this same revision.
+	t.Run("WithMaxInvocations provisions a bounded multi-invocation grant, default and ceiling preserved", func(t *testing.T) {
+		taskStore, taskErr := taskpostgres.New(platform)
+		if taskErr != nil {
+			t.Fatal(taskErr)
+		}
+		reader := dispatchTaskReader{reader: taskStore}
+		catalog := dispatchCatalog{reader: repo}
+		authorizer, authErr := authorization.New(repo, dispatchIntegrationOrganization, filepath.Join("..", "..", "..", "docs", "canonical"))
+		if authErr != nil {
+			t.Fatal(authErr)
+		}
+		principal := registerFixturePrincipal(t, ctx, store, "quota-policy")
+		insertBindingFixture(t, ctx, platform, revision.ID, revision.CanonicalHash, "ingenieria_ia/orquestador", "quota-policy")
+		assignments, serviceErr := modeldispatch.NewAssignmentService(
+			dispatchIntegrationOrganization, authorizer, catalog, reader, store, store,
+			modeldispatch.ClockFunc(time.Now), 15*time.Minute, time.Hour,
+		)
+		if serviceErr != nil {
+			t.Fatal(serviceErr)
+		}
+
+		// Invalid policy is rejected AT CONSTRUCTION, never at dispatch time.
+		for _, invalid := range []int{0, -1, 65} {
+			if _, constructErr := modeldispatch.NewAuthorizedAttemptProvisioner(assignments, reader, store, principal.PrincipalKey, modeldispatch.WithMaxInvocations(invalid)); !errors.Is(constructErr, modeldispatch.ErrInvalidRequest) {
+				t.Fatalf("max_invocations=%d: expected construction to be rejected, got %v", invalid, constructErr)
+			}
+		}
+
+		// A/L: default constructor -- Executive's unchanged shape -- still exactly MaxInvocations=1.
+		defaultProvisioner, err := modeldispatch.NewAuthorizedAttemptProvisioner(assignments, reader, store, principal.PrincipalKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rootID := insertLineageTaskFixture(t, ctx, platform, revision.ID, "quota-policy-root", "ingenieria_ia/orquestador", "executive:quota-policy", "owner:quota-policy", "ready")
+		defaultTaskID := insertLineageTaskFixture(t, ctx, platform, revision.ID, "quota-policy-default-child", "ingenieria_ia/orquestador", "executive:quota-policy", "task:"+strconv.FormatInt(rootID, 10), "running")
+		defaultAttempt := insertRunningAttemptFixture(t, ctx, platform, defaultTaskID, "quota-policy-default")
+		defaultResult, err := defaultProvisioner.EnsureAuthorizedAssignmentForRunningAttempt(ctx, defaultTaskID, defaultAttempt.AttemptID)
+		if err != nil || defaultResult.Assignment.MaxInvocations != 1 {
+			t.Fatalf("default provisioner max_invocations=%d, want 1 (err=%v)", defaultResult.Assignment.MaxInvocations, err)
+		}
+
+		// B: WithMaxInvocations(8) -- ceochat's own MaxTurns-derived ceiling -- on an independent attempt.
+		boundedProvisioner, err := modeldispatch.NewAuthorizedAttemptProvisioner(assignments, reader, store, principal.PrincipalKey, modeldispatch.WithMaxInvocations(8))
+		if err != nil {
+			t.Fatal(err)
+		}
+		boundedTaskID := insertLineageTaskFixture(t, ctx, platform, revision.ID, "quota-policy-bounded-child", "ingenieria_ia/orquestador", "executive:quota-policy", "task:"+strconv.FormatInt(rootID, 10), "running")
+		boundedAttempt := insertRunningAttemptFixture(t, ctx, platform, boundedTaskID, "quota-policy-bounded")
+		boundedResult, err := boundedProvisioner.EnsureAuthorizedAssignmentForRunningAttempt(ctx, boundedTaskID, boundedAttempt.AttemptID)
+		if err != nil || boundedResult.Assignment.MaxInvocations != 8 {
+			t.Fatalf("bounded provisioner max_invocations=%d, want 8 (err=%v)", boundedResult.Assignment.MaxInvocations, err)
+		}
+
+		// C: reuse -- the SAME bounded provisioner called again on the SAME attempt resolves the SAME assignment.
+		reused, err := boundedProvisioner.EnsureAuthorizedAssignmentForRunningAttempt(ctx, boundedTaskID, boundedAttempt.AttemptID)
+		if err != nil || !reused.Reused || reused.Assignment.ID != boundedResult.Assignment.ID {
+			t.Fatalf("reuse result=%+v err=%v", reused, err)
+		}
+	})
+
+	t.Run("differing max_invocations policy on the same attempt fails closed in both directions", func(t *testing.T) {
+		taskStore, taskErr := taskpostgres.New(platform)
+		if taskErr != nil {
+			t.Fatal(taskErr)
+		}
+		reader := dispatchTaskReader{reader: taskStore}
+		catalog := dispatchCatalog{reader: repo}
+		authorizer, authErr := authorization.New(repo, dispatchIntegrationOrganization, filepath.Join("..", "..", "..", "docs", "canonical"))
+		if authErr != nil {
+			t.Fatal(authErr)
+		}
+		principal := registerFixturePrincipal(t, ctx, store, "quota-conflict")
+		insertBindingFixture(t, ctx, platform, revision.ID, revision.CanonicalHash, "ingenieria_ia/qa", "quota-conflict")
+		assignments, serviceErr := modeldispatch.NewAssignmentService(
+			dispatchIntegrationOrganization, authorizer, catalog, reader, store, store,
+			modeldispatch.ClockFunc(time.Now), 15*time.Minute, time.Hour,
+		)
+		if serviceErr != nil {
+			t.Fatal(serviceErr)
+		}
+		defaultProvisioner, err := modeldispatch.NewAuthorizedAttemptProvisioner(assignments, reader, store, principal.PrincipalKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		boundedProvisioner, err := modeldispatch.NewAuthorizedAttemptProvisioner(assignments, reader, store, principal.PrincipalKey, modeldispatch.WithMaxInvocations(8))
+		if err != nil {
+			t.Fatal(err)
+		}
+		rootID := insertLineageTaskFixture(t, ctx, platform, revision.ID, "quota-conflict-root", "ingenieria_ia/qa", "executive:quota-conflict", "owner:quota-conflict", "ready")
+
+		// D: existing max=1 (default), then a max=8 provisioner on the SAME attempt -- must fail closed, never widen.
+		forwardTaskID := insertLineageTaskFixture(t, ctx, platform, revision.ID, "quota-conflict-forward", "ingenieria_ia/qa", "executive:quota-conflict", "task:"+strconv.FormatInt(rootID, 10), "running")
+		forwardAttempt := insertRunningAttemptFixture(t, ctx, platform, forwardTaskID, "quota-conflict-forward")
+		if _, err = defaultProvisioner.EnsureAuthorizedAssignmentForRunningAttempt(ctx, forwardTaskID, forwardAttempt.AttemptID); err != nil {
+			t.Fatalf("seed max=1 assignment: %v", err)
+		}
+		if _, err = boundedProvisioner.EnsureAuthorizedAssignmentForRunningAttempt(ctx, forwardTaskID, forwardAttempt.AttemptID); !errors.Is(err, modeldispatch.ErrConflict) {
+			t.Fatalf("expected conflict widening max=1 to max=8, got %v", err)
+		}
+
+		// E: reverse -- existing max=8, then a max=1 provisioner on the SAME attempt -- must also fail closed, never narrow.
+		reverseTaskID := insertLineageTaskFixture(t, ctx, platform, revision.ID, "quota-conflict-reverse", "ingenieria_ia/qa", "executive:quota-conflict", "task:"+strconv.FormatInt(rootID, 10), "running")
+		reverseAttempt := insertRunningAttemptFixture(t, ctx, platform, reverseTaskID, "quota-conflict-reverse")
+		if _, err = boundedProvisioner.EnsureAuthorizedAssignmentForRunningAttempt(ctx, reverseTaskID, reverseAttempt.AttemptID); err != nil {
+			t.Fatalf("seed max=8 assignment: %v", err)
+		}
+		if _, err = defaultProvisioner.EnsureAuthorizedAssignmentForRunningAttempt(ctx, reverseTaskID, reverseAttempt.AttemptID); !errors.Is(err, modeldispatch.ErrConflict) {
+			t.Fatalf("expected conflict narrowing max=8 to max=1, got %v", err)
+		}
+
+		// Exact match, no silent widening or narrowing: precisely one row at 1, one at 8.
+		rows, queryErr := platform.Pool().Query(ctx, `SELECT max_invocations FROM model_dispatcher_assignments WHERE task_id=ANY($1::bigint[]) ORDER BY task_id`, []int64{forwardTaskID, reverseTaskID})
+		if queryErr != nil {
+			t.Fatal(queryErr)
+		}
+		defer rows.Close()
+		var maxes []int
+		for rows.Next() {
+			var m int
+			if scanErr := rows.Scan(&m); scanErr != nil {
+				t.Fatal(scanErr)
+			}
+			maxes = append(maxes, m)
+		}
+		if len(maxes) != 2 || maxes[0] != 1 || maxes[1] != 8 {
+			t.Fatalf("persisted max_invocations=%v, want exactly [1 8] (no silent widening/narrowing)", maxes)
+		}
+	})
 }
 
 func registerCommandFixture(suffix string) modeldispatch.RegisterPrincipalCommand {
