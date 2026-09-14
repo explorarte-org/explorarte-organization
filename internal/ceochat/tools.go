@@ -47,7 +47,7 @@ var listFindingsSchema = json.RawMessage(`{
     "department_id": {"type": "string", "maxLength": 240},
     "topic_id": {"type": "string", "maxLength": 240},
     "important_only": {"type": "boolean"},
-    "limit": {"type": "integer", "minimum": 1, "maximum": 20}
+    "limit": {"type": "integer"}
   }
 }`)
 
@@ -56,7 +56,7 @@ var listTopicsSchema = json.RawMessage(`{
   "additionalProperties": false,
   "properties": {
     "department_id": {"type": "string", "maxLength": 240},
-    "limit": {"type": "integer", "minimum": 1, "maximum": 50}
+    "limit": {"type": "integer"}
   }
 }`)
 

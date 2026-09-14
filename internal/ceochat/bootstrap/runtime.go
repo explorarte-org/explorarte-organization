@@ -46,7 +46,15 @@ type Runtime struct {
 // process: every dependency here is a stateless adapter over the same
 // store/registry, exactly the pattern internal/executive/bootstrap already
 // uses to open Model Runtime a second time for its own purposes.
-func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
+//
+// modelRuntimeOpts is passed straight through to modelbootstrap.Open (see
+// its own Option/WithExtraAdapters doc comments) -- production never
+// passes any, so this parameter changes nothing about what a real
+// deployment does. It exists only so an integration test can register a
+// deterministic test.fake adapter alongside the real ones, to drive the
+// canonical ceochat.Service.Send -> ... -> InvocationService.Create ->
+// DispatchService.Dispatch composition without a real provider call.
+func Open(cfg config.Config, store *platformpostgres.Store, modelRuntimeOpts ...modelbootstrap.Option) (*Runtime, error) {
 	if store == nil {
 		return nil, fmt.Errorf("ceochat bootstrap requires PostgreSQL")
 	}
@@ -97,7 +105,7 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 	// internal/executive/bootstrap already opens for typed-task work. None
 	// of that is Executive-specific: it is org-scoped adapter code shared by
 	// any execution profile.
-	modelRuntime, err := modelbootstrap.Open(cfg, store)
+	modelRuntime, err := modelbootstrap.Open(cfg, store, modelRuntimeOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("open ceochat model runtime: %w", err)
 	}

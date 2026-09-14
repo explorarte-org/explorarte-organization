@@ -43,11 +43,11 @@ var financeGetCostSummarySchema = json.RawMessage(`{
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "task_id": {"type": "integer", "minimum": 1},
+    "task_id": {"type": "integer"},
     "wallet_provider_id": {"type": "string", "maxLength": 240},
     "provider_model_id": {"type": "string", "maxLength": 240},
-    "since": {"type": "string", "format": "date-time"},
-    "until": {"type": "string", "format": "date-time"}
+    "since": {"type": "string"},
+    "until": {"type": "string"}
   }
 }`)
 

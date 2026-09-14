@@ -29,9 +29,9 @@ var memorySearchSchema = json.RawMessage(`{
   "additionalProperties": false,
   "required": ["query"],
   "properties": {
-    "query": {"type": "string", "minLength": 1, "maxLength": 2000},
-    "task_id": {"type": "integer", "minimum": 1},
-    "limit": {"type": "integer", "minimum": 1, "maximum": 20}
+    "query": {"type": "string", "maxLength": 2000},
+    "task_id": {"type": "integer"},
+    "limit": {"type": "integer"}
   }
 }`)
 

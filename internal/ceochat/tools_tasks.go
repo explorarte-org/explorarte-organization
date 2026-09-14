@@ -29,7 +29,7 @@ var tasksListSchema = json.RawMessage(`{
   "properties": {
     "status": {"type": "string"},
     "assigned_role_id": {"type": "string", "maxLength": 240},
-    "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+    "limit": {"type": "integer"},
     "cursor": {"type": "string", "maxLength": 400}
   }
 }`)
@@ -39,7 +39,7 @@ var tasksGetSchema = json.RawMessage(`{
   "additionalProperties": false,
   "required": ["task_id"],
   "properties": {
-    "task_id": {"type": "integer", "minimum": 1}
+    "task_id": {"type": "integer"}
   }
 }`)
 
@@ -48,8 +48,8 @@ var tasksListAttemptsSchema = json.RawMessage(`{
   "additionalProperties": false,
   "required": ["task_id"],
   "properties": {
-    "task_id": {"type": "integer", "minimum": 1},
-    "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+    "task_id": {"type": "integer"},
+    "limit": {"type": "integer"},
     "cursor": {"type": "string", "maxLength": 400}
   }
 }`)

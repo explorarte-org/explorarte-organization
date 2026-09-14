@@ -108,9 +108,39 @@ type Runtime struct {
 	Identity    *identitybootstrap.Runtime
 }
 
-func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, error) {
+// Option configures optional Open behavior that production callers never
+// need.
+type Option func(*openOptions)
+
+type openOptions struct {
+	extraAdapters []modelruntime.ProviderAdapter
+}
+
+// WithExtraAdapters registers additional provider adapters alongside the
+// ones Open already builds from ORG_MODEL_PROVIDER_* environment
+// configuration -- it adds to that list, never replaces or bypasses any of
+// it. It exists for exactly one purpose: letting an integration test drive
+// the CANONICAL dispatch composition (ceochat.Service.Send -> ... ->
+// InvocationService.Create -> modeldispatch.ResolveActive -> DispatchService.Dispatch)
+// against a deterministic in-process adapter (adapter.NewFake, ProviderID
+// "test.fake") instead of a real provider, with no network call and no
+// cost -- never to add a second real provider stack or change what a
+// production deployment (which never passes this option) dispatches
+// through. A canonical routing document must still route to whatever
+// ProviderID the extra adapter reports (see canonical_routing.go's
+// TransportFake restriction: fake transport is restricted to provider
+// "test.fake") before it is ever reachable.
+func WithExtraAdapters(adapters ...modelruntime.ProviderAdapter) Option {
+	return func(o *openOptions) { o.extraAdapters = append(o.extraAdapters, adapters...) }
+}
+
+func Open(cfg config.Config, platformStore *platformpostgres.Store, opts ...Option) (*Runtime, error) {
 	if platformStore == nil {
 		return nil, errors.New("model runtime bootstrap requires PostgreSQL store")
+	}
+	var options openOptions
+	for _, opt := range opts {
+		opt(&options)
 	}
 	runtimeCfg, err := modelruntime.LoadRuntimeConfig(os.LookupEnv, cfg.Tasks.OutboxMaxAttempts)
 	if err != nil {
@@ -284,6 +314,7 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store) (*Runtime, e
 		}
 		registeredAdapters = append(registeredAdapters, providerAdapter)
 	}
+	registeredAdapters = append(registeredAdapters, options.extraAdapters...)
 	adapters := adapter.NewRegistry(registeredAdapters...)
 	pricingStore, err := modelpricingpostgres.New(platformStore)
 	if err != nil {

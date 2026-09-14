@@ -32,9 +32,9 @@ var runsListRecentSchema = json.RawMessage(`{
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "task_id": {"type": "integer", "minimum": 1},
+    "task_id": {"type": "integer"},
     "execution_profile_id": {"type": "string", "maxLength": 240},
-    "limit": {"type": "integer", "minimum": 1, "maximum": 30},
+    "limit": {"type": "integer"},
     "cursor": {"type": "string", "maxLength": 400}
   }
 }`)
@@ -44,7 +44,7 @@ var runsGetSchema = json.RawMessage(`{
   "additionalProperties": false,
   "required": ["run_id"],
   "properties": {
-    "run_id": {"type": "string", "minLength": 1, "maxLength": 200}
+    "run_id": {"type": "string", "maxLength": 200}
   }
 }`)
 
