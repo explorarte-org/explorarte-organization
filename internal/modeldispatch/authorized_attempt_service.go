@@ -287,31 +287,65 @@ func authorityDigestFields(authority RoleRoutingAuthorityRef) []string {
 	return []string{authority.ProfileID, strconv.FormatInt(authority.ModelProfileVersionID, 10), authority.AuthorityHash}
 }
 
-// maxInvocations participates in both digests below: a grant for 1
-// invocation and a grant for 8 invocations are materially different
-// authority, even for the same task/attempt/principal/routing-authority
-// tuple, and must never be able to collide or silently replace one another
-// (see validateAuthorizedAttemptReplay and the DB's
-// model_dispatcher_assignments_one_active_idx, which independently blocks a
-// second active assignment for the same task/attempt regardless of digest).
+// legacyAuthorizedAttemptMaxInvocations names the one quota value that ever
+// existed before CEO_CONVERSATIONAL_DISPATCH_ASSIGNMENT_BOUNDARY_V1 made
+// this policy configurable. It is a separate name from
+// authorizedAttemptMaxInvocations (the current default) purely so the
+// digest functions below read as "the historical body shape applies
+// exactly when this legacy value is requested" rather than "applies
+// exactly when nobody overrode the current default" -- those happen to be
+// the same number today, but the compatibility contract is about the
+// HISTORICAL shape, not about default-ness.
+const legacyAuthorizedAttemptMaxInvocations = 1
+
+// authorizedAttemptIdempotencyKey and authorizedAttemptActionDigest below
+// carry a durable-compatibility contract, not just an internal digest
+// choice: real Postgres assignment rows already exist (or existed during a
+// rollout window) whose idempotency_key/request_hash were computed by the
+// pre-quota-policy formula, for MaxInvocations=1 only (the only value that
+// could ever be requested before this change). A rolling deploy, or simply
+// resuming a long-lived attempt across a restart, must still recognize
+// those rows as the exact same grant -- never as a conflict, never by
+// silently minting a second assignment.
+//
+// So for maxInvocations == legacyAuthorizedAttemptMaxInvocations (1), the
+// body is BYTE-IDENTICAL to the pre-change formula: no max_invocations
+// field, "authorized-attempt/..." key prefix, "provision_authorized_attempt"
+// digest prefix -- unchanged, on purpose, forever, for this one value.
+//
+// For any other maxInvocations, the body is explicitly domain-separated
+// (a literal "multi_invocation" tag plus the decimal quota, and a distinct
+// "authorized-attempt-multi/..." key prefix) so a multi-invocation grant
+// can never collide with, or be silently reinterpreted as, a legacy
+// single-invocation one -- see
+// TestAuthorizedAttemptDigestsAreDomainSeparatedByMaxInvocations and
+// TestAuthorizedAttemptLegacyMax1DigestsAreByteIdenticalToThePreQuotaFormula.
 func authorizedAttemptIdempotencyKey(rootTaskID int64, attempt TaskAttemptRef, principal ExecutionPrincipal, authority RoleRoutingAuthorityRef, maxInvocations int) string {
-	fields := append([]string{
+	fields := []string{
 		attempt.OrganizationID, strconv.FormatInt(attempt.OrganizationRevisionID, 10),
 		strconv.FormatInt(rootTaskID, 10), strconv.FormatInt(attempt.TaskID, 10), strconv.FormatInt(attempt.AttemptID, 10),
 		attempt.AssignedRoleID, strconv.FormatInt(principal.ID, 10), principal.PrincipalKey, principal.DispatchActorRoleID,
-		strconv.Itoa(maxInvocations),
-	}, authorityDigestFields(authority)...)
+	}
+	keyPrefix := "authorized-attempt"
+	if maxInvocations != legacyAuthorizedAttemptMaxInvocations {
+		fields = append(fields, "multi_invocation", strconv.Itoa(maxInvocations))
+		keyPrefix = "authorized-attempt-multi"
+	}
+	fields = append(fields, authorityDigestFields(authority)...)
 	body := strings.Join(fields, "\x00")
-	return fmt.Sprintf("authorized-attempt/%d/%d/%s", attempt.TaskID, attempt.AttemptID, sha256Hex([]byte(body))[:32])
+	return fmt.Sprintf("%s/%d/%d/%s", keyPrefix, attempt.TaskID, attempt.AttemptID, sha256Hex([]byte(body))[:32])
 }
 
 func authorizedAttemptActionDigest(rootTaskID int64, attempt TaskAttemptRef, principal ExecutionPrincipal, authority RoleRoutingAuthorityRef, requesterRoleID string, maxInvocations int) string {
-	fields := append([]string{
+	fields := []string{
 		"provision_authorized_attempt", attempt.OrganizationID, strconv.FormatInt(attempt.OrganizationRevisionID, 10),
 		strconv.FormatInt(rootTaskID, 10), requesterRoleID, strconv.FormatInt(attempt.TaskID, 10), strconv.FormatInt(attempt.AttemptID, 10),
 		attempt.AssignedRoleID, strconv.FormatInt(principal.ID, 10), principal.PrincipalKey, principal.DispatchActorRoleID,
-		strconv.Itoa(maxInvocations),
-	}, authorityDigestFields(authority)...)
+	}
+	if maxInvocations != legacyAuthorizedAttemptMaxInvocations {
+		fields = append(fields, "multi_invocation", strconv.Itoa(maxInvocations))
+	}
+	fields = append(fields, authorityDigestFields(authority)...)
 	body := strings.Join(fields, "\x00")
 	return sha256Hex([]byte(body))
 }

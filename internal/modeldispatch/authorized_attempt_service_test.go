@@ -246,22 +246,9 @@ func TestAuthorizedAttemptProvisionerPoolAuthorityWorksWithoutBinding(t *testing
 // for Kind==RoleRoutingStaticBinding to the exact byte layout the binding-
 // shaped predecessor produced (ProfileID, decimal ModelProfileVersionID,
 // hash, NUL-joined, in that order, ahead of the shared
-// organization/revision/task/attempt/role/principal/dispatch-actor/
-// max-invocations prefix) -- so replay/idempotency for every
-// already-provisioned static assignment is unaffected by the pool-authority
-// unification.
-//
-// The max-invocations field (decimal, immediately after DispatchActorRoleID
-// and ahead of the authority tail) was added by
-// CEO_CONVERSATIONAL_DISPATCH_ASSIGNMENT_BOUNDARY_V1: a grant of 1
-// invocation and a grant of 8 is materially different authority even for an
-// otherwise identical tuple, so it must be part of this identity (see
-// TestAuthorizedAttemptDigestsAreDomainSeparatedByMaxInvocations). This is a
-// deliberate, intentional digest-format change, not a regression the way an
-// accidental one would be: any assignment an older binary provisioned under
-// the pre-quota digest is short-lived (bounded by its own lease-derived
-// ValidUntil), so it simply expires and gets re-provisioned under the
-// current format rather than requiring any migration.
+// organization/revision/task/attempt/role/principal/dispatch-actor
+// prefix) -- so replay/idempotency for every already-provisioned static
+// assignment is unaffected by the pool-authority unification.
 func TestAuthorizedAttemptStaticDigestsAreByteCompatibleWithThePreUnificationFormat(t *testing.T) {
 	attempt := TaskAttemptRef{TaskID: 12, AttemptID: 34, OrganizationID: "explorarte", OrganizationRevisionID: 7, AssignedRoleID: "empresa/ceo"}
 	principal := ExecutionPrincipal{ID: 81, PrincipalKey: "oracle-01/model-runtime-01", DispatchActorRoleID: "ingenieria_ia/code-runner"}
@@ -270,17 +257,15 @@ func TestAuthorizedAttemptStaticDigestsAreByteCompatibleWithThePreUnificationFor
 		AuthorityHash: "bf7b45e7e18cf02ff98a4562537c16b21767fb321bf6a87a48bc2ba5ab24f669",
 	}
 	const rootTaskID = int64(4)
-	const maxInvocations = 1
 
 	wantIdemBody := strings.Join([]string{
 		attempt.OrganizationID, strconv.FormatInt(attempt.OrganizationRevisionID, 10),
 		strconv.FormatInt(rootTaskID, 10), strconv.FormatInt(attempt.TaskID, 10), strconv.FormatInt(attempt.AttemptID, 10),
 		attempt.AssignedRoleID, strconv.FormatInt(principal.ID, 10), principal.PrincipalKey, principal.DispatchActorRoleID,
-		strconv.Itoa(maxInvocations),
 		authority.ProfileID, strconv.FormatInt(authority.ModelProfileVersionID, 10), authority.AuthorityHash,
 	}, "\x00")
 	wantIdem := fmt.Sprintf("authorized-attempt/%d/%d/%s", attempt.TaskID, attempt.AttemptID, sha256Hex([]byte(wantIdemBody))[:32])
-	if got := authorizedAttemptIdempotencyKey(rootTaskID, attempt, principal, authority, maxInvocations); got != wantIdem {
+	if got := authorizedAttemptIdempotencyKey(rootTaskID, attempt, principal, authority, legacyAuthorizedAttemptMaxInvocations); got != wantIdem {
 		t.Fatalf("static idempotency key changed shape: got %q want %q", got, wantIdem)
 	}
 
@@ -289,13 +274,89 @@ func TestAuthorizedAttemptStaticDigestsAreByteCompatibleWithThePreUnificationFor
 		"provision_authorized_attempt", attempt.OrganizationID, strconv.FormatInt(attempt.OrganizationRevisionID, 10),
 		strconv.FormatInt(rootTaskID, 10), requesterRoleID, strconv.FormatInt(attempt.TaskID, 10), strconv.FormatInt(attempt.AttemptID, 10),
 		attempt.AssignedRoleID, strconv.FormatInt(principal.ID, 10), principal.PrincipalKey, principal.DispatchActorRoleID,
-		strconv.Itoa(maxInvocations),
 		authority.ProfileID, strconv.FormatInt(authority.ModelProfileVersionID, 10), authority.AuthorityHash,
 	}, "\x00")
 	wantDigest := sha256Hex([]byte(wantDigestBody))
-	if got := authorizedAttemptActionDigest(rootTaskID, attempt, principal, authority, requesterRoleID, maxInvocations); got != wantDigest {
+	if got := authorizedAttemptActionDigest(rootTaskID, attempt, principal, authority, requesterRoleID, legacyAuthorizedAttemptMaxInvocations); got != wantDigest {
 		t.Fatalf("static action digest changed shape: got %q want %q", got, wantDigest)
 	}
+}
+
+// TestAuthorizedAttemptLegacyMax1DigestsAreByteIdenticalToThePreQuotaPolicyFormula
+// is CEO_CONVERSATIONAL_DISPATCH_ASSIGNMENT_BOUNDARY_CLOSURE_V1's GAP 1,
+// REQUIRED TEST A: a golden/pinned reproduction of the EXACT formula that
+// shipped before max_invocations became part of this identity at all (no
+// max_invocations field anywhere in the body, "authorized-attempt/..." key
+// prefix, "provision_authorized_attempt" digest prefix), reimplemented here
+// independently of authorizedAttemptIdempotencyKey/authorizedAttemptActionDigest
+// so this test cannot become tautological by construction. Durable
+// assignment rows a pre-quota-policy binary already wrote (max_invocations
+// was always 1 back then, the only value that could ever be requested) must
+// resolve to this exact identity after the upgrade, or a live rollout could
+// see a legitimate in-flight attempt's replay rejected as ErrConflict --
+// see TestAuthorizedAttemptProvisionerReplaysADurableLegacyMax1Assignment
+// for the real-Postgres proof that this pinned formula is what production
+// actually needs to match.
+func TestAuthorizedAttemptLegacyMax1DigestsAreByteIdenticalToThePreQuotaPolicyFormula(t *testing.T) {
+	attempt := TaskAttemptRef{TaskID: 555, AttemptID: 7, OrganizationID: "explorarte", OrganizationRevisionID: 41, AssignedRoleID: "empresa/ceo"}
+	principal := ExecutionPrincipal{ID: 202, PrincipalKey: "oracle-org-01/model-runtime-01", DispatchActorRoleID: "ingenieria_ia/code-runner"}
+	authority := RoleRoutingAuthorityRef{
+		Kind: RoleRoutingStaticBinding, ProfileID: "ceo-primary", ModelProfileVersionID: 3,
+		AuthorityHash: "0f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778899aabbccddeeff",
+	}
+	const rootTaskID = int64(11)
+	const requesterRoleID = "empresa/human"
+
+	legacyIdem := legacyAuthorizedAttemptIdempotencyKeyForTest(rootTaskID, attempt, principal, authority)
+	if got := authorizedAttemptIdempotencyKey(rootTaskID, attempt, principal, authority, legacyAuthorizedAttemptMaxInvocations); got != legacyIdem {
+		t.Fatalf("legacy max=1 idempotency key diverged from the pinned pre-quota-policy formula: got %q want %q", got, legacyIdem)
+	}
+	legacyDigest := legacyAuthorizedAttemptActionDigestForTest(rootTaskID, attempt, principal, authority, requesterRoleID)
+	if got := authorizedAttemptActionDigest(rootTaskID, attempt, principal, authority, requesterRoleID, legacyAuthorizedAttemptMaxInvocations); got != legacyDigest {
+		t.Fatalf("legacy max=1 action digest diverged from the pinned pre-quota-policy formula: got %q want %q", got, legacyDigest)
+	}
+}
+
+// legacyAuthorizedAttemptIdempotencyKeyForTest and
+// legacyAuthorizedAttemptActionDigestForTest are literal, independent
+// reimplementations of the formula that shipped before
+// CEO_CONVERSATIONAL_DISPATCH_ASSIGNMENT_BOUNDARY_V1 -- copy-pasted as it
+// was, never refactored to share code with the current production
+// functions. Sharing code with them would make
+// TestAuthorizedAttemptLegacyMax1DigestsAreByteIdenticalToThePreQuotaPolicyFormula
+// tautological (a change to production's shared helper would silently move
+// both sides together); keeping these standalone is what makes that test an
+// actual pin.
+func legacyAuthorizedAttemptIdempotencyKeyForTest(rootTaskID int64, attempt TaskAttemptRef, principal ExecutionPrincipal, authority RoleRoutingAuthorityRef) string {
+	var authorityTail []string
+	if authority.Kind == RoleRoutingPoolPolicy {
+		authorityTail = []string{"pool_policy", authority.PolicyID, authority.AuthorityHash}
+	} else {
+		authorityTail = []string{authority.ProfileID, strconv.FormatInt(authority.ModelProfileVersionID, 10), authority.AuthorityHash}
+	}
+	fields := append([]string{
+		attempt.OrganizationID, strconv.FormatInt(attempt.OrganizationRevisionID, 10),
+		strconv.FormatInt(rootTaskID, 10), strconv.FormatInt(attempt.TaskID, 10), strconv.FormatInt(attempt.AttemptID, 10),
+		attempt.AssignedRoleID, strconv.FormatInt(principal.ID, 10), principal.PrincipalKey, principal.DispatchActorRoleID,
+	}, authorityTail...)
+	body := strings.Join(fields, "\x00")
+	return fmt.Sprintf("authorized-attempt/%d/%d/%s", attempt.TaskID, attempt.AttemptID, sha256Hex([]byte(body))[:32])
+}
+
+func legacyAuthorizedAttemptActionDigestForTest(rootTaskID int64, attempt TaskAttemptRef, principal ExecutionPrincipal, authority RoleRoutingAuthorityRef, requesterRoleID string) string {
+	var authorityTail []string
+	if authority.Kind == RoleRoutingPoolPolicy {
+		authorityTail = []string{"pool_policy", authority.PolicyID, authority.AuthorityHash}
+	} else {
+		authorityTail = []string{authority.ProfileID, strconv.FormatInt(authority.ModelProfileVersionID, 10), authority.AuthorityHash}
+	}
+	fields := append([]string{
+		"provision_authorized_attempt", attempt.OrganizationID, strconv.FormatInt(attempt.OrganizationRevisionID, 10),
+		strconv.FormatInt(rootTaskID, 10), requesterRoleID, strconv.FormatInt(attempt.TaskID, 10), strconv.FormatInt(attempt.AttemptID, 10),
+		attempt.AssignedRoleID, strconv.FormatInt(principal.ID, 10), principal.PrincipalKey, principal.DispatchActorRoleID,
+	}, authorityTail...)
+	body := strings.Join(fields, "\x00")
+	return sha256Hex([]byte(body))
 }
 
 // TestAuthorizedAttemptDigestsAreDomainSeparatedByMaxInvocations proves a

@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -440,6 +441,150 @@ func TestModelDispatcherAssignmentsPostgreSQL17(t *testing.T) {
 			t.Fatalf("persisted max_invocations=%v, want exactly [1 8] (no silent widening/narrowing)", maxes)
 		}
 	})
+
+	// CEO_CONVERSATIONAL_DISPATCH_ASSIGNMENT_BOUNDARY_CLOSURE_V1 GAP 1,
+	// REQUIRED TESTS B/C/D/E: durable compatibility for a real assignment
+	// row seeded with the EXACT identity a pre-quota-policy binary would
+	// have written (idempotency key computed by an independently
+	// reimplemented legacy formula, never by calling the current
+	// production helper -- see legacyAuthorizedAttemptIdempotencyKeyForPostgresTest
+	// below and its sibling unit-level pin,
+	// TestAuthorizedAttemptLegacyMax1DigestsAreByteIdenticalToThePreQuotaPolicyFormula,
+	// in internal/modeldispatch/authorized_attempt_service_test.go).
+	t.Run("a durable legacy max=1 assignment replays cleanly after the quota-policy upgrade", func(t *testing.T) {
+		taskStore, taskErr := taskpostgres.New(platform)
+		if taskErr != nil {
+			t.Fatal(taskErr)
+		}
+		reader := dispatchTaskReader{reader: taskStore}
+		catalog := dispatchCatalog{reader: repo}
+		authorizer, authErr := authorization.New(repo, dispatchIntegrationOrganization, filepath.Join("..", "..", "..", "docs", "canonical"))
+		if authErr != nil {
+			t.Fatal(authErr)
+		}
+		principal := registerFixturePrincipal(t, ctx, store, "legacy-replay")
+		// ingenieria_ia/qa already has a role_model_binding from the
+		// "differing max_invocations policy..." block above (same
+		// revision): model_profiles enforces UNIQUE(organization_id,
+		// policy_id), so a role's binding can only be inserted once per
+		// test function run, not once per suffix. Reusing it here (rather
+		// than picking a fresh role) keeps this block's intent legible --
+		// it is specifically about REPLAYING a legacy assignment on this
+		// exact role, not about routing setup.
+		authority, authorityErr := store.GetRoleRoutingAuthority(ctx, dispatchIntegrationOrganization, revision.ID, "ingenieria_ia/qa")
+		if authorityErr != nil {
+			t.Fatalf("load routing authority for legacy fixture: %v", authorityErr)
+		}
+		assignments, serviceErr := modeldispatch.NewAssignmentService(
+			dispatchIntegrationOrganization, authorizer, catalog, reader, store, store,
+			modeldispatch.ClockFunc(time.Now), 15*time.Minute, time.Hour,
+		)
+		if serviceErr != nil {
+			t.Fatal(serviceErr)
+		}
+		rootID := insertLineageTaskFixture(t, ctx, platform, revision.ID, "legacy-replay-root", "ingenieria_ia/qa", "executive:legacy-replay", "owner:legacy-replay", "ready")
+		legacyTaskID := insertLineageTaskFixture(t, ctx, platform, revision.ID, "legacy-replay-child", "ingenieria_ia/qa", "executive:legacy-replay", "task:"+strconv.FormatInt(rootID, 10), "running")
+		legacyAttempt := insertRunningAttemptFixture(t, ctx, platform, legacyTaskID, "legacy-replay")
+
+		// Seed AS THE PRE-CHANGE PROVISIONER WOULD HAVE: MaxInvocations=1
+		// (the only value that could ever exist before this quota policy),
+		// IdempotencyKey computed by the pinned legacy formula, created
+		// directly through AssignmentService.Create -- never through
+		// AuthorizedAttemptProvisioner, which is the thing under test here.
+		legacyIdemKey := legacyAuthorizedAttemptIdempotencyKeyForPostgresTest(rootID, legacyTaskID, legacyAttempt.AttemptID, dispatchIntegrationOrganization, revision.ID, "ingenieria_ia/qa", principal, authority)
+		// Read the lease expiry back through the same TaskAttemptReader
+		// AssignmentService.Create itself uses (not the Go-side value
+		// insertRunningAttemptFixture returned): TIMESTAMPTZ is
+		// microsecond-precision, Go's time.Time is nanosecond-precision, and
+		// Create's own "assignment vigency exceeds the active task lease"
+		// check compares against whatever THIS read returns -- using the
+		// pre-round-trip value here can be a few nanoseconds later than
+		// what Postgres actually stored, tripping that check spuriously.
+		freshLegacyAttempt, freshErr := reader.GetTaskAttempt(ctx, legacyTaskID, legacyAttempt.AttemptID)
+		if freshErr != nil {
+			t.Fatal(freshErr)
+		}
+		validUntil := freshLegacyAttempt.LeaseExpiresAt
+		seeded, seedErr := assignments.Create(ctx, "empresa/human", modeldispatch.CreateAssignmentCommand{
+			OrganizationID: dispatchIntegrationOrganization, TaskID: legacyTaskID, AttemptID: legacyAttempt.AttemptID,
+			SubjectRoleID: "ingenieria_ia/qa", ExecutionPrincipalKey: principal.PrincipalKey,
+			MaxInvocations: 1, ValidUntil: &validUntil, IdempotencyKey: legacyIdemKey,
+		})
+		if seedErr != nil {
+			t.Fatalf("seed legacy assignment: %v", seedErr)
+		}
+		if seeded.Assignment.MaxInvocations != 1 || seeded.Assignment.IdempotencyKey != legacyIdemKey {
+			t.Fatalf("legacy seed=%+v, want max=1 idempotency_key=%q", seeded.Assignment, legacyIdemKey)
+		}
+
+		// REQUIRED TEST B: the NEW default provisioner (max=1, unconfigured)
+		// resolves the SAME durable row, exactly, no mutation, no second row.
+		defaultProvisioner, err := modeldispatch.NewAuthorizedAttemptProvisioner(assignments, reader, store, principal.PrincipalKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		replayed, err := defaultProvisioner.EnsureAuthorizedAssignmentForRunningAttempt(ctx, legacyTaskID, legacyAttempt.AttemptID)
+		if err != nil || !replayed.Reused || replayed.Assignment.ID != seeded.Assignment.ID || replayed.Assignment.MaxInvocations != 1 {
+			t.Fatalf("legacy replay=%+v err=%v, want Reused=true same ID max=1", replayed, err)
+		}
+		var rowCount int
+		if countErr := platform.Pool().QueryRow(ctx, `SELECT COUNT(*) FROM model_dispatcher_assignments WHERE task_id=$1 AND attempt_id=$2`, legacyTaskID, legacyAttempt.AttemptID).Scan(&rowCount); countErr != nil || rowCount != 1 {
+			t.Fatalf("row count=%d err=%v, want exactly 1 (no second assignment written)", rowCount, countErr)
+		}
+
+		// REQUIRED TEST C: existing legacy max=1, new policy max=8 on the SAME attempt -> CONFLICT, no widening.
+		boundedProvisioner, err := modeldispatch.NewAuthorizedAttemptProvisioner(assignments, reader, store, principal.PrincipalKey, modeldispatch.WithMaxInvocations(8))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = boundedProvisioner.EnsureAuthorizedAssignmentForRunningAttempt(ctx, legacyTaskID, legacyAttempt.AttemptID); !errors.Is(err, modeldispatch.ErrConflict) {
+			t.Fatalf("expected conflict widening legacy max=1 to max=8, got %v", err)
+		}
+
+		// REQUIRED TEST D: existing max=8, new policy max=1 on an INDEPENDENT attempt -> CONFLICT, no narrowing.
+		max8TaskID := insertLineageTaskFixture(t, ctx, platform, revision.ID, "legacy-replay-max8", "ingenieria_ia/qa", "executive:legacy-replay", "task:"+strconv.FormatInt(rootID, 10), "running")
+		max8Attempt := insertRunningAttemptFixture(t, ctx, platform, max8TaskID, "legacy-replay-max8")
+		max8First, err := boundedProvisioner.EnsureAuthorizedAssignmentForRunningAttempt(ctx, max8TaskID, max8Attempt.AttemptID)
+		if err != nil || max8First.Assignment.MaxInvocations != 8 {
+			t.Fatalf("seed max=8 assignment: result=%+v err=%v", max8First, err)
+		}
+		if _, err = defaultProvisioner.EnsureAuthorizedAssignmentForRunningAttempt(ctx, max8TaskID, max8Attempt.AttemptID); !errors.Is(err, modeldispatch.ErrConflict) {
+			t.Fatalf("expected conflict narrowing max=8 to max=1, got %v", err)
+		}
+
+		// REQUIRED TEST E: max=8, same policy max=8 again on the SAME attempt -> exact reuse.
+		max8Second, err := boundedProvisioner.EnsureAuthorizedAssignmentForRunningAttempt(ctx, max8TaskID, max8Attempt.AttemptID)
+		if err != nil || !max8Second.Reused || max8Second.Assignment.ID != max8First.Assignment.ID {
+			t.Fatalf("expected exact max=8 reuse, got result=%+v err=%v", max8Second, err)
+		}
+	})
+}
+
+// legacyAuthorizedAttemptIdempotencyKeyForPostgresTest is an INDEPENDENT
+// reimplementation (never calling internal/modeldispatch's own
+// authorizedAttemptIdempotencyKey, which is unexported and under test) of
+// the formula that shipped before CEO_CONVERSATIONAL_DISPATCH_ASSIGNMENT_BOUNDARY_V1
+// -- the exact byte layout a pre-quota-policy binary would have produced for
+// MaxInvocations=1, the only value that could ever have existed. It exists
+// so "a durable legacy max=1 assignment replays cleanly after the
+// quota-policy upgrade" above can seed a row that is genuinely
+// representative of pre-upgrade durable state, not merely of whatever the
+// current (already-fixed) production formula happens to produce today.
+func legacyAuthorizedAttemptIdempotencyKeyForPostgresTest(rootTaskID, taskID, attemptID int64, organizationID string, organizationRevisionID int64, assignedRoleID string, principal modeldispatch.ExecutionPrincipal, authority modeldispatch.RoleRoutingAuthorityRef) string {
+	var authorityTail []string
+	if authority.Kind == modeldispatch.RoleRoutingPoolPolicy {
+		authorityTail = []string{"pool_policy", authority.PolicyID, authority.AuthorityHash}
+	} else {
+		authorityTail = []string{authority.ProfileID, strconv.FormatInt(authority.ModelProfileVersionID, 10), authority.AuthorityHash}
+	}
+	fields := append([]string{
+		organizationID, strconv.FormatInt(organizationRevisionID, 10),
+		strconv.FormatInt(rootTaskID, 10), strconv.FormatInt(taskID, 10), strconv.FormatInt(attemptID, 10),
+		assignedRoleID, strconv.FormatInt(principal.ID, 10), principal.PrincipalKey, principal.DispatchActorRoleID,
+	}, authorityTail...)
+	body := strings.Join(fields, "\x00")
+	sum := sha256.Sum256([]byte(body))
+	return fmt.Sprintf("authorized-attempt/%d/%d/%s", taskID, attemptID, hex.EncodeToString(sum[:])[:32])
 }
 
 func registerCommandFixture(suffix string) modeldispatch.RegisterPrincipalCommand {
