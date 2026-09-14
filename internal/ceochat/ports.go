@@ -2,7 +2,9 @@ package ceochat
 
 import (
 	"context"
+	"time"
 
+	"github.com/Mireuz13/explorarte-organization/internal/executionharness"
 	"github.com/Mireuz13/explorarte-organization/internal/tasks"
 )
 
@@ -84,4 +86,51 @@ type TaskCoordinator interface {
 	RecordAttemptResult(ctx context.Context, command tasks.RecordAttemptResultCommand) (tasks.Task, error)
 	FinalizeTask(ctx context.Context, command tasks.FinalizeCommand) (tasks.Task, error)
 	BlockTask(ctx context.Context, command tasks.BlockCommand) (tasks.Task, error)
+}
+
+// TaskReader is the read-only slice of the Task Engine the tasks.* chat
+// capabilities use. It is satisfied directly by *tasks.Service -- the same
+// canonical service TaskCoordinator already wraps -- so a read-only
+// capability and the turn-driving coordinator can never observe two
+// different notions of task state.
+type TaskReader interface {
+	ListTasks(ctx context.Context, filter tasks.TaskFilter) ([]tasks.Task, error)
+	GetTask(ctx context.Context, id int64) (tasks.TaskDetail, error)
+	ListAttempts(ctx context.Context, taskID int64) ([]tasks.Attempt, error)
+}
+
+// RunDescriptorRecord is the read-only projection of one Harness run's
+// immutable descriptor the runs.* tools need: exactly the fields
+// RunDescriptorStore.ReadRunDescriptor already returns, plus CreatedAt for
+// ordering a list by recency. It intentionally carries no trajectory
+// (prompts, tool bodies, provider reasoning) -- a descriptor is an
+// execution identity record, never an execution log.
+type RunDescriptorRecord struct {
+	executionharness.RunDescriptor
+	CreatedAt time.Time
+}
+
+// RunDescriptorFilter bounds one RunLister.ListRunDescriptors call.
+type RunDescriptorFilter struct {
+	TaskID             int64
+	ExecutionProfileID string
+	Limit              int
+	Offset             int
+}
+
+// RunLister is the read-only slice of the durable run-descriptor store the
+// runs.list_recent capability needs. The production implementation adapts
+// *executionharnesspostgres.Store.ListRunDescriptors -- the same canonical
+// table EnsureRunDescriptor/ReadRunDescriptor already own, not a new store.
+type RunLister interface {
+	ListRunDescriptors(ctx context.Context, filter RunDescriptorFilter) ([]RunDescriptorRecord, error)
+}
+
+// RunEventReader is the read-only slice of ExecutionHistoryStore the
+// runs.get capability needs to derive a run's outcome: its own durable
+// trajectory, read the same way the Harness itself reads it to resume a
+// run. It is satisfied directly by whatever Service.HarnessHistory already
+// is -- runs.* never opens a second history store.
+type RunEventReader interface {
+	Read(ctx context.Context, runID string) ([]executionharness.Event, error)
 }

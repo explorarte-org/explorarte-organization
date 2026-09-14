@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/executionharness"
 	"github.com/jackc/pgx/v5"
@@ -110,6 +111,95 @@ func (s *Store) ReadRunDescriptor(ctx context.Context, organizationID, runID str
 		return executionharness.RunDescriptor{}, fmt.Errorf("%w: canonical descriptor digest mismatch", executionharness.ErrRunDescriptorCorrupt)
 	}
 	return descriptor, nil
+}
+
+// RunDescriptorSummary pairs an immutable RunDescriptor with the one extra
+// fact a LIST view needs and a single-run GET never did: when it was
+// created. ReadRunDescriptor has no ordering concern, so it never selected
+// this column; it has always existed on the row (migration 000064).
+type RunDescriptorSummary struct {
+	executionharness.RunDescriptor
+	CreatedAt time.Time
+}
+
+// RunDescriptorFilter bounds one ListRunDescriptors call. TaskID and
+// ExecutionProfileID are the two narrowing filters a "recent runs" read
+// naturally supports over this table's own columns; Limit/Offset are the
+// same host-owned offset pagination ceochat's cursor already wraps.
+type RunDescriptorFilter struct {
+	TaskID             int64
+	ExecutionProfileID string
+	Limit              int
+	Offset             int
+}
+
+// ListRunDescriptors returns this organization's immutable run descriptors,
+// most recently created first. It is an ADDITIVE read path over the same
+// execution_run_descriptors table EnsureRunDescriptor/ReadRunDescriptor
+// already own: no new table, no bypass of the canonical descriptor store,
+// no column this store did not already write.
+func (s *Store) ListRunDescriptors(ctx context.Context, filter RunDescriptorFilter) ([]RunDescriptorSummary, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	query := `
+		SELECT harness_run_id,organization_id,task_id,attempt_id,role_id,
+		       execution_principal_id,context_id,context_version,context_digest,
+		       execution_profile_id,model_policy_ref,build_ref,max_turns,max_tool_calls,
+		       frozen_tools,identity_digest,canonical_digest,created_at
+		FROM execution_run_descriptors
+		WHERE organization_id=$1`
+	args := []any{s.organizationID}
+	if filter.TaskID > 0 {
+		args = append(args, filter.TaskID)
+		query += fmt.Sprintf(" AND task_id=$%d", len(args))
+	}
+	if strings.TrimSpace(filter.ExecutionProfileID) != "" {
+		args = append(args, filter.ExecutionProfileID)
+		query += fmt.Sprintf(" AND execution_profile_id=$%d", len(args))
+	}
+	args = append(args, limit, filter.Offset)
+	query += fmt.Sprintf(" ORDER BY created_at DESC, harness_run_id DESC LIMIT $%d OFFSET $%d", len(args)-1, len(args))
+
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	summaries := []RunDescriptorSummary{}
+	for rows.Next() {
+		var summary RunDescriptorSummary
+		var toolsJSON []byte
+		var storedDigest string
+		if err = rows.Scan(
+			&summary.RunID, &summary.OrganizationID, &summary.TaskID, &summary.AttemptID,
+			&summary.RoleID, &summary.ExecutionPrincipalID, &summary.ContextID,
+			&summary.ContextVersion, &summary.ContextDigest, &summary.ExecutionProfileID,
+			&summary.ModelPolicyRef, &summary.BuildRef, &summary.MaxTurns,
+			&summary.MaxToolCalls, &toolsJSON, &summary.IdentityDigest, &storedDigest, &summary.CreatedAt,
+		); err != nil {
+			return nil, mapError(err)
+		}
+		if err = json.Unmarshal(toolsJSON, &summary.FrozenTools); err != nil {
+			return nil, fmt.Errorf("%w: frozen tool metadata is undecodable", executionharness.ErrRunDescriptorCorrupt)
+		}
+		if err = summary.Validate(); err != nil {
+			return nil, fmt.Errorf("%w: descriptor metadata failed validation", executionharness.ErrRunDescriptorCorrupt)
+		}
+		digest, err := summary.CanonicalDigest()
+		if err != nil || digest != storedDigest {
+			return nil, fmt.Errorf("%w: canonical descriptor digest mismatch", executionharness.ErrRunDescriptorCorrupt)
+		}
+		summaries = append(summaries, summary)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, mapError(err)
+	}
+	return summaries, nil
 }
 
 // canonicalDescriptorStorage returns the normalized descriptor and the exact

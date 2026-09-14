@@ -22,4 +22,13 @@ var (
 	// not proven it holds the lease token). The caller may retry later; no
 	// side effect occurred.
 	ErrRunNotReady = errors.New("ceochat turn is not ready to resume")
+	// ErrDuplicateToolRegistration means a ToolRegistry.Register call named
+	// an ID already registered. This is a bootstrap/test bug, never a
+	// runtime condition: the model can neither trigger nor observe it.
+	ErrDuplicateToolRegistration = errors.New("ceochat tool registry: duplicate tool registration")
+	// ErrToolResultTooLarge means a capability's canonical-service call
+	// returned more data than its descriptor's MaxResultBytes allows. The
+	// registry refuses to hand it to the Harness; the caller (the model, on
+	// its next turn) must narrow the request instead.
+	ErrToolResultTooLarge = errors.New("ceochat tool result exceeds its bounded size limit")
 )
