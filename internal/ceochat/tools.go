@@ -285,3 +285,44 @@ func (e ToolExecutor) executeListFindings(ctx context.Context, rawArgs []byte) (
 }
 
 var _ executionharness.ToolExecutor = ToolExecutor{}
+
+// registerResearchTools registers research.list_topics and
+// research.list_findings into a *ToolRegistry, producing byte-identical
+// output to ToolCatalog/ToolExecutor above -- this is the round's
+// "migrate research into the common ToolRegistry with unchanged behavior"
+// requirement. It is what production bootstrap wires; ToolCatalog/
+// ToolExecutor remain in this file only for their own isolated unit tests
+// and for a caller that wants a narrower, registry-free composition.
+func RegisterResearchTools(registry *ToolRegistry, topics TopicLister, findings FindingLister) error {
+	executor := ToolExecutor{Topics: topics, Findings: findings}
+	if err := registry.Register(ToolDescriptor{
+		ID: ToolListTopics, Version: "v1",
+		Description: "List research topics tracked for the organization, optionally scoped to one department.",
+		InputSchema: listTopicsSchema, Access: AccessReadOnly, RequiredRole: CEORoleID,
+		Limits:    ToolLimits{MaxRows: maxTopicsLimit, MaxResultBytes: 32 << 10, Timeout: defaultToolTimeout},
+		DataClass: DataClassInternal,
+	}, func(args json.RawMessage) error { _, err := decodeListTopicsArgs(args); return err },
+		func(ctx context.Context, _ string, args json.RawMessage) (json.RawMessage, error) {
+			result, err := executor.executeListTopics(ctx, args)
+			if err != nil {
+				return nil, err
+			}
+			return result.Content, nil
+		}); err != nil {
+		return err
+	}
+	return registry.Register(ToolDescriptor{
+		ID: ToolListFindings, Version: "v1",
+		Description: "List recent research findings, optionally scoped to a department or topic.",
+		InputSchema: listFindingsSchema, Access: AccessReadOnly, RequiredRole: CEORoleID,
+		Limits:    ToolLimits{MaxRows: maxFindingsLimit, MaxResultBytes: 32 << 10, Timeout: defaultToolTimeout},
+		DataClass: DataClassInternal,
+	}, func(args json.RawMessage) error { _, err := decodeListFindingsArgs(args); return err },
+		func(ctx context.Context, _ string, args json.RawMessage) (json.RawMessage, error) {
+			result, err := executor.executeListFindings(ctx, args)
+			if err != nil {
+				return nil, err
+			}
+			return result.Content, nil
+		})
+}

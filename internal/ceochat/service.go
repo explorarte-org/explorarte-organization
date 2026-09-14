@@ -56,8 +56,26 @@ type Service struct {
 	HarnessHistory   executionharness.ExecutionHistoryStore
 	DescriptorStore  executionharness.RunDescriptorStore
 	NewModelExecutor ModelExecutorFactory
-	Catalog          ToolCatalog
-	ToolExecutor     ToolExecutor
+	// Catalog and ToolExecutor are the two Harness-facing ends of whatever
+	// tool source this Service was composed with. Production always wires
+	// both from the same *ToolRegistry (RegistryToolCatalog /
+	// RegistryToolExecutor -- see bootstrap.Open), so "known to the
+	// catalog" and "executed by the executor" can never diverge into two
+	// different tool sets. Both are interfaces (not the concrete ceochat
+	// ToolCatalog/ToolExecutor types) so a test may still compose the
+	// narrower, research-only pair those types provide.
+	Catalog      executionharness.ToolCatalog
+	ToolExecutor executionharness.ToolExecutor
+	// ToolDefinitions is the exact RunSpec.Tools set exposed to every chat
+	// turn -- it must describe precisely the tools Catalog/ToolExecutor make
+	// known and executable. Open defaults it to NewToolCatalog().Definitions()
+	// only when Catalog itself is also left at that default; a Service
+	// composed with any other Catalog (e.g. a *ToolRegistry-backed one) must
+	// supply its own ToolDefinitions explicitly, because "known to the
+	// catalog" and "exposed to this run" silently diverging is exactly the
+	// failure ToolRegistry.DefinitionsFor's fail-closed design exists to
+	// prevent.
+	ToolDefinitions []executionharness.ToolDefinition
 
 	Clock func() time.Time
 
@@ -79,6 +97,19 @@ func Open(service Service) (*Service, error) {
 		s.Authority == nil || s.HarnessHistory == nil || s.DescriptorStore == nil || s.NewModelExecutor == nil {
 		return nil, fmt.Errorf("%w: ceochat service dependencies are incomplete", ErrInvalidInput)
 	}
+	if s.Catalog == nil {
+		defaultCatalog := NewToolCatalog()
+		s.Catalog = defaultCatalog
+		if s.ToolDefinitions == nil {
+			s.ToolDefinitions = defaultCatalog.Definitions()
+		}
+	}
+	if s.ToolExecutor == nil {
+		return nil, fmt.Errorf("%w: ceochat service requires a tool executor", ErrInvalidInput)
+	}
+	if len(s.ToolDefinitions) == 0 {
+		return nil, fmt.Errorf("%w: ceochat service requires tool definitions", ErrInvalidInput)
+	}
 	if s.Clock == nil {
 		s.Clock = time.Now
 	}
@@ -90,9 +121,6 @@ func Open(service Service) (*Service, error) {
 	}
 	if s.MaxOutputTokens <= 0 {
 		s.MaxOutputTokens = defaultMaxOutputTokens
-	}
-	if len(s.Catalog.definitions) == 0 {
-		s.Catalog = NewToolCatalog()
 	}
 	return &s, nil
 }
@@ -330,7 +358,7 @@ func (s *Service) driveTurn(ctx context.Context, conversation Conversation, task
 			Digest:  snapshot.Digest,
 			Content: snapshot.Content,
 		},
-		Tools: s.Catalog.Definitions(),
+		Tools: s.ToolDefinitions,
 		Policy: executionharness.RunPolicy{
 			MaxTurns:           MaxTurns,
 			MaxToolCalls:       MaxToolCalls,

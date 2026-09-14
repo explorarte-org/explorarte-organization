@@ -17,10 +17,12 @@ import (
 	contextcompilerpostgres "github.com/Mireuz13/explorarte-organization/internal/contextcompiler/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/contextengine"
 	contextbootstrap "github.com/Mireuz13/explorarte-organization/internal/contextengine/bootstrap"
+	costledgerpostgres "github.com/Mireuz13/explorarte-organization/internal/costledger/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/executionharness"
 	"github.com/Mireuz13/explorarte-organization/internal/executionharness/modelruntimeadapter"
 	executionharnesspostgres "github.com/Mireuz13/explorarte-organization/internal/executionharness/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/executive/runtimeadapter"
+	memorybootstrap "github.com/Mireuz13/explorarte-organization/internal/memory/bootstrap"
 	modelbootstrap "github.com/Mireuz13/explorarte-organization/internal/modelruntime/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
@@ -122,6 +124,37 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 		return nil, fmt.Errorf("create ceochat conversation store: %w", err)
 	}
 
+	costLedger, err := costledgerpostgres.New(store)
+	if err != nil {
+		return nil, fmt.Errorf("create ceochat cost ledger reader: %w", err)
+	}
+	memoryRuntime, err := memorybootstrap.Open(cfg, store)
+	if err != nil {
+		return nil, fmt.Errorf("open ceochat memory runtime: %w", err)
+	}
+
+	// toolRegistry is the single, host-owned capability catalog every
+	// ceochat tool -- research (migrated, unchanged behavior) and the new
+	// read-only tasks/runs/finance/memory families -- is registered into.
+	// This is what RunSpec.Tools and the Harness's ToolCatalog/ToolExecutor
+	// both end up backed by: one registry, never a second tool framework.
+	toolRegistry := ceochat.NewToolRegistry()
+	if err = ceochat.RegisterResearchTools(toolRegistry, searchStore, searchStore); err != nil {
+		return nil, fmt.Errorf("register ceochat research tools: %w", err)
+	}
+	if err = ceochat.RegisterTaskTools(toolRegistry, taskService); err != nil {
+		return nil, fmt.Errorf("register ceochat task tools: %w", err)
+	}
+	if err = ceochat.RegisterRunTools(toolRegistry, organizationID, runDescriptorLister{store: harnessHistory}, harnessHistory, harnessHistory); err != nil {
+		return nil, fmt.Errorf("register ceochat run tools: %w", err)
+	}
+	if err = ceochat.RegisterFinanceTools(toolRegistry, organizationID, costLedger, costLedger); err != nil {
+		return nil, fmt.Errorf("register ceochat finance tools: %w", err)
+	}
+	if err = ceochat.RegisterMemoryTools(toolRegistry, organizationID, memoryRuntime.Manager); err != nil {
+		return nil, fmt.Errorf("register ceochat memory tools: %w", err)
+	}
+
 	service, err := ceochat.Open(ceochat.Service{
 		OrganizationID: organizationID,
 		Store:          conversationStore,
@@ -138,14 +171,41 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 		NewModelExecutor: func(config modelruntimeadapter.Config) (executionharness.ModelExecutor, error) {
 			return modelRuntime.NewHarnessModelExecutor(config)
 		},
-		Catalog:      ceochat.NewToolCatalog(),
-		ToolExecutor: ceochat.ToolExecutor{Topics: searchStore, Findings: searchStore},
+		Catalog:         ceochat.RegistryToolCatalog{Registry: toolRegistry},
+		ToolExecutor:    ceochat.RegistryToolExecutor{Registry: toolRegistry},
+		ToolDefinitions: toolRegistry.Definitions(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("open ceochat service: %w", err)
 	}
 	return &Runtime{Service: service, Tasks: taskService}, nil
 }
+
+// runDescriptorLister adapts *executionharnesspostgres.Store.ListRunDescriptors
+// to ceochat.RunLister. It is a type conversion only -- both
+// RunDescriptorSummary and RunDescriptorRecord embed the exact same
+// executionharness.RunDescriptor and add exactly the same CreatedAt field,
+// so this adapter reads through the canonical descriptor store and nothing
+// else.
+type runDescriptorLister struct {
+	store *executionharnesspostgres.Store
+}
+
+func (r runDescriptorLister) ListRunDescriptors(ctx context.Context, filter ceochat.RunDescriptorFilter) ([]ceochat.RunDescriptorRecord, error) {
+	summaries, err := r.store.ListRunDescriptors(ctx, executionharnesspostgres.RunDescriptorFilter{
+		TaskID: filter.TaskID, ExecutionProfileID: filter.ExecutionProfileID, Limit: filter.Limit, Offset: filter.Offset,
+	})
+	if err != nil {
+		return nil, err
+	}
+	records := make([]ceochat.RunDescriptorRecord, len(summaries))
+	for i, summary := range summaries {
+		records[i] = ceochat.RunDescriptorRecord{RunDescriptor: summary.RunDescriptor, CreatedAt: summary.CreatedAt}
+	}
+	return records, nil
+}
+
+var _ ceochat.RunLister = runDescriptorLister{}
 
 // principalResolver adapts runtimeadapter.RoleBoundPrincipalResolver's
 // int64 principal ID to the plain string ceochat.PrincipalResolver expects
