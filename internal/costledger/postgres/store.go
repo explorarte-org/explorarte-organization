@@ -139,8 +139,117 @@ ORDER BY calls.last_ledger_at DESC, calls.invocation_id DESC`, organizationID, p
 		return nil, err
 	}
 	defer rows.Close()
+	return scanCallBreakdownRows(rows, limit)
+}
 
-	values := make([]costledger.CallBreakdown, 0, limit)
+// ListCallBreakdownsFiltered is ListCallBreakdowns' exhaustive-and-filtered
+// sibling: every filter dimension (task, provider model, time range) is a
+// SQL WHERE/HAVING predicate applied BEFORE the page LIMIT, and the cursor
+// lets a caller walk every matching page in the same (last_ledger_at DESC,
+// invocation_id DESC) order -- so a caller that pages to hasMore==false has
+// seen every matching row exactly once, never silently missed one a
+// fixed-size recency window would have excluded.
+func (s *Store) ListCallBreakdownsFiltered(ctx context.Context, organizationID, providerID string, filter costledger.CallBreakdownFilter, cursor costledger.CallBreakdownCursor, limit int) ([]costledger.CallBreakdown, costledger.CallBreakdownCursor, bool, error) {
+	organizationID = strings.TrimSpace(organizationID)
+	providerID = strings.TrimSpace(providerID)
+	if organizationID == "" || providerID == "" || limit <= 0 || limit > 1000 {
+		return nil, costledger.CallBreakdownCursor{}, false, fmt.Errorf("%w: organization, provider, and limit between 1 and 1000 are required", costledger.ErrInvalidRequest)
+	}
+	var taskID *int64
+	if filter.TaskID > 0 {
+		taskID = &filter.TaskID
+	}
+	var providerModelID *string
+	if filter.ProviderModelID != "" {
+		providerModelID = &filter.ProviderModelID
+	}
+	// The zero CallBreakdownCursor means "start from the newest row": its
+	// InvocationID==0 is what distinguishes that from a real cursor, since
+	// LastLedgerAt's own zero value cannot be told apart from "no cursor"
+	// once it round-trips through a timestamptz column.
+	var cursorLedgerAt *time.Time
+	var cursorInvocationID *int64
+	if cursor.InvocationID > 0 {
+		cursorLedgerAt = &cursor.LastLedgerAt
+		cursorInvocationID = &cursor.InvocationID
+	}
+	// Fetch one row beyond the page so hasMore is known without a second
+	// query; the (limit+1)th row, if present, is dropped before returning.
+	rows, err := s.pool.Query(ctx, `
+WITH calls AS (
+    SELECT
+        e.provider_id AS wallet_provider_id,
+        e.invocation_id,
+        MAX(e.amount_usd_nanos) FILTER (WHERE e.kind='reserved') AS estimated_usd_nanos,
+        MAX(e.amount_usd_nanos) FILTER (WHERE e.kind='committed') AS charged_usd_nanos,
+        MAX(e.amount_usd_nanos) FILTER (WHERE e.kind='released') AS released_usd_nanos,
+        MAX(e.created_at) AS last_ledger_at
+    FROM provider_wallet_events e
+    JOIN model_invocations scoped
+      ON scoped.id=e.invocation_id
+     AND scoped.organization_id=$1
+    WHERE e.provider_id=$2
+      AND ($4::bigint IS NULL OR scoped.task_id=$4)
+      AND ($5::text IS NULL OR scoped.provider_model_id=$5)
+      AND ($6::timestamptz IS NULL OR scoped.created_at>=$6)
+      AND ($7::timestamptz IS NULL OR scoped.created_at<=$7)
+    GROUP BY e.provider_id, e.invocation_id
+    HAVING $8::timestamptz IS NULL
+        OR MAX(e.created_at) < $8
+        OR (MAX(e.created_at) = $8 AND e.invocation_id < $9)
+    ORDER BY MAX(e.created_at) DESC, e.invocation_id DESC
+    LIMIT $3
+)
+SELECT
+    calls.invocation_id,
+    invocation.organization_id,
+    invocation.task_id,
+    invocation.attempt_id,
+    invocation.dispatch_actor_role_id,
+    invocation.subject_role_id,
+    calls.wallet_provider_id,
+    invocation.provider_id,
+    invocation.provider_model_id,
+    invocation.status,
+    COALESCE(invocation.error_code,''),
+    calls.estimated_usd_nanos,
+    calls.charged_usd_nanos,
+    calls.released_usd_nanos,
+    COALESCE(usage.input_tokens,0),
+    COALESCE(usage.output_tokens,0),
+    COALESCE(usage.total_tokens,0),
+    COALESCE(usage.provider_reported,FALSE),
+    invocation.created_at,
+    invocation.terminal_at,
+    calls.last_ledger_at
+FROM calls
+JOIN model_invocations invocation ON invocation.id=calls.invocation_id
+LEFT JOIN model_invocation_usage usage ON usage.invocation_id=calls.invocation_id
+ORDER BY calls.last_ledger_at DESC, calls.invocation_id DESC`,
+		organizationID, providerID, limit+1, taskID, providerModelID, filter.Since, filter.Until,
+		cursorLedgerAt, cursorInvocationID)
+	if err != nil {
+		return nil, costledger.CallBreakdownCursor{}, false, err
+	}
+	defer rows.Close()
+	values, err := scanCallBreakdownRows(rows, limit+1)
+	if err != nil {
+		return nil, costledger.CallBreakdownCursor{}, false, err
+	}
+	hasMore := len(values) > limit
+	if hasMore {
+		values = values[:limit]
+	}
+	var next costledger.CallBreakdownCursor
+	if hasMore {
+		last := values[len(values)-1]
+		next = costledger.CallBreakdownCursor{LastLedgerAt: last.LastLedgerAt, InvocationID: last.InvocationID}
+	}
+	return values, next, hasMore, nil
+}
+
+func scanCallBreakdownRows(rows pgx.Rows, capacity int) ([]costledger.CallBreakdown, error) {
+	values := make([]costledger.CallBreakdown, 0, capacity)
 	for rows.Next() {
 		var value costledger.CallBreakdown
 		var estimated, charged, released *int64

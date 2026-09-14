@@ -472,6 +472,116 @@ UPDATE model_invocations SET status='succeeded',updated_at=$2,terminal_at=$2 WHE
 	}
 }
 
+// TestListCallBreakdownsFilteredAppliesFiltersInSQLAndPaginatesExhaustively
+// is a regression test for a PR review finding: ListCallBreakdowns alone
+// applies its LIMIT before any caller-side filter, so a caller filtering
+// its output by task/time can silently undercount when a match falls
+// outside the fetched window. This test seeds THREE real, real-money
+// committed calls -- two under one task, one under another -- and proves
+// ListCallBreakdownsFiltered (a) returns only the task-matching calls when
+// filtered by task_id, and (b) walking every page via its cursor (page
+// size 1) visits every one of the three calls exactly once, in both
+// filtered and unfiltered form, never silently dropping a row a fixed-size
+// window would have excluded.
+func TestListCallBreakdownsFilteredAppliesFiltersInSQLAndPaginatesExhaustively(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	fixture := openLedgerFixture(t, ctx)
+	ledger, err := costledgerpostgres.New(fixture.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Add(time.Second).Truncate(time.Microsecond)
+	if _, err := ledger.SetBalance(ctx, fixture.providerID, modelpricing.USDFromDollars(10), now); err != nil {
+		t.Fatal(err)
+	}
+
+	settle := func(invocationID int64, at time.Time) {
+		t.Helper()
+		if err := ledger.Reserve(ctx, fixture.providerID, invocationID, modelpricing.USDFromDollars(1), at); err != nil {
+			t.Fatal(err)
+		}
+		if err := ledger.Reconcile(ctx, fixture.providerID, invocationID, modelpricing.USDFromDollars(0.5), at.Add(time.Millisecond)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	taskOf := func(invocationID int64) int64 {
+		t.Helper()
+		var taskID int64
+		if err := fixture.store.Pool().QueryRow(ctx, `SELECT task_id FROM model_invocations WHERE id=$1`, invocationID).Scan(&taskID); err != nil {
+			t.Fatal(err)
+		}
+		return taskID
+	}
+
+	// insertInvocation creates a fresh task for every call, so each of
+	// these three invocations belongs to its OWN distinct task -- exactly
+	// what makes a task_id filter meaningful to test: it must match
+	// precisely one of the three, never zero, never more than one.
+	invocationA := fixture.insertInvocation(t, ctx)
+	settle(invocationA, now.Add(1*time.Second))
+	invocationB := fixture.insertInvocation(t, ctx)
+	settle(invocationB, now.Add(2*time.Second))
+	invocationC := fixture.insertInvocation(t, ctx)
+	settle(invocationC, now.Add(3*time.Second))
+
+	taskA := taskOf(invocationA)
+	taskB := taskOf(invocationB)
+	if taskA == taskB {
+		t.Fatalf("fixture invariant broken: expected distinct tasks, got %d for both", taskA)
+	}
+
+	// (a) SQL-side task filter: exactly invocation A comes back, never B
+	// or C's rows.
+	filtered, _, hasMore, err := ledger.ListCallBreakdownsFiltered(ctx, ledgerIntegrationOrg, fixture.providerID,
+		costledger.CallBreakdownFilter{TaskID: taskA}, costledger.CallBreakdownCursor{}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasMore {
+		t.Fatalf("want hasMore=false for a single page covering task A's one call")
+	}
+	if len(filtered) != 1 || filtered[0].InvocationID != invocationA {
+		t.Fatalf("task-filtered calls=%+v want exactly [invocation %d]", filtered, invocationA)
+	}
+	for _, call := range filtered {
+		if call.TaskID != taskA {
+			t.Fatalf("task filter leaked a call from another task: %+v", call)
+		}
+	}
+
+	// (b) exhaustive pagination, page size 1, unfiltered: every one of the
+	// 3 seeded calls must be visited exactly once across all pages.
+	seen := map[int64]bool{}
+	var cursor costledger.CallBreakdownCursor
+	for page := 0; ; page++ {
+		if page > 10 {
+			t.Fatal("pagination did not terminate: possible cursor bug")
+		}
+		rows, next, more, err := ledger.ListCallBreakdownsFiltered(ctx, ledgerIntegrationOrg, fixture.providerID,
+			costledger.CallBreakdownFilter{}, cursor, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != 1 {
+			t.Fatalf("page %d: rows=%+v want exactly 1 (page size 1)", page, rows)
+		}
+		if seen[rows[0].InvocationID] {
+			t.Fatalf("invocation %d visited twice across pages", rows[0].InvocationID)
+		}
+		seen[rows[0].InvocationID] = true
+		if !more {
+			break
+		}
+		cursor = next
+	}
+	for _, want := range []int64{invocationA, invocationB, invocationC} {
+		if !seen[want] {
+			t.Fatalf("invocation %d never visited across any page: seen=%v", want, seen)
+		}
+	}
+}
+
 func TestReserveFailsClosedOnInsufficientBalanceAndUnknownWallet(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

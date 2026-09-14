@@ -73,7 +73,42 @@ type ProgramScopedReserver interface {
 // separate from Ledger so the dispatch path depends only on wallet mutations,
 // not on reporting queries.
 type CallReader interface {
+	// ListCallBreakdowns returns a provider's most recent up-to-limit calls,
+	// newest first. It is a bounded RECENCY WINDOW, not an exhaustive
+	// historical read: a caller that needs every call matching a filter
+	// (e.g. a cost aggregate) must use ListCallBreakdownsFiltered instead --
+	// applying a filter to this method's output after the fact can silently
+	// under-count, because rows outside the window are never fetched at all.
 	ListCallBreakdowns(ctx context.Context, organizationID, providerID string, limit int) ([]CallBreakdown, error)
+	// ListCallBreakdownsFiltered returns one PAGE of calls matching filter,
+	// starting strictly after cursor (the zero CallBreakdownCursor starts
+	// from the newest row), with every filter applied in SQL before the
+	// page LIMIT -- so, unlike ListCallBreakdowns, a caller paging through
+	// every page via the returned cursor is guaranteed to see every
+	// matching row exactly once, never silently missing older rows a
+	// fixed-size window would have excluded. hasMore reports whether at
+	// least one further page exists; nextCursor, when hasMore is true, is
+	// the cursor for that next page.
+	ListCallBreakdownsFiltered(ctx context.Context, organizationID, providerID string, filter CallBreakdownFilter, cursor CallBreakdownCursor, limit int) (calls []CallBreakdown, nextCursor CallBreakdownCursor, hasMore bool, err error)
+}
+
+// CallBreakdownFilter narrows a ListCallBreakdownsFiltered page. A zero
+// value (TaskID==0, ProviderModelID=="", Since/Until nil) applies no
+// narrowing on that dimension.
+type CallBreakdownFilter struct {
+	TaskID          int64
+	ProviderModelID string
+	Since           *time.Time
+	Until           *time.Time
+}
+
+// CallBreakdownCursor is an opaque keyset position in the same
+// (last_ledger_at DESC, invocation_id DESC) order ListCallBreakdowns and
+// ListCallBreakdownsFiltered both return rows in. The zero value means
+// "start from the newest row."
+type CallBreakdownCursor struct {
+	LastLedgerAt time.Time
+	InvocationID int64
 }
 
 // PendingReconciliationMarker is an optional capability of a Ledger backend:

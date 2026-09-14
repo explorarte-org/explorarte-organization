@@ -13,9 +13,18 @@ import (
 )
 
 const (
-	ToolFinanceGetCostSummary        = "finance.get_cost_summary"
-	financeGetCostSummaryVersion     = "v1"
-	financeCallBreakdownScanPerCall  = 500
+	ToolFinanceGetCostSummary    = "finance.get_cost_summary"
+	financeGetCostSummaryVersion = "v1"
+
+	// financeCallBreakdownPageSize is the per-page fetch size used to walk
+	// ListCallBreakdownsFiltered exhaustively. financeCallBreakdownMaxPages
+	// bounds how many pages one provider is scanned for before this handler
+	// gives up and reports the result as truncated=true -- a real, honest
+	// signal, never a silently incomplete total. At 500 rows/page x 20
+	// pages, a provider needs more than 10,000 matching calls before this
+	// ever triggers.
+	financeCallBreakdownPageSize     = 500
+	financeCallBreakdownMaxPages     = 20
 	financeCallBreakdownMaxProviders = 50
 )
 
@@ -38,8 +47,7 @@ var financeGetCostSummarySchema = json.RawMessage(`{
     "wallet_provider_id": {"type": "string", "maxLength": 240},
     "provider_model_id": {"type": "string", "maxLength": 240},
     "since": {"type": "string", "format": "date-time"},
-    "until": {"type": "string", "format": "date-time"},
-    "limit": {"type": "integer", "minimum": 1, "maximum": 500}
+    "until": {"type": "string", "format": "date-time"}
   }
 }`)
 
@@ -49,7 +57,6 @@ type financeGetCostSummaryArgs struct {
 	ProviderModelID  *string `json:"provider_model_id,omitempty"`
 	Since            *string `json:"since,omitempty"`
 	Until            *string `json:"until,omitempty"`
-	Limit            *int    `json:"limit,omitempty"`
 }
 
 type costSummaryView struct {
@@ -59,17 +66,25 @@ type costSummaryView struct {
 	// EstimatedUnsettledUSD is money reserved but not yet committed
 	// (Settlement=reserved): a forecast, explicitly labeled as such, never
 	// merged into SettledUSD.
-	EstimatedUnsettledUSD string          `json:"estimated_unsettled_usd"`
-	CallsSettled          int             `json:"calls_settled"`
-	CallsUnsettled        int             `json:"calls_unsettled"`
-	CallsExcluded         int             `json:"calls_excluded,omitempty"`
-	ByProvider            []providerSpend `json:"by_provider"`
+	EstimatedUnsettledUSD string `json:"estimated_unsettled_usd"`
+	CallsSettled          int    `json:"calls_settled"`
+	CallsUnsettled        int    `json:"calls_unsettled"`
+	CallsExcluded         int    `json:"calls_excluded,omitempty"`
+	// Truncated is true only when a provider had more matching calls than
+	// this handler's own safety cap (financeCallBreakdownMaxPages pages)
+	// allowed it to scan exhaustively. When true, SettledUSD/
+	// EstimatedUnsettledUSD are a partial sum over what WAS scanned, and
+	// the caller must not present them as a complete total -- this field
+	// exists specifically so that never happens silently.
+	Truncated  bool            `json:"truncated"`
+	ByProvider []providerSpend `json:"by_provider"`
 }
 
 type providerSpend struct {
 	WalletProviderID string `json:"wallet_provider_id"`
 	SettledUSD       string `json:"settled_usd"`
 	EstimatedUSD     string `json:"estimated_unsettled_usd"`
+	Truncated        bool   `json:"truncated,omitempty"`
 }
 
 func decodeFinanceGetCostSummaryArgs(body json.RawMessage) (financeGetCostSummaryArgs, error) {
@@ -82,9 +97,6 @@ func decodeFinanceGetCostSummaryArgs(body json.RawMessage) (financeGetCostSummar
 	}
 	if args.TaskID != nil && *args.TaskID <= 0 {
 		return financeGetCostSummaryArgs{}, fmt.Errorf("%w: task_id must be positive", ErrInvalidInput)
-	}
-	if args.Limit != nil && (*args.Limit < 1 || *args.Limit > financeCallBreakdownScanPerCall) {
-		return financeGetCostSummaryArgs{}, fmt.Errorf("%w: limit must be between 1 and %d", ErrInvalidInput, financeCallBreakdownScanPerCall)
 	}
 	since, err := parseOptionalRFC3339(args.Since)
 	if err != nil {
@@ -111,20 +123,26 @@ func parseOptionalRFC3339(raw *string) (*time.Time, error) {
 	return &parsed, nil
 }
 
-// registerFinanceTools adds finance.get_cost_summary. It reads exclusively
-// through costledger.CallReader.ListCallBreakdowns -- the canonical join of
-// the wallet ledger to the durable model invocation -- iterating the
-// organization's provisioned providers (ProvisionedProviderIDs) rather than
-// scanning every provider ID that has ever existed. Every filter
-// (task_id/wallet_provider_id/provider_model_id/since/until) is applied
-// client-side over that canonical read, never as a second, ad-hoc query
-// against the ledger tables.
+// RegisterFinanceTools adds finance.get_cost_summary. It reads exclusively
+// through costledger.CallReader.ListCallBreakdownsFiltered -- the
+// canonical join of the wallet ledger to the durable model invocation,
+// with every filter (task/provider model/time range) applied in SQL
+// before any page boundary -- iterating the organization's provisioned
+// providers (ProvisionedProviderIDs) rather than scanning every provider ID
+// that has ever existed. A provider is walked page by page until
+// hasMore==false (exhaustive for that filter) or a safety page cap is hit,
+// in which case the result is explicitly marked truncated rather than
+// silently presented as complete. This deliberately does NOT use the
+// plain ListCallBreakdowns (a bounded, most-recent-N read meant for
+// recency views like `orgctl cost calls`): applying a task/time filter to
+// that method's fixed-size window can silently exclude older matching
+// rows, understating real spend without any signal that it happened.
 func RegisterFinanceTools(registry *ToolRegistry, organizationID string, providers ProvisionedProviderLister, calls costledger.CallReader) error {
 	return registry.Register(ToolDescriptor{
 		ID: ToolFinanceGetCostSummary, Version: financeGetCostSummaryVersion,
-		Description: "Summarize settled and estimated-unsettled provider spend, optionally filtered by task, provider, model, or time range.",
+		Description: "Summarize settled and estimated-unsettled provider spend, optionally filtered by task, provider, model, or time range. Exhaustive over the filter unless truncated=true.",
 		InputSchema: financeGetCostSummarySchema, Access: AccessReadOnly, RequiredRole: CEORoleID,
-		Limits:    ToolLimits{MaxResultBytes: 32 << 10, Timeout: 10 * time.Second},
+		Limits:    ToolLimits{MaxResultBytes: 32 << 10, Timeout: 20 * time.Second},
 		DataClass: DataClassInternal,
 	}, func(body json.RawMessage) error { _, err := decodeFinanceGetCostSummaryArgs(body); return err },
 		func(ctx context.Context, _ string, body json.RawMessage) (json.RawMessage, error) {
@@ -134,9 +152,13 @@ func RegisterFinanceTools(registry *ToolRegistry, organizationID string, provide
 			}
 			since, _ := parseOptionalRFC3339(args.Since)
 			until, _ := parseOptionalRFC3339(args.Until)
-			scanLimit := financeCallBreakdownScanPerCall
-			if args.Limit != nil {
-				scanLimit = *args.Limit
+
+			filter := costledger.CallBreakdownFilter{Since: since, Until: until}
+			if args.TaskID != nil {
+				filter.TaskID = *args.TaskID
+			}
+			if args.ProviderModelID != nil {
+				filter.ProviderModelID = *args.ProviderModelID
 			}
 
 			provisioned, err := providers.ProvisionedProviderIDs(ctx)
@@ -154,54 +176,50 @@ func RegisterFinanceTools(registry *ToolRegistry, organizationID string, provide
 
 			var settled, estimated modelpricing.USDNanos
 			var callsSettled, callsUnsettled, callsExcluded int
+			anyTruncated := false
 			byProvider := make(map[string]*providerSpendAccumulator)
 
 			for _, providerID := range providerIDs {
 				if args.WalletProviderID != nil && *args.WalletProviderID != providerID {
 					continue
 				}
-				breakdowns, err := calls.ListCallBreakdowns(ctx, organizationID, providerID, scanLimit)
-				if err != nil {
-					return nil, err
+				accumulator := &providerSpendAccumulator{}
+				var cursor costledger.CallBreakdownCursor
+				for page := 0; ; page++ {
+					if page >= financeCallBreakdownMaxPages {
+						accumulator.truncated = true
+						anyTruncated = true
+						break
+					}
+					breakdowns, next, hasMore, err := calls.ListCallBreakdownsFiltered(ctx, organizationID, providerID, filter, cursor, financeCallBreakdownPageSize)
+					if err != nil {
+						return nil, err
+					}
+					for _, call := range breakdowns {
+						switch call.Settlement {
+						case costledger.SettlementCommitted:
+							settled += call.ChargedUSD
+							accumulator.settled += call.ChargedUSD
+							callsSettled++
+						case costledger.SettlementReserved:
+							estimated += call.EstimatedUSD
+							accumulator.estimated += call.EstimatedUSD
+							callsUnsettled++
+						default:
+							// Released reservations are neither settled spend
+							// nor a live estimate -- correctly excluded from
+							// both totals rather than silently counted as
+							// either.
+							callsExcluded++
+						}
+					}
+					if !hasMore {
+						break
+					}
+					cursor = next
 				}
-				for _, call := range breakdowns {
-					if args.TaskID != nil && call.TaskID != *args.TaskID {
-						callsExcluded++
-						continue
-					}
-					if args.ProviderModelID != nil && call.ProviderModelID != *args.ProviderModelID {
-						callsExcluded++
-						continue
-					}
-					if since != nil && call.InvocationCreatedAt.Before(*since) {
-						callsExcluded++
-						continue
-					}
-					if until != nil && call.InvocationCreatedAt.After(*until) {
-						callsExcluded++
-						continue
-					}
-					accumulator, ok := byProvider[providerID]
-					if !ok {
-						accumulator = &providerSpendAccumulator{}
-						byProvider[providerID] = accumulator
-					}
-					switch call.Settlement {
-					case costledger.SettlementCommitted:
-						settled += call.ChargedUSD
-						accumulator.settled += call.ChargedUSD
-						callsSettled++
-					case costledger.SettlementReserved:
-						estimated += call.EstimatedUSD
-						accumulator.estimated += call.EstimatedUSD
-						callsUnsettled++
-					default:
-						// Released reservations are neither settled spend
-						// nor a live estimate -- they are correctly excluded
-						// from both totals rather than silently counted as
-						// either.
-						callsExcluded++
-					}
+				if accumulator.settled != 0 || accumulator.estimated != 0 || accumulator.truncated {
+					byProvider[providerID] = accumulator
 				}
 			}
 
@@ -211,6 +229,7 @@ func RegisterFinanceTools(registry *ToolRegistry, organizationID string, provide
 					WalletProviderID: providerID,
 					SettledUSD:       accumulator.settled.String(),
 					EstimatedUSD:     accumulator.estimated.String(),
+					Truncated:        accumulator.truncated,
 				})
 			}
 			sort.Slice(providerViews, func(i, j int) bool { return providerViews[i].WalletProviderID < providerViews[j].WalletProviderID })
@@ -218,7 +237,7 @@ func RegisterFinanceTools(registry *ToolRegistry, organizationID string, provide
 			return json.Marshal(costSummaryView{
 				SettledUSD: settled.String(), EstimatedUnsettledUSD: estimated.String(),
 				CallsSettled: callsSettled, CallsUnsettled: callsUnsettled, CallsExcluded: callsExcluded,
-				ByProvider: providerViews,
+				Truncated: anyTruncated, ByProvider: providerViews,
 			})
 		})
 }
@@ -226,6 +245,7 @@ func RegisterFinanceTools(registry *ToolRegistry, organizationID string, provide
 type providerSpendAccumulator struct {
 	settled   modelpricing.USDNanos
 	estimated modelpricing.USDNanos
+	truncated bool
 }
 
 // ProvisionedProviderLister is the narrow seam finance.get_cost_summary
