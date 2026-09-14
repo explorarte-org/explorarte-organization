@@ -743,3 +743,103 @@ func (m *singleToolProbeModel) Invoke(_ context.Context, _ executionharness.RunI
 		return executionharness.ModelResult{}, fmt.Errorf("unexpected turn %d", m.calls)
 	}
 }
+
+// finalizeFailsOnce wraps a real ceochat.TaskCoordinator and fails exactly
+// the FIRST FinalizeTask call, simulating a crash AFTER the assistant
+// message would already have been durably appended (Send now appends it
+// before calling RecordAttemptResult/FinalizeTask -- see service.go) but
+// BEFORE the task itself reaches its terminal Completed state. Every other
+// method, including later FinalizeTask calls, delegates to the real
+// coordinator untouched.
+type finalizeFailsOnce struct {
+	ceochat.TaskCoordinator
+	finalizeCalls int
+}
+
+func (f *finalizeFailsOnce) FinalizeTask(ctx context.Context, command tasks.FinalizeCommand) (tasks.Task, error) {
+	f.finalizeCalls++
+	if f.finalizeCalls == 1 {
+		return tasks.Task{}, errors.New("simulated crash: process died before FinalizeTask committed")
+	}
+	return f.TaskCoordinator.FinalizeTask(ctx, command)
+}
+
+// TestCEOChatCrashBetweenAppendAndFinalizeNeverLosesTheAnswer is a
+// regression test for the exact crash window a PR review identified: if
+// the process dies between recording the assistant's answer and finalizing
+// the task, the answer must not be lost. This test simulates that crash by
+// failing the real FinalizeTask call once, then proves (1) the assistant
+// message is ALREADY durable despite Send returning an error, and (2) a
+// retry with the identical idempotency key recovers it via Send's own
+// FindAssistantReply fast path -- completed, Reused=true, no task-state
+// dependency -- rather than the turn being permanently unrecoverable.
+func TestCEOChatCrashBetweenAppendAndFinalizeNeverLosesTheAnswer(t *testing.T) {
+	f := newChatFixture(t)
+	defer f.cleanup()
+	ctx := context.Background()
+
+	model := &scriptedModel{}
+	base := *f.runtime.Service
+	base.NewModelExecutor = func(modelruntimeadapter.Config) (executionharness.ModelExecutor, error) { return model, nil }
+	base.ToolExecutor = ceochat.ToolExecutor{Topics: fakeTopicsOnly{}, Findings: &fakeFindingsOnly{}}
+	wrappedTasks := &finalizeFailsOnce{TaskCoordinator: base.Tasks}
+	base.Tasks = wrappedTasks
+	service, err := ceochat.Open(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	conversation, err := service.CreateConversation(ctx, ceochat.CreateConversationRequest{ActorRoleID: "empresa/human", OwnerRoleID: "empresa/human"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.Send(ctx, ceochat.SendRequest{
+		ConversationID: conversation.ID, ActorRoleID: "empresa/human",
+		IdempotencyKey: "crash-window-turn", Content: "¿Qué hallazgos recientes tenemos?",
+	})
+	if err == nil {
+		t.Fatal("want the simulated FinalizeTask failure to surface as an error")
+	}
+	if wrappedTasks.finalizeCalls != 1 {
+		t.Fatalf("finalizeCalls=%d want exactly 1 before this assertion point", wrappedTasks.finalizeCalls)
+	}
+
+	// The assistant's answer must ALREADY be durable, despite Send having
+	// just returned an error -- this is the property the reordering fixes.
+	history, err := service.History(ctx, ceochat.HistoryRequest{ConversationID: conversation.ID, ActorRoleID: "empresa/human"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundAssistant := false
+	for _, message := range history {
+		if message.Role == ceochat.MessageAssistant {
+			foundAssistant = true
+		}
+	}
+	if !foundAssistant {
+		t.Fatal("the assistant's answer must be durable even though FinalizeTask failed afterward")
+	}
+
+	// A retry with the SAME idempotency key must recover via
+	// FindAssistantReply, without needing the task to have reached a
+	// terminal state.
+	retry, err := service.Send(ctx, ceochat.SendRequest{
+		ConversationID: conversation.ID, ActorRoleID: "empresa/human",
+		IdempotencyKey: "crash-window-turn", Content: "¿Qué hallazgos recientes tenemos?",
+	})
+	if err != nil {
+		t.Fatalf("retry after the crash window must recover the answer, got error: %v", err)
+	}
+	if !retry.Reused {
+		t.Fatal("retry must report Reused=true: the answer was already durable")
+	}
+	if retry.Outcome != ceochat.RunOutcomeCompleted {
+		t.Fatalf("retry outcome=%s want completed", retry.Outcome)
+	}
+	if retry.AssistantMessage == nil {
+		t.Fatal("retry must return the already-durable assistant message")
+	}
+	if model.calls != 2 {
+		t.Fatalf("the retry must not re-invoke the model: calls=%d want 2 (from the original turn only)", model.calls)
+	}
+}

@@ -393,18 +393,21 @@ func (s *Service) driveTurn(ctx context.Context, conversation Conversation, task
 		return SendResult{Reused: isReplay, Outcome: RunOutcomeIncomplete, OwnerMessage: ownerMessage, TurnsUsed: result.TurnsUsed, ToolCallsUsed: result.ToolCallsUsed}, nil
 	}
 
-	if _, err = s.Tasks.RecordAttemptResult(ctx, tasks.RecordAttemptResultCommand{
-		LeaseCommand: tasks.LeaseCommand{TaskID: claimed.Task.ID, AttemptID: claimed.Attempt.ID, LeaseToken: claimed.LeaseToken, ActorID: principalID},
-		Result:       tasks.AttemptResult{Outcome: tasks.OutcomeSucceeded, Summary: "ceo chat turn answered"},
-	}); err != nil {
-		return SendResult{}, fmt.Errorf("record ceochat turn result: %w", err)
-	}
-	if _, err = s.Tasks.FinalizeTask(ctx, tasks.FinalizeCommand{
-		TaskID: claimed.Task.ID, Outcome: tasks.FinalCompleted, ActorType: "service", ActorID: ceoChatActorID,
-	}); err != nil {
-		return SendResult{}, fmt.Errorf("finalize ceochat turn: %w", err)
-	}
-
+	// The assistant message is appended BEFORE the task is recorded/
+	// finalized, deliberately. If the process crashes between this append
+	// and the two Task Engine calls below, the task is left non-terminal
+	// (Running, lease eventually expiring) -- a pre-existing, understood
+	// failure mode the Task Engine's own reclaim path already handles for
+	// any mid-run crash, not something new this ordering introduces. What
+	// this ordering PREVENTS is the answer itself ever being computed and
+	// then lost: a retry with the same idempotency key finds this message
+	// via Send's own FindAssistantReply check (which runs before driveTurn
+	// is ever reached) and returns it directly, without touching task
+	// state at all. The reverse order -- finalize, then append -- has no
+	// equivalent recovery: a crash between them would leave the task
+	// permanently Completed with no reply and no way to derive one, since
+	// driveTurn's terminal-status branch has no route back into a task
+	// that already finished without a durable answer.
 	assistantMessage, err := s.Store.AppendMessage(ctx, Message{
 		ConversationID: conversation.ID,
 		OrganizationID: s.OrganizationID,
@@ -419,6 +422,19 @@ func (s *Service) driveTurn(ctx context.Context, conversation Conversation, task
 	if err != nil {
 		return SendResult{}, fmt.Errorf("persist ceochat assistant message: %w", err)
 	}
+
+	if _, err = s.Tasks.RecordAttemptResult(ctx, tasks.RecordAttemptResultCommand{
+		LeaseCommand: tasks.LeaseCommand{TaskID: claimed.Task.ID, AttemptID: claimed.Attempt.ID, LeaseToken: claimed.LeaseToken, ActorID: principalID},
+		Result:       tasks.AttemptResult{Outcome: tasks.OutcomeSucceeded, Summary: "ceo chat turn answered"},
+	}); err != nil {
+		return SendResult{}, fmt.Errorf("record ceochat turn result: %w", err)
+	}
+	if _, err = s.Tasks.FinalizeTask(ctx, tasks.FinalizeCommand{
+		TaskID: claimed.Task.ID, Outcome: tasks.FinalCompleted, ActorType: "service", ActorID: ceoChatActorID,
+	}); err != nil {
+		return SendResult{}, fmt.Errorf("finalize ceochat turn: %w", err)
+	}
+
 	return SendResult{
 		Reused: isReplay, Outcome: RunOutcomeCompleted, OwnerMessage: ownerMessage, AssistantMessage: &assistantMessage,
 		TurnsUsed: result.TurnsUsed, ToolCallsUsed: result.ToolCallsUsed,
