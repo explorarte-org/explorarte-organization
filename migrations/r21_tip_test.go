@@ -39,7 +39,10 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 	// INTEGRATION_BASELINE_FAILURES_FORENSICS_V1's own remediation, the
 	// exact same class of gap 61 (seed_xai_wallet) closed: pricing without
 	// a provider_wallets row.
-	const wantCount = 73
+	// 74 (create_ceo_chat) is
+	// CEO_CONVERSATIONAL_TOOL_RUNTIME_FOUNDATION_V1's durable owner<->CEO
+	// conversation/message persistence.
+	const wantCount = 74
 	if len(loaded) != wantCount {
 		t.Fatalf("migration count=%d want %d", len(loaded), wantCount)
 	}
@@ -122,6 +125,8 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		72: "model_routing_capacity_state",
 		// INTEGRATION_BASELINE_FAILURES_FORENSICS_V1 / CLOSURE_FIX_V1:
 		73: "seed_mistral_zero_wallet_anchor",
+		// CEO_CONVERSATIONAL_TOOL_RUNTIME_FOUNDATION_V1:
+		74: "create_ceo_chat",
 	}
 	byVersion := make(map[int64]string, len(loaded))
 	for _, migration := range loaded {

@@ -60,6 +60,8 @@ func runExecutive(args []string, stdout, stderr io.Writer) int {
 		return runExecutiveReconcileGating(args[1:], stdout, stderr)
 	case "smoke":
 		return runExecutiveSmoke(args[1:], stdout, stderr)
+	case "chat":
+		return runExecutiveChat(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printExecutiveUsage(stdout)
 		return exitOK
@@ -420,5 +422,8 @@ commands:
   status ROOT_TASK_ID [--json]
   resume ROOT_TASK_ID [--json]
   worker run [--poll 1s] [--error-backoff 3s] [--batch 16]
-  reconcile-gating [--limit 100] [--json]`)
+  reconcile-gating [--limit 100] [--json]
+  chat create --actor-role empresa/human [--json]
+  chat send CONVERSATION_ID --actor-role empresa/human --idempotency-key KEY [--file message.txt] [--json]
+  chat history CONVERSATION_ID [--limit 32] [--json]`)
 }
