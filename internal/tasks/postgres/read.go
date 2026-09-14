@@ -124,6 +124,26 @@ func (s *Store) ListAttempts(ctx context.Context, taskID int64) ([]tasks.Attempt
 	return values, mapError(rows.Err())
 }
 
+func (s *Store) ListAttemptsPage(ctx context.Context, taskID int64, limit, offset int) ([]tasks.Attempt, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id,task_id,ordinal,state,worker_id,result_summary,failure_code,retryable,leased_at,started_at,finished_at,created_at,updated_at
+		FROM task_attempts WHERE task_id=$1 ORDER BY ordinal LIMIT $2 OFFSET $3
+	`, taskID, limit, offset)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	defer rows.Close()
+	values := make([]tasks.Attempt, 0, limit)
+	for rows.Next() {
+		value, scanErr := scanAttempt(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		values = append(values, value)
+	}
+	return values, mapError(rows.Err())
+}
+
 func (s *Store) ListDeadLetters(ctx context.Context, limit int) ([]tasks.DeadLetter, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id,task_id,attempt_id,reason_code,reason,attempt_count,created_at,redriven_at,redrive_task_id

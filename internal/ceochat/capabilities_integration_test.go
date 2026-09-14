@@ -51,8 +51,8 @@ func (c *countingTaskReader) ListTasks(ctx context.Context, filter tasks.TaskFil
 func (c *countingTaskReader) GetTask(ctx context.Context, id int64) (tasks.TaskDetail, error) {
 	return c.real.GetTask(ctx, id)
 }
-func (c *countingTaskReader) ListAttempts(ctx context.Context, taskID int64) ([]tasks.Attempt, error) {
-	return c.real.ListAttempts(ctx, taskID)
+func (c *countingTaskReader) ListAttemptsPage(ctx context.Context, taskID int64, limit, offset int) ([]tasks.Attempt, error) {
+	return c.real.ListAttemptsPage(ctx, taskID, limit, offset)
 }
 
 // withTaskToolOnly composes a *ceochat.Service identical to the fixture's

@@ -47,8 +47,16 @@ func (f *fakeTaskReader) GetTask(_ context.Context, id int64) (tasks.TaskDetail,
 	return tasks.TaskDetail{Task: tasks.Task{ID: id, Title: "t", Status: tasks.StatusReady, AssignedRoleID: CEORoleID}}, nil
 }
 
-func (f *fakeTaskReader) ListAttempts(_ context.Context, _ int64) ([]tasks.Attempt, error) {
-	return f.attempts, nil
+func (f *fakeTaskReader) ListAttemptsPage(_ context.Context, _ int64, limit, offset int) ([]tasks.Attempt, error) {
+	start := offset
+	if start > len(f.attempts) {
+		start = len(f.attempts)
+	}
+	end := start + limit
+	if end > len(f.attempts) {
+		end = len(f.attempts)
+	}
+	return f.attempts[start:end], nil
 }
 
 func newFakeTasks(n int) []tasks.Task {

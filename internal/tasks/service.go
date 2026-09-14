@@ -155,6 +155,35 @@ func (s *Service) ListAttempts(ctx context.Context, taskID int64) ([]Attempt, er
 	return s.persistence.ListAttempts(ctx, taskID)
 }
 
+// attemptPager is a narrow, optional capability check: ListAttemptsPage
+// does not widen the shared Persistence/TaskReader interfaces (which
+// several other packages -- engineeringmission, programbudget,
+// executive/runtimeadapter -- embed or fake well beyond this one paginated
+// read's own caller) just to add a read used only by the CEO chat
+// capability layer. *postgres.Store implements it structurally; any other
+// Persistence backend that does not is told so explicitly, never silently
+// given an unbounded read instead.
+type attemptPager interface {
+	ListAttemptsPage(ctx context.Context, taskID int64, limit, offset int) ([]Attempt, error)
+}
+
+func (s *Service) ListAttemptsPage(ctx context.Context, taskID int64, limit, offset int) ([]Attempt, error) {
+	if taskID <= 0 {
+		return nil, fmt.Errorf("%w: task ID must be positive", ErrInvalidInput)
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 || offset < 0 {
+		return nil, fmt.Errorf("%w: attempt page limit or offset is invalid", ErrInvalidInput)
+	}
+	pager, ok := s.persistence.(attemptPager)
+	if !ok {
+		return nil, fmt.Errorf("%w: this persistence backend does not support paginated attempt reads", ErrInvalidInput)
+	}
+	return pager.ListAttemptsPage(ctx, taskID, limit, offset)
+}
+
 func (s *Service) ListDeadLetters(ctx context.Context, limit int) ([]DeadLetter, error) {
 	if limit == 0 {
 		limit = 100

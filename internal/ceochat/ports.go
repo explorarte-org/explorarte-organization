@@ -96,7 +96,10 @@ type TaskCoordinator interface {
 type TaskReader interface {
 	ListTasks(ctx context.Context, filter tasks.TaskFilter) ([]tasks.Task, error)
 	GetTask(ctx context.Context, id int64) (tasks.TaskDetail, error)
-	ListAttempts(ctx context.Context, taskID int64) ([]tasks.Attempt, error)
+	// ListAttemptsPage returns a real, server-side-bounded page (SQL
+	// LIMIT/OFFSET, not "fetch everything, then slice") -- see
+	// tasks.Service.ListAttemptsPage.
+	ListAttemptsPage(ctx context.Context, taskID int64, limit, offset int) ([]tasks.Attempt, error)
 }
 
 // RunDescriptorRecord is the read-only projection of one Harness run's

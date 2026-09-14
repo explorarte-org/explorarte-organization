@@ -49,7 +49,8 @@ var tasksListAttemptsSchema = json.RawMessage(`{
   "required": ["task_id"],
   "properties": {
     "task_id": {"type": "integer", "minimum": 1},
-    "limit": {"type": "integer", "minimum": 1, "maximum": 20}
+    "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+    "cursor": {"type": "string", "maxLength": 400}
   }
 }`)
 
@@ -65,8 +66,9 @@ type taskIDArgs struct {
 }
 
 type tasksListAttemptsArgs struct {
-	TaskID int64 `json:"task_id"`
-	Limit  *int  `json:"limit,omitempty"`
+	TaskID int64   `json:"task_id"`
+	Limit  *int    `json:"limit,omitempty"`
+	Cursor *string `json:"cursor,omitempty"`
 }
 
 // taskListView and friends are host-designed projections: enough for the
@@ -169,6 +171,11 @@ func decodeTasksListAttemptsArgs(body json.RawMessage) (tasksListAttemptsArgs, e
 	}
 	if args.Limit != nil && (*args.Limit < 1 || *args.Limit > maxTaskAttemptsRows) {
 		return tasksListAttemptsArgs{}, fmt.Errorf("%w: limit must be between 1 and %d", ErrInvalidInput, maxTaskAttemptsRows)
+	}
+	if args.Cursor != nil {
+		if _, err := decodeOffsetCursor(*args.Cursor); err != nil {
+			return tasksListAttemptsArgs{}, err
+		}
 	}
 	return args, nil
 }
@@ -283,16 +290,24 @@ func RegisterTaskTools(registry *ToolRegistry, reader TaskReader) error {
 			if err != nil {
 				return nil, err
 			}
-			attempts, err := reader.ListAttempts(ctx, args.TaskID)
-			if err != nil {
-				return nil, err
+			offset := 0
+			if args.Cursor != nil {
+				offset, err = decodeOffsetCursor(*args.Cursor)
+				if err != nil {
+					return nil, err
+				}
 			}
 			limit := maxTaskAttemptsRows
 			if args.Limit != nil {
 				limit = *args.Limit
 			}
-			if len(attempts) > limit {
-				attempts = attempts[:limit]
+			// A real SQL LIMIT/OFFSET (tasks.Service.ListAttemptsPage) --
+			// never "fetch every attempt this task has ever had, then
+			// slice," which would be an unbounded read for a task with a
+			// pathologically long retry history.
+			attempts, err := reader.ListAttemptsPage(ctx, args.TaskID, limit, offset)
+			if err != nil {
+				return nil, err
 			}
 			views := make([]taskAttemptView, 0, len(attempts))
 			for _, attempt := range attempts {
@@ -308,8 +323,13 @@ func RegisterTaskTools(registry *ToolRegistry, reader TaskReader) error {
 				}
 				views = append(views, view)
 			}
+			nextCursor := ""
+			if len(attempts) == limit {
+				nextCursor = encodeOffsetCursor(offset + limit)
+			}
 			return json.Marshal(struct {
-				Attempts []taskAttemptView `json:"attempts"`
-			}{Attempts: views})
+				Attempts   []taskAttemptView `json:"attempts"`
+				NextCursor string            `json:"next_cursor,omitempty"`
+			}{Attempts: views, NextCursor: nextCursor})
 		})
 }
