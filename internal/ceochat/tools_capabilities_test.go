@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/Mireuz13/explorarte-organization/internal/costledger"
 	"github.com/Mireuz13/explorarte-organization/internal/executionharness"
+	"github.com/Mireuz13/explorarte-organization/internal/modelpricing"
 	"github.com/Mireuz13/explorarte-organization/internal/tasks"
 )
 
@@ -269,5 +272,98 @@ func TestToolDescriptorValidateRequiresMaxResultBytesRegardlessOfMaxRows(t *test
 		})
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("err=%v want ErrInvalidInput (MaxRows>0 must not waive the MaxResultBytes>0 requirement)", err)
+	}
+}
+
+// fakeProvisionedProviders is a controllable ProvisionedProviderLister used
+// only to exercise finance.get_cost_summary's own provider-selection logic
+// (the enumerate-then-cap path vs. the named-provider bypass) without real
+// Postgres or 51 real seeded providers.
+type fakeProvisionedProviders struct{ ids map[string]bool }
+
+func (f fakeProvisionedProviders) ProvisionedProviderIDs(context.Context) (map[string]bool, error) {
+	return f.ids, nil
+}
+
+// fakeCallReader answers ListCallBreakdownsFiltered from an in-memory,
+// per-provider table of calls, ignoring every filter dimension except
+// providerID (this test is about provider SELECTION, not row filtering --
+// that SQL-level behavior is proven separately against real Postgres).
+// ListCallBreakdowns is never called by finance.get_cost_summary and is
+// implemented only to satisfy costledger.CallReader.
+type fakeCallReader struct {
+	callsByProvider map[string][]costledger.CallBreakdown
+}
+
+func (f fakeCallReader) ListCallBreakdowns(context.Context, string, string, int) ([]costledger.CallBreakdown, error) {
+	return nil, errors.New("fakeCallReader: ListCallBreakdowns must not be called by finance.get_cost_summary")
+}
+
+func (f fakeCallReader) ListCallBreakdownsFiltered(_ context.Context, _, providerID string, _ costledger.CallBreakdownFilter, _ costledger.CallBreakdownCursor, _ int) ([]costledger.CallBreakdown, costledger.CallBreakdownCursor, bool, error) {
+	return f.callsByProvider[providerID], costledger.CallBreakdownCursor{}, false, nil
+}
+
+// TestFinanceGetCostSummaryNeverOmitsANamedProviderBehindTheCap is a
+// regression test: with more than financeCallBreakdownMaxProviders (50)
+// real provisioned providers, a request naming one specific
+// wallet_provider_id must find that provider's real calls even when it
+// would not have survived the enumerate-then-cap path -- and the
+// no-filter case must explicitly report providers_omitted/truncated=true
+// rather than silently presenting a partial provider set as complete.
+func TestFinanceGetCostSummaryNeverOmitsANamedProviderBehindTheCap(t *testing.T) {
+	ids := make(map[string]bool, financeCallBreakdownMaxProviders+1)
+	callsByProvider := make(map[string][]costledger.CallBreakdown, financeCallBreakdownMaxProviders+1)
+	for i := 0; i < financeCallBreakdownMaxProviders+1; i++ {
+		id := fmt.Sprintf("provider-%03d", i)
+		ids[id] = true
+		callsByProvider[id] = []costledger.CallBreakdown{{
+			InvocationID: int64(i + 1), Settlement: costledger.SettlementCommitted, ChargedUSD: modelpricing.USDFromDollars(1),
+		}}
+	}
+	// "provider-050" sorts last among 051 alphabetically-ordered IDs
+	// (provider-000..provider-050) and is exactly the one the old
+	// [:50] cut would have silently dropped.
+	excludedByCap := "provider-050"
+
+	registry := NewToolRegistry()
+	if err := RegisterFinanceTools(registry, "explorarte", fakeProvisionedProviders{ids: ids}, fakeCallReader{callsByProvider: callsByProvider}); err != nil {
+		t.Fatal(err)
+	}
+	executor := RegistryToolExecutor{Registry: registry}
+	identity := executionharness.RunIdentity{RoleID: CEORoleID}
+
+	unfiltered, err := executor.Execute(context.Background(), identity,
+		executionharness.ToolRequest{ToolCallID: "call-1", ToolName: ToolFinanceGetCostSummary, Arguments: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var unfilteredView costSummaryView
+	if err = json.Unmarshal(unfiltered.Content, &unfilteredView); err != nil {
+		t.Fatal(err)
+	}
+	if !unfilteredView.Truncated || unfilteredView.ProvidersOmitted != 1 {
+		t.Fatalf("unfiltered view=%+v want truncated=true, providers_omitted=1", unfilteredView)
+	}
+	for _, provider := range unfilteredView.ByProvider {
+		if provider.WalletProviderID == excludedByCap {
+			t.Fatalf("provider %q must not appear in the capped, unfiltered result: %+v", excludedByCap, unfilteredView)
+		}
+	}
+
+	filteredArgs, _ := json.Marshal(map[string]string{"wallet_provider_id": excludedByCap})
+	named, err := executor.Execute(context.Background(), identity,
+		executionharness.ToolRequest{ToolCallID: "call-2", ToolName: ToolFinanceGetCostSummary, Arguments: filteredArgs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var namedView costSummaryView
+	if err = json.Unmarshal(named.Content, &namedView); err != nil {
+		t.Fatal(err)
+	}
+	if namedView.Truncated || namedView.ProvidersOmitted != 0 {
+		t.Fatalf("named-provider view=%+v want truncated=false, providers_omitted=0: the cap must never apply to a named provider", namedView)
+	}
+	if len(namedView.ByProvider) != 1 || namedView.ByProvider[0].WalletProviderID != excludedByCap || namedView.CallsSettled != 1 {
+		t.Fatalf("named-provider view=%+v want exactly %q's real $1 settled call", namedView, excludedByCap)
 	}
 }

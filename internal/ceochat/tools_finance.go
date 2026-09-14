@@ -76,8 +76,16 @@ type costSummaryView struct {
 	// EstimatedUnsettledUSD are a partial sum over what WAS scanned, and
 	// the caller must not present them as a complete total -- this field
 	// exists specifically so that never happens silently.
-	Truncated  bool            `json:"truncated"`
-	ByProvider []providerSpend `json:"by_provider"`
+	// ProvidersOmitted counts real, provisioned providers this call did NOT
+	// scan at all because more than financeCallBreakdownMaxProviders exist
+	// and no wallet_provider_id was requested. It is always 0 when
+	// wallet_provider_id IS set: that path queries the named provider
+	// directly and never enumerates or caps the provider list, so a
+	// provider "outside the first 50" is never silently skipped just
+	// because it would not have survived that cut.
+	ProvidersOmitted int             `json:"providers_omitted,omitempty"`
+	Truncated        bool            `json:"truncated"`
+	ByProvider       []providerSpend `json:"by_provider"`
 }
 
 type providerSpend struct {
@@ -127,20 +135,26 @@ func parseOptionalRFC3339(raw *string) (*time.Time, error) {
 // through costledger.CallReader.ListCallBreakdownsFiltered -- the
 // canonical join of the wallet ledger to the durable model invocation,
 // with every filter (task/provider model/time range) applied in SQL
-// before any page boundary -- iterating the organization's provisioned
-// providers (ProvisionedProviderIDs) rather than scanning every provider ID
-// that has ever existed. A provider is walked page by page until
-// hasMore==false (exhaustive for that filter) or a safety page cap is hit,
-// in which case the result is explicitly marked truncated rather than
-// silently presented as complete. This deliberately does NOT use the
-// plain ListCallBreakdowns (a bounded, most-recent-N read meant for
-// recency views like `orgctl cost calls`): applying a task/time filter to
-// that method's fixed-size window can silently exclude older matching
-// rows, understating real spend without any signal that it happened.
+// before any page boundary. When wallet_provider_id IS given, that one
+// provider is queried directly. When it is NOT given, the organization's
+// provisioned providers (ProvisionedProviderIDs) are enumerated and capped
+// to financeCallBreakdownMaxProviders -- a cut that must never apply to a
+// caller-named provider, which is exactly why that case bypasses
+// enumeration entirely; the cap only ever omits providers nobody asked for
+// by name, and doing so always sets providers_omitted/truncated rather
+// than silently reporting an incomplete "0" for an ignored provider. Each
+// scanned provider is walked page by page until hasMore==false (exhaustive
+// for that filter) or a safety page cap is hit, in which case the result
+// is explicitly marked truncated rather than silently presented as
+// complete. This deliberately does NOT use the plain ListCallBreakdowns (a
+// bounded, most-recent-N read meant for recency views like `orgctl cost
+// calls`): applying a task/time filter to that method's fixed-size window
+// can silently exclude older matching rows, understating real spend
+// without any signal that it happened.
 func RegisterFinanceTools(registry *ToolRegistry, organizationID string, providers ProvisionedProviderLister, calls costledger.CallReader) error {
 	return registry.Register(ToolDescriptor{
 		ID: ToolFinanceGetCostSummary, Version: financeGetCostSummaryVersion,
-		Description: "Summarize settled and estimated-unsettled provider spend, optionally filtered by task, provider, model, or time range. Exhaustive over the filter unless truncated=true.",
+		Description: "Summarize settled and estimated-unsettled provider spend, optionally filtered by task, provider, model, or time range. Exhaustive over the filter unless truncated=true (see providers_omitted for why).",
 		InputSchema: financeGetCostSummarySchema, Access: AccessReadOnly, RequiredRole: CEORoleID,
 		Limits:    ToolLimits{MaxResultBytes: 32 << 10, Timeout: 20 * time.Second},
 		DataClass: DataClassInternal,
@@ -161,28 +175,38 @@ func RegisterFinanceTools(registry *ToolRegistry, organizationID string, provide
 				filter.ProviderModelID = *args.ProviderModelID
 			}
 
-			provisioned, err := providers.ProvisionedProviderIDs(ctx)
-			if err != nil {
-				return nil, err
-			}
-			providerIDs := make([]string, 0, len(provisioned))
-			for id := range provisioned {
-				providerIDs = append(providerIDs, id)
-			}
-			sort.Strings(providerIDs)
-			if len(providerIDs) > financeCallBreakdownMaxProviders {
-				providerIDs = providerIDs[:financeCallBreakdownMaxProviders]
+			// A specific wallet_provider_id is queried DIRECTLY, never
+			// through the enumerate-then-cap path below: capping the
+			// provisioned-provider list to financeCallBreakdownMaxProviders
+			// must never cause a named, real provider's calls to be
+			// silently skipped just because it did not survive that cut.
+			var providerIDs []string
+			providersOmitted := 0
+			if args.WalletProviderID != nil {
+				providerIDs = []string{*args.WalletProviderID}
+			} else {
+				provisioned, err := providers.ProvisionedProviderIDs(ctx)
+				if err != nil {
+					return nil, err
+				}
+				all := make([]string, 0, len(provisioned))
+				for id := range provisioned {
+					all = append(all, id)
+				}
+				sort.Strings(all)
+				if len(all) > financeCallBreakdownMaxProviders {
+					providersOmitted = len(all) - financeCallBreakdownMaxProviders
+					all = all[:financeCallBreakdownMaxProviders]
+				}
+				providerIDs = all
 			}
 
 			var settled, estimated modelpricing.USDNanos
 			var callsSettled, callsUnsettled, callsExcluded int
-			anyTruncated := false
+			anyTruncated := providersOmitted > 0
 			byProvider := make(map[string]*providerSpendAccumulator)
 
 			for _, providerID := range providerIDs {
-				if args.WalletProviderID != nil && *args.WalletProviderID != providerID {
-					continue
-				}
 				accumulator := &providerSpendAccumulator{}
 				var cursor costledger.CallBreakdownCursor
 				for page := 0; ; page++ {
@@ -237,7 +261,7 @@ func RegisterFinanceTools(registry *ToolRegistry, organizationID string, provide
 			return json.Marshal(costSummaryView{
 				SettledUSD: settled.String(), EstimatedUnsettledUSD: estimated.String(),
 				CallsSettled: callsSettled, CallsUnsettled: callsUnsettled, CallsExcluded: callsExcluded,
-				Truncated: anyTruncated, ByProvider: providerViews,
+				ProvidersOmitted: providersOmitted, Truncated: anyTruncated, ByProvider: providerViews,
 			})
 		})
 }
