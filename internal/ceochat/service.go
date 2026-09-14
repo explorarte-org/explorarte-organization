@@ -51,6 +51,11 @@ type Service struct {
 	Tasks      TaskCoordinator
 	Principals PrincipalResolver
 	Contexts   ContextBuilder
+	// Assignments provisions the bounded Model Dispatch authorization a
+	// running attempt needs before the Harness may invoke the model. See
+	// DispatchProvisioner's doc comment for why this exists and why its
+	// quota is fixed at construction, never chosen per call.
+	Assignments DispatchProvisioner
 
 	Authority        executionharness.ExecutionAuthorityPort
 	HarnessHistory   executionharness.ExecutionHistoryStore
@@ -93,7 +98,7 @@ func Open(service Service) (*Service, error) {
 	if strings.TrimSpace(s.OrganizationID) == "" {
 		return nil, fmt.Errorf("%w: ceochat service requires an organization", ErrInvalidInput)
 	}
-	if s.Store == nil || s.Tasks == nil || s.Principals == nil || s.Contexts == nil ||
+	if s.Store == nil || s.Tasks == nil || s.Principals == nil || s.Contexts == nil || s.Assignments == nil ||
 		s.Authority == nil || s.HarnessHistory == nil || s.DescriptorStore == nil || s.NewModelExecutor == nil {
 		return nil, fmt.Errorf("%w: ceochat service dependencies are incomplete", ErrInvalidInput)
 	}
@@ -188,7 +193,18 @@ func (s *Service) Send(ctx context.Context, request SendRequest) (SendResult, er
 		AcceptanceCriteria: []string{"produce a final answer to the owner, or a durable reason why not"},
 		MaxAttempts:        1,
 		CorrelationID:      correlationID,
-		CausationID:        request.IdempotencyKey,
+		// "owner:" + IdempotencyKey, not the bare key: every ceochat turn
+		// task is a conversation root (never a child of a prior turn's
+		// task -- each owner message gets its own independent task), and
+		// modeldispatch.AuthorizedAttemptProvisioner's trusted-root walk
+		// (resolveTrustedRoot) only recognizes a root via this exact
+		// "owner:<...>" causation shape -- see
+		// internal/executive/orchestrator.go's identical convention for
+		// its own owner-initiated root tasks. Without this prefix,
+		// EnsureAuthorizedAssignmentForRunningAttempt fails every chat
+		// turn with "task N has unsupported causation" before any model
+		// or tool call.
+		CausationID: "owner:" + request.IdempotencyKey,
 	}, "service", ceoChatActorID)
 	if err != nil {
 		return SendResult{}, fmt.Errorf("create ceochat turn task: %w", err)
@@ -329,6 +345,18 @@ func (s *Service) driveTurn(ctx context.Context, conversation Conversation, task
 		TaskID: claimed.Task.ID, AttemptID: claimed.Attempt.ID, LeaseToken: claimed.LeaseToken, ActorID: principalID,
 	}); err != nil {
 		return SendResult{}, fmt.Errorf("start ceochat turn attempt: %w", err)
+	}
+
+	// Must happen after StartAttempt (AuthorizedAttemptProvisioner requires
+	// the attempt to actually be running) and before anything that could
+	// reach the Harness/Model Runtime: an unauthorized attempt must never
+	// produce a model invocation, tool execution, or assistant message.
+	// Nothing durable about the answer has been written yet, so on failure
+	// this returns exactly like a Contexts.Build or NewModelExecutor
+	// failure below -- the attempt is left running, holding its lease, and
+	// a retry of the same turn resumes here rather than duplicating work.
+	if err = s.Assignments.EnsureAuthorizedAssignmentForRunningAttempt(ctx, claimed.Task.ID, claimed.Attempt.ID); err != nil {
+		return SendResult{}, fmt.Errorf("provision ceochat turn dispatch authority: %w", err)
 	}
 
 	priorMessages, err := s.Store.ListMessages(ctx, conversation.ID, DefaultHistoryMessageLimit+1)

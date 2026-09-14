@@ -292,6 +292,15 @@ func newRealProviderRehearsalFixture(t *testing.T, credentialFile string) *realP
 	t.Setenv("ORG_MODEL_PROVIDER_OPENAI_RESPONSES_ENABLED", "true")
 	t.Setenv("ORG_MODEL_PROVIDER_OPENAI_RESPONSES_ENDPOINT_URL", "https://api.openai.com/v1/responses")
 	t.Setenv("ORG_MODEL_PROVIDER_OPENAI_RESPONSES_CREDENTIAL_FILE", credentialFile)
+	// See chatTestDispatchPrincipalKey's doc comment in integration_test.go:
+	// ceochatbootstrap.Open now builds a real
+	// modeldispatch.AuthorizedAttemptProvisioner keyed to
+	// ORG_MODEL_EXECUTION_PRINCIPAL_KEY (CEO_CONVERSATIONAL_DISPATCH_ASSIGNMENT_BOUNDARY_V1),
+	// so this standalone fixture needs the exact same env var and registered
+	// principal newChatFixture provisions -- this rehearsal never called
+	// newChatFixture (it replicates the bootstrap sequence to control the
+	// real provider adapter env separately), so it cannot inherit that setup.
+	t.Setenv("ORG_MODEL_EXECUTION_PRINCIPAL_KEY", chatTestDispatchPrincipalKey)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	cfg, err := rehearsalConfig(databaseURL)
@@ -334,6 +343,7 @@ func newRealProviderRehearsalFixture(t *testing.T, credentialFile string) *realP
 	if result, syncErr := registryService.SynchronizeCanonical(ctx, true); syncErr != nil || (!result.Applied && !result.NoOp) {
 		fail("sync canonical registry: result=%+v err=%v", result, syncErr)
 	}
+	registerChatTestDispatchPrincipal(t, ctx, store, fail)
 	ceochatRuntime, err := ceochatbootstrap.Open(cfg, store)
 	if err != nil {
 		fail("open ceochat runtime: %v", err)

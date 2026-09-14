@@ -23,6 +23,7 @@ import (
 	executionharnesspostgres "github.com/Mireuz13/explorarte-organization/internal/executionharness/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/executive/runtimeadapter"
 	memorybootstrap "github.com/Mireuz13/explorarte-organization/internal/memory/bootstrap"
+	"github.com/Mireuz13/explorarte-organization/internal/modeldispatch"
 	modelbootstrap "github.com/Mireuz13/explorarte-organization/internal/modelruntime/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
@@ -113,6 +114,20 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create ceochat role-bound principal resolver: %w", err)
 	}
+	// A chat turn's Harness run can make up to MaxTurns model invocations
+	// within the SAME task attempt (one per tool-calling round) before it
+	// answers -- unlike Executive's typed-task profile, which never leaves
+	// the provisioner's default quota of 1. WithMaxInvocations(MaxTurns) is
+	// what makes that legal: without it, InvocationService.Create's second
+	// invocation in the same attempt would fail closed with
+	// dispatcher_assignment_exhausted even though the first one succeeded.
+	// See ceochat.DispatchProvisioner's doc comment for the full boundary.
+	authorizedAttempts, err := modelRuntime.Dispatcher.NewAuthorizedAttemptProvisioner(
+		modelRuntime.Config.ExecutionPrincipalKey, modeldispatch.WithMaxInvocations(ceochat.MaxTurns),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create ceochat dispatch assignment provisioner: %w", err)
+	}
 
 	searchStore, err := searchpostgres.New(store.Pool())
 	if err != nil {
@@ -160,6 +175,7 @@ func Open(cfg config.Config, store *platformpostgres.Store) (*Runtime, error) {
 		Store:          conversationStore,
 		Tasks:          taskService,
 		Principals:     principalResolver{resolver: roleBoundResolver},
+		Assignments:    dispatchProvisioner{provisioner: authorizedAttempts},
 		Contexts: contextSeam{
 			service:        contextRuntime.Service,
 			assembly:       contextcompiler.ContextAssemblyService{Store: executionContextViewStore},
@@ -224,6 +240,22 @@ func (r principalResolver) Resolve(ctx context.Context, roleID string) (string, 
 }
 
 var _ ceochat.PrincipalResolver = principalResolver{}
+
+// dispatchProvisioner adapts *modeldispatch.AuthorizedAttemptProvisioner's
+// (CreateAssignmentResult, error) return to the bare error
+// ceochat.DispatchProvisioner expects: ceochat only needs to know whether
+// it may proceed to the Harness, never the assignment's own identity or
+// quota.
+type dispatchProvisioner struct {
+	provisioner *modeldispatch.AuthorizedAttemptProvisioner
+}
+
+func (d dispatchProvisioner) EnsureAuthorizedAssignmentForRunningAttempt(ctx context.Context, taskID, attemptID int64) error {
+	_, err := d.provisioner.EnsureAuthorizedAssignmentForRunningAttempt(ctx, taskID, attemptID)
+	return err
+}
+
+var _ ceochat.DispatchProvisioner = dispatchProvisioner{}
 
 // contextSeam is the minimal Context Engine composition ceochat needs: the
 // same Build -> Get -> Validate -> ResolveAndPersist sequence

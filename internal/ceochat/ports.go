@@ -73,6 +73,35 @@ type ContextBuilder interface {
 	Build(ctx context.Context, request ContextRequest) (ContextSnapshot, error)
 }
 
+// DispatchProvisioner ensures a bounded Model Dispatch authorization exists
+// for a running task attempt before the Harness is allowed to invoke the
+// model. It is the seam CEO_CONVERSATIONAL_REAL_PROVIDER_REHEARSAL_V1 found
+// missing: without it, Model Runtime's InvocationService.Create fails
+// closed with modeldispatch.ErrNotFound on the very first invocation --
+// ceochat claimed the task and started the attempt, but nothing had ever
+// provisioned the modeldispatch.DispatcherAssignment that
+// InvocationService.Create's ResolveActive call requires.
+//
+// The production implementation (internal/ceochat/bootstrap) wraps a
+// *modeldispatch.AuthorizedAttemptProvisioner constructed with
+// modeldispatch.WithMaxInvocations(MaxTurns): a chat turn's Harness run may
+// make up to MaxTurns model invocations within the same task attempt (one
+// per tool-calling round), all needing the same assignment -- unlike
+// Executive's typed-task profile, which never leaves the default quota of
+// 1. The quota is fixed at construction time, entirely host-owned: nothing
+// this interface exposes lets an owner message, model output, tool
+// argument, or task instruction choose how many invocations an attempt is
+// allowed.
+//
+// EnsureAuthorizedAssignmentForRunningAttempt is idempotent for the same
+// running attempt (repeated calls resolve the same assignment rather than
+// creating a second one) and deliberately returns no assignment detail --
+// ceochat only needs to know whether a call is now authorized to proceed to
+// the Harness, not the assignment's own identity or quota.
+type DispatchProvisioner interface {
+	EnsureAuthorizedAssignmentForRunningAttempt(ctx context.Context, taskID, attemptID int64) error
+}
+
 // TaskCoordinator is the narrow slice of the Task Engine a chat turn needs:
 // create-or-reuse the turn's task, read its current state, claim it exactly
 // once, and finalize the attempt/task once the Harness run has an answer.
