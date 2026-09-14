@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/ceochat"
 	"github.com/Mireuz13/explorarte-organization/internal/executionharness"
@@ -55,9 +56,22 @@ func (c *countingContextBuilder) Build(ctx context.Context, request ceochat.Cont
 // test can prove none of them are ever reached.
 func (f *chatFixture) withFailingAssignments(t *testing.T, provisionErr error) (service *ceochat.Service, provisioner *failingDispatchProvisioner, contexts *countingContextBuilder, modelExecutorBuilds *int, toolExecutorCalls *countingTopicLister) {
 	t.Helper()
+	return f.withFailingAssignmentsAndLease(t, provisionErr, 0)
+}
+
+// withFailingAssignmentsAndLease is withFailingAssignments generalized to
+// accept an explicit LeaseDuration (0 keeps Service's own default) --
+// CEO_CONVERSATIONAL_DISPATCH_ASSIGNMENT_BOUNDARY_FINAL_CLOSURE_V1's lease-
+// expiry recovery test needs a short, controllable lease so it can drive a
+// real expiry + Reconcile without waiting out the production default.
+func (f *chatFixture) withFailingAssignmentsAndLease(t *testing.T, provisionErr error, leaseDuration time.Duration) (service *ceochat.Service, provisioner *failingDispatchProvisioner, contexts *countingContextBuilder, modelExecutorBuilds *int, toolExecutorCalls *countingTopicLister) {
+	t.Helper()
 	base := *f.runtime.Service
 	provisioner = &failingDispatchProvisioner{err: provisionErr}
 	base.Assignments = provisioner
+	if leaseDuration > 0 {
+		base.LeaseDuration = leaseDuration
+	}
 	wrappedContexts := &countingContextBuilder{real: base.Contexts}
 	base.Contexts = wrappedContexts
 	builds := 0

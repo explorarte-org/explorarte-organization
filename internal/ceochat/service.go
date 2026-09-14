@@ -2,6 +2,8 @@ package ceochat
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strconv"
@@ -193,18 +195,23 @@ func (s *Service) Send(ctx context.Context, request SendRequest) (SendResult, er
 		AcceptanceCriteria: []string{"produce a final answer to the owner, or a durable reason why not"},
 		MaxAttempts:        1,
 		CorrelationID:      correlationID,
-		// "owner:" + IdempotencyKey, not the bare key: every ceochat turn
-		// task is a conversation root (never a child of a prior turn's
-		// task -- each owner message gets its own independent task), and
+		// canonicalOwnerCausation, not the bare "owner:"+IdempotencyKey:
+		// every ceochat turn task is a conversation root (never a child of
+		// a prior turn's task -- each owner message gets its own
+		// independent task), and
 		// modeldispatch.AuthorizedAttemptProvisioner's trusted-root walk
-		// (resolveTrustedRoot) only recognizes a root via this exact
-		// "owner:<...>" causation shape -- see
-		// internal/executive/orchestrator.go's identical convention for
-		// its own owner-initiated root tasks. Without this prefix,
-		// EnsureAuthorizedAssignmentForRunningAttempt fails every chat
-		// turn with "task N has unsupported causation" before any model
-		// or tool call.
-		CausationID: "owner:" + request.IdempotencyKey,
+		// (resolveTrustedRoot) only recognizes a root via an "owner:<...>"
+		// causation shape whose suffix matches modeldispatch's own
+		// principal-key-shaped pattern -- see
+		// internal/executive/orchestrator.go's identical "owner:" + key
+		// convention for its own owner-initiated root tasks, which works
+		// there only because Executive's own request idempotency keys
+		// happen to already be principal-key-shaped. ceochat's
+		// SendRequest.IdempotencyKey carries no such restriction (any
+		// 1..maxIdempotencyKeyLen bytes, any character) -- see
+		// canonicalOwnerCausation's own doc comment for why a digest,
+		// not the raw key, is required here.
+		CausationID: canonicalOwnerCausation(conversation.ID, request.IdempotencyKey),
 	}, "service", ceoChatActorID)
 	if err != nil {
 		return SendResult{}, fmt.Errorf("create ceochat turn task: %w", err)
@@ -353,8 +360,30 @@ func (s *Service) driveTurn(ctx context.Context, conversation Conversation, task
 	// produce a model invocation, tool execution, or assistant message.
 	// Nothing durable about the answer has been written yet, so on failure
 	// this returns exactly like a Contexts.Build or NewModelExecutor
-	// failure below -- the attempt is left running, holding its lease, and
-	// a retry of the same turn resumes here rather than duplicating work.
+	// failure below -- the attempt is left running, holding its lease.
+	//
+	// That does NOT mean an immediate retry of the same turn resumes here:
+	// driveTurn's own status switch above runs on every call, and a
+	// running/leased task always returns ErrRunNotReady there ("never
+	// adopt, never start a second attempt beside an active lease this
+	// process did not just claim itself") before this line is ever
+	// reached again -- verified in
+	// TestCEOChatImmediateRetryAfterProvisioningFailureNeverAdoptsTheActiveLease
+	// (CEO_CONVERSATIONAL_DISPATCH_ASSIGNMENT_BOUNDARY_FINAL_CLOSURE_V1).
+	// And because MaxAttempts is 1 for every chat turn, the ONE
+	// reconciliation path that could otherwise return a running task to
+	// StatusReady (internal/tasks/postgres/reconcile.go's
+	// reconcileExpiredLeases, once this attempt's lease expires) instead
+	// finds AttemptCount >= MaxAttempts already true and moves the task
+	// straight to StatusDeadLetter -- terminal, never claimable again --
+	// rather than back to StatusReady. So the SAME owner message's turn
+	// never succeeds after this failure, by either path; the intent is
+	// only recoverable by the owner sending a NEW message (a new
+	// idempotency key, and therefore a wholly independent task/attempt/
+	// assignment, safe by construction) in the same conversation. See
+	// TestCEOChatProvisioningFailureAfterLeaseExpiryReachesDeadLetterSafely
+	// for the durable proof of that terminal state and its zero duplicate
+	// side effects.
 	if err = s.Assignments.EnsureAuthorizedAssignmentForRunningAttempt(ctx, claimed.Task.ID, claimed.Attempt.ID); err != nil {
 		return SendResult{}, fmt.Errorf("provision ceochat turn dispatch authority: %w", err)
 	}
@@ -584,6 +613,38 @@ func excludeMessage(messages []Message, id int64) []Message {
 
 func turnTaskIdempotencyKey(conversationID int64, idempotencyKey string) string {
 	return "ceochat:turn:" + strconv.FormatInt(conversationID, 10) + ":" + idempotencyKey
+}
+
+// canonicalOwnerCausation derives a durable turn task's CausationID: an
+// "owner:<...>" marker modeldispatch.AuthorizedAttemptProvisioner's
+// trusted-root walk (resolveTrustedRoot / validOwnerRootCausation)
+// requires to recognize a task as an owner-initiated root, and whose
+// suffix it validates against a principal-key-shaped pattern --
+// alphanumerics separated by single '.', '_', '/', or '-' characters,
+// nothing else.
+//
+// SendRequest.IdempotencyKey carries no such restriction: Send accepts
+// any 1..maxIdempotencyKeyLen bytes of content (spaces, colons, unicode,
+// anything), by design -- narrowing that acceptance retroactively would
+// reject requests and break replays that are valid today. So this never
+// forwards the raw key: it hashes (conversation ID, idempotency key) into
+// a fixed-shape hex digest that trivially satisfies the pattern
+// regardless of what the caller's key looks like, is deterministic and
+// stable (the same input always derives the same causation, which is
+// exactly the property idempotent task creation needs), and is
+// collision-resistant without any lossy substitution that could map two
+// different keys onto the same marker.
+//
+// This never changes the durable owner message or task IdempotencyKey
+// values themselves (those still carry the raw key, unchanged, via
+// turnTaskIdempotencyKey and recordOwnerMessage) -- only this one
+// provenance-facing field, and only for newly-created tasks: an existing
+// task is always found by CreateTask's own idempotency lookup on
+// IdempotencyKey, never by CausationID, so a task created under an older
+// binary's causation shape keeps replaying correctly.
+func canonicalOwnerCausation(conversationID int64, idempotencyKey string) string {
+	sum := sha256.Sum256([]byte(strconv.FormatInt(conversationID, 10) + "\x00" + idempotencyKey))
+	return "owner:ceochat-" + hex.EncodeToString(sum[:])
 }
 
 func conversationCorrelationID(conversationID int64) string {
