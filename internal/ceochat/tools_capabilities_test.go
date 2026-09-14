@@ -249,3 +249,25 @@ func TestEveryRegisteredToolDescriptorIsReadOnly(t *testing.T) {
 		}
 	}
 }
+
+// TestToolDescriptorValidateRequiresMaxResultBytesRegardlessOfMaxRows is a
+// regression test: MaxResultBytes must be positive on its own, never waived
+// just because MaxRows>0. RegistryToolExecutor.Execute only enforces the
+// byte bound when MaxResultBytes itself is positive (see its own doc
+// comment) -- a descriptor that validated with MaxRows>0 and
+// MaxResultBytes<=0 would run with NO result-size bound at all, silently
+// defeating BOUNDED_RESULTS.
+func TestToolDescriptorValidateRequiresMaxResultBytesRegardlessOfMaxRows(t *testing.T) {
+	registry := NewToolRegistry()
+	err := registry.Register(ToolDescriptor{
+		ID: "test.unbounded_bytes", Version: "v1", Description: "d",
+		InputSchema: json.RawMessage(`{"type":"object"}`), Access: AccessReadOnly, RequiredRole: CEORoleID,
+		Limits: ToolLimits{MaxRows: 20, MaxResultBytes: 0, Timeout: time.Second}, DataClass: DataClassInternal,
+	}, func(json.RawMessage) error { return nil },
+		func(context.Context, string, json.RawMessage) (json.RawMessage, error) {
+			return json.RawMessage(`{}`), nil
+		})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("err=%v want ErrInvalidInput (MaxRows>0 must not waive the MaxResultBytes>0 requirement)", err)
+	}
+}

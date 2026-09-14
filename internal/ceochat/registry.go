@@ -76,9 +76,16 @@ func (d ToolDescriptor) validate() error {
 		return fmt.Errorf("%w: tool %q must declare access=read_only", ErrInvalidInput, d.ID)
 	case strings.TrimSpace(d.RequiredRole) == "":
 		return fmt.Errorf("%w: tool %q requires an authorized role", ErrInvalidInput, d.ID)
-	case d.Limits.MaxRows <= 0 && d.Limits.MaxResultBytes <= 0:
+	case d.Limits.MaxResultBytes <= 0:
 		// A tool with no row concept (e.g. a single-record get) may leave
-		// MaxRows at 0, but every tool must bound its byte size.
+		// MaxRows at 0, but EVERY tool must bound its byte size -- this
+		// check does not depend on MaxRows at all, because
+		// RegistryToolExecutor.Execute only enforces MaxResultBytes when
+		// it is itself positive: a descriptor that slipped through with
+		// MaxResultBytes<=0 (however MaxRows was set) would run with no
+		// result-size bound whatsoever, silently reintroducing exactly
+		// the unbounded-read risk this round's BOUNDED_RESULTS section
+		// exists to close.
 		return fmt.Errorf("%w: tool %q requires MaxResultBytes > 0", ErrInvalidInput, d.ID)
 	case d.Limits.Timeout <= 0:
 		return fmt.Errorf("%w: tool %q requires a positive timeout", ErrInvalidInput, d.ID)
