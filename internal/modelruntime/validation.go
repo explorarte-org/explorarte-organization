@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/big"
 	"regexp"
 	"sort"
@@ -255,7 +256,56 @@ func validateSchemaDefinition(schema map[string]any, depth int) error {
 			return fmt.Errorf("maxLength must be a positive integer")
 		}
 	}
-	allowed := map[string]struct{}{"type": {}, "required": {}, "properties": {}, "items": {}, "additionalProperties": {}, "enum": {}, "description": {}, "maxLength": {}}
+	var minRat *big.Rat
+	hasMin := false
+	if raw, ok := schema["minimum"]; ok {
+		hasMin = true
+		schemaType, _ := schema["type"].(string)
+		if schemaType != "number" && schemaType != "integer" {
+			return fmt.Errorf("minimum only allowed on number or integer schemas")
+		}
+		rat, err := parseFiniteRat(raw)
+		if err != nil {
+			return fmt.Errorf("minimum must be a finite number: %w", err)
+		}
+		if schemaType == "integer" && !rat.IsInt() {
+			return fmt.Errorf("minimum for integer schema must be an integer")
+		}
+		minRat = rat
+	}
+	var maxRat *big.Rat
+	hasMax := false
+	if raw, ok := schema["maximum"]; ok {
+		hasMax = true
+		schemaType, _ := schema["type"].(string)
+		if schemaType != "number" && schemaType != "integer" {
+			return fmt.Errorf("maximum only allowed on number or integer schemas")
+		}
+		rat, err := parseFiniteRat(raw)
+		if err != nil {
+			return fmt.Errorf("maximum must be a finite number: %w", err)
+		}
+		if schemaType == "integer" && !rat.IsInt() {
+			return fmt.Errorf("maximum for integer schema must be an integer")
+		}
+		maxRat = rat
+	}
+	if hasMin && hasMax && minRat.Cmp(maxRat) > 0 {
+		return fmt.Errorf("minimum cannot be greater than maximum")
+	}
+
+	allowed := map[string]struct{}{
+		"type":                 {},
+		"required":             {},
+		"properties":           {},
+		"items":                {},
+		"additionalProperties": {},
+		"enum":                 {},
+		"description":          {},
+		"maxLength":            {},
+		"minimum":              {},
+		"maximum":              {},
+	}
 	for k := range schema {
 		if _, ok := allowed[k]; !ok {
 			return fmt.Errorf("unsupported schema keyword %q", k)
@@ -274,6 +324,30 @@ func validateAgainstSchema(value any, schema map[string]any, path string) error 
 	if raw, ok := schema["type"]; ok {
 		if !matchesType(value, raw.(string)) {
 			return fmt.Errorf("%s has wrong type", path)
+		}
+	}
+	if rawMin, ok := schema["minimum"]; ok {
+		minRat, err := parseFiniteRat(rawMin)
+		if err == nil {
+			valRat, valErr := parseFiniteRat(value)
+			if valErr != nil {
+				return fmt.Errorf("%s must be a number to compare against minimum", path)
+			}
+			if valRat.Cmp(minRat) < 0 {
+				return fmt.Errorf("%s is less than minimum", path)
+			}
+		}
+	}
+	if rawMax, ok := schema["maximum"]; ok {
+		maxRat, err := parseFiniteRat(rawMax)
+		if err == nil {
+			valRat, valErr := parseFiniteRat(value)
+			if valErr != nil {
+				return fmt.Errorf("%s must be a number to compare against maximum", path)
+			}
+			if valRat.Cmp(maxRat) > 0 {
+				return fmt.Errorf("%s is greater than maximum", path)
+			}
 		}
 	}
 	if enum, ok := schema["enum"].([]any); ok {
@@ -368,4 +442,26 @@ func sortedCapabilities(values []ModelCapability) []ModelCapability {
 	r := append([]ModelCapability(nil), values...)
 	sort.Slice(r, func(i, j int) bool { return r[i] < r[j] })
 	return r
+}
+
+func parseFiniteRat(raw any) (*big.Rat, error) {
+	switch v := raw.(type) {
+	case json.Number:
+		rat, ok := new(big.Rat).SetString(v.String())
+		if !ok {
+			return nil, fmt.Errorf("invalid number %q", v.String())
+		}
+		return rat, nil
+	case float64:
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return nil, fmt.Errorf("number must be finite")
+		}
+		return new(big.Rat).SetFloat64(v), nil
+	case int:
+		return new(big.Rat).SetInt64(int64(v)), nil
+	case int64:
+		return new(big.Rat).SetInt64(v), nil
+	default:
+		return nil, fmt.Errorf("unsupported number type %T", raw)
+	}
 }
