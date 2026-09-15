@@ -42,7 +42,9 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 	// 74 (create_ceo_chat) is
 	// CEO_CONVERSATIONAL_TOOL_RUNTIME_FOUNDATION_V1's durable owner<->CEO
 	// conversation/message persistence.
-	const wantCount = 74
+	// 75 (create_campaign_proposals) is
+	// CEO_CONVERSATIONAL_CAMPAIGN_PROPOSAL_V1's durable immutable campaign proposals.
+	const wantCount = 75
 	if len(loaded) != wantCount {
 		t.Fatalf("migration count=%d want %d", len(loaded), wantCount)
 	}
@@ -127,6 +129,8 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		73: "seed_mistral_zero_wallet_anchor",
 		// CEO_CONVERSATIONAL_TOOL_RUNTIME_FOUNDATION_V1:
 		74: "create_ceo_chat",
+		// CEO_CONVERSATIONAL_CAMPAIGN_PROPOSAL_V1:
+		75: "create_campaign_proposals",
 	}
 	byVersion := make(map[int64]string, len(loaded))
 	for _, migration := range loaded {
