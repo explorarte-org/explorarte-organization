@@ -11,6 +11,7 @@ import (
 
 	"github.com/Mireuz13/explorarte-organization/internal/campaign"
 	"github.com/Mireuz13/explorarte-organization/internal/executionharness"
+	"github.com/Mireuz13/explorarte-organization/internal/executive"
 	"github.com/Mireuz13/explorarte-organization/internal/tasks"
 )
 
@@ -23,6 +24,9 @@ type fakeCampaignStore struct {
 	approvals        map[int64]campaign.CampaignOwnerApproval
 	approvalsByKey   map[string]campaign.CampaignOwnerApproval
 	approvalsByTuple map[string]campaign.CampaignOwnerApproval
+	promotions       map[int64]campaign.CampaignPromotion
+	promotionsByKey  map[string]campaign.CampaignPromotion
+	promotionsByAppr map[int64]campaign.CampaignPromotion
 	nextID           int64
 }
 
@@ -35,6 +39,9 @@ func newFakeCampaignStore() *fakeCampaignStore {
 		approvals:        make(map[int64]campaign.CampaignOwnerApproval),
 		approvalsByKey:   make(map[string]campaign.CampaignOwnerApproval),
 		approvalsByTuple: make(map[string]campaign.CampaignOwnerApproval),
+		promotions:       make(map[int64]campaign.CampaignPromotion),
+		promotionsByKey:  make(map[string]campaign.CampaignPromotion),
+		promotionsByAppr: make(map[int64]campaign.CampaignPromotion),
 		nextID:           1,
 	}
 }
@@ -405,6 +412,77 @@ func (s *fakeCampaignStore) GetOwnerApprovalByProposal(ctx context.Context, orga
 		return campaign.CampaignOwnerApproval{}, campaign.ErrApprovalNotFound
 	}
 	return latest, nil
+}
+
+func (s *fakeCampaignStore) CreatePromotion(ctx context.Context, cmd campaign.CreatePromotionCommand) (campaign.CampaignPromotion, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	lookupKey := cmd.OrganizationID + ":" + cmd.IdempotencyKey
+	if existing, found := s.promotionsByKey[lookupKey]; found {
+		if existing.CanonicalHash == cmd.CanonicalHash {
+			return existing, true, nil
+		}
+		return campaign.CampaignPromotion{}, false, fmt.Errorf("%w: hash mismatch", campaign.ErrIdempotencyConflict)
+	}
+
+	if existing, found := s.promotionsByAppr[cmd.OwnerApprovalID]; found {
+		if existing.IdempotencyKey == cmd.IdempotencyKey && existing.CanonicalHash == cmd.CanonicalHash {
+			return existing, true, nil
+		}
+		return campaign.CampaignPromotion{}, false, campaign.ErrPromotionAlreadyExists
+	}
+
+	prom := campaign.CampaignPromotion{
+		ID:                            s.nextID,
+		OrganizationID:                cmd.OrganizationID,
+		OwnerApprovalID:               cmd.OwnerApprovalID,
+		OwnerApprovalCanonicalHash:    cmd.OwnerApprovalCanonicalHash,
+		ProposalID:                    cmd.ProposalID,
+		ProposalCanonicalHash:         cmd.ProposalCanonicalHash,
+		FinancialReviewID:             cmd.FinancialReviewID,
+		FinancialReviewCanonicalHash:  cmd.FinancialReviewCanonicalHash,
+		ExecutionBudget:               cmd.ExecutionBudget,
+		ExecutiveRootTaskID:           cmd.ExecutiveRootTaskID,
+		ExecutiveCorrelationID:        cmd.ExecutiveCorrelationID,
+		ExecutiveSubmitIdempotencyKey: cmd.ExecutiveSubmitIdempotencyKey,
+		Status:                        cmd.Status,
+		PromotedByRoleID:              cmd.PromotedByRoleID,
+		ConversationID:                cmd.ConversationID,
+		MessageID:                     cmd.MessageID,
+		TurnTaskID:                    cmd.TurnTaskID,
+		ToolCallID:                    cmd.ToolCallID,
+		IdempotencyKey:                cmd.IdempotencyKey,
+		CanonicalHash:                 cmd.CanonicalHash,
+		CreatedAt:                     time.Now(),
+	}
+	s.nextID++
+	s.promotions[prom.ID] = prom
+	s.promotionsByKey[lookupKey] = prom
+	s.promotionsByAppr[prom.OwnerApprovalID] = prom
+	return prom, false, nil
+}
+
+func (s *fakeCampaignStore) GetPromotion(ctx context.Context, organizationID string, id int64) (campaign.CampaignPromotion, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	p, found := s.promotions[id]
+	if !found || p.OrganizationID != organizationID {
+		return campaign.CampaignPromotion{}, campaign.ErrPromotionNotFound
+	}
+	return p, nil
+}
+
+func (s *fakeCampaignStore) GetPromotionByApprovalID(ctx context.Context, organizationID string, approvalID int64) (campaign.CampaignPromotion, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	p, found := s.promotionsByAppr[approvalID]
+	if !found || p.OrganizationID != organizationID {
+		return campaign.CampaignPromotion{}, campaign.ErrPromotionNotFound
+	}
+	return p, nil
 }
 
 type fakeAuthorizer struct {
@@ -878,5 +956,296 @@ func TestCampaignReviseProposalAndOwnerApprovalTools(t *testing.T) {
 	}
 	if getApprProj.ApprovalID != apprProj.ApprovalID {
 		t.Fatalf("expected approval ID %d, got %d", apprProj.ApprovalID, getApprProj.ApprovalID)
+	}
+}
+
+type fakeSubmitter struct {
+	mu           sync.Mutex
+	submitCalls  int
+	resumeCalls  int
+	lastRequest  executive.SubmitRequest
+	returnRun    executive.Run
+	returnReused bool
+	returnErr    error
+}
+
+func (f *fakeSubmitter) Submit(_ context.Context, req executive.SubmitRequest) (executive.Run, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.submitCalls++
+	f.lastRequest = req
+	if f.returnErr != nil {
+		return executive.Run{}, false, f.returnErr
+	}
+	run := f.returnRun
+	if run.RootTaskID == 0 {
+		run = executive.Run{
+			RootTaskID:    777,
+			CorrelationID: "executive:ceochat-test-corr",
+			State:         executive.StateAccepted,
+		}
+	}
+	return run, f.returnReused, nil
+}
+
+func TestCampaignPromoteToExecutiveTools(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeCampaignStore()
+	submitter := &fakeSubmitter{}
+	auth := fakeAuthorizer{
+		allowed: map[string]bool{
+			"owner:campaign.proposal.create":       true,
+			"owner:campaign.proposal.read":         true,
+			"owner:campaign.owner_approval.create": true,
+			"owner:campaign.owner_approval.read":   true,
+			"owner:campaign.promotion.execute":     true,
+			"owner:campaign.promotion.read":        true,
+			"empresa/ceo:campaign.promotion.read":  true,
+		},
+	}
+	promSvc := campaign.NewPromotionService(store, submitter, auth)
+	reg := NewToolRegistry()
+	if err := RegisterCampaignTools(reg, "org-test", store, auth, WithPromotionService(promSvc)); err != nil {
+		t.Fatalf("RegisterCampaignTools failed: %v", err)
+	}
+	executor := RegistryToolExecutor{Registry: reg}
+
+	turnCtx := TurnContext{
+		OrganizationID:         "org-test",
+		OrganizationRevisionID: 1,
+		ConversationID:         100,
+		OwnerRoleID:            "owner",
+		OwnerMessageID:         200,
+		TaskID:                 300,
+		AttemptID:              1,
+		ActorRoleID:            "empresa/ceo",
+	}
+	turnCtxBg := WithTurnContext(ctx, turnCtx)
+	identity := executionharness.RunIdentity{
+		OrganizationID: "org-test",
+		RoleID:         CEORoleID,
+		TaskID:         300,
+		AttemptID:      1,
+	}
+
+	// 1. Initial proposal
+	pPayload := campaign.CanonicalPayload{
+		Title:              "Summer Promotion Campaign",
+		Goal:               "Scale user acquisition by 20%",
+		AcceptanceCriteria: []string{"CAC < $50", "ROI > 1.5"},
+	}
+	pHash, _ := campaign.ComputeCanonicalHash(pPayload)
+	p, _, err := store.CreateProposal(ctx, campaign.CreateProposalCommand{
+		OrganizationID:     "org-test",
+		Title:              pPayload.Title,
+		Goal:               pPayload.Goal,
+		AcceptanceCriteria: pPayload.AcceptanceCriteria,
+		CanonicalHash:      pHash,
+		IdempotencyKey:     "prop-promo-1",
+		CreatedByRoleID:    "empresa/ceo",
+	})
+	if err != nil {
+		t.Fatalf("create proposal: %v", err)
+	}
+
+	// 2. Financial review (recommended)
+	recBudget := campaign.BudgetRecommendation{
+		MaxUSD:        5000.0,
+		MaxTokens:     100000,
+		MaxModelCalls: 50,
+		MaxWallTimeMS: 300000,
+		MaxDepth:      5,
+		MaxRetries:    3,
+		MaxSubagents:  4,
+	}
+	rHash, _ := campaign.ComputeReviewCanonicalHash(campaign.ReviewCanonicalPayload{
+		ProposalID:            p.ID,
+		ProposalCanonicalHash: pHash,
+		ReviewerRoleID:        "empresa/finanzas",
+		Verdict:               campaign.VerdictRecommended,
+		RecommendedBudget:     &recBudget,
+	})
+	rev, _, err := store.RecordFinancialReview(ctx, campaign.RecordFinancialReviewCommand{
+		OrganizationID:        "org-test",
+		ReviewRequestID:       101,
+		ProposalID:            p.ID,
+		ProposalCanonicalHash: pHash,
+		ReviewerRoleID:        "empresa/finanzas",
+		Verdict:               campaign.VerdictRecommended,
+		RecommendedBudget:     &recBudget,
+		CanonicalHash:         rHash,
+	})
+	if err != nil {
+		t.Fatalf("record financial review: %v", err)
+	}
+
+	// 3. Owner approval
+	apprHash, _ := campaign.ComputeApprovalCanonicalHash(campaign.ApprovalCanonicalPayload{
+		OrganizationID:               "org-test",
+		ProposalID:                   p.ID,
+		ProposalCanonicalHash:        pHash,
+		FinancialReviewID:            rev.ID,
+		FinancialReviewCanonicalHash: rHash,
+		ApprovedByRoleID:             "owner",
+		ExecutionBudget:              recBudget,
+	})
+	appr, _, err := store.CreateOwnerApproval(ctx, campaign.CreateOwnerApprovalCommand{
+		OrganizationID:               "org-test",
+		ProposalID:                   p.ID,
+		ProposalCanonicalHash:        pHash,
+		FinancialReviewID:            rev.ID,
+		FinancialReviewCanonicalHash: rHash,
+		ApprovedByRoleID:             "owner",
+		ConversationID:               100,
+		MessageID:                    200,
+		TurnTaskID:                   300,
+		ToolCallID:                   "call_appr_1",
+		ExecutionBudget:              recBudget,
+		CanonicalHash:                apprHash,
+		IdempotencyKey:               "appr-promo-1",
+	})
+	if err != nil {
+		t.Fatalf("create owner approval: %v", err)
+	}
+
+	// 4. Promote with unauthorized role context -> must fail
+	unauthTurnCtx := WithTurnContext(ctx, TurnContext{
+		OrganizationID:         "org-test",
+		OrganizationRevisionID: 1,
+		ConversationID:         100,
+		OwnerRoleID:            "unauthorized_role",
+		OwnerMessageID:         200,
+		TaskID:                 300,
+		AttemptID:              1,
+		ActorRoleID:            "empresa/ceo",
+	})
+	promotePayload := json.RawMessage(fmt.Sprintf(`{"owner_approval_id": %d}`, appr.ID))
+	_, err = executor.Execute(unauthTurnCtx, identity, executionharness.ToolRequest{
+		ToolName:   "campaign.promote_to_executive",
+		ToolCallID: "call_promo_unauth",
+		Arguments:  promotePayload,
+	})
+	if err == nil {
+		t.Fatalf("expected error for unauthorized role, got nil")
+	}
+
+	// 5. Promote with non-existent approval ID -> must fail
+	badApprPayload := json.RawMessage(`{"owner_approval_id": 99999}`)
+	_, err = executor.Execute(turnCtxBg, identity, executionharness.ToolRequest{
+		ToolName:   "campaign.promote_to_executive",
+		ToolCallID: "call_promo_notfound",
+		Arguments:  badApprPayload,
+	})
+	if err == nil {
+		t.Fatalf("expected error for nonexistent approval, got nil")
+	}
+
+	// 6. Valid promotion
+	resPromo, err := executor.Execute(turnCtxBg, identity, executionharness.ToolRequest{
+		ToolName:   "campaign.promote_to_executive",
+		ToolCallID: "call_promo_valid",
+		Arguments:  promotePayload,
+	})
+	if err != nil {
+		t.Fatalf("valid promote_to_executive failed: %v", err)
+	}
+
+	var promoProj PromoteResultProjection
+	if err := json.Unmarshal(resPromo.Content, &promoProj); err != nil {
+		t.Fatalf("unmarshal promotion projection: %v", err)
+	}
+	if promoProj.PromotionID == 0 {
+		t.Errorf("expected non-zero promotion ID, got 0")
+	}
+	if promoProj.Status != "submitted" {
+		t.Errorf("status = %q, want submitted", promoProj.Status)
+	}
+	if promoProj.ExecutiveRootTaskID != 777 {
+		t.Errorf("root task ID = %d, want 777", promoProj.ExecutiveRootTaskID)
+	}
+	if promoProj.ExecutiveCorrelationID != "executive:ceochat-test-corr" {
+		t.Errorf("correlation ID = %q, want executive:ceochat-test-corr", promoProj.ExecutiveCorrelationID)
+	}
+	if promoProj.Reused {
+		t.Errorf("expected reused=false on first promotion, got true")
+	}
+
+	// Verify submitter was invoked exactly once with pinned budget
+	if submitter.submitCalls != 1 {
+		t.Errorf("submit calls = %d, want 1", submitter.submitCalls)
+	}
+	if submitter.resumeCalls != 0 {
+		t.Errorf("resume calls = %d, want 0", submitter.resumeCalls)
+	}
+	if submitter.lastRequest.Budget.MaxTokens != recBudget.MaxTokens {
+		t.Errorf("budget tokens = %d, want %d", submitter.lastRequest.Budget.MaxTokens, recBudget.MaxTokens)
+	}
+	if submitter.lastRequest.Budget.MaxModelCalls != int64(recBudget.MaxModelCalls) {
+		t.Errorf("budget model calls = %d, want %d", submitter.lastRequest.Budget.MaxModelCalls, recBudget.MaxModelCalls)
+	}
+	if submitter.lastRequest.ActorRoleID != executive.OwnerRoleID {
+		t.Errorf("actor role = %q, want %q", submitter.lastRequest.ActorRoleID, executive.OwnerRoleID)
+	}
+
+	// 7. Idempotent promotion replay with same approval
+	resPromoRetry, err := executor.Execute(turnCtxBg, identity, executionharness.ToolRequest{
+		ToolName:   "campaign.promote_to_executive",
+		ToolCallID: "call_promo_retry",
+		Arguments:  promotePayload,
+	})
+	if err != nil {
+		t.Fatalf("retry promote_to_executive failed: %v", err)
+	}
+	var promoRetryProj PromoteResultProjection
+	if err := json.Unmarshal(resPromoRetry.Content, &promoRetryProj); err != nil {
+		t.Fatalf("unmarshal retry promotion projection: %v", err)
+	}
+	if promoRetryProj.PromotionID != promoProj.PromotionID {
+		t.Errorf("retry promotion ID = %d, want %d", promoRetryProj.PromotionID, promoProj.PromotionID)
+	}
+	if promoRetryProj.ExecutiveRootTaskID != 777 {
+		t.Errorf("retry root task ID = %d, want 777", promoRetryProj.ExecutiveRootTaskID)
+	}
+	if !promoRetryProj.Reused {
+		t.Errorf("expected reused=true on replay, got false")
+	}
+
+	// 8. Read promotion using campaign.get_promotion by promotion_id
+	getPromoPayload := json.RawMessage(fmt.Sprintf(`{"promotion_id": %d}`, promoProj.PromotionID))
+	resGetPromo, err := executor.Execute(turnCtxBg, identity, executionharness.ToolRequest{
+		ToolName:   "campaign.get_promotion",
+		ToolCallID: "call_get_promo_1",
+		Arguments:  getPromoPayload,
+	})
+	if err != nil {
+		t.Fatalf("campaign.get_promotion by promotion_id failed: %v", err)
+	}
+	var getPromoProj PromotionResultProjection
+	if err := json.Unmarshal(resGetPromo.Content, &getPromoProj); err != nil {
+		t.Fatalf("unmarshal get promotion: %v", err)
+	}
+	if getPromoProj.PromotionID != promoProj.PromotionID {
+		t.Errorf("get promotion ID = %d, want %d", getPromoProj.PromotionID, promoProj.PromotionID)
+	}
+	if getPromoProj.ExecutiveRootTaskID != 777 {
+		t.Errorf("get root task ID = %d, want 777", getPromoProj.ExecutiveRootTaskID)
+	}
+
+	// 9. Read promotion using campaign.get_promotion by owner_approval_id
+	getPromoApprPayload := json.RawMessage(fmt.Sprintf(`{"owner_approval_id": %d}`, appr.ID))
+	resGetPromoAppr, err := executor.Execute(turnCtxBg, identity, executionharness.ToolRequest{
+		ToolName:   "campaign.get_promotion",
+		ToolCallID: "call_get_promo_2",
+		Arguments:  getPromoApprPayload,
+	})
+	if err != nil {
+		t.Fatalf("campaign.get_promotion by owner_approval_id failed: %v", err)
+	}
+	var getPromoApprProj PromotionResultProjection
+	if err := json.Unmarshal(resGetPromoAppr.Content, &getPromoApprProj); err != nil {
+		t.Fatalf("unmarshal get promotion by approval: %v", err)
+	}
+	if getPromoApprProj.PromotionID != promoProj.PromotionID {
+		t.Errorf("get promotion by appr ID = %d, want %d", getPromoApprProj.PromotionID, promoProj.PromotionID)
 	}
 }
