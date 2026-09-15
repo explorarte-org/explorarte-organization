@@ -23,6 +23,9 @@ type memCampaignStore struct {
 	requestsByKey    map[string]campaign.CampaignFinancialReviewRequest
 	financialReviews map[int64]campaign.CampaignFinancialReview
 	reviewsByReqID   map[int64]campaign.CampaignFinancialReview
+	approvals        map[int64]campaign.CampaignOwnerApproval
+	approvalsByKey   map[string]campaign.CampaignOwnerApproval
+	approvalsByTuple map[string]campaign.CampaignOwnerApproval
 	nextID           int64
 }
 
@@ -34,6 +37,9 @@ func newMemCampaignStore() *memCampaignStore {
 		requestsByKey:    make(map[string]campaign.CampaignFinancialReviewRequest),
 		financialReviews: make(map[int64]campaign.CampaignFinancialReview),
 		reviewsByReqID:   make(map[int64]campaign.CampaignFinancialReview),
+		approvals:        make(map[int64]campaign.CampaignOwnerApproval),
+		approvalsByKey:   make(map[string]campaign.CampaignOwnerApproval),
+		approvalsByTuple: make(map[string]campaign.CampaignOwnerApproval),
 		nextID:           1,
 	}
 }
@@ -50,7 +56,10 @@ func (s *memCampaignStore) CreateProposal(ctx context.Context, cmd campaign.Crea
 		return campaign.CampaignProposal{}, false, campaign.ErrIdempotencyConflict
 	}
 
+	rootID := s.nextID
 	p := campaign.CampaignProposal{
+		RevisionNumber:          1,
+		RootProposalID:          &rootID,
 		ID:                      s.nextID,
 		OrganizationID:          cmd.OrganizationID,
 		ConversationID:          cmd.ConversationID,
@@ -256,6 +265,168 @@ func (s *memCampaignStore) GetLatestFinancialReviewForProposal(ctx context.Conte
 	}
 	if !found {
 		return campaign.CampaignFinancialReview{}, campaign.ErrFinancialReviewNotFound
+	}
+	return latest, nil
+}
+
+func (s *memCampaignStore) CreateRevision(ctx context.Context, cmd campaign.CreateRevisionCommand) (campaign.CampaignProposal, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	parent, found := s.proposals[cmd.ParentProposalID]
+	if !found || parent.OrganizationID != cmd.OrganizationID {
+		return campaign.CampaignProposal{}, false, campaign.ErrProposalNotFound
+	}
+
+	rootID := cmd.ParentProposalID
+	if parent.RootProposalID != nil {
+		rootID = *parent.RootProposalID
+	}
+
+	lookupKey := cmd.OrganizationID + ":" + cmd.IdempotencyKey
+	if existing, found := s.proposalsByKey[lookupKey]; found {
+		if existing.CanonicalHash == cmd.CanonicalHash {
+			return existing, true, nil
+		}
+		return campaign.CampaignProposal{}, false, campaign.ErrIdempotencyConflict
+	}
+
+	maxRev := 0
+	for _, p := range s.proposals {
+		if p.OrganizationID == cmd.OrganizationID && p.RootProposalID != nil && *p.RootProposalID == rootID {
+			if p.RevisionNumber > maxRev {
+				maxRev = p.RevisionNumber
+			}
+		}
+	}
+	if maxRev > parent.RevisionNumber {
+		return campaign.CampaignProposal{}, false, campaign.ErrStaleParentRevision
+	}
+
+	parentID := cmd.ParentProposalID
+	newRev := campaign.CampaignProposal{
+		ID:                      s.nextID,
+		OrganizationID:          cmd.OrganizationID,
+		ConversationID:          cmd.ConversationID,
+		CreatedByRoleID:         cmd.CreatedByRoleID,
+		CreatedFromMessageID:    cmd.CreatedFromMessageID,
+		TaskID:                  cmd.TaskID,
+		AttemptID:               cmd.AttemptID,
+		ToolCallID:              cmd.ToolCallID,
+		Status:                  campaign.StatusDraft,
+		Title:                   cmd.Title,
+		Goal:                    cmd.Goal,
+		AcceptanceCriteria:      cmd.AcceptanceCriteria,
+		Requirements:            cmd.Requirements,
+		Budget:                  cmd.Budget,
+		Assumptions:             cmd.Assumptions,
+		Risks:                   cmd.Risks,
+		OpenQuestions:           cmd.OpenQuestions,
+		FinancialReviewRequired: true,
+		ExecutionStarted:        false,
+		ParentProposalID:        &parentID,
+		RevisionNumber:          parent.RevisionNumber + 1,
+		RootProposalID:          &rootID,
+		IdempotencyKey:          cmd.IdempotencyKey,
+		CanonicalHash:           cmd.CanonicalHash,
+		CreatedAt:               time.Now(),
+		UpdatedAt:               time.Now(),
+	}
+	s.nextID++
+	s.proposals[newRev.ID] = newRev
+	s.proposalsByKey[lookupKey] = newRev
+	return newRev, false, nil
+}
+
+func (s *memCampaignStore) GetLatestRevisionForRoot(ctx context.Context, organizationID string, rootProposalID int64) (campaign.CampaignProposal, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var latest campaign.CampaignProposal
+	found := false
+	for _, p := range s.proposals {
+		if p.OrganizationID == organizationID && p.RootProposalID != nil && *p.RootProposalID == rootProposalID {
+			if !found || p.RevisionNumber > latest.RevisionNumber {
+				latest = p
+				found = true
+			}
+		}
+	}
+	if !found {
+		return campaign.CampaignProposal{}, campaign.ErrProposalNotFound
+	}
+	return latest, nil
+}
+
+func (s *memCampaignStore) CreateOwnerApproval(ctx context.Context, cmd campaign.CreateOwnerApprovalCommand) (campaign.CampaignOwnerApproval, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	lookupKey := cmd.OrganizationID + ":" + cmd.IdempotencyKey
+	if existing, found := s.approvalsByKey[lookupKey]; found {
+		if existing.CanonicalHash == cmd.CanonicalHash {
+			return existing, true, nil
+		}
+		return campaign.CampaignOwnerApproval{}, false, campaign.ErrApprovalConflict
+	}
+
+	tupleKey := fmt.Sprintf("%s:%s:%s", cmd.OrganizationID, cmd.ProposalCanonicalHash, cmd.FinancialReviewCanonicalHash)
+	if existing, found := s.approvalsByTuple[tupleKey]; found {
+		return existing, true, nil
+	}
+
+	appr := campaign.CampaignOwnerApproval{
+		ID:                           s.nextID,
+		OrganizationID:               cmd.OrganizationID,
+		ProposalID:                   cmd.ProposalID,
+		ProposalCanonicalHash:        cmd.ProposalCanonicalHash,
+		FinancialReviewID:            cmd.FinancialReviewID,
+		FinancialReviewCanonicalHash: cmd.FinancialReviewCanonicalHash,
+		ApprovedByRoleID:             cmd.ApprovedByRoleID,
+		ConversationID:               cmd.ConversationID,
+		MessageID:                    cmd.MessageID,
+		TurnTaskID:                   cmd.TurnTaskID,
+		ToolCallID:                   cmd.ToolCallID,
+		Status:                       campaign.StatusApprovedForExecution,
+		ExecutionBudget:              cmd.ExecutionBudget,
+		IdempotencyKey:               cmd.IdempotencyKey,
+		CanonicalHash:                cmd.CanonicalHash,
+		CreatedAt:                    time.Now(),
+	}
+	s.nextID++
+	s.approvals[appr.ID] = appr
+	s.approvalsByKey[lookupKey] = appr
+	s.approvalsByTuple[tupleKey] = appr
+	return appr, false, nil
+}
+
+func (s *memCampaignStore) GetOwnerApproval(ctx context.Context, organizationID string, approvalID int64) (campaign.CampaignOwnerApproval, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	a, found := s.approvals[approvalID]
+	if !found || a.OrganizationID != organizationID {
+		return campaign.CampaignOwnerApproval{}, campaign.ErrApprovalNotFound
+	}
+	return a, nil
+}
+
+func (s *memCampaignStore) GetOwnerApprovalByProposal(ctx context.Context, organizationID string, proposalID int64) (campaign.CampaignOwnerApproval, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var latest campaign.CampaignOwnerApproval
+	found := false
+	for _, a := range s.approvals {
+		if a.OrganizationID == organizationID && a.ProposalID == proposalID {
+			if !found || a.CreatedAt.After(latest.CreatedAt) {
+				latest = a
+				found = true
+			}
+		}
+	}
+	if !found {
+		return campaign.CampaignOwnerApproval{}, campaign.ErrApprovalNotFound
 	}
 	return latest, nil
 }
