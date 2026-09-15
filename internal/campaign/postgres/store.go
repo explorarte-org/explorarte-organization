@@ -208,14 +208,14 @@ type rowScanner interface {
 
 func scanProposal(scanner rowScanner) (campaign.CampaignProposal, error) {
 	var (
-		p               campaign.CampaignProposal
-		statusStr       string
-		criteriaBytes   []byte
-		reqsBytes       []byte
-		budgetBytes     []byte
+		p                campaign.CampaignProposal
+		statusStr        string
+		criteriaBytes    []byte
+		reqsBytes        []byte
+		budgetBytes      []byte
 		assumptionsBytes []byte
-		risksBytes      []byte
-		questionsBytes  []byte
+		risksBytes       []byte
+		questionsBytes   []byte
 	)
 
 	err := scanner.Scan(
