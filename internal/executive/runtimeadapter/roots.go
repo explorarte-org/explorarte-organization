@@ -82,7 +82,13 @@ func (a Tasks) ListExecutableRoots(ctx context.Context, limit int) ([]int64, err
 }
 
 func isExecutiveRoot(detail tasks.TaskDetail) bool {
+	if detail.Task.TaskClass != executive.TaskClassOwnerGoal {
+		return false
+	}
 	if detail.Task.AssignedRoleID != executive.CEORoleID || detail.Task.RequestedByRoleID == nil || *detail.Task.RequestedByRoleID != executive.OwnerRoleID {
+		return false
+	}
+	if detail.Task.CorrelationID == nil || *detail.Task.CorrelationID == "" {
 		return false
 	}
 	for _, requirement := range detail.Requirements {
