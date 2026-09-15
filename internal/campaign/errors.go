@@ -30,3 +30,26 @@ var (
 	// ErrSeparationOfDutiesViolation is returned when proponent and reviewer violate separation of duties.
 	ErrSeparationOfDutiesViolation = errors.New("separation of duties violation")
 )
+
+var (
+	// ErrStaleParentRevision is returned when attempting to revise a proposal that is not the latest revision.
+	ErrStaleParentRevision = errors.New("stale parent: only the latest revision may be revised")
+
+	// ErrReviewNotRecommended is returned when attempting to approve a proposal whose review verdict is not recommended.
+	ErrReviewNotRecommended = errors.New("financial review verdict is not recommended")
+
+	// ErrReviewHashMismatch is returned when review canonical hash does not match the approval request.
+	ErrReviewHashMismatch = errors.New("financial review canonical hash mismatch")
+
+	// ErrApprovalNotFound is returned when a requested owner approval does not exist.
+	ErrApprovalNotFound = errors.New("campaign owner approval not found")
+
+	// ErrApprovalConflict is returned when an approval idempotency key is reused with different hashes.
+	ErrApprovalConflict = errors.New("campaign owner approval conflict")
+
+	// ErrNoFinancialReview is returned when no completed financial review exists for a proposal.
+	ErrNoFinancialReview = errors.New("no completed financial review for this proposal")
+
+	// ErrRevisionConflict is returned when a revision idempotency key is reused with a different payload.
+	ErrRevisionConflict = errors.New("campaign proposal revision conflict")
+)

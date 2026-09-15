@@ -72,17 +72,21 @@ func (s *Store) CreateProposal(ctx context.Context, cmd campaign.CreateProposalC
 			organization_id, conversation_id, created_by_role_id, created_from_message_id,
 			task_id, attempt_id, tool_call_id, status, title, goal,
 			acceptance_criteria, requirements, budget, assumptions, risks, open_questions,
-			financial_review_required, execution_started, idempotency_key, canonical_hash
+			financial_review_required, execution_started, idempotency_key, canonical_hash,
+			parent_proposal_id, revision_number, root_proposal_id
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, 'draft', $8, $9,
 			$10, $11, $12, $13, $14, $15,
-			TRUE, FALSE, $16, $17
+			TRUE, FALSE, $16, $17,
+			NULL, 1, NULL
 		)
 		ON CONFLICT (organization_id, idempotency_key) DO NOTHING
 		RETURNING id, organization_id, conversation_id, created_by_role_id, created_from_message_id,
 		          task_id, attempt_id, tool_call_id, status, title, goal,
 		          acceptance_criteria, requirements, budget, assumptions, risks, open_questions,
-		          financial_review_required, execution_started, idempotency_key, canonical_hash,
+		          financial_review_required, execution_started,
+		       parent_proposal_id, revision_number, root_proposal_id,
+		       idempotency_key, canonical_hash,
 		          created_at, updated_at`,
 		cmd.OrganizationID, cmd.ConversationID, cmd.CreatedByRoleID, cmd.CreatedFromMessageID,
 		cmd.TaskID, cmd.AttemptID, cmd.ToolCallID, cmd.Title, cmd.Goal,
@@ -116,7 +120,9 @@ func (s *Store) getProposalByIdempotencyKey(ctx context.Context, organizationID,
 		SELECT id, organization_id, conversation_id, created_by_role_id, created_from_message_id,
 		       task_id, attempt_id, tool_call_id, status, title, goal,
 		       acceptance_criteria, requirements, budget, assumptions, risks, open_questions,
-		       financial_review_required, execution_started, idempotency_key, canonical_hash,
+		       financial_review_required, execution_started,
+		       parent_proposal_id, revision_number, root_proposal_id,
+		       idempotency_key, canonical_hash,
 		       created_at, updated_at
 		FROM campaign_proposals
 		WHERE organization_id = $1 AND idempotency_key = $2`, organizationID, key)
@@ -141,7 +147,9 @@ func (s *Store) GetProposal(ctx context.Context, organizationID string, id int64
 		SELECT id, organization_id, conversation_id, created_by_role_id, created_from_message_id,
 		       task_id, attempt_id, tool_call_id, status, title, goal,
 		       acceptance_criteria, requirements, budget, assumptions, risks, open_questions,
-		       financial_review_required, execution_started, idempotency_key, canonical_hash,
+		       financial_review_required, execution_started,
+		       parent_proposal_id, revision_number, root_proposal_id,
+		       idempotency_key, canonical_hash,
 		       created_at, updated_at
 		FROM campaign_proposals
 		WHERE organization_id = $1 AND id = $2`, organizationID, id)
@@ -168,7 +176,9 @@ func (s *Store) ListProposals(ctx context.Context, organizationID string, limit,
 		SELECT id, organization_id, conversation_id, created_by_role_id, created_from_message_id,
 		       task_id, attempt_id, tool_call_id, status, title, goal,
 		       acceptance_criteria, requirements, budget, assumptions, risks, open_questions,
-		       financial_review_required, execution_started, idempotency_key, canonical_hash,
+		       financial_review_required, execution_started,
+		       parent_proposal_id, revision_number, root_proposal_id,
+		       idempotency_key, canonical_hash,
 		       created_at, updated_at
 		FROM campaign_proposals
 		WHERE organization_id = $1
@@ -540,6 +550,9 @@ func scanProposal(scanner rowScanner) (campaign.CampaignProposal, error) {
 		&questionsBytes,
 		&p.FinancialReviewRequired,
 		&p.ExecutionStarted,
+		&p.ParentProposalID,
+		&p.RevisionNumber,
+		&p.RootProposalID,
 		&p.IdempotencyKey,
 		&p.CanonicalHash,
 		&p.CreatedAt,

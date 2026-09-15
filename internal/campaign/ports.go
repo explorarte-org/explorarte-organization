@@ -33,4 +33,19 @@ type Store interface {
 
 	// GetLatestFinancialReviewForProposal retrieves the latest completed financial review for a proposal.
 	GetLatestFinancialReviewForProposal(ctx context.Context, organizationID string, proposalID int64) (CampaignFinancialReview, error)
+
+	// CreateRevision idempotently creates a new proposal revision with lineage.
+	CreateRevision(ctx context.Context, cmd CreateRevisionCommand) (CampaignProposal, bool, error)
+
+	// GetLatestRevisionForRoot retrieves the latest revision for a proposal root lineage.
+	GetLatestRevisionForRoot(ctx context.Context, organizationID string, rootProposalID int64) (CampaignProposal, error)
+
+	// CreateOwnerApproval idempotently creates an owner execution approval.
+	CreateOwnerApproval(ctx context.Context, cmd CreateOwnerApprovalCommand) (CampaignOwnerApproval, bool, error)
+
+	// GetOwnerApproval retrieves an owner approval by ID.
+	GetOwnerApproval(ctx context.Context, organizationID string, approvalID int64) (CampaignOwnerApproval, error)
+
+	// GetOwnerApprovalByProposal retrieves the owner approval for a specific proposal.
+	GetOwnerApprovalByProposal(ctx context.Context, organizationID string, proposalID int64) (CampaignOwnerApproval, error)
 }

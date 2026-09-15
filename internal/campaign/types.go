@@ -57,6 +57,9 @@ type CampaignProposal struct {
 	OpenQuestions           []string              `json:"open_questions"`
 	FinancialReviewRequired bool                  `json:"financial_review_required"`
 	ExecutionStarted        bool                  `json:"execution_started"`
+	ParentProposalID        *int64                `json:"parent_proposal_id,omitempty"`
+	RevisionNumber          int                   `json:"revision_number"`
+	RootProposalID          *int64                `json:"root_proposal_id,omitempty"`
 	IdempotencyKey          string                `json:"idempotency_key"`
 	CanonicalHash           string                `json:"canonical_hash"`
 	CreatedAt               time.Time             `json:"created_at"`
@@ -229,4 +232,73 @@ type RecordFinancialReviewCommand struct {
 	MissingInformation    []string
 	Summary               string
 	CanonicalHash         string
+}
+
+// ApprovalStatus represents the lifecycle state of an owner execution approval.
+type ApprovalStatus string
+
+const (
+	// StatusApprovedForExecution means the owner has authorized promotion to Executive.
+	StatusApprovedForExecution ApprovalStatus = "approved_for_execution"
+)
+
+// CampaignOwnerApproval is the durable, append-only record of an owner approving
+// a specific campaign proposal + financial review tuple for eventual Executive promotion.
+type CampaignOwnerApproval struct {
+	ID                           int64                `json:"id"`
+	OrganizationID               string               `json:"organization_id"`
+	ProposalID                   int64                `json:"proposal_id"`
+	ProposalCanonicalHash        string               `json:"proposal_canonical_hash"`
+	FinancialReviewID            int64                `json:"financial_review_id"`
+	FinancialReviewCanonicalHash string               `json:"financial_review_canonical_hash"`
+	ApprovedByRoleID             string               `json:"approved_by_role_id"`
+	ConversationID               int64                `json:"conversation_id,omitempty"`
+	MessageID                    int64                `json:"message_id,omitempty"`
+	TurnTaskID                   int64                `json:"turn_task_id,omitempty"`
+	ToolCallID                   string               `json:"tool_call_id"`
+	Status                       ApprovalStatus       `json:"status"`
+	ExecutionBudget              BudgetRecommendation `json:"execution_budget"`
+	IdempotencyKey               string               `json:"idempotency_key"`
+	CanonicalHash                string               `json:"canonical_hash"`
+	CreatedAt                    time.Time            `json:"created_at"`
+}
+
+// CreateRevisionCommand specifies the inputs required to create a new proposal revision.
+type CreateRevisionCommand struct {
+	OrganizationID       string
+	ParentProposalID     int64
+	ConversationID       int64
+	CreatedByRoleID      string
+	CreatedFromMessageID int64
+	TaskID               int64
+	AttemptID            int64
+	ToolCallID           string
+	IdempotencyKey       string
+	CanonicalHash        string
+
+	Title              string
+	Goal               string
+	AcceptanceCriteria []string
+	Requirements       []ProposalRequirement
+	Budget             *ProposalBudget
+	Assumptions        []string
+	Risks              []string
+	OpenQuestions      []string
+}
+
+// CreateOwnerApprovalCommand specifies the inputs required to record an owner execution approval.
+type CreateOwnerApprovalCommand struct {
+	OrganizationID               string
+	ProposalID                   int64
+	ProposalCanonicalHash        string
+	FinancialReviewID            int64
+	FinancialReviewCanonicalHash string
+	ApprovedByRoleID             string
+	ConversationID               int64
+	MessageID                    int64
+	TurnTaskID                   int64
+	ToolCallID                   string
+	ExecutionBudget              BudgetRecommendation
+	IdempotencyKey               string
+	CanonicalHash                string
 }
