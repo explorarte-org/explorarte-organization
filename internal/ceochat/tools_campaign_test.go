@@ -20,6 +20,9 @@ type fakeCampaignStore struct {
 	byID             map[int64]campaign.CampaignProposal
 	reviewRequests   map[int64]campaign.CampaignFinancialReviewRequest
 	financialReviews map[int64]campaign.CampaignFinancialReview
+	approvals        map[int64]campaign.CampaignOwnerApproval
+	approvalsByKey   map[string]campaign.CampaignOwnerApproval
+	approvalsByTuple map[string]campaign.CampaignOwnerApproval
 	nextID           int64
 }
 
@@ -29,6 +32,9 @@ func newFakeCampaignStore() *fakeCampaignStore {
 		byID:             make(map[int64]campaign.CampaignProposal),
 		reviewRequests:   make(map[int64]campaign.CampaignFinancialReviewRequest),
 		financialReviews: make(map[int64]campaign.CampaignFinancialReview),
+		approvals:        make(map[int64]campaign.CampaignOwnerApproval),
+		approvalsByKey:   make(map[string]campaign.CampaignOwnerApproval),
+		approvalsByTuple: make(map[string]campaign.CampaignOwnerApproval),
 		nextID:           1,
 	}
 }
@@ -45,7 +51,10 @@ func (s *fakeCampaignStore) CreateProposal(ctx context.Context, cmd campaign.Cre
 		return campaign.CampaignProposal{}, false, fmt.Errorf("%w: hash mismatch", campaign.ErrIdempotencyConflict)
 	}
 
+	rootID := s.nextID
 	p := campaign.CampaignProposal{
+		RevisionNumber:          1,
+		RootProposalID:          &rootID,
 		ID:                      s.nextID,
 		OrganizationID:          cmd.OrganizationID,
 		ConversationID:          cmd.ConversationID,
@@ -232,6 +241,168 @@ func (s *fakeCampaignStore) GetLatestFinancialReviewForProposal(ctx context.Cont
 	}
 	if !found {
 		return campaign.CampaignFinancialReview{}, campaign.ErrFinancialReviewNotFound
+	}
+	return latest, nil
+}
+
+func (s *fakeCampaignStore) CreateRevision(ctx context.Context, cmd campaign.CreateRevisionCommand) (campaign.CampaignProposal, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	parent, found := s.byID[cmd.ParentProposalID]
+	if !found || parent.OrganizationID != cmd.OrganizationID {
+		return campaign.CampaignProposal{}, false, campaign.ErrProposalNotFound
+	}
+
+	rootID := cmd.ParentProposalID
+	if parent.RootProposalID != nil {
+		rootID = *parent.RootProposalID
+	}
+
+	lookupKey := cmd.OrganizationID + ":" + cmd.IdempotencyKey
+	if existing, found := s.proposals[lookupKey]; found {
+		if existing.CanonicalHash == cmd.CanonicalHash {
+			return existing, true, nil
+		}
+		return campaign.CampaignProposal{}, false, fmt.Errorf("%w: hash mismatch", campaign.ErrIdempotencyConflict)
+	}
+
+	maxRev := 0
+	for _, p := range s.byID {
+		if p.OrganizationID == cmd.OrganizationID && p.RootProposalID != nil && *p.RootProposalID == rootID {
+			if p.RevisionNumber > maxRev {
+				maxRev = p.RevisionNumber
+			}
+		}
+	}
+	if maxRev > parent.RevisionNumber {
+		return campaign.CampaignProposal{}, false, campaign.ErrStaleParentRevision
+	}
+
+	parentID := cmd.ParentProposalID
+	rev := campaign.CampaignProposal{
+		ID:                      s.nextID,
+		OrganizationID:          cmd.OrganizationID,
+		ConversationID:          cmd.ConversationID,
+		CreatedByRoleID:         cmd.CreatedByRoleID,
+		CreatedFromMessageID:    cmd.CreatedFromMessageID,
+		TaskID:                  cmd.TaskID,
+		AttemptID:               cmd.AttemptID,
+		ToolCallID:              cmd.ToolCallID,
+		Status:                  campaign.StatusDraft,
+		Title:                   cmd.Title,
+		Goal:                    cmd.Goal,
+		AcceptanceCriteria:      cmd.AcceptanceCriteria,
+		Requirements:            cmd.Requirements,
+		Budget:                  cmd.Budget,
+		Assumptions:             cmd.Assumptions,
+		Risks:                   cmd.Risks,
+		OpenQuestions:           cmd.OpenQuestions,
+		FinancialReviewRequired: true,
+		ExecutionStarted:        false,
+		ParentProposalID:        &parentID,
+		RevisionNumber:          parent.RevisionNumber + 1,
+		RootProposalID:          &rootID,
+		IdempotencyKey:          cmd.IdempotencyKey,
+		CanonicalHash:           cmd.CanonicalHash,
+		CreatedAt:               time.Now(),
+		UpdatedAt:               time.Now(),
+	}
+	s.nextID++
+	s.proposals[lookupKey] = rev
+	s.byID[rev.ID] = rev
+	return rev, false, nil
+}
+
+func (s *fakeCampaignStore) GetLatestRevisionForRoot(ctx context.Context, organizationID string, rootProposalID int64) (campaign.CampaignProposal, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var latest campaign.CampaignProposal
+	found := false
+	for _, p := range s.byID {
+		if p.OrganizationID == organizationID && p.RootProposalID != nil && *p.RootProposalID == rootProposalID {
+			if !found || p.RevisionNumber > latest.RevisionNumber {
+				latest = p
+				found = true
+			}
+		}
+	}
+	if !found {
+		return campaign.CampaignProposal{}, campaign.ErrProposalNotFound
+	}
+	return latest, nil
+}
+
+func (s *fakeCampaignStore) CreateOwnerApproval(ctx context.Context, cmd campaign.CreateOwnerApprovalCommand) (campaign.CampaignOwnerApproval, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	lookupKey := cmd.OrganizationID + ":" + cmd.IdempotencyKey
+	if existing, found := s.approvalsByKey[lookupKey]; found {
+		if existing.CanonicalHash == cmd.CanonicalHash {
+			return existing, true, nil
+		}
+		return campaign.CampaignOwnerApproval{}, false, campaign.ErrApprovalConflict
+	}
+
+	tupleKey := fmt.Sprintf("%s:%s:%s", cmd.OrganizationID, cmd.ProposalCanonicalHash, cmd.FinancialReviewCanonicalHash)
+	if existing, found := s.approvalsByTuple[tupleKey]; found {
+		return existing, true, nil
+	}
+
+	appr := campaign.CampaignOwnerApproval{
+		ID:                           s.nextID,
+		OrganizationID:               cmd.OrganizationID,
+		ProposalID:                   cmd.ProposalID,
+		ProposalCanonicalHash:        cmd.ProposalCanonicalHash,
+		FinancialReviewID:            cmd.FinancialReviewID,
+		FinancialReviewCanonicalHash: cmd.FinancialReviewCanonicalHash,
+		ApprovedByRoleID:             cmd.ApprovedByRoleID,
+		ConversationID:               cmd.ConversationID,
+		MessageID:                    cmd.MessageID,
+		TurnTaskID:                   cmd.TurnTaskID,
+		ToolCallID:                   cmd.ToolCallID,
+		Status:                       campaign.StatusApprovedForExecution,
+		ExecutionBudget:              cmd.ExecutionBudget,
+		IdempotencyKey:               cmd.IdempotencyKey,
+		CanonicalHash:                cmd.CanonicalHash,
+		CreatedAt:                    time.Now(),
+	}
+	s.nextID++
+	s.approvals[appr.ID] = appr
+	s.approvalsByKey[lookupKey] = appr
+	s.approvalsByTuple[tupleKey] = appr
+	return appr, false, nil
+}
+
+func (s *fakeCampaignStore) GetOwnerApproval(ctx context.Context, organizationID string, approvalID int64) (campaign.CampaignOwnerApproval, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	a, found := s.approvals[approvalID]
+	if !found || a.OrganizationID != organizationID {
+		return campaign.CampaignOwnerApproval{}, campaign.ErrApprovalNotFound
+	}
+	return a, nil
+}
+
+func (s *fakeCampaignStore) GetOwnerApprovalByProposal(ctx context.Context, organizationID string, proposalID int64) (campaign.CampaignOwnerApproval, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var latest campaign.CampaignOwnerApproval
+	found := false
+	for _, a := range s.approvals {
+		if a.OrganizationID == organizationID && a.ProposalID == proposalID {
+			if !found || a.CreatedAt.After(latest.CreatedAt) {
+				latest = a
+				found = true
+			}
+		}
+	}
+	if !found {
+		return campaign.CampaignOwnerApproval{}, campaign.ErrApprovalNotFound
 	}
 	return latest, nil
 }
@@ -549,5 +720,163 @@ func TestCampaignFinancialReviewTools(t *testing.T) {
 	}
 	if revProj.Verdict != string(campaign.VerdictRecommended) || revProj.ProposalID != prop.ID {
 		t.Errorf("unexpected financial review projection: %+v", revProj)
+	}
+}
+
+func TestCampaignReviseProposalAndOwnerApprovalTools(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeCampaignStore()
+	auth := fakeAuthorizer{
+		allowed: map[string]bool{
+			"owner:campaign.proposal.create":           true,
+			"owner:campaign.proposal.read":             true,
+			"owner:campaign.proposal.revise":           true,
+			"owner:campaign.owner_approval.create":     true,
+			"owner:campaign.owner_approval.read":       true,
+			"empresa/ceo:campaign.proposal.revise":     true,
+			"empresa/ceo:campaign.owner_approval.read": true,
+		},
+	}
+	approvalSvc := campaign.NewApprovalService(store, auth)
+	reg := NewToolRegistry()
+	if err := RegisterCampaignTools(reg, "org-test", store, auth, WithApprovalService(approvalSvc)); err != nil {
+		t.Fatalf("RegisterCampaignTools failed: %v", err)
+	}
+	executor := RegistryToolExecutor{Registry: reg}
+
+	turnCtx := TurnContext{
+		OrganizationID:         "org-test",
+		OrganizationRevisionID: 1,
+		ConversationID:         100,
+		OwnerRoleID:            "owner",
+		OwnerMessageID:         200,
+		TaskID:                 300,
+		AttemptID:              1,
+		ActorRoleID:            "empresa/ceo",
+	}
+	turnCtxBg := WithTurnContext(ctx, turnCtx)
+	identity := executionharness.RunIdentity{
+		OrganizationID: "org-test",
+		RoleID:         CEORoleID,
+		TaskID:         300,
+		AttemptID:      1,
+	}
+
+	// 1. Initial proposal
+	p1Hash, _ := campaign.ComputeCanonicalHash(campaign.CanonicalPayload{
+		Title: "Initial Title",
+		Goal:  "Initial Goal",
+	})
+	p1, _, err := store.CreateProposal(ctx, campaign.CreateProposalCommand{
+		OrganizationID: "org-test",
+		Title:          "Initial Title",
+		Goal:           "Initial Goal",
+		IdempotencyKey: "k-p1",
+		CanonicalHash:  p1Hash,
+	})
+	if err != nil {
+		t.Fatalf("create initial proposal: %v", err)
+	}
+
+	// 2. Revise proposal using campaign.revise_proposal tool
+	revisePayload := json.RawMessage(fmt.Sprintf(`{
+		"proposal_id": %d,
+		"title": "Revised Title",
+		"goal": "Revised Goal",
+		"acceptance_criteria": ["Criteria 1", "Criteria 2"]
+	}`, p1.ID))
+
+	resRev, err := executor.Execute(turnCtxBg, identity, executionharness.ToolRequest{
+		ToolName:   "campaign.revise_proposal",
+		ToolCallID: "call_rev_1",
+		Arguments:  revisePayload,
+	})
+	if err != nil {
+		t.Fatalf("campaign.revise_proposal failed: %v", err)
+	}
+
+	var revProj ReviseProposalResultProjection
+	if err := json.Unmarshal(resRev.Content, &revProj); err != nil {
+		t.Fatalf("unmarshal revision result: %v", err)
+	}
+	if revProj.ParentProposalID != p1.ID || revProj.RevisionNumber != 2 {
+		t.Fatalf("unexpected revision projection: %+v", revProj)
+	}
+
+	// 3. Record recommended review for v2
+	r2Hash, _ := campaign.ComputeReviewCanonicalHash(campaign.ReviewCanonicalPayload{
+		ProposalID:            revProj.ProposalID,
+		ProposalCanonicalHash: revProj.CanonicalHash,
+		ReviewerRoleID:        "empresa/finanzas",
+		Verdict:               campaign.VerdictRecommended,
+	})
+	recBudget := &campaign.BudgetRecommendation{
+		MaxUSD:        12000,
+		MaxTokens:     300000,
+		MaxModelCalls: 120,
+		MaxWallTimeMS: 86400000,
+		MaxDepth:      7,
+		MaxRetries:    5,
+		MaxSubagents:  4,
+	}
+	rev2, _, err := store.RecordFinancialReview(ctx, campaign.RecordFinancialReviewCommand{
+		OrganizationID:        "org-test",
+		ReviewRequestID:       555,
+		ProposalID:            revProj.ProposalID,
+		ProposalCanonicalHash: revProj.CanonicalHash,
+		ReviewerRoleID:        "empresa/finanzas",
+		Verdict:               campaign.VerdictRecommended,
+		RecommendedBudget:     recBudget,
+		CanonicalHash:         r2Hash,
+	})
+	if err != nil {
+		t.Fatalf("record review v2: %v", err)
+	}
+
+	// 4. Approve for execution using campaign.approve_for_execution
+	apprPayload := json.RawMessage(fmt.Sprintf(`{
+		"proposal_id": %d,
+		"financial_review_id": %d
+	}`, revProj.ProposalID, rev2.ID))
+
+	resAppr, err := executor.Execute(turnCtxBg, identity, executionharness.ToolRequest{
+		ToolName:   "campaign.approve_for_execution",
+		ToolCallID: "call_appr_1",
+		Arguments:  apprPayload,
+	})
+	if err != nil {
+		t.Fatalf("campaign.approve_for_execution failed: %v", err)
+	}
+
+	var apprProj OwnerApprovalResultProjection
+	if err := json.Unmarshal(resAppr.Content, &apprProj); err != nil {
+		t.Fatalf("unmarshal approval result: %v", err)
+	}
+	if apprProj.ProposalID != revProj.ProposalID || apprProj.FinancialReviewID != rev2.ID {
+		t.Fatalf("unexpected approval projection: %+v", apprProj)
+	}
+	if apprProj.ApprovedByRoleID != "owner" {
+		t.Fatalf("expected approved by owner, got %s", apprProj.ApprovedByRoleID)
+	}
+	if apprProj.ExecutionBudget.MaxUSD != recBudget.MaxUSD {
+		t.Fatalf("budget mismatch: got %v want %v", apprProj.ExecutionBudget.MaxUSD, recBudget.MaxUSD)
+	}
+
+	// 5. Read approval with campaign.get_owner_approval
+	getApprPayload := json.RawMessage(fmt.Sprintf(`{"approval_id": %d}`, apprProj.ApprovalID))
+	resGetAppr, err := executor.Execute(turnCtxBg, identity, executionharness.ToolRequest{
+		ToolName:   "campaign.get_owner_approval",
+		ToolCallID: "call_get_appr_1",
+		Arguments:  getApprPayload,
+	})
+	if err != nil {
+		t.Fatalf("campaign.get_owner_approval failed: %v", err)
+	}
+	var getApprProj OwnerApprovalResultProjection
+	if err := json.Unmarshal(resGetAppr.Content, &getApprProj); err != nil {
+		t.Fatalf("unmarshal get approval result: %v", err)
+	}
+	if getApprProj.ApprovalID != apprProj.ApprovalID {
+		t.Fatalf("expected approval ID %d, got %d", apprProj.ApprovalID, getApprProj.ApprovalID)
 	}
 }

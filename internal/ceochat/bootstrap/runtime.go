@@ -12,6 +12,7 @@ import (
 
 	"github.com/Mireuz13/explorarte-organization/internal/authorization"
 	authorizationpostgres "github.com/Mireuz13/explorarte-organization/internal/authorization/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/campaign"
 	campaignpostgres "github.com/Mireuz13/explorarte-organization/internal/campaign/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/ceochat"
 	ceochatpostgres "github.com/Mireuz13/explorarte-organization/internal/ceochat/postgres"
@@ -193,7 +194,8 @@ func Open(cfg config.Config, store *platformpostgres.Store, modelRuntimeOpts ...
 	if err != nil {
 		return nil, fmt.Errorf("create ceochat capability authorizer: %w", err)
 	}
-	if err = ceochat.RegisterCampaignTools(toolRegistry, organizationID, campaignStore, authorizerPolicy); err != nil {
+	approvalService := campaign.NewApprovalService(campaignStore, authorizerPolicy)
+	if err = ceochat.RegisterCampaignTools(toolRegistry, organizationID, campaignStore, authorizerPolicy, ceochat.WithApprovalService(approvalService)); err != nil {
 		return nil, fmt.Errorf("register ceochat campaign tools: %w", err)
 	}
 

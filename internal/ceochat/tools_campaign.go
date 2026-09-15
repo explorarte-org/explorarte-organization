@@ -18,7 +18,8 @@ type CapabilityAuthorizer interface {
 
 // CampaignToolsConfig holds optional collaborators for campaign tools.
 type CampaignToolsConfig struct {
-	FinanceService *campaign.FinanceService
+	FinanceService  *campaign.FinanceService
+	ApprovalService *campaign.ApprovalService
 }
 
 // CampaignToolsOption configures CampaignToolsConfig.
@@ -28,6 +29,13 @@ type CampaignToolsOption func(*CampaignToolsConfig)
 func WithFinanceService(svc *campaign.FinanceService) CampaignToolsOption {
 	return func(c *CampaignToolsConfig) {
 		c.FinanceService = svc
+	}
+}
+
+// WithApprovalService configures an ApprovalService for campaign owner execution approval tools.
+func WithApprovalService(svc *campaign.ApprovalService) CampaignToolsOption {
+	return func(c *CampaignToolsConfig) {
+		c.ApprovalService = svc
 	}
 }
 
@@ -70,6 +78,31 @@ type FinancialReviewResultProjection struct {
 	CreatedAt             string                         `json:"created_at"`
 }
 
+// ReviseProposalResultProjection is the bounded projection returned to the model upon proposal revision.
+type ReviseProposalResultProjection struct {
+	ProposalID       int64  `json:"proposal_id"`
+	ParentProposalID int64  `json:"parent_proposal_id"`
+	RevisionNumber   int    `json:"revision_number"`
+	RootProposalID   int64  `json:"root_proposal_id"`
+	Status           string `json:"status"`
+	Title            string `json:"title"`
+	CanonicalHash    string `json:"canonical_hash"`
+}
+
+// OwnerApprovalResultProjection is the bounded projection returned upon owner execution approval.
+type OwnerApprovalResultProjection struct {
+	ApprovalID                   int64                         `json:"approval_id"`
+	ProposalID                   int64                         `json:"proposal_id"`
+	ProposalCanonicalHash        string                        `json:"proposal_canonical_hash"`
+	FinancialReviewID            int64                         `json:"financial_review_id"`
+	FinancialReviewCanonicalHash string                        `json:"financial_review_canonical_hash"`
+	ApprovedByRoleID             string                        `json:"approved_by_role_id"`
+	Status                       string                        `json:"status"`
+	ExecutionBudget              campaign.BudgetRecommendation `json:"execution_budget"`
+	CanonicalHash                string                        `json:"canonical_hash"`
+	CreatedAt                    string                        `json:"created_at"`
+}
+
 type proposeArgs struct {
 	Title              string                         `json:"title"`
 	Goal               string                         `json:"goal"`
@@ -97,6 +130,28 @@ type getFinancialReviewArgs struct {
 	ReviewID        int64 `json:"review_id,omitempty"`
 	ProposalID      int64 `json:"proposal_id,omitempty"`
 	ReviewRequestID int64 `json:"review_request_id,omitempty"`
+}
+
+type reviseProposalArgs struct {
+	ProposalID         int64                          `json:"proposal_id"`
+	Title              string                         `json:"title"`
+	Goal               string                         `json:"goal"`
+	AcceptanceCriteria []string                       `json:"acceptance_criteria"`
+	Requirements       []campaign.ProposalRequirement `json:"requirements"`
+	Budget             *campaign.ProposalBudget       `json:"budget"`
+	Assumptions        []string                       `json:"assumptions"`
+	Risks              []string                       `json:"risks"`
+	OpenQuestions      []string                       `json:"open_questions"`
+}
+
+type approveForExecutionArgs struct {
+	ProposalID        int64 `json:"proposal_id"`
+	FinancialReviewID int64 `json:"financial_review_id"`
+}
+
+type getOwnerApprovalArgs struct {
+	ApprovalID int64 `json:"approval_id,omitempty"`
+	ProposalID int64 `json:"proposal_id,omitempty"`
 }
 
 var (
@@ -185,6 +240,79 @@ var (
 			"review_id": {"type": "integer", "minimum": 1, "description": "Durable ID of the financial review."},
 			"proposal_id": {"type": "integer", "minimum": 1, "description": "Durable ID of the proposal whose financial review to retrieve."},
 			"review_request_id": {"type": "integer", "minimum": 1, "description": "Durable ID of the review request."}
+		},
+		"additionalProperties": false
+	}`)
+
+	campaignReviseProposalInputSchema = json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"proposal_id": {"type": "integer", "minimum": 1, "description": "Durable ID of the campaign proposal to revise."},
+			"title": {"type": "string", "maxLength": 4000, "description": "Short, clear title of the revised campaign proposal."},
+			"goal": {"type": "string", "maxLength": 16000, "description": "High-level goal and objective of the revised campaign."},
+			"acceptance_criteria": {
+				"type": "array",
+				"items": {"type": "string", "maxLength": 2000},
+				"description": "Measurable criteria defining successful completion (1 to 20 items)."
+			},
+			"requirements": {
+				"type": "array",
+				"items": {
+					"type": "object",
+					"properties": {
+						"key": {"type": "string", "maxLength": 200},
+						"description": {"type": "string", "maxLength": 2000},
+						"required": {"type": "boolean"}
+					},
+					"required": ["key", "description"]
+				},
+				"description": "Operational requirements for the revised campaign (up to 20 items)."
+			},
+			"budget": {
+				"type": "object",
+				"properties": {
+					"currency": {"type": "string", "maxLength": 10, "description": "Currency code (e.g. USD)"},
+					"max_amount": {"type": "number", "minimum": 0, "description": "Proposed maximum spending limit or estimate."},
+					"source": {"type": "string", "enum": ["OWNER_LIMIT", "CEO_ESTIMATE", "UNKNOWN"]}
+				},
+				"required": ["currency", "max_amount"],
+				"description": "Non-executing estimated or proposed spending constraint."
+			},
+			"assumptions": {
+				"type": "array",
+				"items": {"type": "string", "maxLength": 2000},
+				"description": "Key assumptions behind this proposal revision (up to 20 items)."
+			},
+			"risks": {
+				"type": "array",
+				"items": {"type": "string", "maxLength": 2000},
+				"description": "Identified risks and potential mitigations (up to 20 items)."
+			},
+			"open_questions": {
+				"type": "array",
+				"items": {"type": "string", "maxLength": 2000},
+				"description": "Open questions requiring owner or team clarification (up to 20 items)."
+			}
+		},
+		"required": ["proposal_id", "title", "goal", "acceptance_criteria"],
+		"additionalProperties": false
+	}`)
+
+	campaignApproveForExecutionInputSchema = json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"proposal_id": {"type": "integer", "minimum": 1, "description": "Durable ID of the campaign proposal to approve for execution."},
+			"financial_review_id": {"type": "integer", "minimum": 1, "description": "Durable ID of the recommended financial review."}
+		},
+		"required": ["proposal_id", "financial_review_id"],
+		"additionalProperties": false
+	}`)
+
+	campaignGetOwnerApprovalInputSchema = json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"approval_id": {"type": "integer", "minimum": 1, "description": "Durable ID of the owner execution approval."},
+			"proposal_id": {"type": "integer", "minimum": 1, "description": "Durable ID of the proposal whose approval to retrieve."}
 		},
 		"additionalProperties": false
 	}`)
@@ -630,6 +758,307 @@ func RegisterCampaignTools(registry *ToolRegistry, organizationID string, store 
 
 	if err := registry.Register(getFinDesc, getFinValidator, getFinHandler); err != nil {
 		return fmt.Errorf("register campaign.get_financial_review: %w", err)
+	}
+
+	// 6. campaign.revise_proposal (MUTATING)
+	reviseDesc := ToolDescriptor{
+		ID:           "campaign.revise_proposal",
+		Version:      "v1",
+		Description:  "Creates an immutable new revision of an existing campaign proposal with lineage. Does NOT execute or authorize spend.",
+		InputSchema:  campaignReviseProposalInputSchema,
+		Access:       AccessMutating,
+		Effect:       ToolEffectWrite,
+		RequiredRole: CEORoleID,
+		Limits: ToolLimits{
+			MaxRows:        1,
+			MaxResultBytes: 16384,
+			Timeout:        defaultToolTimeout,
+		},
+		DataClass: DataClassInternal,
+	}
+
+	reviseValidator := func(raw json.RawMessage) error {
+		var args reviseProposalArgs
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidInput, err)
+		}
+		if args.ProposalID <= 0 {
+			return fmt.Errorf("%w: proposal_id must be positive", ErrInvalidInput)
+		}
+		if strings.TrimSpace(args.Title) == "" {
+			return fmt.Errorf("%w: title cannot be empty", ErrInvalidInput)
+		}
+		if strings.TrimSpace(args.Goal) == "" {
+			return fmt.Errorf("%w: goal cannot be empty", ErrInvalidInput)
+		}
+		if len(args.AcceptanceCriteria) == 0 {
+			return fmt.Errorf("%w: at least one acceptance criterion is required", ErrInvalidInput)
+		}
+		return nil
+	}
+
+	reviseHandler := func(ctx context.Context, actorRoleID string, raw json.RawMessage) (json.RawMessage, error) {
+		turnCtx, ok := TurnContextFrom(ctx)
+		if !ok {
+			return nil, fmt.Errorf("%w: missing turn context", ErrInvalidInput)
+		}
+		toolCallCtx, _ := ToolCallContextFrom(ctx)
+
+		if authorizer != nil {
+			if err := authorizer.Authorize(ctx, turnCtx.OrganizationID, turnCtx.OrganizationRevisionID, turnCtx.ActorRoleID, campaign.CapabilityProposalRevise); err != nil {
+				return nil, fmt.Errorf("%w: actor %q lacks %s capability: %v", ErrUnauthorizedActor, turnCtx.ActorRoleID, campaign.CapabilityProposalRevise, err)
+			}
+		}
+
+		var args reviseProposalArgs
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrInvalidInput, err)
+		}
+
+		if args.Budget != nil && args.Budget.Source == "" {
+			args.Budget.Source = campaign.BudgetSourceCEOEstimate
+		}
+
+		canonicalHash, err := campaign.ComputeCanonicalHash(campaign.CanonicalPayload{
+			Title:              args.Title,
+			Goal:               args.Goal,
+			AcceptanceCriteria: args.AcceptanceCriteria,
+			Requirements:       args.Requirements,
+			Budget:             args.Budget,
+			Assumptions:        args.Assumptions,
+			Risks:              args.Risks,
+			OpenQuestions:      args.OpenQuestions,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("%w: compute canonical hash: %v", ErrInvalidInput, err)
+		}
+
+		idempotencyKey := fmt.Sprintf("crev:%d:%d:%s", turnCtx.ConversationID, turnCtx.TaskID, toolCallCtx.ToolCallID)
+		if len(idempotencyKey) > campaign.MaxIdempotencyKeyLength {
+			h := sha256.Sum256([]byte(toolCallCtx.ToolCallID))
+			idempotencyKey = fmt.Sprintf("crev:%d:%d:%x", turnCtx.ConversationID, turnCtx.TaskID, h[:])
+		}
+
+		rev, _, err := store.CreateRevision(ctx, campaign.CreateRevisionCommand{
+			OrganizationID:       turnCtx.OrganizationID,
+			ParentProposalID:     args.ProposalID,
+			ConversationID:       turnCtx.ConversationID,
+			CreatedByRoleID:      turnCtx.ActorRoleID,
+			CreatedFromMessageID: turnCtx.OwnerMessageID,
+			TaskID:               turnCtx.TaskID,
+			AttemptID:            turnCtx.AttemptID,
+			ToolCallID:           toolCallCtx.ToolCallID,
+			IdempotencyKey:       idempotencyKey,
+			CanonicalHash:        canonicalHash,
+			Title:                args.Title,
+			Goal:                 args.Goal,
+			AcceptanceCriteria:   args.AcceptanceCriteria,
+			Requirements:         args.Requirements,
+			Budget:               args.Budget,
+			Assumptions:          args.Assumptions,
+			Risks:                args.Risks,
+			OpenQuestions:        args.OpenQuestions,
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		parentID := int64(0)
+		if rev.ParentProposalID != nil {
+			parentID = *rev.ParentProposalID
+		}
+		rootID := int64(0)
+		if rev.RootProposalID != nil {
+			rootID = *rev.RootProposalID
+		}
+
+		projection := ReviseProposalResultProjection{
+			ProposalID:       rev.ID,
+			ParentProposalID: parentID,
+			RevisionNumber:   rev.RevisionNumber,
+			RootProposalID:   rootID,
+			Status:           string(rev.Status),
+			Title:            rev.Title,
+			CanonicalHash:    rev.CanonicalHash,
+		}
+		return json.Marshal(projection)
+	}
+
+	if err := registry.Register(reviseDesc, reviseValidator, reviseHandler); err != nil {
+		return fmt.Errorf("register campaign.revise_proposal: %w", err)
+	}
+
+	// 7. campaign.approve_for_execution (MUTATING)
+	approveDesc := ToolDescriptor{
+		ID:           "campaign.approve_for_execution",
+		Version:      "v1",
+		Description:  "Records durable owner execution approval for an exact campaign proposal and recommended financial review tuple. Does NOT execute or call Executive.Submit.",
+		InputSchema:  campaignApproveForExecutionInputSchema,
+		Access:       AccessMutating,
+		Effect:       ToolEffectWrite,
+		RequiredRole: CEORoleID,
+		Limits: ToolLimits{
+			MaxRows:        1,
+			MaxResultBytes: 16384,
+			Timeout:        defaultToolTimeout,
+		},
+		DataClass: DataClassInternal,
+	}
+
+	approveValidator := func(raw json.RawMessage) error {
+		var args approveForExecutionArgs
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidInput, err)
+		}
+		if args.ProposalID <= 0 {
+			return fmt.Errorf("%w: proposal_id must be positive", ErrInvalidInput)
+		}
+		if args.FinancialReviewID <= 0 {
+			return fmt.Errorf("%w: financial_review_id must be positive", ErrInvalidInput)
+		}
+		return nil
+	}
+
+	approveHandler := func(ctx context.Context, actorRoleID string, raw json.RawMessage) (json.RawMessage, error) {
+		turnCtx, ok := TurnContextFrom(ctx)
+		if !ok {
+			return nil, fmt.Errorf("%w: missing turn context", ErrInvalidInput)
+		}
+		toolCallCtx, _ := ToolCallContextFrom(ctx)
+
+		if cfg.ApprovalService == nil {
+			return nil, fmt.Errorf("%w: approval service is not configured", ErrInvalidInput)
+		}
+
+		// Strictly enforce owner authority:
+		// 1. OwnerRoleID must be present and non-empty.
+		// 2. The owner role must possess campaign.owner_approval.create capability.
+		// 3. The conversational model/CEO cannot self-approve.
+		ownerRoleID := turnCtx.OwnerRoleID
+		if strings.TrimSpace(ownerRoleID) == "" {
+			return nil, fmt.Errorf("%w: turn has no verified owner identity", ErrUnauthorizedActor)
+		}
+
+		if authorizer != nil {
+			if err := authorizer.Authorize(ctx, turnCtx.OrganizationID, turnCtx.OrganizationRevisionID, ownerRoleID, campaign.CapabilityOwnerApprovalCreate); err != nil {
+				return nil, fmt.Errorf("%w: owner role %q lacks %s capability: %v", ErrUnauthorizedActor, ownerRoleID, campaign.CapabilityOwnerApprovalCreate, err)
+			}
+		}
+
+		var args approveForExecutionArgs
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrInvalidInput, err)
+		}
+
+		appr, _, err := cfg.ApprovalService.ApproveForExecution(ctx, campaign.ApproveParams{
+			OrganizationID:    turnCtx.OrganizationID,
+			RevisionID:        turnCtx.OrganizationRevisionID,
+			ProposalID:        args.ProposalID,
+			FinancialReviewID: args.FinancialReviewID,
+			ApprovedByRoleID:  ownerRoleID,
+			ConversationID:    turnCtx.ConversationID,
+			MessageID:         turnCtx.OwnerMessageID,
+			TurnTaskID:        turnCtx.TaskID,
+			ToolCallID:        toolCallCtx.ToolCallID,
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		projection := OwnerApprovalResultProjection{
+			ApprovalID:                   appr.ID,
+			ProposalID:                   appr.ProposalID,
+			ProposalCanonicalHash:        appr.ProposalCanonicalHash,
+			FinancialReviewID:            appr.FinancialReviewID,
+			FinancialReviewCanonicalHash: appr.FinancialReviewCanonicalHash,
+			ApprovedByRoleID:             appr.ApprovedByRoleID,
+			Status:                       string(appr.Status),
+			ExecutionBudget:              appr.ExecutionBudget,
+			CanonicalHash:                appr.CanonicalHash,
+			CreatedAt:                    appr.CreatedAt.Format(time.RFC3339),
+		}
+		return json.Marshal(projection)
+	}
+
+	if err := registry.Register(approveDesc, approveValidator, approveHandler); err != nil {
+		return fmt.Errorf("register campaign.approve_for_execution: %w", err)
+	}
+
+	// 8. campaign.get_owner_approval (READ ONLY)
+	getApprDesc := ToolDescriptor{
+		ID:           "campaign.get_owner_approval",
+		Version:      "v1",
+		Description:  "Retrieves an existing durable owner execution approval by approval ID or proposal ID.",
+		InputSchema:  campaignGetOwnerApprovalInputSchema,
+		Access:       AccessReadOnly,
+		Effect:       ToolEffectRead,
+		RequiredRole: CEORoleID,
+		Limits: ToolLimits{
+			MaxRows:        1,
+			MaxResultBytes: 16384,
+			Timeout:        defaultToolTimeout,
+		},
+		DataClass: DataClassInternal,
+	}
+
+	getApprValidator := func(raw json.RawMessage) error {
+		var args getOwnerApprovalArgs
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidInput, err)
+		}
+		if args.ApprovalID <= 0 && args.ProposalID <= 0 {
+			return fmt.Errorf("%w: either approval_id or proposal_id must be positive", ErrInvalidInput)
+		}
+		return nil
+	}
+
+	getApprHandler := func(ctx context.Context, actorRoleID string, raw json.RawMessage) (json.RawMessage, error) {
+		turnCtx, ok := TurnContextFrom(ctx)
+		orgID := organizationID
+		if ok && turnCtx.OrganizationID != "" {
+			orgID = turnCtx.OrganizationID
+		}
+		if authorizer != nil && ok && turnCtx.ActorRoleID != "" {
+			if err := authorizer.Authorize(ctx, orgID, turnCtx.OrganizationRevisionID, turnCtx.ActorRoleID, campaign.CapabilityOwnerApprovalRead); err != nil {
+				return nil, fmt.Errorf("%w: actor %q lacks %s capability: %v", ErrUnauthorizedActor, turnCtx.ActorRoleID, campaign.CapabilityOwnerApprovalRead, err)
+			}
+		}
+
+		var args getOwnerApprovalArgs
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrInvalidInput, err)
+		}
+
+		var appr campaign.CampaignOwnerApproval
+		var err error
+		if args.ApprovalID > 0 {
+			appr, err = store.GetOwnerApproval(ctx, orgID, args.ApprovalID)
+		} else if args.ProposalID > 0 {
+			appr, err = store.GetOwnerApprovalByProposal(ctx, orgID, args.ProposalID)
+		} else {
+			return nil, fmt.Errorf("%w: query identifier required", ErrInvalidInput)
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		projection := OwnerApprovalResultProjection{
+			ApprovalID:                   appr.ID,
+			ProposalID:                   appr.ProposalID,
+			ProposalCanonicalHash:        appr.ProposalCanonicalHash,
+			FinancialReviewID:            appr.FinancialReviewID,
+			FinancialReviewCanonicalHash: appr.FinancialReviewCanonicalHash,
+			ApprovedByRoleID:             appr.ApprovedByRoleID,
+			Status:                       string(appr.Status),
+			ExecutionBudget:              appr.ExecutionBudget,
+			CanonicalHash:                appr.CanonicalHash,
+			CreatedAt:                    appr.CreatedAt.Format(time.RFC3339),
+		}
+		return json.Marshal(projection)
+	}
+
+	if err := registry.Register(getApprDesc, getApprValidator, getApprHandler); err != nil {
+		return fmt.Errorf("register campaign.get_owner_approval: %w", err)
 	}
 
 	return nil
