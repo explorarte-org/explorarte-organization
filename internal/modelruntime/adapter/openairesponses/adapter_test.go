@@ -169,6 +169,9 @@ func TestDispatchSendsBoundedCanonicalRequestAndNormalizesResponse(t *testing.T)
 		t.Fatal(err)
 	}
 	request := validRequest(time.Now().Add(time.Minute))
+	request.ModelInput.Envelope.ToolDefinitions = []modelruntime.ModelInputToolDefinition{
+		{Name: "inspect", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
 	if err = adapter.Preflight(context.Background(), modelruntime.ProviderPreflightRequest{ProviderID: request.ProviderID, ProviderModelID: request.ProviderModelID, Deadline: request.Deadline}); err != nil {
 		t.Fatal(err)
 	}
@@ -518,5 +521,229 @@ func TestGateFJSONErrorOffsetMatchesStandardLibrary(t *testing.T) {
 	outcome := classified.Outcome
 	if outcome.JSONErrorOffset == nil || *outcome.JSONErrorOffset != expected.Offset {
 		t.Fatalf("expected json_error_offset=%d (from encoding/json itself), got %+v", expected.Offset, outcome.JSONErrorOffset)
+	}
+}
+
+func TestWireToolNameMapping(t *testing.T) {
+	tools := []modelruntime.ModelInputToolDefinition{
+		{Name: "tasks.list", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "tasks_list", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "tasks-list", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "a.b.c", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "names_containing_underscores", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+
+	mapping, err := buildWireToolMapping(tools)
+	if err != nil {
+		t.Fatalf("buildWireToolMapping: %v", err)
+	}
+
+	expected := map[string]string{
+		"tasks.list":                   "tasks__list",
+		"tasks_list":                   "tasks_list",
+		"tasks-list":                   "tasks-list",
+		"a.b.c":                        "a__b__c",
+		"names_containing_underscores": "names_containing_underscores",
+	}
+
+	for canonical, wantWire := range expected {
+		gotWire, ok := mapping.canonicalToWire[canonical]
+		if !ok || gotWire != wantWire {
+			t.Errorf("canonicalToWire[%q] = %q, want %q", canonical, gotWire, wantWire)
+		}
+		backCanonical, ok := mapping.wireToCanonical[wantWire]
+		if !ok || backCanonical != canonical {
+			t.Errorf("wireToCanonical[%q] = %q, want %q (reversible)", wantWire, backCanonical, canonical)
+		}
+	}
+}
+
+func TestWireToolNameCollision(t *testing.T) {
+	// Both "tasks.list" and "tasks__list" would map to wire name "tasks__list".
+	tools := []modelruntime.ModelInputToolDefinition{
+		{Name: "tasks.list", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "tasks__list", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+
+	_, err := buildWireToolMapping(tools)
+	if err == nil {
+		t.Fatal("expected collision error for tasks.list and tasks__list, got nil")
+	}
+	if !strings.Contains(err.Error(), "collision") {
+		t.Fatalf("expected collision in error message, got: %v", err)
+	}
+}
+
+func TestWireToolNameLengthAndPattern(t *testing.T) {
+	// Name longer than 64 characters
+	longName := "tool." + strings.Repeat("a", 65)
+	toolsLong := []modelruntime.ModelInputToolDefinition{
+		{Name: longName, InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+	if _, err := buildWireToolMapping(toolsLong); err == nil {
+		t.Fatal("expected error for wire name > 64 chars, got nil")
+	}
+
+	// Invalid characters (e.g. spaces or symbols not matching ^[a-zA-Z0-9_-]+$)
+	toolsInvalid := []modelruntime.ModelInputToolDefinition{
+		{Name: "tool with space", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+	if _, err := buildWireToolMapping(toolsInvalid); err == nil {
+		t.Fatal("expected error for invalid characters, got nil")
+	}
+}
+
+func TestUnknownWireToolFailsClosed(t *testing.T) {
+	credential := writeCredential(t, "test-provider-token")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("x-request-id", "provider-request-unknown")
+		w.Header().Set("Content-Type", "application/json")
+		// Provider returns an unknown tool "unregistered_tool" not in request tools
+		_, _ = io.WriteString(w, `{"id":"r1","object":"response","status":"completed","output":[{"type":"function_call","name":"unregistered_tool","call_id":"c1","arguments":"{}"}],"usage":{"input_tokens":10,"output_tokens":5}}`)
+	}))
+	defer server.Close()
+
+	adapter, err := newAdapter(adapterConfig(server.URL+"/v1/responses", credential), server.Client(), time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := validRequest(time.Now().Add(time.Minute))
+	request.ModelInput.Envelope.ToolDefinitions = []modelruntime.ModelInputToolDefinition{
+		{Name: "tasks.list", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+
+	_, err = adapter.Dispatch(context.Background(), request)
+	if err == nil {
+		t.Fatal("expected dispatch to fail closed on unknown wire tool, got nil")
+	}
+	classified, ok := modelruntime.AsAdapterError(err)
+	if !ok {
+		t.Fatalf("expected AdapterError, got %T: %v", err, err)
+	}
+	if classified.Outcome.ErrorCode != "response_content_invalid" {
+		t.Fatalf("expected error_code=response_content_invalid, got %+v", classified.Outcome)
+	}
+}
+
+func TestFunctionArgumentUnwrapping(t *testing.T) {
+	// A. Valid object string -> decoded exactly once
+	validObjStr := json.RawMessage(`"{\"task_id\":123}"`)
+	got, err := unwrapToolArguments(validObjStr)
+	if err != nil {
+		t.Fatalf("valid object string: %v", err)
+	}
+	if string(got) != `{"task_id":123}` {
+		t.Fatalf("expected {\"task_id\":123}, got %s", string(got))
+	}
+
+	// Also test raw object bytes decoded once
+	rawObj := json.RawMessage(`{"task_id":123}`)
+	got, err = unwrapToolArguments(rawObj)
+	if err != nil {
+		t.Fatalf("raw object: %v", err)
+	}
+	if string(got) != `{"task_id":123}` {
+		t.Fatalf("expected {\"task_id\":123}, got %s", string(got))
+	}
+
+	// B. Malformed JSON -> fail closed
+	malformedStr := json.RawMessage(`"{"task_id":123"`)
+	if _, err = unwrapToolArguments(malformedStr); err == nil {
+		t.Fatal("expected malformed JSON string to fail closed, got nil")
+	}
+
+	malformedRaw := json.RawMessage(`{"task_id":`)
+	if _, err = unwrapToolArguments(malformedRaw); err == nil {
+		t.Fatal("expected malformed raw JSON to fail closed, got nil")
+	}
+
+	// C. JSON string containing another JSON string -> do NOT recursively keep decoding
+	nestedStr := json.RawMessage(`"\"{\\\"task_id\\\":123}\""`)
+	got, err = unwrapToolArguments(nestedStr)
+	if err != nil {
+		t.Fatalf("nested string: %v", err)
+	}
+	// It must decode to the JSON string `"{"task_id":123}"`, NOT to the object `{"task_id":123}`
+	if string(got) != `"{\"task_id\":123}"` {
+		t.Fatalf("expected JSON string literal not unwrapped recursively, got %s", string(got))
+	}
+
+	// D. Array / scalar when tool args require object -> passed through (rejected by normal schema validation)
+	arrayStr := json.RawMessage(`"[1,2,3]"`)
+	got, err = unwrapToolArguments(arrayStr)
+	if err != nil {
+		t.Fatalf("array string: %v", err)
+	}
+	if string(got) != `[1,2,3]` {
+		t.Fatalf("expected [1,2,3], got %s", string(got))
+	}
+
+	scalarStr := json.RawMessage(`"42"`)
+	got, err = unwrapToolArguments(scalarStr)
+	if err != nil {
+		t.Fatalf("scalar string: %v", err)
+	}
+	if string(got) != `42` {
+		t.Fatalf("expected 42, got %s", string(got))
+	}
+
+	// Empty and null -> "{}"
+	empty, err := unwrapToolArguments(json.RawMessage(``))
+	if err != nil || string(empty) != "{}" {
+		t.Fatalf("expected {}, got %s err=%v", string(empty), err)
+	}
+	nullVal, err := unwrapToolArguments(json.RawMessage(`null`))
+	if err != nil || string(nullVal) != "{}" {
+		t.Fatalf("expected {}, got %s err=%v", string(nullVal), err)
+	}
+}
+
+func TestStrictModeAndOptionalProperties(t *testing.T) {
+	// Canonical tool schema where properties are optional by omission
+	optionalSchema := json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"limit": {"type": "integer"},
+			"status": {"type": "string"}
+		}
+	}`)
+	tools := []modelruntime.ModelInputToolDefinition{
+		{Name: "tasks.list", Description: "List tasks", InputSchema: optionalSchema},
+	}
+
+	request := validRequest(time.Now().Add(time.Minute))
+	request.ModelInput.Envelope.SchemaVersion = modelruntime.ModelInputEnvelopeSchemaV1
+	request.ModelInput.Envelope.ToolDefinitions = tools
+
+	body, err := encodeRequest(request)
+	if err != nil {
+		t.Fatalf("encodeRequest: %v", err)
+	}
+
+	var payload struct {
+		Tools []struct {
+			Type     string `json:"type"`
+			Strict   *bool  `json:"strict,omitempty"`
+			Function struct {
+				Strict *bool `json:"strict,omitempty"`
+			} `json:"function,omitempty"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal encoded request: %v", err)
+	}
+	if len(payload.Tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(payload.Tools))
+	}
+	// Strict must not be true for function tools
+	if payload.Tools[0].Strict != nil && *payload.Tools[0].Strict {
+		t.Fatalf("strict must not be true for optional canonical schema tools")
+	}
+
+	// Also verify that provider returning "{}" (all optional omitted) unwraps safely
+	emptyArgs, err := unwrapToolArguments(json.RawMessage(`"{}"`))
+	if err != nil || string(emptyArgs) != "{}" {
+		t.Fatalf("expected {}, got %s err=%v", string(emptyArgs), err)
 	}
 }
