@@ -81,7 +81,7 @@ func (s *Store) CreateRevision(ctx context.Context, cmd campaign.CreateRevisionC
 	err = tx.QueryRow(ctx, `
 		SELECT COALESCE(MAX(revision_number), 0)
 		FROM campaign_proposals
-		WHERE organization_id = $1 AND root_proposal_id = $2
+		WHERE organization_id = $1 AND (root_proposal_id = $2 OR id = $2)
 	`, cmd.OrganizationID, rootID).Scan(&maxRevision)
 	if err != nil {
 		return campaign.CampaignProposal{}, false, fmt.Errorf("check max revision: %w", err)
@@ -139,7 +139,7 @@ func (s *Store) GetLatestRevisionForRoot(ctx context.Context, organizationID str
 		       parent_proposal_id, revision_number, root_proposal_id,
 		       idempotency_key, canonical_hash, created_at, updated_at
 		FROM campaign_proposals
-		WHERE organization_id = $1 AND root_proposal_id = $2
+		WHERE organization_id = $1 AND (root_proposal_id = $2 OR id = $2)
 		ORDER BY revision_number DESC
 		LIMIT 1
 	`, organizationID, rootProposalID)
@@ -166,7 +166,7 @@ func (s *Store) CreateOwnerApproval(ctx context.Context, cmd campaign.CreateOwne
 			status, execution_budget, idempotency_key, canonical_hash
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-			approved_for_execution, $11, $12, $13
+			'approved_for_execution', $11, $12, $13
 		)
 		ON CONFLICT (organization_id, idempotency_key) DO UPDATE
 		SET organization_id = campaign_owner_approvals.organization_id

@@ -48,7 +48,8 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 	// CEO_CONVERSATIONAL_CAMPAIGN_FINANCIAL_REVIEW_V1 durable financial reviews.
 	// 77 (add_proposal_revision_lineage) is CEO_CONVERSATIONAL_CAMPAIGN_REVISION_AND_OWNER_APPROVAL_V1 proposal revision lineage.
 	// 78 (create_campaign_owner_approvals) is CEO_CONVERSATIONAL_CAMPAIGN_REVISION_AND_OWNER_APPROVAL_V1 owner approvals.
-	const wantCount = 78
+	// 79 (create_campaign_promotions) is CEO_CONVERSATIONAL_CAMPAIGN_PROMOTION_TO_EXECUTIVE_V1 campaign promotions.
+	const wantCount = 79
 	if len(loaded) != wantCount {
 		t.Fatalf("migration count=%d want %d", len(loaded), wantCount)
 	}
@@ -140,6 +141,8 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		// CEO_CONVERSATIONAL_CAMPAIGN_REVISION_AND_OWNER_APPROVAL_V1:
 		77: "add_proposal_revision_lineage",
 		78: "create_campaign_owner_approvals",
+		// CEO_CONVERSATIONAL_CAMPAIGN_PROMOTION_TO_EXECUTIVE_V1:
+		79: "create_campaign_promotions",
 	}
 	byVersion := make(map[int64]string, len(loaded))
 	for _, migration := range loaded {

@@ -53,3 +53,23 @@ var (
 	// ErrRevisionConflict is returned when a revision idempotency key is reused with a different payload.
 	ErrRevisionConflict = errors.New("campaign proposal revision conflict")
 )
+
+var (
+	// ErrStaleApproval is returned when attempting to promote an approval for a proposal revision that is no longer the latest.
+	ErrStaleApproval = errors.New("stale approval: proposal has a newer revision")
+
+	// ErrApprovalNotApproved is returned when approval status is not approved_for_execution.
+	ErrApprovalNotApproved = errors.New("approval is not in approved_for_execution status")
+
+	// ErrPromotionAlreadyExists is returned when a promotion already exists for this owner approval.
+	ErrPromotionAlreadyExists = errors.New("campaign promotion already exists for this owner approval")
+
+	// ErrPromotionNotFound is returned when a requested campaign promotion does not exist.
+	ErrPromotionNotFound = errors.New("campaign promotion not found")
+
+	// ErrSubmitterNotConfigured is returned when the executive submitter port has not been wired.
+	ErrSubmitterNotConfigured = errors.New("executive submitter is not configured")
+
+	// ErrBudgetMismatch is returned when the approval budget does not match the financial review recommended budget.
+	ErrBudgetMismatch = errors.New("approval execution budget does not match financial review recommended budget")
+)

@@ -302,3 +302,86 @@ type CreateOwnerApprovalCommand struct {
 	IdempotencyKey               string
 	CanonicalHash                string
 }
+
+// PromotionStatus represents the lifecycle state of a campaign promotion.
+type PromotionStatus string
+
+const (
+	// StatusSubmitted means the campaign has been submitted to Executive and its root is durable.
+	StatusSubmitted PromotionStatus = "submitted"
+)
+
+// CampaignPromotion is the durable record linking an approved campaign proposal + financial review
+// + owner approval tuple to an Executive root task execution.
+type CampaignPromotion struct {
+	ID                            int64                `json:"id"`
+	OrganizationID                string               `json:"organization_id"`
+	OwnerApprovalID               int64                `json:"owner_approval_id"`
+	OwnerApprovalCanonicalHash    string               `json:"owner_approval_canonical_hash"`
+	ProposalID                    int64                `json:"proposal_id"`
+	ProposalCanonicalHash         string               `json:"proposal_canonical_hash"`
+	FinancialReviewID             int64                `json:"financial_review_id"`
+	FinancialReviewCanonicalHash  string               `json:"financial_review_canonical_hash"`
+	ExecutionBudget               BudgetRecommendation `json:"execution_budget"`
+	ExecutiveRootTaskID           int64                `json:"executive_root_task_id"`
+	ExecutiveCorrelationID        string               `json:"executive_correlation_id"`
+	ExecutiveSubmitIdempotencyKey string               `json:"executive_submit_idempotency_key"`
+	Status                        PromotionStatus      `json:"status"`
+	PromotedByRoleID              string               `json:"promoted_by_role_id"`
+	ConversationID                int64                `json:"conversation_id,omitempty"`
+	MessageID                     int64                `json:"message_id,omitempty"`
+	TurnTaskID                    int64                `json:"turn_task_id,omitempty"`
+	ToolCallID                    string               `json:"tool_call_id"`
+	IdempotencyKey                string               `json:"idempotency_key"`
+	CanonicalHash                 string               `json:"canonical_hash"`
+	CreatedAt                     time.Time            `json:"created_at"`
+}
+
+// CreatePromotionCommand specifies the inputs required to record a campaign promotion.
+type CreatePromotionCommand struct {
+	OrganizationID                string
+	OwnerApprovalID               int64
+	OwnerApprovalCanonicalHash    string
+	ProposalID                    int64
+	ProposalCanonicalHash         string
+	FinancialReviewID             int64
+	FinancialReviewCanonicalHash  string
+	ExecutionBudget               BudgetRecommendation
+	ExecutiveRootTaskID           int64
+	ExecutiveCorrelationID        string
+	ExecutiveSubmitIdempotencyKey string
+	Status                        PromotionStatus
+	PromotedByRoleID              string
+	ConversationID                int64
+	MessageID                     int64
+	TurnTaskID                    int64
+	ToolCallID                    string
+	IdempotencyKey                string
+	CanonicalHash                 string
+}
+
+// PromoteToExecutiveParams carries the host-verified parameters to promote an approved campaign.
+type PromoteToExecutiveParams struct {
+	OrganizationID         string
+	OrganizationRevisionID int64
+	OwnerApprovalID        int64
+	PromotedByRoleID       string
+	ConversationID         int64
+	MessageID              int64
+	TurnTaskID             int64
+	ToolCallID             string
+	IdempotencyKey         string
+}
+
+// PromotionResult carries the result of a promotion to Executive.
+type PromotionResult struct {
+	Promotion              CampaignPromotion `json:"promotion"`
+	ExecutiveRootTaskID    int64             `json:"executive_root_task_id"`
+	ExecutiveCorrelationID string            `json:"executive_correlation_id"`
+	Reused                 bool              `json:"reused"`
+}
+
+const (
+	CapabilityPromotionExecute = "campaign.promotion.execute"
+	CapabilityPromotionRead    = "campaign.promotion.read"
+)

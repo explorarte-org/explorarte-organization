@@ -1,8 +1,18 @@
 package campaign
 
-import "context"
+import (
+	"context"
 
-// Store defines the durable persistence operations for campaign proposals and financial reviews.
+	"github.com/Mireuz13/explorarte-organization/internal/executive"
+)
+
+// ExecutiveSubmitter is the narrow execution boundary port implemented by Executive Orchestrator.
+type ExecutiveSubmitter interface {
+	Submit(ctx context.Context, request executive.SubmitRequest) (executive.Run, bool, error)
+}
+
+// Store defines the durable persistence operations for campaign proposals, financial reviews,
+// owner approvals, and promotions to Executive.
 type Store interface {
 	// CreateProposal idempotently creates a new draft proposal.
 	CreateProposal(ctx context.Context, cmd CreateProposalCommand) (proposal CampaignProposal, reused bool, err error)
@@ -48,4 +58,13 @@ type Store interface {
 
 	// GetOwnerApprovalByProposal retrieves the owner approval for a specific proposal.
 	GetOwnerApprovalByProposal(ctx context.Context, organizationID string, proposalID int64) (CampaignOwnerApproval, error)
+
+	// CreatePromotion idempotently creates a campaign promotion record.
+	CreatePromotion(ctx context.Context, cmd CreatePromotionCommand) (CampaignPromotion, bool, error)
+
+	// GetPromotion retrieves a campaign promotion by ID.
+	GetPromotion(ctx context.Context, organizationID string, id int64) (CampaignPromotion, error)
+
+	// GetPromotionByApprovalID retrieves a campaign promotion by owner approval ID.
+	GetPromotionByApprovalID(ctx context.Context, organizationID string, approvalID int64) (CampaignPromotion, error)
 }
