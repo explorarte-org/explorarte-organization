@@ -89,11 +89,16 @@ capabilities:
   risk: low
 - id: memory.read_own
   risk: low
+- id: campaign.proposal.create
+  risk: medium
+- id: campaign.proposal.read
+  risk: low
 grants:
   owner:
   - '*'
   executive:
   - organization.read_registry
+  - campaign.proposal.read
   - project.create
   - project.delegate_department
   - audit.read_sanitized_evidence
