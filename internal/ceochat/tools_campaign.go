@@ -53,9 +53,7 @@ var (
 			"acceptance_criteria": {
 				"type": "array",
 				"items": {"type": "string", "maxLength": 2000},
-				"minItems": 1,
-				"maxItems": 20,
-				"description": "Measurable criteria defining successful completion."
+				"description": "Measurable criteria defining successful completion (1 to 20 items)."
 			},
 			"requirements": {
 				"type": "array",
@@ -68,8 +66,7 @@ var (
 					},
 					"required": ["key", "description"]
 				},
-				"maxItems": 20,
-				"description": "Operational requirements for the campaign."
+				"description": "Operational requirements for the campaign (up to 20 items)."
 			},
 			"budget": {
 				"type": "object",
@@ -84,20 +81,17 @@ var (
 			"assumptions": {
 				"type": "array",
 				"items": {"type": "string", "maxLength": 2000},
-				"maxItems": 20,
-				"description": "Key assumptions behind this proposal."
+				"description": "Key assumptions behind this proposal (up to 20 items)."
 			},
 			"risks": {
 				"type": "array",
 				"items": {"type": "string", "maxLength": 2000},
-				"maxItems": 20,
-				"description": "Identified risks and potential mitigations."
+				"description": "Identified risks and potential mitigations (up to 20 items)."
 			},
 			"open_questions": {
 				"type": "array",
 				"items": {"type": "string", "maxLength": 2000},
-				"maxItems": 20,
-				"description": "Open questions requiring owner or team clarification."
+				"description": "Open questions requiring owner or team clarification (up to 20 items)."
 			}
 		},
 		"required": ["title", "goal", "acceptance_criteria"],
