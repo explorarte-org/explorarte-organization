@@ -44,7 +44,9 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 	// conversation/message persistence.
 	// 75 (create_campaign_proposals) is
 	// CEO_CONVERSATIONAL_CAMPAIGN_PROPOSAL_V1's durable immutable campaign proposals.
-	const wantCount = 75
+	// 76 (create_campaign_financial_reviews) is
+	// CEO_CONVERSATIONAL_CAMPAIGN_FINANCIAL_REVIEW_V1 durable financial reviews.
+	const wantCount = 76
 	if len(loaded) != wantCount {
 		t.Fatalf("migration count=%d want %d", len(loaded), wantCount)
 	}
@@ -131,6 +133,8 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		74: "create_ceo_chat",
 		// CEO_CONVERSATIONAL_CAMPAIGN_PROPOSAL_V1:
 		75: "create_campaign_proposals",
+		// CEO_CONVERSATIONAL_CAMPAIGN_FINANCIAL_REVIEW_V1:
+		76: "create_campaign_financial_reviews",
 	}
 	byVersion := make(map[int64]string, len(loaded))
 	for _, migration := range loaded {
