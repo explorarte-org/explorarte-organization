@@ -26,6 +26,9 @@ type memCampaignStore struct {
 	approvals        map[int64]campaign.CampaignOwnerApproval
 	approvalsByKey   map[string]campaign.CampaignOwnerApproval
 	approvalsByTuple map[string]campaign.CampaignOwnerApproval
+	promotions       map[int64]campaign.CampaignPromotion
+	promotionsByKey  map[string]campaign.CampaignPromotion
+	promotionsByAppr map[int64]campaign.CampaignPromotion
 	nextID           int64
 }
 
@@ -40,6 +43,9 @@ func newMemCampaignStore() *memCampaignStore {
 		approvals:        make(map[int64]campaign.CampaignOwnerApproval),
 		approvalsByKey:   make(map[string]campaign.CampaignOwnerApproval),
 		approvalsByTuple: make(map[string]campaign.CampaignOwnerApproval),
+		promotions:       make(map[int64]campaign.CampaignPromotion),
+		promotionsByKey:  make(map[string]campaign.CampaignPromotion),
+		promotionsByAppr: make(map[int64]campaign.CampaignPromotion),
 		nextID:           1,
 	}
 }
@@ -429,6 +435,77 @@ func (s *memCampaignStore) GetOwnerApprovalByProposal(ctx context.Context, organ
 		return campaign.CampaignOwnerApproval{}, campaign.ErrApprovalNotFound
 	}
 	return latest, nil
+}
+
+func (s *memCampaignStore) CreatePromotion(ctx context.Context, cmd campaign.CreatePromotionCommand) (campaign.CampaignPromotion, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	lookupKey := cmd.OrganizationID + ":" + cmd.IdempotencyKey
+	if existing, found := s.promotionsByKey[lookupKey]; found {
+		if existing.CanonicalHash == cmd.CanonicalHash {
+			return existing, true, nil
+		}
+		return campaign.CampaignPromotion{}, false, campaign.ErrIdempotencyConflict
+	}
+
+	if existing, found := s.promotionsByAppr[cmd.OwnerApprovalID]; found {
+		if existing.IdempotencyKey == cmd.IdempotencyKey && existing.CanonicalHash == cmd.CanonicalHash {
+			return existing, true, nil
+		}
+		return campaign.CampaignPromotion{}, false, campaign.ErrPromotionAlreadyExists
+	}
+
+	prom := campaign.CampaignPromotion{
+		ID:                            s.nextID,
+		OrganizationID:                cmd.OrganizationID,
+		OwnerApprovalID:               cmd.OwnerApprovalID,
+		OwnerApprovalCanonicalHash:    cmd.OwnerApprovalCanonicalHash,
+		ProposalID:                    cmd.ProposalID,
+		ProposalCanonicalHash:         cmd.ProposalCanonicalHash,
+		FinancialReviewID:             cmd.FinancialReviewID,
+		FinancialReviewCanonicalHash:  cmd.FinancialReviewCanonicalHash,
+		ExecutionBudget:               cmd.ExecutionBudget,
+		ExecutiveRootTaskID:           cmd.ExecutiveRootTaskID,
+		ExecutiveCorrelationID:        cmd.ExecutiveCorrelationID,
+		ExecutiveSubmitIdempotencyKey: cmd.ExecutiveSubmitIdempotencyKey,
+		Status:                        cmd.Status,
+		PromotedByRoleID:              cmd.PromotedByRoleID,
+		ConversationID:                cmd.ConversationID,
+		MessageID:                     cmd.MessageID,
+		TurnTaskID:                    cmd.TurnTaskID,
+		ToolCallID:                    cmd.ToolCallID,
+		IdempotencyKey:                cmd.IdempotencyKey,
+		CanonicalHash:                 cmd.CanonicalHash,
+		CreatedAt:                     time.Now(),
+	}
+	s.nextID++
+	s.promotions[prom.ID] = prom
+	s.promotionsByKey[lookupKey] = prom
+	s.promotionsByAppr[prom.OwnerApprovalID] = prom
+	return prom, false, nil
+}
+
+func (s *memCampaignStore) GetPromotion(ctx context.Context, organizationID string, id int64) (campaign.CampaignPromotion, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	p, found := s.promotions[id]
+	if !found || p.OrganizationID != organizationID {
+		return campaign.CampaignPromotion{}, campaign.ErrPromotionNotFound
+	}
+	return p, nil
+}
+
+func (s *memCampaignStore) GetPromotionByApprovalID(ctx context.Context, organizationID string, approvalID int64) (campaign.CampaignPromotion, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	p, found := s.promotionsByAppr[approvalID]
+	if !found || p.OrganizationID != organizationID {
+		return campaign.CampaignPromotion{}, campaign.ErrPromotionNotFound
+	}
+	return p, nil
 }
 
 // fakeTaskCoordinator tracks created tasks, claims, attempts, and finalizations.
