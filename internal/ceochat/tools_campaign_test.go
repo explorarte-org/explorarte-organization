@@ -11,20 +11,25 @@ import (
 
 	"github.com/Mireuz13/explorarte-organization/internal/campaign"
 	"github.com/Mireuz13/explorarte-organization/internal/executionharness"
+	"github.com/Mireuz13/explorarte-organization/internal/tasks"
 )
 
 type fakeCampaignStore struct {
-	mu        sync.Mutex
-	proposals map[string]campaign.CampaignProposal // org:key -> proposal
-	byID      map[int64]campaign.CampaignProposal
-	nextID    int64
+	mu               sync.Mutex
+	proposals        map[string]campaign.CampaignProposal // org:key -> proposal
+	byID             map[int64]campaign.CampaignProposal
+	reviewRequests   map[int64]campaign.CampaignFinancialReviewRequest
+	financialReviews map[int64]campaign.CampaignFinancialReview
+	nextID           int64
 }
 
 func newFakeCampaignStore() *fakeCampaignStore {
 	return &fakeCampaignStore{
-		proposals: make(map[string]campaign.CampaignProposal),
-		byID:      make(map[int64]campaign.CampaignProposal),
-		nextID:    1,
+		proposals:        make(map[string]campaign.CampaignProposal),
+		byID:             make(map[int64]campaign.CampaignProposal),
+		reviewRequests:   make(map[int64]campaign.CampaignFinancialReviewRequest),
+		financialReviews: make(map[int64]campaign.CampaignFinancialReview),
+		nextID:           1,
 	}
 }
 
@@ -93,6 +98,142 @@ func (s *fakeCampaignStore) ListProposals(ctx context.Context, organizationID st
 		}
 	}
 	return result, nil
+}
+
+func (s *fakeCampaignStore) CreateReviewRequest(ctx context.Context, cmd campaign.CreateReviewRequestCommand) (campaign.CampaignFinancialReviewRequest, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	req := campaign.CampaignFinancialReviewRequest{
+		ID:                          s.nextID,
+		OrganizationID:              cmd.OrganizationID,
+		ProposalID:                  cmd.ProposalID,
+		ProposalCanonicalHash:       cmd.ProposalCanonicalHash,
+		RequestedByRoleID:           cmd.RequestedByRoleID,
+		RequestedFromConversationID: cmd.RequestedFromConversationID,
+		RequestedFromMessageID:      cmd.RequestedFromMessageID,
+		RequestedFromTaskID:         cmd.RequestedFromTaskID,
+		ReviewerRoleID:              cmd.ReviewerRoleID,
+		ReviewTaskID:                cmd.ReviewTaskID,
+		Status:                      campaign.ReviewRequestStatusPending,
+		IdempotencyKey:              cmd.IdempotencyKey,
+		CreatedAt:                   time.Now(),
+		UpdatedAt:                   time.Now(),
+	}
+	s.nextID++
+	s.reviewRequests[req.ID] = req
+	return req, false, nil
+}
+
+func (s *fakeCampaignStore) GetReviewRequest(ctx context.Context, organizationID string, id int64) (campaign.CampaignFinancialReviewRequest, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	r, found := s.reviewRequests[id]
+	if !found || r.OrganizationID != organizationID {
+		return campaign.CampaignFinancialReviewRequest{}, campaign.ErrReviewRequestNotFound
+	}
+	return r, nil
+}
+
+func (s *fakeCampaignStore) GetLatestReviewRequestForProposal(ctx context.Context, organizationID string, proposalID int64) (campaign.CampaignFinancialReviewRequest, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var latest campaign.CampaignFinancialReviewRequest
+	found := false
+	for _, r := range s.reviewRequests {
+		if r.OrganizationID == organizationID && r.ProposalID == proposalID {
+			if !found || r.ID > latest.ID {
+				latest = r
+				found = true
+			}
+		}
+	}
+	if !found {
+		return campaign.CampaignFinancialReviewRequest{}, campaign.ErrReviewRequestNotFound
+	}
+	return latest, nil
+}
+
+func (s *fakeCampaignStore) RecordFinancialReview(ctx context.Context, cmd campaign.RecordFinancialReviewCommand) (campaign.CampaignFinancialReview, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if cmd.ReviewerRoleID == "empresa/ceo" || cmd.ReviewerRoleID == "empresa/human" {
+		return campaign.CampaignFinancialReview{}, false, campaign.ErrSeparationOfDutiesViolation
+	}
+
+	rev := campaign.CampaignFinancialReview{
+		ID:                    s.nextID,
+		OrganizationID:        cmd.OrganizationID,
+		ReviewRequestID:       cmd.ReviewRequestID,
+		ProposalID:            cmd.ProposalID,
+		ProposalCanonicalHash: cmd.ProposalCanonicalHash,
+		ReviewerRoleID:        cmd.ReviewerRoleID,
+		ReviewTaskID:          cmd.ReviewTaskID,
+		ReviewAttemptID:       cmd.ReviewAttemptID,
+		Verdict:               cmd.Verdict,
+		RecommendedBudget:     cmd.RecommendedBudget,
+		EstimatedCost:         cmd.EstimatedCost,
+		Assumptions:           cmd.Assumptions,
+		Risks:                 cmd.Risks,
+		RequiredCorrections:   cmd.RequiredCorrections,
+		MissingInformation:    cmd.MissingInformation,
+		Summary:               cmd.Summary,
+		CanonicalHash:         cmd.CanonicalHash,
+		CreatedAt:             time.Now(),
+	}
+	s.nextID++
+	s.financialReviews[rev.ID] = rev
+	if req, ok := s.reviewRequests[cmd.ReviewRequestID]; ok {
+		req.Status = campaign.ReviewRequestStatusCompleted
+		s.reviewRequests[cmd.ReviewRequestID] = req
+	}
+	return rev, false, nil
+}
+
+func (s *fakeCampaignStore) GetFinancialReview(ctx context.Context, organizationID string, id int64) (campaign.CampaignFinancialReview, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	r, found := s.financialReviews[id]
+	if !found || r.OrganizationID != organizationID {
+		return campaign.CampaignFinancialReview{}, campaign.ErrFinancialReviewNotFound
+	}
+	return r, nil
+}
+
+func (s *fakeCampaignStore) GetFinancialReviewByRequestID(ctx context.Context, organizationID string, requestID int64) (campaign.CampaignFinancialReview, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, r := range s.financialReviews {
+		if r.OrganizationID == organizationID && r.ReviewRequestID == requestID {
+			return r, nil
+		}
+	}
+	return campaign.CampaignFinancialReview{}, campaign.ErrFinancialReviewNotFound
+}
+
+func (s *fakeCampaignStore) GetLatestFinancialReviewForProposal(ctx context.Context, organizationID string, proposalID int64) (campaign.CampaignFinancialReview, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var latest campaign.CampaignFinancialReview
+	found := false
+	for _, r := range s.financialReviews {
+		if r.OrganizationID == organizationID && r.ProposalID == proposalID {
+			if !found || r.ID > latest.ID {
+				latest = r
+				found = true
+			}
+		}
+	}
+	if !found {
+		return campaign.CampaignFinancialReview{}, campaign.ErrFinancialReviewNotFound
+	}
+	return latest, nil
 }
 
 type fakeAuthorizer struct {
@@ -237,5 +378,176 @@ func TestCampaignProposeValidationAndCreation(t *testing.T) {
 	}
 	if fetched.ID != 1 || fetched.Title != "Summer Growth Campaign" {
 		t.Errorf("unexpected fetched proposal: %+v", fetched)
+	}
+}
+
+type fakeTaskCoord struct {
+	tasks  map[int64]tasks.Task
+	nextID int64
+}
+
+func newFakeTaskCoord() *fakeTaskCoord {
+	return &fakeTaskCoord{tasks: make(map[int64]tasks.Task), nextID: 100}
+}
+
+func (f *fakeTaskCoord) CreateTask(ctx context.Context, req tasks.CreateRequest, actorType, actorID string) (tasks.Task, bool, error) {
+	f.nextID++
+	t := tasks.Task{
+		ID:             f.nextID,
+		OrganizationID: req.OrganizationID,
+		TaskClass:      req.TaskClass,
+		AssignedRoleID: req.AssignedRoleID,
+		Title:          req.Title,
+		Instructions:   req.Instructions,
+		Status:         tasks.StatusReady,
+	}
+	f.tasks[t.ID] = t
+	return t, true, nil
+}
+
+func (f *fakeTaskCoord) ClaimTaskByID(ctx context.Context, taskID int64, req tasks.ClaimRequest) (tasks.ClaimedTask, error) {
+	t := f.tasks[taskID]
+	t.Status = tasks.StatusRunning
+	f.tasks[taskID] = t
+	return tasks.ClaimedTask{Task: t, Attempt: tasks.Attempt{ID: 1}, LeaseToken: "lease-1"}, nil
+}
+
+func (f *fakeTaskCoord) StartAttempt(ctx context.Context, cmd tasks.LeaseCommand) (tasks.Task, error) {
+	return f.tasks[cmd.TaskID], nil
+}
+
+func (f *fakeTaskCoord) RecordAttemptResult(ctx context.Context, cmd tasks.RecordAttemptResultCommand) (tasks.Task, error) {
+	t := f.tasks[cmd.TaskID]
+	t.Status = tasks.StatusAwaitingVerification
+	f.tasks[cmd.TaskID] = t
+	return t, nil
+}
+
+func (f *fakeTaskCoord) FinalizeTask(ctx context.Context, cmd tasks.FinalizeCommand) (tasks.Task, error) {
+	t := f.tasks[cmd.TaskID]
+	t.Status = tasks.StatusCompleted
+	f.tasks[cmd.TaskID] = t
+	return t, nil
+}
+
+func (f *fakeTaskCoord) GetTask(ctx context.Context, taskID int64) (tasks.Task, error) {
+	t, ok := f.tasks[taskID]
+	if !ok {
+		return tasks.Task{}, errors.New("task not found")
+	}
+	return t, nil
+}
+
+func TestCampaignFinancialReviewTools(t *testing.T) {
+	store := newFakeCampaignStore()
+	taskCoord := newFakeTaskCoord()
+	auth := fakeAuthorizer{
+		allowed: map[string]bool{
+			"empresa/ceo:campaign.proposal.create":                               true,
+			"empresa/ceo:campaign.proposal.read":                                 true,
+			"empresa/ceo:campaign.financial_review.request":                      true,
+			"empresa/ceo:campaign.financial_review.read":                         true,
+			"negocio/administrador_financiero:campaign.financial_review.perform": true,
+		},
+	}
+
+	finSvc, err := campaign.NewFinanceService(campaign.FinanceServiceConfig{
+		OrganizationID: "org-test",
+		Store:          store,
+		Tasks:          taskCoord,
+		Authorizer:     auth,
+	})
+	if err != nil {
+		t.Fatalf("NewFinanceService: %v", err)
+	}
+
+	reg := NewToolRegistry()
+	if err := RegisterCampaignTools(reg, "org-test", store, auth, WithFinanceService(finSvc)); err != nil {
+		t.Fatalf("RegisterCampaignTools failed: %v", err)
+	}
+
+	executor := RegistryToolExecutor{Registry: reg}
+	identity := executionharness.RunIdentity{RoleID: CEORoleID}
+
+	// Create a proposal first
+	prop, _, err := store.CreateProposal(context.Background(), campaign.CreateProposalCommand{
+		OrganizationID:  "org-test",
+		CreatedByRoleID: "empresa/ceo",
+		CanonicalHash:   "hash-prop-1",
+		Title:           "Proposal For Review",
+		Goal:            "Review goal",
+	})
+	if err != nil {
+		t.Fatalf("CreateProposal failed: %v", err)
+	}
+
+	turnCtx := TurnContext{
+		OrganizationID: "org-test",
+		ConversationID: 10,
+		TaskID:         20,
+		AttemptID:      1,
+		ActorRoleID:    CEORoleID,
+		OwnerMessageID: 100,
+	}
+	ctx := WithTurnContext(context.Background(), turnCtx)
+
+	// 1. Request financial review
+	req := executionharness.ToolRequest{
+		ToolName:   "campaign.request_financial_review",
+		ToolCallID: "call_req_rev_1",
+		Arguments:  json.RawMessage(fmt.Sprintf(`{"proposal_id": %d}`, prop.ID)),
+	}
+
+	res, err := executor.Execute(ctx, identity, req)
+	if err != nil {
+		t.Fatalf("campaign.request_financial_review failed: %v", err)
+	}
+
+	var reqProj RequestFinancialReviewResultProjection
+	if err := json.Unmarshal(res.Content, &reqProj); err != nil {
+		t.Fatalf("unmarshal request_financial_review result: %v", err)
+	}
+	if reqProj.ProposalID != prop.ID || reqProj.ReviewerRoleID != "negocio/administrador_financiero" {
+		t.Fatalf("unexpected review request projection: %+v", reqProj)
+	}
+	if reqProj.Status != "pending" {
+		t.Errorf("expected pending status, got %q", reqProj.Status)
+	}
+
+	// 2. Mock completed review in store
+	_, _, err = store.RecordFinancialReview(context.Background(), campaign.RecordFinancialReviewCommand{
+		OrganizationID:        "org-test",
+		ReviewRequestID:       reqProj.ReviewRequestID,
+		ProposalID:            prop.ID,
+		ProposalCanonicalHash: prop.CanonicalHash,
+		ReviewerRoleID:        "negocio/administrador_financiero",
+		ReviewTaskID:          reqProj.ReviewTaskID,
+		ReviewAttemptID:       1,
+		Verdict:               campaign.VerdictRecommended,
+		Summary:               "Financially sound within limits",
+		CanonicalHash:         "hash-rev-1",
+	})
+	if err != nil {
+		t.Fatalf("RecordFinancialReview failed: %v", err)
+	}
+
+	// 3. Read back financial review with campaign.get_financial_review
+	getReq := executionharness.ToolRequest{
+		ToolName:   "campaign.get_financial_review",
+		ToolCallID: "call_get_rev_1",
+		Arguments:  json.RawMessage(fmt.Sprintf(`{"proposal_id": %d}`, prop.ID)),
+	}
+
+	getRes, err := executor.Execute(ctx, identity, getReq)
+	if err != nil {
+		t.Fatalf("campaign.get_financial_review failed: %v", err)
+	}
+
+	var revProj FinancialReviewResultProjection
+	if err := json.Unmarshal(getRes.Content, &revProj); err != nil {
+		t.Fatalf("unmarshal get_financial_review result: %v", err)
+	}
+	if revProj.Verdict != string(campaign.VerdictRecommended) || revProj.ProposalID != prop.ID {
+		t.Errorf("unexpected financial review projection: %+v", revProj)
 	}
 }

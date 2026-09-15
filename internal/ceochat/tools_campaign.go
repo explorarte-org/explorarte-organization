@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/campaign"
 )
@@ -13,6 +14,21 @@ import (
 // CapabilityAuthorizer evaluates canonical capability permissions.
 type CapabilityAuthorizer interface {
 	Authorize(ctx context.Context, organizationID string, revisionID int64, roleID, capability string) error
+}
+
+// CampaignToolsConfig holds optional collaborators for campaign tools.
+type CampaignToolsConfig struct {
+	FinanceService *campaign.FinanceService
+}
+
+// CampaignToolsOption configures CampaignToolsConfig.
+type CampaignToolsOption func(*CampaignToolsConfig)
+
+// WithFinanceService configures a FinanceService for campaign financial review tools.
+func WithFinanceService(svc *campaign.FinanceService) CampaignToolsOption {
+	return func(c *CampaignToolsConfig) {
+		c.FinanceService = svc
+	}
 }
 
 // ProposeResultProjection is the bounded, non-sensitive projection returned
@@ -23,6 +39,35 @@ type ProposeResultProjection struct {
 	Title                   string `json:"title"`
 	FinancialReviewRequired bool   `json:"financial_review_required"`
 	ExecutionStarted        bool   `json:"execution_started"`
+}
+
+// RequestFinancialReviewResultProjection is the projection returned upon review request.
+type RequestFinancialReviewResultProjection struct {
+	ReviewRequestID       int64  `json:"review_request_id"`
+	ProposalID            int64  `json:"proposal_id"`
+	ProposalCanonicalHash string `json:"proposal_canonical_hash"`
+	ReviewerRoleID        string `json:"reviewer_role_id"`
+	ReviewTaskID          int64  `json:"review_task_id"`
+	Status                string `json:"status"`
+}
+
+// FinancialReviewResultProjection is the projection returned by campaign.get_financial_review.
+type FinancialReviewResultProjection struct {
+	ReviewID              int64                          `json:"review_id"`
+	ReviewRequestID       int64                          `json:"review_request_id"`
+	ProposalID            int64                          `json:"proposal_id"`
+	ProposalCanonicalHash string                         `json:"proposal_canonical_hash"`
+	ReviewerRoleID        string                         `json:"reviewer_role_id"`
+	Verdict               string                         `json:"verdict"`
+	Summary               string                         `json:"summary"`
+	RecommendedBudget     *campaign.BudgetRecommendation `json:"recommended_budget,omitempty"`
+	EstimatedCost         *campaign.EstimatedCost        `json:"estimated_cost,omitempty"`
+	Assumptions           []string                       `json:"assumptions"`
+	Risks                 []string                       `json:"risks"`
+	RequiredCorrections   []string                       `json:"required_corrections"`
+	MissingInformation    []string                       `json:"missing_information"`
+	CanonicalHash         string                         `json:"canonical_hash"`
+	CreatedAt             string                         `json:"created_at"`
 }
 
 type proposeArgs struct {
@@ -42,6 +87,16 @@ type getProposalArgs struct {
 
 type listProposalsArgs struct {
 	Limit int `json:"limit"`
+}
+
+type requestFinancialReviewArgs struct {
+	ProposalID int64 `json:"proposal_id"`
+}
+
+type getFinancialReviewArgs struct {
+	ReviewID        int64 `json:"review_id,omitempty"`
+	ProposalID      int64 `json:"proposal_id,omitempty"`
+	ReviewRequestID int64 `json:"review_request_id,omitempty"`
 }
 
 var (
@@ -114,30 +169,48 @@ var (
 		},
 		"additionalProperties": false
 	}`)
+
+	campaignRequestFinancialReviewInputSchema = json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"proposal_id": {"type": "integer", "minimum": 1, "description": "Durable ID of the draft campaign proposal to submit for financial review."}
+		},
+		"required": ["proposal_id"],
+		"additionalProperties": false
+	}`)
+
+	campaignGetFinancialReviewInputSchema = json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"review_id": {"type": "integer", "minimum": 1, "description": "Durable ID of the financial review."},
+			"proposal_id": {"type": "integer", "minimum": 1, "description": "Durable ID of the proposal whose financial review to retrieve."},
+			"review_request_id": {"type": "integer", "minimum": 1, "description": "Durable ID of the review request."}
+		},
+		"additionalProperties": false
+	}`)
 )
 
 // RegisterCampaignTools registers campaign.propose (mutating), campaign.get_proposal (read_only),
-// and campaign.list_proposals (read_only) into the provided ToolRegistry.
-func RegisterCampaignTools(registry *ToolRegistry, organizationID string, store campaign.Store, authorizer CapabilityAuthorizer) error {
-	if registry == nil {
-		return fmt.Errorf("%w: registry is required", ErrInvalidInput)
-	}
-	if store == nil {
-		return fmt.Errorf("%w: campaign store is required", ErrInvalidInput)
+// campaign.list_proposals (read_only), campaign.request_financial_review (mutating),
+// and campaign.get_financial_review (read_only) into the provided ToolRegistry.
+func RegisterCampaignTools(registry *ToolRegistry, organizationID string, store campaign.Store, authorizer CapabilityAuthorizer, opts ...CampaignToolsOption) error {
+	cfg := CampaignToolsConfig{}
+	for _, opt := range opts {
+		opt(&cfg)
 	}
 
 	// 1. campaign.propose (MUTATING)
 	proposeDesc := ToolDescriptor{
 		ID:           "campaign.propose",
 		Version:      "v1",
-		Description:  "Creates a durable, immutable draft campaign proposal based on explicit owner intent. Does not execute the campaign, does not create an executive root task, and does not allocate operational budget.",
+		Description:  "Drafts a durable campaign proposal for owner review. Does NOT execute, commit resources, or authorize spend.",
 		InputSchema:  campaignProposeInputSchema,
 		Access:       AccessMutating,
 		Effect:       ToolEffectWrite,
 		RequiredRole: CEORoleID,
 		Limits: ToolLimits{
 			MaxRows:        1,
-			MaxResultBytes: 4096,
+			MaxResultBytes: 16384,
 			Timeout:        defaultToolTimeout,
 		},
 		DataClass: DataClassInternal,
@@ -149,16 +222,29 @@ func RegisterCampaignTools(registry *ToolRegistry, organizationID string, store 
 			return fmt.Errorf("%w: decode campaign.propose args: %v", ErrInvalidInput, err)
 		}
 		if strings.TrimSpace(args.Title) == "" || len(args.Title) > campaign.MaxTitleLength {
-			return fmt.Errorf("%w: title must be 1..%d bytes", ErrInvalidInput, campaign.MaxTitleLength)
+			return fmt.Errorf("%w: title must be non-empty and <= %d chars", ErrInvalidInput, campaign.MaxTitleLength)
 		}
 		if strings.TrimSpace(args.Goal) == "" || len(args.Goal) > campaign.MaxGoalLength {
-			return fmt.Errorf("%w: goal must be 1..%d bytes", ErrInvalidInput, campaign.MaxGoalLength)
+			return fmt.Errorf("%w: goal must be non-empty and <= %d chars", ErrInvalidInput, campaign.MaxGoalLength)
 		}
 		if len(args.AcceptanceCriteria) == 0 || len(args.AcceptanceCriteria) > campaign.MaxAcceptanceCriteriaCount {
-			return fmt.Errorf("%w: acceptance_criteria count must be 1..%d", ErrInvalidInput, campaign.MaxAcceptanceCriteriaCount)
+			return fmt.Errorf("%w: acceptance_criteria count must be between 1 and %d", ErrInvalidInput, campaign.MaxAcceptanceCriteriaCount)
+		}
+		for i, ac := range args.AcceptanceCriteria {
+			if strings.TrimSpace(ac) == "" || len(ac) > campaign.MaxAcceptanceCriteriaItemBytes {
+				return fmt.Errorf("%w: acceptance_criteria[%d] must be non-empty and <= %d bytes", ErrInvalidInput, i, campaign.MaxAcceptanceCriteriaItemBytes)
+			}
 		}
 		if len(args.Requirements) > campaign.MaxRequirementsCount {
 			return fmt.Errorf("%w: requirements count exceeds %d", ErrInvalidInput, campaign.MaxRequirementsCount)
+		}
+		for i, req := range args.Requirements {
+			if strings.TrimSpace(req.Key) == "" || len(req.Key) > campaign.MaxRequirementKeyBytes {
+				return fmt.Errorf("%w: requirements[%d].key invalid", ErrInvalidInput, i)
+			}
+			if strings.TrimSpace(req.Description) == "" || len(req.Description) > campaign.MaxRequirementDescBytes {
+				return fmt.Errorf("%w: requirements[%d].description invalid", ErrInvalidInput, i)
+			}
 		}
 		if len(args.Assumptions) > campaign.MaxAssumptionsCount {
 			return fmt.Errorf("%w: assumptions count exceeds %d", ErrInvalidInput, campaign.MaxAssumptionsCount)
@@ -190,7 +276,6 @@ func RegisterCampaignTools(registry *ToolRegistry, organizationID string, store 
 			return nil, fmt.Errorf("%w: missing tool call context", ErrUnauthorizedActor)
 		}
 
-		// Authorization guard: only a role holding campaign.proposal.create may cause this mutation.
 		if authorizer != nil {
 			if err := authorizer.Authorize(ctx, turnCtx.OrganizationID, turnCtx.OrganizationRevisionID, turnCtx.ActorRoleID, "campaign.proposal.create"); err != nil {
 				return nil, fmt.Errorf("%w: actor %q lacks campaign.proposal.create capability: %v", ErrUnauthorizedActor, turnCtx.ActorRoleID, err)
@@ -202,7 +287,6 @@ func RegisterCampaignTools(registry *ToolRegistry, organizationID string, store 
 			return nil, fmt.Errorf("%w: %v", ErrInvalidInput, err)
 		}
 
-		// Default budget source if unset
 		if args.Budget != nil && args.Budget.Source == "" {
 			args.Budget.Source = campaign.BudgetSourceCEOEstimate
 		}
@@ -380,6 +464,172 @@ func RegisterCampaignTools(registry *ToolRegistry, organizationID string, store 
 
 	if err := registry.Register(listDesc, listValidator, listHandler); err != nil {
 		return fmt.Errorf("register campaign.list_proposals: %w", err)
+	}
+
+	// 4. campaign.request_financial_review (MUTATING / WRITE)
+	reqFinDesc := ToolDescriptor{
+		ID:           "campaign.request_financial_review",
+		Version:      "v1",
+		Description:  "Submits a draft campaign proposal to the canonical Finance role for formal financial review. Does NOT execute the campaign.",
+		InputSchema:  campaignRequestFinancialReviewInputSchema,
+		Access:       AccessMutating,
+		Effect:       ToolEffectWrite,
+		RequiredRole: CEORoleID,
+		Limits: ToolLimits{
+			MaxRows:        1,
+			MaxResultBytes: 16384,
+			Timeout:        defaultToolTimeout,
+		},
+		DataClass: DataClassInternal,
+	}
+
+	reqFinValidator := func(raw json.RawMessage) error {
+		var args requestFinancialReviewArgs
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return fmt.Errorf("%w: decode campaign.request_financial_review args: %v", ErrInvalidInput, err)
+		}
+		if args.ProposalID <= 0 {
+			return fmt.Errorf("%w: proposal_id must be positive", ErrInvalidInput)
+		}
+		return nil
+	}
+
+	reqFinHandler := func(ctx context.Context, actorRoleID string, raw json.RawMessage) (json.RawMessage, error) {
+		turnCtx, ok := TurnContextFrom(ctx)
+		if !ok || strings.TrimSpace(turnCtx.ActorRoleID) == "" {
+			return nil, fmt.Errorf("%w: missing authorized turn context", ErrUnauthorizedActor)
+		}
+		toolCallCtx, ok := ToolCallContextFrom(ctx)
+		if !ok || strings.TrimSpace(toolCallCtx.ToolCallID) == "" {
+			return nil, fmt.Errorf("%w: missing tool call context", ErrUnauthorizedActor)
+		}
+
+		if authorizer != nil {
+			if err := authorizer.Authorize(ctx, turnCtx.OrganizationID, turnCtx.OrganizationRevisionID, turnCtx.ActorRoleID, campaign.CapabilityFinancialReviewRequest); err != nil {
+				return nil, fmt.Errorf("%w: actor %q lacks %s capability: %v", ErrUnauthorizedActor, turnCtx.ActorRoleID, campaign.CapabilityFinancialReviewRequest, err)
+			}
+		}
+
+		var args requestFinancialReviewArgs
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrInvalidInput, err)
+		}
+
+		if cfg.FinanceService == nil {
+			return nil, fmt.Errorf("%w: finance service not configured", ErrInvalidInput)
+		}
+
+		reviewReq, task, _, err := cfg.FinanceService.RequestReview(ctx, campaign.RequestReviewParams{
+			OrganizationID:              turnCtx.OrganizationID,
+			OrganizationRevisionID:      turnCtx.OrganizationRevisionID,
+			ProposalID:                  args.ProposalID,
+			RequestedByRoleID:           turnCtx.ActorRoleID,
+			RequestedFromConversationID: turnCtx.ConversationID,
+			RequestedFromMessageID:      turnCtx.OwnerMessageID,
+			RequestedFromTaskID:         turnCtx.TaskID,
+			ToolCallID:                  toolCallCtx.ToolCallID,
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		projection := RequestFinancialReviewResultProjection{
+			ReviewRequestID:       reviewReq.ID,
+			ProposalID:            reviewReq.ProposalID,
+			ProposalCanonicalHash: reviewReq.ProposalCanonicalHash,
+			ReviewerRoleID:        reviewReq.ReviewerRoleID,
+			ReviewTaskID:          task.ID,
+			Status:                string(reviewReq.Status),
+		}
+		return json.Marshal(projection)
+	}
+
+	if err := registry.Register(reqFinDesc, reqFinValidator, reqFinHandler); err != nil {
+		return fmt.Errorf("register campaign.request_financial_review: %w", err)
+	}
+
+	// 5. campaign.get_financial_review (READ ONLY)
+	getFinDesc := ToolDescriptor{
+		ID:           "campaign.get_financial_review",
+		Version:      "v1",
+		Description:  "Retrieves the completed immutable financial review recommendation for a campaign proposal.",
+		InputSchema:  campaignGetFinancialReviewInputSchema,
+		Access:       AccessReadOnly,
+		Effect:       ToolEffectRead,
+		RequiredRole: CEORoleID,
+		Limits: ToolLimits{
+			MaxRows:        1,
+			MaxResultBytes: 16384,
+			Timeout:        defaultToolTimeout,
+		},
+		DataClass: DataClassInternal,
+	}
+
+	getFinValidator := func(raw json.RawMessage) error {
+		var args getFinancialReviewArgs
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return fmt.Errorf("%w: decode campaign.get_financial_review args: %v", ErrInvalidInput, err)
+		}
+		if args.ReviewID <= 0 && args.ProposalID <= 0 && args.ReviewRequestID <= 0 {
+			return fmt.Errorf("%w: at least one of review_id, proposal_id, or review_request_id must be provided", ErrInvalidInput)
+		}
+		return nil
+	}
+
+	getFinHandler := func(ctx context.Context, actorRoleID string, raw json.RawMessage) (json.RawMessage, error) {
+		turnCtx, ok := TurnContextFrom(ctx)
+		orgID := organizationID
+		if ok && turnCtx.OrganizationID != "" {
+			orgID = turnCtx.OrganizationID
+		}
+		if authorizer != nil && ok && turnCtx.ActorRoleID != "" {
+			if err := authorizer.Authorize(ctx, orgID, turnCtx.OrganizationRevisionID, turnCtx.ActorRoleID, campaign.CapabilityFinancialReviewRead); err != nil {
+				return nil, fmt.Errorf("%w: actor %q lacks %s capability: %v", ErrUnauthorizedActor, turnCtx.ActorRoleID, campaign.CapabilityFinancialReviewRead, err)
+			}
+		}
+
+		var args getFinancialReviewArgs
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrInvalidInput, err)
+		}
+
+		var rev campaign.CampaignFinancialReview
+		var err error
+		if args.ReviewID > 0 {
+			rev, err = store.GetFinancialReview(ctx, orgID, args.ReviewID)
+		} else if args.ReviewRequestID > 0 {
+			rev, err = store.GetFinancialReviewByRequestID(ctx, orgID, args.ReviewRequestID)
+		} else if args.ProposalID > 0 {
+			rev, err = store.GetLatestFinancialReviewForProposal(ctx, orgID, args.ProposalID)
+		} else {
+			return nil, fmt.Errorf("%w: query identifier required", ErrInvalidInput)
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		projection := FinancialReviewResultProjection{
+			ReviewID:              rev.ID,
+			ReviewRequestID:       rev.ReviewRequestID,
+			ProposalID:            rev.ProposalID,
+			ProposalCanonicalHash: rev.ProposalCanonicalHash,
+			ReviewerRoleID:        rev.ReviewerRoleID,
+			Verdict:               string(rev.Verdict),
+			Summary:               rev.Summary,
+			RecommendedBudget:     rev.RecommendedBudget,
+			EstimatedCost:         rev.EstimatedCost,
+			Assumptions:           rev.Assumptions,
+			Risks:                 rev.Risks,
+			RequiredCorrections:   rev.RequiredCorrections,
+			MissingInformation:    rev.MissingInformation,
+			CanonicalHash:         rev.CanonicalHash,
+			CreatedAt:             rev.CreatedAt.Format(time.RFC3339),
+		}
+		return json.Marshal(projection)
+	}
+
+	if err := registry.Register(getFinDesc, getFinValidator, getFinHandler); err != nil {
+		return fmt.Errorf("register campaign.get_financial_review: %w", err)
 	}
 
 	return nil
