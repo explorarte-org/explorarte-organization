@@ -99,7 +99,7 @@ func RegisterMemoryTools(registry *ToolRegistry, organizationID string, searcher
 	return registry.Register(ToolDescriptor{
 		ID: ToolMemorySearch, Version: memorySearchVersion,
 		Description: "Search the CEO's own role memory for prior corrections relevant to a query, optionally scoped to a task.",
-		InputSchema: memorySearchSchema, Access: AccessReadOnly, RequiredRole: CEORoleID,
+		InputSchema: memorySearchSchema, Access: AccessReadOnly, Effect: ToolEffectRead, RequiredRole: CEORoleID,
 		Limits:    ToolLimits{MaxRows: maxMemorySearchRows, MaxResultBytes: 32 << 10, Timeout: 10 * time.Second},
 		DataClass: DataClassInternal,
 	}, func(body json.RawMessage) error { _, err := decodeMemorySearchArgs(body); return err },

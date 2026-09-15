@@ -221,7 +221,7 @@ func RegisterTaskTools(registry *ToolRegistry, reader TaskReader) error {
 	if err := registry.Register(ToolDescriptor{
 		ID: ToolTasksList, Version: tasksListVersion,
 		Description: "List durable tasks, optionally filtered by status or assigned role.",
-		InputSchema: tasksListSchema, Access: AccessReadOnly, RequiredRole: CEORoleID,
+		InputSchema: tasksListSchema, Access: AccessReadOnly, Effect: ToolEffectRead, RequiredRole: CEORoleID,
 		Limits:    ToolLimits{MaxRows: maxTasksListRows, MaxResultBytes: 32 << 10, Timeout: defaultToolTimeout},
 		DataClass: DataClassInternal,
 	}, func(body json.RawMessage) error { _, err := decodeTasksListArgs(body); return err },
@@ -279,7 +279,7 @@ func RegisterTaskTools(registry *ToolRegistry, reader TaskReader) error {
 	if err := registry.Register(ToolDescriptor{
 		ID: ToolTasksGet, Version: tasksGetVersion,
 		Description: "Get one durable task by ID.",
-		InputSchema: tasksGetSchema, Access: AccessReadOnly, RequiredRole: CEORoleID,
+		InputSchema: tasksGetSchema, Access: AccessReadOnly, Effect: ToolEffectRead, RequiredRole: CEORoleID,
 		Limits:    ToolLimits{MaxResultBytes: 16 << 10, Timeout: defaultToolTimeout},
 		DataClass: DataClassInternal,
 	}, func(body json.RawMessage) error { _, err := decodeTaskIDArgs(body); return err },
@@ -314,7 +314,7 @@ func RegisterTaskTools(registry *ToolRegistry, reader TaskReader) error {
 	return registry.Register(ToolDescriptor{
 		ID: ToolTasksListAttempts, Version: tasksListAttemptsVersion,
 		Description: "List the attempts recorded for one task.",
-		InputSchema: tasksListAttemptsSchema, Access: AccessReadOnly, RequiredRole: CEORoleID,
+		InputSchema: tasksListAttemptsSchema, Access: AccessReadOnly, Effect: ToolEffectRead, RequiredRole: CEORoleID,
 		Limits:    ToolLimits{MaxRows: maxTaskAttemptsRows, MaxResultBytes: 16 << 10, Timeout: defaultToolTimeout},
 		DataClass: DataClassInternal,
 	}, func(body json.RawMessage) error { _, err := decodeTasksListAttemptsArgs(body); return err },

@@ -173,7 +173,7 @@ func RegisterFinanceTools(registry *ToolRegistry, organizationID string, provide
 	return registry.Register(ToolDescriptor{
 		ID: ToolFinanceGetCostSummary, Version: financeGetCostSummaryVersion,
 		Description: "Summarize settled and estimated-unsettled provider spend, optionally filtered by task, provider, model, or time range. Exhaustive over the filter unless truncated=true (see providers_omitted for why).",
-		InputSchema: financeGetCostSummarySchema, Access: AccessReadOnly, RequiredRole: CEORoleID,
+		InputSchema: financeGetCostSummarySchema, Access: AccessReadOnly, Effect: ToolEffectRead, RequiredRole: CEORoleID,
 		Limits:    ToolLimits{MaxResultBytes: 32 << 10, Timeout: 20 * time.Second},
 		DataClass: DataClassInternal,
 	}, func(body json.RawMessage) error { _, err := decodeFinanceGetCostSummaryArgs(body); return err },

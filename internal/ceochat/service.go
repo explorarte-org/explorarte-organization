@@ -426,6 +426,18 @@ func (s *Service) driveTurn(ctx context.Context, conversation Conversation, task
 		return SendResult{}, fmt.Errorf("build ceochat harness runtime: %w", err)
 	}
 
+	turnCtx := TurnContext{
+		OrganizationID:         s.OrganizationID,
+		OrganizationRevisionID: claimed.Task.OrganizationRevisionID,
+		ConversationID:         conversation.ID,
+		OwnerRoleID:            conversation.OwnerRoleID,
+		OwnerMessageID:         ownerMessage.ID,
+		TaskID:                 claimed.Task.ID,
+		AttemptID:              claimed.Attempt.ID,
+		ActorRoleID:            conversation.OwnerRoleID,
+	}
+	ctx = WithTurnContext(ctx, turnCtx)
+
 	spec := executionharness.RunSpec{
 		Identity: executionharness.RunIdentity{
 			RunID:                turnRunID(claimed.Task.ID),
@@ -677,6 +689,13 @@ func renderConversationContract(prior []Message, newMessage Message) string {
 		lines = append([]string{line}, lines...)
 	}
 	var b strings.Builder
+	b.WriteString("Operational instructions for CEO conversational role:\n")
+	b.WriteString("- You are the CEO conversational interface responding to the organization owner.\n")
+	b.WriteString("- Only invoke campaign.propose when the owner explicitly asks to create, draft, prepare, or save a campaign proposal.\n")
+	b.WriteString("- Do NOT call campaign.propose for hypothetical questions, brainstorming, or cost inquiries.\n")
+	b.WriteString("- Creating a proposal produces a draft; it does NOT execute the campaign, does NOT create an executive root task, and does NOT consume operational budget.\n")
+	b.WriteString("- If the owner demands immediate execution (e.g. \"lanza la campaña inmediatamente\"), explain that you can create a draft proposal, but execution requires financial review and their subsequent explicit approval before any execution can begin.\n")
+	b.WriteString("- After proposing a campaign, inform the owner that the draft proposal has been created, has not been executed, and requires financial review and approval.\n\n")
 	b.WriteString("Conversation so far (bounded, oldest first):\n")
 	if len(lines) == 0 {
 		b.WriteString("(no prior messages)\n")

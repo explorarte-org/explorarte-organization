@@ -10,6 +10,9 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/Mireuz13/explorarte-organization/internal/authorization"
+	authorizationpostgres "github.com/Mireuz13/explorarte-organization/internal/authorization/postgres"
+	campaignpostgres "github.com/Mireuz13/explorarte-organization/internal/campaign/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/ceochat"
 	ceochatpostgres "github.com/Mireuz13/explorarte-organization/internal/ceochat/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/config"
@@ -176,6 +179,22 @@ func Open(cfg config.Config, store *platformpostgres.Store, modelRuntimeOpts ...
 	}
 	if err = ceochat.RegisterMemoryTools(toolRegistry, organizationID, memoryRuntime.Manager); err != nil {
 		return nil, fmt.Errorf("register ceochat memory tools: %w", err)
+	}
+
+	campaignStore, err := campaignpostgres.New(store)
+	if err != nil {
+		return nil, fmt.Errorf("create ceochat campaign store: %w", err)
+	}
+	authorizationStore, err := authorizationpostgres.New(store)
+	if err != nil {
+		return nil, fmt.Errorf("create ceochat authorization store: %w", err)
+	}
+	authorizerPolicy, err := authorization.NewWithPolicyReader(authorizationStore, organizationID, cfg.Registry.CanonicalDir)
+	if err != nil {
+		return nil, fmt.Errorf("create ceochat capability authorizer: %w", err)
+	}
+	if err = ceochat.RegisterCampaignTools(toolRegistry, organizationID, campaignStore, authorizerPolicy); err != nil {
+		return nil, fmt.Errorf("register ceochat campaign tools: %w", err)
 	}
 
 	service, err := ceochat.Open(ceochat.Service{
