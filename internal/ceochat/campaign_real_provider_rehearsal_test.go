@@ -12,6 +12,9 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/campaign"
 	campaignpostgres "github.com/Mireuz13/explorarte-organization/internal/campaign/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/ceochat"
+	ceochatbootstrap "github.com/Mireuz13/explorarte-organization/internal/ceochat/bootstrap"
+	"github.com/Mireuz13/explorarte-organization/internal/executive"
+	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
 )
 
 func TestCampaignProposalRealProviderRehearsal(t *testing.T) {
@@ -378,6 +381,288 @@ func TestCampaignRevisionAndApprovalRealProviderRehearsal(t *testing.T) {
 		if pCheck.ExecutionStarted {
 			t.Fatalf("[ScenarioD] FATAL: ExecutionStarted = true")
 		}
+	})
+
+	runs, invocations, _ := counters.snapshot()
+	settledUSD, estimatedUSD := budget.spentSoFar(ctx, t)
+	totalUSD := settledUSD + estimatedUSD
+	t.Logf("[REHEARSAL SUMMARY] runs=%d (max %d) invocations=%d (max %d) settled=$%.4f estimated=$%.4f total=$%.4f (max $%.2f)",
+		runs, maxScenarios, invocations, maxInvocations, settledUSD, estimatedUSD, totalUSD, maxCostUSD)
+
+	if runs > maxScenarios {
+		t.Errorf("exceeded max scenarios: %d > %d", runs, maxScenarios)
+	}
+	if invocations > maxInvocations {
+		t.Errorf("exceeded max invocations: %d > %d", invocations, maxInvocations)
+	}
+	if totalUSD > maxCostUSD {
+		t.Errorf("exceeded max cost: $%.4f > $%.2f", totalUSD, maxCostUSD)
+	}
+}
+
+func TestCampaignPromotionRealProviderRehearsal(t *testing.T) {
+	if os.Getenv("ORG_REAL_PROVIDER_REHEARSAL") != "1" {
+		t.Skip("real-provider rehearsal is opt-in only: set ORG_REAL_PROVIDER_REHEARSAL=1")
+	}
+	credentialFile := os.Getenv("ORG_REAL_PROVIDER_REHEARSAL_CREDENTIAL_FILE")
+	if credentialFile == "" {
+		t.Skip("ORG_REAL_PROVIDER_REHEARSAL_CREDENTIAL_FILE not set; refusing to run without credential path")
+	}
+
+	const maxCostUSD = 0.50
+	const maxScenarios = 3
+	const maxInvocations = 12
+
+	var realExecutive *executive.Orchestrator
+	f := newRealProviderRehearsalFixtureWithStore(t, credentialFile, func(s *platformpostgres.Store) []any {
+		realExecutive = buildRealExecutiveOrchestrator(t, s, rehearsalOrganization)
+		return []any{ceochatbootstrap.WithExecutiveSubmitter(realExecutive)}
+	})
+	defer f.cleanup()
+	ctx := context.Background()
+
+	campStore, err := campaignpostgres.New(f.store)
+	if err != nil {
+		t.Fatalf("open campaign store: %v", err)
+	}
+
+	budget := &rehearsalBudget{calls: f.costLedger, maxCostUSD: maxCostUSD}
+	counters := &rehearsalCounters{}
+
+	// Setup: seed an approved campaign proposal and recommended financial review tuple.
+	conv, err := f.runtime.Service.CreateConversation(ctx, ceochat.CreateConversationRequest{
+		ActorRoleID: "empresa/human",
+		OwnerRoleID: "empresa/human",
+	})
+	if err != nil {
+		t.Fatalf("create rehearsal conversation: %v", err)
+	}
+
+	send0, err := f.runtime.Service.Send(ctx, ceochat.SendRequest{
+		ConversationID: conv.ID,
+		ActorRoleID:    "empresa/human",
+		IdempotencyKey: "rehearsal-promo-init-0",
+		Content:        "Hola, preparemos la campaña.",
+	})
+	if err != nil {
+		t.Fatalf("send init turn: %v", err)
+	}
+	initMsgID := send0.OwnerMessage.ID
+	initTaskID := send0.OwnerMessage.TaskID
+
+	pPayload := campaign.CanonicalPayload{
+		Title:              "Campaña Verificada de Creadores",
+		Goal:               "Adquirir 500 creadores verificados vía outreach",
+		AcceptanceCriteria: []string{"Tasa de registro verificado > 12%"},
+	}
+	pHash, _ := campaign.ComputeCanonicalHash(pPayload)
+	p, _, err := campStore.CreateProposal(ctx, campaign.CreateProposalCommand{
+		OrganizationID:       rehearsalOrganization,
+		ConversationID:       conv.ID,
+		CreatedFromMessageID: initMsgID,
+		TaskID:               initTaskID,
+		AttemptID:            1,
+		ToolCallID:           "rehearsal-call-prop",
+		Title:                pPayload.Title,
+		Goal:                 pPayload.Goal,
+		AcceptanceCriteria:   pPayload.AcceptanceCriteria,
+		CanonicalHash:        pHash,
+		IdempotencyKey:       "rehearsal-promo-p1",
+		CreatedByRoleID:      "empresa/ceo",
+	})
+	if err != nil {
+		t.Fatalf("setup proposal: %v", err)
+	}
+
+	recBudget := campaign.BudgetRecommendation{
+		MaxUSD:        4500.0,
+		MaxTokens:     150000,
+		MaxModelCalls: 80,
+		MaxWallTimeMS: 7200000,
+		MaxDepth:      6,
+		MaxRetries:    4,
+		MaxSubagents:  3,
+	}
+	rHash, _ := campaign.ComputeReviewCanonicalHash(campaign.ReviewCanonicalPayload{
+		ProposalID:            p.ID,
+		ProposalCanonicalHash: pHash,
+		ReviewerRoleID:        "negocio/administrador_financiero",
+		Verdict:               campaign.VerdictRecommended,
+		RecommendedBudget:     &recBudget,
+		Summary:               "Aprobado financieramente",
+	})
+
+	revReq, _, err := campStore.CreateReviewRequest(ctx, campaign.CreateReviewRequestCommand{
+		OrganizationID:              rehearsalOrganization,
+		ProposalID:                  p.ID,
+		ProposalCanonicalHash:       pHash,
+		RequestedByRoleID:           "empresa/ceo",
+		RequestedFromConversationID: conv.ID,
+		RequestedFromMessageID:      initMsgID,
+		RequestedFromTaskID:         initTaskID,
+		ReviewerRoleID:              "negocio/administrador_financiero",
+		ReviewTaskID:                initTaskID,
+		IdempotencyKey:              "rehearsal-promo-revreq-1",
+	})
+	if err != nil {
+		t.Fatalf("setup review request: %v", err)
+	}
+
+	rev, _, err := campStore.RecordFinancialReview(ctx, campaign.RecordFinancialReviewCommand{
+		OrganizationID:        rehearsalOrganization,
+		ReviewRequestID:       revReq.ID,
+		ProposalID:            p.ID,
+		ProposalCanonicalHash: pHash,
+		ReviewerRoleID:        "negocio/administrador_financiero",
+		ReviewTaskID:          initTaskID,
+		ReviewAttemptID:       1,
+		Verdict:               campaign.VerdictRecommended,
+		RecommendedBudget:     &recBudget,
+		CanonicalHash:         rHash,
+		Summary:               "Aprobado financieramente",
+	})
+	if err != nil {
+		t.Fatalf("setup financial review: %v", err)
+	}
+
+	apprHash, _ := campaign.ComputeApprovalCanonicalHash(campaign.ApprovalCanonicalPayload{
+		OrganizationID:               rehearsalOrganization,
+		ProposalID:                   p.ID,
+		ProposalCanonicalHash:        pHash,
+		FinancialReviewID:            rev.ID,
+		FinancialReviewCanonicalHash: rHash,
+		ApprovedByRoleID:             "empresa/human",
+		ExecutionBudget:              recBudget,
+	})
+	appr, _, err := campStore.CreateOwnerApproval(ctx, campaign.CreateOwnerApprovalCommand{
+		OrganizationID:               rehearsalOrganization,
+		ProposalID:                   p.ID,
+		ProposalCanonicalHash:        pHash,
+		FinancialReviewID:            rev.ID,
+		FinancialReviewCanonicalHash: rHash,
+		ApprovedByRoleID:             "empresa/human",
+		ConversationID:               conv.ID,
+		MessageID:                    initMsgID,
+		TurnTaskID:                   initTaskID,
+		ToolCallID:                   "rehearsal-call-appr",
+		ExecutionBudget:              recBudget,
+		CanonicalHash:                apprHash,
+		IdempotencyKey:               "rehearsal-promo-appr-1",
+	})
+	if err != nil {
+		t.Fatalf("setup owner approval: %v", err)
+	}
+
+	// =========================================================================
+	// Scenario A: Read-Only Check
+	// Owner: "¿Esta campaña ya está lista para ejecutarse?"
+	// Expected: 0 promotions
+	// =========================================================================
+	t.Run("ScenarioA_ReadOnlyCheck", func(t *testing.T) {
+		prompt := fmt.Sprintf("¿La campaña ID %d con aprobación ID %d ya está lista para ejecutarse?", p.ID, appr.ID)
+		res, ev := f.sendReal(t, "ScenarioA_ReadOnlyCheck", "empresa/human", prompt, "rehearsal-promo-s-a", budget, counters)
+		if res.Outcome != ceochat.RunOutcomeCompleted {
+			t.Errorf("[ScenarioA] expected completed outcome, got %s", res.Outcome)
+		}
+
+		for _, call := range ev.ToolCalls {
+			if call.ToolName == "campaign.promote_to_executive" {
+				t.Errorf("[ScenarioA] FATAL: model called campaign.promote_to_executive on read-only question: %s", call.Arguments)
+			}
+		}
+
+		_, err := campStore.GetPromotionByApprovalID(ctx, rehearsalOrganization, appr.ID)
+		if err == nil {
+			t.Errorf("[ScenarioA] FATAL: campaign promotion created on read-only question")
+		}
+		t.Logf("[ScenarioA] PASS: 0 promotions created.")
+	})
+
+	// =========================================================================
+	// Scenario B: Explicit Execution
+	// Owner: "Lanza ahora la campaña aprobada."
+	// Expected: 1 promotion, 1 Executive root, 1 AgentBudget, assistant reports submitted/started, does not claim completed.
+	// =========================================================================
+	var promoB campaign.CampaignPromotion
+	t.Run("ScenarioB_ExplicitExecution", func(t *testing.T) {
+		prompt := fmt.Sprintf("Lanza ahora la campaña aprobada con ID de aprobación %d.", appr.ID)
+		res, _ := f.sendReal(t, "ScenarioB_ExplicitExecution", "empresa/human", prompt, "rehearsal-promo-s-b", budget, counters)
+		if res.Outcome != ceochat.RunOutcomeCompleted {
+			t.Errorf("[ScenarioB] expected completed outcome, got %s", res.Outcome)
+		}
+
+		var err error
+		promoB, err = campStore.GetPromotionByApprovalID(ctx, rehearsalOrganization, appr.ID)
+		if err != nil {
+			t.Fatalf("[ScenarioB] FATAL: promotion not found: %v", err)
+		}
+		if promoB.Status != campaign.StatusSubmitted {
+			t.Errorf("[ScenarioB] promotion status = %s, want submitted", promoB.Status)
+		}
+		if promoB.ExecutiveRootTaskID == 0 {
+			t.Fatalf("[ScenarioB] FATAL: ExecutiveRootTaskID = 0")
+		}
+
+		// Verify 1 Executive root task
+		var taskCount int
+		_ = f.store.Pool().QueryRow(ctx, "SELECT count(*) FROM tasks WHERE id = $1", promoB.ExecutiveRootTaskID).Scan(&taskCount)
+		if taskCount != 1 {
+			t.Errorf("[ScenarioB] root task count = %d, want 1", taskCount)
+		}
+
+		// Verify 1 AgentBudget root
+		var budgetCount int
+		_ = f.store.Pool().QueryRow(ctx, "SELECT count(*) FROM agent_budgets WHERE task_id = $1 AND parent_budget_id IS NULL", promoB.ExecutiveRootTaskID).Scan(&budgetCount)
+		if budgetCount != 1 {
+			t.Errorf("[ScenarioB] root budget count = %d, want 1", budgetCount)
+		}
+
+		// Check assistant output does NOT claim completed
+		if res.AssistantMessage != nil {
+			lower := strings.ToLower(res.AssistantMessage.Content)
+			if strings.Contains(lower, "completada") || strings.Contains(lower, "terminada") {
+				t.Errorf("[ScenarioB] assistant falsely claimed campaign is completed: %s", res.AssistantMessage.Content)
+			}
+		}
+		t.Logf("[ScenarioB] PASS: 1 promotion, 1 Executive root, 1 AgentBudget created.")
+	})
+
+	// =========================================================================
+	// Scenario C: Repeat
+	// Owner in a NEW conversational turn: "Ejecuta esa campaña nuevamente."
+	// Expected: same promotion/root, 0 duplicate roots, 0 duplicate AgentBudgets, assistant explains already submitted/running.
+	// =========================================================================
+	t.Run("ScenarioC_Repeat", func(t *testing.T) {
+		prompt := fmt.Sprintf("Ejecuta esa campaña nuevamente para la aprobación ID %d.", appr.ID)
+		res, _ := f.sendReal(t, "ScenarioC_Repeat", "empresa/human", prompt, "rehearsal-promo-s-c", budget, counters)
+		if res.Outcome != ceochat.RunOutcomeCompleted {
+			t.Errorf("[ScenarioC] expected completed outcome, got %s", res.Outcome)
+		}
+
+		// Verify promotion row remains unchanged and identical
+		promAfter, err := campStore.GetPromotionByApprovalID(ctx, rehearsalOrganization, appr.ID)
+		if err != nil {
+			t.Fatalf("[ScenarioC] promotion lookup failed: %v", err)
+		}
+		if promAfter.ID != promoB.ID || promAfter.ExecutiveRootTaskID != promoB.ExecutiveRootTaskID {
+			t.Errorf("[ScenarioC] promotion changed: got %+v, want %+v", promAfter, promoB)
+		}
+
+		// Verify 0 duplicate roots
+		var totalGoalTasks int
+		_ = f.store.Pool().QueryRow(ctx, "SELECT count(*) FROM tasks WHERE task_class = 'owner.goal'").Scan(&totalGoalTasks)
+		if totalGoalTasks != 1 {
+			t.Errorf("[ScenarioC] total goal tasks = %d, want 1", totalGoalTasks)
+		}
+
+		// Verify 0 duplicate budgets
+		var totalBudgets int
+		_ = f.store.Pool().QueryRow(ctx, "SELECT count(*) FROM agent_budgets WHERE parent_budget_id IS NULL").Scan(&totalBudgets)
+		if totalBudgets != 1 {
+			t.Errorf("[ScenarioC] total budgets = %d, want 1", totalBudgets)
+		}
+
+		t.Logf("[ScenarioC] PASS: 0 duplicate roots, 0 duplicate budgets.")
 	})
 
 	runs, invocations, _ := counters.snapshot()
