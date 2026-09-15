@@ -58,7 +58,45 @@ type Runtime struct {
 // deterministic test.fake adapter alongside the real ones, to drive the
 // canonical ceochat.Service.Send -> ... -> InvocationService.Create ->
 // DispatchService.Dispatch composition without a real provider call.
-func Open(cfg config.Config, store *platformpostgres.Store, modelRuntimeOpts ...modelbootstrap.Option) (*Runtime, error) {
+// OpenOption configures optional dependencies for ceochat runtime.
+type OpenOption func(*openConfig)
+
+type openConfig struct {
+	modelRuntimeOpts []modelbootstrap.Option
+	submitter        campaign.ExecutiveSubmitter
+	promotionService *campaign.PromotionService
+}
+
+// WithExecutiveSubmitter injects the canonical ExecutiveSubmitter into ceochat for campaign promotion.
+func WithExecutiveSubmitter(submitter campaign.ExecutiveSubmitter) OpenOption {
+	return func(c *openConfig) {
+		c.submitter = submitter
+	}
+}
+
+// WithPromotionService injects an existing PromotionService into ceochat.
+func WithPromotionService(svc *campaign.PromotionService) OpenOption {
+	return func(c *openConfig) {
+		c.promotionService = svc
+	}
+}
+
+// Open builds a ceochat.Service against the given PostgreSQL store.
+func Open(cfg config.Config, store *platformpostgres.Store, opts ...any) (*Runtime, error) {
+	var openCfg openConfig
+	for _, opt := range opts {
+		switch v := opt.(type) {
+		case modelbootstrap.Option:
+			openCfg.modelRuntimeOpts = append(openCfg.modelRuntimeOpts, v)
+		case campaign.ExecutiveSubmitter:
+			openCfg.submitter = v
+		case *campaign.PromotionService:
+			openCfg.promotionService = v
+		case OpenOption:
+			v(&openCfg)
+		}
+	}
+	modelRuntimeOpts := openCfg.modelRuntimeOpts
 	if store == nil {
 		return nil, fmt.Errorf("ceochat bootstrap requires PostgreSQL")
 	}
@@ -195,7 +233,16 @@ func Open(cfg config.Config, store *platformpostgres.Store, modelRuntimeOpts ...
 		return nil, fmt.Errorf("create ceochat capability authorizer: %w", err)
 	}
 	approvalService := campaign.NewApprovalService(campaignStore, authorizerPolicy)
-	if err = ceochat.RegisterCampaignTools(toolRegistry, organizationID, campaignStore, authorizerPolicy, ceochat.WithApprovalService(approvalService)); err != nil {
+	campToolOpts := []ceochat.CampaignToolsOption{
+		ceochat.WithApprovalService(approvalService),
+	}
+	if openCfg.submitter != nil {
+		promService := campaign.NewPromotionService(campaignStore, openCfg.submitter, authorizerPolicy)
+		campToolOpts = append(campToolOpts, ceochat.WithPromotionService(promService))
+	} else if openCfg.promotionService != nil {
+		campToolOpts = append(campToolOpts, ceochat.WithPromotionService(openCfg.promotionService))
+	}
+	if err = ceochat.RegisterCampaignTools(toolRegistry, organizationID, campaignStore, authorizerPolicy, campToolOpts...); err != nil {
 		return nil, fmt.Errorf("register ceochat campaign tools: %w", err)
 	}
 

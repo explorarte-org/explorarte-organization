@@ -18,8 +18,9 @@ type CapabilityAuthorizer interface {
 
 // CampaignToolsConfig holds optional collaborators for campaign tools.
 type CampaignToolsConfig struct {
-	FinanceService  *campaign.FinanceService
-	ApprovalService *campaign.ApprovalService
+	FinanceService   *campaign.FinanceService
+	ApprovalService  *campaign.ApprovalService
+	PromotionService *campaign.PromotionService
 }
 
 // CampaignToolsOption configures CampaignToolsConfig.
@@ -36,6 +37,13 @@ func WithFinanceService(svc *campaign.FinanceService) CampaignToolsOption {
 func WithApprovalService(svc *campaign.ApprovalService) CampaignToolsOption {
 	return func(c *CampaignToolsConfig) {
 		c.ApprovalService = svc
+	}
+}
+
+// WithPromotionService configures a PromotionService for campaign promotion tools.
+func WithPromotionService(svc *campaign.PromotionService) CampaignToolsOption {
+	return func(c *CampaignToolsConfig) {
+		c.PromotionService = svc
 	}
 }
 
@@ -103,6 +111,27 @@ type OwnerApprovalResultProjection struct {
 	CreatedAt                    string                        `json:"created_at"`
 }
 
+// PromoteResultProjection is the projection returned upon campaign promotion to Executive.
+type PromoteResultProjection struct {
+	PromotionID            int64  `json:"promotion_id"`
+	Status                 string `json:"status"`
+	ExecutiveRootTaskID    int64  `json:"executive_root_task_id"`
+	ExecutiveCorrelationID string `json:"executive_correlation_id"`
+	Reused                 bool   `json:"reused"`
+}
+
+// PromotionResultProjection is the projection returned when reading a campaign promotion.
+type PromotionResultProjection struct {
+	PromotionID            int64  `json:"promotion_id"`
+	OwnerApprovalID        int64  `json:"owner_approval_id"`
+	ProposalID             int64  `json:"proposal_id"`
+	FinancialReviewID      int64  `json:"financial_review_id"`
+	ExecutiveRootTaskID    int64  `json:"executive_root_task_id"`
+	ExecutiveCorrelationID string `json:"executive_correlation_id"`
+	Status                 string `json:"status"`
+	CreatedAt              string `json:"created_at"`
+}
+
 type proposeArgs struct {
 	Title              string                         `json:"title"`
 	Goal               string                         `json:"goal"`
@@ -152,6 +181,15 @@ type approveForExecutionArgs struct {
 type getOwnerApprovalArgs struct {
 	ApprovalID int64 `json:"approval_id,omitempty"`
 	ProposalID int64 `json:"proposal_id,omitempty"`
+}
+
+type promoteToExecutiveArgs struct {
+	OwnerApprovalID int64 `json:"owner_approval_id"`
+}
+
+type getPromotionArgs struct {
+	PromotionID     int64 `json:"promotion_id,omitempty"`
+	OwnerApprovalID int64 `json:"owner_approval_id,omitempty"`
 }
 
 var (
@@ -313,6 +351,24 @@ var (
 		"properties": {
 			"approval_id": {"type": "integer", "minimum": 1, "description": "Durable ID of the owner execution approval."},
 			"proposal_id": {"type": "integer", "minimum": 1, "description": "Durable ID of the proposal whose approval to retrieve."}
+		},
+		"additionalProperties": false
+	}`)
+
+	campaignPromoteToExecutiveInputSchema = json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"owner_approval_id": {"type": "integer", "minimum": 1, "description": "Durable ID of the owner execution approval to promote."}
+		},
+		"required": ["owner_approval_id"],
+		"additionalProperties": false
+	}`)
+
+	campaignGetPromotionInputSchema = json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"promotion_id": {"type": "integer", "minimum": 1, "description": "Durable ID of the campaign promotion record."},
+			"owner_approval_id": {"type": "integer", "minimum": 1, "description": "Durable ID of the owner execution approval."}
 		},
 		"additionalProperties": false
 	}`)
@@ -1059,6 +1115,169 @@ func RegisterCampaignTools(registry *ToolRegistry, organizationID string, store 
 
 	if err := registry.Register(getApprDesc, getApprValidator, getApprHandler); err != nil {
 		return fmt.Errorf("register campaign.get_owner_approval: %w", err)
+	}
+
+	// 9. campaign.promote_to_executive (WRITE / MUTATING)
+	promoteDesc := ToolDescriptor{
+		ID:           "campaign.promote_to_executive",
+		Version:      "v1",
+		Description:  "Promotes an approved campaign (proposal + recommended financial review + owner approval) to Executive execution. This initiates canonical Executive campaign submission and links the durable promotion record to the Executive root.",
+		InputSchema:  campaignPromoteToExecutiveInputSchema,
+		Access:       AccessMutating,
+		Effect:       ToolEffectWrite,
+		RequiredRole: CEORoleID,
+		Limits: ToolLimits{
+			MaxRows:        1,
+			MaxResultBytes: 16384,
+			Timeout:        defaultToolTimeout,
+		},
+		DataClass: DataClassInternal,
+	}
+
+	promoteValidator := func(raw json.RawMessage) error {
+		var args promoteToExecutiveArgs
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidInput, err)
+		}
+		if args.OwnerApprovalID <= 0 {
+			return fmt.Errorf("%w: owner_approval_id must be positive", ErrInvalidInput)
+		}
+		return nil
+	}
+
+	promoteHandler := func(ctx context.Context, actorRoleID string, raw json.RawMessage) (json.RawMessage, error) {
+		turnCtx, ok := TurnContextFrom(ctx)
+		if !ok {
+			return nil, fmt.Errorf("%w: missing turn context", ErrInvalidInput)
+		}
+		toolCallCtx, _ := ToolCallContextFrom(ctx)
+
+		if cfg.PromotionService == nil {
+			return nil, fmt.Errorf("%w: promotion service is not configured", ErrInvalidInput)
+		}
+
+		// Strictly enforce owner authority:
+		// 1. OwnerRoleID must be present and non-empty.
+		// 2. The owner role must possess campaign.promotion.execute capability.
+		// 3. The conversational model/CEO cannot self-promote.
+		ownerRoleID := turnCtx.OwnerRoleID
+		if strings.TrimSpace(ownerRoleID) == "" {
+			return nil, fmt.Errorf("%w: turn has no verified owner identity", ErrUnauthorizedActor)
+		}
+
+		if authorizer != nil {
+			if err := authorizer.Authorize(ctx, turnCtx.OrganizationID, turnCtx.OrganizationRevisionID, ownerRoleID, campaign.CapabilityPromotionExecute); err != nil {
+				return nil, fmt.Errorf("%w: owner role %q lacks %s capability: %v", ErrUnauthorizedActor, ownerRoleID, campaign.CapabilityPromotionExecute, err)
+			}
+		}
+
+		var args promoteToExecutiveArgs
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrInvalidInput, err)
+		}
+
+		res, err := cfg.PromotionService.PromoteToExecutive(ctx, campaign.PromoteToExecutiveParams{
+			OrganizationID:         turnCtx.OrganizationID,
+			OrganizationRevisionID: turnCtx.OrganizationRevisionID,
+			OwnerApprovalID:        args.OwnerApprovalID,
+			PromotedByRoleID:       ownerRoleID,
+			ConversationID:         turnCtx.ConversationID,
+			MessageID:              turnCtx.OwnerMessageID,
+			TurnTaskID:             turnCtx.TaskID,
+			ToolCallID:             toolCallCtx.ToolCallID,
+			IdempotencyKey:         fmt.Sprintf("campaign-promotion:%s:%d", turnCtx.OrganizationID, args.OwnerApprovalID),
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		projection := PromoteResultProjection{
+			PromotionID:            res.Promotion.ID,
+			Status:                 string(res.Promotion.Status),
+			ExecutiveRootTaskID:    res.ExecutiveRootTaskID,
+			ExecutiveCorrelationID: res.ExecutiveCorrelationID,
+			Reused:                 res.Reused,
+		}
+		return json.Marshal(projection)
+	}
+
+	if err := registry.Register(promoteDesc, promoteValidator, promoteHandler); err != nil {
+		return fmt.Errorf("register campaign.promote_to_executive: %w", err)
+	}
+
+	// 10. campaign.get_promotion (READ ONLY)
+	getPromDesc := ToolDescriptor{
+		ID:           "campaign.get_promotion",
+		Version:      "v1",
+		Description:  "Retrieves an existing campaign promotion record by promotion ID or owner approval ID.",
+		InputSchema:  campaignGetPromotionInputSchema,
+		Access:       AccessReadOnly,
+		Effect:       ToolEffectRead,
+		RequiredRole: CEORoleID,
+		Limits: ToolLimits{
+			MaxRows:        1,
+			MaxResultBytes: 16384,
+			Timeout:        defaultToolTimeout,
+		},
+		DataClass: DataClassInternal,
+	}
+
+	getPromValidator := func(raw json.RawMessage) error {
+		var args getPromotionArgs
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidInput, err)
+		}
+		if args.PromotionID <= 0 && args.OwnerApprovalID <= 0 {
+			return fmt.Errorf("%w: either promotion_id or owner_approval_id must be positive", ErrInvalidInput)
+		}
+		return nil
+	}
+
+	getPromHandler := func(ctx context.Context, actorRoleID string, raw json.RawMessage) (json.RawMessage, error) {
+		turnCtx, ok := TurnContextFrom(ctx)
+		orgID := organizationID
+		if ok && turnCtx.OrganizationID != "" {
+			orgID = turnCtx.OrganizationID
+		}
+		if authorizer != nil && ok && turnCtx.ActorRoleID != "" {
+			if err := authorizer.Authorize(ctx, orgID, turnCtx.OrganizationRevisionID, turnCtx.ActorRoleID, campaign.CapabilityPromotionRead); err != nil {
+				return nil, fmt.Errorf("%w: actor %q lacks %s capability: %v", ErrUnauthorizedActor, turnCtx.ActorRoleID, campaign.CapabilityPromotionRead, err)
+			}
+		}
+
+		var args getPromotionArgs
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrInvalidInput, err)
+		}
+
+		var prom campaign.CampaignPromotion
+		var err error
+		if args.PromotionID > 0 {
+			prom, err = store.GetPromotion(ctx, orgID, args.PromotionID)
+		} else if args.OwnerApprovalID > 0 {
+			prom, err = store.GetPromotionByApprovalID(ctx, orgID, args.OwnerApprovalID)
+		} else {
+			return nil, fmt.Errorf("%w: query identifier required", ErrInvalidInput)
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		projection := PromotionResultProjection{
+			PromotionID:            prom.ID,
+			OwnerApprovalID:        prom.OwnerApprovalID,
+			ProposalID:             prom.ProposalID,
+			FinancialReviewID:      prom.FinancialReviewID,
+			ExecutiveRootTaskID:    prom.ExecutiveRootTaskID,
+			ExecutiveCorrelationID: prom.ExecutiveCorrelationID,
+			Status:                 string(prom.Status),
+			CreatedAt:              prom.CreatedAt.Format(time.RFC3339),
+		}
+		return json.Marshal(projection)
+	}
+
+	if err := registry.Register(getPromDesc, getPromValidator, getPromHandler); err != nil {
+		return fmt.Errorf("register campaign.get_promotion: %w", err)
 	}
 
 	return nil

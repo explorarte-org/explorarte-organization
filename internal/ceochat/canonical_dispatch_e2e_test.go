@@ -49,12 +49,12 @@ package ceochat_test
 import (
 	"context"
 	"crypto/ed25519"
-	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -89,10 +89,8 @@ import (
 // helper is unexported in a different package) rather than shared.
 func writeCEOChatE2EIdentityKeyFile(t *testing.T) (ed25519.PrivateKey, string) {
 	t.Helper()
-	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
+	seed := sha256.Sum256([]byte("ceochat-e2e-fixed-identity-seed"))
+	privateKey := ed25519.NewKeyFromSeed(seed[:])
 	der, err := x509.MarshalPKCS8PrivateKey(privateKey)
 	if err != nil {
 		t.Fatal(err)
@@ -158,7 +156,7 @@ RETURNING id`, revisionID).Scan(&shadowRevisionID); err != nil {
 	}
 	if _, err := store.Pool().Exec(ctx, `
 INSERT INTO model_providers(organization_id,id,transport,adapter_status,dispatch_enabled,direct_http_forbidden,canonical_hash,organization_revision_id)
-VALUES($1,'test.fake','fake_adapter','available',true,true,$2,$3)`, organizationID, ceochatE2EHexFixture("ceochat-e2e-provider"), shadowRevisionID); err != nil {
+VALUES($1,'test.fake','fake_adapter','available',true,true,$2,$3)`, organizationID, ceochatE2EHexFixture(fmt.Sprintf("ceochat-e2e-provider-%d", shadowRevisionID)), shadowRevisionID); err != nil {
 		t.Fatalf("insert test.fake model_providers row: %v", err)
 	}
 	// version_number is unique per (organization_id, profile_id) ACROSS
@@ -173,15 +171,15 @@ VALUES($1,'test.fake','fake_adapter','available',true,true,$2,$3)`, organization
 	if err := store.Pool().QueryRow(ctx, `
 INSERT INTO model_profile_versions(organization_id,profile_id,version_number,organization_revision_id,canonical_document_hash,version_hash,provider_id,provider_model_id,transport,adapter_status,dispatch_enabled)
 VALUES($1,$2,$3,$4,$5,$6,'test.fake','ceochat-e2e-fake','fake_adapter','available',true) RETURNING id`,
-		organizationID, profileID, nextVersion, shadowRevisionID, ceochatE2EHexFixture("ceochat-e2e-doc"), ceochatE2EHexFixture("ceochat-e2e-version")).Scan(&versionID); err != nil {
+		organizationID, profileID, nextVersion, shadowRevisionID, ceochatE2EHexFixture(fmt.Sprintf("ceochat-e2e-doc-%d", shadowRevisionID)), ceochatE2EHexFixture(fmt.Sprintf("ceochat-e2e-version-%d", shadowRevisionID))).Scan(&versionID); err != nil {
 		t.Fatalf("insert test.fake model_profile_versions row: %v", err)
 	}
 	if _, err := store.Pool().Exec(ctx, `INSERT INTO model_capability_snapshots(organization_id,model_profile_version_id,capabilities,capability_hash) VALUES($1,$2,'[]',$3)`,
-		organizationID, versionID, ceochatE2EHexFixture("ceochat-e2e-caps")); err != nil {
+		organizationID, versionID, ceochatE2EHexFixture(fmt.Sprintf("ceochat-e2e-caps-%d", shadowRevisionID))); err != nil {
 		t.Fatalf("insert test.fake model_capability_snapshots row: %v", err)
 	}
 	if _, err := store.Pool().Exec(ctx, `INSERT INTO role_model_bindings(organization_id,organization_revision_id,role_id,policy_id,profile_id,model_profile_version_id,binding_hash,active) VALUES($1,$2,'empresa/ceo','executive.ceo',$3,$4,$5,true)`,
-		organizationID, shadowRevisionID, profileID, versionID, ceochatE2EHexFixture("ceochat-e2e-binding")); err != nil {
+		organizationID, shadowRevisionID, profileID, versionID, ceochatE2EHexFixture(fmt.Sprintf("ceochat-e2e-binding-%d", shadowRevisionID))); err != nil {
 		t.Fatalf("insert empresa/ceo role_model_binding for the sibling revision: %v", err)
 	}
 	if tag, err := store.Pool().Exec(ctx, `UPDATE organizations SET current_revision_id=$1, updated_at=clock_timestamp() WHERE id=$2`, shadowRevisionID, organizationID); err != nil {
@@ -325,8 +323,11 @@ var _ modelruntime.ProviderAdapter = (*ceochatE2EAdapter)(nil)
 // evaluator (both in-process, both documented on their own functions
 // above), and finally opens ceochatbootstrap with
 // modelbootstrap.WithExtraAdapters(adapter) so that repointed policy
-// actually resolves to something dispatchable.
-func newCEOChatCanonicalE2EFixture(t *testing.T, adapter *ceochatE2EAdapter) (*ceochat.Service, *platformpostgres.Store, func()) {
+func newCEOChatCanonicalE2EFixture(t *testing.T, adapter modelruntime.ProviderAdapter, extraOpts ...any) (*ceochat.Service, *platformpostgres.Store, func()) {
+	return newCEOChatCanonicalE2EFixtureWithStore(t, adapter, func(*platformpostgres.Store) []any { return extraOpts })
+}
+
+func newCEOChatCanonicalE2EFixtureWithStore(t *testing.T, adapter modelruntime.ProviderAdapter, buildOpts func(store *platformpostgres.Store) []any) (*ceochat.Service, *platformpostgres.Store, func()) {
 	t.Helper()
 	databaseURL := os.Getenv("ORG_TEST_DATABASE_URL")
 	if databaseURL == "" {
@@ -436,7 +437,7 @@ func newCEOChatCanonicalE2EFixture(t *testing.T, adapter *ceochatE2EAdapter) (*c
 	// organizations.current_revision_id's document_hashes, already
 	// pointed at the sibling revision) still matches, avoids that
 	// collision entirely.
-	fixtureEgressHash := ceochatE2EHexFixture("ceochat-e2e-egress-policy")
+	fixtureEgressHash := ceochatE2EHexFixture(fmt.Sprintf("ceochat-e2e-egress-policy-%d", shadowRevisionID))
 	if _, err = store.Pool().Exec(ctx, `UPDATE organization_registry_revisions SET document_hashes = jsonb_set(document_hashes, '{model-egress-policy.yaml}', to_jsonb($1::text)) WHERE id=$2`,
 		fixtureEgressHash, shadowRevisionID); err != nil {
 		fail("set sibling revision's egress document hash: %v", err)
@@ -502,7 +503,12 @@ func newCEOChatCanonicalE2EFixture(t *testing.T, adapter *ceochatE2EAdapter) (*c
 		fail("fund test.fake wallet: %v", err)
 	}
 
-	runtime, err := ceochatbootstrap.Open(cfg, store, modelbootstrap.WithExtraAdapters(adapter))
+	var extraOpts []any
+	if buildOpts != nil {
+		extraOpts = buildOpts(store)
+	}
+	openOpts := append([]any{modelbootstrap.WithExtraAdapters(adapter)}, extraOpts...)
+	runtime, err := ceochatbootstrap.Open(cfg, store, openOpts...)
 	if err != nil {
 		fail("open ceochat runtime: %v", err)
 	}

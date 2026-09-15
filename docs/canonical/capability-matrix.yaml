@@ -99,6 +99,14 @@ capabilities:
   risk: medium
 - id: campaign.financial_review.read
   risk: low
+- id: campaign.owner_approval.create
+  risk: high
+- id: campaign.owner_approval.read
+  risk: low
+- id: campaign.promotion.execute
+  risk: high
+- id: campaign.promotion.read
+  risk: low
 grants:
   owner:
   - '*'
@@ -107,6 +115,8 @@ grants:
   - campaign.proposal.read
   - campaign.financial_review.request
   - campaign.financial_review.read
+  - campaign.owner_approval.read
+  - campaign.promotion.read
   - project.create
   - project.delegate_department
   - audit.read_sanitized_evidence
@@ -167,6 +177,8 @@ hard_denies:
   executive:
   - code.promote
   - campaign.financial_review.perform
+  - campaign.owner_approval.create
+  - campaign.promotion.execute
   department_leadership:
   - code.promote
   '*':
