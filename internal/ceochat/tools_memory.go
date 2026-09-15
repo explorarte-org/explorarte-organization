@@ -24,16 +24,29 @@ const (
 // scenario. A future round may add them against memory.Manager's own
 // Get-by-ID seams once a concrete need names what they should return.
 
-var memorySearchSchema = json.RawMessage(`{
+var memorySearchSchema = json.RawMessage(fmt.Sprintf(`{
   "type": "object",
   "additionalProperties": false,
   "required": ["query"],
   "properties": {
-    "query": {"type": "string", "maxLength": 2000},
-    "task_id": {"type": "integer"},
-    "limit": {"type": "integer"}
+    "query": {
+      "type": "string",
+      "maxLength": 2000,
+      "description": "Query text to search prior role memories and corrections for."
+    },
+    "task_id": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Positive integer task ID to scope search to. Omit this field when searching across all tasks."
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": %d,
+      "description": "Maximum memory entries to return. Omit to use default (%d). Must be between 1 and %d."
+    }
   }
-}`)
+}`, maxMemorySearchRows, defaultMemorySearchRows, maxMemorySearchRows))
 
 type memorySearchArgs struct {
 	Query  string `json:"query"`

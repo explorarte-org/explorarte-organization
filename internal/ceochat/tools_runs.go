@@ -28,23 +28,44 @@ const (
 	runStatusInProgress = "in_progress"
 )
 
-var runsListRecentSchema = json.RawMessage(`{
+var runsListRecentSchema = json.RawMessage(fmt.Sprintf(`{
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "task_id": {"type": "integer"},
-    "execution_profile_id": {"type": "string", "maxLength": 240},
-    "limit": {"type": "integer"},
-    "cursor": {"type": "string", "maxLength": 400}
+    "task_id": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Positive integer task ID to filter runs by. Omit this field when not filtering by task."
+    },
+    "execution_profile_id": {
+      "type": "string",
+      "maxLength": 240,
+      "description": "Filter runs by execution profile ID. Omit this field when not filtering by profile."
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": %d,
+      "description": "Maximum runs to return. Omit to use the host default (%d). Must be between 1 and %d."
+    },
+    "cursor": {
+      "type": "string",
+      "maxLength": 400,
+      "description": "Pagination cursor from a previous page. Omit this field for the first page."
+    }
   }
-}`)
+}`, maxRunsListRows, defaultRunsListRows, maxRunsListRows))
 
 var runsGetSchema = json.RawMessage(`{
   "type": "object",
   "additionalProperties": false,
   "required": ["run_id"],
   "properties": {
-    "run_id": {"type": "string", "maxLength": 200}
+    "run_id": {
+      "type": "string",
+      "maxLength": 200,
+      "description": "Canonical run identifier."
+    }
   }
 }`)
 

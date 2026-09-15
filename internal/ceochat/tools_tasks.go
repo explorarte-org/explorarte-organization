@@ -23,36 +23,69 @@ const (
 	defaultTasksListRows = 20
 )
 
-var tasksListSchema = json.RawMessage(`{
+var tasksListSchema = json.RawMessage(fmt.Sprintf(`{
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "status": {"type": "string"},
-    "assigned_role_id": {"type": "string", "maxLength": 240},
-    "limit": {"type": "integer"},
-    "cursor": {"type": "string", "maxLength": 400}
+    "status": {
+      "type": "string",
+      "description": "Filter tasks by lifecycle status (e.g. pending, ready, running, completed, failed, blocked). Omit this field when not filtering by status."
+    },
+    "assigned_role_id": {
+      "type": "string",
+      "maxLength": 240,
+      "description": "Filter tasks by assigned role ID. Omit this field when not filtering by role."
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": %d,
+      "description": "Maximum rows to return. Omit to use the host default (%d). Must be between 1 and %d."
+    },
+    "cursor": {
+      "type": "string",
+      "maxLength": 400,
+      "description": "Pagination cursor from a previous page. Omit this field for the first page."
+    }
   }
-}`)
+}`, maxTasksListRows, defaultTasksListRows, maxTasksListRows))
 
 var tasksGetSchema = json.RawMessage(`{
   "type": "object",
   "additionalProperties": false,
   "required": ["task_id"],
   "properties": {
-    "task_id": {"type": "integer"}
+    "task_id": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Positive integer ID of the task to retrieve."
+    }
   }
 }`)
 
-var tasksListAttemptsSchema = json.RawMessage(`{
+var tasksListAttemptsSchema = json.RawMessage(fmt.Sprintf(`{
   "type": "object",
   "additionalProperties": false,
   "required": ["task_id"],
   "properties": {
-    "task_id": {"type": "integer"},
-    "limit": {"type": "integer"},
-    "cursor": {"type": "string", "maxLength": 400}
+    "task_id": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Positive integer ID of the task whose attempts to list."
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": %d,
+      "description": "Maximum attempts per page. Omit to use the host default (%d). Must be between 1 and %d."
+    },
+    "cursor": {
+      "type": "string",
+      "maxLength": 400,
+      "description": "Pagination cursor from a previous page. Omit this field for the first page."
+    }
   }
-}`)
+}`, maxTaskAttemptsRows, maxTaskAttemptsRows, maxTaskAttemptsRows))
 
 type tasksListArgs struct {
 	Status         *string `json:"status,omitempty"`

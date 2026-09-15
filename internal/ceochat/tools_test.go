@@ -109,3 +109,114 @@ func TestToolExecutorRejectsUnknownToolName(t *testing.T) {
 		t.Fatal("want an error for an unrecognized tool name")
 	}
 }
+
+func TestHostValidationEnforcesTasksBounds(t *testing.T) {
+	// tasks.list limit validation (1..50)
+	for _, invalidLimit := range []int{0, -1, 51, 100} {
+		body, _ := json.Marshal(map[string]any{"limit": invalidLimit})
+		if _, err := decodeTasksListArgs(body); err == nil {
+			t.Errorf("tasks.list must reject limit=%d, got nil", invalidLimit)
+		} else if !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("tasks.list limit=%d error=%v want ErrInvalidInput", invalidLimit, err)
+		}
+	}
+	// tasks.list valid limit
+	for _, validLimit := range []int{1, 20, 50} {
+		body, _ := json.Marshal(map[string]any{"limit": validLimit})
+		if _, err := decodeTasksListArgs(body); err != nil {
+			t.Errorf("tasks.list must accept limit=%d, got error: %v", validLimit, err)
+		}
+	}
+
+	// tasks.get task_id validation (> 0)
+	for _, invalidID := range []int64{0, -1, -99} {
+		body, _ := json.Marshal(map[string]any{"task_id": invalidID})
+		if _, err := decodeTaskIDArgs(body); err == nil {
+			t.Errorf("tasks.get must reject task_id=%d, got nil", invalidID)
+		} else if !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("tasks.get task_id=%d error=%v want ErrInvalidInput", invalidID, err)
+		}
+	}
+
+	// tasks.list_attempts limit validation (1..20) and task_id (> 0)
+	for _, invalidLimit := range []int{0, -1, 21, 100} {
+		body, _ := json.Marshal(map[string]any{"task_id": 1, "limit": invalidLimit})
+		if _, err := decodeTasksListAttemptsArgs(body); err == nil {
+			t.Errorf("tasks.list_attempts must reject limit=%d, got nil", invalidLimit)
+		} else if !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("tasks.list_attempts limit=%d error=%v want ErrInvalidInput", invalidLimit, err)
+		}
+	}
+	for _, invalidID := range []int64{0, -1} {
+		body, _ := json.Marshal(map[string]any{"task_id": invalidID, "limit": 10})
+		if _, err := decodeTasksListAttemptsArgs(body); err == nil {
+			t.Errorf("tasks.list_attempts must reject task_id=%d, got nil", invalidID)
+		}
+	}
+}
+
+func TestHostValidationEnforcesRunsBounds(t *testing.T) {
+	// runs.list_recent limit validation (1..30)
+	for _, invalidLimit := range []int{0, -1, 31, 100} {
+		body, _ := json.Marshal(map[string]any{"limit": invalidLimit})
+		if _, err := decodeRunsListRecentArgs(body); err == nil {
+			t.Errorf("runs.list_recent must reject limit=%d, got nil", invalidLimit)
+		} else if !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("runs.list_recent limit=%d error=%v want ErrInvalidInput", invalidLimit, err)
+		}
+	}
+	// runs.list_recent task_id validation (> 0 when provided)
+	for _, invalidID := range []int64{0, -1, -50} {
+		body, _ := json.Marshal(map[string]any{"task_id": invalidID})
+		if _, err := decodeRunsListRecentArgs(body); err == nil {
+			t.Errorf("runs.list_recent must reject task_id=%d, got nil", invalidID)
+		} else if !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("runs.list_recent task_id=%d error=%v want ErrInvalidInput", invalidID, err)
+		}
+	}
+	// runs.list_recent accepts omitted task_id
+	if _, err := decodeRunsListRecentArgs([]byte(`{}`)); err != nil {
+		t.Errorf("runs.list_recent must accept empty object: %v", err)
+	}
+
+	// runs.get run_id validation
+	if _, err := decodeRunsGetArgs([]byte(`{"run_id":""}`)); err == nil {
+		t.Error("runs.get must reject empty run_id")
+	}
+	if _, err := decodeRunsGetArgs([]byte(`{"run_id":"   "}`)); err == nil {
+		t.Error("runs.get must reject whitespace run_id")
+	}
+}
+
+func TestHostValidationEnforcesFinanceAndMemoryBounds(t *testing.T) {
+	// finance.get_cost_summary task_id validation (> 0 when provided)
+	for _, invalidID := range []int64{0, -1, -10} {
+		body, _ := json.Marshal(map[string]any{"task_id": invalidID})
+		if _, err := decodeFinanceGetCostSummaryArgs(body); err == nil {
+			t.Errorf("finance.get_cost_summary must reject task_id=%d, got nil", invalidID)
+		} else if !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("finance.get_cost_summary task_id=%d error=%v want ErrInvalidInput", invalidID, err)
+		}
+	}
+	// finance.get_cost_summary accepts empty object
+	if _, err := decodeFinanceGetCostSummaryArgs([]byte(`{}`)); err != nil {
+		t.Errorf("finance.get_cost_summary must accept empty object: %v", err)
+	}
+
+	// memory.search query required, task_id (> 0), limit (1..20)
+	if _, err := decodeMemorySearchArgs([]byte(`{"query":""}`)); err == nil {
+		t.Error("memory.search must reject empty query")
+	}
+	for _, invalidID := range []int64{0, -1} {
+		body, _ := json.Marshal(map[string]any{"query": "valid", "task_id": invalidID})
+		if _, err := decodeMemorySearchArgs(body); err == nil {
+			t.Errorf("memory.search must reject task_id=%d, got nil", invalidID)
+		}
+	}
+	for _, invalidLimit := range []int{0, -1, 21, 50} {
+		body, _ := json.Marshal(map[string]any{"query": "valid", "limit": invalidLimit})
+		if _, err := decodeMemorySearchArgs(body); err == nil {
+			t.Errorf("memory.search must reject limit=%d, got nil", invalidLimit)
+		}
+	}
+}
