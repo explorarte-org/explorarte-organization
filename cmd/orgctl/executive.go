@@ -16,6 +16,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/config"
 	"github.com/Mireuz13/explorarte-organization/internal/executive"
 	executivebootstrap "github.com/Mireuz13/explorarte-organization/internal/executive/bootstrap"
+	"github.com/Mireuz13/explorarte-organization/internal/executive/driver"
 	"github.com/Mireuz13/explorarte-organization/internal/executive/runtimeadapter"
 	"github.com/Mireuz13/explorarte-organization/internal/modelpricing"
 	modelruntimepostgres "github.com/Mireuz13/explorarte-organization/internal/modelruntime/postgres"
@@ -251,18 +252,32 @@ func runExecutiveWorker(args []string, stdout, stderr io.Writer) int {
 	// `orgctl model invocation reconcile`, so a stranded invocation stayed
 	// stranded and every pass skipped it again. Wiring it here is what makes
 	// the assumption true in the deployment, not just in the code.
-	worker, err := executive.NewWorker(runtime.Orchestrator, rootSource,
-		executive.WorkerConfig{PollInterval: *poll, ErrorBackoff: *errorBackoff, BatchSize: *batch},
-		executive.WithExecutionReconciler(runtimeadapter.ExecutionReconciler{Invocations: runtime.Models.Invocations}),
-		executive.WithFailureObserver(func(rootTaskID int64, err error) {
-			fmt.Fprintf(stderr, "executive worker: root %d: %v\n", rootTaskID, err)
-		}))
+	coord := driver.NewPostgresRootCoordinator(store.Pool())
+	driverCfg := driver.Config{
+		OrganizationID: cfg.Tasks.OrganizationID,
+		PollInterval:   *poll,
+		ErrorBackoff:   *errorBackoff,
+		BatchSize:      *batch,
+		MaxConcurrency: 4,
+	}
+	drv, err := driver.NewCampaignDriver(
+		runtime.Orchestrator,
+		rootSource,
+		coord,
+		driverCfg,
+		driver.WithExecutionReconciler(runtimeadapter.ExecutionReconciler{Invocations: runtime.Models.Invocations}),
+		driver.WithObserver(func(rootTaskID int64, classification driver.ResultClassification, err error) {
+			if err != nil && classification != driver.ResultBusy && classification != driver.ResultBlockedHuman {
+				fmt.Fprintf(stderr, "executive worker: root %d [%s]: %v\n", rootTaskID, classification, err)
+			}
+		}),
+	)
 	if err != nil {
 		fmt.Fprintf(stderr, "create executive worker: %v\n", err)
 		return exitInternal
 	}
 	fmt.Fprintln(stdout, "executive worker started")
-	if err = worker.Run(ctx); err != nil {
+	if err = drv.Run(ctx); err != nil {
 		fmt.Fprintf(stderr, "executive worker: %v\n", err)
 		return exitInternal
 	}

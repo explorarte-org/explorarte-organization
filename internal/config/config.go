@@ -27,76 +27,82 @@ const (
 	defaultShutdownTimeout   = 15 * time.Second
 	defaultLogFormat         = "json"
 
-	defaultDatabaseHost                       = "127.0.0.1"
-	defaultDatabasePort                       = 5432
-	defaultDatabaseName                       = "explorarte_org"
-	defaultDatabaseUser                       = "explorarte_app"
-	defaultDatabaseSSLMode                    = "disable"
-	defaultDatabaseMaxConns             int32 = 8
-	defaultDatabaseMinConns             int32 = 1
-	defaultDatabaseMaxConnLifetime            = 30 * time.Minute
-	defaultDatabaseMaxConnIdleTime            = 5 * time.Minute
-	defaultDatabaseHealthCheckPeriod          = 30 * time.Second
-	defaultDatabaseConnectTimeout             = 5 * time.Second
-	defaultDatabasePingTimeout                = 2 * time.Second
-	defaultDatabaseStatementTimeout           = 30 * time.Second
-	defaultDatabaseLockTimeout                = 5 * time.Second
-	defaultDatabaseMigrationTimeout           = 45 * time.Second
-	defaultDatabaseMigrationRetry             = 5 * time.Second
-	defaultCanonicalDir                       = "docs/canonical"
-	defaultRegistrySyncTimeout                = 30 * time.Second
-	defaultTaskOrganizationID                 = "explorarte"
-	defaultTaskReconcileInterval              = 5 * time.Second
-	defaultTaskReconcileBatchSize             = 100
-	defaultTaskDefaultMaxAttempts             = 5
-	defaultTaskDefaultLeaseDuration           = 2 * time.Minute
-	defaultTaskMaxLeaseDuration               = 15 * time.Minute
-	defaultTaskRetryBaseDelay                 = 5 * time.Second
-	defaultTaskRetryMaxDelay                  = 10 * time.Minute
-	defaultTaskOutboxMaxAttempts              = 10
-	defaultTaskOutboxClaimDuration            = time.Minute
-	defaultTaskCommandTimeout                 = 30 * time.Second
-	defaultAuthorizationDefaultTTL            = 30 * time.Minute
-	defaultAuthorizationMaxTTL                = 24 * time.Hour
-	defaultAuthorizationCommandTimeout        = 30 * time.Second
-	defaultAuthorizationExpireBatchSize       = 100
-	defaultContextSourceRoot                  = "/opt/explorarte/organization"
-	defaultContextCommandTimeout              = 30 * time.Second
-	defaultContextMaxTotalBytes               = 524288
-	defaultContextMaxSegmentBytes             = 65536
-	defaultContextMaxSegments                 = 128
-	defaultContextMaxSkills                   = 16
-	defaultContextMaxMemorySegments           = 32
-	defaultContextMaxRAGSegments              = 20
-	defaultStagingRepositoriesFile            = "/etc/explorarte/repositories.yaml"
-	defaultStagingWorkspaceRoot               = "/var/lib/explorarte/staging/workspaces"
-	defaultStagingArtifactRoot                = "/var/lib/explorarte/staging/artifacts"
-	defaultStagingQuarantineRoot              = "/var/lib/explorarte/staging/quarantine"
-	defaultStagingCommandTimeout              = 2 * time.Minute
-	defaultStagingMaxArtifactBytes      int64 = 64 << 20
-	defaultStagingMaxChangedFiles             = 500
-	defaultStagingStaleAfter                  = 30 * time.Minute
-	defaultStagingReconcileInterval           = 30 * time.Second
-	defaultStagingReconcileBatchSize          = 100
-	defaultStagingGitBinary                   = "git"
-	defaultSkillForgeEnabled                  = false
-	defaultSkillForgeSourceRepoRoot           = "/opt/explorarte/skills-source"
-	defaultSkillForgeRuntimeRoot              = "/opt/explorarte/skills-runtime"
-	defaultSkillForgePublishedRemoteURL       = "git@github.com:explorarte-org/skills.git"
+	defaultDatabaseHost                        = "127.0.0.1"
+	defaultDatabasePort                        = 5432
+	defaultDatabaseName                        = "explorarte_org"
+	defaultDatabaseUser                        = "explorarte_app"
+	defaultDatabaseSSLMode                     = "disable"
+	defaultDatabaseMaxConns              int32 = 8
+	defaultDatabaseMinConns              int32 = 1
+	defaultDatabaseMaxConnLifetime             = 30 * time.Minute
+	defaultDatabaseMaxConnIdleTime             = 5 * time.Minute
+	defaultDatabaseHealthCheckPeriod           = 30 * time.Second
+	defaultDatabaseConnectTimeout              = 5 * time.Second
+	defaultDatabasePingTimeout                 = 2 * time.Second
+	defaultDatabaseStatementTimeout            = 30 * time.Second
+	defaultDatabaseLockTimeout                 = 5 * time.Second
+	defaultDatabaseMigrationTimeout            = 45 * time.Second
+	defaultDatabaseMigrationRetry              = 5 * time.Second
+	defaultCanonicalDir                        = "docs/canonical"
+	defaultRegistrySyncTimeout                 = 30 * time.Second
+	defaultTaskOrganizationID                  = "explorarte"
+	defaultTaskReconcileInterval               = 5 * time.Second
+	defaultTaskReconcileBatchSize              = 100
+	defaultTaskDefaultMaxAttempts              = 5
+	defaultTaskDefaultLeaseDuration            = 2 * time.Minute
+	defaultTaskMaxLeaseDuration                = 15 * time.Minute
+	defaultTaskRetryBaseDelay                  = 5 * time.Second
+	defaultTaskRetryMaxDelay                   = 10 * time.Minute
+	defaultTaskOutboxMaxAttempts               = 10
+	defaultTaskOutboxClaimDuration             = time.Minute
+	defaultTaskCommandTimeout                  = 30 * time.Second
+	defaultAuthorizationDefaultTTL             = 30 * time.Minute
+	defaultAuthorizationMaxTTL                 = 24 * time.Hour
+	defaultAuthorizationCommandTimeout         = 30 * time.Second
+	defaultAuthorizationExpireBatchSize        = 100
+	defaultContextSourceRoot                   = "/opt/explorarte/organization"
+	defaultContextCommandTimeout               = 30 * time.Second
+	defaultContextMaxTotalBytes                = 524288
+	defaultContextMaxSegmentBytes              = 65536
+	defaultContextMaxSegments                  = 128
+	defaultContextMaxSkills                    = 16
+	defaultContextMaxMemorySegments            = 32
+	defaultContextMaxRAGSegments               = 20
+	defaultStagingRepositoriesFile             = "/etc/explorarte/repositories.yaml"
+	defaultStagingWorkspaceRoot                = "/var/lib/explorarte/staging/workspaces"
+	defaultStagingArtifactRoot                 = "/var/lib/explorarte/staging/artifacts"
+	defaultStagingQuarantineRoot               = "/var/lib/explorarte/staging/quarantine"
+	defaultStagingCommandTimeout               = 2 * time.Minute
+	defaultStagingMaxArtifactBytes       int64 = 64 << 20
+	defaultStagingMaxChangedFiles              = 500
+	defaultStagingStaleAfter                   = 30 * time.Minute
+	defaultStagingReconcileInterval            = 30 * time.Second
+	defaultStagingReconcileBatchSize           = 100
+	defaultStagingGitBinary                    = "git"
+	defaultSkillForgeEnabled                   = false
+	defaultSkillForgeSourceRepoRoot            = "/opt/explorarte/skills-source"
+	defaultSkillForgeRuntimeRoot               = "/opt/explorarte/skills-runtime"
+	defaultSkillForgePublishedRemoteURL        = "git@github.com:explorarte-org/skills.git"
+	defaultExecutiveDriverEnabled              = true
+	defaultExecutiveDriverPollInterval         = 2 * time.Second
+	defaultExecutiveDriverErrorBackoff         = 3 * time.Second
+	defaultExecutiveDriverBatchSize            = 16
+	defaultExecutiveDriverMaxConcurrency       = 4
 )
 
 type Config struct {
-	App           AppConfig
-	HTTP          HTTPConfig
-	Logging       LoggingConfig
-	Database      DatabaseConfig
-	Registry      RegistryConfig
-	Tasks         TaskConfig
-	Authorization AuthorizationConfig
-	Context       ContextConfig
-	Staging       StagingConfig
-	ModelRuntime  ModelRuntimeConfig
-	SkillForge    SkillForgeConfig
+	App             AppConfig
+	HTTP            HTTPConfig
+	Logging         LoggingConfig
+	Database        DatabaseConfig
+	Registry        RegistryConfig
+	Tasks           TaskConfig
+	Authorization   AuthorizationConfig
+	Context         ContextConfig
+	Staging         StagingConfig
+	ModelRuntime    ModelRuntimeConfig
+	SkillForge      SkillForgeConfig
+	ExecutiveDriver ExecutiveDriverConfig
 }
 
 type SkillForgeConfig struct {
@@ -282,6 +288,10 @@ func LoadFrom(lookup LookupEnv) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	executiveDriver, err := loadExecutiveDriver(lookup)
+	if err != nil {
+		return Config{}, err
+	}
 
 	cfg := Config{
 		App: AppConfig{
@@ -300,14 +310,15 @@ func LoadFrom(lookup LookupEnv) (Config, error) {
 			Level:  level,
 			Format: strings.ToLower(text(lookup, "ORG_LOG_FORMAT", defaultLogFormat)),
 		},
-		Database:      database,
-		Registry:      RegistryConfig{CanonicalDir: canonicalDir, SyncTimeout: registryTimeout},
-		Tasks:         tasks,
-		Authorization: authorization,
-		Context:       contextConfig,
-		Staging:       staging,
-		ModelRuntime:  ModelRuntimeConfig{SingleProviderTestMode: singleProviderTestMode},
-		SkillForge:    skillForge,
+		Database:        database,
+		Registry:        RegistryConfig{CanonicalDir: canonicalDir, SyncTimeout: registryTimeout},
+		Tasks:           tasks,
+		Authorization:   authorization,
+		Context:         contextConfig,
+		Staging:         staging,
+		ModelRuntime:    ModelRuntimeConfig{SingleProviderTestMode: singleProviderTestMode},
+		SkillForge:      skillForge,
+		ExecutiveDriver: executiveDriver,
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -633,6 +644,9 @@ func (cfg Config) Validate() error {
 	if err := cfg.SkillForge.Validate(); err != nil {
 		return err
 	}
+	if err := cfg.ExecutiveDriver.Validate(); err != nil {
+		return err
+	}
 	// ORG_MODEL_SINGLE_PROVIDER_TEST relaxes the R24 executive egress scope
 	// gate; it must be structurally impossible to leave on in a production
 	// deployment. Requiring ORG_ENVIRONMENT=test (not merely "not production")
@@ -941,4 +955,58 @@ func (cfg SkillForgeConfig) Validate() error {
 		return errors.New("ORG_SKILLFORGE_PUBLISHED_REMOTE_URL must be non-empty when skillforge is enabled")
 	}
 	return nil
+}
+
+type ExecutiveDriverConfig struct {
+	Enabled        bool          `json:"enabled"`
+	PollInterval   time.Duration `json:"poll_interval"`
+	ErrorBackoff   time.Duration `json:"error_backoff"`
+	BatchSize      int           `json:"batch_size"`
+	MaxConcurrency int           `json:"max_concurrency"`
+}
+
+func (cfg ExecutiveDriverConfig) Validate() error {
+	if !cfg.Enabled {
+		return nil
+	}
+	if cfg.PollInterval <= 0 || cfg.ErrorBackoff <= 0 {
+		return errors.New("executive driver durations must be greater than zero")
+	}
+	if cfg.BatchSize < 1 || cfg.BatchSize > 128 {
+		return errors.New("ORG_EXECUTIVE_DRIVER_BATCH_SIZE must be between 1 and 128")
+	}
+	if cfg.MaxConcurrency < 1 || cfg.MaxConcurrency > 32 {
+		return errors.New("ORG_EXECUTIVE_DRIVER_MAX_CONCURRENCY must be between 1 and 32")
+	}
+	return nil
+}
+
+func loadExecutiveDriver(lookup LookupEnv) (ExecutiveDriverConfig, error) {
+	enabled, err := boolean(lookup, "ORG_EXECUTIVE_DRIVER_ENABLED", defaultExecutiveDriverEnabled)
+	if err != nil {
+		return ExecutiveDriverConfig{}, err
+	}
+	pollInterval, err := duration(lookup, "ORG_EXECUTIVE_DRIVER_POLL_INTERVAL", defaultExecutiveDriverPollInterval)
+	if err != nil {
+		return ExecutiveDriverConfig{}, err
+	}
+	errorBackoff, err := duration(lookup, "ORG_EXECUTIVE_DRIVER_ERROR_BACKOFF", defaultExecutiveDriverErrorBackoff)
+	if err != nil {
+		return ExecutiveDriverConfig{}, err
+	}
+	batchSize, err := integer(lookup, "ORG_EXECUTIVE_DRIVER_BATCH_SIZE", defaultExecutiveDriverBatchSize, 1, 128)
+	if err != nil {
+		return ExecutiveDriverConfig{}, err
+	}
+	maxConcurrency, err := integer(lookup, "ORG_EXECUTIVE_DRIVER_MAX_CONCURRENCY", defaultExecutiveDriverMaxConcurrency, 1, 32)
+	if err != nil {
+		return ExecutiveDriverConfig{}, err
+	}
+	return ExecutiveDriverConfig{
+		Enabled:        enabled,
+		PollInterval:   pollInterval,
+		ErrorBackoff:   errorBackoff,
+		BatchSize:      batchSize,
+		MaxConcurrency: maxConcurrency,
+	}, nil
 }
