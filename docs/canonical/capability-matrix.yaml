@@ -91,6 +91,8 @@ capabilities:
   risk: low
 - id: campaign.proposal.create
   risk: medium
+- id: campaign.proposal.revise
+  risk: medium
 - id: campaign.proposal.read
   risk: low
 - id: campaign.financial_review.request

@@ -233,8 +233,26 @@ func Open(cfg config.Config, store *platformpostgres.Store, opts ...any) (*Runti
 		return nil, fmt.Errorf("create ceochat capability authorizer: %w", err)
 	}
 	approvalService := campaign.NewApprovalService(campaignStore, authorizerPolicy)
+	// campaign.request_financial_review/campaign.get_financial_review were
+	// registered unconditionally but had no real FinanceService anywhere in
+	// production to back them (campaign.NewFinanceService had zero non-test
+	// callers in the whole repo) -- every real "solicita la revisión
+	// financiera" turn failed closed with "finance service not configured".
+	// The minimal config below (Store/Tasks/Authorizer) is exactly what
+	// TestCampaignFinancialReviewTools already proves is sufficient for the
+	// CEO-facing request/read surface; the richer, Harness-capable fields
+	// FinanceServiceConfig also accepts belong to a separate, not-yet-built
+	// autonomous finance-reviewer capability, out of this round's scope.
+	financeService, err := campaign.NewFinanceService(campaign.FinanceServiceConfig{
+		OrganizationID: organizationID, Store: campaignStore,
+		Tasks: financeTaskCoordinator{taskService}, Authorizer: authorizerPolicy,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create ceochat finance service: %w", err)
+	}
 	campToolOpts := []ceochat.CampaignToolsOption{
 		ceochat.WithApprovalService(approvalService),
+		ceochat.WithFinanceService(financeService),
 	}
 	if openCfg.submitter != nil {
 		promService := campaign.NewPromotionService(campaignStore, openCfg.submitter, authorizerPolicy)
@@ -303,6 +321,25 @@ var _ ceochat.RunLister = runDescriptorLister{}
 // int64 principal ID to the plain string ceochat.PrincipalResolver expects
 // (the same string form RunIdentity.ExecutionPrincipalID carries
 // throughout the Harness).
+// financeTaskCoordinator adapts *tasks.Service to campaign.TaskCoordinator.
+// *tasks.Service already implements every method that interface needs
+// (CreateTask, ClaimTaskByID, StartAttempt, RecordAttemptResult,
+// FinalizeTask) with an identical signature except GetTask, which returns
+// the richer tasks.TaskDetail rather than the bare tasks.Task
+// campaign.TaskCoordinator expects -- embedding covers the rest, this
+// overrides only that one method.
+type financeTaskCoordinator struct {
+	*tasks.Service
+}
+
+func (f financeTaskCoordinator) GetTask(ctx context.Context, taskID int64) (tasks.Task, error) {
+	detail, err := f.Service.GetTask(ctx, taskID)
+	if err != nil {
+		return tasks.Task{}, err
+	}
+	return detail.Task, nil
+}
+
 type principalResolver struct {
 	resolver runtimeadapter.RoleBoundPrincipalResolver
 }

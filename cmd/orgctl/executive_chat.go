@@ -12,6 +12,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/ceochat"
 	ceochatbootstrap "github.com/Mireuz13/explorarte-organization/internal/ceochat/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/config"
+	executivebootstrap "github.com/Mireuz13/explorarte-organization/internal/executive/bootstrap"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
 )
 
@@ -183,7 +184,25 @@ func openCeoChatRuntime(stderr io.Writer, suffix string, timeout time.Duration) 
 		cancel()
 		return cfg, nil, nil, nil, func() {}, code
 	}
-	runtime, err := ceochatbootstrap.Open(cfg, store)
+	// campaign.promote_to_executive needs a real campaign.ExecutiveSubmitter
+	// to do anything but fail closed with "promotion service is not
+	// configured" -- without this, every owner "lánzala" ever reaches a
+	// dead end no matter how correct the rest of the campaign chain is.
+	// internal/ceochat/bootstrap's own package doc comment already
+	// documents opening internal/executive/bootstrap alongside it in the
+	// same process as safe (every dependency in both is a stateless
+	// adapter over the same store/registry, the same reasoning
+	// internal/executive/bootstrap itself relies on to open Model Runtime
+	// again rather than share model-worker's instance) -- this is that
+	// documented pattern's first real caller, not a new one.
+	executiveRuntime, err := executivebootstrap.Open(cfg, store)
+	if err != nil {
+		store.Close()
+		cancel()
+		fmt.Fprintf(stderr, "open executive runtime for campaign promotion: %v\n", err)
+		return cfg, nil, nil, nil, func() {}, exitInternal
+	}
+	runtime, err := ceochatbootstrap.Open(cfg, store, ceochatbootstrap.WithExecutiveSubmitter(executiveRuntime.Orchestrator))
 	if err != nil {
 		store.Close()
 		cancel()
