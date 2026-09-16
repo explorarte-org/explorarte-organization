@@ -18,6 +18,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/ceochat"
 	ceochatbootstrap "github.com/Mireuz13/explorarte-organization/internal/ceochat/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/executive"
+	"github.com/Mireuz13/explorarte-organization/internal/executive/driver"
 	executivepostgres "github.com/Mireuz13/explorarte-organization/internal/executive/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/executive/runtimeadapter"
 	"github.com/Mireuz13/explorarte-organization/internal/modelpricing"
@@ -117,11 +118,17 @@ func (dummyExecutiveContext) Build(context.Context, executive.ContextRequest) (e
 
 type dummyExecutiveAssignments struct{}
 
-func (dummyExecutiveAssignments) EnsureAuthorizedAssignmentForRunningAttempt(context.Context, int64, int64) (executive.AssignmentRef, error) {
-	return executive.AssignmentRef{}, nil
+func (dummyExecutiveAssignments) EnsureAuthorizedAssignmentForRunningAttempt(_ context.Context, taskID, attemptID int64) (executive.AssignmentRef, error) {
+	return executive.AssignmentRef{
+		ID: 1000 + attemptID, OrganizationRevisionID: 1, TaskID: taskID, AttemptID: attemptID,
+		SubjectRoleID: "empresa/ceo", ValidUntil: time.Now().Add(time.Hour),
+	}, nil
 }
-func (dummyExecutiveAssignments) ResolveAssignment(context.Context, int64, int64, string) (executive.AssignmentRef, error) {
-	return executive.AssignmentRef{}, nil
+func (dummyExecutiveAssignments) ResolveAssignment(_ context.Context, taskID, attemptID int64, role string) (executive.AssignmentRef, error) {
+	return executive.AssignmentRef{
+		ID: 1000 + attemptID, OrganizationRevisionID: 1, TaskID: taskID, AttemptID: attemptID,
+		SubjectRoleID: role, ValidUntil: time.Now().Add(time.Hour),
+	}, nil
 }
 
 type dummyExecutivePrincipals struct{}
@@ -132,20 +139,28 @@ func (dummyExecutivePrincipals) ResolveRoleBoundPrincipal(context.Context, strin
 
 type dummyExecutiveModels struct{}
 
-func (dummyExecutiveModels) GetInvocation(context.Context, int64) (executive.InvocationRecord, error) {
-	return executive.InvocationRecord{}, nil
+func (dummyExecutiveModels) GetInvocation(_ context.Context, id int64) (executive.InvocationRecord, error) {
+	return executive.InvocationRecord{ID: id, Status: "succeeded"}, nil
 }
 func (dummyExecutiveModels) FindTaskAttemptInvocations(context.Context, int64, int64) ([]executive.InvocationRecord, error) {
 	return nil, nil
 }
 func (dummyExecutiveModels) GetResult(context.Context, int64) (executive.InvocationResult, error) {
-	return executive.InvocationResult{}, nil
+	out := `{"schema_version":"executive-plan/v1","objective":"analyze","department_requests":[{"unit_id":"ingenieria_ia","objective":"inspect","deliverable":"report","priority":10,"constraints":[]}],"global_constraints":[],"success_criteria":["verified"],"owner_decisions_required":[]}`
+	return executive.InvocationResult{
+		InvocationID: 9001,
+		JSONOutput:   []byte(out),
+	}, nil
 }
 func (dummyExecutiveModels) ProviderFailureRetryable(context.Context, int64) (bool, error) {
 	return false, nil
 }
 func (dummyExecutiveModels) Execute(context.Context, executive.HarnessRunCommand) (executive.HarnessRunOutcome, error) {
-	return executive.HarnessRunOutcome{}, nil
+	return executive.HarnessRunOutcome{
+		Status:       executive.HarnessRunSucceeded,
+		InvocationID: 9001,
+		FinalOutput:  `{"schema_version":"executive-plan/v1","objective":"analyze","department_requests":[{"unit_id":"ingenieria_ia","objective":"inspect","deliverable":"report","priority":10,"constraints":[]}],"global_constraints":[],"success_criteria":["verified"],"owner_decisions_required":[]}`,
+	}, nil
 }
 
 type dummyExecutiveBudget struct{}
@@ -157,7 +172,7 @@ func (dummyExecutiveBudget) AuthorizeModelCall(context.Context, executive.ModelC
 type dummyExecutiveCompletion struct{}
 
 func (dummyExecutiveCompletion) Verify(context.Context, int64, int64) (executive.CompletionResult, error) {
-	return executive.CompletionResult{}, nil
+	return executive.CompletionResult{Verdict: executive.CompletionPass}, nil
 }
 
 type dummyExecutiveDecisions struct{}
@@ -172,7 +187,7 @@ func (dummyExecutiveAuthz) Evaluate(context.Context, executive.AuthorizationRequ
 	return executive.AuthorizationDecision{Allowed: true}, nil
 }
 
-func buildRealExecutiveOrchestrator(t *testing.T, store *platformpostgres.Store, organizationID string) *executive.Orchestrator {
+func buildRealExecutiveOrchestrator(t *testing.T, store *platformpostgres.Store, organizationID string) (*executive.Orchestrator, *tasks.Service) {
 	t.Helper()
 	registryRepo, err := registry.NewPostgresRepository(store)
 	if err != nil {
@@ -237,7 +252,7 @@ func buildRealExecutiveOrchestrator(t *testing.T, store *platformpostgres.Store,
 	if err != nil {
 		t.Fatalf("create executive orchestrator: %v", err)
 	}
-	return orchestrator
+	return orchestrator, taskService
 }
 
 // TestCanonicalCampaignPromotionToExecutive traverses the full end-to-end promotion chain:
@@ -274,8 +289,9 @@ func TestCanonicalCampaignPromotionToExecutive(t *testing.T) {
 	adapter := &ceochatPromotionE2EAdapter{}
 
 	var realExecutive *executive.Orchestrator
+	var executiveTasks *tasks.Service
 	service, store, cleanup := newCEOChatCanonicalE2EFixtureWithStore(t, adapter, func(s *platformpostgres.Store) []any {
-		realExecutive = buildRealExecutiveOrchestrator(t, s, chatTestOrganization)
+		realExecutive, executiveTasks = buildRealExecutiveOrchestrator(t, s, chatTestOrganization)
 		return []any{ceochatbootstrap.WithExecutiveSubmitter(realExecutive)}
 	})
 	defer cleanup()
@@ -588,4 +604,42 @@ func TestCanonicalCampaignPromotionToExecutive(t *testing.T) {
 	if totalPromotions != 1 {
 		t.Errorf("total promotions after replay = %d, want 1", totalPromotions)
 	}
+
+	// 11. Autonomous Campaign Driver Advancement (EXECUTIVE_AUTONOMOUS_CAMPAIGN_DRIVER_V1):
+	// After the chat turns have ended, the autonomous CampaignDriver discovers the promoted
+	// root from PostgreSQL and advances it WITHOUT any further chat message or manual Resume call!
+	driverCoord := driver.NewPostgresRootCoordinator(store.Pool())
+	campaignDriver, err := driver.NewCampaignDriver(
+		realExecutive,
+		runtimeadapter.Tasks{Service: executiveTasks, OrganizationID: chatTestOrganization},
+		driverCoord,
+		driver.DefaultConfig(chatTestOrganization),
+	)
+	if err != nil {
+		t.Fatalf("NewCampaignDriver: %v", err)
+	}
+
+	// CRITICAL TEST PROPERTY: test code DOES NOT call realExecutive.Resume!
+	// Advancement happens strictly via campaignDriver.RunOnce!
+	driverMetrics, err := campaignDriver.RunOnce(ctx)
+	if err != nil {
+		t.Fatalf("campaignDriver.RunOnce: %v", err)
+	}
+	if driverMetrics.RootsDiscovered != 1 {
+		t.Errorf("driver RootsDiscovered = %d, want 1", driverMetrics.RootsDiscovered)
+	}
+	if driverMetrics.RootsClaimed != 1 {
+		t.Errorf("driver RootsClaimed = %d, want 1", driverMetrics.RootsClaimed)
+	}
+	if driverMetrics.ResumeCalls != 1 {
+		t.Errorf("driver ResumeCalls = %d, want 1", driverMetrics.ResumeCalls)
+	}
+
+	// Verify that CEO plan task was created by the driver in PostgreSQL
+	var ceoPlanTasks int
+	_ = store.Pool().QueryRow(ctx, "SELECT count(*) FROM tasks WHERE task_class = 'coordination.ceo_plan' AND correlation_id = $1", prom.ExecutiveCorrelationID).Scan(&ceoPlanTasks)
+	if ceoPlanTasks != 1 {
+		t.Errorf("CEO plan task count after driver run = %d, want 1", ceoPlanTasks)
+	}
+	t.Logf("PASS: autonomous driver advanced promoted root %d without chat intervention", prom.ExecutiveRootTaskID)
 }

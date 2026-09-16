@@ -415,7 +415,7 @@ func TestCampaignPromotionRealProviderRehearsal(t *testing.T) {
 
 	var realExecutive *executive.Orchestrator
 	f := newRealProviderRehearsalFixtureWithStore(t, credentialFile, func(s *platformpostgres.Store) []any {
-		realExecutive = buildRealExecutiveOrchestrator(t, s, rehearsalOrganization)
+		realExecutive, _ = buildRealExecutiveOrchestrator(t, s, rehearsalOrganization)
 		return []any{ceochatbootstrap.WithExecutiveSubmitter(realExecutive)}
 	})
 	defer f.cleanup()
