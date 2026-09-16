@@ -3,6 +3,7 @@ package driver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -74,6 +75,9 @@ type CampaignDriver struct {
 	wakeupCh    chan struct{}
 	observe     func(rootID int64, classification ResultClassification, err error)
 
+	mu       sync.Mutex
+	backoffs map[int64]time.Time
+
 	rootsDiscovered  atomic.Int64
 	rootsClaimed     atomic.Int64
 	resumeCalls      atomic.Int64
@@ -96,10 +100,13 @@ func NewCampaignDriver(resumer ExecutiveResumer, roots executive.RootSource, coo
 	if coordinator == nil {
 		return nil, errors.New("campaign driver requires a root coordinator")
 	}
-	if cfg.PollInterval <= 0 {
+	if cfg.PollInterval < 100*time.Millisecond {
 		cfg.PollInterval = 2 * time.Second
 	}
-	if cfg.ErrorBackoff <= 0 {
+	if cfg.PollInterval > 10*time.Minute {
+		cfg.PollInterval = 10 * time.Minute
+	}
+	if cfg.ErrorBackoff < 100*time.Millisecond {
 		cfg.ErrorBackoff = 3 * time.Second
 	}
 	if cfg.BatchSize <= 0 || cfg.BatchSize > 128 {
@@ -115,6 +122,7 @@ func NewCampaignDriver(resumer ExecutiveResumer, roots executive.RootSource, coo
 		coordinator: coordinator,
 		cfg:         cfg,
 		wakeupCh:    make(chan struct{}, 1),
+		backoffs:    make(map[int64]time.Time),
 	}
 	for _, opt := range options {
 		opt(d)
@@ -161,11 +169,28 @@ func (d *CampaignDriver) RunOnce(ctx context.Context) (Metrics, error) {
 		return d.SnapshotMetrics(), nil
 	}
 
+	// Filter out roots currently under retry backoff or suppression.
+	now := time.Now()
+	eligible := make([]int64, 0, len(rootIDs))
+	d.mu.Lock()
+	for _, id := range rootIDs {
+		retryUntil, hasBackoff := d.backoffs[id]
+		if hasBackoff && now.Before(retryUntil) {
+			continue
+		}
+		eligible = append(eligible, id)
+	}
+	d.mu.Unlock()
+
+	if len(eligible) == 0 {
+		return d.SnapshotMetrics(), nil
+	}
+
 	// Bound concurrency and drive each root fairly.
 	sem := make(chan struct{}, d.cfg.MaxConcurrency)
 	var wg sync.WaitGroup
 
-	for _, rootID := range rootIDs {
+	for _, rootID := range eligible {
 		if ctx.Err() != nil {
 			break
 		}
@@ -178,14 +203,38 @@ func (d *CampaignDriver) RunOnce(ctx context.Context) (Metrics, error) {
 
 		wg.Add(1)
 		go func(id int64) {
+			// Matches the recover-and-continue convention every other
+			// background reconciler in this codebase already uses (see
+			// App.reconcileTasksOnce/reconcileStagingOnce in
+			// internal/app/app.go): a panic advancing one root must not take
+			// the whole worker process down with it -- especially here,
+			// where doing so would also abort every OTHER root concurrently
+			// mid-Resume in sibling goroutines. Registered first so it runs
+			// last (defers unwind LIFO): the semaphore/WaitGroup release and
+			// claim.Release below still run normally on a panic, so the
+			// pinned session is never left dangling.
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					d.resumeErrors.Add(1)
+					d.mu.Lock()
+					d.backoffs[id] = time.Now().Add(d.cfg.ErrorBackoff)
+					d.mu.Unlock()
+					if d.observe != nil {
+						d.observe(id, ResultInfraFailure, fmt.Errorf("campaign driver: recovered panic advancing root %d: %v", id, recovered))
+					}
+				}
+			}()
 			defer func() {
 				<-sem
 				wg.Done()
 			}()
 
-			release, claimed, claimErr := d.coordinator.TryClaimRoot(ctx, d.cfg.OrganizationID, id)
+			claim, claimed, claimErr := d.coordinator.TryClaimRoot(ctx, d.cfg.OrganizationID, id)
 			if claimErr != nil {
 				d.resumeErrors.Add(1)
+				d.mu.Lock()
+				d.backoffs[id] = time.Now().Add(d.cfg.ErrorBackoff)
+				d.mu.Unlock()
 				if d.observe != nil {
 					d.observe(id, ResultInfraFailure, claimErr)
 				}
@@ -198,7 +247,13 @@ func (d *CampaignDriver) RunOnce(ctx context.Context) (Metrics, error) {
 				}
 				return
 			}
-			defer release()
+			defer func() {
+				if releaseErr := claim.Release(context.Background()); releaseErr != nil {
+					if d.observe != nil {
+						d.observe(id, ResultInfraFailure, releaseErr)
+					}
+				}
+			}()
 
 			d.rootsClaimed.Add(1)
 			d.resumeCalls.Add(1)
@@ -209,16 +264,31 @@ func (d *CampaignDriver) RunOnce(ctx context.Context) (Metrics, error) {
 			switch classification {
 			case ResultContinue:
 				d.resumeSuccess.Add(1)
+				d.mu.Lock()
+				delete(d.backoffs, id)
+				d.mu.Unlock()
 			case ResultTerminal:
 				d.resumeTerminal.Add(1)
+				d.mu.Lock()
+				d.backoffs[id] = time.Now().Add(24 * time.Hour)
+				d.mu.Unlock()
 			case ResultBusy:
 				d.resumeBusy.Add(1)
 			case ResultBlockedHuman, ResultBlockedSafety:
 				d.resumeBlocked.Add(1)
+				d.mu.Lock()
+				d.backoffs[id] = time.Now().Add(time.Hour)
+				d.mu.Unlock()
 			case ResultRetryLater:
 				d.resumeRetryLater.Add(1)
+				d.mu.Lock()
+				d.backoffs[id] = time.Now().Add(d.cfg.ErrorBackoff)
+				d.mu.Unlock()
 			case ResultInfraFailure:
 				d.resumeErrors.Add(1)
+				d.mu.Lock()
+				d.backoffs[id] = time.Now().Add(d.cfg.ErrorBackoff)
+				d.mu.Unlock()
 			}
 
 			if d.observe != nil {

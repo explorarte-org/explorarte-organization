@@ -212,21 +212,26 @@ func runExecutiveResume(args []string, stdout, stderr io.Writer) int {
 
 func runExecutiveWorker(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || args[0] != "run" {
-		fmt.Fprintln(stderr, "usage: orgctl executive worker run [--poll 1s] [--error-backoff 3s] [--batch 16]")
-		return exitUsage
-	}
-	flags := flag.NewFlagSet("executive worker run", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	poll := flags.Duration("poll", time.Second, "poll interval")
-	errorBackoff := flags.Duration("error-backoff", 3*time.Second, "source error backoff")
-	batch := flags.Int("batch", 16, "maximum roots per poll")
-	noRetries := flags.Bool("no-retries", false, "pin every task to one attempt for this operator-run campaign")
-	if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 || *poll <= 0 || *errorBackoff <= 0 || *batch <= 0 || *batch > 128 {
+		fmt.Fprintln(stderr, "usage: orgctl executive worker run [--poll 2s] [--error-backoff 3s] [--batch 16] [--max-concurrency 4]")
 		return exitUsage
 	}
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(stderr, "load configuration: %v\n", err)
+		return exitUsage
+	}
+	flags := flag.NewFlagSet("executive worker run", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	poll := flags.Duration("poll", cfg.ExecutiveDriver.PollInterval, "poll interval")
+	errorBackoff := flags.Duration("error-backoff", cfg.ExecutiveDriver.ErrorBackoff, "source error backoff")
+	batch := flags.Int("batch", cfg.ExecutiveDriver.BatchSize, "maximum roots per poll")
+	maxConcurrency := flags.Int("max-concurrency", cfg.ExecutiveDriver.MaxConcurrency, "maximum concurrent roots per replica")
+	noRetries := flags.Bool("no-retries", false, "pin every task to one attempt for this operator-run campaign")
+	if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 ||
+		*poll < 100*time.Millisecond || *poll > 10*time.Minute ||
+		*errorBackoff < 100*time.Millisecond ||
+		*batch <= 0 || *batch > 128 ||
+		*maxConcurrency <= 0 || *maxConcurrency > 32 {
 		return exitUsage
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -258,7 +263,7 @@ func runExecutiveWorker(args []string, stdout, stderr io.Writer) int {
 		PollInterval:   *poll,
 		ErrorBackoff:   *errorBackoff,
 		BatchSize:      *batch,
-		MaxConcurrency: 4,
+		MaxConcurrency: *maxConcurrency,
 	}
 	drv, err := driver.NewCampaignDriver(
 		runtime.Orchestrator,
@@ -436,7 +441,7 @@ commands:
   external-smoke-5usd --confirm EXECUTIVE_EXTERNAL_SMOKE_5USD_ONCE --idempotency-key external-smoke-5usd-KEY [--json]
   status ROOT_TASK_ID [--json]
   resume ROOT_TASK_ID [--json]
-  worker run [--poll 1s] [--error-backoff 3s] [--batch 16]
+  worker run [--poll 2s] [--error-backoff 3s] [--batch 16] [--max-concurrency 4]
   reconcile-gating [--limit 100] [--json]
   chat create --actor-role empresa/human [--json]
   chat send CONVERSATION_ID --actor-role empresa/human --idempotency-key KEY [--file message.txt] [--json]
