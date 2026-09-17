@@ -384,15 +384,21 @@ func TestCanonicalCampaignPromotionToExecutive(t *testing.T) {
 	// 3. Drive the whole proposal -> finance -> revision -> approval chain
 	// conversationally, through the real campaign.* tools (never seeded
 	// directly into Postgres) -- the one exception being the financial
-	// review's own VERDICT, which negocio/administrador_financiero records
-	// via a direct campStore.RecordFinancialReview call: Finance is not a
-	// CEO chat actor (REVIEW 27's authority matrix hard-denies
-	// campaign.financial_review.perform to empresa/ceo), so there is no
-	// conversational tool through which the CEO's own turn could ever
-	// perform that step -- this is the real authority boundary, not a test
-	// shortcut. Everything the OWNER<->CEO conversation can actually do
-	// (propose, request review, revise, approve, and -- in step 4 below --
-	// promote) goes through a real turn and a real tool call.
+	// review's own VERDICT, which is produced by a real, autonomous
+	// financeworker.Worker: Finance is not a CEO chat actor (REVIEW 27's
+	// authority matrix hard-denies campaign.financial_review.perform to
+	// empresa/ceo), so there is no conversational tool through which the
+	// CEO's own turn could ever perform that step -- this is the real
+	// authority boundary, not a test shortcut. Everything the OWNER<->CEO
+	// conversation can actually do (propose, request review, revise,
+	// approve, and -- in step 4 below -- promote) goes through a real turn
+	// and a real tool call; the finance step goes through a real worker
+	// tick (CAMPAIGN_FINANCIAL_REVIEW_AUTONOMOUS_WORKER_PREMERGE_V1's
+	// CRITICAL TEST PROPERTY: after campaign.request_financial_review,
+	// this test never calls RecordFinancialReview or ExecuteReviewTask
+	// directly -- it only ticks financeWorker.RunOnce, and the worker
+	// itself discovers, claims, and executes the ready task).
+	financeWorker, financeExecutor, _ := buildTestFinanceWorker(t, store, executiveTasks, chatTestOrganization)
 
 	//    a) campaign.propose (with a prompt-injection string in a
 	//       requirement description, to prove it stays inert DATA all the
@@ -439,23 +445,19 @@ func TestCanonicalCampaignPromotionToExecutive(t *testing.T) {
 	//    c) Finance's own action (NOT conversational, see comment above):
 	//       changes requested -- gives the revision step below a real
 	//       reason to exist, rather than an unmotivated no-op revision.
-	rev1Hash, err := campaign.ComputeReviewCanonicalHash(campaign.ReviewCanonicalPayload{
-		ProposalID: proposeProj.ProposalID, ProposalCanonicalHash: reqRev1Proj.ProposalCanonicalHash,
-		ReviewerRoleID: "negocio/administrador_financiero", Verdict: campaign.VerdictChangesRequested,
+	//       The CEO chat turn above already ended (RequestReview never
+	//       blocks on model completion); nothing further happens until
+	//       the autonomous worker itself is ticked, here.
+	financeExecutor.setOutput(reqRev1Proj.ReviewTaskID, campaign.FinanceReviewOutput{
+		Verdict: string(campaign.VerdictChangesRequested),
 		Summary: "Falta una cláusula de cumplimiento de privacidad para datos de creadores.",
 	})
-	if err != nil {
-		t.Fatalf("ComputeReviewCanonicalHash (1): %v", err)
+	if _, err := financeWorker.RunOnce(ctx); err != nil {
+		t.Fatalf("financeWorker.RunOnce (1, changes_requested): %v", err)
 	}
-	_, _, err = campStore.RecordFinancialReview(ctx, campaign.RecordFinancialReviewCommand{
-		OrganizationID: chatTestOrganization, ReviewRequestID: reqRev1Proj.ReviewRequestID,
-		ProposalID: proposeProj.ProposalID, ProposalCanonicalHash: reqRev1Proj.ProposalCanonicalHash,
-		ReviewerRoleID: "negocio/administrador_financiero", ReviewTaskID: reqRev1Proj.ReviewTaskID, ReviewAttemptID: 1,
-		Verdict: campaign.VerdictChangesRequested, CanonicalHash: rev1Hash,
-		Summary: "Falta una cláusula de cumplimiento de privacidad para datos de creadores.",
-	})
-	if err != nil {
-		t.Fatalf("RecordFinancialReview (1, changes_requested): %v", err)
+	rev1 := financeExecutor.mustResultFor(t, reqRev1Proj.ReviewTaskID)
+	if rev1.Verdict != campaign.VerdictChangesRequested {
+		t.Fatalf("review (1) verdict = %q, want %q", rev1.Verdict, campaign.VerdictChangesRequested)
 	}
 
 	//    d) campaign.revise_proposal -- CEO_CONVERSATIONAL_FULL_STACK_ADVERSARIAL_
@@ -507,7 +509,9 @@ func TestCanonicalCampaignPromotionToExecutive(t *testing.T) {
 		t.Fatalf("unmarshal campaign.request_financial_review (2) result: %v", err)
 	}
 
-	//    f) Finance's own action again: recommended, with a real budget.
+	//    f) Finance's own action again: recommended, with a real budget --
+	//       same autonomous worker, ticked again after the revision's own
+	//       request_financial_review turn ended.
 	recBudget := campaign.BudgetRecommendation{
 		MaxUSD:        4500.0,
 		MaxTokens:     150000,
@@ -517,23 +521,15 @@ func TestCanonicalCampaignPromotionToExecutive(t *testing.T) {
 		MaxRetries:    4,
 		MaxSubagents:  3,
 	}
-	rev2Hash, err := campaign.ComputeReviewCanonicalHash(campaign.ReviewCanonicalPayload{
-		ProposalID: reviseProj.ProposalID, ProposalCanonicalHash: reqRev2Proj.ProposalCanonicalHash,
-		ReviewerRoleID: "negocio/administrador_financiero", Verdict: campaign.VerdictRecommended,
-		RecommendedBudget: &recBudget, Summary: "Financially sound and approved",
+	financeExecutor.setOutput(reqRev2Proj.ReviewTaskID, campaign.FinanceReviewOutput{
+		Verdict: string(campaign.VerdictRecommended), RecommendedBudget: &recBudget, Summary: "Financially sound and approved",
 	})
-	if err != nil {
-		t.Fatalf("ComputeReviewCanonicalHash (2): %v", err)
+	if _, err := financeWorker.RunOnce(ctx); err != nil {
+		t.Fatalf("financeWorker.RunOnce (2, recommended): %v", err)
 	}
-	rev2, _, err := campStore.RecordFinancialReview(ctx, campaign.RecordFinancialReviewCommand{
-		OrganizationID: chatTestOrganization, ReviewRequestID: reqRev2Proj.ReviewRequestID,
-		ProposalID: reviseProj.ProposalID, ProposalCanonicalHash: reqRev2Proj.ProposalCanonicalHash,
-		ReviewerRoleID: "negocio/administrador_financiero", ReviewTaskID: reqRev2Proj.ReviewTaskID, ReviewAttemptID: 1,
-		Verdict: campaign.VerdictRecommended, RecommendedBudget: &recBudget, CanonicalHash: rev2Hash,
-		Summary: "Financially sound and approved",
-	})
-	if err != nil {
-		t.Fatalf("RecordFinancialReview (2, recommended): %v", err)
+	rev2 := financeExecutor.mustResultFor(t, reqRev2Proj.ReviewTaskID)
+	if rev2.Verdict != campaign.VerdictRecommended {
+		t.Fatalf("review (2) verdict = %q, want %q", rev2.Verdict, campaign.VerdictRecommended)
 	}
 
 	//    g) campaign.approve_for_execution -- owner identity comes from the
