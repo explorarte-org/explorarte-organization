@@ -39,32 +39,26 @@ import (
 )
 
 // Runtime bundles the opened ceochat service together with the pieces a
-// caller (CLI, HTTP surface) needs directly.
+// caller (CLI, HTTP surface) needs directly. ModelRuntime is exposed so a
+// caller can prove (or reuse) exactly which Model Runtime instance backs
+// this ceochat service -- see WithModelRuntime.
 type Runtime struct {
-	Service *ceochat.Service
-	Tasks   *tasks.Service
+	Service      *ceochat.Service
+	Tasks        *tasks.Service
+	ModelRuntime *modelbootstrap.Runtime
 }
 
-// Open builds a ceochat.Service against the given PostgreSQL store. It is
-// safe to call this alongside internal/executive/bootstrap.Open in the same
-// process: every dependency here is a stateless adapter over the same
-// store/registry, exactly the pattern internal/executive/bootstrap already
-// uses to open Model Runtime a second time for its own purposes.
-//
-// modelRuntimeOpts is passed straight through to modelbootstrap.Open (see
-// its own Option/WithExtraAdapters doc comments) -- production never
-// passes any, so this parameter changes nothing about what a real
-// deployment does. It exists only so an integration test can register a
-// deterministic test.fake adapter alongside the real ones, to drive the
-// canonical ceochat.Service.Send -> ... -> InvocationService.Create ->
-// DispatchService.Dispatch composition without a real provider call.
-// OpenOption configures optional dependencies for ceochat runtime.
+// OpenOption configures optional dependencies for ceochat runtime. This is
+// the only supported way to configure Open: an unrecognized option cannot
+// silently be dropped, because there is no other type an argument to Open
+// could have.
 type OpenOption func(*openConfig)
 
 type openConfig struct {
-	modelRuntimeOpts []modelbootstrap.Option
-	submitter        campaign.ExecutiveSubmitter
-	promotionService *campaign.PromotionService
+	sharedModelRuntime *modelbootstrap.Runtime
+	modelRuntimeOpts   []modelbootstrap.Option
+	submitter          campaign.ExecutiveSubmitter
+	promotionService   *campaign.PromotionService
 }
 
 // WithExecutiveSubmitter injects the canonical ExecutiveSubmitter into ceochat for campaign promotion.
@@ -81,22 +75,47 @@ func WithPromotionService(svc *campaign.PromotionService) OpenOption {
 	}
 }
 
+// WithModelRuntime shares an already-opened Model Runtime instead of
+// letting Open construct its own -- the fix for the one real caller that
+// opens both internal/executive/bootstrap.Runtime and this package's
+// Runtime in the SAME process (cmd/orgctl/executive_chat.go): without this,
+// that process built two independent Model Runtimes (two provider adapter
+// sets, two routers, two circuit breakers, two egress clients) even though
+// both talked to the same database, which is not the same thing as being
+// the same runtime. Pass the Executive runtime's own Models field here so
+// the process composes exactly one.
+//
+// A caller that never passes this (every ceochat test fixture, and any
+// future independent caller) keeps the old behavior exactly: Open opens
+// its own canonical Model Runtime, as it always has.
+func WithModelRuntime(runtime *modelbootstrap.Runtime) OpenOption {
+	return func(c *openConfig) {
+		c.sharedModelRuntime = runtime
+	}
+}
+
+// WithModelRuntimeOptions passes modelbootstrap.Option values through to
+// the Model Runtime Open constructs when NOT sharing one via
+// WithModelRuntime (if both are supplied, WithModelRuntime wins and these
+// are ignored, since there is then no local Open call for them to modify).
+// Exists only so a test can register a deterministic test.fake provider
+// adapter (modelbootstrap.WithExtraAdapters) alongside the real ones --
+// production never passes this, so it changes nothing about what a real
+// deployment does.
+func WithModelRuntimeOptions(opts ...modelbootstrap.Option) OpenOption {
+	return func(c *openConfig) {
+		c.modelRuntimeOpts = append(c.modelRuntimeOpts, opts...)
+	}
+}
+
 // Open builds a ceochat.Service against the given PostgreSQL store.
-func Open(cfg config.Config, store *platformpostgres.Store, opts ...any) (*Runtime, error) {
+func Open(cfg config.Config, store *platformpostgres.Store, opts ...OpenOption) (*Runtime, error) {
 	var openCfg openConfig
 	for _, opt := range opts {
-		switch v := opt.(type) {
-		case modelbootstrap.Option:
-			openCfg.modelRuntimeOpts = append(openCfg.modelRuntimeOpts, v)
-		case campaign.ExecutiveSubmitter:
-			openCfg.submitter = v
-		case *campaign.PromotionService:
-			openCfg.promotionService = v
-		case OpenOption:
-			v(&openCfg)
+		if opt != nil {
+			opt(&openCfg)
 		}
 	}
-	modelRuntimeOpts := openCfg.modelRuntimeOpts
 	if store == nil {
 		return nil, fmt.Errorf("ceochat bootstrap requires PostgreSQL")
 	}
@@ -146,10 +165,15 @@ func Open(cfg config.Config, store *platformpostgres.Store, opts ...any) (*Runti
 	// execution authority all reuse the exact seams
 	// internal/executive/bootstrap already opens for typed-task work. None
 	// of that is Executive-specific: it is org-scoped adapter code shared by
-	// any execution profile.
-	modelRuntime, err := modelbootstrap.Open(cfg, store, modelRuntimeOpts...)
-	if err != nil {
-		return nil, fmt.Errorf("open ceochat model runtime: %w", err)
+	// any execution profile. WithModelRuntime lets a caller that already
+	// opened one (internal/executive/bootstrap.Runtime.Models) share it
+	// instead of a second one being constructed here.
+	modelRuntime := openCfg.sharedModelRuntime
+	if modelRuntime == nil {
+		modelRuntime, err = modelbootstrap.Open(cfg, store, openCfg.modelRuntimeOpts...)
+		if err != nil {
+			return nil, fmt.Errorf("open ceochat model runtime: %w", err)
+		}
 	}
 	harnessAuthority, err := modelRuntime.NewHarnessAuthority()
 	if err != nil {
@@ -288,7 +312,7 @@ func Open(cfg config.Config, store *platformpostgres.Store, opts ...any) (*Runti
 	if err != nil {
 		return nil, fmt.Errorf("open ceochat service: %w", err)
 	}
-	return &Runtime{Service: service, Tasks: taskService}, nil
+	return &Runtime{Service: service, Tasks: taskService, ModelRuntime: modelRuntime}, nil
 }
 
 // runDescriptorLister adapts *executionharnesspostgres.Store.ListRunDescriptors

@@ -188,13 +188,15 @@ func openCeoChatRuntime(stderr io.Writer, suffix string, timeout time.Duration) 
 	// to do anything but fail closed with "promotion service is not
 	// configured" -- without this, every owner "lánzala" ever reaches a
 	// dead end no matter how correct the rest of the campaign chain is.
-	// internal/ceochat/bootstrap's own package doc comment already
-	// documents opening internal/executive/bootstrap alongside it in the
-	// same process as safe (every dependency in both is a stateless
-	// adapter over the same store/registry, the same reasoning
-	// internal/executive/bootstrap itself relies on to open Model Runtime
-	// again rather than share model-worker's instance) -- this is that
-	// documented pattern's first real caller, not a new one.
+	// This process therefore opens two composition roots (Executive's and
+	// ceochat's own) -- but WithModelRuntime makes that ONE Model Runtime,
+	// not two: executiveRuntime.Models is threaded straight into ceochat's
+	// own Open instead of letting it construct an independent one (two
+	// provider adapter sets, two routers, two circuit breakers, two egress
+	// clients, even though both would otherwise talk to the same
+	// database -- durable storage equality is not runtime equality).
+	// TestCEOChatSharesExecutiveModelRuntime proves this by pointer
+	// identity against real PostgreSQL.
 	executiveRuntime, err := executivebootstrap.Open(cfg, store)
 	if err != nil {
 		store.Close()
@@ -202,7 +204,10 @@ func openCeoChatRuntime(stderr io.Writer, suffix string, timeout time.Duration) 
 		fmt.Fprintf(stderr, "open executive runtime for campaign promotion: %v\n", err)
 		return cfg, nil, nil, nil, func() {}, exitInternal
 	}
-	runtime, err := ceochatbootstrap.Open(cfg, store, ceochatbootstrap.WithExecutiveSubmitter(executiveRuntime.Orchestrator))
+	runtime, err := ceochatbootstrap.Open(cfg, store,
+		ceochatbootstrap.WithModelRuntime(executiveRuntime.Models),
+		ceochatbootstrap.WithExecutiveSubmitter(executiveRuntime.Orchestrator),
+	)
 	if err != nil {
 		store.Close()
 		cancel()

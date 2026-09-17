@@ -323,11 +323,11 @@ var _ modelruntime.ProviderAdapter = (*ceochatE2EAdapter)(nil)
 // evaluator (both in-process, both documented on their own functions
 // above), and finally opens ceochatbootstrap with
 // modelbootstrap.WithExtraAdapters(adapter) so that repointed policy
-func newCEOChatCanonicalE2EFixture(t *testing.T, adapter modelruntime.ProviderAdapter, extraOpts ...any) (*ceochat.Service, *platformpostgres.Store, func()) {
-	return newCEOChatCanonicalE2EFixtureWithStore(t, adapter, func(*platformpostgres.Store) []any { return extraOpts })
+func newCEOChatCanonicalE2EFixture(t *testing.T, adapter modelruntime.ProviderAdapter, extraOpts ...ceochatbootstrap.OpenOption) (*ceochat.Service, *platformpostgres.Store, func()) {
+	return newCEOChatCanonicalE2EFixtureWithStore(t, adapter, func(*platformpostgres.Store) []ceochatbootstrap.OpenOption { return extraOpts })
 }
 
-func newCEOChatCanonicalE2EFixtureWithStore(t *testing.T, adapter modelruntime.ProviderAdapter, buildOpts func(store *platformpostgres.Store) []any) (*ceochat.Service, *platformpostgres.Store, func()) {
+func newCEOChatCanonicalE2EFixtureWithStore(t *testing.T, adapter modelruntime.ProviderAdapter, buildOpts func(store *platformpostgres.Store) []ceochatbootstrap.OpenOption) (*ceochat.Service, *platformpostgres.Store, func()) {
 	t.Helper()
 	databaseURL := os.Getenv("ORG_TEST_DATABASE_URL")
 	if databaseURL == "" {
@@ -503,11 +503,11 @@ func newCEOChatCanonicalE2EFixtureWithStore(t *testing.T, adapter modelruntime.P
 		fail("fund test.fake wallet: %v", err)
 	}
 
-	var extraOpts []any
+	var extraOpts []ceochatbootstrap.OpenOption
 	if buildOpts != nil {
 		extraOpts = buildOpts(store)
 	}
-	openOpts := append([]any{modelbootstrap.WithExtraAdapters(adapter)}, extraOpts...)
+	openOpts := append([]ceochatbootstrap.OpenOption{ceochatbootstrap.WithModelRuntimeOptions(modelbootstrap.WithExtraAdapters(adapter))}, extraOpts...)
 	runtime, err := ceochatbootstrap.Open(cfg, store, openOpts...)
 	if err != nil {
 		fail("open ceochat runtime: %v", err)

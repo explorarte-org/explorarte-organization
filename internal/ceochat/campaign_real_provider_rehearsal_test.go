@@ -414,9 +414,9 @@ func TestCampaignPromotionRealProviderRehearsal(t *testing.T) {
 	const maxInvocations = 12
 
 	var realExecutive *executive.Orchestrator
-	f := newRealProviderRehearsalFixtureWithStore(t, credentialFile, func(s *platformpostgres.Store) []any {
+	f := newRealProviderRehearsalFixtureWithStore(t, credentialFile, func(s *platformpostgres.Store) []ceochatbootstrap.OpenOption {
 		realExecutive, _ = buildRealExecutiveOrchestrator(t, s, rehearsalOrganization)
-		return []any{ceochatbootstrap.WithExecutiveSubmitter(realExecutive)}
+		return []ceochatbootstrap.OpenOption{ceochatbootstrap.WithExecutiveSubmitter(realExecutive)}
 	})
 	defer f.cleanup()
 	ctx := context.Background()

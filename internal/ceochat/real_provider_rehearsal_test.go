@@ -287,11 +287,11 @@ type realProviderRehearsalFixture struct {
 // to seed many real attempts quickly (driveManyRetryableAttempts), so it
 // builds its own store/registry/bootstrap using ONE config.Config that
 // carries it everywhere: ceochat, the model registry sync, and memory.
-func newRealProviderRehearsalFixture(t *testing.T, credentialFile string, extraOpts ...any) *realProviderRehearsalFixture {
-	return newRealProviderRehearsalFixtureWithStore(t, credentialFile, func(*platformpostgres.Store) []any { return extraOpts })
+func newRealProviderRehearsalFixture(t *testing.T, credentialFile string, extraOpts ...ceochatbootstrap.OpenOption) *realProviderRehearsalFixture {
+	return newRealProviderRehearsalFixtureWithStore(t, credentialFile, func(*platformpostgres.Store) []ceochatbootstrap.OpenOption { return extraOpts })
 }
 
-func newRealProviderRehearsalFixtureWithStore(t *testing.T, credentialFile string, buildOpts func(store *platformpostgres.Store) []any) *realProviderRehearsalFixture {
+func newRealProviderRehearsalFixtureWithStore(t *testing.T, credentialFile string, buildOpts func(store *platformpostgres.Store) []ceochatbootstrap.OpenOption) *realProviderRehearsalFixture {
 	t.Helper()
 	databaseURL := os.Getenv("ORG_TEST_DATABASE_URL")
 	if databaseURL == "" {
@@ -370,7 +370,7 @@ func newRealProviderRehearsalFixtureWithStore(t *testing.T, credentialFile strin
 		fail("sync canonical registry: result=%+v err=%v", result, syncErr)
 	}
 	registerChatTestDispatchPrincipal(t, ctx, store, fail)
-	var extraOpts []any
+	var extraOpts []ceochatbootstrap.OpenOption
 	if buildOpts != nil {
 		extraOpts = buildOpts(store)
 	}
