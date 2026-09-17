@@ -23,36 +23,69 @@ const (
 	defaultTasksListRows = 20
 )
 
-var tasksListSchema = json.RawMessage(`{
+var tasksListSchema = json.RawMessage(fmt.Sprintf(`{
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "status": {"type": "string"},
-    "assigned_role_id": {"type": "string", "maxLength": 240},
-    "limit": {"type": "integer", "minimum": 1, "maximum": 50},
-    "cursor": {"type": "string", "maxLength": 400}
+    "status": {
+      "type": "string",
+      "description": "Filter tasks by lifecycle status (e.g. pending, ready, running, completed, failed, blocked). Omit this field when not filtering by status."
+    },
+    "assigned_role_id": {
+      "type": "string",
+      "maxLength": 240,
+      "description": "Filter tasks by assigned role ID. Omit this field when not filtering by role."
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": %d,
+      "description": "Maximum rows to return. Omit to use the host default (%d). Must be between 1 and %d."
+    },
+    "cursor": {
+      "type": "string",
+      "maxLength": 400,
+      "description": "Pagination cursor from a previous page. Omit this field for the first page."
+    }
   }
-}`)
+}`, maxTasksListRows, defaultTasksListRows, maxTasksListRows))
 
 var tasksGetSchema = json.RawMessage(`{
   "type": "object",
   "additionalProperties": false,
   "required": ["task_id"],
   "properties": {
-    "task_id": {"type": "integer", "minimum": 1}
+    "task_id": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Positive integer ID of the task to retrieve."
+    }
   }
 }`)
 
-var tasksListAttemptsSchema = json.RawMessage(`{
+var tasksListAttemptsSchema = json.RawMessage(fmt.Sprintf(`{
   "type": "object",
   "additionalProperties": false,
   "required": ["task_id"],
   "properties": {
-    "task_id": {"type": "integer", "minimum": 1},
-    "limit": {"type": "integer", "minimum": 1, "maximum": 20},
-    "cursor": {"type": "string", "maxLength": 400}
+    "task_id": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Positive integer ID of the task whose attempts to list."
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": %d,
+      "description": "Maximum attempts per page. Omit to use the host default (%d). Must be between 1 and %d."
+    },
+    "cursor": {
+      "type": "string",
+      "maxLength": 400,
+      "description": "Pagination cursor from a previous page. Omit this field for the first page."
+    }
   }
-}`)
+}`, maxTaskAttemptsRows, maxTaskAttemptsRows, maxTaskAttemptsRows))
 
 type tasksListArgs struct {
 	Status         *string `json:"status,omitempty"`
@@ -188,7 +221,7 @@ func RegisterTaskTools(registry *ToolRegistry, reader TaskReader) error {
 	if err := registry.Register(ToolDescriptor{
 		ID: ToolTasksList, Version: tasksListVersion,
 		Description: "List durable tasks, optionally filtered by status or assigned role.",
-		InputSchema: tasksListSchema, Access: AccessReadOnly, RequiredRole: CEORoleID,
+		InputSchema: tasksListSchema, Access: AccessReadOnly, Effect: ToolEffectRead, RequiredRole: CEORoleID,
 		Limits:    ToolLimits{MaxRows: maxTasksListRows, MaxResultBytes: 32 << 10, Timeout: defaultToolTimeout},
 		DataClass: DataClassInternal,
 	}, func(body json.RawMessage) error { _, err := decodeTasksListArgs(body); return err },
@@ -246,7 +279,7 @@ func RegisterTaskTools(registry *ToolRegistry, reader TaskReader) error {
 	if err := registry.Register(ToolDescriptor{
 		ID: ToolTasksGet, Version: tasksGetVersion,
 		Description: "Get one durable task by ID.",
-		InputSchema: tasksGetSchema, Access: AccessReadOnly, RequiredRole: CEORoleID,
+		InputSchema: tasksGetSchema, Access: AccessReadOnly, Effect: ToolEffectRead, RequiredRole: CEORoleID,
 		Limits:    ToolLimits{MaxResultBytes: 16 << 10, Timeout: defaultToolTimeout},
 		DataClass: DataClassInternal,
 	}, func(body json.RawMessage) error { _, err := decodeTaskIDArgs(body); return err },
@@ -281,7 +314,7 @@ func RegisterTaskTools(registry *ToolRegistry, reader TaskReader) error {
 	return registry.Register(ToolDescriptor{
 		ID: ToolTasksListAttempts, Version: tasksListAttemptsVersion,
 		Description: "List the attempts recorded for one task.",
-		InputSchema: tasksListAttemptsSchema, Access: AccessReadOnly, RequiredRole: CEORoleID,
+		InputSchema: tasksListAttemptsSchema, Access: AccessReadOnly, Effect: ToolEffectRead, RequiredRole: CEORoleID,
 		Limits:    ToolLimits{MaxRows: maxTaskAttemptsRows, MaxResultBytes: 16 << 10, Timeout: defaultToolTimeout},
 		DataClass: DataClassInternal,
 	}, func(body json.RawMessage) error { _, err := decodeTasksListAttemptsArgs(body); return err },

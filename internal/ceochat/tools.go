@@ -47,7 +47,7 @@ var listFindingsSchema = json.RawMessage(`{
     "department_id": {"type": "string", "maxLength": 240},
     "topic_id": {"type": "string", "maxLength": 240},
     "important_only": {"type": "boolean"},
-    "limit": {"type": "integer", "minimum": 1, "maximum": 20}
+    "limit": {"type": "integer"}
   }
 }`)
 
@@ -56,7 +56,7 @@ var listTopicsSchema = json.RawMessage(`{
   "additionalProperties": false,
   "properties": {
     "department_id": {"type": "string", "maxLength": 240},
-    "limit": {"type": "integer", "minimum": 1, "maximum": 50}
+    "limit": {"type": "integer"}
   }
 }`)
 
@@ -298,7 +298,7 @@ func RegisterResearchTools(registry *ToolRegistry, topics TopicLister, findings 
 	if err := registry.Register(ToolDescriptor{
 		ID: ToolListTopics, Version: "v1",
 		Description: "List research topics tracked for the organization, optionally scoped to one department.",
-		InputSchema: listTopicsSchema, Access: AccessReadOnly, RequiredRole: CEORoleID,
+		InputSchema: listTopicsSchema, Access: AccessReadOnly, Effect: ToolEffectRead, RequiredRole: CEORoleID,
 		Limits:    ToolLimits{MaxRows: maxTopicsLimit, MaxResultBytes: 32 << 10, Timeout: defaultToolTimeout},
 		DataClass: DataClassInternal,
 	}, func(args json.RawMessage) error { _, err := decodeListTopicsArgs(args); return err },
@@ -314,7 +314,7 @@ func RegisterResearchTools(registry *ToolRegistry, topics TopicLister, findings 
 	return registry.Register(ToolDescriptor{
 		ID: ToolListFindings, Version: "v1",
 		Description: "List recent research findings, optionally scoped to a department or topic.",
-		InputSchema: listFindingsSchema, Access: AccessReadOnly, RequiredRole: CEORoleID,
+		InputSchema: listFindingsSchema, Access: AccessReadOnly, Effect: ToolEffectRead, RequiredRole: CEORoleID,
 		Limits:    ToolLimits{MaxRows: maxFindingsLimit, MaxResultBytes: 32 << 10, Timeout: defaultToolTimeout},
 		DataClass: DataClassInternal,
 	}, func(args json.RawMessage) error { _, err := decodeListFindingsArgs(args); return err },

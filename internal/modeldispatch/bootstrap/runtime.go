@@ -56,11 +56,11 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store, taskReader t
 	return &Runtime{Config: dispatchCfg, Principals: principals, Assignments: assignments, Store: store, lineage: tasksAdapter}, nil
 }
 
-func (r *Runtime) NewAuthorizedAttemptProvisioner(executionPrincipalKey string) (*modeldispatch.AuthorizedAttemptProvisioner, error) {
+func (r *Runtime) NewAuthorizedAttemptProvisioner(executionPrincipalKey string, opts ...modeldispatch.AuthorizedAttemptProvisionerOption) (*modeldispatch.AuthorizedAttemptProvisioner, error) {
 	if r == nil {
 		return nil, fmt.Errorf("model dispatch runtime is unavailable")
 	}
-	return modeldispatch.NewAuthorizedAttemptProvisioner(r.Assignments, r.lineage, r.Store, executionPrincipalKey)
+	return modeldispatch.NewAuthorizedAttemptProvisioner(r.Assignments, r.lineage, r.Store, executionPrincipalKey, opts...)
 }
 
 type catalogAdapter struct{ reader registry.Reader }

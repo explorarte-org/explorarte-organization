@@ -17,6 +17,9 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/config"
 	"github.com/Mireuz13/explorarte-organization/internal/executionharness"
 	"github.com/Mireuz13/explorarte-organization/internal/executionharness/modelruntimeadapter"
+	"github.com/Mireuz13/explorarte-organization/internal/modeldispatch"
+	dispatchpostgres "github.com/Mireuz13/explorarte-organization/internal/modeldispatch/postgres"
+	modelbootstrap "github.com/Mireuz13/explorarte-organization/internal/modelruntime/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
@@ -26,6 +29,52 @@ import (
 )
 
 const chatTestOrganization = "explorarte"
+
+// chatTestDispatchPrincipalKey is the fixed, stable ORG_MODEL_EXECUTION_PRINCIPAL_KEY
+// every ceochat integration test uses. modelruntime.LoadRuntimeConfig reads this
+// straight from the OS environment (internal/config's own lookup map has no
+// influence over it -- see rehearsalConfig's doc comment in
+// real_provider_rehearsal_test.go for the same discovery), and
+// ceochatbootstrap.Open now constructs a real
+// modeldispatch.AuthorizedAttemptProvisioner keyed to it, so a value must be
+// present and a matching model_execution_principals row must already exist
+// before the first Send() call, or EnsureAuthorizedAssignmentForRunningAttempt
+// fails closed on modeldispatch.ErrNotFound before any model or tool call.
+// Fixed (not per-test-random) and idempotently registered: many tests in
+// this package call newChatFixture against the SAME shared, migrated-once
+// integration database, and RegisterPrincipal is itself idempotent on
+// (organization_id, idempotency_key).
+const chatTestDispatchPrincipalKey = "ceochat-test/model-runtime-01"
+
+// registerChatTestDispatchPrincipal idempotently ensures the principal
+// chatTestDispatchPrincipalKey resolves to exists. It calls
+// dispatchpostgres.Store.RegisterPrincipal directly (the same store
+// ceochatbootstrap.Open itself opens against), not a second modeldispatch
+// stack -- exactly the pattern internal/modeldispatch/postgres/integration_test.go's
+// own registerFixturePrincipal helper already uses.
+func registerChatTestDispatchPrincipal(t *testing.T, ctx context.Context, store *platformpostgres.Store, fail func(format string, args ...any)) {
+	t.Helper()
+	dispatchStore, err := dispatchpostgres.New(store)
+	if err != nil {
+		fail("open dispatch store for test principal registration: %v", err)
+	}
+	const dispatchActorRoleID = "ingenieria_ia/code-runner"
+	const registeredBy = "empresa/human"
+	requestHash, err := modeldispatch.PrincipalRequestHash(chatTestOrganization, chatTestDispatchPrincipalKey, dispatchActorRoleID, modeldispatch.PrincipalLocalProcess, registeredBy)
+	if err != nil {
+		fail("compute test dispatch principal request hash: %v", err)
+	}
+	if _, err = dispatchStore.RegisterPrincipal(ctx, modeldispatch.PreparedRegisterPrincipal{
+		Command: modeldispatch.RegisterPrincipalCommand{
+			OrganizationID: chatTestOrganization, PrincipalKey: chatTestDispatchPrincipalKey,
+			DispatchActorRoleID: dispatchActorRoleID, PrincipalKind: modeldispatch.PrincipalLocalProcess,
+			IdempotencyKey: "ceochat-test-dispatch-principal",
+		},
+		RequestHash: requestHash, RegisteredByRoleID: registeredBy,
+	}); err != nil {
+		fail("register test dispatch principal: %v", err)
+	}
+}
 
 // fakeFindingsOnly is a deterministic, in-memory FindingLister: exactly what
 // the round authorizes ("una interfaz estrecha sobre FindingRepository")
@@ -95,6 +144,7 @@ func newChatFixture(t *testing.T) *chatFixture {
 		t.Skip("ORG_TEST_DATABASE_URL is required")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	t.Setenv("ORG_MODEL_EXECUTION_PRINCIPAL_KEY", chatTestDispatchPrincipalKey)
 	cfg, err := config.LoadFrom(func(key string) (string, bool) {
 		values := map[string]string{
 			"ORG_ENVIRONMENT":           "test",
@@ -146,6 +196,25 @@ func newChatFixture(t *testing.T) *chatFixture {
 	}
 	if result, syncErr := registryService.SynchronizeCanonical(ctx, true); syncErr != nil || (!result.Applied && !result.NoOp) {
 		fail("sync canonical registry: result=%+v err=%v", result, syncErr)
+	}
+	registerChatTestDispatchPrincipal(t, ctx, store, fail)
+	// GetRoleRoutingAuthority (called by AuthorizedAttemptProvisioner on
+	// every Send) fails closed unless empresa/ceo's executive.ceo
+	// model_policy resolves to either a static role_model_binding or a
+	// pool routing_policy row. SynchronizeCanonical above only syncs the
+	// organization/role/capability registry; those binding rows come from
+	// the SEPARATE model registry, which nothing in this fixture opened
+	// before CEO_CONVERSATIONAL_DISPATCH_ASSIGNMENT_BOUNDARY_V1 because
+	// every model call was scripted (bypassing Model Runtime's route
+	// resolution entirely). No second Model Runtime, no second dispatcher:
+	// this is the exact modelbootstrap.OpenRegistry + Registry.Sync
+	// sequence real_provider_rehearsal_test.go already uses.
+	modelRegistryRuntime, err := modelbootstrap.OpenRegistry(cfg, store)
+	if err != nil {
+		fail("open model registry for ceochat test fixture: %v", err)
+	}
+	if sync, syncErr := modelRegistryRuntime.Registry.Sync(ctx, true, cfg.Tasks.OutboxMaxAttempts); syncErr != nil || (!sync.Applied && !sync.NoOp) {
+		fail("sync model registry for ceochat test fixture: result=%+v err=%v", sync, syncErr)
 	}
 
 	runtime, err := ceochatbootstrap.Open(cfg, store)

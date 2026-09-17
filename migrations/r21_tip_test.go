@@ -42,7 +42,14 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 	// 74 (create_ceo_chat) is
 	// CEO_CONVERSATIONAL_TOOL_RUNTIME_FOUNDATION_V1's durable owner<->CEO
 	// conversation/message persistence.
-	const wantCount = 74
+	// 75 (create_campaign_proposals) is
+	// CEO_CONVERSATIONAL_CAMPAIGN_PROPOSAL_V1's durable immutable campaign proposals.
+	// 76 (create_campaign_financial_reviews) is
+	// CEO_CONVERSATIONAL_CAMPAIGN_FINANCIAL_REVIEW_V1 durable financial reviews.
+	// 77 (add_proposal_revision_lineage) is CEO_CONVERSATIONAL_CAMPAIGN_REVISION_AND_OWNER_APPROVAL_V1 proposal revision lineage.
+	// 78 (create_campaign_owner_approvals) is CEO_CONVERSATIONAL_CAMPAIGN_REVISION_AND_OWNER_APPROVAL_V1 owner approvals.
+	// 79 (create_campaign_promotions) is CEO_CONVERSATIONAL_CAMPAIGN_PROMOTION_TO_EXECUTIVE_V1 campaign promotions.
+	const wantCount = 79
 	if len(loaded) != wantCount {
 		t.Fatalf("migration count=%d want %d", len(loaded), wantCount)
 	}
@@ -127,6 +134,15 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		73: "seed_mistral_zero_wallet_anchor",
 		// CEO_CONVERSATIONAL_TOOL_RUNTIME_FOUNDATION_V1:
 		74: "create_ceo_chat",
+		// CEO_CONVERSATIONAL_CAMPAIGN_PROPOSAL_V1:
+		75: "create_campaign_proposals",
+		// CEO_CONVERSATIONAL_CAMPAIGN_FINANCIAL_REVIEW_V1:
+		76: "create_campaign_financial_reviews",
+		// CEO_CONVERSATIONAL_CAMPAIGN_REVISION_AND_OWNER_APPROVAL_V1:
+		77: "add_proposal_revision_lineage",
+		78: "create_campaign_owner_approvals",
+		// CEO_CONVERSATIONAL_CAMPAIGN_PROMOTION_TO_EXECUTIVE_V1:
+		79: "create_campaign_promotions",
 	}
 	byVersion := make(map[int64]string, len(loaded))
 	for _, migration := range loaded {

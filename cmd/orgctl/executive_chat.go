@@ -12,6 +12,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/ceochat"
 	ceochatbootstrap "github.com/Mireuz13/explorarte-organization/internal/ceochat/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/config"
+	executivebootstrap "github.com/Mireuz13/explorarte-organization/internal/executive/bootstrap"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
 )
 
@@ -183,7 +184,30 @@ func openCeoChatRuntime(stderr io.Writer, suffix string, timeout time.Duration) 
 		cancel()
 		return cfg, nil, nil, nil, func() {}, code
 	}
-	runtime, err := ceochatbootstrap.Open(cfg, store)
+	// campaign.promote_to_executive needs a real campaign.ExecutiveSubmitter
+	// to do anything but fail closed with "promotion service is not
+	// configured" -- without this, every owner "lánzala" ever reaches a
+	// dead end no matter how correct the rest of the campaign chain is.
+	// This process therefore opens two composition roots (Executive's and
+	// ceochat's own) -- but WithModelRuntime makes that ONE Model Runtime,
+	// not two: executiveRuntime.Models is threaded straight into ceochat's
+	// own Open instead of letting it construct an independent one (two
+	// provider adapter sets, two routers, two circuit breakers, two egress
+	// clients, even though both would otherwise talk to the same
+	// database -- durable storage equality is not runtime equality).
+	// TestCEOChatSharesExecutiveModelRuntime proves this by pointer
+	// identity against real PostgreSQL.
+	executiveRuntime, err := executivebootstrap.Open(cfg, store)
+	if err != nil {
+		store.Close()
+		cancel()
+		fmt.Fprintf(stderr, "open executive runtime for campaign promotion: %v\n", err)
+		return cfg, nil, nil, nil, func() {}, exitInternal
+	}
+	runtime, err := ceochatbootstrap.Open(cfg, store,
+		ceochatbootstrap.WithModelRuntime(executiveRuntime.Models),
+		ceochatbootstrap.WithExecutiveSubmitter(executiveRuntime.Orchestrator),
+	)
 	if err != nil {
 		store.Close()
 		cancel()

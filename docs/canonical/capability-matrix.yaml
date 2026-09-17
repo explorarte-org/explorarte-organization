@@ -89,11 +89,36 @@ capabilities:
   risk: low
 - id: memory.read_own
   risk: low
+- id: campaign.proposal.create
+  risk: medium
+- id: campaign.proposal.revise
+  risk: medium
+- id: campaign.proposal.read
+  risk: low
+- id: campaign.financial_review.request
+  risk: medium
+- id: campaign.financial_review.perform
+  risk: medium
+- id: campaign.financial_review.read
+  risk: low
+- id: campaign.owner_approval.create
+  risk: high
+- id: campaign.owner_approval.read
+  risk: low
+- id: campaign.promotion.execute
+  risk: high
+- id: campaign.promotion.read
+  risk: low
 grants:
   owner:
   - '*'
   executive:
   - organization.read_registry
+  - campaign.proposal.read
+  - campaign.financial_review.request
+  - campaign.financial_review.read
+  - campaign.owner_approval.read
+  - campaign.promotion.read
   - project.create
   - project.delegate_department
   - audit.read_sanitized_evidence
@@ -104,6 +129,7 @@ grants:
   - agent.message.settle
   department_leadership:
   - organization.read_registry
+  - campaign.financial_review.read
   - project.delegate_department
   - task.assign_worker
   - task.review
@@ -114,6 +140,8 @@ grants:
   - agent.message.settle
   specialist:
   - organization.read_registry
+  - campaign.financial_review.perform
+  - campaign.financial_review.read
   - task.execute
   - rag.read_own_namespace
   - memory.propose
@@ -150,6 +178,9 @@ hard_denies:
   - model.invoke
   executive:
   - code.promote
+  - campaign.financial_review.perform
+  - campaign.owner_approval.create
+  - campaign.promotion.execute
   department_leadership:
   - code.promote
   '*':

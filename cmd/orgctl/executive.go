@@ -13,14 +13,26 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Mireuz13/explorarte-organization/internal/authorization"
+	authorizationpostgres "github.com/Mireuz13/explorarte-organization/internal/authorization/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/campaign"
+	"github.com/Mireuz13/explorarte-organization/internal/campaign/financeworker"
+	campaignpostgres "github.com/Mireuz13/explorarte-organization/internal/campaign/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/config"
+	"github.com/Mireuz13/explorarte-organization/internal/executionharness"
+	"github.com/Mireuz13/explorarte-organization/internal/executionharness/modelruntimeadapter"
+	executionharnesspostgres "github.com/Mireuz13/explorarte-organization/internal/executionharness/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/executive"
 	executivebootstrap "github.com/Mireuz13/explorarte-organization/internal/executive/bootstrap"
+	"github.com/Mireuz13/explorarte-organization/internal/executive/driver"
 	"github.com/Mireuz13/explorarte-organization/internal/executive/runtimeadapter"
+	"github.com/Mireuz13/explorarte-organization/internal/modeldispatch"
 	"github.com/Mireuz13/explorarte-organization/internal/modelpricing"
 	modelruntimepostgres "github.com/Mireuz13/explorarte-organization/internal/modelruntime/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/tasks"
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 )
 
@@ -211,21 +223,26 @@ func runExecutiveResume(args []string, stdout, stderr io.Writer) int {
 
 func runExecutiveWorker(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || args[0] != "run" {
-		fmt.Fprintln(stderr, "usage: orgctl executive worker run [--poll 1s] [--error-backoff 3s] [--batch 16]")
-		return exitUsage
-	}
-	flags := flag.NewFlagSet("executive worker run", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	poll := flags.Duration("poll", time.Second, "poll interval")
-	errorBackoff := flags.Duration("error-backoff", 3*time.Second, "source error backoff")
-	batch := flags.Int("batch", 16, "maximum roots per poll")
-	noRetries := flags.Bool("no-retries", false, "pin every task to one attempt for this operator-run campaign")
-	if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 || *poll <= 0 || *errorBackoff <= 0 || *batch <= 0 || *batch > 128 {
+		fmt.Fprintln(stderr, "usage: orgctl executive worker run [--poll 2s] [--error-backoff 3s] [--batch 16] [--max-concurrency 4]")
 		return exitUsage
 	}
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(stderr, "load configuration: %v\n", err)
+		return exitUsage
+	}
+	flags := flag.NewFlagSet("executive worker run", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	poll := flags.Duration("poll", cfg.ExecutiveDriver.PollInterval, "poll interval")
+	errorBackoff := flags.Duration("error-backoff", cfg.ExecutiveDriver.ErrorBackoff, "source error backoff")
+	batch := flags.Int("batch", cfg.ExecutiveDriver.BatchSize, "maximum roots per poll")
+	maxConcurrency := flags.Int("max-concurrency", cfg.ExecutiveDriver.MaxConcurrency, "maximum concurrent roots per replica")
+	noRetries := flags.Bool("no-retries", false, "pin every task to one attempt for this operator-run campaign")
+	if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 ||
+		*poll < 100*time.Millisecond || *poll > 10*time.Minute ||
+		*errorBackoff < 100*time.Millisecond ||
+		*batch <= 0 || *batch > 128 ||
+		*maxConcurrency <= 0 || *maxConcurrency > 32 {
 		return exitUsage
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -251,23 +268,200 @@ func runExecutiveWorker(args []string, stdout, stderr io.Writer) int {
 	// `orgctl model invocation reconcile`, so a stranded invocation stayed
 	// stranded and every pass skipped it again. Wiring it here is what makes
 	// the assumption true in the deployment, not just in the code.
-	worker, err := executive.NewWorker(runtime.Orchestrator, rootSource,
-		executive.WorkerConfig{PollInterval: *poll, ErrorBackoff: *errorBackoff, BatchSize: *batch},
-		executive.WithExecutionReconciler(runtimeadapter.ExecutionReconciler{Invocations: runtime.Models.Invocations}),
-		executive.WithFailureObserver(func(rootTaskID int64, err error) {
-			fmt.Fprintf(stderr, "executive worker: root %d: %v\n", rootTaskID, err)
-		}))
+	coord := driver.NewPostgresRootCoordinator(store.Pool())
+	driverCfg := driver.Config{
+		OrganizationID: cfg.Tasks.OrganizationID,
+		PollInterval:   *poll,
+		ErrorBackoff:   *errorBackoff,
+		BatchSize:      *batch,
+		MaxConcurrency: *maxConcurrency,
+	}
+	drv, err := driver.NewCampaignDriver(
+		runtime.Orchestrator,
+		rootSource,
+		coord,
+		driverCfg,
+		driver.WithExecutionReconciler(runtimeadapter.ExecutionReconciler{Invocations: runtime.Models.Invocations}),
+		driver.WithObserver(func(rootTaskID int64, classification driver.ResultClassification, err error) {
+			if err != nil && classification != driver.ResultBusy && classification != driver.ResultBlockedHuman {
+				fmt.Fprintf(stderr, "executive worker: root %d [%s]: %v\n", rootTaskID, classification, err)
+			}
+		}),
+	)
 	if err != nil {
 		fmt.Fprintf(stderr, "create executive worker: %v\n", err)
 		return exitInternal
 	}
+
+	finWorker, err := buildFinanceWorker(ctx, cfg, store, runtime, stderr)
+	if err != nil {
+		fmt.Fprintf(stderr, "create finance worker: %v\n", err)
+		return exitInternal
+	}
+
 	fmt.Fprintln(stdout, "executive worker started")
-	if err = worker.Run(ctx); err != nil {
-		fmt.Fprintf(stderr, "executive worker: %v\n", err)
+	// The autonomous campaign driver and the finance review worker run as
+	// two goroutines of the SAME process, sharing runtime.Models (one
+	// Model Runtime, opened once above) -- not two worker processes, not
+	// a second composition root. Neither is optional: superviseExecutiveWorkers
+	// fails the whole process fast if either one terminates unexpectedly
+	// (error, or even a premature "successful" nil) while ctx is still
+	// active, cancelling the sibling immediately rather than leaving it
+	// running alone forever -- a worker process silently missing half its
+	// job is worse than a visible, restart-recoverable crash (this
+	// process already runs under Restart=always).
+	if runErr := superviseExecutiveWorkers(ctx, drv.Run, finWorker.Run); runErr != nil {
+		fmt.Fprintf(stderr, "executive worker: %v\n", runErr)
 		return exitInternal
 	}
 	fmt.Fprintln(stdout, "executive worker stopped")
 	return exitOK
+}
+
+// financeTaskCoordinator adapts *tasks.Service to campaign.TaskCoordinator.
+// *tasks.Service already implements every method that interface needs
+// (CreateTask, ClaimTaskByID, StartAttempt, RecordAttemptResult,
+// FinalizeTask) with an identical signature except GetTask, which returns
+// the richer tasks.TaskDetail rather than the bare tasks.Task
+// campaign.TaskCoordinator expects. Duplicated from the identical adapter
+// in internal/ceochat/bootstrap/runtime.go (unexported there, in a
+// different package) rather than shared -- the same precedent this
+// codebase already established for this exact shape.
+type financeTaskCoordinator struct {
+	*tasks.Service
+}
+
+func (f financeTaskCoordinator) GetTask(ctx context.Context, taskID int64) (tasks.Task, error) {
+	detail, err := f.Service.GetTask(ctx, taskID)
+	if err != nil {
+		return tasks.Task{}, err
+	}
+	return detail.Task, nil
+}
+
+// financeDispatchProvisioner adapts
+// *modeldispatch.AuthorizedAttemptProvisioner's (CreateAssignmentResult,
+// error) return to the bare error campaign.DispatchProvisioner expects --
+// the finance worker only needs to know whether it may proceed to the
+// Harness, never the assignment's own identity or quota. Same shape as
+// ceochat's own dispatchProvisioner adapter.
+type financeDispatchProvisioner struct {
+	provisioner *modeldispatch.AuthorizedAttemptProvisioner
+}
+
+func (d financeDispatchProvisioner) EnsureAuthorizedAssignmentForRunningAttempt(ctx context.Context, taskID, attemptID int64) error {
+	_, err := d.provisioner.EnsureAuthorizedAssignmentForRunningAttempt(ctx, taskID, attemptID)
+	return err
+}
+
+// buildFinanceWorker wires the autonomous consumer of
+// campaign.financial_review tasks into this SAME worker process,
+// reusing the Model Runtime, task service, and database connection
+// executivebootstrap.Open already opened above -- never a second
+// modelbootstrap.Open call. This is the missing link between
+// campaign.request_financial_review (which only ever creates a task,
+// deliberately never blocking a CEO chat turn on model completion) and
+// FinanceService.ExecuteReviewTask (fully built, crash-safe, race-safe,
+// but with zero production callers before this).
+func buildFinanceWorker(ctx context.Context, cfg config.Config, store *platformpostgres.Store, runtime *executivebootstrap.Runtime, stderr io.Writer) (*financeworker.Worker, error) {
+	campaignStore, err := campaignpostgres.New(store)
+	if err != nil {
+		return nil, fmt.Errorf("open campaign store: %w", err)
+	}
+	authorizationStore, err := authorizationpostgres.New(store)
+	if err != nil {
+		return nil, fmt.Errorf("open authorization store: %w", err)
+	}
+	authorizerPolicy, err := authorization.NewWithPolicyReader(authorizationStore, cfg.Tasks.OrganizationID, cfg.Registry.CanonicalDir)
+	if err != nil {
+		return nil, fmt.Errorf("open capability authorizer: %w", err)
+	}
+	registryRepository, err := registry.NewPostgresRepository(store)
+	if err != nil {
+		return nil, fmt.Errorf("open registry repository: %w", err)
+	}
+	// Reviewer role resolution is canonical, not a hardcoded string:
+	// DefaultReviewerRoleResolver searches negocio's own roles for one
+	// holding campaign.financial_review.perform, falling back to the
+	// canonical constant only if the authorizer itself confirms that role
+	// still holds the capability.
+	roleResolver := campaign.DefaultReviewerRoleResolver{Registry: registryRepository, Authorizer: authorizerPolicy}
+	revision, err := registryRepository.GetCurrentRevision(ctx, cfg.Tasks.OrganizationID)
+	if err != nil || revision == nil {
+		return nil, fmt.Errorf("read current organization revision: revision=%+v err=%w", revision, err)
+	}
+	reviewerRoleID, err := roleResolver.ResolveReviewerRole(ctx, cfg.Tasks.OrganizationID, revision.ID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve canonical finance reviewer role: %w", err)
+	}
+
+	harnessAuthority, err := runtime.Models.NewHarnessAuthority()
+	if err != nil {
+		return nil, fmt.Errorf("create harness authority: %w", err)
+	}
+	harnessHistory, err := executionharnesspostgres.New(store, cfg.Tasks.OrganizationID)
+	if err != nil {
+		return nil, fmt.Errorf("create harness history store: %w", err)
+	}
+	// Finance performs exactly one bounded model review per task (the
+	// Harness spec itself pins MaxTurns=1) -- the provisioner's own
+	// default MaxInvocations=1 is left untouched, never overridden the
+	// way ceochat overrides it to 8 for its own multi-turn conversation
+	// shape.
+	financeAssignments, err := runtime.Models.Dispatcher.NewAuthorizedAttemptProvisioner(runtime.Models.Config.ExecutionPrincipalKey)
+	if err != nil {
+		return nil, fmt.Errorf("create finance dispatch provisioner: %w", err)
+	}
+	// The role-bound principal for the finance reviewer role -- never
+	// empresa/ceo, empresa/human, or a generic technical principal
+	// presented as Finance. The SAME identity holds the task lease, owns
+	// the dispatch assignment, and executes the Harness run: it is
+	// threaded through once here as HolderPrincipalID, and
+	// ExecuteReviewTask itself reuses it for all three.
+	roleBoundResolver, err := runtimeadapter.NewRoleBoundPrincipalResolver(runtime.Models.Dispatcher.Store, cfg.Tasks.OrganizationID)
+	if err != nil {
+		return nil, fmt.Errorf("create role-bound principal resolver: %w", err)
+	}
+	financePrincipal, err := roleBoundResolver.Resolve(ctx, reviewerRoleID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve finance role-bound principal: %w", err)
+	}
+	holderPrincipalID := strconv.FormatInt(financePrincipal.ID, 10)
+
+	financeService, err := campaign.NewFinanceService(campaign.FinanceServiceConfig{
+		OrganizationID:  cfg.Tasks.OrganizationID,
+		Store:           campaignStore,
+		Tasks:           financeTaskCoordinator{runtime.Tasks},
+		Assignments:     financeDispatchProvisioner{financeAssignments},
+		Authorizer:      authorizerPolicy,
+		RoleResolver:    roleResolver,
+		Authority:       harnessAuthority,
+		HarnessHistory:  harnessHistory,
+		DescriptorStore: harnessHistory,
+		NewModelExecutor: func(execConfig modelruntimeadapter.Config) (executionharness.ModelExecutor, error) {
+			return runtime.Models.NewHarnessModelExecutor(execConfig)
+		},
+		WorkerID:          "executive-worker-finance",
+		HolderPrincipalID: holderPrincipalID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create finance service: %w", err)
+	}
+
+	discovery := financeworker.DiscoveryTaskSource{
+		Service: runtime.Tasks, OrganizationID: cfg.Tasks.OrganizationID, ReviewerRoleID: reviewerRoleID,
+	}
+	workerCfg := financeworker.DefaultConfig(cfg.Tasks.OrganizationID)
+	workerCfg.WorkerID = "executive-worker-finance"
+	workerCfg.HolderPrincipalID = holderPrincipalID
+
+	return financeworker.NewWorker(discovery, campaignStore, financeService, workerCfg,
+		financeworker.WithObserver(func(taskID int64, classification financeworker.ResultClassification, err error) {
+			if err != nil && classification != financeworker.ResultBusy {
+				fmt.Fprintf(stderr, "executive worker: finance task %d [%s]: %v\n", taskID, classification, err)
+			}
+		}),
+	)
 }
 
 func readExecutiveGoal(path string) (executive.OwnerGoal, error) {
@@ -421,7 +615,7 @@ commands:
   external-smoke-5usd --confirm EXECUTIVE_EXTERNAL_SMOKE_5USD_ONCE --idempotency-key external-smoke-5usd-KEY [--json]
   status ROOT_TASK_ID [--json]
   resume ROOT_TASK_ID [--json]
-  worker run [--poll 1s] [--error-backoff 3s] [--batch 16]
+  worker run [--poll 2s] [--error-backoff 3s] [--batch 16] [--max-concurrency 4]
   reconcile-gating [--limit 100] [--json]
   chat create --actor-role empresa/human [--json]
   chat send CONVERSATION_ID --actor-role empresa/human --idempotency-key KEY [--file message.txt] [--json]

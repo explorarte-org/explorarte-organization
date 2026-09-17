@@ -1,0 +1,40 @@
+# Template. Host paths, the operating user, and the log destination are
+# deployment facts, not repository facts -- this file is a starting point
+# for provisioning a new host, not something to install unchanged (see
+# explorarte-composition-controller.service in this same directory for the
+# established pattern this follows).
+#
+# ExecStart runs the autonomous campaign driver (orgctl executive worker
+# run -> internal/executive/driver.CampaignDriver), never the legacy
+# per-root manual worker path. --poll and --batch below match this
+# organization's current live values; --max-concurrency and --error-backoff
+# are left at their config-file/env defaults (see
+# internal/config.ExecutiveDriverConfig) rather than duplicated here, so a
+# config change does not silently drift out of sync with this template.
+#
+# The worker's own root coordination uses PostgreSQL session-level advisory
+# locks (internal/executive/driver.PostgresRootCoordinator), so running more
+# than one instance of this unit -- on this host or others -- is safe by
+# construction: at most one instance ever advances a given root at a time,
+# and a killed/restarted instance's locks are released by PostgreSQL itself
+# when its session dies. Restart=always is therefore a recovery policy, not
+# a correctness requirement.
+
+[Unit]
+Description=Explorarte Organization Executive Worker (autonomous campaign driver)
+Documentation=internal/executive/driver
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/explorarte-organization
+ExecStart=/usr/bin/docker compose -f /home/ubuntu/explorarte-organization/compose.yaml exec -T model-worker /usr/local/bin/orgctl executive worker run --poll 2s --batch 16
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/explorarte/executive-worker.log
+StandardError=append:/var/log/explorarte/executive-worker.log
+
+[Install]
+WantedBy=multi-user.target

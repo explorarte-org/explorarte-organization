@@ -28,23 +28,44 @@ const (
 	runStatusInProgress = "in_progress"
 )
 
-var runsListRecentSchema = json.RawMessage(`{
+var runsListRecentSchema = json.RawMessage(fmt.Sprintf(`{
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "task_id": {"type": "integer", "minimum": 1},
-    "execution_profile_id": {"type": "string", "maxLength": 240},
-    "limit": {"type": "integer", "minimum": 1, "maximum": 30},
-    "cursor": {"type": "string", "maxLength": 400}
+    "task_id": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Positive integer task ID to filter runs by. Omit this field when not filtering by task."
+    },
+    "execution_profile_id": {
+      "type": "string",
+      "maxLength": 240,
+      "description": "Filter runs by execution profile ID. Omit this field when not filtering by profile."
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": %d,
+      "description": "Maximum runs to return. Omit to use the host default (%d). Must be between 1 and %d."
+    },
+    "cursor": {
+      "type": "string",
+      "maxLength": 400,
+      "description": "Pagination cursor from a previous page. Omit this field for the first page."
+    }
   }
-}`)
+}`, maxRunsListRows, defaultRunsListRows, maxRunsListRows))
 
 var runsGetSchema = json.RawMessage(`{
   "type": "object",
   "additionalProperties": false,
   "required": ["run_id"],
   "properties": {
-    "run_id": {"type": "string", "minLength": 1, "maxLength": 200}
+    "run_id": {
+      "type": "string",
+      "maxLength": 200,
+      "description": "Canonical run identifier."
+    }
   }
 }`)
 
@@ -150,7 +171,7 @@ func RegisterRunTools(registry *ToolRegistry, organizationID string, runs RunLis
 	if err := registry.Register(ToolDescriptor{
 		ID: ToolRunsListRecent, Version: runsListRecentVersion,
 		Description: "List the most recent Harness runs, optionally filtered by task or execution profile.",
-		InputSchema: runsListRecentSchema, Access: AccessReadOnly, RequiredRole: CEORoleID,
+		InputSchema: runsListRecentSchema, Access: AccessReadOnly, Effect: ToolEffectRead, RequiredRole: CEORoleID,
 		Limits:    ToolLimits{MaxRows: maxRunsListRows, MaxResultBytes: 32 << 10, Timeout: defaultToolTimeout},
 		DataClass: DataClassInternal,
 	}, func(body json.RawMessage) error { _, err := decodeRunsListRecentArgs(body); return err },
@@ -209,7 +230,7 @@ func RegisterRunTools(registry *ToolRegistry, organizationID string, runs RunLis
 	return registry.Register(ToolDescriptor{
 		ID: ToolRunsGet, Version: runsGetVersion,
 		Description: "Get one Harness run's descriptor and outcome by run ID.",
-		InputSchema: runsGetSchema, Access: AccessReadOnly, RequiredRole: CEORoleID,
+		InputSchema: runsGetSchema, Access: AccessReadOnly, Effect: ToolEffectRead, RequiredRole: CEORoleID,
 		Limits:    ToolLimits{MaxResultBytes: 16 << 10, Timeout: defaultToolTimeout},
 		DataClass: DataClassInternal,
 	}, func(body json.RawMessage) error { _, err := decodeRunsGetArgs(body); return err },

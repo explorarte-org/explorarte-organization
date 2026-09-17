@@ -43,11 +43,29 @@ var financeGetCostSummarySchema = json.RawMessage(`{
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "task_id": {"type": "integer", "minimum": 1},
-    "wallet_provider_id": {"type": "string", "maxLength": 240},
-    "provider_model_id": {"type": "string", "maxLength": 240},
-    "since": {"type": "string", "format": "date-time"},
-    "until": {"type": "string", "format": "date-time"}
+    "task_id": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Positive integer task ID to filter spend by. Omit this field when not filtering by task."
+    },
+    "wallet_provider_id": {
+      "type": "string",
+      "maxLength": 240,
+      "description": "Filter spend by provider identifier (e.g. openai, anthropic). Omit this field when not filtering by provider."
+    },
+    "provider_model_id": {
+      "type": "string",
+      "maxLength": 240,
+      "description": "Filter spend by provider model ID. Omit this field when not filtering by model."
+    },
+    "since": {
+      "type": "string",
+      "description": "RFC3339 timestamp start of time range. Omit this field when not filtering by start time."
+    },
+    "until": {
+      "type": "string",
+      "description": "RFC3339 timestamp end of time range. Omit this field when not filtering by end time."
+    }
   }
 }`)
 
@@ -155,7 +173,7 @@ func RegisterFinanceTools(registry *ToolRegistry, organizationID string, provide
 	return registry.Register(ToolDescriptor{
 		ID: ToolFinanceGetCostSummary, Version: financeGetCostSummaryVersion,
 		Description: "Summarize settled and estimated-unsettled provider spend, optionally filtered by task, provider, model, or time range. Exhaustive over the filter unless truncated=true (see providers_omitted for why).",
-		InputSchema: financeGetCostSummarySchema, Access: AccessReadOnly, RequiredRole: CEORoleID,
+		InputSchema: financeGetCostSummarySchema, Access: AccessReadOnly, Effect: ToolEffectRead, RequiredRole: CEORoleID,
 		Limits:    ToolLimits{MaxResultBytes: 32 << 10, Timeout: 20 * time.Second},
 		DataClass: DataClassInternal,
 	}, func(body json.RawMessage) error { _, err := decodeFinanceGetCostSummaryArgs(body); return err },
@@ -171,7 +189,7 @@ func RegisterFinanceTools(registry *ToolRegistry, organizationID string, provide
 			if args.TaskID != nil {
 				filter.TaskID = *args.TaskID
 			}
-			if args.ProviderModelID != nil {
+			if args.ProviderModelID != nil && strings.TrimSpace(*args.ProviderModelID) != "" {
 				filter.ProviderModelID = *args.ProviderModelID
 			}
 
@@ -182,7 +200,7 @@ func RegisterFinanceTools(registry *ToolRegistry, organizationID string, provide
 			// silently skipped just because it did not survive that cut.
 			var providerIDs []string
 			providersOmitted := 0
-			if args.WalletProviderID != nil {
+			if args.WalletProviderID != nil && strings.TrimSpace(*args.WalletProviderID) != "" {
 				providerIDs = []string{*args.WalletProviderID}
 			} else {
 				provisioned, err := providers.ProvisionedProviderIDs(ctx)

@@ -136,7 +136,7 @@ func TestRegistryToolExecutorRejectsOversizedResult(t *testing.T) {
 	registry := NewToolRegistry()
 	err := registry.Register(ToolDescriptor{
 		ID: "test.oversized", Version: "v1", Description: "d",
-		InputSchema: json.RawMessage(`{"type":"object"}`), Access: AccessReadOnly, RequiredRole: CEORoleID,
+		InputSchema: json.RawMessage(`{"type":"object"}`), Access: AccessReadOnly, Effect: ToolEffectRead, RequiredRole: CEORoleID,
 		Limits: ToolLimits{MaxResultBytes: 8, Timeout: time.Second}, DataClass: DataClassInternal,
 	}, func(json.RawMessage) error { return nil },
 		func(context.Context, string, json.RawMessage) (json.RawMessage, error) {
@@ -264,7 +264,7 @@ func TestToolDescriptorValidateRequiresMaxResultBytesRegardlessOfMaxRows(t *test
 	registry := NewToolRegistry()
 	err := registry.Register(ToolDescriptor{
 		ID: "test.unbounded_bytes", Version: "v1", Description: "d",
-		InputSchema: json.RawMessage(`{"type":"object"}`), Access: AccessReadOnly, RequiredRole: CEORoleID,
+		InputSchema: json.RawMessage(`{"type":"object"}`), Access: AccessReadOnly, Effect: ToolEffectRead, RequiredRole: CEORoleID,
 		Limits: ToolLimits{MaxRows: 20, MaxResultBytes: 0, Timeout: time.Second}, DataClass: DataClassInternal,
 	}, func(json.RawMessage) error { return nil },
 		func(context.Context, string, json.RawMessage) (json.RawMessage, error) {
@@ -365,5 +365,32 @@ func TestFinanceGetCostSummaryNeverOmitsANamedProviderBehindTheCap(t *testing.T)
 	}
 	if len(namedView.ByProvider) != 1 || namedView.ByProvider[0].WalletProviderID != excludedByCap || namedView.CallsSettled != 1 {
 		t.Fatalf("named-provider view=%+v want exactly %q's real $1 settled call", namedView, excludedByCap)
+	}
+}
+
+func TestToolDescriptorValidateEffectSafetyClassification(t *testing.T) {
+	registry := NewToolRegistry()
+	// Mismatched: AccessReadOnly with ToolEffectWrite
+	err := registry.Register(ToolDescriptor{
+		ID: "test.mismatch", Version: "v1", Description: "d",
+		InputSchema: json.RawMessage(`{"type":"object"}`), Access: AccessReadOnly, Effect: ToolEffectWrite, RequiredRole: CEORoleID,
+		Limits: ToolLimits{MaxResultBytes: 100, Timeout: time.Second}, DataClass: DataClassInternal,
+	}, func(json.RawMessage) error { return nil }, func(context.Context, string, json.RawMessage) (json.RawMessage, error) { return nil, nil })
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput for mismatched access/effect, got %v", err)
+	}
+
+	// Valid mutating descriptor
+	err = registry.Register(ToolDescriptor{
+		ID: "test.mutating", Version: "v1", Description: "d",
+		InputSchema: json.RawMessage(`{"type":"object"}`), Access: AccessMutating, Effect: ToolEffectWrite, RequiredRole: CEORoleID,
+		Limits: ToolLimits{MaxResultBytes: 100, Timeout: time.Second}, DataClass: DataClassInternal,
+	}, func(json.RawMessage) error { return nil }, func(context.Context, string, json.RawMessage) (json.RawMessage, error) { return nil, nil })
+	if err != nil {
+		t.Fatalf("expected valid mutating descriptor to register, got %v", err)
+	}
+	desc, ok := registry.Lookup("test.mutating")
+	if !ok || !desc.IsMutating() {
+		t.Fatal("expected test.mutating to report IsMutating() == true")
 	}
 }

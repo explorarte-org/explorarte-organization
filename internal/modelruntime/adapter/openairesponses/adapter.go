@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -65,7 +66,7 @@ type responseTool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	Parameters  json.RawMessage `json:"parameters"`
-	Strict      bool            `json:"strict"`
+	Strict      bool            `json:"strict,omitempty"`
 }
 
 type reasoningConfig struct {
@@ -316,7 +317,11 @@ func (a *Adapter) Preflight(ctx context.Context, request modelruntime.ProviderPr
 
 func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRequest) (modelruntime.RawResponse, error) {
 	baseTelemetry := requestTelemetry(request)
-	body, err := encodeRequest(request)
+	mapping, err := buildWireToolMapping(request.ModelInput.Envelope.ToolDefinitions)
+	if err != nil {
+		return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureBeforeRequest, Outcome: a.notSentOutcome("request_encoding", "tool_mapping_failed", baseTelemetry), Cause: err}
+	}
+	body, err := encodeRequestWithMapping(request, mapping)
 	if err != nil {
 		return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureBeforeRequest, Outcome: a.notSentOutcome("request_encoding", "request_encoding_failed", baseTelemetry), Cause: err}
 	}
@@ -429,7 +434,7 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 		ProviderReported:  true,
 	}
 
-	content, tools, err := decodeOutput(decoded.Output)
+	content, tools, err := decodeOutput(decoded.Output, mapping)
 	if err != nil {
 		outcome := responseErrorOutcome(response.StatusCode, providerRequestID, responseHash, "response", "response_content_invalid", false, telemetry)
 		return usageOnlyResponse, &modelruntime.AdapterError{Phase: modelruntime.AdapterFailureResponseReceived, Outcome: outcome, Cause: err}
@@ -497,6 +502,14 @@ func (a *Adapter) Dispatch(ctx context.Context, request modelruntime.CanonicalRe
 }
 
 func encodeRequest(request modelruntime.CanonicalRequest) ([]byte, error) {
+	mapping, err := buildWireToolMapping(request.ModelInput.Envelope.ToolDefinitions)
+	if err != nil {
+		return nil, err
+	}
+	return encodeRequestWithMapping(request, mapping)
+}
+
+func encodeRequestWithMapping(request modelruntime.CanonicalRequest, mapping wireToolMapping) ([]byte, error) {
 	if request.ProviderID != ProviderID || strings.TrimSpace(request.ProviderModelID) == "" || request.MaxOutputTokens <= 0 {
 		return nil, modelruntime.ErrInvalidRequest
 	}
@@ -508,7 +521,7 @@ func encodeRequest(request modelruntime.CanonicalRequest) ([]byte, error) {
 		Store:           false,
 		Stream:          false,
 	}
-	input, tools, err := encodeModelInput(request)
+	input, tools, err := encodeModelInput(request, mapping)
 	if err != nil {
 		return nil, err
 	}
@@ -535,13 +548,27 @@ func encodeRequest(request modelruntime.CanonicalRequest) ([]byte, error) {
 	return json.Marshal(payload)
 }
 
-func encodeModelInput(request modelruntime.CanonicalRequest) ([]responseInputItem, []responseTool, error) {
+func encodeModelInput(request modelruntime.CanonicalRequest, mapping wireToolMapping) ([]responseInputItem, []responseTool, error) {
 	input := request.ModelInput.Envelope
 	if input.SchemaVersion == "" {
 		if len(request.RenderedContext) == 0 {
 			return nil, nil, modelruntime.ErrInvalidRequest
 		}
-		return []responseInputItem{{Type: "message", Role: "user", Content: string(request.RenderedContext)}}, nil, nil
+		tools := make([]responseTool, 0, len(input.ToolDefinitions))
+		for _, source := range input.ToolDefinitions {
+			wireName, ok := mapping.canonicalToWire[source.Name]
+			if !ok {
+				wireName = toWireToolName(source.Name)
+			}
+			tools = append(tools, responseTool{
+				Type:        "function",
+				Name:        wireName,
+				Description: source.Description,
+				Parameters:  append([]byte(nil), source.InputSchema...),
+				Strict:      false,
+			})
+		}
+		return []responseInputItem{{Type: "message", Role: "user", Content: string(request.RenderedContext)}}, tools, nil
 	}
 	if input.SchemaVersion != modelruntime.ModelInputEnvelopeSchemaV1 || input.ProviderContinuationRef != "" {
 		return nil, nil, modelruntime.ErrInvalidRequest
@@ -556,7 +583,17 @@ func encodeModelInput(request modelruntime.CanonicalRequest) ([]responseInputIte
 				items = append(items, responseInputItem{Type: "message", Role: string(message.Role), Content: message.Content})
 			}
 			for _, call := range message.ToolCalls {
-				items = append(items, responseInputItem{Type: "function_call", CallID: call.ID, Name: call.Name, Arguments: append([]byte(nil), call.Arguments...)})
+				rawArgs := bytes.TrimSpace(call.Arguments)
+				if len(rawArgs) > 0 && rawArgs[0] != '"' {
+					if q, err := json.Marshal(string(rawArgs)); err == nil {
+						rawArgs = q
+					}
+				}
+				wireName, ok := mapping.canonicalToWire[call.Name]
+				if !ok {
+					wireName = toWireToolName(call.Name)
+				}
+				items = append(items, responseInputItem{Type: "function_call", CallID: call.ID, Name: wireName, Arguments: rawArgs})
 			}
 		}
 	}
@@ -568,9 +605,52 @@ func encodeModelInput(request modelruntime.CanonicalRequest) ([]responseInputIte
 	}
 	tools := make([]responseTool, 0, len(input.ToolDefinitions))
 	for _, source := range input.ToolDefinitions {
-		tools = append(tools, responseTool{Type: "function", Name: source.Name, Description: source.Description, Parameters: append([]byte(nil), source.InputSchema...), Strict: true})
+		wireName, ok := mapping.canonicalToWire[source.Name]
+		if !ok {
+			wireName = toWireToolName(source.Name)
+		}
+		// Strict is deliberately set to false for function tools: canonical schemas allow
+		// properties to be genuinely omitted when optional. OpenAI strict schema mode requires
+		// all properties in 'properties' to be listed in 'required', which mutates optionality
+		// semantics. Host-side schema validation remains authoritative.
+		tools = append(tools, responseTool{
+			Type:        "function",
+			Name:        wireName,
+			Description: source.Description,
+			Parameters:  append([]byte(nil), source.InputSchema...),
+			Strict:      false,
+		})
 	}
 	return items, tools, nil
+}
+
+func unwrapToolArguments(raw json.RawMessage) ([]byte, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return []byte("{}"), nil
+	}
+	if trimmed[0] == '"' {
+		var unquoted string
+		if err := json.Unmarshal(trimmed, &unquoted); err != nil {
+			return nil, fmt.Errorf("malformed JSON string in tool arguments: %w", err)
+		}
+		trimmed = bytes.TrimSpace([]byte(unquoted))
+		if len(trimmed) == 0 {
+			return []byte("{}"), nil
+		}
+	}
+	var parsed any
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	if err := dec.Decode(&parsed); err != nil {
+		return nil, fmt.Errorf("malformed JSON in tool arguments: %w", err)
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); err == nil {
+		return nil, fmt.Errorf("trailing JSON in tool arguments")
+	} else if !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("invalid tool arguments: %w", err)
+	}
+	return trimmed, nil
 }
 
 // decodeOutput walks the Responses API output array. Only "message" items
@@ -578,7 +658,7 @@ func encodeModelInput(request modelruntime.CanonicalRequest) ([]responseInputIte
 // items are intentionally skipped -- their content is either absent or,
 // with include=reasoning.encrypted_content, opaque ciphertext never meant
 // to be treated as the answer. "function_call" items become tool intents.
-func decodeOutput(items []responseOutput) ([]byte, []modelruntime.RawToolIntent, error) {
+func decodeOutput(items []responseOutput, mapping wireToolMapping) ([]byte, []modelruntime.RawToolIntent, error) {
 	var text strings.Builder
 	tools := make([]modelruntime.RawToolIntent, 0, len(items))
 	for _, item := range items {
@@ -593,7 +673,15 @@ func decodeOutput(items []responseOutput) ([]byte, []modelruntime.RawToolIntent,
 			if strings.TrimSpace(item.Name) == "" {
 				return nil, nil, fmt.Errorf("function_call output item missing name")
 			}
-			tools = append(tools, modelruntime.RawToolIntent{ID: item.CallID, Name: item.Name, Arguments: append([]byte(nil), item.Arguments...)})
+			canonicalName, ok := mapping.wireToCanonical[item.Name]
+			if !ok {
+				return nil, nil, fmt.Errorf("unknown wire tool %q", item.Name)
+			}
+			rawArgs, err := unwrapToolArguments(item.Arguments)
+			if err != nil {
+				return nil, nil, fmt.Errorf("tool %q arguments invalid: %w", canonicalName, err)
+			}
+			tools = append(tools, modelruntime.RawToolIntent{ID: item.CallID, Name: canonicalName, Arguments: rawArgs})
 		case "reasoning":
 			// Deliberately not surfaced as content: see doc comment above.
 		}
@@ -694,4 +782,35 @@ func bound(value string, maximum int) string {
 		return value[:maximum]
 	}
 	return value
+}
+
+var wireToolNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
+
+type wireToolMapping struct {
+	canonicalToWire map[string]string
+	wireToCanonical map[string]string
+}
+
+func toWireToolName(name string) string {
+	return strings.ReplaceAll(name, ".", "__")
+}
+
+func buildWireToolMapping(tools []modelruntime.ModelInputToolDefinition) (wireToolMapping, error) {
+	mapping := wireToolMapping{
+		canonicalToWire: make(map[string]string, len(tools)),
+		wireToCanonical: make(map[string]string, len(tools)),
+	}
+	for _, tool := range tools {
+		canonical := tool.Name
+		wire := toWireToolName(canonical)
+		if !wireToolNamePattern.MatchString(wire) {
+			return wireToolMapping{}, fmt.Errorf("wire tool name %q for canonical tool %q does not match OpenAI pattern ^[a-zA-Z0-9_-]{1,64}$", wire, canonical)
+		}
+		if existing, exists := mapping.wireToCanonical[wire]; exists {
+			return wireToolMapping{}, fmt.Errorf("wire tool name collision: canonical tools %q and %q both map to wire name %q", existing, canonical, wire)
+		}
+		mapping.canonicalToWire[canonical] = wire
+		mapping.wireToCanonical[wire] = canonical
+	}
+	return mapping, nil
 }

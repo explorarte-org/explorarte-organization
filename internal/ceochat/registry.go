@@ -11,12 +11,21 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/executionharness"
 )
 
-// AccessMode is the only access classification this round introduces:
-// every capability registered here must declare it is read-only, and the
-// registry refuses anything else (see Register).
+// AccessMode classifies whether a capability is read-only or mutative.
 type AccessMode string
 
-const AccessReadOnly AccessMode = "read_only"
+const (
+	AccessReadOnly AccessMode = "read_only"
+	AccessMutating AccessMode = "mutating"
+)
+
+// ToolEffect classifies the effect of a capability.
+type ToolEffect string
+
+const (
+	ToolEffectRead  ToolEffect = "read"
+	ToolEffectWrite ToolEffect = "write"
+)
 
 // DataClassification is a coarse, host-owned label for what kind of data a
 // capability's result carries. It exists so a future round can add
@@ -52,11 +61,16 @@ type ToolDescriptor struct {
 	OutputSchema json.RawMessage
 
 	Access       AccessMode
+	Effect       ToolEffect
 	RequiredRole string
 
 	Limits ToolLimits
 
 	DataClass DataClassification
+}
+
+func (d ToolDescriptor) IsMutating() bool {
+	return d.Access == AccessMutating || d.Effect == ToolEffectWrite
 }
 
 func (d ToolDescriptor) validate() error {
@@ -69,11 +83,14 @@ func (d ToolDescriptor) validate() error {
 		return fmt.Errorf("%w: tool %q requires a description", ErrInvalidInput, d.ID)
 	case len(d.InputSchema) == 0:
 		return fmt.Errorf("%w: tool %q requires an input schema", ErrInvalidInput, d.ID)
-	case d.Access != AccessReadOnly:
-		// This round registers no other access mode. A future round that
-		// wants write/action capabilities must extend this deliberately,
-		// not by a descriptor quietly carrying a different value through.
-		return fmt.Errorf("%w: tool %q must declare access=read_only", ErrInvalidInput, d.ID)
+	case d.Access != AccessReadOnly && d.Access != AccessMutating:
+		return fmt.Errorf("%w: tool %q must declare access=read_only or access=mutating", ErrInvalidInput, d.ID)
+	case d.Effect != ToolEffectRead && d.Effect != ToolEffectWrite:
+		return fmt.Errorf("%w: tool %q must declare effect=read or effect=write", ErrInvalidInput, d.ID)
+	case d.Access == AccessReadOnly && d.Effect != ToolEffectRead:
+		return fmt.Errorf("%w: tool %q with access=read_only must declare effect=read", ErrInvalidInput, d.ID)
+	case d.Access == AccessMutating && d.Effect != ToolEffectWrite:
+		return fmt.Errorf("%w: tool %q with access=mutating must declare effect=write", ErrInvalidInput, d.ID)
 	case strings.TrimSpace(d.RequiredRole) == "":
 		return fmt.Errorf("%w: tool %q requires an authorized role", ErrInvalidInput, d.ID)
 	case d.Limits.MaxResultBytes <= 0:
@@ -245,7 +262,11 @@ func (e RegistryToolExecutor) Execute(ctx context.Context, identity executionhar
 	if timeout <= 0 {
 		timeout = defaultToolTimeout
 	}
-	callCtx, cancel := context.WithTimeout(ctx, timeout)
+	callCtx := WithToolCallContext(ctx, ToolCallContext{
+		RunIdentity: identity,
+		ToolCallID:  request.ToolCallID,
+	})
+	callCtx, cancel := context.WithTimeout(callCtx, timeout)
 	defer cancel()
 	result, err := tool.Handle(callCtx, identity.RoleID, request.Arguments)
 	if err != nil {
@@ -260,3 +281,42 @@ func (e RegistryToolExecutor) Execute(ctx context.Context, identity executionhar
 var _ executionharness.ToolExecutor = RegistryToolExecutor{}
 
 const defaultToolTimeout = 5 * time.Second
+
+type turnContextKey struct{}
+type toolCallContextKey struct{}
+
+// TurnContext carries the host-authoritative context of the active chat turn.
+type TurnContext struct {
+	OrganizationID         string
+	OrganizationRevisionID int64
+	ConversationID         int64
+	OwnerRoleID            string
+	OwnerMessageID         int64
+	TaskID                 int64
+	AttemptID              int64
+	ActorRoleID            string
+}
+
+func WithTurnContext(ctx context.Context, tc TurnContext) context.Context {
+	return context.WithValue(ctx, turnContextKey{}, tc)
+}
+
+func TurnContextFrom(ctx context.Context) (TurnContext, bool) {
+	tc, ok := ctx.Value(turnContextKey{}).(TurnContext)
+	return tc, ok
+}
+
+// ToolCallContext carries execution run identity and tool call ID.
+type ToolCallContext struct {
+	RunIdentity executionharness.RunIdentity
+	ToolCallID  string
+}
+
+func WithToolCallContext(ctx context.Context, tcc ToolCallContext) context.Context {
+	return context.WithValue(ctx, toolCallContextKey{}, tcc)
+}
+
+func ToolCallContextFrom(ctx context.Context) (ToolCallContext, bool) {
+	tcc, ok := ctx.Value(toolCallContextKey{}).(ToolCallContext)
+	return tcc, ok
+}
