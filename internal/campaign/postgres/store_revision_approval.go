@@ -158,6 +158,17 @@ func (s *Store) CreateOwnerApproval(ctx context.Context, cmd campaign.CreateOwne
 		return campaign.CampaignOwnerApproval{}, false, fmt.Errorf("marshal execution budget: %w", err)
 	}
 
+	// ON CONFLICT DO NOTHING (no explicit target) suppresses a violation of
+	// EITHER of this table's two unique constraints -- uq_approval_org_key
+	// (organization_id, idempotency_key), the same turn's own retry, and
+	// uq_approval_exact_tuple (organization_id, proposal_canonical_hash,
+	// financial_review_canonical_hash), the owner repeating an approval for
+	// the same tuple from a DIFFERENT turn (a genuinely new idempotency
+	// key) -- and returns no row for either, rather than letting either
+	// raise a raw 23505 out of this function. A row IS returned if and
+	// only if this call's own INSERT actually committed a new row: that,
+	// not field-equality after the fact (which a fresh insert would also
+	// trivially satisfy), is what "reused" means.
 	row := s.pool.QueryRow(ctx, `
 		INSERT INTO campaign_owner_approvals (
 			organization_id, proposal_id, proposal_canonical_hash,
@@ -168,8 +179,7 @@ func (s *Store) CreateOwnerApproval(ctx context.Context, cmd campaign.CreateOwne
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
 			'approved_for_execution', $11, $12, $13
 		)
-		ON CONFLICT (organization_id, idempotency_key) DO UPDATE
-		SET organization_id = campaign_owner_approvals.organization_id
+		ON CONFLICT DO NOTHING
 		RETURNING id, organization_id, proposal_id, proposal_canonical_hash,
 		          financial_review_id, financial_review_canonical_hash,
 		          approved_by_role_id, conversation_id, message_id, turn_task_id, tool_call_id,
@@ -180,22 +190,40 @@ func (s *Store) CreateOwnerApproval(ctx context.Context, cmd campaign.CreateOwne
 		budgetJSON, cmd.IdempotencyKey, cmd.CanonicalHash,
 	)
 
-	approval, err := scanApproval(row)
-	if err != nil {
+	inserted, err := scanApproval(row)
+	if err == nil {
+		return inserted, false, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return campaign.CampaignOwnerApproval{}, false, fmt.Errorf("insert approval: %w", err)
 	}
 
-	// Detect if this was an idempotent replay or conflict.
-	if approval.CanonicalHash != cmd.CanonicalHash {
+	// No row inserted: something already conflicted. Load whichever
+	// existing row actually caused it -- the same idempotency key first
+	// (the more specific, same-turn-retry case), falling back to the
+	// exact proposal/review tuple (the cross-turn convergence case) --
+	// then decide reuse vs. conflict purely from that existing row's own
+	// canonical hash, never from the input we just tried to insert.
+	existingRow := s.pool.QueryRow(ctx, `
+		SELECT id, organization_id, proposal_id, proposal_canonical_hash,
+		       financial_review_id, financial_review_canonical_hash,
+		       approved_by_role_id, conversation_id, message_id, turn_task_id, tool_call_id,
+		       status, execution_budget, idempotency_key, canonical_hash, created_at
+		FROM campaign_owner_approvals
+		WHERE organization_id = $1
+		  AND (idempotency_key = $2
+		       OR (proposal_canonical_hash = $3 AND financial_review_canonical_hash = $4))
+		ORDER BY (idempotency_key = $2) DESC, id ASC
+		LIMIT 1
+	`, cmd.OrganizationID, cmd.IdempotencyKey, cmd.ProposalCanonicalHash, cmd.FinancialReviewCanonicalHash)
+	existing, err := scanApproval(existingRow)
+	if err != nil {
+		return campaign.CampaignOwnerApproval{}, false, fmt.Errorf("load conflicting approval: %w", err)
+	}
+	if existing.CanonicalHash != cmd.CanonicalHash {
 		return campaign.CampaignOwnerApproval{}, false, campaign.ErrApprovalConflict
 	}
-
-	// Determine if reused by checking if canonical hash matched existing.
-	reused := approval.ProposalCanonicalHash == cmd.ProposalCanonicalHash &&
-		approval.FinancialReviewCanonicalHash == cmd.FinancialReviewCanonicalHash &&
-		approval.CanonicalHash == cmd.CanonicalHash
-
-	return approval, reused && approval.ID > 0, nil
+	return existing, true, nil
 }
 
 // GetOwnerApproval retrieves an owner approval by ID.

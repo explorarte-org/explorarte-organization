@@ -346,9 +346,9 @@ func TestCanonicalCampaignPromotionToExecutive(t *testing.T) {
 
 	var realExecutive *executive.Orchestrator
 	var executiveTasks *tasks.Service
-	service, store, cleanup := newCEOChatCanonicalE2EFixtureWithStore(t, adapter, func(s *platformpostgres.Store) []any {
+	service, store, cleanup := newCEOChatCanonicalE2EFixtureWithStore(t, adapter, func(s *platformpostgres.Store) []ceochatbootstrap.OpenOption {
 		realExecutive, executiveTasks = buildRealExecutiveOrchestrator(t, s, chatTestOrganization)
-		return []any{ceochatbootstrap.WithExecutiveSubmitter(realExecutive)}
+		return []ceochatbootstrap.OpenOption{ceochatbootstrap.WithExecutiveSubmitter(realExecutive)}
 	})
 	defer cleanup()
 
@@ -556,6 +556,45 @@ func TestCanonicalCampaignPromotionToExecutive(t *testing.T) {
 		t.Fatalf("approval approved_by_role_id = %q, want empresa/human (from trusted turn context)", apprProj.ApprovedByRoleID)
 	}
 	finalApprovalID := apprProj.ApprovalID
+
+	// 3h. CEO_CONVERSATIONAL_FULL_STACK_PREMERGE_CLOSURE_V1's CANONICAL E2E
+	// REGRESSION: the owner repeats the approval itself ("Apruébala
+	// nuevamente.") in a genuinely new turn -- a new idempotency key, a
+	// new tool_call_id, the exact same proposal/review tuple. This must
+	// converge on the SAME durable approval (BLOCKER 2's fix, exercised
+	// here through the real tool and a real conversational turn, not just
+	// the store directly) with zero duplicate rows and no raw SQL error
+	// surfacing as a turn failure -- and, just as importantly, it must NOT
+	// itself promote anything: re-approving is not an execution intent.
+	adapter.setNextTool("campaign.approve_for_execution", json.RawMessage(fmt.Sprintf(`{"proposal_id": %d, "financial_review_id": %d}`, reviseProj.ProposalID, rev2.ID)))
+	sendReapprove, err := service.Send(ctx, ceochat.SendRequest{
+		ConversationID: conversation.ID, ActorRoleID: "empresa/human",
+		IdempotencyKey: "turn-canon-reapprove", Content: "Apruébala nuevamente.",
+	})
+	if err != nil || sendReapprove.Outcome != ceochat.RunOutcomeCompleted {
+		diagnoseCanonicalTurn(t, ctx, store, "reapprove", sendReapprove, err)
+	}
+	var reapprProj ceochat.OwnerApprovalResultProjection
+	if err := json.Unmarshal(adapter.drainLastResult(t), &reapprProj); err != nil {
+		t.Fatalf("unmarshal repeated campaign.approve_for_execution result: %v", err)
+	}
+	if reapprProj.ApprovalID != finalApprovalID {
+		t.Fatalf("repeated approval ID = %d, want %d (same durable approval)", reapprProj.ApprovalID, finalApprovalID)
+	}
+	var approvalCountAfterReapprove int
+	if err := store.Pool().QueryRow(ctx, "SELECT count(*) FROM campaign_owner_approvals WHERE organization_id=$1 AND proposal_id=$2", chatTestOrganization, reviseProj.ProposalID).Scan(&approvalCountAfterReapprove); err != nil {
+		t.Fatalf("count approvals after reapprove: %v", err)
+	}
+	if approvalCountAfterReapprove != 1 {
+		t.Errorf("approval rows after repeated approval = %d, want exactly 1 (no duplicate)", approvalCountAfterReapprove)
+	}
+	var promotionCountBeforePromote int
+	if err := store.Pool().QueryRow(ctx, "SELECT count(*) FROM campaign_promotions WHERE organization_id=$1", chatTestOrganization).Scan(&promotionCountBeforePromote); err != nil {
+		t.Fatalf("count promotions after reapprove: %v", err)
+	}
+	if promotionCountBeforePromote != 0 {
+		t.Errorf("promotion count after re-approval (before any explicit execution intent) = %d, want 0 -- re-approving must never itself promote", promotionCountBeforePromote)
+	}
 
 	// Point adapter at the real, conversationally-produced approval for the promotion turn
 	adapter.setNextTool("campaign.promote_to_executive", json.RawMessage(fmt.Sprintf(`{"owner_approval_id": %d}`, finalApprovalID)))
@@ -801,9 +840,9 @@ func TestCanonicalCampaignInjectedTextNeverEscalatesAuthority(t *testing.T) {
 	adapter := &ceochatPromotionE2EAdapter{}
 
 	var realExecutive *executive.Orchestrator
-	service, store, cleanup := newCEOChatCanonicalE2EFixtureWithStore(t, adapter, func(s *platformpostgres.Store) []any {
+	service, store, cleanup := newCEOChatCanonicalE2EFixtureWithStore(t, adapter, func(s *platformpostgres.Store) []ceochatbootstrap.OpenOption {
 		realExecutive, _ = buildRealExecutiveOrchestrator(t, s, chatTestOrganization)
-		return []any{ceochatbootstrap.WithExecutiveSubmitter(realExecutive)}
+		return []ceochatbootstrap.OpenOption{ceochatbootstrap.WithExecutiveSubmitter(realExecutive)}
 	})
 	defer cleanup()
 	ctx := context.Background()
