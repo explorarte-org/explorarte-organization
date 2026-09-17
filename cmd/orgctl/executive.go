@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
-	"sync"
 	"syscall"
 	"time"
 
@@ -304,22 +303,16 @@ func runExecutiveWorker(args []string, stdout, stderr io.Writer) int {
 	// The autonomous campaign driver and the finance review worker run as
 	// two goroutines of the SAME process, sharing runtime.Models (one
 	// Model Runtime, opened once above) -- not two worker processes, not
-	// a second composition root. Either one returning a real error stops
-	// the whole worker: a worker process silently missing half its job
-	// forever is worse than a visible, restart-recoverable crash (this
+	// a second composition root. Neither is optional: superviseExecutiveWorkers
+	// fails the whole process fast if either one terminates unexpectedly
+	// (error, or even a premature "successful" nil) while ctx is still
+	// active, cancelling the sibling immediately rather than leaving it
+	// running alone forever -- a worker process silently missing half its
+	// job is worse than a visible, restart-recoverable crash (this
 	// process already runs under Restart=always).
-	var wg sync.WaitGroup
-	errCh := make(chan error, 2)
-	wg.Add(2)
-	go func() { defer wg.Done(); errCh <- drv.Run(ctx) }()
-	go func() { defer wg.Done(); errCh <- finWorker.Run(ctx) }()
-	wg.Wait()
-	close(errCh)
-	for runErr := range errCh {
-		if runErr != nil {
-			fmt.Fprintf(stderr, "executive worker: %v\n", runErr)
-			return exitInternal
-		}
+	if runErr := superviseExecutiveWorkers(ctx, drv.Run, finWorker.Run); runErr != nil {
+		fmt.Fprintf(stderr, "executive worker: %v\n", runErr)
+		return exitInternal
 	}
 	fmt.Fprintln(stdout, "executive worker stopped")
 	return exitOK
