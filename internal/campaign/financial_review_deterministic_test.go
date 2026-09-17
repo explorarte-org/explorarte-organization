@@ -185,6 +185,26 @@ func (s *memCampaignStore) GetLatestReviewRequestForProposal(ctx context.Context
 	return latest, nil
 }
 
+func (s *memCampaignStore) GetReviewRequestByTaskID(ctx context.Context, organizationID string, taskID int64) (campaign.CampaignFinancialReviewRequest, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var latest campaign.CampaignFinancialReviewRequest
+	found := false
+	for _, r := range s.reviewRequests {
+		if r.OrganizationID == organizationID && r.ReviewTaskID == taskID {
+			if !found || r.ID > latest.ID {
+				latest = r
+				found = true
+			}
+		}
+	}
+	if !found {
+		return campaign.CampaignFinancialReviewRequest{}, campaign.ErrReviewRequestNotFound
+	}
+	return latest, nil
+}
+
 func (s *memCampaignStore) RecordFinancialReview(ctx context.Context, cmd campaign.RecordFinancialReviewCommand) (campaign.CampaignFinancialReview, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

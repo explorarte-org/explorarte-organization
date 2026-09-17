@@ -10,18 +10,30 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/Mireuz13/explorarte-organization/internal/authorization"
+	authorizationpostgres "github.com/Mireuz13/explorarte-organization/internal/authorization/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/campaign"
+	"github.com/Mireuz13/explorarte-organization/internal/campaign/financeworker"
+	campaignpostgres "github.com/Mireuz13/explorarte-organization/internal/campaign/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/config"
+	"github.com/Mireuz13/explorarte-organization/internal/executionharness"
+	"github.com/Mireuz13/explorarte-organization/internal/executionharness/modelruntimeadapter"
+	executionharnesspostgres "github.com/Mireuz13/explorarte-organization/internal/executionharness/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/executive"
 	executivebootstrap "github.com/Mireuz13/explorarte-organization/internal/executive/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/executive/driver"
 	"github.com/Mireuz13/explorarte-organization/internal/executive/runtimeadapter"
+	"github.com/Mireuz13/explorarte-organization/internal/modeldispatch"
 	"github.com/Mireuz13/explorarte-organization/internal/modelpricing"
 	modelruntimepostgres "github.com/Mireuz13/explorarte-organization/internal/modelruntime/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
 	platformpostgres "github.com/Mireuz13/explorarte-organization/internal/platform/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/tasks"
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 )
 
@@ -281,13 +293,182 @@ func runExecutiveWorker(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "create executive worker: %v\n", err)
 		return exitInternal
 	}
-	fmt.Fprintln(stdout, "executive worker started")
-	if err = drv.Run(ctx); err != nil {
-		fmt.Fprintf(stderr, "executive worker: %v\n", err)
+
+	finWorker, err := buildFinanceWorker(ctx, cfg, store, runtime, stderr)
+	if err != nil {
+		fmt.Fprintf(stderr, "create finance worker: %v\n", err)
 		return exitInternal
+	}
+
+	fmt.Fprintln(stdout, "executive worker started")
+	// The autonomous campaign driver and the finance review worker run as
+	// two goroutines of the SAME process, sharing runtime.Models (one
+	// Model Runtime, opened once above) -- not two worker processes, not
+	// a second composition root. Either one returning a real error stops
+	// the whole worker: a worker process silently missing half its job
+	// forever is worse than a visible, restart-recoverable crash (this
+	// process already runs under Restart=always).
+	var wg sync.WaitGroup
+	errCh := make(chan error, 2)
+	wg.Add(2)
+	go func() { defer wg.Done(); errCh <- drv.Run(ctx) }()
+	go func() { defer wg.Done(); errCh <- finWorker.Run(ctx) }()
+	wg.Wait()
+	close(errCh)
+	for runErr := range errCh {
+		if runErr != nil {
+			fmt.Fprintf(stderr, "executive worker: %v\n", runErr)
+			return exitInternal
+		}
 	}
 	fmt.Fprintln(stdout, "executive worker stopped")
 	return exitOK
+}
+
+// financeTaskCoordinator adapts *tasks.Service to campaign.TaskCoordinator.
+// *tasks.Service already implements every method that interface needs
+// (CreateTask, ClaimTaskByID, StartAttempt, RecordAttemptResult,
+// FinalizeTask) with an identical signature except GetTask, which returns
+// the richer tasks.TaskDetail rather than the bare tasks.Task
+// campaign.TaskCoordinator expects. Duplicated from the identical adapter
+// in internal/ceochat/bootstrap/runtime.go (unexported there, in a
+// different package) rather than shared -- the same precedent this
+// codebase already established for this exact shape.
+type financeTaskCoordinator struct {
+	*tasks.Service
+}
+
+func (f financeTaskCoordinator) GetTask(ctx context.Context, taskID int64) (tasks.Task, error) {
+	detail, err := f.Service.GetTask(ctx, taskID)
+	if err != nil {
+		return tasks.Task{}, err
+	}
+	return detail.Task, nil
+}
+
+// financeDispatchProvisioner adapts
+// *modeldispatch.AuthorizedAttemptProvisioner's (CreateAssignmentResult,
+// error) return to the bare error campaign.DispatchProvisioner expects --
+// the finance worker only needs to know whether it may proceed to the
+// Harness, never the assignment's own identity or quota. Same shape as
+// ceochat's own dispatchProvisioner adapter.
+type financeDispatchProvisioner struct {
+	provisioner *modeldispatch.AuthorizedAttemptProvisioner
+}
+
+func (d financeDispatchProvisioner) EnsureAuthorizedAssignmentForRunningAttempt(ctx context.Context, taskID, attemptID int64) error {
+	_, err := d.provisioner.EnsureAuthorizedAssignmentForRunningAttempt(ctx, taskID, attemptID)
+	return err
+}
+
+// buildFinanceWorker wires the autonomous consumer of
+// campaign.financial_review tasks into this SAME worker process,
+// reusing the Model Runtime, task service, and database connection
+// executivebootstrap.Open already opened above -- never a second
+// modelbootstrap.Open call. This is the missing link between
+// campaign.request_financial_review (which only ever creates a task,
+// deliberately never blocking a CEO chat turn on model completion) and
+// FinanceService.ExecuteReviewTask (fully built, crash-safe, race-safe,
+// but with zero production callers before this).
+func buildFinanceWorker(ctx context.Context, cfg config.Config, store *platformpostgres.Store, runtime *executivebootstrap.Runtime, stderr io.Writer) (*financeworker.Worker, error) {
+	campaignStore, err := campaignpostgres.New(store)
+	if err != nil {
+		return nil, fmt.Errorf("open campaign store: %w", err)
+	}
+	authorizationStore, err := authorizationpostgres.New(store)
+	if err != nil {
+		return nil, fmt.Errorf("open authorization store: %w", err)
+	}
+	authorizerPolicy, err := authorization.NewWithPolicyReader(authorizationStore, cfg.Tasks.OrganizationID, cfg.Registry.CanonicalDir)
+	if err != nil {
+		return nil, fmt.Errorf("open capability authorizer: %w", err)
+	}
+	registryRepository, err := registry.NewPostgresRepository(store)
+	if err != nil {
+		return nil, fmt.Errorf("open registry repository: %w", err)
+	}
+	// Reviewer role resolution is canonical, not a hardcoded string:
+	// DefaultReviewerRoleResolver searches negocio's own roles for one
+	// holding campaign.financial_review.perform, falling back to the
+	// canonical constant only if the authorizer itself confirms that role
+	// still holds the capability.
+	roleResolver := campaign.DefaultReviewerRoleResolver{Registry: registryRepository, Authorizer: authorizerPolicy}
+	revision, err := registryRepository.GetCurrentRevision(ctx, cfg.Tasks.OrganizationID)
+	if err != nil || revision == nil {
+		return nil, fmt.Errorf("read current organization revision: revision=%+v err=%w", revision, err)
+	}
+	reviewerRoleID, err := roleResolver.ResolveReviewerRole(ctx, cfg.Tasks.OrganizationID, revision.ID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve canonical finance reviewer role: %w", err)
+	}
+
+	harnessAuthority, err := runtime.Models.NewHarnessAuthority()
+	if err != nil {
+		return nil, fmt.Errorf("create harness authority: %w", err)
+	}
+	harnessHistory, err := executionharnesspostgres.New(store, cfg.Tasks.OrganizationID)
+	if err != nil {
+		return nil, fmt.Errorf("create harness history store: %w", err)
+	}
+	// Finance performs exactly one bounded model review per task (the
+	// Harness spec itself pins MaxTurns=1) -- the provisioner's own
+	// default MaxInvocations=1 is left untouched, never overridden the
+	// way ceochat overrides it to 8 for its own multi-turn conversation
+	// shape.
+	financeAssignments, err := runtime.Models.Dispatcher.NewAuthorizedAttemptProvisioner(runtime.Models.Config.ExecutionPrincipalKey)
+	if err != nil {
+		return nil, fmt.Errorf("create finance dispatch provisioner: %w", err)
+	}
+	// The role-bound principal for the finance reviewer role -- never
+	// empresa/ceo, empresa/human, or a generic technical principal
+	// presented as Finance. The SAME identity holds the task lease, owns
+	// the dispatch assignment, and executes the Harness run: it is
+	// threaded through once here as HolderPrincipalID, and
+	// ExecuteReviewTask itself reuses it for all three.
+	roleBoundResolver, err := runtimeadapter.NewRoleBoundPrincipalResolver(runtime.Models.Dispatcher.Store, cfg.Tasks.OrganizationID)
+	if err != nil {
+		return nil, fmt.Errorf("create role-bound principal resolver: %w", err)
+	}
+	financePrincipal, err := roleBoundResolver.Resolve(ctx, reviewerRoleID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve finance role-bound principal: %w", err)
+	}
+	holderPrincipalID := strconv.FormatInt(financePrincipal.ID, 10)
+
+	financeService, err := campaign.NewFinanceService(campaign.FinanceServiceConfig{
+		OrganizationID:  cfg.Tasks.OrganizationID,
+		Store:           campaignStore,
+		Tasks:           financeTaskCoordinator{runtime.Tasks},
+		Assignments:     financeDispatchProvisioner{financeAssignments},
+		Authorizer:      authorizerPolicy,
+		RoleResolver:    roleResolver,
+		Authority:       harnessAuthority,
+		HarnessHistory:  harnessHistory,
+		DescriptorStore: harnessHistory,
+		NewModelExecutor: func(execConfig modelruntimeadapter.Config) (executionharness.ModelExecutor, error) {
+			return runtime.Models.NewHarnessModelExecutor(execConfig)
+		},
+		WorkerID:          "executive-worker-finance",
+		HolderPrincipalID: holderPrincipalID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create finance service: %w", err)
+	}
+
+	discovery := financeworker.DiscoveryTaskSource{
+		Service: runtime.Tasks, OrganizationID: cfg.Tasks.OrganizationID, ReviewerRoleID: reviewerRoleID,
+	}
+	workerCfg := financeworker.DefaultConfig(cfg.Tasks.OrganizationID)
+	workerCfg.WorkerID = "executive-worker-finance"
+	workerCfg.HolderPrincipalID = holderPrincipalID
+
+	return financeworker.NewWorker(discovery, campaignStore, financeService, workerCfg,
+		financeworker.WithObserver(func(taskID int64, classification financeworker.ResultClassification, err error) {
+			if err != nil && classification != financeworker.ResultBusy {
+				fmt.Fprintf(stderr, "executive worker: finance task %d [%s]: %v\n", taskID, classification, err)
+			}
+		}),
+	)
 }
 
 func readExecutiveGoal(path string) (executive.OwnerGoal, error) {

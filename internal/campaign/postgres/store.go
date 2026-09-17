@@ -334,6 +334,41 @@ func (s *Store) GetLatestReviewRequestForProposal(ctx context.Context, organizat
 	return req, err
 }
 
+// GetReviewRequestByTaskID resolves the review request a finance review Task
+// Engine task belongs to. This is the canonical, index-backed lookup the
+// autonomous finance worker uses to go from a discovered
+// campaign.financial_review task ID to the ReviewRequestID
+// FinanceService.ExecuteReviewTask requires -- never inferred from the
+// task's own title or instructions text, which are display-only.
+// RequestReview creates the task before creating the request that
+// references it (see RequestReview's ordering), so a given task_id maps to
+// at most one request; ORDER BY id DESC LIMIT 1 is defensive, not required
+// by any observed multiplicity.
+func (s *Store) GetReviewRequestByTaskID(ctx context.Context, organizationID string, taskID int64) (campaign.CampaignFinancialReviewRequest, error) {
+	if strings.TrimSpace(organizationID) == "" {
+		return campaign.CampaignFinancialReviewRequest{}, fmt.Errorf("%w: organization ID is required", campaign.ErrInvalidInput)
+	}
+	if taskID <= 0 {
+		return campaign.CampaignFinancialReviewRequest{}, fmt.Errorf("%w: task ID must be positive", campaign.ErrInvalidInput)
+	}
+	row := s.pool.QueryRow(ctx, `
+		SELECT id, organization_id, proposal_id, proposal_canonical_hash,
+		       requested_by_role_id, requested_from_conversation_id,
+		       requested_from_message_id, requested_from_task_id,
+		       reviewer_role_id, review_task_id, status, idempotency_key,
+		       created_at, updated_at
+		FROM campaign_financial_review_requests
+		WHERE organization_id = $1 AND review_task_id = $2
+		ORDER BY id DESC
+		LIMIT 1`, organizationID, taskID)
+
+	req, err := scanReviewRequest(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return campaign.CampaignFinancialReviewRequest{}, campaign.ErrReviewRequestNotFound
+	}
+	return req, err
+}
+
 // RecordFinancialReview idempotently stores an immutable financial review.
 func (s *Store) RecordFinancialReview(ctx context.Context, cmd campaign.RecordFinancialReviewCommand) (campaign.CampaignFinancialReview, bool, error) {
 	if err := validateRecordFinancialReviewCommand(cmd); err != nil {

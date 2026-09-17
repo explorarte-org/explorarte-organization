@@ -32,6 +32,11 @@ type Store interface {
 	// GetLatestReviewRequestForProposal retrieves the latest review request for a proposal.
 	GetLatestReviewRequestForProposal(ctx context.Context, organizationID string, proposalID int64) (CampaignFinancialReviewRequest, error)
 
+	// GetReviewRequestByTaskID resolves the review request owning a
+	// campaign.financial_review Task Engine task -- the canonical
+	// task-ID-to-review-request lookup the autonomous finance worker uses.
+	GetReviewRequestByTaskID(ctx context.Context, organizationID string, taskID int64) (CampaignFinancialReviewRequest, error)
+
 	// RecordFinancialReview idempotently records an immutable financial review.
 	RecordFinancialReview(ctx context.Context, cmd RecordFinancialReviewCommand) (review CampaignFinancialReview, reused bool, err error)
 
