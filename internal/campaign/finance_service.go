@@ -429,7 +429,7 @@ func (s *FinanceService) ExecuteReviewTask(ctx context.Context, params ExecuteRe
 	if params.MockOutput != nil {
 		output = *params.MockOutput
 	} else {
-		output, err = s.runHarnessModel(ctx, claimed, proposal, req)
+		output, err = s.runHarnessModel(ctx, claimed, proposal, req, holderPrincipalID)
 		if err != nil {
 			// Record failure in task engine
 			_, _ = s.cfg.Tasks.RecordAttemptResult(ctx, tasks.RecordAttemptResultCommand{
@@ -525,7 +525,111 @@ func (s *FinanceService) ExecuteReviewTask(ctx context.Context, params ExecuteRe
 	return review, reused, nil
 }
 
-func (s *FinanceService) runHarnessModel(ctx context.Context, claimed tasks.ClaimedTask, proposal CampaignProposal, req CampaignFinancialReviewRequest) (FinanceReviewOutput, error) {
+// validateFinanceHarnessPreconditions fails closed, before any RunSpec is
+// constructed or model invocation attempted, unless the claimed task/attempt
+// is sound enough to run a Finance Harness under: a positive task/attempt
+// id, a real (non-synthesized) lease token, an assignment/organization match
+// against the review request it is executing, durable non-blank
+// correlation/causation on the task itself (PR #223's own lineage fix), and
+// a non-blank execution principal. This never broadens authority -- it only
+// refuses to proceed when the inputs the Harness is about to trust are
+// incomplete, the same fail-closed posture the constructor itself already
+// has for its own dependencies.
+func validateFinanceHarnessPreconditions(claimed tasks.ClaimedTask, proposal CampaignProposal, req CampaignFinancialReviewRequest, holderPrincipalID string) error {
+	if claimed.Task.ID <= 0 {
+		return fmt.Errorf("%w: finance harness precondition: claimed task id must be positive", ErrInvalidInput)
+	}
+	if claimed.Attempt.ID <= 0 {
+		return fmt.Errorf("%w: finance harness precondition: claimed attempt id must be positive", ErrInvalidInput)
+	}
+	if strings.TrimSpace(claimed.LeaseToken) == "" {
+		return fmt.Errorf("%w: finance harness precondition: lease token is blank", ErrInvalidInput)
+	}
+	if claimed.Task.OrganizationID != proposal.OrganizationID {
+		return fmt.Errorf("%w: finance harness precondition: claimed task organization %q does not match proposal organization %q",
+			ErrInvalidInput, claimed.Task.OrganizationID, proposal.OrganizationID)
+	}
+	if claimed.Task.AssignedRoleID != req.ReviewerRoleID {
+		return fmt.Errorf("%w: finance harness precondition: claimed task assigned role %q does not match reviewer role %q",
+			ErrInvalidInput, claimed.Task.AssignedRoleID, req.ReviewerRoleID)
+	}
+	if claimed.Task.CorrelationID == nil || strings.TrimSpace(*claimed.Task.CorrelationID) == "" {
+		return fmt.Errorf("%w: finance harness precondition: claimed task has no correlation", ErrInvalidInput)
+	}
+	if claimed.Task.CausationID == nil || strings.TrimSpace(*claimed.Task.CausationID) == "" {
+		return fmt.Errorf("%w: finance harness precondition: claimed task has no causation", ErrInvalidInput)
+	}
+	if strings.TrimSpace(holderPrincipalID) == "" {
+		return fmt.Errorf("%w: finance harness precondition: holder principal id is blank", ErrInvalidInput)
+	}
+	return nil
+}
+
+// financeRunIdentityPayload is the durable, domain-separated identity a
+// Finance Harness run's RunID is derived from -- no clock, no randomness, no
+// process-local state. The same durable attempt reviewing the same proposal
+// always computes the same RunID, so a re-entry into runHarnessModel for an
+// already-completed run lets the Harness's own history-based replay adopt
+// its durable terminal state instead of invoking the model a second time.
+type financeRunIdentityPayload struct {
+	Namespace             string `json:"namespace"`
+	OrganizationID        string `json:"organization_id"`
+	FinanceTaskID         int64  `json:"finance_task_id"`
+	FinanceAttemptID      int64  `json:"finance_attempt_id"`
+	ReviewRequestID       int64  `json:"review_request_id"`
+	ProposalID            int64  `json:"proposal_id"`
+	ProposalCanonicalHash string `json:"proposal_canonical_hash"`
+	ReviewerRoleID        string `json:"reviewer_role_id"`
+}
+
+func computeFinanceRunID(payload financeRunIdentityPayload) (string, error) {
+	payload.Namespace = "finance-review-run-v1"
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("marshal finance run identity payload: %w", err)
+	}
+	sum := sha256.Sum256(raw)
+	return "finrev-" + hex.EncodeToString(sum[:]), nil
+}
+
+// financeToolCatalog knows no tools: campaign.financial_review reviews are
+// intentionally tool-free (MaxToolCalls=0) -- a model tool intent fails the
+// Harness's own catalog lookup and is denied before any executor is
+// reached. Mirrors internal/executive/runtimeadapter/harness.go's identical
+// executiveToolCatalog for the same reason (a typed, single-turn task with
+// zero tools); duplicated here rather than shared across packages, since
+// this is a hotfix to Finance's own composition, not a Harness framework
+// change.
+type financeToolCatalog struct{}
+
+func (financeToolCatalog) Lookup(context.Context, string) (executionharness.ToolDefinition, bool) {
+	return executionharness.ToolDefinition{}, false
+}
+
+func (financeToolCatalog) ValidateArguments(context.Context, executionharness.ToolDefinition, []byte) error {
+	return errors.New("campaign financial review tasks expose no tools")
+}
+
+// financeToolExecutor exists only to satisfy the Harness constructor's
+// non-nil requirement. If it is ever entered, something upstream stopped
+// denying a tool intent, and failing loudly here is better than silently
+// performing an external side effect Finance was never authorized for.
+type financeToolExecutor struct{}
+
+func (financeToolExecutor) Execute(context.Context, executionharness.RunIdentity, executionharness.ToolRequest) (executionharness.ToolExecutionResult, error) {
+	return executionharness.ToolExecutionResult{}, errors.New("campaign financial review tasks execute no tools")
+}
+
+var (
+	_ executionharness.ToolCatalog  = financeToolCatalog{}
+	_ executionharness.ToolExecutor = financeToolExecutor{}
+)
+
+func (s *FinanceService) runHarnessModel(ctx context.Context, claimed tasks.ClaimedTask, proposal CampaignProposal, req CampaignFinancialReviewRequest, holderPrincipalID string) (FinanceReviewOutput, error) {
+	if err := validateFinanceHarnessPreconditions(claimed, proposal, req, holderPrincipalID); err != nil {
+		return FinanceReviewOutput{}, err
+	}
+
 	contractInstructions := renderFinanceContractInstructions()
 
 	proposalData, _ := json.MarshalIndent(proposal, "", "  ")
@@ -536,11 +640,25 @@ Proposal Data:
 
 Perform conservative financial review following instructions.`,
 		proposal.ID, proposal.CanonicalHash, string(proposalData))
+	contentDigest := sha256.Sum256([]byte(promptContent))
 
-	correlationID := fmt.Sprintf("finrev-corr:%d:%d", claimed.Task.ID, claimed.Attempt.ID)
-	causationID := fmt.Sprintf("finrev-cause:%d", req.ID)
-	runHash := sha256.Sum256([]byte(fmt.Sprintf("%d:%d:%d", claimed.Task.ID, claimed.Attempt.ID, time.Now().UnixNano())))
-	runID := hex.EncodeToString(runHash[:16])
+	// CorrelationID/CausationID come from the Finance task's own durable
+	// lineage (PR #223's own fix), never fabricated here: the Harness run
+	// IS that task's execution, not a second provenance namespace.
+	// validateFinanceHarnessPreconditions above already proved both are
+	// non-nil and non-blank.
+	runID, err := computeFinanceRunID(financeRunIdentityPayload{
+		OrganizationID:        proposal.OrganizationID,
+		FinanceTaskID:         claimed.Task.ID,
+		FinanceAttemptID:      claimed.Attempt.ID,
+		ReviewRequestID:       req.ID,
+		ProposalID:            proposal.ID,
+		ProposalCanonicalHash: proposal.CanonicalHash,
+		ReviewerRoleID:        req.ReviewerRoleID,
+	})
+	if err != nil {
+		return FinanceReviewOutput{}, fmt.Errorf("compute finance run id: %w", err)
+	}
 
 	spec := executionharness.RunSpec{
 		Identity: executionharness.RunIdentity{
@@ -548,17 +666,23 @@ Perform conservative financial review following instructions.`,
 			TaskID:               claimed.Task.ID,
 			AttemptID:            claimed.Attempt.ID,
 			RoleID:               req.ReviewerRoleID,
-			ExecutionPrincipalID: s.cfg.HolderPrincipalID,
+			ExecutionPrincipalID: holderPrincipalID,
 			RunID:                runID,
-			CorrelationID:        correlationID,
-			CausationID:          causationID,
+			CorrelationID:        *claimed.Task.CorrelationID,
+			CausationID:          *claimed.Task.CausationID,
 		},
+		LeaseToken: claimed.LeaseToken,
 		Context: executionharness.InitialContext{
 			ID:      fmt.Sprintf("context-finrev-%d", claimed.Task.ID),
 			Version: "v1",
-			Digest:  proposal.CanonicalHash,
+			Digest:  hex.EncodeToString(contentDigest[:]),
 			Content: promptContent,
 		},
+		// No tools. Not an empty list configuration could later fill in:
+		// campaign.financial_review has never allowed a model-selected
+		// tool, and the Harness turns any tool intent under an empty set
+		// into a denial before financeToolExecutor is ever reached.
+		Tools: nil,
 		Policy: executionharness.RunPolicy{
 			MaxTurns:           1,
 			MaxToolCalls:       0,
@@ -569,7 +693,6 @@ Perform conservative financial review following instructions.`,
 
 	var runResult executionharness.RunResult
 	if s.cfg.HarnessRunner != nil {
-		var err error
 		runResult, err = s.cfg.HarnessRunner.Run(ctx, spec)
 		if err != nil {
 			return FinanceReviewOutput{}, fmt.Errorf("harness runner: %w", err)
@@ -586,7 +709,7 @@ Perform conservative financial review following instructions.`,
 		if err != nil {
 			return FinanceReviewOutput{}, fmt.Errorf("build finance model executor: %w", err)
 		}
-		runtime, err := executionharness.NewWithDescriptorStore(s.cfg.Authority, models, nil, nil, s.cfg.HarnessHistory, s.cfg.DescriptorStore)
+		runtime, err := executionharness.NewWithDescriptorStore(s.cfg.Authority, models, financeToolCatalog{}, financeToolExecutor{}, s.cfg.HarnessHistory, s.cfg.DescriptorStore)
 		if err != nil {
 			return FinanceReviewOutput{}, fmt.Errorf("build harness runtime: %w", err)
 		}
