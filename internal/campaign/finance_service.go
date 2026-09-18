@@ -186,6 +186,26 @@ func (s *FinanceService) RequestReview(ctx context.Context, params RequestReview
 		}
 	}
 
+	// 1.5. Load and validate the durable parent task (the active CEO Chat
+	// turn task, host-owned context -- never accepted from model/tool
+	// arguments) so the new Finance task can carry REAL provenance.
+	// modeldispatch.AuthorizedAttemptProvisioner.resolveTrustedRoot walks a
+	// task's causation chain back to a trusted owner root; a Finance task
+	// created without a valid parent to chain onto is provenance nobody can
+	// ever authorize a dispatch for -- exactly the production defect this
+	// validates against, not a new restriction.
+	if params.RequestedFromTaskID <= 0 {
+		return CampaignFinancialReviewRequest{}, tasks.Task{}, false, fmt.Errorf("%w: requested_from_task_id must be positive", ErrInvalidTaskLineage)
+	}
+	parent, err := s.cfg.Tasks.GetTask(ctx, params.RequestedFromTaskID)
+	if err != nil {
+		return CampaignFinancialReviewRequest{}, tasks.Task{}, false, fmt.Errorf("%w: load parent task %d: %v", ErrInvalidTaskLineage, params.RequestedFromTaskID, err)
+	}
+	if err := validateParentTaskLineage(parent, orgID, params.OrganizationRevisionID, params.RequestedByRoleID); err != nil {
+		return CampaignFinancialReviewRequest{}, tasks.Task{}, false, err
+	}
+	parentCorrelation := strings.TrimSpace(*parent.CorrelationID)
+
 	// 2. Load proposal from store
 	proposal, err := s.cfg.Store.GetProposal(ctx, orgID, params.ProposalID)
 	if err != nil {
@@ -222,12 +242,15 @@ Ground your evaluation strictly in available evidence. Do NOT fabricate company 
 		proposal.ID, proposal.CanonicalHash, proposal.Title)
 
 	task, _, err := s.cfg.Tasks.CreateTask(ctx, tasks.CreateRequest{
-		OrganizationID: orgID,
-		TaskClass:      FinancialReviewTaskClass,
-		AssignedRoleID: reviewerRole,
-		Title:          fmt.Sprintf("Financial review for proposal %d: %s", proposal.ID, proposal.Title),
-		Instructions:   taskInstructions,
-		IdempotencyKey: taskKey,
+		OrganizationID:    orgID,
+		RequestedByRoleID: params.RequestedByRoleID,
+		TaskClass:         FinancialReviewTaskClass,
+		AssignedRoleID:    reviewerRole,
+		Title:             fmt.Sprintf("Financial review for proposal %d: %s", proposal.ID, proposal.Title),
+		Instructions:      taskInstructions,
+		IdempotencyKey:    taskKey,
+		CorrelationID:     parentCorrelation,
+		CausationID:       fmt.Sprintf("task:%d", parent.ID),
 	}, "role", params.RequestedByRoleID)
 	if err != nil {
 		return CampaignFinancialReviewRequest{}, tasks.Task{}, false, fmt.Errorf("create finance review task: %w", err)
@@ -260,6 +283,40 @@ Ground your evaluation strictly in available evidence. Do NOT fabricate company 
 	}
 
 	return reviewReq, task, reused, nil
+}
+
+// validateParentTaskLineage fails closed unless parent is sound enough to
+// serve as the originating task for a new child task's provenance:
+// modeldispatch.AuthorizedAttemptProvisioner.resolveTrustedRoot will later
+// walk from the child up through parent.CorrelationID/CausationID to a
+// trusted owner root, so parent must already carry a correlation, belong to
+// the same organization and organization revision as the request, and have
+// been requested by the SAME actor making this request -- never a task
+// requested by someone else, which would let one actor mint a Finance task
+// underneath a stranger's turn.
+//
+// Deliberately NOT checked: parent.AssignedRoleID == requestedByRoleID.
+// The canonical CEO Chat turn task is requested BY the owner but ASSIGNED
+// TO the CEO (RequestedByRoleID=owner, AssignedRoleID=empresa/ceo) -- that
+// mismatch is the normal, correct shape of the one caller this exists for
+// today, not a violation.
+func validateParentTaskLineage(parent tasks.Task, organizationID string, organizationRevisionID int64, requestedByRoleID string) error {
+	if parent.OrganizationID != organizationID {
+		return fmt.Errorf("%w: parent task %d belongs to organization %q, want %q", ErrInvalidTaskLineage, parent.ID, parent.OrganizationID, organizationID)
+	}
+	if parent.OrganizationRevisionID != organizationRevisionID {
+		return fmt.Errorf("%w: parent task %d is at organization revision %d, want %d", ErrInvalidTaskLineage, parent.ID, parent.OrganizationRevisionID, organizationRevisionID)
+	}
+	if parent.CorrelationID == nil || strings.TrimSpace(*parent.CorrelationID) == "" {
+		return fmt.Errorf("%w: parent task %d has no correlation", ErrInvalidTaskLineage, parent.ID)
+	}
+	if parent.RequestedByRoleID == nil || strings.TrimSpace(*parent.RequestedByRoleID) == "" {
+		return fmt.Errorf("%w: parent task %d has no requester", ErrInvalidTaskLineage, parent.ID)
+	}
+	if strings.TrimSpace(*parent.RequestedByRoleID) != requestedByRoleID {
+		return fmt.Errorf("%w: parent task %d was requested by %q, not the requesting actor %q", ErrInvalidTaskLineage, parent.ID, *parent.RequestedByRoleID, requestedByRoleID)
+	}
+	return nil
 }
 
 // ExecuteReviewParams specifies the inputs to execute a financial review task.

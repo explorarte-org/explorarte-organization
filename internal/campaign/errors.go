@@ -29,6 +29,17 @@ var (
 
 	// ErrSeparationOfDutiesViolation is returned when proponent and reviewer violate separation of duties.
 	ErrSeparationOfDutiesViolation = errors.New("separation of duties violation")
+
+	// ErrInvalidTaskLineage is returned when the durable parent task named by
+	// RequestedFromTaskID cannot serve as the originating task for a new
+	// child task's provenance -- it is missing, belongs to a different
+	// organization or organization revision, carries no correlation, or was
+	// not requested by the same actor as the child request. A task created
+	// on top of an invalid parent would produce unauthorizable provenance
+	// (modeldispatch.AuthorizedAttemptProvisioner's resolveTrustedRoot has
+	// nothing sound to walk), so this fails closed before any task is ever
+	// created.
+	ErrInvalidTaskLineage = errors.New("invalid parent task lineage")
 )
 
 var (
