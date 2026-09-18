@@ -398,7 +398,12 @@ func TestCanonicalCampaignPromotionToExecutive(t *testing.T) {
 	// this test never calls RecordFinancialReview or ExecuteReviewTask
 	// directly -- it only ticks financeWorker.RunOnce, and the worker
 	// itself discovers, claims, and executes the ready task).
-	financeWorker, financeExecutor, _ := buildTestFinanceWorker(t, store, executiveTasks, chatTestOrganization)
+	financeWorker, financeExecutor, _, restoreFinanceRole := buildTestFinanceWorker(t, store, executiveTasks, chatTestOrganization)
+	// Deferred AFTER (hence LIFO-runs BEFORE) the store-closing cleanup()
+	// above -- see buildTestFinanceWorker's own doc comment: restoring
+	// organization_roles.source_revision_id after the pool closes would
+	// fail and wrongly mark this test as failed.
+	defer restoreFinanceRole()
 
 	//    a) campaign.propose (with a prompt-injection string in a
 	//       requirement description, to prove it stays inert DATA all the

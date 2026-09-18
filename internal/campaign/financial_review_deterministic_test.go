@@ -566,10 +566,46 @@ func (f *fakeTaskCoordinator) CreateTask(ctx context.Context, req tasks.CreateRe
 		IdempotencyKey: req.IdempotencyKey,
 		Status:         tasks.StatusReady,
 	}
+	if req.RequestedByRoleID != "" {
+		t.RequestedByRoleID = &req.RequestedByRoleID
+	}
+	if req.CorrelationID != "" {
+		t.CorrelationID = &req.CorrelationID
+	}
+	if req.CausationID != "" {
+		t.CausationID = &req.CausationID
+	}
 	f.tasks[t.ID] = t
 	f.tasksByKey[req.IdempotencyKey] = t
 	return t, false, nil
 }
+
+// seedParentTask directly inserts a valid, already-durable parent task
+// (the shape of a real CEO Chat turn task: requested by the owner,
+// carrying a correlation) so RequestReview's own lineage validation has a
+// sound parent to chain onto -- never fabricated inside RequestReview
+// itself, exactly like the real ceochat-owned turn task it stands in for.
+func (f *fakeTaskCoordinator) seedParentTask(id int64, organizationID, requestedByRoleID, correlationID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	corr := correlationID
+	reqBy := requestedByRoleID
+	f.tasks[id] = tasks.Task{
+		ID:                id,
+		OrganizationID:    organizationID,
+		RequestedByRoleID: &reqBy,
+		AssignedRoleID:    "empresa/ceo",
+		TaskClass:         "ceochat.turn",
+		Status:            tasks.StatusCompleted,
+		CorrelationID:     &corr,
+		CausationID:       stringPtr("owner:empresa/human"),
+	}
+	if id >= f.nextID {
+		f.nextID = id + 1
+	}
+}
+
+func stringPtr(s string) *string { return &s }
 
 func (f *fakeTaskCoordinator) ClaimTaskByID(ctx context.Context, taskID int64, req tasks.ClaimRequest) (tasks.ClaimedTask, error) {
 	f.mu.Lock()
@@ -676,6 +712,13 @@ func setupDeterministicFixture(t *testing.T) (*memCampaignStore, *fakeTaskCoordi
 		t.Fatalf("NewFinanceService: %v", err)
 	}
 
+	// Every scenario below requests a review from a real, durable parent
+	// CEO Chat turn task at ID 20 -- RequestReview's own lineage
+	// validation now requires one; this fixture seeds exactly the parent
+	// shape a real turn task has (requested by the owner, carrying a
+	// correlation), never something RequestReview fabricates itself.
+	taskCoord.seedParentTask(20, "org-test", "empresa/ceo", "corr:test-fixture")
+
 	return store, taskCoord, finSvc, auth
 }
 
@@ -737,6 +780,21 @@ func TestScenarioA_RequestCreatesExactlyOneFinanceTaskAndRequest(t *testing.T) {
 		t.Errorf("assigned role = %q, want %q", task.AssignedRoleID, campaign.CanonicalFinanceReviewerRoleID)
 	}
 
+	// Lineage: the Finance task must carry REAL provenance derived from
+	// its durable parent (the seeded CEO-turn task 20), never fabricated
+	// or left blank -- exactly the field set production's real
+	// modeldispatch.AuthorizedAttemptProvisioner requires to walk a trusted
+	// root.
+	if task.RequestedByRoleID == nil || *task.RequestedByRoleID != "empresa/ceo" {
+		t.Errorf("finance task RequestedByRoleID = %v, want %q", task.RequestedByRoleID, "empresa/ceo")
+	}
+	if task.CorrelationID == nil || *task.CorrelationID != "corr:test-fixture" {
+		t.Errorf("finance task CorrelationID = %v, want %q", task.CorrelationID, "corr:test-fixture")
+	}
+	if task.CausationID == nil || *task.CausationID != "task:20" {
+		t.Errorf("finance task CausationID = %v, want %q", task.CausationID, "task:20")
+	}
+
 	// Exactly 1 review request created with status pending
 	if req.ProposalID != prop.ID || req.Status != campaign.ReviewRequestStatusPending {
 		t.Errorf("unexpected review request: %+v", req)
@@ -747,8 +805,8 @@ func TestScenarioA_RequestCreatesExactlyOneFinanceTaskAndRequest(t *testing.T) {
 	if len(store.reviewRequests) != 1 {
 		t.Errorf("expected 1 review request, found %d", len(store.reviewRequests))
 	}
-	if len(taskCoord.tasks) != 1 {
-		t.Errorf("expected 1 task in coordinator, found %d", len(taskCoord.tasks))
+	if len(taskCoord.tasks) != 2 { // seeded parent task 20 + the one new Finance task
+		t.Errorf("expected 2 tasks in coordinator (parent + finance), found %d", len(taskCoord.tasks))
 	}
 }
 
@@ -786,8 +844,8 @@ func TestScenarioB_RequestReplayReusesExistingTaskAndRequest(t *testing.T) {
 	if len(store.reviewRequests) != 1 {
 		t.Errorf("expected 1 review request, found %d", len(store.reviewRequests))
 	}
-	if len(taskCoord.tasks) != 1 {
-		t.Errorf("expected 1 task in coordinator, found %d", len(taskCoord.tasks))
+	if len(taskCoord.tasks) != 2 { // seeded parent task 20 + the one Finance task (replay must not create a second)
+		t.Errorf("expected 2 tasks in coordinator (parent + finance), found %d", len(taskCoord.tasks))
 	}
 }
 
@@ -799,9 +857,10 @@ func TestScenarioC_WrongProposalFailsClosed(t *testing.T) {
 
 	// Nonexistent proposal ID
 	_, _, _, err := finSvc.RequestReview(context.Background(), campaign.RequestReviewParams{
-		OrganizationID:    "org-test",
-		ProposalID:        999999,
-		RequestedByRoleID: "empresa/ceo",
+		OrganizationID:      "org-test",
+		ProposalID:          999999,
+		RequestedByRoleID:   "empresa/ceo",
+		RequestedFromTaskID: 20,
 	})
 	if !errors.Is(err, campaign.ErrProposalNotFound) {
 		t.Errorf("expected ErrProposalNotFound for missing ID, got %v", err)
@@ -809,9 +868,10 @@ func TestScenarioC_WrongProposalFailsClosed(t *testing.T) {
 
 	// Cross-org proposal ID
 	_, _, _, err = finSvc.RequestReview(context.Background(), campaign.RequestReviewParams{
-		OrganizationID:    "org-test",
-		ProposalID:        propOtherOrg.ID,
-		RequestedByRoleID: "empresa/ceo",
+		OrganizationID:      "org-test",
+		ProposalID:          propOtherOrg.ID,
+		RequestedByRoleID:   "empresa/ceo",
+		RequestedFromTaskID: 20,
 	})
 	if !errors.Is(err, campaign.ErrProposalNotFound) {
 		t.Errorf("expected ErrProposalNotFound for cross-org proposal, got %v", err)
@@ -820,8 +880,124 @@ func TestScenarioC_WrongProposalFailsClosed(t *testing.T) {
 	if len(store.reviewRequests) != 0 {
 		t.Errorf("expected 0 review requests, got %d", len(store.reviewRequests))
 	}
-	if len(taskCoord.tasks) != 0 {
-		t.Errorf("expected 0 tasks, got %d", len(taskCoord.tasks))
+	if len(taskCoord.tasks) != 1 { // only the seeded parent task 20; no Finance task created
+		t.Errorf("expected 1 task (parent only), got %d", len(taskCoord.tasks))
+	}
+}
+
+// =========================================================================
+// NEGATIVE PARENT LINEAGE TESTS (A-G)
+// =========================================================================
+//
+// Each case proves RequestReview fails closed -- zero Finance tasks and
+// zero review requests created -- when the durable parent task named by
+// RequestedFromTaskID cannot serve as sound provenance for the new
+// Finance task's own correlation/causation chain.
+func TestRequestReview_NegativeParentLineage(t *testing.T) {
+	const orgID = "org-test"
+
+	cases := []struct {
+		name              string
+		requestedTaskID   int64
+		seedParent        func(tc *fakeTaskCoordinator)
+		revisionID        int64
+		requestedByRoleID string
+	}{
+		{
+			name:              "A_zero_task_id",
+			requestedTaskID:   0,
+			seedParent:        func(tc *fakeTaskCoordinator) {},
+			requestedByRoleID: "empresa/ceo",
+		},
+		{
+			name:              "B_parent_not_found",
+			requestedTaskID:   999,
+			seedParent:        func(tc *fakeTaskCoordinator) {}, // never seeded
+			requestedByRoleID: "empresa/ceo",
+		},
+		{
+			name:            "C_parent_organization_mismatch",
+			requestedTaskID: 21,
+			seedParent: func(tc *fakeTaskCoordinator) {
+				tc.seedParentTask(21, "other-org", "empresa/ceo", "corr:c")
+			},
+			requestedByRoleID: "empresa/ceo",
+		},
+		{
+			name:            "D_parent_revision_mismatch",
+			requestedTaskID: 22,
+			seedParent: func(tc *fakeTaskCoordinator) {
+				tc.mu.Lock()
+				corr, reqBy := "corr:d", "empresa/ceo"
+				tc.tasks[22] = tasks.Task{
+					ID: 22, OrganizationID: orgID, OrganizationRevisionID: 5,
+					RequestedByRoleID: &reqBy, CorrelationID: &corr, AssignedRoleID: "empresa/ceo",
+				}
+				tc.mu.Unlock()
+			},
+			revisionID:        0, // params requests revision 0, parent is at revision 5
+			requestedByRoleID: "empresa/ceo",
+		},
+		{
+			name:            "E_parent_correlation_blank",
+			requestedTaskID: 23,
+			seedParent: func(tc *fakeTaskCoordinator) {
+				tc.mu.Lock()
+				reqBy := "empresa/ceo"
+				tc.tasks[23] = tasks.Task{ID: 23, OrganizationID: orgID, RequestedByRoleID: &reqBy, AssignedRoleID: "empresa/ceo"}
+				tc.mu.Unlock()
+			},
+			requestedByRoleID: "empresa/ceo",
+		},
+		{
+			name:            "F_parent_requested_by_blank",
+			requestedTaskID: 24,
+			seedParent: func(tc *fakeTaskCoordinator) {
+				tc.mu.Lock()
+				corr := "corr:f"
+				tc.tasks[24] = tasks.Task{ID: 24, OrganizationID: orgID, CorrelationID: &corr, AssignedRoleID: "empresa/ceo"}
+				tc.mu.Unlock()
+			},
+			requestedByRoleID: "empresa/ceo",
+		},
+		{
+			name:            "G_parent_requested_by_mismatch",
+			requestedTaskID: 25,
+			seedParent: func(tc *fakeTaskCoordinator) {
+				tc.seedParentTask(25, orgID, "empresa/human", "corr:g")
+			},
+			requestedByRoleID: "empresa/ceo", // request claims empresa/ceo, but parent was requested by empresa/human
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store, taskCoord, finSvc, _ := setupDeterministicFixture(t)
+			prop := createTestProposal(t, store, orgID, "Campaign "+tc.name, "Goal")
+			tc.seedParent(taskCoord)
+
+			_, _, _, err := finSvc.RequestReview(context.Background(), campaign.RequestReviewParams{
+				OrganizationID:         orgID,
+				OrganizationRevisionID: tc.revisionID,
+				ProposalID:             prop.ID,
+				RequestedByRoleID:      tc.requestedByRoleID,
+				RequestedFromTaskID:    tc.requestedTaskID,
+				ToolCallID:             "call_" + tc.name,
+			})
+			if !errors.Is(err, campaign.ErrInvalidTaskLineage) {
+				t.Fatalf("expected ErrInvalidTaskLineage, got %v", err)
+			}
+			if len(store.reviewRequests) != 0 {
+				t.Errorf("expected 0 review requests, found %d", len(store.reviewRequests))
+			}
+			// The only tasks present must be whatever the case itself
+			// seeded as the (invalid) parent -- never a new Finance task.
+			for _, task := range taskCoord.tasks {
+				if task.TaskClass == campaign.FinancialReviewTaskClass {
+					t.Errorf("expected 0 finance tasks created, found one: %+v", task)
+				}
+			}
+		})
 	}
 }
 
@@ -832,10 +1008,11 @@ func TestScenarioD_CEOSelfReviewDenied(t *testing.T) {
 	prop := createTestProposal(t, store, "org-test", "Campaign D", "Goal D")
 
 	req, _, _, err := finSvc.RequestReview(context.Background(), campaign.RequestReviewParams{
-		OrganizationID:    "org-test",
-		ProposalID:        prop.ID,
-		RequestedByRoleID: "empresa/ceo",
-		ToolCallID:        "call_d",
+		OrganizationID:      "org-test",
+		ProposalID:          prop.ID,
+		RequestedByRoleID:   "empresa/ceo",
+		RequestedFromTaskID: 20,
+		ToolCallID:          "call_d",
 	})
 	if err != nil {
 		t.Fatalf("RequestReview: %v", err)
@@ -872,10 +1049,11 @@ func TestScenarioE_FinanceReviewRecommendedProducesDurableReview(t *testing.T) {
 	prop := createTestProposal(t, store, "org-test", "Campaign E", "Goal E")
 
 	req, task, _, err := finSvc.RequestReview(context.Background(), campaign.RequestReviewParams{
-		OrganizationID:    "org-test",
-		ProposalID:        prop.ID,
-		RequestedByRoleID: "empresa/ceo",
-		ToolCallID:        "call_e",
+		OrganizationID:      "org-test",
+		ProposalID:          prop.ID,
+		RequestedByRoleID:   "empresa/ceo",
+		RequestedFromTaskID: 20,
+		ToolCallID:          "call_e",
 	})
 	if err != nil {
 		t.Fatalf("RequestReview: %v", err)
@@ -941,10 +1119,11 @@ func TestScenarioF_ChangesRequestedPersistsCorrectionsWithoutMutatingProposal(t 
 	initialHash := prop.CanonicalHash
 
 	req, task, _, err := finSvc.RequestReview(context.Background(), campaign.RequestReviewParams{
-		OrganizationID:    "org-test",
-		ProposalID:        prop.ID,
-		RequestedByRoleID: "empresa/ceo",
-		ToolCallID:        "call_f",
+		OrganizationID:      "org-test",
+		ProposalID:          prop.ID,
+		RequestedByRoleID:   "empresa/ceo",
+		RequestedFromTaskID: 20,
+		ToolCallID:          "call_f",
 	})
 	if err != nil {
 		t.Fatalf("RequestReview: %v", err)
@@ -1000,10 +1179,11 @@ func TestScenarioG_NotRecommendedPersistsReviewWithoutExecution(t *testing.T) {
 	prop := createTestProposal(t, store, "org-test", "Campaign G", "Goal G")
 
 	req, task, _, err := finSvc.RequestReview(context.Background(), campaign.RequestReviewParams{
-		OrganizationID:    "org-test",
-		ProposalID:        prop.ID,
-		RequestedByRoleID: "empresa/ceo",
-		ToolCallID:        "call_g",
+		OrganizationID:      "org-test",
+		ProposalID:          prop.ID,
+		RequestedByRoleID:   "empresa/ceo",
+		RequestedFromTaskID: 20,
+		ToolCallID:          "call_g",
 	})
 	if err != nil {
 		t.Fatalf("RequestReview: %v", err)
@@ -1039,10 +1219,11 @@ func TestScenarioH_InsufficientDataDoesNotFabricateCashPosition(t *testing.T) {
 	prop := createTestProposal(t, store, "org-test", "Campaign H", "Goal H")
 
 	req, task, _, err := finSvc.RequestReview(context.Background(), campaign.RequestReviewParams{
-		OrganizationID:    "org-test",
-		ProposalID:        prop.ID,
-		RequestedByRoleID: "empresa/ceo",
-		ToolCallID:        "call_h",
+		OrganizationID:      "org-test",
+		ProposalID:          prop.ID,
+		RequestedByRoleID:   "empresa/ceo",
+		RequestedFromTaskID: 20,
+		ToolCallID:          "call_h",
 	})
 	if err != nil {
 		t.Fatalf("RequestReview: %v", err)
@@ -1084,10 +1265,11 @@ func TestScenarioI_PromptInjectionSafety(t *testing.T) {
 	prop := createTestProposal(t, store, "org-test", "Campaign Injection", injectionGoal)
 
 	req, task, _, err := finSvc.RequestReview(context.Background(), campaign.RequestReviewParams{
-		OrganizationID:    "org-test",
-		ProposalID:        prop.ID,
-		RequestedByRoleID: "empresa/ceo",
-		ToolCallID:        "call_inj",
+		OrganizationID:      "org-test",
+		ProposalID:          prop.ID,
+		RequestedByRoleID:   "empresa/ceo",
+		RequestedFromTaskID: 20,
+		ToolCallID:          "call_inj",
 	})
 	if err != nil {
 		t.Fatalf("RequestReview: %v", err)
@@ -1122,10 +1304,11 @@ func TestScenarioJ_ReviewReplayReusesExistingReview(t *testing.T) {
 	prop := createTestProposal(t, store, "org-test", "Campaign J", "Goal J")
 
 	req, task, _, err := finSvc.RequestReview(context.Background(), campaign.RequestReviewParams{
-		OrganizationID:    "org-test",
-		ProposalID:        prop.ID,
-		RequestedByRoleID: "empresa/ceo",
-		ToolCallID:        "call_j",
+		OrganizationID:      "org-test",
+		ProposalID:          prop.ID,
+		RequestedByRoleID:   "empresa/ceo",
+		RequestedFromTaskID: 20,
+		ToolCallID:          "call_j",
 	})
 	if err != nil {
 		t.Fatalf("RequestReview: %v", err)
@@ -1209,10 +1392,11 @@ func TestScenarioL_RecordResultFailurePersistsZeroDurableReviews(t *testing.T) {
 	prop := createTestProposal(t, store, "org-test", "Campaign L", "Goal L")
 
 	req, task, _, err := finSvc.RequestReview(context.Background(), campaign.RequestReviewParams{
-		OrganizationID:    "org-test",
-		ProposalID:        prop.ID,
-		RequestedByRoleID: "empresa/ceo",
-		ToolCallID:        "call_l",
+		OrganizationID:      "org-test",
+		ProposalID:          prop.ID,
+		RequestedByRoleID:   "empresa/ceo",
+		RequestedFromTaskID: 20,
+		ToolCallID:          "call_l",
 	})
 	if err != nil {
 		t.Fatalf("RequestReview: %v", err)
@@ -1249,10 +1433,11 @@ func TestScenarioM_FinalizeFailureRecoveryConvergesWithoutSecondModelCall(t *tes
 	prop := createTestProposal(t, store, "org-test", "Campaign M", "Goal M")
 
 	req, task, _, err := finSvc.RequestReview(context.Background(), campaign.RequestReviewParams{
-		OrganizationID:    "org-test",
-		ProposalID:        prop.ID,
-		RequestedByRoleID: "empresa/ceo",
-		ToolCallID:        "call_m",
+		OrganizationID:      "org-test",
+		ProposalID:          prop.ID,
+		RequestedByRoleID:   "empresa/ceo",
+		RequestedFromTaskID: 20,
+		ToolCallID:          "call_m",
 	})
 	if err != nil {
 		t.Fatalf("RequestReview: %v", err)
@@ -1332,10 +1517,11 @@ func TestScenarioN_ExecutionNonEffectInvariant(t *testing.T) {
 	prop := createTestProposal(t, store, "org-test", "Campaign N", "Goal N")
 
 	req, task, _, err := finSvc.RequestReview(context.Background(), campaign.RequestReviewParams{
-		OrganizationID:    "org-test",
-		ProposalID:        prop.ID,
-		RequestedByRoleID: "empresa/ceo",
-		ToolCallID:        "call_n",
+		OrganizationID:      "org-test",
+		ProposalID:          prop.ID,
+		RequestedByRoleID:   "empresa/ceo",
+		RequestedFromTaskID: 20,
+		ToolCallID:          "call_n",
 	})
 	if err != nil {
 		t.Fatalf("RequestReview: %v", err)
@@ -1359,6 +1545,9 @@ func TestScenarioN_ExecutionNonEffectInvariant(t *testing.T) {
 	// Invariant Checks:
 	// 1. Executive root tasks created: 0
 	for _, task := range taskCoord.tasks {
+		if task.ID == 20 {
+			continue // the seeded parent CEO-turn task the fixture itself creates, not something RequestReview/ExecuteReviewTask produced
+		}
 		if task.TaskClass == "executive.root" || task.TaskClass == "campaign.root" {
 			t.Errorf("FORBIDDEN executive root task found: ID %d, class %s", task.ID, task.TaskClass)
 		}
