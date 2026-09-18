@@ -20,7 +20,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -39,6 +38,39 @@ type passAuthority struct{}
 
 func (passAuthority) AuthorizeExecution(context.Context, executionharness.AuthorityRequest) error {
 	return nil
+}
+
+// fakeFinanceContextBuilder is a deterministic, in-memory stand-in for the
+// real Context Engine (FINANCE_CONTEXT_ENGINE_INTEGRATION_V1): it reads
+// the SAME Finance task's own Instructions the fixture's taskCoord holds
+// -- exactly the field the real SourceTaskContext provider
+// (internal/tasks/contextprovider) renders verbatim in production -- and
+// returns a snapshot whose Content IS that task's Instructions and whose
+// Digest is that content's own sha256. This proves runHarnessModel's own
+// consumption side (validate the snapshot, use ID/Version/Digest/Content
+// byte-for-byte, never re-wrap or re-derive) without needing a real
+// PostgreSQL-backed Context Engine, which is proven separately against
+// real infrastructure in internal/ceochat's own suite.
+type fakeFinanceContextBuilder struct {
+	taskCoord *fakeTaskCoordinator
+	nextID    int64
+	calls     int
+}
+
+func (b *fakeFinanceContextBuilder) BuildFinanceContext(ctx context.Context, request campaign.FinanceContextRequest) (campaign.FinanceContextSnapshot, error) {
+	b.calls++
+	task, err := b.taskCoord.GetTask(ctx, request.TaskID)
+	if err != nil {
+		return campaign.FinanceContextSnapshot{}, err
+	}
+	b.nextID++
+	digest := sha256.Sum256([]byte(task.Instructions))
+	return campaign.FinanceContextSnapshot{
+		ID:      b.nextID,
+		Version: "v1",
+		Digest:  hex.EncodeToString(digest[:]),
+		Content: task.Instructions,
+	}, nil
 }
 
 // capturingModel records the exact RunIdentity it was invoked with, so a
@@ -93,6 +125,7 @@ func newHarnessLocalFixture(t *testing.T, model *capturingModel) harnessLocalFix
 		HarnessHistory:    history,
 		DescriptorStore:   descriptors,
 		HolderPrincipalID: "finance-principal-local-test",
+		ContextBuilder:    &fakeFinanceContextBuilder{taskCoord: taskCoord},
 		NewModelExecutor: func(modelruntimeadapter.Config) (executionharness.ModelExecutor, error) {
 			return model, nil
 		},
@@ -118,25 +151,22 @@ func newHarnessLocalFixture(t *testing.T, model *capturingModel) harnessLocalFix
 	}
 }
 
-// expectedFinancePromptDigest mirrors internal/campaign/finance_service.go's
-// own promptContent rendering exactly, so the test can assert the
-// persisted RunDescriptor.ContextDigest is the ACTUAL rendered content's
+// expectedFinanceContextDigest mirrors fakeFinanceContextBuilder's own
+// digest derivation exactly (sha256 of the Finance task's own
+// Instructions -- the real SourceTaskContext content, per FINANCE_
+// CONTEXT_ENGINE_INTEGRATION_V1), so the test can assert the persisted
+// RunDescriptor.ContextDigest is the ACTUAL context snapshot content's own
 // digest -- never the proposal's own canonical hash substituted in its
-// place, which is exactly the defect this hotfix corrects.
-func expectedFinancePromptDigest(t *testing.T, prop campaign.CampaignProposal) string {
+// place, which is exactly the defect PR #224 corrected, and never a
+// fabricated ad-hoc prompt digest, which is exactly the defect this round
+// corrects.
+func expectedFinanceContextDigest(t *testing.T, taskCoord *fakeTaskCoordinator, taskID int64) string {
 	t.Helper()
-	proposalData, err := json.MarshalIndent(prop, "", "  ")
+	task, err := taskCoord.GetTask(context.Background(), taskID)
 	if err != nil {
-		t.Fatalf("marshal proposal: %v", err)
+		t.Fatalf("read task: %v", err)
 	}
-	promptContent := fmt.Sprintf(`Proposal ID: %d
-Proposal Canonical Hash: %s
-Proposal Data:
-%s
-
-Perform conservative financial review following instructions.`,
-		prop.ID, prop.CanonicalHash, string(proposalData))
-	sum := sha256.Sum256([]byte(promptContent))
+	sum := sha256.Sum256([]byte(task.Instructions))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -195,7 +225,7 @@ func TestRealHarness_ProvenanceAndContextDigest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read run descriptor: %v", err)
 	}
-	wantDigest := expectedFinancePromptDigest(t, fx.proposal)
+	wantDigest := expectedFinanceContextDigest(t, fx.taskCoord, fx.task.ID)
 	if descriptor.ContextDigest != wantDigest {
 		t.Errorf("RunDescriptor.ContextDigest = %q, want the rendered-content digest %q", descriptor.ContextDigest, wantDigest)
 	}

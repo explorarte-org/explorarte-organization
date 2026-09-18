@@ -363,6 +363,58 @@ func (d financeDispatchProvisioner) EnsureAuthorizedAssignmentForRunningAttempt(
 // deliberately never blocking a CEO chat turn on model completion) and
 // FinanceService.ExecuteReviewTask (fully built, crash-safe, race-safe,
 // but with zero production callers before this).
+// financeContextAdapter maps campaign.FinanceContextBuilder to the
+// already-open executive.ContextCoordinator (runtimeadapter.Context,
+// composed from the SAME contextengine.Service + contextcompiler.
+// ContextAssemblyService the Executive Orchestrator itself uses --
+// runtime.Contexts, never a second Context Engine runtime). This adapter
+// lives in cmd/orgctl because it is the composition root and may import
+// both internal/campaign and internal/executive; internal/campaign itself
+// never imports internal/executive. FINANCE_CONTEXT_ENGINE_INTEGRATION_V1.
+type financeContextAdapter struct {
+	coordinator executive.ContextCoordinator
+}
+
+// financeContextExecutionPurpose/financeContextLegacyPurpose select the
+// existing, already-canonical executive.department_worker ContextProfile
+// (internal/contextcompiler's SelectorRegistry, EXECUTION-PURPOSE tier,
+// unrestricted on actor role/unit) -- Finance gets no new, campaign-
+// specific ContextProfile. TaskClass carries campaign.financial_review
+// through for durable provenance/selector-precedence purposes only: no
+// TaskClass-tier profile is registered for it, so selection always falls
+// through to this EXECUTION-PURPOSE match.
+const (
+	financeContextLegacyPurpose    = "department_worker"
+	financeContextExecutionPurpose = "department-worker"
+)
+
+func (a financeContextAdapter) BuildFinanceContext(ctx context.Context, request campaign.FinanceContextRequest) (campaign.FinanceContextSnapshot, error) {
+	if a.coordinator == nil {
+		return campaign.FinanceContextSnapshot{}, errors.New("finance context coordinator is not configured")
+	}
+	snapshot, err := a.coordinator.Build(ctx, executive.ContextRequest{
+		OrganizationRevisionID: request.OrganizationRevisionID,
+		ActorRoleID:            request.ActorRoleID,
+		ActorUnitID:            request.ActorUnitID,
+		Purpose:                financeContextLegacyPurpose,
+		ExecutionPurpose:       financeContextExecutionPurpose,
+		TaskRef:                fmt.Sprintf("task:%d", request.TaskID),
+		TaskClass:              request.TaskClass,
+		CorrelationID:          request.CorrelationID,
+		CausationID:            request.CausationID,
+		IdempotencyKey:         request.IdempotencyKey,
+	})
+	if err != nil {
+		return campaign.FinanceContextSnapshot{}, err
+	}
+	return campaign.FinanceContextSnapshot{
+		ID:      snapshot.ID,
+		Version: snapshot.Version,
+		Digest:  snapshot.Digest,
+		Content: snapshot.Content,
+	}, nil
+}
+
 func buildFinanceWorker(ctx context.Context, cfg config.Config, store *platformpostgres.Store, runtime *executivebootstrap.Runtime, stderr io.Writer) (*financeworker.Worker, error) {
 	campaignStore, err := campaignpostgres.New(store)
 	if err != nil {
@@ -441,6 +493,7 @@ func buildFinanceWorker(ctx context.Context, cfg config.Config, store *platformp
 		NewModelExecutor: func(execConfig modelruntimeadapter.Config) (executionharness.ModelExecutor, error) {
 			return runtime.Models.NewHarnessModelExecutor(execConfig)
 		},
+		ContextBuilder:    financeContextAdapter{coordinator: runtime.Contexts},
 		WorkerID:          "executive-worker-finance",
 		HolderPrincipalID: holderPrincipalID,
 	})

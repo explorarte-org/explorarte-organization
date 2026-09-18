@@ -1460,6 +1460,7 @@ func TestScenarioM_FinalizeFailureRecoveryConvergesWithoutSecondModelCall(t *tes
 		Tasks:             taskCoord,
 		HarnessRunner:     harnessRunner,
 		HolderPrincipalID: "negocio/administrador_financiero-principal-test",
+		ContextBuilder:    &fakeFinanceContextBuilder{taskCoord: taskCoord},
 	})
 	if err != nil {
 		t.Fatalf("NewFinanceService: %v", err)

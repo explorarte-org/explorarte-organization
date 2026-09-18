@@ -38,6 +38,14 @@ type Runtime struct {
 	// lease verifier, and both come from the same single provider stack --
 	// opening a second one would mean two routing/egress/pricing paths.
 	Models *modelbootstrap.Runtime
+	// Contexts is the SAME executive.ContextCoordinator instance
+	// (runtimeadapter.Context, composed from contextRuntime.Service +
+	// contextcompiler.ContextAssemblyService) the Orchestrator itself uses
+	// -- exposed here so a sibling department-worker composition root
+	// (cmd/orgctl/executive.go's buildFinanceWorker) can reuse the one
+	// already-open Context Engine runtime instead of opening a second one.
+	// FINANCE_CONTEXT_ENGINE_INTEGRATION_V1.
+	Contexts executive.ContextCoordinator
 }
 
 type OpenOption func(*openOptions)
@@ -245,12 +253,20 @@ func Open(cfg config.Config, store *platformpostgres.Store, opts ...OpenOption) 
 	if err != nil {
 		return nil, fmt.Errorf("create executive evidence proof store: %w", err)
 	}
+	// Constructed ONCE, shared with both the Orchestrator (via
+	// dependencies.Contexts below) and this Runtime's own exposed Contexts
+	// field, so a sibling composition (Finance's real Harness path) binds
+	// to the identical Context Engine + Context Compiler instance the
+	// Executive Orchestrator itself uses -- never a second Context Engine
+	// runtime. FINANCE_CONTEXT_ENGINE_INTEGRATION_V1.
+	contextCoordinator := runtimeadapter.Context{Service: contextRuntime.Service, Assembly: contextcompiler.ContextAssemblyService{Store: executionContextViewStore}, OrganizationID: cfg.Tasks.OrganizationID}
+
 	var orchestrator *executive.Orchestrator
 	dependencies := executive.Dependencies{
 		OrganizationID: cfg.Tasks.OrganizationID,
 		Registry:       runtimeadapter.Registry{Reader: registryRepository, OrganizationID: cfg.Tasks.OrganizationID},
 		Tasks:          dagTasks,
-		Contexts:       runtimeadapter.Context{Service: contextRuntime.Service, Assembly: contextcompiler.ContextAssemblyService{Store: executionContextViewStore}, OrganizationID: cfg.Tasks.OrganizationID},
+		Contexts:       contextCoordinator,
 		Assignments:    runtimeadapter.Assignment{Resolver: modelRuntime.Dispatcher.Store, Provisioner: authorizedAssignments, OrganizationID: cfg.Tasks.OrganizationID},
 		Principals:     runtimeadapter.RoleBoundPrincipals{Resolver: roleBoundResolver},
 		Models:         baseModels,
@@ -297,7 +313,7 @@ func Open(cfg config.Config, store *platformpostgres.Store, opts ...OpenOption) 
 	if err != nil {
 		return nil, fmt.Errorf("create executive orchestrator: %w", err)
 	}
-	return &Runtime{Orchestrator: orchestrator, Tasks: taskService, Models: modelRuntime}, nil
+	return &Runtime{Orchestrator: orchestrator, Tasks: taskService, Models: modelRuntime, Contexts: contextCoordinator}, nil
 }
 
 const (
