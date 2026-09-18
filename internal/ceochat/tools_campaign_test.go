@@ -760,6 +760,18 @@ func TestCampaignFinancialReviewTools(t *testing.T) {
 	}
 	ctx := WithTurnContext(context.Background(), turnCtx)
 
+	// RequestReview's own lineage validation requires a real, durable
+	// parent task at turnCtx.TaskID -- seed one matching this turn
+	// context's own actor/correlation exactly (RequestedByRoleID must
+	// equal turnCtx.ActorRoleID, the same value the real tool handler
+	// passes as RequestReviewParams.RequestedByRoleID).
+	parentRequestedBy, parentCorrelation := CEORoleID, "corr:tools-campaign-test"
+	taskCoord.tasks[turnCtx.TaskID] = tasks.Task{
+		ID: turnCtx.TaskID, OrganizationID: turnCtx.OrganizationID,
+		RequestedByRoleID: &parentRequestedBy, AssignedRoleID: CEORoleID,
+		CorrelationID: &parentCorrelation,
+	}
+
 	// 1. Request financial review
 	req := executionharness.ToolRequest{
 		ToolName:   "campaign.request_financial_review",
