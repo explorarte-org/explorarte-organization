@@ -246,8 +246,12 @@ func (dummyExecutiveAssignments) ResolveAssignment(_ context.Context, taskID, at
 
 type dummyExecutivePrincipals struct{}
 
-func (dummyExecutivePrincipals) ResolveRoleBoundPrincipal(context.Context, string) (executive.ExecutionPrincipalRef, error) {
-	return executive.ExecutionPrincipalRef{ID: "1", RoleID: "empresa/ceo"}, nil
+// ResolveRoleBoundPrincipal answers for whichever role is asked about. It used
+// to always answer empresa/ceo, which was enough while the campaign never left
+// its CEO planning task; once the promoted campaign runs on to department
+// plans and workers, each role's own principal must be bound to that role.
+func (dummyExecutivePrincipals) ResolveRoleBoundPrincipal(_ context.Context, roleID string) (executive.ExecutionPrincipalRef, error) {
+	return executive.ExecutionPrincipalRef{ID: "1", RoleID: roleID}, nil
 }
 
 type dummyExecutiveModels struct{}
@@ -301,6 +305,14 @@ func (dummyExecutiveAuthz) Evaluate(context.Context, executive.AuthorizationRequ
 }
 
 func buildRealExecutiveOrchestrator(t *testing.T, store *platformpostgres.Store, organizationID string) (*executive.Orchestrator, *tasks.Service) {
+	t.Helper()
+	return buildRealExecutiveOrchestratorWithModels(t, store, organizationID, dummyExecutiveModels{}, dummyExecutiveModels{})
+}
+
+// buildRealExecutiveOrchestratorWithModels is buildRealExecutiveOrchestrator
+// with the model port supplied by the caller, so a test can drive the campaign
+// past its first phase with real (not canned-for-one-purpose) outputs.
+func buildRealExecutiveOrchestratorWithModels(t *testing.T, store *platformpostgres.Store, organizationID string, models executive.ModelInvocationReader, harness executive.HarnessExecutor) (*executive.Orchestrator, *tasks.Service) {
 	t.Helper()
 	registryRepo, err := registry.NewPostgresRepository(store)
 	if err != nil {
@@ -359,8 +371,8 @@ func buildRealExecutiveOrchestrator(t *testing.T, store *platformpostgres.Store,
 			OrganizationID: organizationID,
 		},
 		Principals:    dummyExecutivePrincipals{},
-		Models:        dummyExecutiveModels{},
-		Harness:       dummyExecutiveModels{},
+		Models:        models,
+		Harness:       harness,
 		Acceptance:    acceptanceStore,
 		Budget:        dummyExecutiveBudget{},
 		Completion:    dummyExecutiveCompletion{},
@@ -433,13 +445,30 @@ func TestCanonicalCampaignPromotionToExecutive(t *testing.T) {
 
 	var realExecutive *executive.Orchestrator
 	var executiveTasks *tasks.Service
+	// CAMPAIGN_EXECUTION_BUDGET_FEASIBILITY_V2: the Executive's model port is
+	// scripted with one valid output PER PURPOSE (not one canned CEO plan), so
+	// the promoted campaign can run past its first phase against the REAL
+	// AgentBudget ledger, Task Engine and AuthorizedAttemptProvisioner.
+	executiveModels := newScriptedExecutiveModels()
 	service, store, modelRuntime, cleanup := newCEOChatCanonicalE2EFixtureWithStore(t, adapter, func(s *platformpostgres.Store) []ceochatbootstrap.OpenOption {
-		realExecutive, executiveTasks = buildRealExecutiveOrchestrator(t, s, chatTestOrganization)
+		realExecutive, executiveTasks = buildRealExecutiveOrchestratorWithModels(t, s, chatTestOrganization, executiveModels, executiveModels)
 		return []ceochatbootstrap.OpenOption{ceochatbootstrap.WithExecutiveSubmitter(realExecutive)}
 	})
 	defer cleanup()
 
 	ctx := context.Background()
+
+	// The host floor is DERIVED from this fixture's real canonical facts (the
+	// routes the roles of each stage resolve to, the rate card, Executive's
+	// limits and the Context Engine bound) -- the same derivation Approval and
+	// Promotion use through ceochat bootstrap. The department roles the plan
+	// below delegates to must be routable under the fixture's shadow revision,
+	// exactly as Finance's own role already is.
+	restoreLeader := alignFinanceRoleForRealDispatch(t, store, chatTestOrganization, "ingenieria_ia/orquestador")
+	defer restoreLeader()
+	restoreWorker := alignFinanceRoleForRealDispatch(t, store, chatTestOrganization, "ingenieria_ia/qa")
+	defer restoreWorker()
+	requirementsProvider := newDerivedExecutionRequirements(t, store, modelRuntime)
 	campStore, err := campaignpostgres.New(store)
 	if err != nil {
 		t.Fatalf("open campaign store: %v", err)
@@ -489,7 +518,7 @@ func TestCanonicalCampaignPromotionToExecutive(t *testing.T) {
 	// directly -- it only ticks financeWorker.RunOnce, and the worker
 	// itself discovers, claims, and executes the ready task through the
 	// real Harness.
-	financeWorker, financeCampStore, restoreFinanceRole := buildRealHarnessFinanceWorkerForE2E(t, store, executiveTasks, modelRuntime, chatTestOrganization)
+	financeWorker, financeCampStore, restoreFinanceRole := buildRealHarnessFinanceWorkerForE2E(t, store, executiveTasks, modelRuntime, chatTestOrganization, requirementsProvider)
 	// Deferred AFTER (hence LIFO-runs BEFORE) the store-closing cleanup()
 	// above -- see alignFinanceRoleForRealDispatch's own doc comment:
 	// restoring organization_roles.source_revision_id after the pool
@@ -611,15 +640,20 @@ func TestCanonicalCampaignPromotionToExecutive(t *testing.T) {
 	//    f) Finance's own action again: recommended, with a real budget --
 	//       same autonomous worker, ticked again after the revision's own
 	//       request_financial_review turn ended.
-	recBudget := campaign.BudgetRecommendation{
-		MaxUSD:        4500.0,
-		MaxTokens:     150000,
-		MaxModelCalls: 80,
-		MaxWallTimeMS: 7200000,
-		MaxDepth:      6,
-		MaxRetries:    4,
-		MaxSubagents:  3,
+	//    The recommended budget is not merely positive: it is built from the
+	//    host's derived execution floor (twice every minimum) and is asserted
+	//    below to carry the promoted campaign through CEO plan -> department
+	//    plan -> worker -> review -> closure on the real AgentBudget ledger.
+	floor, err := requirementsProvider.ExecutionBudgetRequirements(ctx, chatTestOrganization)
+	if err != nil {
+		t.Fatalf("derive the host execution budget floor: %v", err)
 	}
+	recBudget := budgetAboveFloor(floor)
+	if err := campaign.ValidateExecutionBudgetFeasibility(recBudget, floor); err != nil {
+		t.Fatalf("the recommended budget must satisfy the derived floor %+v: %v", floor, err)
+	}
+	t.Logf("derived execution floor: usd=%s tokens=%d calls=%d depth=%d subagents=%d (basis stages: %d)",
+		floor.MinUSD, floor.MinTokens, floor.MinModelCalls, floor.MinDepth, floor.MinSubagents, len(floor.Basis.Stages))
 	adapter.setNextFinanceOutput(reqRev2Proj.ReviewTaskID, campaign.FinanceReviewOutput{
 		Verdict: string(campaign.VerdictRecommended), RecommendedBudget: &recBudget, Summary: "Financially sound and approved",
 	})
@@ -1034,6 +1068,50 @@ func TestCanonicalCampaignPromotionToExecutive(t *testing.T) {
 		t.Fatalf("root %d blocked with dispatch_assignment_required", prom.ExecutiveRootTaskID)
 	}
 
+	// 13b. CAMPAIGN_EXECUTION_BUDGET_FEASIBILITY_V2: the budget Finance
+	// recommended -- derived from the host floor, approved by the owner and
+	// promoted with EXACTLY those limits -- carries the campaign through the
+	// whole minimal canonical topology on the REAL AgentBudget ledger: CEO plan
+	// -> department plan -> at least one worker -> department review -> CEO
+	// closure. (Before this round, production's budget could not attach the
+	// second child.) The driver above advanced the root without a chat message;
+	// here the same orchestrator is resumed to finish it.
+	var run executive.Run
+	for i := 0; i < 25; i++ {
+		run, err = realExecutive.Resume(ctx, prom.ExecutiveRootTaskID)
+		if err != nil {
+			t.Fatalf("resume promoted root (step %d): %v", i, err)
+		}
+		if run.State == executive.StateCompleted || run.State == executive.StateFailed || run.State == executive.StateBlocked {
+			break
+		}
+	}
+	if run.State != executive.StateCompleted {
+		t.Fatalf("the promoted campaign must complete under its derived budget: run=%+v purposes=%v", run, executiveModels.executedPurposes())
+	}
+	var workerTasks int
+	if err := store.Pool().QueryRow(ctx, `SELECT count(*) FROM tasks WHERE correlation_id=$1 AND assigned_role_id='ingenieria_ia/qa'`, prom.ExecutiveCorrelationID).Scan(&workerTasks); err != nil {
+		t.Fatalf("count worker tasks: %v", err)
+	}
+	if workerTasks < 1 {
+		t.Errorf("worker tasks = %d, want at least one (department plan -> worker)", workerTasks)
+	}
+	topology := executive.MinimalCampaignTopology()
+	var usedSubagents, budgetDepth, ledgerMaxSubagents, ledgerMaxDepth int64
+	if err := store.Pool().QueryRow(ctx, `SELECT used_subagents, depth, max_subagents, max_depth FROM agent_budgets WHERE task_id=$1 AND parent_budget_id IS NULL`, prom.ExecutiveRootTaskID).
+		Scan(&usedSubagents, &budgetDepth, &ledgerMaxSubagents, &ledgerMaxDepth); err != nil {
+		t.Fatalf("read the campaign's budget usage: %v", err)
+	}
+	if usedSubagents != topology.Subagents || budgetDepth != topology.Depth {
+		t.Errorf("ledger used %d subagents / depth %d; Executive's minimal topology is %d / %d", usedSubagents, budgetDepth, topology.Subagents, topology.Depth)
+	}
+	if ledgerMaxSubagents != int64(recBudget.MaxSubagents) || ledgerMaxDepth != int64(recBudget.MaxDepth) {
+		t.Errorf("the durable ceilings %d/%d are not the Finance-recommended %d/%d", ledgerMaxSubagents, ledgerMaxDepth, recBudget.MaxSubagents, recBudget.MaxDepth)
+	}
+	if got, want := executiveModels.executedPurposes(), []string{"executive_ceo_plan", "department_plan", "department_worker", "department_review", "executive_ceo_closure"}; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("executed purposes = %v, want the minimal canonical lifecycle %v", got, want)
+	}
+
 	// 14. Negative control against real PostgreSQL:
 	// Verify that if a root task carries the old malformed colon causation
 	// ("owner:campaign-promotion:42:0123456789abcdef"), the real AuthorizedAttemptProvisioner
@@ -1200,7 +1278,7 @@ func TestOwnerToFinanceRealHarnessEndToEnd(t *testing.T) {
 	// every other real-Harness Finance fixture in this package uses).
 	_, tasksSvc := buildRealExecutiveOrchestrator(t, store, chatTestOrganization)
 
-	financeWorker, financeCampStore, restoreFinanceRole := buildRealHarnessFinanceWorkerForE2E(t, store, tasksSvc, modelRuntime, chatTestOrganization)
+	financeWorker, financeCampStore, restoreFinanceRole := buildRealHarnessFinanceWorkerForE2E(t, store, tasksSvc, modelRuntime, chatTestOrganization, permissiveExecutionRequirements())
 	defer restoreFinanceRole()
 
 	conversation, err := service.CreateConversation(ctx, ceochat.CreateConversationRequest{

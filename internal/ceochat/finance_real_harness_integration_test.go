@@ -237,7 +237,7 @@ func mustContextcompilerStore(t *testing.T, store *platformpostgres.Store) *cont
 // convention of small, duplicated test helpers over shared ones with
 // growing parameter lists (see finTestTaskCoordinator's and
 // financeTestDispatchProvisioner's own doc comments).
-func buildTestFinanceServiceRealHarness(t *testing.T, store *platformpostgres.Store, tasksSvc *tasks.Service, dispatch *modeldispatchbootstrap.Runtime, modelRuntime *modelbootstrap.Runtime, organizationID string) (svc *campaign.FinanceService, campStore *campaignpostgres.Store, reviewerRoleID string, revisionID int64, holderPrincipalID string, restore func()) {
+func buildTestFinanceServiceRealHarness(t *testing.T, store *platformpostgres.Store, tasksSvc *tasks.Service, dispatch *modeldispatchbootstrap.Runtime, modelRuntime *modelbootstrap.Runtime, organizationID string, requirements campaign.ExecutionRequirementsProvider) (svc *campaign.FinanceService, campStore *campaignpostgres.Store, reviewerRoleID string, revisionID int64, holderPrincipalID string, restore func()) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -294,6 +294,7 @@ func buildTestFinanceServiceRealHarness(t *testing.T, store *platformpostgres.St
 
 	financeService, err := campaign.NewFinanceService(campaign.FinanceServiceConfig{
 		OrganizationID:  organizationID,
+		Requirements:    requirements,
 		Store:           campStore,
 		Tasks:           finTestTaskCoordinator{tasksSvc},
 		Assignments:     financeTestDispatchProvisioner{financeAssignments},
@@ -463,14 +464,15 @@ func newFinanceRealHarnessFixture(t *testing.T) (*chatFixture, *financeWorkerFix
 	}
 
 	dispatch := buildTestModelDispatch(t, f.store, f.runtime.Tasks, chatTestOrganization)
-	financeService, campStore, reviewerRoleID2, revisionID, holderPrincipalID, _ := buildTestFinanceServiceRealHarness(t, f.store, f.runtime.Tasks, dispatch, f.runtime.ModelRuntime, chatTestOrganization)
+	requirements := newMutableRequirements()
+	financeService, campStore, reviewerRoleID2, revisionID, holderPrincipalID, _ := buildTestFinanceServiceRealHarness(t, f.store, f.runtime.Tasks, dispatch, f.runtime.ModelRuntime, chatTestOrganization, requirements)
 	restore := func() {
 		restoreFinanceRole()
 		restoreRevision()
 	}
 	return f, &financeWorkerFixture{
 		store: campStore, financeService: financeService, reviewerRoleID: reviewerRoleID2,
-		revisionID: revisionID, tasksService: f.runtime.Tasks, holderPrincipalID: holderPrincipalID,
+		revisionID: revisionID, tasksService: f.runtime.Tasks, holderPrincipalID: holderPrincipalID, requirements: requirements,
 	}, f.runtime.ModelRuntime, restore
 }
 
@@ -807,7 +809,7 @@ func TestFinanceWorkerMultiReplicaRealHarness_TwoWorkersOneExecution(t *testing.
 // revision is already current, and a pricing tier for Finance's own
 // provider_model_id ("ceochat-e2e-finance-fake", distinct from CEO's own
 // "ceochat-e2e-fake" entry).
-func buildRealHarnessFinanceWorkerForE2E(t *testing.T, store *platformpostgres.Store, tasksSvc *tasks.Service, modelRuntime *modelbootstrap.Runtime, organizationID string) (worker *financeworker.Worker, campStore *campaignpostgres.Store, restore func()) {
+func buildRealHarnessFinanceWorkerForE2E(t *testing.T, store *platformpostgres.Store, tasksSvc *tasks.Service, modelRuntime *modelbootstrap.Runtime, organizationID string, requirements campaign.ExecutionRequirementsProvider) (worker *financeworker.Worker, campStore *campaignpostgres.Store, restore func()) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -881,6 +883,7 @@ func buildRealHarnessFinanceWorkerForE2E(t *testing.T, store *platformpostgres.S
 
 	financeService, err := campaign.NewFinanceService(campaign.FinanceServiceConfig{
 		OrganizationID:  organizationID,
+		Requirements:    requirements,
 		Store:           campStore,
 		Tasks:           finTestTaskCoordinator{tasksSvc},
 		Assignments:     financeTestDispatchProvisioner{financeAssignments},
@@ -1054,6 +1057,7 @@ func TestFinanceHarnessReentry_SameAttemptAdoptsDurableTerminalRun(t *testing.T)
 	}
 	capturingFinSvc, err := campaign.NewFinanceService(campaign.FinanceServiceConfig{
 		OrganizationID:    chatTestOrganization,
+		Requirements:      permissiveExecutionRequirements(),
 		Store:             fx.store,
 		Tasks:             finTestTaskCoordinator{fx.tasksService},
 		Assignments:       financeTestDispatchProvisioner{reentryAssignments},
