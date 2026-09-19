@@ -10,6 +10,12 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/modelpricing"
 )
 
+// permissiveTestRequirements is a floor every fixture budget clears: it lets
+// tests that are not about feasibility exercise the rest of the contract.
+func permissiveTestRequirements() ExecutionBudgetRequirements {
+	return ExecutionBudgetRequirements{MinUSD: 1, MinTokens: 1, MinModelCalls: 1, MinWallTimeMS: 1, MinDepth: 1, MinRetries: 1, MinSubagents: 1}
+}
+
 func validTestBudget() BudgetRecommendation {
 	return BudgetRecommendation{
 		MaxUSD:        1.0,
@@ -268,7 +274,7 @@ func TestValidateFinanceReviewOutput_Matrix(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateFinanceReviewOutput(tt.output)
+			err := validateFinanceReviewOutput(tt.output, permissiveTestRequirements())
 			if tt.wantValid {
 				if err != nil {
 					t.Fatalf("expected valid, got error: %v", err)
@@ -289,7 +295,7 @@ func TestValidateFinanceReviewOutput_Matrix(t *testing.T) {
 // explicitly instructs strictly positive budgets and does not contain zero examples
 // (CAMPAIGN_EXECUTABLE_BUDGET_CONTRACT_HOTFIX_V1 section 24).
 func TestRenderFinanceContractInstructions_ContractPinned(t *testing.T) {
-	instructions := renderFinanceContractInstructions()
+	instructions := renderFinanceContractInstructions(permissiveTestRequirements())
 
 	requiredPhrases := []string{
 		"recommended_budget MUST be present",

@@ -63,6 +63,24 @@ var (
 	// Finance, Approval, and Promotion all delegate to instead of each
 	// hand-rolling their own positivity checks.
 	ErrInvalidExecutionBudget = errors.New("invalid campaign execution budget")
+
+	// ErrInfeasibleExecutionBudget is returned when a budget is perfectly
+	// representable (ValidateExecutableBudget passes: seven strictly
+	// positive AgentBudget dimensions) but cannot fund the canonical
+	// minimum execution the campaign it approves must perform, under the
+	// host's CURRENT canonical facts (Executive topology, model routing,
+	// pricing, runtime limits). It is deliberately a different sentinel
+	// from ErrInvalidExecutionBudget: "this is not valid budget data" and
+	// "this valid budget cannot begin the work" are different defects with
+	// different remedies (CAMPAIGN_EXECUTION_BUDGET_FEASIBILITY_V2).
+	ErrInfeasibleExecutionBudget = errors.New("infeasible campaign execution budget")
+
+	// ErrExecutionRequirementsUnavailable is returned when the host cannot
+	// produce (or was never given a way to produce) the execution budget
+	// requirements the feasibility contract needs. Feasibility is never
+	// assumed: without requirements a recommended budget is not approved,
+	// promoted or recorded.
+	ErrExecutionRequirementsUnavailable = errors.New("campaign execution budget requirements unavailable")
 )
 
 var (

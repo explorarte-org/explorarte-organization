@@ -13,6 +13,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/authorization"
 	authorizationpostgres "github.com/Mireuz13/explorarte-organization/internal/authorization/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/campaign"
+	"github.com/Mireuz13/explorarte-organization/internal/campaign/executionrequirements"
 	campaignpostgres "github.com/Mireuz13/explorarte-organization/internal/campaign/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/ceochat"
 	ceochatpostgres "github.com/Mireuz13/explorarte-organization/internal/ceochat/postgres"
@@ -25,6 +26,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/executionharness"
 	"github.com/Mireuz13/explorarte-organization/internal/executionharness/modelruntimeadapter"
 	executionharnesspostgres "github.com/Mireuz13/explorarte-organization/internal/executionharness/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/executive"
 	"github.com/Mireuz13/explorarte-organization/internal/executive/runtimeadapter"
 	memorybootstrap "github.com/Mireuz13/explorarte-organization/internal/memory/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/modeldispatch"
@@ -256,7 +258,20 @@ func Open(cfg config.Config, store *platformpostgres.Store, opts ...OpenOption) 
 	if err != nil {
 		return nil, fmt.Errorf("create ceochat capability authorizer: %w", err)
 	}
-	approvalService := campaign.NewApprovalService(campaignStore, authorizerPolicy)
+	// Approval and Promotion re-check the owner-facing budget against the
+	// CURRENT host execution budget floor (CAMPAIGN_EXECUTION_BUDGET_
+	// FEASIBILITY_V2), derived from this process's own Model Runtime routing,
+	// pricing and Context Engine bound. The Executive limits are the same
+	// canonical defaults the Executive worker runs under (only an explicit
+	// smoke-time WithExecutiveLimits ever differs, and it never promotes).
+	requirementsProvider, err := executionrequirements.New(executionrequirements.Config{
+		Registry: registryRepository, Routes: modelRuntime.Store, Costs: modelRuntime.Costs,
+		Limits: executive.DefaultLimits(), ContextMaxTotalBytes: cfg.Context.MaxTotalBytes,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create ceochat campaign execution requirements provider: %w", err)
+	}
+	approvalService := campaign.NewApprovalService(campaignStore, authorizerPolicy, requirementsProvider)
 	// campaign.request_financial_review/campaign.get_financial_review were
 	// registered unconditionally but had no real FinanceService anywhere in
 	// production to back them (campaign.NewFinanceService had zero non-test
@@ -279,7 +294,7 @@ func Open(cfg config.Config, store *platformpostgres.Store, opts ...OpenOption) 
 		ceochat.WithFinanceService(financeService),
 	}
 	if openCfg.submitter != nil {
-		promService := campaign.NewPromotionService(campaignStore, openCfg.submitter, authorizerPolicy)
+		promService := campaign.NewPromotionService(campaignStore, openCfg.submitter, authorizerPolicy, requirementsProvider)
 		campToolOpts = append(campToolOpts, ceochat.WithPromotionService(promService))
 	} else if openCfg.promotionService != nil {
 		campToolOpts = append(campToolOpts, ceochat.WithPromotionService(openCfg.promotionService))

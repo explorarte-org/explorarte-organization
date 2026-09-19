@@ -21,11 +21,15 @@ const (
 type ApprovalService struct {
 	Store      Store
 	Authorizer CapabilityAuthorizer
+	// Requirements supplies the CURRENT host execution budget floor. A
+	// recommended review whose budget no longer reaches it (routing,
+	// pricing or runtime limits moved since Finance ran) is not approvable.
+	Requirements ExecutionRequirementsProvider
 }
 
 // NewApprovalService creates an ApprovalService.
-func NewApprovalService(store Store, authorizer CapabilityAuthorizer) *ApprovalService {
-	return &ApprovalService{Store: store, Authorizer: authorizer}
+func NewApprovalService(store Store, authorizer CapabilityAuthorizer, requirements ExecutionRequirementsProvider) *ApprovalService {
+	return &ApprovalService{Store: store, Authorizer: authorizer, Requirements: requirements}
 }
 
 // ApproveParams contains the input parameters for creating an owner execution approval.
@@ -120,6 +124,21 @@ func (s *ApprovalService) ApproveForExecution(ctx context.Context, params Approv
 	// again turn into a new approval, even though existing historical
 	// approvals stay untouched.
 	if err := ValidateExecutableBudget(*review.RecommendedBudget); err != nil {
+		return CampaignOwnerApproval{}, false, err
+	}
+
+	// 6.6. CAMPAIGN_EXECUTION_BUDGET_FEASIBILITY_V2 defense-in-depth: a
+	// representable budget must also fund the canonical minimum execution
+	// under the CURRENT host facts. This protects against a historical
+	// review, or routing / pricing / runtime-limit drift between the Finance
+	// review and this approval. The owner is never asked to approve a budget
+	// that cannot begin the campaign, and the budget is never silently
+	// raised: a review that no longer clears the floor needs a new review.
+	requirements, err := requireExecutionRequirements(ctx, s.Requirements, params.OrganizationID)
+	if err != nil {
+		return CampaignOwnerApproval{}, false, err
+	}
+	if err := ValidateExecutionBudgetFeasibility(*review.RecommendedBudget, requirements); err != nil {
 		return CampaignOwnerApproval{}, false, err
 	}
 

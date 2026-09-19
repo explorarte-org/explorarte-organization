@@ -16,6 +16,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/authorization"
 	authorizationpostgres "github.com/Mireuz13/explorarte-organization/internal/authorization/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/campaign"
+	"github.com/Mireuz13/explorarte-organization/internal/campaign/executionrequirements"
 	"github.com/Mireuz13/explorarte-organization/internal/campaign/financeworker"
 	campaignpostgres "github.com/Mireuz13/explorarte-organization/internal/campaign/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/config"
@@ -480,8 +481,21 @@ func buildFinanceWorker(ctx context.Context, cfg config.Config, store *platformp
 	}
 	holderPrincipalID := strconv.FormatInt(financePrincipal.ID, 10)
 
+	// The host execution budget floor Finance is shown and held to is derived
+	// from the SAME Executive limits, Model Runtime routing/pricing (through
+	// the real CostGate's read-only estimator) and Context Engine bound this
+	// process actually runs under -- not from a copy of any of them.
+	requirementsProvider, err := executionrequirements.New(executionrequirements.Config{
+		Registry: registryRepository, Routes: runtime.Models.Store, Costs: runtime.Models.Costs,
+		Limits: runtime.Limits, ContextMaxTotalBytes: cfg.Context.MaxTotalBytes,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create campaign execution requirements provider: %w", err)
+	}
+
 	financeService, err := campaign.NewFinanceService(campaign.FinanceServiceConfig{
 		OrganizationID:  cfg.Tasks.OrganizationID,
+		Requirements:    requirementsProvider,
 		Store:           campaignStore,
 		Tasks:           financeTaskCoordinator{runtime.Tasks},
 		Assignments:     financeDispatchProvisioner{financeAssignments},

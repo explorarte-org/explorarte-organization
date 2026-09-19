@@ -54,6 +54,7 @@ func New(pricing *modelpricing.Service, ledger costledger.Ledger, budgets agentb
 }
 
 var _ modelruntime.CostBudgetGate = (*Gate)(nil)
+var _ modelruntime.CostReservationEstimator = (*Gate)(nil)
 var _ modelruntime.SubscriptionSettler = (*Gate)(nil)
 
 // translateReserveErr distinguishes "no provider_wallets row exists at
@@ -69,6 +70,29 @@ func translateReserveErr(err error) error {
 		return fmt.Errorf("%w: %w", modelruntime.ErrProviderWalletNotProvisioned, err)
 	}
 	return err
+}
+
+// EstimateReservation is the read-only worst-case pricing Reserve is built
+// on: it resolves the price tier for the estimated input size and prices
+// input plus the FULL MaxOutputTokens ceiling, and touches no wallet, no
+// budget and no invocation. Reserve calls it for every pay-as-you-go
+// provider, so a host preflight (Campaign's execution-budget feasibility
+// floor) and a real dispatch reservation are the same computation over the
+// same inputs, not two formulas that happen to agree today.
+func (g *Gate) EstimateReservation(ctx context.Context, request modelruntime.ReservationEstimateRequest, now time.Time) (modelruntime.ReservationEstimate, error) {
+	tokens := request.EstimatedInputTokens + request.MaxOutputTokens
+	if g.subscriptionProviders[request.ProviderID] {
+		return modelruntime.ReservationEstimate{Tokens: tokens, Subscription: true}, nil
+	}
+	tier, err := g.pricing.Resolve(ctx, request.ProviderID, request.ProviderModelID, request.EstimatedInputTokens, modelpricing.BillingOnline, now)
+	if err != nil {
+		return modelruntime.ReservationEstimate{}, fmt.Errorf("resolve price tier: %w", err)
+	}
+	estimatedUSD, err := tier.EstimateCost(request.EstimatedInputTokens, 0, 0, request.MaxOutputTokens)
+	if err != nil {
+		return modelruntime.ReservationEstimate{}, fmt.Errorf("estimate call cost: %w", err)
+	}
+	return modelruntime.ReservationEstimate{USDNanos: int64(estimatedUSD), Tokens: tokens, PriceTier: tier.ContextTierName}, nil
 }
 
 func (g *Gate) Reserve(ctx context.Context, request modelruntime.CostReservationRequest, now time.Time) (modelruntime.CostReservation, error) {
@@ -121,14 +145,14 @@ func (g *Gate) Reserve(ctx context.Context, request modelruntime.CostReservation
 		return reservation, nil
 	}
 
-	tier, err := g.pricing.Resolve(ctx, request.ProviderID, request.ProviderModelID, request.EstimatedInputTokens, modelpricing.BillingOnline, now)
+	estimate, err := g.EstimateReservation(ctx, modelruntime.ReservationEstimateRequest{
+		ProviderID: request.ProviderID, ProviderModelID: request.ProviderModelID,
+		EstimatedInputTokens: request.EstimatedInputTokens, MaxOutputTokens: request.MaxOutputTokens,
+	}, now)
 	if err != nil {
-		return modelruntime.CostReservation{}, fmt.Errorf("resolve price tier: %w", err)
+		return modelruntime.CostReservation{}, err
 	}
-	estimatedUSD, err := tier.EstimateCost(request.EstimatedInputTokens, 0, 0, request.MaxOutputTokens)
-	if err != nil {
-		return modelruntime.CostReservation{}, fmt.Errorf("estimate call cost: %w", err)
-	}
+	estimatedUSD := modelpricing.USDNanos(estimate.USDNanos)
 
 	if g.programResolver != nil {
 		if programScope.Family.Key != "" {
@@ -156,7 +180,7 @@ func (g *Gate) Reserve(ctx context.Context, request modelruntime.CostReservation
 
 	delta := agentbudget.Usage{
 		UsedUSD:        estimatedUSD,
-		UsedTokens:     request.EstimatedInputTokens + request.MaxOutputTokens,
+		UsedTokens:     estimate.Tokens,
 		UsedModelCalls: 1,
 	}
 	if err := g.budgets.ConsumeModelCall(ctx, budget.ID, request.InvocationID, delta, now); err != nil {

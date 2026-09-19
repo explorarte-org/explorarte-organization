@@ -28,7 +28,7 @@ func setupRevisionApprovalFixture() (*memCampaignStore, *campaign.ApprovalServic
 			"owner:" + campaign.CapabilityOwnerApprovalCreate:         true,
 		},
 	}
-	svc := campaign.NewApprovalService(store, auth)
+	svc := campaign.NewApprovalService(store, auth, permissiveRequirements())
 
 	p1Hash, _ := campaign.ComputeCanonicalHash(campaign.CanonicalPayload{
 		Title: "Campaign v1",

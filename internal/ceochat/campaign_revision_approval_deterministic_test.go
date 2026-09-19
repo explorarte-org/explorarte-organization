@@ -13,7 +13,7 @@ import (
 
 func buildRevisionApprovalTestService(chatStore Store, campStore campaign.Store, auth CapabilityAuthorizer, model *scriptedModelExecutor, taskCoord *fakeTaskCoordinator) *Service {
 	reg := NewToolRegistry()
-	approvalSvc := campaign.NewApprovalService(campStore, auth)
+	approvalSvc := campaign.NewApprovalService(campStore, auth, permissiveExecutionRequirements())
 	_ = RegisterCampaignTools(reg, "org-test", campStore, auth, WithApprovalService(approvalSvc))
 
 	historyStore := executionharness.NewMemoryHistoryStore()

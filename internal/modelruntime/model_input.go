@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
 	"sort"
 	"strings"
@@ -131,6 +132,45 @@ func PrepareModelInput(supplied *ModelInputEnvelope, snapshot ContextSnapshotRef
 		return PreparedModelInput{}, fmt.Errorf("%w: model input exceeds maximum size", ErrInvalidRequest)
 	}
 	return PreparedModelInput{Envelope: envelope, CanonicalBytes: canonical, CanonicalDigest: SHA256Bytes(canonical)}, nil
+}
+
+// SingleShotModelInputCeilingBytes is the canonical-JSON size of the largest
+// model input a typed, tool-free, single-turn call can carry when its rendered
+// context is at most renderedContextBytes and its execution contract is
+// contractBytes: the envelope's own fixed structure (keys, 64-hex digests, the
+// widest snapshot id, every classification) measured by the SAME CanonicalJSON
+// the real PrepareModelInput uses, plus the two stable-prefix message bodies.
+// It exists so a pre-execution preflight sizes an input through the real
+// envelope encoding instead of guessing framing overhead. It does not model
+// JSON string escaping of the bodies (a body byte counts as one byte).
+func SingleShotModelInputCeilingBytes(renderedContextBytes, contractBytes int) (int, error) {
+	if renderedContextBytes <= 0 || contractBytes < 0 {
+		return 0, fmt.Errorf("%w: input ceiling requires a positive rendered-context bound", ErrInvalidRequest)
+	}
+	digest := strings.Repeat("f", 64)
+	frame, err := CanonicalJSON(ModelInputEnvelope{
+		SchemaVersion:             ModelInputEnvelopeSchemaV1,
+		ContextSnapshotID:         math.MaxInt64,
+		CanonicalProjectionDigest: digest,
+		StablePrefix:              []ModelInputMessage{{Role: ModelInputRoleUser}, {Role: ModelInputRoleUser}},
+		StablePrefixDigest:        digest,
+		VisibleHistory:            []ModelInputMessage{},
+		ToolDefinitions:           []ModelInputToolDefinition{},
+		InputClassifications: []string{
+			string(modelegress.ClassificationPublic), string(modelegress.ClassificationSanitized),
+			string(modelegress.ClassificationOrganizational), string(modelegress.ClassificationSecret),
+			string(modelegress.ClassificationClinical),
+		},
+		InputClassificationsHash: digest,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("%w: measure model input envelope: %v", ErrInvalidRequest, err)
+	}
+	total := len(frame) + renderedContextBytes + contractBytes
+	if total > maxModelInputBytes {
+		total = maxModelInputBytes
+	}
+	return total, nil
 }
 
 func ValidateStoredModelInput(stored PreparedModelInput, snapshot ContextSnapshotRef) (PreparedModelInput, error) {

@@ -714,6 +714,7 @@ func setupDeterministicFixture(t *testing.T) (*memCampaignStore, *fakeTaskCoordi
 
 	finSvc, err := campaign.NewFinanceService(campaign.FinanceServiceConfig{
 		OrganizationID: "org-test",
+		Requirements:   permissiveRequirements(),
 		Store:          store,
 		Tasks:          taskCoord,
 		Authorizer:     auth,
@@ -1482,6 +1483,7 @@ func TestScenarioM_FinalizeFailureRecoveryConvergesWithoutSecondModelCall(t *tes
 	}
 	finSvcWithRunner, err := campaign.NewFinanceService(campaign.FinanceServiceConfig{
 		OrganizationID:    "org-test",
+		Requirements:      permissiveRequirements(),
 		Store:             store,
 		Tasks:             taskCoord,
 		HarnessRunner:     harnessRunner,

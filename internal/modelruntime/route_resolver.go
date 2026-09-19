@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/modelrouting"
@@ -210,6 +211,66 @@ func (r *DefaultRouteResolver) Resolve(ctx context.Context, req RouteResolutionR
 		CandidateHash:    approvedCandidate.CandidateHash,
 		DecisionReason:   decision.Reason,
 	}, nil
+}
+
+// RoutableModel names one provider model a policy can dispatch to.
+type RoutableModel struct {
+	ProviderID      string
+	ProviderModelID string
+}
+
+// PossibleRoutes lists EVERY provider model DefaultRouteResolver.Resolve
+// could ever select for req -- read-only, deterministic (sorted, de-duplicated)
+// and independent of the mutable capacity picture. A static policy has exactly
+// its one canonical binding; a pool policy has every materialized candidate,
+// because which one wins at dispatch time depends on capacity state that a
+// host preflight must not assume. It reads the same GetBinding /
+// GetRoutingPolicy / ListRoutingCandidates canonical state Resolve reads and
+// applies the same static-vs-pool decision, so a preflight that needs "what
+// could this role cost" never re-derives routing on its own.
+func PossibleRoutes(ctx context.Context, store RegistryStore, req RouteResolutionRequest) ([]RoutableModel, error) {
+	if store == nil {
+		return nil, fmt.Errorf("route enumeration requires a registry store")
+	}
+	policy, ok, err := store.GetRoutingPolicy(ctx, req.OrganizationID, req.OrganizationRevisionID, req.PolicyID)
+	if err != nil {
+		return nil, err
+	}
+	var routes []RoutableModel
+	if !ok {
+		binding, err := store.GetBinding(ctx, req.OrganizationID, req.OrganizationRevisionID, req.SubjectRoleID)
+		if err != nil {
+			return nil, err
+		}
+		routes = append(routes, RoutableModel{ProviderID: binding.Version.ProviderID, ProviderModelID: binding.Version.ProviderModelID})
+	} else {
+		if policy.RoutingMode != RoutingModePool {
+			return nil, fmt.Errorf("%w: policy %q has routing_mode %q", ErrRoutingPolicyMalformed, req.PolicyID, policy.RoutingMode)
+		}
+		stored, err := store.ListRoutingCandidates(ctx, req.OrganizationID, req.OrganizationRevisionID, req.PolicyID)
+		if err != nil {
+			return nil, err
+		}
+		if len(stored) == 0 {
+			return nil, fmt.Errorf("%w: pool policy %q has no materialized candidates", ErrRoutingPolicyMalformed, req.PolicyID)
+		}
+		for _, candidate := range stored {
+			routes = append(routes, RoutableModel{ProviderID: candidate.ProviderID, ProviderModelID: candidate.ProviderModelID})
+		}
+	}
+	sort.Slice(routes, func(i, j int) bool {
+		if routes[i].ProviderID != routes[j].ProviderID {
+			return routes[i].ProviderID < routes[j].ProviderID
+		}
+		return routes[i].ProviderModelID < routes[j].ProviderModelID
+	})
+	unique := routes[:0]
+	for i, route := range routes {
+		if i == 0 || route != routes[i-1] {
+			unique = append(unique, route)
+		}
+	}
+	return unique, nil
 }
 
 // ValidateResolvedRouteAgainstCanonical independently re-derives and
