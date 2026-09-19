@@ -489,8 +489,11 @@ func TestDeterministicMatrix(t *testing.T) {
 			ProposalCanonicalHash: v2.CanonicalHash,
 			ReviewerRoleID:        "empresa/finanzas",
 			Verdict:               campaign.VerdictRecommended,
-			RecommendedBudget:     &campaign.BudgetRecommendation{MaxUSD: 500},
-			CanonicalHash:         r2Hash,
+			RecommendedBudget: &campaign.BudgetRecommendation{
+				MaxUSD: 500, MaxTokens: 1000, MaxModelCalls: 1, MaxWallTimeMS: 60000,
+				MaxDepth: 1, MaxRetries: 1, MaxSubagents: 1,
+			},
+			CanonicalHash: r2Hash,
 		})
 
 		apprV2, _, err := svc.ApproveForExecution(ctx, campaign.ApproveParams{
@@ -552,4 +555,56 @@ func TestDeterministicMatrix(t *testing.T) {
 			t.Fatal("pCheck.ExecutionStarted must remain false")
 		}
 	})
+}
+
+// TestApprovalHistoricalDefense_ZeroSubagentsRejected proves that a historical-style
+// recommended FinancialReview containing max_subagents = 0 cannot produce a new
+// owner approval (CAMPAIGN_EXECUTABLE_BUDGET_CONTRACT_HOTFIX_V1 section 20).
+func TestApprovalHistoricalDefense_ZeroSubagentsRejected(t *testing.T) {
+	ctx := context.Background()
+	store, svc, p1, _ := setupRevisionApprovalFixture()
+
+	invalidBudget := campaign.BudgetRecommendation{
+		MaxUSD: 500, MaxTokens: 1000, MaxModelCalls: 1, MaxWallTimeMS: 60000,
+		MaxDepth: 1, MaxRetries: 1, MaxSubagents: 0, // invalid zero subagents (production historical shape)
+	}
+	rHash, _ := campaign.ComputeReviewCanonicalHash(campaign.ReviewCanonicalPayload{
+		ProposalID:            p1.ID,
+		ProposalCanonicalHash: p1.CanonicalHash,
+		ReviewerRoleID:        "empresa/finanzas",
+		Verdict:               campaign.VerdictRecommended,
+		RecommendedBudget:     &invalidBudget,
+	})
+
+	rev, _, err := store.RecordFinancialReview(ctx, campaign.RecordFinancialReviewCommand{
+		OrganizationID:        "org-1",
+		ReviewRequestID:       999,
+		ProposalID:            p1.ID,
+		ProposalCanonicalHash: p1.CanonicalHash,
+		ReviewerRoleID:        "empresa/finanzas",
+		Verdict:               campaign.VerdictRecommended,
+		RecommendedBudget:     &invalidBudget,
+		CanonicalHash:         rHash,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = svc.ApproveForExecution(ctx, campaign.ApproveParams{
+		OrganizationID:    "org-1",
+		ProposalID:        p1.ID,
+		FinancialReviewID: rev.ID,
+		ApprovedByRoleID:  "empresa/human",
+		ToolCallID:        "call-hist-appr",
+	})
+	if err == nil {
+		t.Fatal("expected error approving historical review with zero subagents, got nil")
+	}
+	if !errors.Is(err, campaign.ErrInvalidExecutionBudget) {
+		t.Fatalf("expected ErrInvalidExecutionBudget, got: %v", err)
+	}
+
+	if len(store.approvals) != 0 {
+		t.Fatalf("expected 0 approvals created, found %d", len(store.approvals))
+	}
 }

@@ -87,6 +87,23 @@ func financeFakeJSONGoal(t *testing.T, output campaign.FinanceReviewOutput) stri
 	return "Prove the real Finance Harness round trip. [fake-json-b64:" + base64.StdEncoding.EncodeToString(body) + "]"
 }
 
+// financeTestExecutableBudget returns a fresh, modest, strictly-positive
+// campaign.BudgetRecommendation for every one of its seven dimensions
+// (CAMPAIGN_EXECUTABLE_BUDGET_CONTRACT_HOTFIX_V1 section 3). Used across
+// test.fake real-Harness integration tests wherever a "recommended" verdict
+// is scripted.
+func financeTestExecutableBudget() *campaign.BudgetRecommendation {
+	return &campaign.BudgetRecommendation{
+		MaxUSD:        1.0,
+		MaxTokens:     1000,
+		MaxModelCalls: 2,
+		MaxWallTimeMS: 60000,
+		MaxDepth:      2,
+		MaxRetries:    1,
+		MaxSubagents:  1,
+	}
+}
+
 // testFinanceContextAdapter maps campaign.FinanceContextBuilder to a REAL
 // executive.ContextCoordinator (runtimeadapter.Context) -- duplicated from
 // cmd/orgctl/executive.go's own financeContextAdapter (unexported there,
@@ -482,7 +499,8 @@ func TestRealFinanceHarnessIntegration_MockOutputNilFullRoundTrip(t *testing.T) 
 
 	goal := financeFakeJSONGoal(t, campaign.FinanceReviewOutput{
 		Verdict: "recommended", Summary: "Real Harness round trip proof.",
-		Assumptions: []string{"none"}, Risks: []string{}, RequiredCorrections: []string{}, MissingInformation: []string{},
+		RecommendedBudget: financeTestExecutableBudget(),
+		Assumptions:       []string{"none"}, Risks: []string{}, RequiredCorrections: []string{}, MissingInformation: []string{},
 	})
 	_, taskID, reviewRequestID := fx.seedReadyReviewTaskWithGoal(t, service, "real-harness-full", goal)
 
@@ -590,7 +608,7 @@ func TestRealLeaseAuthority_EmptyLeaseTokenRejectedByAdapter(t *testing.T) {
 	ctx := context.Background()
 	service := f.withScriptedModel(t, &scriptedModel{})
 
-	goal := financeFakeJSONGoal(t, campaign.FinanceReviewOutput{Verdict: "recommended", Summary: "unused"})
+	goal := financeFakeJSONGoal(t, campaign.FinanceReviewOutput{Verdict: "recommended", Summary: "unused", RecommendedBudget: financeTestExecutableBudget()})
 	_, taskID, _ := fx.seedReadyReviewTaskWithGoal(t, service, "real-lease-neg", goal)
 
 	claimed, err := fx.tasksService.ClaimTaskByID(ctx, taskID, tasks.ClaimRequest{
@@ -648,7 +666,7 @@ func TestFinanceWorkerRealHarness_RunOnce(t *testing.T) {
 	ctx := context.Background()
 	service := f.withScriptedModel(t, &scriptedModel{})
 
-	goal := financeFakeJSONGoal(t, campaign.FinanceReviewOutput{Verdict: "recommended", Summary: "Real worker + real harness."})
+	goal := financeFakeJSONGoal(t, campaign.FinanceReviewOutput{Verdict: "recommended", Summary: "Real worker + real harness.", RecommendedBudget: financeTestExecutableBudget()})
 	_, taskID, reviewRequestID := fx.seedReadyReviewTaskWithGoal(t, service, "real-harness-worker", goal)
 
 	var mu sync.Mutex
@@ -707,7 +725,7 @@ func TestFinanceWorkerMultiReplicaRealHarness_TwoWorkersOneExecution(t *testing.
 	ctx := context.Background()
 	service := f.withScriptedModel(t, &scriptedModel{})
 
-	goal := financeFakeJSONGoal(t, campaign.FinanceReviewOutput{Verdict: "recommended", Summary: "Multi-replica real harness."})
+	goal := financeFakeJSONGoal(t, campaign.FinanceReviewOutput{Verdict: "recommended", Summary: "Multi-replica real harness.", RecommendedBudget: financeTestExecutableBudget()})
 	_, taskID, reviewRequestID := fx.seedReadyReviewTaskWithGoal(t, service, "real-harness-multi", goal)
 
 	var mu sync.Mutex
@@ -987,6 +1005,7 @@ func TestFinanceHarnessReentry_SameAttemptAdoptsDurableTerminalRun(t *testing.T)
 
 	goal := financeFakeJSONGoal(t, campaign.FinanceReviewOutput{
 		Verdict: "recommended", Summary: "Reentry proof.",
+		RecommendedBudget: financeTestExecutableBudget(),
 	})
 	_, taskID, reviewRequestID := fx.seedReadyReviewTaskWithGoal(t, service, "reentry-same-attempt", goal)
 
@@ -1117,4 +1136,82 @@ func TestFinanceHarnessReentry_SameAttemptAdoptsDurableTerminalRun(t *testing.T)
 	}
 
 	t.Logf("FINANCE_FULLSTACK_E2E_CLOSURE_V1 section 13: this proves same-attempt reentry only. A NEW Task Engine attempt after a legitimate retry/lease-expiry would compute a DIFFERENT RunID by design (AttemptID is part of the RunID formula) -- that boundary is intentionally not redesigned here.")
+}
+
+// TestRealFinanceHarnessIntegration_RecommendedZeroSubagentsFailsClosed proves that when
+// test.fake returns verdict "recommended" with max_subagents = 0 through the REAL Harness path
+// (MockOutput=nil, real PostgreSQL, real Task Engine, real Context Engine, real ExecutionHarness,
+// real Model Runtime), Finance host validation rejects the output, records FINANCE_OUTPUT_INVALID,
+// writes 0 FinancialReviews, fails the task terminally without lease-expiry retry loops,
+// and permits 0 owner approvals (CAMPAIGN_EXECUTABLE_BUDGET_CONTRACT_HOTFIX_V1 section 15).
+func TestRealFinanceHarnessIntegration_RecommendedZeroSubagentsFailsClosed(t *testing.T) {
+	f, fx, _, restore := newFinanceRealHarnessFixture(t)
+	defer f.cleanup()
+	defer restore()
+	ctx := context.Background()
+	service := f.withScriptedModel(t, &scriptedModel{})
+
+	invalidZeroSubagentsBudget := &campaign.BudgetRecommendation{
+		MaxUSD:        1.0,
+		MaxTokens:     1000,
+		MaxModelCalls: 2,
+		MaxWallTimeMS: 60000,
+		MaxDepth:      2,
+		MaxRetries:    1,
+		MaxSubagents:  0, // invalid zero subagents
+	}
+
+	goal := financeFakeJSONGoal(t, campaign.FinanceReviewOutput{
+		Verdict:           "recommended",
+		Summary:           "Finance recommended with zero subagents fails closed.",
+		RecommendedBudget: invalidZeroSubagentsBudget,
+		Assumptions:       []string{"none"},
+		Risks:             []string{},
+	})
+	proposalID, taskID, reviewRequestID := fx.seedReadyReviewTaskWithGoal(t, service, "real-harness-zero-subagents", goal)
+
+	_, _, err := fx.financeService.ExecuteReviewTask(ctx, campaign.ExecuteReviewParams{
+		OrganizationID:  chatTestOrganization,
+		TaskID:          taskID,
+		ReviewRequestID: reviewRequestID,
+	})
+	if err == nil {
+		t.Fatal("expected ExecuteReviewTask to fail closed on zero subagents, got nil")
+	}
+
+	// 1. Zero financial reviews persisted
+	var reviewCount int
+	if err := f.store.Pool().QueryRow(ctx, "SELECT count(*) FROM campaign_financial_reviews WHERE organization_id=$1 AND review_request_id=$2", chatTestOrganization, reviewRequestID).Scan(&reviewCount); err != nil {
+		t.Fatalf("count reviews: %v", err)
+	}
+	if reviewCount != 0 {
+		t.Errorf("review rows = %d, want 0", reviewCount)
+	}
+
+	// 2. Zero owner approvals
+	var approvalCount int
+	if err := f.store.Pool().QueryRow(ctx, "SELECT count(*) FROM campaign_owner_approvals WHERE organization_id=$1 AND proposal_id=$2", chatTestOrganization, proposalID).Scan(&approvalCount); err != nil {
+		t.Fatalf("count approvals: %v", err)
+	}
+	if approvalCount != 0 {
+		t.Errorf("approval rows = %d, want 0", approvalCount)
+	}
+
+	// 3. Task is in terminal failed status (no lease retry loop)
+	var taskStatus string
+	if err := f.store.Pool().QueryRow(ctx, "SELECT status FROM tasks WHERE id=$1", taskID).Scan(&taskStatus); err != nil {
+		t.Fatalf("query task status: %v", err)
+	}
+	if taskStatus != "failed" {
+		t.Errorf("task status = %q, want failed", taskStatus)
+	}
+
+	// 4. Attempt recorded with FINANCE_OUTPUT_INVALID
+	var failureCode *string
+	if err := f.store.Pool().QueryRow(ctx, "SELECT failure_code FROM task_attempts WHERE task_id=$1 ORDER BY id DESC LIMIT 1", taskID).Scan(&failureCode); err != nil {
+		t.Fatalf("query attempt failure_code: %v", err)
+	}
+	if failureCode == nil || *failureCode != "FINANCE_OUTPUT_INVALID" {
+		t.Errorf("attempt failure_code = %v, want FINANCE_OUTPUT_INVALID", failureCode)
+	}
 }

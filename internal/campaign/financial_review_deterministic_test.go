@@ -530,13 +530,14 @@ func (s *memCampaignStore) GetPromotionByApprovalID(ctx context.Context, organiz
 
 // fakeTaskCoordinator tracks created tasks, claims, attempts, and finalizations.
 type fakeTaskCoordinator struct {
-	mu              sync.Mutex
-	tasks           map[int64]tasks.Task
-	tasksByKey      map[string]tasks.Task
-	nextID          int64
-	recordFail      bool
-	finalizeFail    bool
-	finalizeRetries int
+	mu                 sync.Mutex
+	tasks              map[int64]tasks.Task
+	tasksByKey         map[string]tasks.Task
+	nextID             int64
+	recordFail         bool
+	finalizeFail       bool
+	finalizeRetries    int
+	lastRecordedResult tasks.AttemptResult
 }
 
 func newFakeTaskCoordinator() *fakeTaskCoordinator {
@@ -634,12 +635,17 @@ func (f *fakeTaskCoordinator) RecordAttemptResult(ctx context.Context, cmd tasks
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	f.lastRecordedResult = cmd.Result
 	if f.recordFail {
 		return tasks.Task{}, errors.New("authority rejection: lease expired or unauthorized")
 	}
 
 	t := f.tasks[cmd.TaskID]
-	t.Status = tasks.StatusAwaitingVerification
+	if cmd.Result.Outcome == tasks.OutcomeNonRetryableFailure {
+		t.Status = tasks.StatusFailed
+	} else {
+		t.Status = tasks.StatusAwaitingVerification
+	}
 	f.tasks[cmd.TaskID] = t
 	return t, nil
 }
@@ -745,6 +751,19 @@ func createTestProposal(t *testing.T, store *memCampaignStore, orgID, title, goa
 		t.Fatalf("CreateProposal: %v", err)
 	}
 	return prop
+}
+
+// validExecutionBudget returns a fresh, strictly-positive
+// campaign.BudgetRecommendation in every one of its seven dimensions --
+// the minimum shape CAMPAIGN_EXECUTABLE_BUDGET_CONTRACT_HOTFIX_V1's
+// validateFinanceReviewOutput now requires alongside a "recommended"
+// verdict. A fresh pointer per call so callers may safely take its
+// address without aliasing another test's budget.
+func validExecutionBudget() *campaign.BudgetRecommendation {
+	return &campaign.BudgetRecommendation{
+		MaxUSD: 1.0, MaxTokens: 1000, MaxModelCalls: 1, MaxWallTimeMS: 60000,
+		MaxDepth: 1, MaxRetries: 1, MaxSubagents: 1,
+	}
 }
 
 // =========================================================================
@@ -1315,8 +1334,9 @@ func TestScenarioJ_ReviewReplayReusesExistingReview(t *testing.T) {
 	}
 
 	mockOutput := campaign.FinanceReviewOutput{
-		Verdict: string(campaign.VerdictRecommended),
-		Summary: "Replay test review",
+		Verdict:           string(campaign.VerdictRecommended),
+		Summary:           "Replay test review",
+		RecommendedBudget: validExecutionBudget(),
 	}
 
 	firstReview, reusedFirst, err := finSvc.ExecuteReviewTask(context.Background(), campaign.ExecuteReviewParams{
@@ -1406,8 +1426,9 @@ func TestScenarioL_RecordResultFailurePersistsZeroDurableReviews(t *testing.T) {
 	taskCoord.recordFail = true
 
 	mockOutput := campaign.FinanceReviewOutput{
-		Verdict: string(campaign.VerdictRecommended),
-		Summary: "Should never persist",
+		Verdict:           string(campaign.VerdictRecommended),
+		Summary:           "Should never persist",
+		RecommendedBudget: validExecutionBudget(),
 	}
 
 	_, _, err = finSvc.ExecuteReviewTask(context.Background(), campaign.ExecuteReviewParams{
@@ -1450,8 +1471,9 @@ func TestScenarioM_FinalizeFailureRecoveryConvergesWithoutSecondModelCall(t *tes
 	harnessRunner := &countingHarnessRunner{
 		callCount: &modelCallCount,
 		output: campaign.FinanceReviewOutput{
-			Verdict: string(campaign.VerdictRecommended),
-			Summary: "Valid review",
+			Verdict:           string(campaign.VerdictRecommended),
+			Summary:           "Valid review",
+			RecommendedBudget: validExecutionBudget(),
 		},
 	}
 	finSvcWithRunner, err := campaign.NewFinanceService(campaign.FinanceServiceConfig{
@@ -1530,8 +1552,9 @@ func TestScenarioN_ExecutionNonEffectInvariant(t *testing.T) {
 	}
 
 	mockOutput := campaign.FinanceReviewOutput{
-		Verdict: string(campaign.VerdictRecommended),
-		Summary: "Non-effect proof review",
+		Verdict:           string(campaign.VerdictRecommended),
+		Summary:           "Non-effect proof review",
+		RecommendedBudget: validExecutionBudget(),
 	}
 
 	_, _, err = finSvc.ExecuteReviewTask(context.Background(), campaign.ExecuteReviewParams{
@@ -1580,4 +1603,81 @@ func (c *countingHarnessRunner) Run(ctx context.Context, spec executionharness.R
 		Status:      executionharness.StatusCompleted,
 		FinalOutput: string(raw),
 	}, nil
+}
+
+// TestProductionRepro_RecommendedZeroSubagentsRejected reproduces the exact production failure
+// (CAMPAIGN_EXECUTABLE_BUDGET_CONTRACT_HOTFIX_V1 sections 12 and 13):
+// Finance model returns verdict "recommended" with max_subagents = 0.
+// Under the new contract, FinanceService must reject the output BEFORE persisting any review,
+// record a terminal non-retryable failure with FINANCE_OUTPUT_INVALID on Task Engine,
+// persist zero financial reviews, and leave the task failed (not completed), with no owner approval possible.
+func TestProductionRepro_RecommendedZeroSubagentsRejected(t *testing.T) {
+	store, taskCoord, finSvc, _ := setupDeterministicFixture(t)
+	prop := createTestProposal(t, store, "org-test", "Campaign Prod Repro", "Goal")
+
+	req, task, _, err := finSvc.RequestReview(context.Background(), campaign.RequestReviewParams{
+		OrganizationID:      "org-test",
+		ProposalID:          prop.ID,
+		RequestedByRoleID:   "empresa/ceo",
+		RequestedFromTaskID: 20,
+		ToolCallID:          "call_prod_repro",
+	})
+	if err != nil {
+		t.Fatalf("RequestReview: %v", err)
+	}
+
+	// Exact production budget shape (max_subagents = 0)
+	prodMockOutput := campaign.FinanceReviewOutput{
+		Verdict: string(campaign.VerdictRecommended),
+		Summary: "Production repro: valid dimensions but max_subagents=0",
+		RecommendedBudget: &campaign.BudgetRecommendation{
+			MaxUSD:        0.05,
+			MaxTokens:     4000,
+			MaxModelCalls: 2,
+			MaxWallTimeMS: 60000,
+			MaxDepth:      1,
+			MaxRetries:    1,
+			MaxSubagents:  0, // EXACT production blocker
+		},
+		EstimatedCost: &campaign.EstimatedCost{
+			Amount:     0.02,
+			Currency:   "USD",
+			Confidence: "high",
+		},
+	}
+
+	_, _, err = finSvc.ExecuteReviewTask(context.Background(), campaign.ExecuteReviewParams{
+		OrganizationID:  "org-test",
+		TaskID:          task.ID,
+		ReviewRequestID: req.ID,
+		MockOutput:      &prodMockOutput,
+	})
+	if err == nil {
+		t.Fatal("expected error executing review with zero subagents, got nil")
+	}
+	if !errors.Is(err, campaign.ErrInvalidExecutionBudget) {
+		t.Fatalf("expected error wrapping ErrInvalidExecutionBudget, got: %v", err)
+	}
+
+	// Persist order assertion (Section 13):
+	// Validation happened before review persistence -> reviews count == 0
+	if len(store.financialReviews) != 0 {
+		t.Fatalf("expected 0 financial reviews persisted, found %d", len(store.financialReviews))
+	}
+
+	// Terminal non-retryable failure recorded with FINANCE_OUTPUT_INVALID
+	if taskCoord.lastRecordedResult.Outcome != tasks.OutcomeNonRetryableFailure {
+		t.Errorf("expected outcome %q, got %q", tasks.OutcomeNonRetryableFailure, taskCoord.lastRecordedResult.Outcome)
+	}
+	if taskCoord.lastRecordedResult.FailureCode != "FINANCE_OUTPUT_INVALID" {
+		t.Errorf("expected failure code FINANCE_OUTPUT_INVALID, got %q", taskCoord.lastRecordedResult.FailureCode)
+	}
+
+	// Task must not reach completed
+	taskCoord.mu.Lock()
+	postTask := taskCoord.tasks[task.ID]
+	taskCoord.mu.Unlock()
+	if postTask.Status == tasks.StatusCompleted {
+		t.Errorf("task reached completed status, want failed")
+	}
 }
