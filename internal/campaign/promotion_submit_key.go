@@ -6,14 +6,41 @@ import (
 )
 
 const (
-	promotionSubmitKeyPrefix = "campaign-promotion-"
-	canonicalHashMinLen      = 16
-	canonicalHashPrefixLen   = 16
-	maxSubmitKeyBytes        = 200
+	promotionSubmitKeyPrefix            = "campaign-promotion:"
+	promotionTrustedRootCausationPrefix = "campaign-promotion-"
+	canonicalHashMinLen                 = 16
+	canonicalHashPrefixLen              = 16
+	maxSubmitKeyBytes                   = 200
 )
 
-// CampaignPromotionSubmitKey produces a deterministic, trusted-root-safe Executive
+// CampaignPromotionSubmitKey produces a deterministic, pre-#226 compatible Executive
 // submit idempotency key from an owner approval ID and its canonical hash.
+//
+// Shape:
+//
+//	campaign-promotion:<approvalID>:<first16CanonicalHash>
+//
+// Example:
+//
+//	campaign-promotion:42:0123456789abcdef
+//
+// This preserves Campaign's durable submission identity across versions so that
+// retries find the existing durable Executive root without opening a duplicate-root
+// crash window.
+func CampaignPromotionSubmitKey(approvalID int64, canonicalHash string) (string, error) {
+	prefix, err := validateApprovalAndCanonicalHash(approvalID, canonicalHash)
+	if err != nil {
+		return "", err
+	}
+	key := fmt.Sprintf("%s%d:%s", promotionSubmitKeyPrefix, approvalID, prefix)
+	if len(key) > maxSubmitKeyBytes {
+		return "", fmt.Errorf("%w: campaign promotion submit key exceeds %d bytes (%d)", ErrInvalidInput, maxSubmitKeyBytes, len(key))
+	}
+	return key, nil
+}
+
+// CampaignPromotionTrustedRootCausationKey produces a deterministic, trusted-root-safe
+// causation key from an owner approval ID and its canonical hash.
 //
 // Shape:
 //
@@ -21,17 +48,30 @@ const (
 //
 // Example:
 //
-//	campaign-promotion-2-c94240ebc0c117c5
+//	campaign-promotion-42-0123456789abcdef
 //
-// The generated key strictly satisfies modeldispatch's trusted-root causation syntax
-// when prefixed with "owner:":
+// When prefixed with "owner:" in Executive root causation ("owner:" + key), the resulting
+// token strictly satisfies modeldispatch's trusted-root causation syntax:
 //
 //	^[a-zA-Z0-9]+(?:[._/-][a-zA-Z0-9]+)*$
 //
-// Colons are strictly forbidden. Input fields must be valid structured host facts:
-// approvalID must be positive, and canonicalHash must contain at least 16 lowercase
-// hexadecimal characters without any lossy replacement or arbitrary sanitization.
-func CampaignPromotionSubmitKey(approvalID int64, canonicalHash string) (string, error) {
+// Colons are strictly forbidden in this causation key.
+func CampaignPromotionTrustedRootCausationKey(approvalID int64, canonicalHash string) (string, error) {
+	prefix, err := validateApprovalAndCanonicalHash(approvalID, canonicalHash)
+	if err != nil {
+		return "", err
+	}
+	key := fmt.Sprintf("%s%d-%s", promotionTrustedRootCausationPrefix, approvalID, prefix)
+	if len(key) > maxSubmitKeyBytes {
+		return "", fmt.Errorf("%w: campaign promotion trusted root causation key exceeds %d bytes (%d)", ErrInvalidInput, maxSubmitKeyBytes, len(key))
+	}
+	if strings.Contains(key, ":") {
+		return "", fmt.Errorf("%w: campaign promotion trusted root causation key contains forbidden colon", ErrInvalidInput)
+	}
+	return key, nil
+}
+
+func validateApprovalAndCanonicalHash(approvalID int64, canonicalHash string) (string, error) {
 	if approvalID <= 0 {
 		return "", fmt.Errorf("%w: owner approval ID must be positive, got %d", ErrInvalidInput, approvalID)
 	}
@@ -45,15 +85,7 @@ func CampaignPromotionSubmitKey(approvalID int64, canonicalHash string) (string,
 			return "", fmt.Errorf("%w: canonical hash prefix must be lowercase hexadecimal characters, got %q", ErrInvalidInput, prefix)
 		}
 	}
-
-	key := fmt.Sprintf("%s%d-%s", promotionSubmitKeyPrefix, approvalID, prefix)
-	if len(key) > maxSubmitKeyBytes {
-		return "", fmt.Errorf("%w: campaign promotion submit key exceeds %d bytes (%d)", ErrInvalidInput, maxSubmitKeyBytes, len(key))
-	}
-	if strings.Contains(key, ":") {
-		return "", fmt.Errorf("%w: campaign promotion submit key contains forbidden colon", ErrInvalidInput)
-	}
-	return key, nil
+	return prefix, nil
 }
 
 func campaignPromotionSubmitKey(approvalID int64, canonicalHash string) (string, error) {

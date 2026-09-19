@@ -943,11 +943,14 @@ func TestCanonicalCampaignPromotionToExecutive(t *testing.T) {
 	// Verify root task causation in PostgreSQL:
 	// - Prefixed with "owner:campaign-promotion-"
 	// - Contains no forbidden ":" after "owner:"
-	// - Exact suffix matches prom.ExecutiveSubmitIdempotencyKey
-	var rootCausation string
-	err = store.Pool().QueryRow(ctx, "SELECT causation_id FROM tasks WHERE id = $1", prom.ExecutiveRootTaskID).Scan(&rootCausation)
+	// - Exact suffix matches trusted-root causation key
+	// Verify root task idempotency key in PostgreSQL:
+	// - Preserves pre-#226 submission identity: "campaign-promotion:<approvalID>:<hash16>"
+	// - Exact match with prom.ExecutiveSubmitIdempotencyKey
+	var rootCausation, rootIdempotencyKey string
+	err = store.Pool().QueryRow(ctx, "SELECT causation_id, idempotency_key FROM tasks WHERE id = $1", prom.ExecutiveRootTaskID).Scan(&rootCausation, &rootIdempotencyKey)
 	if err != nil {
-		t.Fatalf("query root causation: %v", err)
+		t.Fatalf("query root causation and idempotency key: %v", err)
 	}
 	if !strings.HasPrefix(rootCausation, "owner:campaign-promotion-") {
 		t.Fatalf("root causation %q does not start with owner:campaign-promotion-", rootCausation)
@@ -956,8 +959,26 @@ func TestCanonicalCampaignPromotionToExecutive(t *testing.T) {
 	if strings.Contains(rootSuffix, ":") {
 		t.Fatalf("root causation suffix %q contains forbidden colon", rootSuffix)
 	}
-	if rootSuffix != prom.ExecutiveSubmitIdempotencyKey {
-		t.Fatalf("root causation suffix %q != ExecutiveSubmitIdempotencyKey %q", rootSuffix, prom.ExecutiveSubmitIdempotencyKey)
+	wantCausationKey, err := campaign.CampaignPromotionTrustedRootCausationKey(prom.OwnerApprovalID, prom.OwnerApprovalCanonicalHash)
+	if err != nil {
+		t.Fatalf("derive causation key: %v", err)
+	}
+	if rootSuffix != wantCausationKey {
+		t.Fatalf("root causation suffix %q != wantCausationKey %q", rootSuffix, wantCausationKey)
+	}
+
+	wantSubmitKey, err := campaign.CampaignPromotionSubmitKey(prom.OwnerApprovalID, prom.OwnerApprovalCanonicalHash)
+	if err != nil {
+		t.Fatalf("derive submit key: %v", err)
+	}
+	if prom.ExecutiveSubmitIdempotencyKey != wantSubmitKey {
+		t.Fatalf("prom.ExecutiveSubmitIdempotencyKey %q != wantSubmitKey %q", prom.ExecutiveSubmitIdempotencyKey, wantSubmitKey)
+	}
+	if rootIdempotencyKey != wantSubmitKey {
+		t.Fatalf("root idempotency_key %q != wantSubmitKey %q", rootIdempotencyKey, wantSubmitKey)
+	}
+	if !strings.Contains(prom.ExecutiveSubmitIdempotencyKey, ":") {
+		t.Fatalf("expected colons preserved in ExecutiveSubmitIdempotencyKey: %q", prom.ExecutiveSubmitIdempotencyKey)
 	}
 
 	// Verify CEO planning task child lineage:
@@ -1077,6 +1098,69 @@ func TestCanonicalCampaignPromotionToExecutive(t *testing.T) {
 		t.Errorf("error = %q, want it to contain %q", badErr.Error(), "unsupported causation")
 	}
 	t.Logf("PASS: real AuthorizedAttemptProvisioner rejected old colon root causation with: %v", badErr)
+
+	// 15. Version-Transition Crash Test (MANDATORY REGRESSION):
+	// A. Simulate pre-#226 submission identity:
+	//    oldKey = campaign-promotion:<approvalID>:<hash16>
+	// B. Durably create the Executive root under oldKey in PostgreSQL with old colon causation
+	// C. Do NOT create CampaignPromotion (simulate crash after Executive.Submit)
+	// D. Retry promotion under the new code
+	// E. Assert:
+	//    EXECUTIVE_ROOT_COUNT = 1. Never 2.
+	//    Acceptable outcome: explicit fail-closed reconciliation error or sound adoption.
+	legacyApprovalID := int64(9999)
+	legacyHash := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	legacyOldKey, err := campaign.CampaignPromotionSubmitKey(legacyApprovalID, legacyHash)
+	if err != nil {
+		t.Fatalf("derive legacy submit key: %v", err)
+	}
+	legacyOldCausation := "owner:" + legacyOldKey
+
+	// B. Durably create Executive root in PostgreSQL under oldKey:
+	_, _, err = executiveTasks.CreateTask(ctx, tasks.CreateRequest{
+		OrganizationID:    chatTestOrganization,
+		RequestedByRoleID: executive.OwnerRoleID,
+		AssignedRoleID:    executive.CEORoleID,
+		TaskClass:         executive.TaskClassOwnerGoal,
+		IdempotencyKey:    legacyOldKey,
+		Title:             "Legacy pre-#226 root",
+		Instructions:      "reproduction test",
+		CorrelationID:     "executive:legacy-corr-" + t.Name(),
+		CausationID:       legacyOldCausation,
+	}, "role", executive.OwnerRoleID)
+	if err != nil {
+		t.Fatalf("create legacy root task: %v", err)
+	}
+
+	// C. Do NOT create CampaignPromotion row (simulating crash before CreatePromotion).
+
+	// D. Retry promotion under the new code:
+	newCausationKey, err := campaign.CampaignPromotionTrustedRootCausationKey(legacyApprovalID, legacyHash)
+	if err != nil {
+		t.Fatalf("derive new causation key: %v", err)
+	}
+	_, _, retryErr := realExecutive.Submit(ctx, executive.SubmitRequest{
+		ActorRoleID:             executive.OwnerRoleID,
+		IdempotencyKey:          legacyOldKey,
+		TrustedRootCausationKey: newCausationKey,
+		Goal: executive.OwnerGoal{
+			Goal: "reproduction test",
+			AcceptanceCriteria: []executive.AcceptanceCriterion{
+				{Text: "verified", Phase: executive.AcceptanceDesign},
+			},
+		},
+	})
+
+	// E. Assert: EXECUTIVE_ROOT_COUNT = 1. Never 2.
+	var legacyRootCount int
+	err = store.Pool().QueryRow(ctx, "SELECT count(*) FROM tasks WHERE idempotency_key = $1", legacyOldKey).Scan(&legacyRootCount)
+	if err != nil {
+		t.Fatalf("query legacy root count: %v", err)
+	}
+	if legacyRootCount != 1 {
+		t.Fatalf("EXECUTIVE_ROOT_COUNT = %d, want 1 (never 2)", legacyRootCount)
+	}
+	t.Logf("PASS: Cross-version crash retry preserved exactly 1 Executive root (outcome err: %v)", retryErr)
 }
 
 // TestCanonicalCampaignInjectedTextNeverEscalatesAuthority is the
