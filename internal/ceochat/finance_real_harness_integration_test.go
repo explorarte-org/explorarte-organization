@@ -64,6 +64,7 @@ import (
 	identitybootstrap "github.com/Mireuz13/explorarte-organization/internal/modelidentity/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/modelpricing"
 	modelpricingpostgres "github.com/Mireuz13/explorarte-organization/internal/modelpricing/postgres"
+	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime/adapter"
 	modelbootstrap "github.com/Mireuz13/explorarte-organization/internal/modelruntime/bootstrap"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
@@ -769,4 +770,351 @@ func TestFinanceWorkerMultiReplicaRealHarness_TwoWorkersOneExecution(t *testing.
 	if completedCount != 1 {
 		t.Errorf("completed task count = %d, want 1", completedCount)
 	}
+}
+
+// buildRealHarnessFinanceWorkerForE2E builds a real-Harness Finance
+// autonomous worker (MockOutput=nil, real Context Engine, real Model
+// Runtime) that DISPATCHES THROUGH THE CALLER'S OWN modelRuntime instance
+// -- e.g. canonical_dispatch_e2e_test.go's newCEOChatCanonicalE2EFixtureWithStore's
+// own returned *modelbootstrap.Runtime, whose registered test.fake
+// adapter is already reachable. FINANCE_FULLSTACK_E2E_CLOSURE_V1.
+//
+// It reuses alignFinanceRoleForRealDispatch exactly as documented for its
+// intended use: the CALLER is expected to have already shifted
+// organizations.current_revision_id to a throwaway sibling registry
+// revision with a test.fake egress allow plan already applied (as
+// newCEOChatCanonicalE2EFixtureWithStore's own repointCEORoleBindingToTestFake
+// does for empresa/ceo) -- this function does NOT create a new sibling or
+// a new egress plan, only Finance's own role_model_binding under whatever
+// revision is already current, and a pricing tier for Finance's own
+// provider_model_id ("ceochat-e2e-finance-fake", distinct from CEO's own
+// "ceochat-e2e-fake" entry).
+func buildRealHarnessFinanceWorkerForE2E(t *testing.T, store *platformpostgres.Store, tasksSvc *tasks.Service, modelRuntime *modelbootstrap.Runtime, organizationID string) (worker *financeworker.Worker, campStore *campaignpostgres.Store, restore func()) {
+	t.Helper()
+	ctx := context.Background()
+
+	campStore, err := campaignpostgres.New(store)
+	if err != nil {
+		t.Fatalf("open campaign store: %v", err)
+	}
+	registryRepo, err := registry.NewPostgresRepository(store)
+	if err != nil {
+		t.Fatalf("open registry repository: %v", err)
+	}
+	revision, err := registryRepo.GetCurrentRevision(ctx, organizationID)
+	if err != nil || revision == nil {
+		t.Fatalf("read current organization revision: revision=%+v err=%v", revision, err)
+	}
+	authorizationStore, err := authorizationpostgres.New(store)
+	if err != nil {
+		t.Fatalf("open authorization store: %v", err)
+	}
+	authorizerPolicy, err := authorization.NewWithPolicyReader(authorizationStore, organizationID, filepath.Join("..", "..", "docs", "canonical"))
+	if err != nil {
+		t.Fatalf("open capability authorizer: %v", err)
+	}
+	roleResolver := campaign.DefaultReviewerRoleResolver{Registry: registryRepo, Authorizer: authorizerPolicy}
+	reviewerRoleID, err := roleResolver.ResolveReviewerRole(ctx, organizationID, revision.ID)
+	if err != nil {
+		t.Fatalf("resolve canonical finance reviewer role: %v", err)
+	}
+	restore = alignFinanceRoleForRealDispatch(t, store, organizationID, reviewerRoleID)
+
+	dispatch := buildTestModelDispatch(t, store, tasksSvc, organizationID)
+	financeAssignments, err := dispatch.NewAuthorizedAttemptProvisioner(chatTestDispatchPrincipalKey)
+	if err != nil {
+		t.Fatalf("create finance dispatch provisioner: %v", err)
+	}
+	roleBoundResolver, err := runtimeadapter.NewRoleBoundPrincipalResolver(dispatch.Store, organizationID)
+	if err != nil {
+		t.Fatalf("create role-bound principal resolver: %v", err)
+	}
+	financePrincipal, err := roleBoundResolver.Resolve(ctx, reviewerRoleID)
+	if err != nil {
+		t.Fatalf("resolve finance role-bound principal: %v", err)
+	}
+	holderPrincipalID := strconv.FormatInt(financePrincipal.ID, 10)
+
+	harnessAuthority, err := modelRuntime.NewHarnessAuthority()
+	if err != nil {
+		t.Fatalf("create real harness authority: %v", err)
+	}
+	harnessHistory, err := executionharnesspostgres.New(store, organizationID)
+	if err != nil {
+		t.Fatalf("create real harness history/descriptor store: %v", err)
+	}
+	contextBuilder := buildTestFinanceContextBuilder(t, store, tasksSvc, organizationID)
+
+	pricingStore, err := modelpricingpostgres.New(store)
+	if err != nil {
+		t.Fatalf("open pricing store: %v", err)
+	}
+	pricingService, err := modelpricing.NewService(pricingStore)
+	if err != nil {
+		t.Fatalf("open pricing service: %v", err)
+	}
+	if _, err = pricingService.Upsert(ctx, modelpricing.PriceTier{
+		ProviderID: "test.fake", ProviderModelID: "ceochat-e2e-finance-fake", ContextTierName: "default",
+		InputPriceNanosPerMillion: 1_000_000_000, OutputPriceNanosPerMillion: 2_000_000_000,
+		BillingMode: modelpricing.BillingOnline, EffectiveAt: time.Now().UTC().Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("seed test.fake price tier: %v", err)
+	}
+
+	financeService, err := campaign.NewFinanceService(campaign.FinanceServiceConfig{
+		OrganizationID:  organizationID,
+		Store:           campStore,
+		Tasks:           finTestTaskCoordinator{tasksSvc},
+		Assignments:     financeTestDispatchProvisioner{financeAssignments},
+		Authorizer:      authorizerPolicy,
+		RoleResolver:    roleResolver,
+		Authority:       harnessAuthority,
+		HarnessHistory:  harnessHistory,
+		DescriptorStore: harnessHistory,
+		ContextBuilder:  contextBuilder,
+		NewModelExecutor: func(execConfig modelruntimeadapter.Config) (executionharness.ModelExecutor, error) {
+			return modelRuntime.NewHarnessModelExecutor(execConfig)
+		},
+		WorkerID:          "finance-worker-e2e-real-harness",
+		HolderPrincipalID: holderPrincipalID,
+		LeaseDuration:     2 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("create finance service (real harness e2e): %v", err)
+	}
+
+	discovery := financeworker.DiscoveryTaskSource{Service: tasksSvc, OrganizationID: organizationID, ReviewerRoleID: reviewerRoleID}
+	worker, err = financeworker.NewWorker(discovery, campStore, financeService, financeworker.DefaultConfig(organizationID))
+	if err != nil {
+		t.Fatalf("NewWorker (real harness e2e): %v", err)
+	}
+	return worker, campStore, restore
+}
+
+// financeReentryToolCatalog/financeReentryToolExecutor are deny-all
+// stand-ins for internal/campaign's own unexported financeToolCatalog/
+// financeToolExecutor (needed here because this test drives a SECOND,
+// independent executionharness.Runtime directly, from black-box code --
+// see TestFinanceHarnessReentry_SameAttemptAdoptsDurableTerminalRun).
+// Behaviorally identical: Finance exposes zero tools, so any tool intent
+// must be denied before either of these is ever reached.
+type financeReentryToolCatalog struct{}
+
+func (financeReentryToolCatalog) Lookup(context.Context, string) (executionharness.ToolDefinition, bool) {
+	return executionharness.ToolDefinition{}, false
+}
+
+func (financeReentryToolCatalog) ValidateArguments(context.Context, executionharness.ToolDefinition, []byte) error {
+	return fmt.Errorf("finance reentry fixture: no tools are exposed")
+}
+
+type financeReentryToolExecutor struct{}
+
+func (financeReentryToolExecutor) Execute(context.Context, executionharness.RunIdentity, executionharness.ToolRequest) (executionharness.ToolExecutionResult, error) {
+	return executionharness.ToolExecutionResult{}, fmt.Errorf("finance reentry fixture: no tools execute")
+}
+
+func mustCountModelInvocations(t *testing.T, ctx context.Context, store *platformpostgres.Store, taskID, attemptID int64) int {
+	t.Helper()
+	var count int
+	if err := store.Pool().QueryRow(ctx, "SELECT count(*) FROM model_invocations WHERE task_id=$1 AND attempt_id=$2", taskID, attemptID).Scan(&count); err != nil {
+		t.Fatalf("count model invocations: %v", err)
+	}
+	return count
+}
+
+// capturingHarnessRunner satisfies campaign.HarnessRunner: it captures the
+// EXACT RunSpec runHarnessModel builds (including the real, ephemeral
+// LeaseToken a completed task can no longer be asked for afterward) and
+// forwards it, unmodified, to a REAL underlying executionharness.Runtime
+// -- nothing about the real path changes; only the spec is observed en
+// route. Used by TestFinanceHarnessReentry_SameAttemptAdoptsDurableTerminalRun
+// so its own reentry call can reuse the identical spec, rather than
+// attempting to reconstruct one after the fact (validateSpec's own
+// identity digest includes a hash of LeaseToken, which is never
+// otherwise readable back once a task has moved past 'running').
+type capturingHarnessRunner struct {
+	runtime *executionharness.Runtime
+
+	mu       sync.Mutex
+	lastSpec executionharness.RunSpec
+	calls    int
+}
+
+func (r *capturingHarnessRunner) Run(ctx context.Context, spec executionharness.RunSpec) (executionharness.RunResult, error) {
+	r.mu.Lock()
+	r.lastSpec = spec
+	r.calls++
+	r.mu.Unlock()
+	return r.runtime.Execute(ctx, spec), nil
+}
+
+// TestFinanceHarnessReentry_SameAttemptAdoptsDurableTerminalRun is
+// FINANCE_FULLSTACK_E2E_CLOSURE_V1 GAP C: proves the deterministic
+// RunID/context Finance's own runHarnessModel computes is not merely
+// deterministic as a function (that is already pinned by
+// internal/campaign's own unit test), but ACTUALLY prevents a second real
+// Model Runtime dispatch when durable Harness history for the same
+// task/attempt already holds the terminal result -- exercised against
+// executionharness.Runtime + REAL PostgreSQL HarnessHistory/RunDescriptor
+// stores, counting real model_invocations rows (a durable, DB-verifiable
+// fact, never a mock's own in-memory counter and never merely two
+// computeFinanceRunID(...) calls compared for equality).
+//
+// Design: FinanceService.ExecuteReviewTask runs with a capturingHarnessRunner
+// (see its own doc comment) wrapping the SAME real Authority/History/
+// DescriptorStore/Model-Runtime dependencies every other real-Harness
+// test in this file uses -- the real Harness run completes exactly once
+// (review persisted, task completed, one model_invocations row), and the
+// EXACT RunSpec it used (including its real, otherwise-unrecoverable
+// LeaseToken) is captured. This test then drives a SECOND, independent
+// executionharness.Runtime.Execute call with that IDENTICAL captured
+// spec directly -- the closest black-box code can get to "re-enter
+// runHarnessModel with the same TaskID/AttemptID/LeaseToken/
+// ReviewRequestID/ProposalID/hash/lineage" for an unexported function.
+// executionharness.Runtime.Execute's own documented behavior
+// (internal/executionharness/runtime.go: durable history is read FIRST;
+// a terminal result found there is returned immediately, BEFORE
+// authority is ever consulted and BEFORE the model executor is ever
+// reached) is what this test verifies empirically against real
+// PostgreSQL, not merely cites.
+func TestFinanceHarnessReentry_SameAttemptAdoptsDurableTerminalRun(t *testing.T) {
+	f, fx, _, restore := newFinanceRealHarnessFixture(t)
+	defer f.cleanup()
+	defer restore()
+	ctx := context.Background()
+	service := f.withScriptedModel(t, &scriptedModel{})
+
+	goal := financeFakeJSONGoal(t, campaign.FinanceReviewOutput{
+		Verdict: "recommended", Summary: "Reentry proof.",
+	})
+	_, taskID, reviewRequestID := fx.seedReadyReviewTaskWithGoal(t, service, "reentry-same-attempt", goal)
+
+	harnessAuthority, err := f.runtime.ModelRuntime.NewHarnessAuthority()
+	if err != nil {
+		t.Fatalf("create real harness authority: %v", err)
+	}
+	harnessHistory, err := executionharnesspostgres.New(f.store, chatTestOrganization)
+	if err != nil {
+		t.Fatalf("open real harness history/descriptor store: %v", err)
+	}
+	models, err := f.runtime.ModelRuntime.NewHarnessModelExecutor(modelruntimeadapter.Config{
+		MaxOutputTokens: 4096, ThinkingMode: modelruntime.ThinkingDisabled, InvocationTTL: 2 * time.Minute,
+		OutputMode: modelruntime.OutputText, ExecutionContractInstructions: "Reentry fixture contract.",
+		Purpose: "campaign.financial_review",
+	})
+	if err != nil {
+		t.Fatalf("build finance model executor: %v", err)
+	}
+	realRuntime, err := executionharness.NewWithDescriptorStore(harnessAuthority, models, financeReentryToolCatalog{}, financeReentryToolExecutor{}, harnessHistory, harnessHistory)
+	if err != nil {
+		t.Fatalf("build real harness runtime: %v", err)
+	}
+	capturer := &capturingHarnessRunner{runtime: realRuntime}
+
+	// A SEPARATE FinanceService instance, sharing the SAME real campStore/
+	// Tasks/Assignments/Authorizer/RoleResolver/HolderPrincipalID as
+	// fx.financeService (built the identical way
+	// buildRealHarnessFinanceWorkerForE2E/buildTestFinanceServiceRealHarness
+	// build theirs), but with HarnessRunner set to the capturer above so
+	// this test can observe the exact spec runHarnessModel builds.
+	// HarnessRunner takes priority over NewModelExecutor inside
+	// runHarnessModel (see TestScenarioM_FinalizeFailureRecoveryConvergesWithoutSecondModelCall's
+	// own identical use of HarnessRunner-only FinanceServiceConfig), so
+	// nothing here duplicates or bypasses the real dispatch path -- it is
+	// the SAME real Authority/History/DescriptorStore/Model-Runtime,
+	// merely observed en route.
+	// Assignments must be real: without it, ExecuteReviewTask's own step 5
+	// (EnsureAuthorizedAssignmentForRunningAttempt) never runs, and the
+	// real Model Runtime dispatch fails closed with "model dispatch
+	// entity not found" before ever reaching test.fake.
+	reentryDispatch := buildTestModelDispatch(t, f.store, fx.tasksService, chatTestOrganization)
+	reentryAssignments, err := reentryDispatch.NewAuthorizedAttemptProvisioner(chatTestDispatchPrincipalKey)
+	if err != nil {
+		t.Fatalf("create reentry dispatch provisioner: %v", err)
+	}
+	capturingFinSvc, err := campaign.NewFinanceService(campaign.FinanceServiceConfig{
+		OrganizationID:    chatTestOrganization,
+		Store:             fx.store,
+		Tasks:             finTestTaskCoordinator{fx.tasksService},
+		Assignments:       financeTestDispatchProvisioner{reentryAssignments},
+		ContextBuilder:    buildTestFinanceContextBuilder(t, f.store, fx.tasksService, chatTestOrganization),
+		HarnessRunner:     capturer,
+		HolderPrincipalID: fx.holderPrincipalID,
+		LeaseDuration:     2 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("create capturing finance service: %v", err)
+	}
+
+	if got := mustCountModelInvocations(t, ctx, f.store, taskID, 1); got != 0 {
+		t.Fatalf("model invocations before any run = %d, want 0", got)
+	}
+
+	review, _, err := capturingFinSvc.ExecuteReviewTask(ctx, campaign.ExecuteReviewParams{
+		OrganizationID: chatTestOrganization, TaskID: taskID, ReviewRequestID: reviewRequestID,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteReviewTask (first, real harness, captured spec): %v", err)
+	}
+	if review.Verdict != campaign.VerdictRecommended {
+		t.Fatalf("first verdict = %q, want recommended", review.Verdict)
+	}
+	if capturer.calls != 1 {
+		t.Fatalf("capturingHarnessRunner.Run was called %d times, want exactly 1", capturer.calls)
+	}
+	capturer.mu.Lock()
+	capturedSpec := capturer.lastSpec
+	capturer.mu.Unlock()
+
+	runID1 := capturedSpec.Identity.RunID
+	contextID1 := capturedSpec.Context.ID
+	if runID1 == "" || contextID1 == "" {
+		t.Fatalf("captured spec has blank RunID/Context.ID: %+v", capturedSpec.Identity)
+	}
+
+	if got := mustCountModelInvocations(t, ctx, f.store, taskID, capturedSpec.Identity.AttemptID); got != 1 {
+		t.Fatalf("model invocations after the first (real) run = %d, want exactly 1", got)
+	}
+
+	// RUN_ID_2 / CONTEXT_ID_2: this reentry call reuses the CAPTURED spec
+	// verbatim -- the load-bearing proof is that driving
+	// executionharness.Runtime.Execute a SECOND time with it produces
+	// ZERO new model_invocations rows.
+	runID2 := capturedSpec.Identity.RunID
+	contextID2 := capturedSpec.Context.ID
+	if runID2 != runID1 {
+		t.Fatalf("RUN_ID_2 = %q, want RUN_ID_1 %q", runID2, runID1)
+	}
+	if contextID2 != contextID1 {
+		t.Fatalf("CONTEXT_ID_2 = %q, want CONTEXT_ID_1 %q", contextID2, contextID1)
+	}
+
+	reentryResult := realRuntime.Execute(ctx, capturedSpec)
+	if reentryResult.Status != executionharness.StatusCompleted {
+		t.Fatalf("reentry run = %+v, want StatusCompleted (adopted from durable history)", reentryResult)
+	}
+	if reentryResult.RunID != runID1 {
+		t.Fatalf("reentry RunID = %q, want %q", reentryResult.RunID, runID1)
+	}
+
+	if got := mustCountModelInvocations(t, ctx, f.store, taskID, capturedSpec.Identity.AttemptID); got != 1 {
+		t.Fatalf("model invocations after reentry = %d, want exactly 1 (NOT 2 -- reentry must adopt the durable terminal run, never dispatch a second time)", got)
+	}
+
+	var reviewCount, completedCount int
+	if err := f.store.Pool().QueryRow(ctx, "SELECT count(*) FROM campaign_financial_reviews WHERE organization_id=$1 AND review_request_id=$2", chatTestOrganization, reviewRequestID).Scan(&reviewCount); err != nil {
+		t.Fatalf("count reviews: %v", err)
+	}
+	if reviewCount != 1 {
+		t.Errorf("review rows after reentry = %d, want exactly 1 (no duplicate)", reviewCount)
+	}
+	if err := f.store.Pool().QueryRow(ctx, "SELECT count(*) FROM tasks WHERE id=$1 AND status='completed'", taskID).Scan(&completedCount); err != nil {
+		t.Fatalf("count completed: %v", err)
+	}
+	if completedCount != 1 {
+		t.Errorf("completed task count = %d, want 1", completedCount)
+	}
+
+	t.Logf("FINANCE_FULLSTACK_E2E_CLOSURE_V1 section 13: this proves same-attempt reentry only. A NEW Task Engine attempt after a legitimate retry/lease-expiry would compute a DIFFERENT RunID by design (AttemptID is part of the RunID formula) -- that boundary is intentionally not redesigned here.")
 }
