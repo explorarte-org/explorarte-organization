@@ -722,6 +722,7 @@ func TestCampaignFinancialReviewTools(t *testing.T) {
 
 	finSvc, err := campaign.NewFinanceService(campaign.FinanceServiceConfig{
 		OrganizationID: "org-test",
+		Requirements:   permissiveExecutionRequirements(),
 		Store:          store,
 		Tasks:          taskCoord,
 		Authorizer:     auth,
@@ -847,7 +848,7 @@ func TestCampaignReviseProposalAndOwnerApprovalTools(t *testing.T) {
 			"empresa/ceo:campaign.owner_approval.read": true,
 		},
 	}
-	approvalSvc := campaign.NewApprovalService(store, auth)
+	approvalSvc := campaign.NewApprovalService(store, auth, permissiveExecutionRequirements())
 	reg := NewToolRegistry()
 	if err := RegisterCampaignTools(reg, "org-test", store, auth, WithApprovalService(approvalSvc)); err != nil {
 		t.Fatalf("RegisterCampaignTools failed: %v", err)
@@ -1035,7 +1036,7 @@ func TestCampaignPromoteToExecutiveTools(t *testing.T) {
 			"empresa/ceo:campaign.promotion.read":  true,
 		},
 	}
-	promSvc := campaign.NewPromotionService(store, submitter, auth)
+	promSvc := campaign.NewPromotionService(store, submitter, auth, permissiveExecutionRequirements())
 	reg := NewToolRegistry()
 	if err := RegisterCampaignTools(reg, "org-test", store, auth, WithPromotionService(promSvc)); err != nil {
 		t.Fatalf("RegisterCampaignTools failed: %v", err)

@@ -106,6 +106,11 @@ type Runtime struct {
 	Store       *modelpostgres.Store
 	Dispatcher  *dispatchbootstrap.Runtime
 	Identity    *identitybootstrap.Runtime
+	// Costs is the read-only face of the SAME CostGate real dispatch
+	// reserves through: it prices a call's worst-case reservation and can
+	// reserve, reconcile or release nothing. Host preflights (Campaign's
+	// execution budget floor) use it so they never restate pricing math.
+	Costs modelruntime.CostReservationEstimator
 }
 
 // Option configures optional Open behavior that production callers never
@@ -359,7 +364,7 @@ func Open(cfg config.Config, platformStore *platformpostgres.Store, opts ...Opti
 	if err != nil {
 		return nil, err
 	}
-	return &Runtime{Config: runtimeCfg, Registry: registryService, Invocations: invocationService, Dispatch: dispatchService, TaskLeases: taskStore, Store: modelStore, Dispatcher: dispatchRuntime, Identity: identityRuntime}, nil
+	return &Runtime{Config: runtimeCfg, Registry: registryService, Invocations: invocationService, Dispatch: dispatchService, TaskLeases: taskStore, Store: modelStore, Dispatcher: dispatchRuntime, Identity: identityRuntime, Costs: gate}, nil
 }
 
 type catalogAdapter struct{ reader registry.Reader }

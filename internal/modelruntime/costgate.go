@@ -47,6 +47,41 @@ type CostReservationRequest struct {
 	MaxOutputTokens      int64
 }
 
+// ReservationEstimateRequest is the pure-function input of a read-only
+// worst-case reservation estimate: exactly the four facts
+// CostReservationRequest.Reserve prices a real call from, and nothing that
+// identifies a task, invocation, wallet or budget -- an estimate reserves,
+// consumes and mutates nothing.
+type ReservationEstimateRequest struct {
+	ProviderID           string
+	ProviderModelID      string
+	EstimatedInputTokens int64
+	MaxOutputTokens      int64
+}
+
+// ReservationEstimate is what Reserve WOULD charge for the same request:
+// the wallet's worst-case USD reservation and the AgentBudget token charge.
+// Subscription providers have no per-call USD price (USDNanos is honestly
+// zero), exactly as in Reserve.
+type ReservationEstimate struct {
+	USDNanos     int64
+	Tokens       int64
+	Subscription bool
+	// PriceTier names the resolved context tier the USD figure was priced
+	// under; empty for a subscription provider. Audit provenance only.
+	PriceTier string
+}
+
+// CostReservationEstimator is the read-only half of CostBudgetGate: it
+// answers "what would Reserve charge for this call" through the SAME
+// price-resolution and cost arithmetic Reserve uses, without contacting
+// any wallet or budget. It exists so a host-side preflight never restates
+// pricing math -- costgate.Gate implements both this and Reserve from one
+// code path.
+type CostReservationEstimator interface {
+	EstimateReservation(ctx context.Context, request ReservationEstimateRequest, now time.Time) (ReservationEstimate, error)
+}
+
 // CostBudgetGate reserves and reconciles the real-money and multidimensional
 // cost of a dispatch, without DispatchService depending on
 // internal/modelpricing, internal/costledger, or internal/agentbudget

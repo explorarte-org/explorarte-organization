@@ -153,18 +153,24 @@ type FinanceReviewOutput struct {
 
 // FinanceServiceConfig configures the FinanceService.
 type FinanceServiceConfig struct {
-	OrganizationID    string
-	Store             Store
-	Tasks             TaskCoordinator
-	Assignments       DispatchProvisioner
-	Authorizer        CapabilityAuthorizer
-	RoleResolver      ReviewerRoleResolver
-	Authority         executionharness.ExecutionAuthorityPort
-	HarnessHistory    executionharness.ExecutionHistoryStore
-	DescriptorStore   executionharness.RunDescriptorStore
-	NewModelExecutor  ModelExecutorFactory
-	HarnessRunner     HarnessRunner
-	ContextBuilder    FinanceContextBuilder
+	OrganizationID   string
+	Store            Store
+	Tasks            TaskCoordinator
+	Assignments      DispatchProvisioner
+	Authorizer       CapabilityAuthorizer
+	RoleResolver     ReviewerRoleResolver
+	Authority        executionharness.ExecutionAuthorityPort
+	HarnessHistory   executionharness.ExecutionHistoryStore
+	DescriptorStore  executionharness.RunDescriptorStore
+	NewModelExecutor ModelExecutorFactory
+	HarnessRunner    HarnessRunner
+	ContextBuilder   FinanceContextBuilder
+	// Requirements derives the host-owned execution budget floor a
+	// "recommended" verdict must reach (CAMPAIGN_EXECUTION_BUDGET_
+	// FEASIBILITY_V2). Required by ExecuteReviewTask, which fails closed
+	// without it; the request/read-only compositions that never execute a
+	// review may leave it nil.
+	Requirements      ExecutionRequirementsProvider
 	WorkerID          string
 	HolderPrincipalID string
 	LeaseDuration     time.Duration
@@ -438,6 +444,12 @@ func (s *FinanceService) ExecuteReviewTask(ctx context.Context, params ExecuteRe
 		orgID = s.cfg.OrganizationID
 	}
 
+	// Feasibility is never assumed: without a requirements provider this
+	// review could not be validated, so nothing is read, claimed or spent.
+	if s.cfg.Requirements == nil {
+		return CampaignFinancialReview{}, false, fmt.Errorf("%w: finance service has no requirements provider", ErrExecutionRequirementsUnavailable)
+	}
+
 	// 1. Resolve ReviewRequest
 	var req CampaignFinancialReviewRequest
 	var err error
@@ -524,11 +536,36 @@ func (s *FinanceService) ExecuteReviewTask(ctx context.Context, params ExecuteRe
 		return CampaignFinancialReview{}, false, fmt.Errorf("%w: proposal hash changed between request and review", ErrProposalHashMismatch)
 	}
 
+	// The host floor is derived BEFORE the model runs so Finance is shown
+	// it, and BEFORE any output is judged so the same value validates it. A
+	// host that cannot derive it fails the attempt here -- no model
+	// invocation, no spend, no review.
+	requirements, err := requireExecutionRequirements(ctx, s.cfg.Requirements, orgID)
+	if err != nil {
+		_, recordErr := s.cfg.Tasks.RecordAttemptResult(ctx, tasks.RecordAttemptResultCommand{
+			LeaseCommand: tasks.LeaseCommand{
+				TaskID:     claimed.Task.ID,
+				AttemptID:  claimed.Attempt.ID,
+				LeaseToken: claimed.LeaseToken,
+				ActorID:    actorID,
+			},
+			Result: tasks.AttemptResult{
+				Outcome:     tasks.OutcomeNonRetryableFailure,
+				FailureCode: "FINANCE_REQUIREMENTS_UNAVAILABLE",
+				Summary:     err.Error(),
+			},
+		})
+		if recordErr != nil {
+			return CampaignFinancialReview{}, false, fmt.Errorf("record terminal failure for unavailable finance requirements: %w: %w", recordErr, err)
+		}
+		return CampaignFinancialReview{}, false, err
+	}
+
 	var output FinanceReviewOutput
 	if params.MockOutput != nil {
 		output = *params.MockOutput
 	} else {
-		output, err = s.runHarnessModel(ctx, claimed, proposal, req, holderPrincipalID)
+		output, err = s.runHarnessModel(ctx, claimed, proposal, req, holderPrincipalID, requirements)
 		if err != nil {
 			// Record failure in task engine
 			_, _ = s.cfg.Tasks.RecordAttemptResult(ctx, tasks.RecordAttemptResultCommand{
@@ -555,11 +592,21 @@ func (s *FinanceService) ExecuteReviewTask(ctx context.Context, params ExecuteRe
 	// MockOutput (CAMPAIGN_EXECUTABLE_BUDGET_CONTRACT_HOTFIX_V1 section
 	// 13: test infrastructure must never bypass the same contract
 	// production enforces).
-	if err := validateFinanceReviewOutput(output); err != nil {
+	if err := validateFinanceReviewOutput(output, requirements); err != nil {
 		// A parsed-but-contract-invalid Finance output must never sit
 		// waiting for lease expiry (section 12): record a deterministic
 		// terminal failure now, exactly like the real-Harness-model
 		// failure path above, and never persist a review for it.
+		//
+		// A recommendation that is a valid budget but cannot fund the
+		// canonical execution is a different, deterministic terminal
+		// classification from malformed output: FINANCE_BUDGET_INFEASIBLE.
+		// It is never retried blindly -- the same floor would reject the
+		// same class of answer -- and it is not a provider failure.
+		failureCode := "FINANCE_OUTPUT_INVALID"
+		if errors.Is(err, ErrInfeasibleExecutionBudget) {
+			failureCode = "FINANCE_BUDGET_INFEASIBLE"
+		}
 		_, recordErr := s.cfg.Tasks.RecordAttemptResult(ctx, tasks.RecordAttemptResultCommand{
 			LeaseCommand: tasks.LeaseCommand{
 				TaskID:     claimed.Task.ID,
@@ -569,7 +616,7 @@ func (s *FinanceService) ExecuteReviewTask(ctx context.Context, params ExecuteRe
 			},
 			Result: tasks.AttemptResult{
 				Outcome:     tasks.OutcomeNonRetryableFailure,
-				FailureCode: "FINANCE_OUTPUT_INVALID",
+				FailureCode: failureCode,
 				Summary:     err.Error(),
 			},
 		})
@@ -662,7 +709,7 @@ func (s *FinanceService) ExecuteReviewTask(ctx context.Context, params ExecuteRe
 // 9). This never trusts prompt compliance -- it is the host's own gate,
 // and it runs identically for a real Harness dispatch and for MockOutput
 // (section 13).
-func validateFinanceReviewOutput(output FinanceReviewOutput) error {
+func validateFinanceReviewOutput(output FinanceReviewOutput, requirements ExecutionBudgetRequirements) error {
 	if !ValidVerdict(output.Verdict) {
 		return fmt.Errorf("%w: %q", ErrInvalidVerdict, output.Verdict)
 	}
@@ -670,7 +717,15 @@ func validateFinanceReviewOutput(output FinanceReviewOutput) error {
 		if output.RecommendedBudget == nil {
 			return fmt.Errorf("%w: verdict %q requires a recommended_budget", ErrInvalidExecutionBudget, output.Verdict)
 		}
-		return ValidateExecutableBudget(*output.RecommendedBudget)
+		// Representable first, then feasible: only a "recommended" budget
+		// is being put forward for execution, so only it must fund the
+		// canonical minimum execution. A non-recommended verdict keeps the
+		// representability rule below and no floor -- nothing is being
+		// launched on it.
+		if err := ValidateExecutableBudget(*output.RecommendedBudget); err != nil {
+			return err
+		}
+		return ValidateExecutionBudgetFeasibility(*output.RecommendedBudget, requirements)
 	}
 	if output.RecommendedBudget != nil {
 		return ValidateExecutableBudget(*output.RecommendedBudget)
@@ -828,7 +883,7 @@ var (
 	_ executionharness.ToolExecutor = financeToolExecutor{}
 )
 
-func (s *FinanceService) runHarnessModel(ctx context.Context, claimed tasks.ClaimedTask, proposal CampaignProposal, req CampaignFinancialReviewRequest, holderPrincipalID string) (FinanceReviewOutput, error) {
+func (s *FinanceService) runHarnessModel(ctx context.Context, claimed tasks.ClaimedTask, proposal CampaignProposal, req CampaignFinancialReviewRequest, holderPrincipalID string, requirements ExecutionBudgetRequirements) (FinanceReviewOutput, error) {
 	if err := validateFinanceHarnessPreconditions(claimed, proposal, req, holderPrincipalID); err != nil {
 		return FinanceReviewOutput{}, err
 	}
@@ -836,7 +891,7 @@ func (s *FinanceService) runHarnessModel(ctx context.Context, claimed tasks.Clai
 		return FinanceReviewOutput{}, fmt.Errorf("%w: finance harness precondition: context builder is not configured", ErrInvalidInput)
 	}
 
-	contractInstructions := renderFinanceContractInstructions()
+	contractInstructions := renderFinanceContractInstructions(requirements)
 
 	// CorrelationID/CausationID come from the Finance task's own durable
 	// lineage (PR #223's own fix), never fabricated here: the Harness run
@@ -988,7 +1043,7 @@ func (s *FinanceService) runHarnessModel(ctx context.Context, claimed tasks.Clai
 	return output, nil
 }
 
-func renderFinanceContractInstructions() string {
+func renderFinanceContractInstructions(requirements ExecutionBudgetRequirements) string {
 	return `You are the canonical Financial Reviewer (negocio/administrador_financiero) of the organization.
 Your responsibility is to perform an objective, conservative financial review of a campaign proposal.
 
@@ -1010,9 +1065,12 @@ CRITICAL POLICY & CONSTRAINTS:
    - Every execution-budget dimension (max_usd, max_tokens, max_model_calls, max_wall_time_ms, max_depth, max_retries, max_subagents) MUST be strictly positive.
    - max_subagents must be at least 1: a campaign submitted for execution is a tree that may need at least one downstream delegation to reach real work.
    - max_retries must be at least 1.
+   - Every dimension must also reach the HOST EXECUTION BUDGET FLOOR stated below: a budget that is positive but under the floor cannot fund the canonical execution and is rejected.
    - The budget represents ceilings the execution may not exceed, not a prediction of what it will actually use.
    - A value of zero is NOT a valid way to say "none", "not needed", or "unlimited" for any dimension -- it will be rejected before any approval or launch can happen.
    - If you cannot recommend an executable, strictly-positive budget for every dimension, do NOT use verdict "recommended". Use "changes_requested", "not_recommended", or "insufficient_data" instead, as appropriate.
+
+` + renderExecutionBudgetRequirements(requirements) + `
 
 OUTPUT FORMAT:
 You must respond with ONLY a valid JSON object matching this schema:
@@ -1020,13 +1078,13 @@ You must respond with ONLY a valid JSON object matching this schema:
   "verdict": "recommended" | "changes_requested" | "not_recommended" | "insufficient_data",
   "summary": "Executive summary of financial evaluation",
   "recommended_budget": {
-    "max_usd": 1.0,
-    "max_tokens": 1000,
-    "max_model_calls": 1,
-    "max_wall_time_ms": 60000,
-    "max_depth": 1,
-    "max_retries": 1,
-    "max_subagents": 1
+    "max_usd": ` + minimumUSDDollars(requirements.MinUSD) + `,
+    "max_tokens": ` + strconv.FormatInt(requirements.MinTokens, 10) + `,
+    "max_model_calls": ` + strconv.FormatInt(requirements.MinModelCalls, 10) + `,
+    "max_wall_time_ms": ` + strconv.FormatInt(requirements.MinWallTimeMS, 10) + `,
+    "max_depth": ` + strconv.FormatInt(requirements.MinDepth, 10) + `,
+    "max_retries": ` + strconv.FormatInt(requirements.MinRetries, 10) + `,
+    "max_subagents": ` + strconv.FormatInt(requirements.MinSubagents, 10) + `
   },
   "estimated_cost": {
     "amount": 0.0,
@@ -1039,5 +1097,5 @@ You must respond with ONLY a valid JSON object matching this schema:
   "missing_information": ["unobserved information 1", ...]
 }
 
-The numbers shown above for recommended_budget are illustrative examples of the required shape only, not defaults or suggested values -- choose ceilings that actually fit this proposal, keeping every dimension strictly positive per rule 6.`
+The numbers shown above for recommended_budget are the host floor, shown only to illustrate the required shape -- not a default or a suggested value. Choose ceilings that actually fit this proposal, keeping every dimension strictly positive and never below its host minimum, per rule 6.`
 }

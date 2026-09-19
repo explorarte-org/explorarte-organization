@@ -15,14 +15,18 @@ type PromotionService struct {
 	Store      Store
 	Submitter  ExecutiveSubmitter
 	Authorizer CapabilityAuthorizer
+	// Requirements supplies the CURRENT host execution budget floor,
+	// re-checked immediately before Executive.Submit.
+	Requirements ExecutionRequirementsProvider
 }
 
 // NewPromotionService constructs a PromotionService with the given dependencies.
-func NewPromotionService(store Store, submitter ExecutiveSubmitter, authorizer CapabilityAuthorizer) *PromotionService {
+func NewPromotionService(store Store, submitter ExecutiveSubmitter, authorizer CapabilityAuthorizer, requirements ExecutionRequirementsProvider) *PromotionService {
 	return &PromotionService{
-		Store:      store,
-		Submitter:  submitter,
-		Authorizer: authorizer,
+		Store:        store,
+		Submitter:    submitter,
+		Authorizer:   authorizer,
+		Requirements: requirements,
 	}
 }
 
@@ -170,6 +174,24 @@ func (s *PromotionService) PromoteToExecutive(ctx context.Context, params Promot
 	// agentbudget.Limits, so the validated value assigns directly.
 	limits, err := ToAgentBudgetLimits(approval.ExecutionBudget)
 	if err != nil {
+		return PromotionResult{}, err
+	}
+
+	// 6.5. CAMPAIGN_EXECUTION_BUDGET_FEASIBILITY_V2 defense-in-depth: the
+	// exact approved budget must fund the canonical minimum execution under
+	// the CURRENT host facts, immediately before Executive.Submit. Approval
+	// and Finance ran against the facts of their own time; routing, pricing
+	// or runtime limits may have moved since. The owner approved a specific
+	// maximum, and that authority is never widened: the budget is not raised
+	// to the floor (no max(approved, minimum)). If it no longer clears the
+	// floor nothing is launched and a new Finance review / approval cycle is
+	// required. (An already-durable promotion short-circuits above and is
+	// deliberately left immutable.)
+	requirements, err := requireExecutionRequirements(ctx, s.Requirements, params.OrganizationID)
+	if err != nil {
+		return PromotionResult{}, err
+	}
+	if err := ValidateExecutionLimitsFeasibility(limits, requirements); err != nil {
 		return PromotionResult{}, err
 	}
 	campaignBudget := &limits

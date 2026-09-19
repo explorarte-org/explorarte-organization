@@ -117,6 +117,7 @@ func newHarnessLocalFixture(t *testing.T, model *capturingModel) harnessLocalFix
 
 	finSvc, err := campaign.NewFinanceService(campaign.FinanceServiceConfig{
 		OrganizationID: "org-test",
+		Requirements:   permissiveRequirements(),
 		Store:          store,
 		Tasks:          taskCoord,
 		Authorizer: fakeAuthorizer{grants: map[string]bool{

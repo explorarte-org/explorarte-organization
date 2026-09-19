@@ -46,6 +46,11 @@ type Runtime struct {
 	// already-open Context Engine runtime instead of opening a second one.
 	// FINANCE_CONTEXT_ENGINE_INTEGRATION_V1.
 	Contexts executive.ContextCoordinator
+	// Limits is the exact Executive limit set this runtime was opened with
+	// (DefaultLimits unless WithExecutiveLimits replaced it) -- exposed so
+	// a host preflight that must agree with the Orchestrator's output-token
+	// ceilings reads the same value instead of re-defaulting it.
+	Limits executive.Limits
 }
 
 type OpenOption func(*openOptions)
@@ -313,7 +318,7 @@ func Open(cfg config.Config, store *platformpostgres.Store, opts ...OpenOption) 
 	if err != nil {
 		return nil, fmt.Errorf("create executive orchestrator: %w", err)
 	}
-	return &Runtime{Orchestrator: orchestrator, Tasks: taskService, Models: modelRuntime, Contexts: contextCoordinator}, nil
+	return &Runtime{Orchestrator: orchestrator, Tasks: taskService, Models: modelRuntime, Contexts: contextCoordinator, Limits: limits}, nil
 }
 
 const (

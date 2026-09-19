@@ -967,7 +967,18 @@ func recoveredUsage(invocationID, dispatchAttemptID int64, rawResponse RawRespon
 // nothing once the call is settled against reported usage; before settlement
 // existed it would have been a permanent overcharge.
 func estimateTokenCount(renderedContext []byte) int64 {
+	return EstimateInputTokens(len(renderedContext))
+}
+
+// EstimateInputTokens is the one pre-call input-token rule: the real dispatch
+// reservation (estimateTokenCount above) and every read-only preflight that
+// must agree with it (Campaign's execution-budget feasibility floor) both
+// call this, so the two can never drift into separate formulas.
+func EstimateInputTokens(byteCount int) int64 {
 	const conservativeBytesPerToken = 3
 	const conservativeDivisorScale = 2 // bytes/1.5, in integer arithmetic
-	return int64(len(renderedContext))*conservativeDivisorScale/conservativeBytesPerToken + 1
+	if byteCount < 0 {
+		byteCount = 0
+	}
+	return int64(byteCount)*conservativeDivisorScale/conservativeBytesPerToken + 1
 }
