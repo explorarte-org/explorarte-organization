@@ -139,6 +139,20 @@ type chatFixture struct {
 
 func newChatFixture(t *testing.T) *chatFixture {
 	t.Helper()
+	return newChatFixtureWithModelRuntimeOptions(t)
+}
+
+// newChatFixtureWithModelRuntimeOptions is newChatFixture, parameterized
+// with extra modelbootstrap.Option values forwarded to
+// ceochatbootstrap.Open via WithModelRuntimeOptions -- FINANCE_HARNESS_
+// RUNTIME_HOTFIX_V1's own real-Model-Runtime Finance Harness tests need a
+// modelbootstrap.WithExtraAdapters(adapter.NewFake()) here (the same
+// mechanism canonical_dispatch_e2e_test.go's own fixture already uses for
+// empresa/ceo) so a real Model Runtime dispatch can resolve to the
+// deterministic test.fake adapter instead of a real provider. Called with
+// no options, this is byte-for-byte newChatFixture's own prior behavior.
+func newChatFixtureWithModelRuntimeOptions(t *testing.T, modelRuntimeOpts ...modelbootstrap.Option) *chatFixture {
+	t.Helper()
 	databaseURL := os.Getenv("ORG_TEST_DATABASE_URL")
 	if databaseURL == "" {
 		t.Skip("ORG_TEST_DATABASE_URL is required")
@@ -217,7 +231,11 @@ func newChatFixture(t *testing.T) *chatFixture {
 		fail("sync model registry for ceochat test fixture: result=%+v err=%v", sync, syncErr)
 	}
 
-	runtime, err := ceochatbootstrap.Open(cfg, store)
+	var openOpts []ceochatbootstrap.OpenOption
+	if len(modelRuntimeOpts) > 0 {
+		openOpts = append(openOpts, ceochatbootstrap.WithModelRuntimeOptions(modelRuntimeOpts...))
+	}
+	runtime, err := ceochatbootstrap.Open(cfg, store, openOpts...)
 	if err != nil {
 		fail("open ceochat runtime: %v", err)
 	}

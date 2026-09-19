@@ -324,10 +324,20 @@ var _ modelruntime.ProviderAdapter = (*ceochatE2EAdapter)(nil)
 // above), and finally opens ceochatbootstrap with
 // modelbootstrap.WithExtraAdapters(adapter) so that repointed policy
 func newCEOChatCanonicalE2EFixture(t *testing.T, adapter modelruntime.ProviderAdapter, extraOpts ...ceochatbootstrap.OpenOption) (*ceochat.Service, *platformpostgres.Store, func()) {
-	return newCEOChatCanonicalE2EFixtureWithStore(t, adapter, func(*platformpostgres.Store) []ceochatbootstrap.OpenOption { return extraOpts })
+	service, store, _, cleanup := newCEOChatCanonicalE2EFixtureWithStore(t, adapter, func(*platformpostgres.Store) []ceochatbootstrap.OpenOption { return extraOpts })
+	return service, store, cleanup
 }
 
-func newCEOChatCanonicalE2EFixtureWithStore(t *testing.T, adapter modelruntime.ProviderAdapter, buildOpts func(store *platformpostgres.Store) []ceochatbootstrap.OpenOption) (*ceochat.Service, *platformpostgres.Store, func()) {
+// newCEOChatCanonicalE2EFixtureWithStore's 3rd return value is the SAME
+// *modelbootstrap.Runtime instance runtime.Service itself dispatches
+// through -- exposed so a caller needing a SECOND real dispatch actor on
+// the identical Model Runtime (e.g. a real-Harness Finance worker sharing
+// this fixture's own registered test.fake adapter and already-shifted
+// sibling registry revision, see
+// FINANCE_FULLSTACK_E2E_CLOSURE_V1's buildRealHarnessFinanceWorkerForE2E)
+// never has to open a second, independent Model Runtime instance just to
+// reach the same provider.
+func newCEOChatCanonicalE2EFixtureWithStore(t *testing.T, adapter modelruntime.ProviderAdapter, buildOpts func(store *platformpostgres.Store) []ceochatbootstrap.OpenOption) (*ceochat.Service, *platformpostgres.Store, *modelbootstrap.Runtime, func()) {
 	t.Helper()
 	databaseURL := os.Getenv("ORG_TEST_DATABASE_URL")
 	if databaseURL == "" {
@@ -512,7 +522,7 @@ func newCEOChatCanonicalE2EFixtureWithStore(t *testing.T, adapter modelruntime.P
 	if err != nil {
 		fail("open ceochat runtime: %v", err)
 	}
-	return runtime.Service, store, func() { restoreCEORoleBinding(); store.Close(); cancel() }
+	return runtime.Service, store, runtime.ModelRuntime, func() { restoreCEORoleBinding(); store.Close(); cancel() }
 }
 
 // TestCEOChatCanonicalMultiInvocationDispatchComposition is

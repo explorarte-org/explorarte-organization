@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -31,6 +32,42 @@ func (*Fake) Preflight(ctx context.Context, request modelruntime.ProviderPreflig
 	}
 	return nil
 }
+
+// fakeJSONResponseMarkerPrefix/Suffix let an integration test embed a
+// caller-chosen JSON response body inside whatever real, unmodified
+// domain content ends up rendered into the prompt (e.g. a campaign
+// proposal's own Title/Goal field, round-tripped through the consuming
+// service's own real JSON marshaling) so a REAL Model Runtime dispatch
+// through this fake adapter can still return a domain-shaped response the
+// consuming service can parse, instead of always synthesizing its own
+// hash-derived placeholder text. Base64-encoded so the marker survives
+// verbatim through any upstream JSON-escaping of the surrounding prompt
+// content. test.fake is reachable only via
+// modelruntime/bootstrap.WithExtraAdapters, which production never calls
+// -- this is test-only surface, never a production response path.
+const (
+	fakeJSONResponseMarkerPrefix = "[fake-json-b64:"
+	fakeJSONResponseMarkerSuffix = "]"
+)
+
+func extractFakeJSONResponse(visibleInput []byte) ([]byte, bool) {
+	text := string(visibleInput)
+	start := strings.Index(text, fakeJSONResponseMarkerPrefix)
+	if start == -1 {
+		return nil, false
+	}
+	rest := text[start+len(fakeJSONResponseMarkerPrefix):]
+	end := strings.Index(rest, fakeJSONResponseMarkerSuffix)
+	if end == -1 {
+		return nil, false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(rest[:end])
+	if err != nil {
+		return nil, false
+	}
+	return decoded, true
+}
+
 func (*Fake) Dispatch(ctx context.Context, req modelruntime.CanonicalRequest) (modelruntime.RawResponse, error) {
 	visibleInput := req.RenderedContext
 	if len(req.ModelInput.CanonicalBytes) > 0 {
@@ -42,7 +79,9 @@ func (*Fake) Dispatch(ctx context.Context, req modelruntime.CanonicalRequest) (m
 	}
 	hash := modelruntime.SHA256Bytes(append(append([]byte{}, visibleInput...), []byte(fmt.Sprintf("|%d|%s", req.InvocationID, req.ProviderModelID))...))
 	response := modelruntime.RawResponse{ProviderRequestID: "fake-" + hash[:16], InputTokens: int64(len(visibleInput) / 4), OutputTokens: 16, ProviderReported: false, HiddenReasoning: []byte("hidden fake reasoning must never persist")}
-	if req.OutputMode == modelruntime.OutputJSON {
+	if body, ok := extractFakeJSONResponse(visibleInput); ok {
+		response.Content = body
+	} else if req.OutputMode == modelruntime.OutputJSON {
 		body, _ := json.Marshal(map[string]any{"context_hash": req.ContextRenderedHash, "invocation_id": req.InvocationID, "provider": "test.fake"})
 		response.Content = body
 	} else {

@@ -40,6 +40,15 @@ var (
 	// nothing sound to walk), so this fails closed before any task is ever
 	// created.
 	ErrInvalidTaskLineage = errors.New("invalid parent task lineage")
+
+	// ErrFinanceTaskPayloadTooLarge is returned when the deterministic
+	// Finance task instruction envelope (the complete immutable proposal
+	// payload RequestReview embeds so the real Context Engine can surface
+	// it to a real Harness run) exceeds the Task Engine's own Instructions
+	// size limit. This fails closed before CreateTask -- RequestReview
+	// never truncates, drops fields, or silently summarizes the proposal
+	// to fit.
+	ErrFinanceTaskPayloadTooLarge = errors.New("finance task instruction envelope exceeds the task engine's instructions size limit")
 )
 
 var (
