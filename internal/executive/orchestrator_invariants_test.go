@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -279,6 +280,91 @@ func TestObserverAndDailyCycleHaveNoExecutionPath(t *testing.T) {
 		name := orchestratorType.Field(i).Name
 		if name == "scheduler" || name == "observer" || name == "dailyCycle" {
 			t.Fatalf("unexpected productive field %s", name)
+		}
+	}
+}
+
+func TestSubmit_TrustedRootCausationKey(t *testing.T) {
+	tasksPort := newMemoryTasks()
+	orchestrator := testOrchestratorForPorts(t, tasksPort, newFakeModels(), &fakeCompletion{verdict: CompletionPass})
+
+	// 1. Existing caller behavior: TrustedRootCausationKey is empty.
+	// CausationID defaults to "owner:" + IdempotencyKey.
+	run1, _, err := orchestrator.Submit(context.Background(), SubmitRequest{
+		ActorRoleID:    OwnerRoleID,
+		IdempotencyKey: "existing-caller-key",
+		Goal: OwnerGoal{
+			Goal: "Goal 1",
+			AcceptanceCriteria: []AcceptanceCriterion{
+				{Text: "criterion 1", Phase: AcceptanceDesign},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("submit existing caller: %v", err)
+	}
+	root1 := tasksPort.tasks[run1.RootTaskID]
+	if root1.IdempotencyKey != "existing-caller-key" {
+		t.Errorf("root1 IdempotencyKey = %q, want %q", root1.IdempotencyKey, "existing-caller-key")
+	}
+	if root1.CausationID != "owner:existing-caller-key" {
+		t.Errorf("root1 CausationID = %q, want %q", root1.CausationID, "owner:existing-caller-key")
+	}
+
+	// 2. Campaign caller: TrustedRootCausationKey supplied.
+	// CausationID becomes "owner:" + TrustedRootCausationKey, while IdempotencyKey is preserved.
+	run2, _, err := orchestrator.Submit(context.Background(), SubmitRequest{
+		ActorRoleID:             OwnerRoleID,
+		IdempotencyKey:          "campaign-promotion:42:0123456789abcdef",
+		TrustedRootCausationKey: "campaign-promotion-42-0123456789abcdef",
+		Goal: OwnerGoal{
+			Goal: "Goal 2",
+			AcceptanceCriteria: []AcceptanceCriterion{
+				{Text: "criterion 2", Phase: AcceptanceDesign},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("submit with trusted root causation: %v", err)
+	}
+	root2 := tasksPort.tasks[run2.RootTaskID]
+	if root2.IdempotencyKey != "campaign-promotion:42:0123456789abcdef" {
+		t.Errorf("root2 IdempotencyKey = %q, want %q (preserved)", root2.IdempotencyKey, "campaign-promotion:42:0123456789abcdef")
+	}
+	if root2.CausationID != "owner:campaign-promotion-42-0123456789abcdef" {
+		t.Errorf("root2 CausationID = %q, want %q", root2.CausationID, "owner:campaign-promotion-42-0123456789abcdef")
+	}
+
+	// 3. Negative validation: invalid trusted root causation keys must fail closed with ErrInvalidInput.
+	for _, badKey := range []string{
+		"has:colon:42",
+		"-leading-dash",
+		"trailing-dash-",
+		"has spaces",
+		"has/trailing/",
+		"has..double.dots",
+		"", // covered by empty check above, but if whitespace:
+		"   ",
+	} {
+		if strings.TrimSpace(badKey) == "" {
+			continue
+		}
+		_, _, err := orchestrator.Submit(context.Background(), SubmitRequest{
+			ActorRoleID:             OwnerRoleID,
+			IdempotencyKey:          "bad-key-test",
+			TrustedRootCausationKey: badKey,
+			Goal: OwnerGoal{
+				Goal: "Goal bad",
+				AcceptanceCriteria: []AcceptanceCriterion{
+					{Text: "criterion bad", Phase: AcceptanceDesign},
+				},
+			},
+		})
+		if err == nil {
+			t.Errorf("expected error for bad trusted root key %q, got nil", badKey)
+		}
+		if !errors.Is(err, ErrInvalidInput) {
+			t.Errorf("error %v for bad key %q does not wrap ErrInvalidInput", err, badKey)
 		}
 	}
 }

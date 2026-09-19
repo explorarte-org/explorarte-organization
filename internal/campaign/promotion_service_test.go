@@ -3,6 +3,7 @@ package campaign_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -17,9 +18,11 @@ type fakeSubmitter struct {
 	submitCalls  int
 	resumeCalls  int
 	lastRequest  executive.SubmitRequest
+	runsByKey    map[string]executive.Run
 	returnRun    executive.Run
 	returnReused bool
 	returnErr    error
+	nextRootID   int64
 }
 
 func (f *fakeSubmitter) Submit(_ context.Context, req executive.SubmitRequest) (executive.Run, bool, error) {
@@ -29,6 +32,22 @@ func (f *fakeSubmitter) Submit(_ context.Context, req executive.SubmitRequest) (
 	f.lastRequest = req
 	if f.returnErr != nil {
 		return executive.Run{}, false, f.returnErr
+	}
+	if f.runsByKey != nil {
+		if run, ok := f.runsByKey[req.IdempotencyKey]; ok {
+			return run, true, nil
+		}
+		if f.nextRootID == 0 {
+			f.nextRootID = 999
+		}
+		run := executive.Run{
+			RootTaskID:    f.nextRootID,
+			CorrelationID: fmt.Sprintf("executive:corr-%d", f.nextRootID),
+			State:         executive.StateAccepted,
+		}
+		f.nextRootID++
+		f.runsByKey[req.IdempotencyKey] = run
+		return run, false, nil
 	}
 	run := f.returnRun
 	if run.RootTaskID == 0 {
@@ -327,10 +346,11 @@ func TestPromotionDeterministicMatrix(t *testing.T) {
 
 	t.Run("Case D: Crash after Executive.Submit converges to same root without duplicate budget", func(t *testing.T) {
 		_, submitter, svc, _, _, appr := setupPromotionFixture(t)
+		submitter.runsByKey = make(map[string]executive.Run)
 
-		// Simulate submitter already having created the task and returning reused=true on subsequent calls.
-		submitter.returnReused = true
-		submitter.returnRun = executive.Run{
+		// Key reuse strictly by SubmitRequest.IdempotencyKey:
+		expectedKey := fmt.Sprintf("campaign-promotion:%d:%.16s", appr.ID, appr.CanonicalHash)
+		submitter.runsByKey[expectedKey] = executive.Run{
 			RootTaskID:    888,
 			CorrelationID: "executive:reused-root",
 			State:         executive.StateAccepted,
@@ -353,6 +373,57 @@ func TestPromotionDeterministicMatrix(t *testing.T) {
 		}
 		if !res.Reused {
 			t.Errorf("expected reused=true because Executive returned reused=true")
+		}
+		if len(submitter.runsByKey) != 1 {
+			t.Errorf("expected exactly 1 root in submitter, got %d", len(submitter.runsByKey))
+		}
+	})
+
+	t.Run("Case D-Regression: Version-transition crash converges to exactly 1 root", func(t *testing.T) {
+		_, submitter, svc, _, _, appr := setupPromotionFixture(t)
+		submitter.runsByKey = make(map[string]executive.Run)
+
+		// A. Simulate pre-#226 submission identity:
+		oldKey := fmt.Sprintf("campaign-promotion:%d:%.16s", appr.ID, appr.CanonicalHash)
+
+		// B. Durably create the Executive root under oldKey (simulating crash after Executive.Submit):
+		submitter.runsByKey[oldKey] = executive.Run{
+			RootTaskID:    782,
+			CorrelationID: "executive:corr-782",
+			State:         executive.StateAccepted,
+		}
+
+		// C. Do NOT create CampaignPromotion (simulate crash before CreatePromotion).
+
+		// D. Retry promotion under the new code:
+		res, err := svc.PromoteToExecutive(ctx, campaign.PromoteToExecutiveParams{
+			OrganizationID:   "org-1",
+			OwnerApprovalID:  appr.ID,
+			PromotedByRoleID: "empresa/human",
+			ConversationID:   1,
+			ToolCallID:       "call-version-transition",
+			IdempotencyKey:   "prom-version-transition-1",
+		})
+		if err != nil {
+			t.Fatalf("PromoteToExecutive on cross-version retry: %v", err)
+		}
+
+		// E. Assert: EXECUTIVE_ROOT_COUNT = 1. Never 2.
+		if len(submitter.runsByKey) != 1 {
+			t.Fatalf("EXECUTIVE_ROOT_COUNT = %d, want 1 (never 2)", len(submitter.runsByKey))
+		}
+		if res.ExecutiveRootTaskID != 782 {
+			t.Fatalf("ExecutiveRootTaskID = %d, want 782 (reused pre-#226 root)", res.ExecutiveRootTaskID)
+		}
+		if !res.Reused {
+			t.Fatalf("expected res.Reused = true")
+		}
+		if submitter.lastRequest.IdempotencyKey != oldKey {
+			t.Fatalf("submitter IdempotencyKey = %q, want %q", submitter.lastRequest.IdempotencyKey, oldKey)
+		}
+		wantCausationKey := fmt.Sprintf("campaign-promotion-%d-%.16s", appr.ID, appr.CanonicalHash)
+		if submitter.lastRequest.TrustedRootCausationKey != wantCausationKey {
+			t.Fatalf("submitter TrustedRootCausationKey = %q, want %q", submitter.lastRequest.TrustedRootCausationKey, wantCausationKey)
 		}
 	})
 

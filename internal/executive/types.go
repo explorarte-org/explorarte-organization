@@ -276,6 +276,14 @@ type SubmitRequest struct {
 	Goal           OwnerGoal
 	ActorRoleID    string
 	IdempotencyKey string
+	// TrustedRootCausationKey is an optional host-derived key used as the
+	// suffix for the root task's CausationID ("owner:" + TrustedRootCausationKey).
+	// When empty, Executive defaults to "owner:" + IdempotencyKey, preserving
+	// existing behavior for all other callers.
+	// When non-empty, Executive strictly validates that it conforms to the
+	// trusted-root causation syntax (^[a-zA-Z0-9]+(?:[._/-][a-zA-Z0-9]+)*$)
+	// before task creation.
+	TrustedRootCausationKey string
 	// Budget is what this campaign may spend, stated once at submission and
 	// recorded durably with its root. Leaving it nil means
 	// DefaultCampaignBudget, identically in every process.
