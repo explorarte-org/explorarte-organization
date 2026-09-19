@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/Mireuz13/explorarte-organization/internal/executive"
-	"github.com/Mireuz13/explorarte-organization/internal/modelpricing"
 )
 
 // PromotionService orchestrates promoting an approved campaign to Executive.Submit.
@@ -159,16 +158,21 @@ func (s *PromotionService) PromoteToExecutive(ctx context.Context, params Promot
 		return PromotionResult{}, ErrBudgetMismatch
 	}
 
-	// 6. Deterministic translation to executive.SubmitRequest without LLM calls.
-	campaignBudget := &executive.CampaignBudget{
-		MaxUSD:        modelpricing.USDFromDollars(approval.ExecutionBudget.MaxUSD),
-		MaxTokens:     approval.ExecutionBudget.MaxTokens,
-		MaxModelCalls: int64(approval.ExecutionBudget.MaxModelCalls),
-		MaxWallTimeMS: approval.ExecutionBudget.MaxWallTimeMS,
-		MaxDepth:      int64(approval.ExecutionBudget.MaxDepth),
-		MaxRetries:    int64(approval.ExecutionBudget.MaxRetries),
-		MaxSubagents:  int64(approval.ExecutionBudget.MaxSubagents),
+	// 6. CAMPAIGN_EXECUTABLE_BUDGET_CONTRACT_HOTFIX_V1 defense-in-depth:
+	// validate the exact approved execution budget through the SAME
+	// canonical campaign helper Finance and Approval use, BEFORE
+	// Executive.Submit is ever called. This protects against a
+	// historical approval (such as production's own owner_approval_id=1,
+	// whose budget predates this hotfix and carries max_subagents=0)
+	// reaching Executive.Submit and discovering the incompatibility only
+	// there. Deterministic translation to executive.SubmitRequest, no
+	// LLM calls; executive.CampaignBudget is a type alias of
+	// agentbudget.Limits, so the validated value assigns directly.
+	limits, err := ToAgentBudgetLimits(approval.ExecutionBudget)
+	if err != nil {
+		return PromotionResult{}, err
 	}
+	campaignBudget := &limits
 
 	// Acceptance criteria: owner criteria mapped to AcceptanceImplementation + 1 host governance AcceptanceDesign.
 	criteria := make([]executive.AcceptanceCriterion, 0, len(proposal.AcceptanceCriteria)+1)

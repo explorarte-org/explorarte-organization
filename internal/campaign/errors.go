@@ -49,6 +49,20 @@ var (
 	// never truncates, drops fields, or silently summarizes the proposal
 	// to fit.
 	ErrFinanceTaskPayloadTooLarge = errors.New("finance task instruction envelope exceeds the task engine's instructions size limit")
+
+	// ErrInvalidExecutionBudget is returned when a campaign budget
+	// recommendation or an already-approved execution budget cannot be
+	// translated into an executable agentbudget.Limits -- most commonly
+	// because one or more of its seven dimensions is not strictly
+	// positive (CAMPAIGN_EXECUTABLE_BUDGET_CONTRACT_HOTFIX_V1). Zero is
+	// never reinterpreted as "unlimited" or "disabled" here: a campaign
+	// submitted to Executive is an execution tree that may require at
+	// least one downstream delegation, so an unexecutable Finance
+	// recommendation is rejected, never silently normalized. See
+	// ValidateExecutableBudget/ToAgentBudgetLimits, the single seam
+	// Finance, Approval, and Promotion all delegate to instead of each
+	// hand-rolling their own positivity checks.
+	ErrInvalidExecutionBudget = errors.New("invalid campaign execution budget")
 )
 
 var (
