@@ -69,6 +69,9 @@ type financeWorkerFixture struct {
 	revisionID        int64
 	tasksService      *tasks.Service
 	holderPrincipalID string
+	// requirements is the injected host execution budget floor the fixture's
+	// FinanceService enforces; nil for fixtures that use a permissive one.
+	requirements *mutableRequirements
 }
 
 // financeTestDispatchProvisioner adapts *modeldispatch.AuthorizedAttemptProvisioner
@@ -195,6 +198,7 @@ func buildTestFinanceService(t *testing.T, store *platformpostgres.Store, tasksS
 
 	financeService, err := campaign.NewFinanceService(campaign.FinanceServiceConfig{
 		OrganizationID:    organizationID,
+		Requirements:      permissiveExecutionRequirements(),
 		Store:             campStore,
 		Tasks:             finTestTaskCoordinator{tasksSvc},
 		Assignments:       financeTestDispatchProvisioner{financeAssignments},
@@ -275,20 +279,28 @@ VALUES($1,'test.fake','fake_adapter','available',true,true,$2,$3) ON CONFLICT (o
 		organizationID, ceochatE2EHexFixture(seed+":provider"), currentRevisionID); err != nil {
 		t.Fatalf("insert test.fake model_providers row for %s: %v", reviewerRoleID, err)
 	}
-	var nextVersion int
-	if err := store.Pool().QueryRow(ctx, `SELECT COALESCE(max(version_number),0)+1 FROM model_profile_versions WHERE organization_id=$1 AND profile_id=$2`, organizationID, profileID).Scan(&nextVersion); err != nil {
-		t.Fatalf("compute next version_number for profile %q: %v", profileID, err)
-	}
+	// model_profile_versions is UNIQUE per (organization, profile, revision)
+	// and profiles are shared by policy (department.worker roles all use
+	// worker-default), so a second role aligned under the same shadow revision
+	// binds to the version the first one created instead of inserting another.
 	var versionID int64
-	if err := store.Pool().QueryRow(ctx, `
+	existingErr := store.Pool().QueryRow(ctx, `SELECT id FROM model_profile_versions WHERE organization_id=$1 AND profile_id=$2 AND organization_revision_id=$3 AND provider_id='test.fake' AND provider_model_id='ceochat-e2e-finance-fake'`,
+		organizationID, profileID, currentRevisionID).Scan(&versionID)
+	if existingErr != nil {
+		var nextVersion int
+		if err := store.Pool().QueryRow(ctx, `SELECT COALESCE(max(version_number),0)+1 FROM model_profile_versions WHERE organization_id=$1 AND profile_id=$2`, organizationID, profileID).Scan(&nextVersion); err != nil {
+			t.Fatalf("compute next version_number for profile %q: %v", profileID, err)
+		}
+		if err := store.Pool().QueryRow(ctx, `
 INSERT INTO model_profile_versions(organization_id,profile_id,version_number,organization_revision_id,canonical_document_hash,version_hash,provider_id,provider_model_id,transport,adapter_status,dispatch_enabled)
 VALUES($1,$2,$3,$4,$5,$6,'test.fake','ceochat-e2e-finance-fake','fake_adapter','available',true) RETURNING id`,
-		organizationID, profileID, nextVersion, currentRevisionID, ceochatE2EHexFixture(seed+":doc"), ceochatE2EHexFixture(seed+":version")).Scan(&versionID); err != nil {
-		t.Fatalf("insert test.fake model_profile_versions row for %s: %v", reviewerRoleID, err)
-	}
-	if _, err := store.Pool().Exec(ctx, `INSERT INTO model_capability_snapshots(organization_id,model_profile_version_id,capabilities,capability_hash) VALUES($1,$2,'[]',$3)`,
-		organizationID, versionID, ceochatE2EHexFixture(seed+":caps")); err != nil {
-		t.Fatalf("insert test.fake model_capability_snapshots row for %s: %v", reviewerRoleID, err)
+			organizationID, profileID, nextVersion, currentRevisionID, ceochatE2EHexFixture(seed+":doc"), ceochatE2EHexFixture(seed+":version")).Scan(&versionID); err != nil {
+			t.Fatalf("insert test.fake model_profile_versions row for %s: %v", reviewerRoleID, err)
+		}
+		if _, err := store.Pool().Exec(ctx, `INSERT INTO model_capability_snapshots(organization_id,model_profile_version_id,capabilities,capability_hash) VALUES($1,$2,'[]',$3)`,
+			organizationID, versionID, ceochatE2EHexFixture(seed+":caps")); err != nil {
+			t.Fatalf("insert test.fake model_capability_snapshots row for %s: %v", reviewerRoleID, err)
+		}
 	}
 	if _, err := store.Pool().Exec(ctx, `INSERT INTO role_model_bindings(organization_id,organization_revision_id,role_id,policy_id,profile_id,model_profile_version_id,binding_hash,active) VALUES($1,$2,$3,$4,$5,$6,$7,true)`,
 		organizationID, currentRevisionID, reviewerRoleID, policyID, profileID, versionID, ceochatE2EHexFixture(seed+":binding")); err != nil {

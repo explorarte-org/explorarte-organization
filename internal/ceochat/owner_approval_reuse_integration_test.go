@@ -354,7 +354,7 @@ func TestApprovalServicePropagatesReusedFlag(t *testing.T) {
 	defer f.cleanup()
 	ctx := context.Background()
 
-	approvalSvc := campaign.NewApprovalService(rf.store, nil)
+	approvalSvc := campaign.NewApprovalService(rf.store, nil, permissiveExecutionRequirements())
 	params := campaign.ApproveParams{
 		OrganizationID: chatTestOrganization, ProposalID: rf.proposalID, FinancialReviewID: rf.reviewID,
 		ApprovedByRoleID: "empresa/human",
