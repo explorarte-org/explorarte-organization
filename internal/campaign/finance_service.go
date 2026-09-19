@@ -560,7 +560,7 @@ func (s *FinanceService) ExecuteReviewTask(ctx context.Context, params ExecuteRe
 		// waiting for lease expiry (section 12): record a deterministic
 		// terminal failure now, exactly like the real-Harness-model
 		// failure path above, and never persist a review for it.
-		_, _ = s.cfg.Tasks.RecordAttemptResult(ctx, tasks.RecordAttemptResultCommand{
+		_, recordErr := s.cfg.Tasks.RecordAttemptResult(ctx, tasks.RecordAttemptResultCommand{
 			LeaseCommand: tasks.LeaseCommand{
 				TaskID:     claimed.Task.ID,
 				AttemptID:  claimed.Attempt.ID,
@@ -573,6 +573,9 @@ func (s *FinanceService) ExecuteReviewTask(ctx context.Context, params ExecuteRe
 				Summary:     err.Error(),
 			},
 		})
+		if recordErr != nil {
+			return CampaignFinancialReview{}, false, fmt.Errorf("record terminal failure for invalid finance output: %w: %w", recordErr, err)
+		}
 		return CampaignFinancialReview{}, false, fmt.Errorf("finance output validation: %w", err)
 	}
 

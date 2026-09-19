@@ -2,6 +2,8 @@ package campaign
 
 import (
 	"errors"
+
+	"github.com/Mireuz13/explorarte-organization/internal/agentbudget"
 	"strings"
 	"testing"
 
@@ -49,6 +51,9 @@ func TestValidateExecutableBudget_AllSevenZeroDimensions(t *testing.T) {
 			if !errors.Is(err, ErrInvalidExecutionBudget) {
 				t.Fatalf("expected ErrInvalidExecutionBudget, got: %v", err)
 			}
+			if !errors.Is(err, agentbudget.ErrInvalidRequest) {
+				t.Fatalf("expected agentbudget.ErrInvalidRequest, got: %v", err)
+			}
 		})
 	}
 }
@@ -81,6 +86,9 @@ func TestValidateExecutableBudget_NegativeDimensions(t *testing.T) {
 			if !errors.Is(err, ErrInvalidExecutionBudget) {
 				t.Fatalf("expected ErrInvalidExecutionBudget, got: %v", err)
 			}
+			if !errors.Is(err, agentbudget.ErrInvalidRequest) {
+				t.Fatalf("expected agentbudget.ErrInvalidRequest, got: %v", err)
+			}
 		})
 	}
 }
@@ -102,6 +110,9 @@ func TestValidateExecutableBudget_USDRepresentationEdge(t *testing.T) {
 		}
 		if !errors.Is(err, ErrInvalidExecutionBudget) {
 			t.Fatalf("expected ErrInvalidExecutionBudget, got: %v", err)
+		}
+		if !errors.Is(err, agentbudget.ErrInvalidRequest) {
+			t.Fatalf("expected agentbudget.ErrInvalidRequest, got: %v", err)
 		}
 	})
 
@@ -167,8 +178,8 @@ func TestToAgentBudgetLimits_CanonicalDelegation(t *testing.T) {
 	if !errors.Is(err, ErrInvalidExecutionBudget) {
 		t.Fatalf("expected ErrInvalidExecutionBudget, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "every budget dimension must be positive") {
-		t.Fatalf("expected underlying agentbudget error preserved, got: %v", err)
+	if !errors.Is(err, agentbudget.ErrInvalidRequest) {
+		t.Fatalf("expected agentbudget.ErrInvalidRequest, got: %v", err)
 	}
 }
 
@@ -308,5 +319,35 @@ func TestRenderFinanceContractInstructions_ContractPinned(t *testing.T) {
 		if strings.Contains(instructions, forbidden) {
 			t.Errorf("prompt instructions contain forbidden zero ceiling pattern: %q", forbidden)
 		}
+	}
+}
+
+// TestExecutableBudget_ErrorChain_PreservesAgentBudgetErrInvalidRequest proves that
+// invalid budgets preserve both ErrInvalidExecutionBudget and agentbudget.ErrInvalidRequest
+// under errors.Is (CAMPAIGN_EXECUTABLE_BUDGET_CONTRACT_HOTFIX_V1 merge review addendum).
+func TestExecutableBudget_ErrorChain_PreservesAgentBudgetErrInvalidRequest(t *testing.T) {
+	b := validTestBudget()
+	b.MaxSubagents = 0
+
+	err := ValidateExecutableBudget(b)
+	if err == nil {
+		t.Fatal("expected error for max_subagents = 0, got nil")
+	}
+	if !errors.Is(err, ErrInvalidExecutionBudget) {
+		t.Fatalf("expected errors.Is(err, ErrInvalidExecutionBudget) == true, got: %v", err)
+	}
+	if !errors.Is(err, agentbudget.ErrInvalidRequest) {
+		t.Fatalf("expected errors.Is(err, agentbudget.ErrInvalidRequest) == true, got: %v", err)
+	}
+
+	_, err = ToAgentBudgetLimits(b)
+	if err == nil {
+		t.Fatal("expected error from ToAgentBudgetLimits for max_subagents = 0, got nil")
+	}
+	if !errors.Is(err, ErrInvalidExecutionBudget) {
+		t.Fatalf("expected errors.Is(err, ErrInvalidExecutionBudget) == true, got: %v", err)
+	}
+	if !errors.Is(err, agentbudget.ErrInvalidRequest) {
+		t.Fatalf("expected errors.Is(err, agentbudget.ErrInvalidRequest) == true, got: %v", err)
 	}
 }

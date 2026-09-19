@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/Mireuz13/explorarte-organization/internal/agentbudget"
 	"github.com/Mireuz13/explorarte-organization/internal/campaign"
 	"github.com/Mireuz13/explorarte-organization/internal/executionharness"
 	"github.com/Mireuz13/explorarte-organization/internal/tasks"
@@ -537,6 +539,7 @@ type fakeTaskCoordinator struct {
 	recordFail         bool
 	finalizeFail       bool
 	finalizeRetries    int
+	finalizeCalls      int
 	lastRecordedResult tasks.AttemptResult
 }
 
@@ -654,6 +657,7 @@ func (f *fakeTaskCoordinator) FinalizeTask(ctx context.Context, cmd tasks.Finali
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	f.finalizeCalls++
 	if f.finalizeFail && f.finalizeRetries == 0 {
 		f.finalizeRetries++
 		return tasks.Task{}, errors.New("transient database failure during finalize")
@@ -1679,5 +1683,90 @@ func TestProductionRepro_RecommendedZeroSubagentsRejected(t *testing.T) {
 	taskCoord.mu.Unlock()
 	if postTask.Status == tasks.StatusCompleted {
 		t.Errorf("task reached completed status, want failed")
+	}
+}
+
+// TestFinanceReviewOutput_TerminalRecordFailureExposed verifies that when Finance output is
+// contract-invalid AND the TaskCoordinator.RecordAttemptResult fails to persist the terminal
+// failure (e.g. lease expired or unauthenticated), ExecuteReviewTask returns an error
+// exposing the terminal-record failure while preserving the underlying validation failure,
+// zero financial reviews are persisted, zero finalize calls occur, no owner approval occurs,
+// and the task is not falsely reported as durably completed or terminal
+// (CAMPAIGN_EXECUTABLE_BUDGET_CONTRACT_HOTFIX_V1 merge review addendum).
+func TestFinanceReviewOutput_TerminalRecordFailureExposed(t *testing.T) {
+	store, taskCoord, finSvc, _ := setupDeterministicFixture(t)
+	prop := createTestProposal(t, store, "org-test", "Campaign Terminal Record Fail", "Goal")
+
+	req, task, _, err := finSvc.RequestReview(context.Background(), campaign.RequestReviewParams{
+		OrganizationID:      "org-test",
+		ProposalID:          prop.ID,
+		RequestedByRoleID:   "empresa/ceo",
+		RequestedFromTaskID: 20,
+		ToolCallID:          "call_terminal_record_fail",
+	})
+	if err != nil {
+		t.Fatalf("RequestReview: %v", err)
+	}
+
+	// Force RecordAttemptResult to fail (simulating lease expiry or authority rejection)
+	taskCoord.recordFail = true
+
+	invalidMockOutput := campaign.FinanceReviewOutput{
+		Verdict: string(campaign.VerdictRecommended),
+		Summary: "Invalid output with zero subagents",
+		RecommendedBudget: &campaign.BudgetRecommendation{
+			MaxUSD:        0.05,
+			MaxTokens:     4000,
+			MaxModelCalls: 2,
+			MaxWallTimeMS: 60000,
+			MaxDepth:      1,
+			MaxRetries:    1,
+			MaxSubagents:  0,
+		},
+	}
+
+	_, _, err = finSvc.ExecuteReviewTask(context.Background(), campaign.ExecuteReviewParams{
+		OrganizationID:  "org-test",
+		TaskID:          task.ID,
+		ReviewRequestID: req.ID,
+		MockOutput:      &invalidMockOutput,
+	})
+	if err == nil {
+		t.Fatal("expected error executing review when terminal write fails, got nil")
+	}
+
+	// Error must expose the terminal-record failure
+	if !strings.Contains(err.Error(), "authority rejection: lease expired or unauthorized") {
+		t.Fatalf("expected error to expose terminal record failure, got: %v", err)
+	}
+	// Error must also preserve the validation failure and underlying agentbudget identity
+	if !errors.Is(err, campaign.ErrInvalidExecutionBudget) {
+		t.Fatalf("expected error wrapping ErrInvalidExecutionBudget, got: %v", err)
+	}
+	if !errors.Is(err, agentbudget.ErrInvalidRequest) {
+		t.Fatalf("expected error wrapping agentbudget.ErrInvalidRequest, got: %v", err)
+	}
+
+	// FinancialReview count = 0 (MUST NOT persist review)
+	if len(store.financialReviews) != 0 {
+		t.Fatalf("expected 0 financial reviews persisted, found %d", len(store.financialReviews))
+	}
+
+	// No FinalizeTask calls
+	if taskCoord.finalizeCalls != 0 {
+		t.Fatalf("expected 0 FinalizeTask calls, found %d", taskCoord.finalizeCalls)
+	}
+
+	// Task must NOT reach completed
+	taskCoord.mu.Lock()
+	postTask := taskCoord.tasks[task.ID]
+	taskCoord.mu.Unlock()
+	if postTask.Status == tasks.StatusCompleted {
+		t.Errorf("task reached completed status, want not completed")
+	}
+
+	// No owner approval: verify approval store has 0 approvals
+	if len(store.approvals) != 0 {
+		t.Fatalf("expected 0 owner approvals, found %d", len(store.approvals))
 	}
 }

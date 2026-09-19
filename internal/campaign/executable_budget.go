@@ -32,7 +32,7 @@ func ToAgentBudgetLimits(rec BudgetRecommendation) (agentbudget.Limits, error) {
 		MaxSubagents:  int64(rec.MaxSubagents),
 	}
 	if err := limits.Validate(); err != nil {
-		return agentbudget.Limits{}, fmt.Errorf("%w: %v", ErrInvalidExecutionBudget, err)
+		return agentbudget.Limits{}, fmt.Errorf("%w: %w", ErrInvalidExecutionBudget, err)
 	}
 	return limits, nil
 }
