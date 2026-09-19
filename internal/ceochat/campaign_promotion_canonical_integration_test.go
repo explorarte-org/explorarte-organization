@@ -5,6 +5,7 @@ package ceochat_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -22,6 +23,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/executive/driver"
 	executivepostgres "github.com/Mireuz13/explorarte-organization/internal/executive/postgres"
 	"github.com/Mireuz13/explorarte-organization/internal/executive/runtimeadapter"
+	"github.com/Mireuz13/explorarte-organization/internal/modeldispatch"
 	"github.com/Mireuz13/explorarte-organization/internal/modelpricing"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
 	"github.com/Mireuz13/explorarte-organization/internal/organization/registry"
@@ -340,22 +342,32 @@ func buildRealExecutiveOrchestrator(t *testing.T, store *platformpostgres.Store,
 		t.Fatalf("evidence proof store: %v", err)
 	}
 
+	dispatch := buildTestModelDispatch(t, store, taskService, organizationID)
+	execAssignments, err := dispatch.NewAuthorizedAttemptProvisioner(chatTestDispatchPrincipalKey)
+	if err != nil {
+		t.Fatalf("create executive dispatch provisioner: %v", err)
+	}
+
 	orchestrator, err := executive.NewOrchestrator(executive.Dependencies{
 		OrganizationID: organizationID,
 		Registry:       runtimeadapter.Registry{Reader: registryRepo, OrganizationID: organizationID},
 		Tasks:          runtimeadapter.Tasks{Service: taskService, OrganizationID: organizationID},
 		Contexts:       dummyExecutiveContext{},
-		Assignments:    dummyExecutiveAssignments{},
-		Principals:     dummyExecutivePrincipals{},
-		Models:         dummyExecutiveModels{},
-		Harness:        dummyExecutiveModels{},
-		Acceptance:     acceptanceStore,
-		Budget:         dummyExecutiveBudget{},
-		Completion:     dummyExecutiveCompletion{},
-		Decisions:      dummyExecutiveDecisions{},
-		Authorization:  dummyExecutiveAuthz{},
-		Limits:         executive.DefaultLimits(),
-		Clock:          executive.ClockFunc(time.Now),
+		Assignments: runtimeadapter.Assignment{
+			Resolver:       dispatch.Store,
+			Provisioner:    execAssignments,
+			OrganizationID: organizationID,
+		},
+		Principals:    dummyExecutivePrincipals{},
+		Models:        dummyExecutiveModels{},
+		Harness:       dummyExecutiveModels{},
+		Acceptance:    acceptanceStore,
+		Budget:        dummyExecutiveBudget{},
+		Completion:    dummyExecutiveCompletion{},
+		Decisions:     dummyExecutiveDecisions{},
+		Authorization: dummyExecutiveAuthz{},
+		Limits:        executive.DefaultLimits(),
+		Clock:         executive.ClockFunc(time.Now),
 	},
 		executive.WithAgentBudgets(runtimeadapter.AgentBudgets{Ledger: budgetLedger}),
 		executive.WithEvidenceProofs(evidenceProofStore),
@@ -926,6 +938,145 @@ func TestCanonicalCampaignPromotionToExecutive(t *testing.T) {
 		t.Errorf("CEO plan task count after driver run = %d, want 1", ceoPlanTasks)
 	}
 	t.Logf("PASS: autonomous driver advanced promoted root %d without chat intervention", prom.ExecutiveRootTaskID)
+
+	// 12. CAMPAIGN_PROMOTION_TRUSTED_ROOT_CAUSATION_HOTFIX_V1 assertions:
+	// Verify root task causation in PostgreSQL:
+	// - Prefixed with "owner:campaign-promotion-"
+	// - Contains no forbidden ":" after "owner:"
+	// - Exact suffix matches prom.ExecutiveSubmitIdempotencyKey
+	var rootCausation string
+	err = store.Pool().QueryRow(ctx, "SELECT causation_id FROM tasks WHERE id = $1", prom.ExecutiveRootTaskID).Scan(&rootCausation)
+	if err != nil {
+		t.Fatalf("query root causation: %v", err)
+	}
+	if !strings.HasPrefix(rootCausation, "owner:campaign-promotion-") {
+		t.Fatalf("root causation %q does not start with owner:campaign-promotion-", rootCausation)
+	}
+	rootSuffix := strings.TrimPrefix(rootCausation, "owner:")
+	if strings.Contains(rootSuffix, ":") {
+		t.Fatalf("root causation suffix %q contains forbidden colon", rootSuffix)
+	}
+	if rootSuffix != prom.ExecutiveSubmitIdempotencyKey {
+		t.Fatalf("root causation suffix %q != ExecutiveSubmitIdempotencyKey %q", rootSuffix, prom.ExecutiveSubmitIdempotencyKey)
+	}
+
+	// Verify CEO planning task child lineage:
+	// - Causation is "task:<rootID>"
+	// - Correlation matches the Executive root
+	var ceoPlanTaskID int64
+	var ceoPlanCausation, ceoPlanCorrelation string
+	err = store.Pool().QueryRow(ctx, `
+		SELECT id, causation_id, correlation_id
+		FROM tasks
+		WHERE task_class = 'coordination.ceo_plan' AND correlation_id = $1`, prom.ExecutiveCorrelationID).
+		Scan(&ceoPlanTaskID, &ceoPlanCausation, &ceoPlanCorrelation)
+	if err != nil {
+		t.Fatalf("query ceo plan task details: %v", err)
+	}
+	expectedChildCausation := fmt.Sprintf("task:%d", prom.ExecutiveRootTaskID)
+	if ceoPlanCausation != expectedChildCausation {
+		t.Errorf("ceo plan task causation = %q, want %q", ceoPlanCausation, expectedChildCausation)
+	}
+	if ceoPlanCorrelation != prom.ExecutiveCorrelationID {
+		t.Errorf("ceo plan task correlation = %q, want %q", ceoPlanCorrelation, prom.ExecutiveCorrelationID)
+	}
+
+	// 13. Cross-boundary proof against real modeldispatch.AuthorizedAttemptProvisioner:
+	// Executive Orchestrator's driveTypedTask was wired with real AuthorizedAttemptProvisioner
+	// (via runtimeadapter.Assignment) during campaignDriver.RunOnce.
+	// Verify that a real active assignment was successfully provisioned in model_dispatcher_assignments:
+	var assignmentCount int
+	var assignmentID int64
+	var assignmentPrincipalKey string
+	err = store.Pool().QueryRow(ctx, `
+		SELECT count(*) OVER(), id, subject_role_id
+		FROM model_dispatcher_assignments
+		WHERE task_id = $1 AND status = 'active'`, ceoPlanTaskID).
+		Scan(&assignmentCount, &assignmentID, &assignmentPrincipalKey)
+	if err != nil {
+		t.Fatalf("query dispatcher assignment for ceo plan task %d: %v", ceoPlanTaskID, err)
+	}
+	if assignmentCount != 1 {
+		t.Errorf("dispatcher assignment count = %d, want 1", assignmentCount)
+	}
+	if assignmentPrincipalKey != "empresa/ceo" {
+		t.Errorf("assignment subject role = %q, want %q", assignmentPrincipalKey, "empresa/ceo")
+	}
+	t.Logf("PASS: real AuthorizedAttemptProvisioner successfully provisioned dispatch assignment %d for CEO plan task %d (trusted root accepted)",
+		assignmentID, ceoPlanTaskID)
+
+	// Verify root was NOT blocked with dispatch_assignment_required
+	var rootStatus string
+	var rootReasonCode *string
+	_ = store.Pool().QueryRow(ctx, "SELECT status, status_reason_code FROM tasks WHERE id = $1", prom.ExecutiveRootTaskID).Scan(&rootStatus, &rootReasonCode)
+	if rootReasonCode != nil && *rootReasonCode == "dispatch_assignment_required" {
+		t.Fatalf("root %d blocked with dispatch_assignment_required", prom.ExecutiveRootTaskID)
+	}
+
+	// 14. Negative control against real PostgreSQL:
+	// Verify that if a root task carries the old malformed colon causation
+	// ("owner:campaign-promotion:42:0123456789abcdef"), the real AuthorizedAttemptProvisioner
+	// STILL rejects its child attempt with "unsupported causation".
+	provisioner, err := modelRuntime.Dispatcher.NewAuthorizedAttemptProvisioner(chatTestDispatchPrincipalKey)
+	if err != nil {
+		t.Fatalf("create authorized attempt provisioner for negative control: %v", err)
+	}
+	malformedRoot, _, err := executiveTasks.CreateTask(ctx, tasks.CreateRequest{
+		OrganizationID:    chatTestOrganization,
+		RequestedByRoleID: executive.OwnerRoleID,
+		AssignedRoleID:    executive.CEORoleID,
+		TaskClass:         executive.TaskClassOwnerGoal,
+		IdempotencyKey:    "malformed-colon-root-" + t.Name(),
+		Title:             "Old malformed colon root",
+		Instructions:      "reproduction test",
+		CorrelationID:     "executive:malformed-colon-" + t.Name(),
+		CausationID:       "owner:campaign-promotion:42:0123456789abcdef",
+	}, "role", executive.OwnerRoleID)
+	if err != nil {
+		t.Fatalf("create malformed colon root: %v", err)
+	}
+	malformedChild, _, err := executiveTasks.CreateTask(ctx, tasks.CreateRequest{
+		OrganizationID:    chatTestOrganization,
+		RequestedByRoleID: executive.CEORoleID,
+		AssignedRoleID:    executive.CEORoleID,
+		TaskClass:         "coordination.ceo_plan",
+		IdempotencyKey:    "malformed-colon-child-" + t.Name(),
+		Title:             "Child of old colon root",
+		Instructions:      "reproduction test",
+		CorrelationID:     "executive:malformed-colon-" + t.Name(),
+		CausationID:       fmt.Sprintf("task:%d", malformedRoot.ID),
+	}, "role", executive.CEORoleID)
+	if err != nil {
+		t.Fatalf("create malformed child: %v", err)
+	}
+	claimedBad, err := executiveTasks.ClaimTaskByID(ctx, malformedChild.ID, tasks.ClaimRequest{
+		OrganizationID: chatTestOrganization,
+		WorkerID:       "test-bad-worker",
+		AssignedRoleID: executive.CEORoleID,
+		LeaseDuration:  2 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("claim malformed child: %v", err)
+	}
+	if _, err = executiveTasks.StartAttempt(ctx, tasks.LeaseCommand{
+		TaskID:     claimedBad.Task.ID,
+		AttemptID:  claimedBad.Attempt.ID,
+		LeaseToken: claimedBad.LeaseToken,
+		ActorID:    "test-bad-worker",
+	}); err != nil {
+		t.Fatalf("start malformed child attempt: %v", err)
+	}
+	_, badErr := provisioner.EnsureAuthorizedAssignmentForRunningAttempt(ctx, malformedChild.ID, claimedBad.Attempt.ID)
+	if badErr == nil {
+		t.Fatal("expected EnsureAuthorizedAssignmentForRunningAttempt to reject old colon root causation, got nil")
+	}
+	if !errors.Is(badErr, modeldispatch.ErrTaskAttemptRejected) {
+		t.Errorf("error = %v, want wrapping modeldispatch.ErrTaskAttemptRejected", badErr)
+	}
+	if !strings.Contains(badErr.Error(), "unsupported causation") {
+		t.Errorf("error = %q, want it to contain %q", badErr.Error(), "unsupported causation")
+	}
+	t.Logf("PASS: real AuthorizedAttemptProvisioner rejected old colon root causation with: %v", badErr)
 }
 
 // TestCanonicalCampaignInjectedTextNeverEscalatesAuthority is the
