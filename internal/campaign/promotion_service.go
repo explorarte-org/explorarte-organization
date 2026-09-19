@@ -190,8 +190,11 @@ func (s *PromotionService) PromoteToExecutive(ctx context.Context, params Promot
 	// Instructions represent the approved goal and preserve all requirements, assumptions, and risks.
 	instructions := FormatProposalGoal(proposal)
 
-	// Derive deterministic submit key from approval identity.
-	submitKey := fmt.Sprintf("campaign-promotion:%d:%.16s", approval.ID, approval.CanonicalHash)
+	// Derive deterministic, trusted-root-safe submit key from approval identity.
+	submitKey, err := campaignPromotionSubmitKey(approval.ID, approval.CanonicalHash)
+	if err != nil {
+		return PromotionResult{}, fmt.Errorf("derive executive submit key: %w", err)
+	}
 
 	// 7. Submit to Executive boundary.
 	run, reused, err := s.Submitter.Submit(ctx, executive.SubmitRequest{
