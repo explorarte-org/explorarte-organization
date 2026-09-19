@@ -111,6 +111,18 @@ func (s *ApprovalService) ApproveForExecution(ctx context.Context, params Approv
 		return CampaignOwnerApproval{}, false, fmt.Errorf("%w: financial review has no recommended budget", ErrInvalidInput)
 	}
 
+	// 6.5. CAMPAIGN_EXECUTABLE_BUDGET_CONTRACT_HOTFIX_V1 defense-in-depth:
+	// the recommended budget must be executable by AgentBudget before it
+	// can become a durable owner approval. This protects against a
+	// historical row, a direct fixture/store insertion, or a future
+	// regression in the Finance worker that bypasses
+	// validateFinanceReviewOutput -- an incompatible review can never
+	// again turn into a new approval, even though existing historical
+	// approvals stay untouched.
+	if err := ValidateExecutableBudget(*review.RecommendedBudget); err != nil {
+		return CampaignOwnerApproval{}, false, err
+	}
+
 	// 7. SoD: approver != finance reviewer.
 	if params.ApprovedByRoleID == review.ReviewerRoleID {
 		return CampaignOwnerApproval{}, false, fmt.Errorf("%w: approver %q is the finance reviewer", ErrSeparationOfDutiesViolation, params.ApprovedByRoleID)

@@ -90,8 +90,11 @@ func (c *capturingModel) Invoke(ctx context.Context, identity executionharness.R
 }
 
 // validFinanceOutputJSON is a well-formed FinanceReviewOutput, used
-// wherever a test needs the model to answer successfully.
-const validFinanceOutputJSON = `{"verdict":"recommended","summary":"Harness composition local test."}`
+// wherever a test needs the model to answer successfully. recommended_budget
+// is strictly positive in every dimension -- CAMPAIGN_EXECUTABLE_BUDGET_
+// CONTRACT_HOTFIX_V1's validateFinanceReviewOutput now rejects a
+// "recommended" verdict without one.
+const validFinanceOutputJSON = `{"verdict":"recommended","summary":"Harness composition local test.","recommended_budget":{"max_usd":1.0,"max_tokens":1000,"max_model_calls":1,"max_wall_time_ms":60000,"max_depth":1,"max_retries":1,"max_subagents":1}}`
 
 type harnessLocalFixture struct {
 	store       *memCampaignStore

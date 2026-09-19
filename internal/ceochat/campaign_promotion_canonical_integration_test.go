@@ -1022,8 +1022,9 @@ func TestOwnerToFinanceRealHarnessEndToEnd(t *testing.T) {
 	// worker discovers, claims, and executes the ready task through the
 	// REAL Harness -- MockOutput is never set.
 	adapter.setNextFinanceOutput(reqRevProj.ReviewTaskID, campaign.FinanceReviewOutput{
-		Verdict: string(campaign.VerdictRecommended),
-		Summary: "Approved via the real owner-to-finance conversational harness.",
+		Verdict:           string(campaign.VerdictRecommended),
+		Summary:           "Approved via the real owner-to-finance conversational harness.",
+		RecommendedBudget: financeTestExecutableBudget(),
 	})
 	if _, err := financeWorker.RunOnce(ctx); err != nil {
 		t.Fatalf("financeWorker.RunOnce: %v", err)

@@ -664,3 +664,156 @@ func TestPromotionDeterministicMatrix(t *testing.T) {
 		}
 	})
 }
+
+// TestPromotionHistoricalDefense_ZeroSubagentsRejected proves that a historical-style
+// owner approval whose approved execution budget has max_subagents = 0 is rejected by
+// PromoteToExecutive before Executive.Submit is ever called
+// (CAMPAIGN_EXECUTABLE_BUDGET_CONTRACT_HOTFIX_V1 section 21).
+func TestPromotionHistoricalDefense_ZeroSubagentsRejected(t *testing.T) {
+	ctx := context.Background()
+	store, submitter, svc, p, _, _ := setupPromotionFixture(t)
+
+	// Seed a historical invalid recommended review with max_subagents = 0
+	invalidBudget := campaign.BudgetRecommendation{
+		MaxUSD:        1250.50,
+		MaxTokens:     200000,
+		MaxModelCalls: 50,
+		MaxWallTimeMS: 1800000,
+		MaxDepth:      4,
+		MaxRetries:    5,
+		MaxSubagents:  0, // historical invalid shape
+	}
+	rPayload := campaign.ReviewCanonicalPayload{
+		ProposalID:            p.ID,
+		ProposalCanonicalHash: p.CanonicalHash,
+		ReviewerRoleID:        "empresa/finanzas",
+		Verdict:               campaign.VerdictRecommended,
+		RecommendedBudget:     &invalidBudget,
+		Summary:               "Historical review with zero subagents",
+	}
+	rHash, err := campaign.ComputeReviewCanonicalHash(rPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, _, err := store.RecordFinancialReview(ctx, campaign.RecordFinancialReviewCommand{
+		OrganizationID:        "org-1",
+		ReviewRequestID:       99,
+		ProposalID:            p.ID,
+		ProposalCanonicalHash: p.CanonicalHash,
+		ReviewerRoleID:        rPayload.ReviewerRoleID,
+		Verdict:               rPayload.Verdict,
+		RecommendedBudget:     &invalidBudget,
+		Summary:               rPayload.Summary,
+		CanonicalHash:         rHash,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed matching historical owner approval with identical invalid budget
+	apprPayload := campaign.ApprovalCanonicalPayload{
+		OrganizationID:               "org-1",
+		ProposalID:                   p.ID,
+		ProposalCanonicalHash:        p.CanonicalHash,
+		FinancialReviewID:            r.ID,
+		FinancialReviewCanonicalHash: r.CanonicalHash,
+		ApprovedByRoleID:             "empresa/human",
+		ExecutionBudget:              invalidBudget,
+	}
+	apprHash, err := campaign.ComputeApprovalCanonicalHash(apprPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appr, _, err := store.CreateOwnerApproval(ctx, campaign.CreateOwnerApprovalCommand{
+		OrganizationID:               "org-1",
+		ProposalID:                   p.ID,
+		ProposalCanonicalHash:        p.CanonicalHash,
+		FinancialReviewID:            r.ID,
+		FinancialReviewCanonicalHash: r.CanonicalHash,
+		ApprovedByRoleID:             "empresa/human",
+		ExecutionBudget:              invalidBudget,
+		IdempotencyKey:               "appr-hist-zero",
+		CanonicalHash:                apprHash,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Call PromoteToExecutive
+	_, err = svc.PromoteToExecutive(ctx, campaign.PromoteToExecutiveParams{
+		OrganizationID:   "org-1",
+		OwnerApprovalID:  appr.ID,
+		PromotedByRoleID: "empresa/human",
+		ConversationID:   1,
+		ToolCallID:       "call-prom-hist",
+		IdempotencyKey:   "prom-hist-zero",
+	})
+	if err == nil {
+		t.Fatal("expected error promoting approval with zero subagents, got nil")
+	}
+	if !errors.Is(err, campaign.ErrInvalidExecutionBudget) {
+		t.Fatalf("expected ErrInvalidExecutionBudget, got: %v", err)
+	}
+
+	// Invariants:
+	if submitter.submitCalls != 0 {
+		t.Errorf("Executive.Submit calls = %d, want 0", submitter.submitCalls)
+	}
+	if len(store.promotions) != 0 {
+		t.Errorf("promotion rows = %d, want 0", len(store.promotions))
+	}
+}
+
+// TestPromotionValidExactness_AllSevenDimensionsPreserved proves that for a valid, strictly-positive
+// budget, PromoteToExecutive forwards all seven dimensions byte/field-equivalently after USD conversion,
+// without clamping, fallback defaults, or 0->1 normalization (CAMPAIGN_EXECUTABLE_BUDGET_CONTRACT_HOTFIX_V1 section 22).
+func TestPromotionValidExactness_AllSevenDimensionsPreserved(t *testing.T) {
+	ctx := context.Background()
+	_, submitter, svc, _, _, appr := setupPromotionFixture(t)
+
+	res, err := svc.PromoteToExecutive(ctx, campaign.PromoteToExecutiveParams{
+		OrganizationID:   "org-1",
+		OwnerApprovalID:  appr.ID,
+		PromotedByRoleID: "empresa/human",
+		ConversationID:   1,
+		ToolCallID:       "call-exact",
+		IdempotencyKey:   "prom-exact",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Promotion.Status != campaign.StatusSubmitted {
+		t.Errorf("status = %q, want submitted", res.Promotion.Status)
+	}
+	if submitter.submitCalls != 1 {
+		t.Fatalf("Executive.Submit calls = %d, want 1", submitter.submitCalls)
+	}
+
+	b := appr.ExecutionBudget
+	reqB := submitter.lastRequest.Budget
+	if reqB == nil {
+		t.Fatal("submitted Budget is nil")
+	}
+
+	if reqB.MaxUSD != modelpricing.USDFromDollars(b.MaxUSD) {
+		t.Errorf("MaxUSD = %d, want %d", reqB.MaxUSD, modelpricing.USDFromDollars(b.MaxUSD))
+	}
+	if reqB.MaxTokens != b.MaxTokens {
+		t.Errorf("MaxTokens = %d, want %d", reqB.MaxTokens, b.MaxTokens)
+	}
+	if reqB.MaxModelCalls != int64(b.MaxModelCalls) {
+		t.Errorf("MaxModelCalls = %d, want %d", reqB.MaxModelCalls, b.MaxModelCalls)
+	}
+	if reqB.MaxWallTimeMS != b.MaxWallTimeMS {
+		t.Errorf("MaxWallTimeMS = %d, want %d", reqB.MaxWallTimeMS, b.MaxWallTimeMS)
+	}
+	if reqB.MaxDepth != int64(b.MaxDepth) {
+		t.Errorf("MaxDepth = %d, want %d", reqB.MaxDepth, b.MaxDepth)
+	}
+	if reqB.MaxRetries != int64(b.MaxRetries) {
+		t.Errorf("MaxRetries = %d, want %d", reqB.MaxRetries, b.MaxRetries)
+	}
+	if reqB.MaxSubagents != int64(b.MaxSubagents) {
+		t.Errorf("MaxSubagents = %d, want %d", reqB.MaxSubagents, b.MaxSubagents)
+	}
+}

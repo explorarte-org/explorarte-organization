@@ -548,9 +548,35 @@ func (s *FinanceService) ExecuteReviewTask(ctx context.Context, params ExecuteRe
 		}
 	}
 
-	// 7. Validate output schema & values
-	if !ValidVerdict(output.Verdict) {
-		return CampaignFinancialReview{}, false, fmt.Errorf("%w: %q", ErrInvalidVerdict, output.Verdict)
+	// 7. Validate output schema & values BEFORE any success can be
+	// recorded or any review persisted. This is the host's own gate --
+	// it never trusts prompt compliance -- and applies identically
+	// whether output came from a real Harness dispatch or from
+	// MockOutput (CAMPAIGN_EXECUTABLE_BUDGET_CONTRACT_HOTFIX_V1 section
+	// 13: test infrastructure must never bypass the same contract
+	// production enforces).
+	if err := validateFinanceReviewOutput(output); err != nil {
+		// A parsed-but-contract-invalid Finance output must never sit
+		// waiting for lease expiry (section 12): record a deterministic
+		// terminal failure now, exactly like the real-Harness-model
+		// failure path above, and never persist a review for it.
+		_, recordErr := s.cfg.Tasks.RecordAttemptResult(ctx, tasks.RecordAttemptResultCommand{
+			LeaseCommand: tasks.LeaseCommand{
+				TaskID:     claimed.Task.ID,
+				AttemptID:  claimed.Attempt.ID,
+				LeaseToken: claimed.LeaseToken,
+				ActorID:    actorID,
+			},
+			Result: tasks.AttemptResult{
+				Outcome:     tasks.OutcomeNonRetryableFailure,
+				FailureCode: "FINANCE_OUTPUT_INVALID",
+				Summary:     err.Error(),
+			},
+		})
+		if recordErr != nil {
+			return CampaignFinancialReview{}, false, fmt.Errorf("record terminal failure for invalid finance output: %w: %w", recordErr, err)
+		}
+		return CampaignFinancialReview{}, false, fmt.Errorf("finance output validation: %w", err)
 	}
 
 	// 8. CRITICAL Persist Order Step A: RecordAttemptResult FIRST (Task Engine authority check)
@@ -622,6 +648,34 @@ func (s *FinanceService) ExecuteReviewTask(ctx context.Context, params ExecuteRe
 	}
 
 	return review, reused, nil
+}
+
+// validateFinanceReviewOutput enforces the Finance output contract before
+// any success can be recorded or any review persisted
+// (CAMPAIGN_EXECUTABLE_BUDGET_CONTRACT_HOTFIX_V1 sections 10-11): the
+// verdict must be one of the closed vocabulary; a "recommended" verdict
+// requires a RecommendedBudget that ValidateExecutableBudget accepts
+// (every one of the seven dimensions strictly positive, delegated to
+// agentbudget.Limits.Validate -- see ToAgentBudgetLimits); any other
+// verdict may omit RecommendedBudget, but if one is supplied anyway it
+// must still be executable, keeping the type semantically honest (section
+// 9). This never trusts prompt compliance -- it is the host's own gate,
+// and it runs identically for a real Harness dispatch and for MockOutput
+// (section 13).
+func validateFinanceReviewOutput(output FinanceReviewOutput) error {
+	if !ValidVerdict(output.Verdict) {
+		return fmt.Errorf("%w: %q", ErrInvalidVerdict, output.Verdict)
+	}
+	if FinancialReviewVerdict(output.Verdict) == VerdictRecommended {
+		if output.RecommendedBudget == nil {
+			return fmt.Errorf("%w: verdict %q requires a recommended_budget", ErrInvalidExecutionBudget, output.Verdict)
+		}
+		return ValidateExecutableBudget(*output.RecommendedBudget)
+	}
+	if output.RecommendedBudget != nil {
+		return ValidateExecutableBudget(*output.RecommendedBudget)
+	}
+	return nil
 }
 
 // validateFinanceHarnessPreconditions fails closed, before any RunSpec is
@@ -951,6 +1005,14 @@ CRITICAL POLICY & CONSTRAINTS:
    - "changes_requested": proposal requires modifications/corrections before it can be recommended.
    - "not_recommended": economically non-viable, too costly, or risks outweigh benefits.
    - "insufficient_data": evidence is insufficient to determine viability.
+6. EXECUTION BUDGET RULES for verdict "recommended":
+   - recommended_budget MUST be present.
+   - Every execution-budget dimension (max_usd, max_tokens, max_model_calls, max_wall_time_ms, max_depth, max_retries, max_subagents) MUST be strictly positive.
+   - max_subagents must be at least 1: a campaign submitted for execution is a tree that may need at least one downstream delegation to reach real work.
+   - max_retries must be at least 1.
+   - The budget represents ceilings the execution may not exceed, not a prediction of what it will actually use.
+   - A value of zero is NOT a valid way to say "none", "not needed", or "unlimited" for any dimension -- it will be rejected before any approval or launch can happen.
+   - If you cannot recommend an executable, strictly-positive budget for every dimension, do NOT use verdict "recommended". Use "changes_requested", "not_recommended", or "insufficient_data" instead, as appropriate.
 
 OUTPUT FORMAT:
 You must respond with ONLY a valid JSON object matching this schema:
@@ -958,13 +1020,13 @@ You must respond with ONLY a valid JSON object matching this schema:
   "verdict": "recommended" | "changes_requested" | "not_recommended" | "insufficient_data",
   "summary": "Executive summary of financial evaluation",
   "recommended_budget": {
-    "max_usd": 0.0,
-    "max_tokens": 0,
-    "max_model_calls": 0,
-    "max_wall_time_ms": 0,
-    "max_depth": 0,
-    "max_retries": 0,
-    "max_subagents": 0
+    "max_usd": 1.0,
+    "max_tokens": 1000,
+    "max_model_calls": 1,
+    "max_wall_time_ms": 60000,
+    "max_depth": 1,
+    "max_retries": 1,
+    "max_subagents": 1
   },
   "estimated_cost": {
     "amount": 0.0,
@@ -975,5 +1037,7 @@ You must respond with ONLY a valid JSON object matching this schema:
   "risks": ["financial risk 1", ...],
   "required_corrections": ["required change 1", ...],
   "missing_information": ["unobserved information 1", ...]
-}`
+}
+
+The numbers shown above for recommended_budget are illustrative examples of the required shape only, not defaults or suggested values -- choose ceilings that actually fit this proposal, keeping every dimension strictly positive per rule 6.`
 }
