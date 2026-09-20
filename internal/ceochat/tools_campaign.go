@@ -118,7 +118,10 @@ type PromoteResultProjection struct {
 	Status                 string `json:"status"`
 	ExecutiveRootTaskID    int64  `json:"executive_root_task_id"`
 	ExecutiveCorrelationID string `json:"executive_correlation_id"`
-	Reused                 bool   `json:"reused"`
+	// ExecutionMode is the mode the campaign runs under. It is provenance the
+	// CEO can read and report, never something the promote tool can set.
+	ExecutionMode string `json:"execution_mode"`
+	Reused        bool   `json:"reused"`
 }
 
 // PromotionResultProjection is the projection returned when reading a campaign promotion.
@@ -129,6 +132,7 @@ type PromotionResultProjection struct {
 	FinancialReviewID      int64  `json:"financial_review_id"`
 	ExecutiveRootTaskID    int64  `json:"executive_root_task_id"`
 	ExecutiveCorrelationID string `json:"executive_correlation_id"`
+	ExecutionMode          string `json:"execution_mode"`
 	Status                 string `json:"status"`
 	CreatedAt              string `json:"created_at"`
 }
@@ -1215,6 +1219,7 @@ func RegisterCampaignTools(registry *ToolRegistry, organizationID string, store 
 			Status:                 string(res.Promotion.Status),
 			ExecutiveRootTaskID:    res.ExecutiveRootTaskID,
 			ExecutiveCorrelationID: res.ExecutiveCorrelationID,
+			ExecutionMode:          string(res.Promotion.ExecutionMode.Normalized()),
 			Reused:                 res.Reused,
 		}
 		return json.Marshal(projection)
@@ -1289,6 +1294,7 @@ func RegisterCampaignTools(registry *ToolRegistry, organizationID string, store 
 			FinancialReviewID:      prom.FinancialReviewID,
 			ExecutiveRootTaskID:    prom.ExecutiveRootTaskID,
 			ExecutiveCorrelationID: prom.ExecutiveCorrelationID,
+			ExecutionMode:          string(prom.ExecutionMode.Normalized()),
 			Status:                 string(prom.Status),
 			CreatedAt:              prom.CreatedAt.Format(time.RFC3339),
 		}
