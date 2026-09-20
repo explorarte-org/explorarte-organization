@@ -3,6 +3,7 @@ package campaign_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/Mireuz13/explorarte-organization/internal/campaign"
@@ -105,6 +106,15 @@ func TestPromotionRevalidatesFeasibilityBeforeSubmit(t *testing.T) {
 	}
 	if result.Promotion.ExecutionBudget != approval.ExecutionBudget {
 		t.Fatalf("recorded promotion budget %+v drifted from the approval %+v", result.Promotion.ExecutionBudget, approval.ExecutionBudget)
+	}
+	// Both contracts on the one Executive.Submit: the feasibility gate above ran
+	// first, and the submission keeps Campaign's historical idempotency identity
+	// with the SEPARATE trusted-root-safe causation.
+	if want := fmt.Sprintf("campaign-promotion:%d:%.16s", approval.ID, approval.CanonicalHash); submitter.lastRequest.IdempotencyKey != want {
+		t.Fatalf("IdempotencyKey = %q, want the historical %q", submitter.lastRequest.IdempotencyKey, want)
+	}
+	if want := fmt.Sprintf("campaign-promotion-%d-%.16s", approval.ID, approval.CanonicalHash); submitter.lastRequest.TrustedRootCausationKey != want {
+		t.Fatalf("TrustedRootCausationKey = %q, want the separate colon-free %q", submitter.lastRequest.TrustedRootCausationKey, want)
 	}
 }
 
