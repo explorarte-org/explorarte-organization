@@ -23,6 +23,10 @@ type PromotionCanonicalPayload struct {
 	ExecutiveSubmitIdempotencyKey string               `json:"executive_submit_idempotency_key"`
 	Status                        PromotionStatus      `json:"status"`
 	PromotedByRoleID              string               `json:"promoted_by_role_id"`
+	// ExecutionMode is sealed only when it is not analysis_only. The omitted
+	// form is byte-identical to the payload every earlier promotion was
+	// sealed with, so their hashes still verify.
+	ExecutionMode string `json:"execution_mode,omitempty"`
 }
 
 // ComputePromotionCanonicalHash computes a deterministic SHA-256 hex digest

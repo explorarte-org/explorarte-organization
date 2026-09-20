@@ -463,6 +463,7 @@ func (s *fakeCampaignStore) CreatePromotion(ctx context.Context, cmd campaign.Cr
 		FinancialReviewID:             cmd.FinancialReviewID,
 		FinancialReviewCanonicalHash:  cmd.FinancialReviewCanonicalHash,
 		ExecutionBudget:               cmd.ExecutionBudget,
+		ExecutionMode:                 cmd.ExecutionMode,
 		ExecutiveRootTaskID:           cmd.ExecutiveRootTaskID,
 		ExecutiveCorrelationID:        cmd.ExecutiveCorrelationID,
 		ExecutiveSubmitIdempotencyKey: cmd.ExecutiveSubmitIdempotencyKey,

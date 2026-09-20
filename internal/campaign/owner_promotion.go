@@ -89,6 +89,7 @@ type ApprovalReader interface {
 // the same instance the CEO tool holds is what makes the two paths one path.
 type PromotionExecutor interface {
 	PromoteToExecutive(ctx context.Context, params PromoteToExecutiveParams) (PromotionResult, error)
+	PromoteToExecutiveWithGrant(ctx context.Context, params PromoteToExecutiveParams, grant ExecutionModeGrant) (PromotionResult, error)
 }
 
 // OwnerPromotionResult is what a promotion (new or already durable) reports.
@@ -98,8 +99,11 @@ type OwnerPromotionResult struct {
 	ActorAuthorityClass    string `json:"actor_authority_class"`
 	OrganizationRevisionID int64  `json:"organization_revision_id"`
 	PromotionID            int64  `json:"promotion_id"`
-	ExecutiveRootTaskID    int64  `json:"executive_root_task_id"`
-	ExecutiveCorrelationID string `json:"executive_correlation_id"`
+	// ExecutionMode is the mode the campaign runs under: the durable
+	// promotion's, which for a reused promotion is the one it was made with.
+	ExecutionMode          ExecutionMode `json:"execution_mode"`
+	ExecutiveRootTaskID    int64         `json:"executive_root_task_id"`
+	ExecutiveCorrelationID string        `json:"executive_correlation_id"`
 	// ExecutiveSubmitIdempotencyKey is the durable Campaign submission identity
 	// recorded on the promotion (campaign-promotion:<approval>:<hash16>).
 	ExecutiveSubmitIdempotencyKey string `json:"executive_submit_idempotency_key"`
@@ -120,6 +124,9 @@ type OwnerPromotionAudit struct {
 	ErrorClass             string // empty on success
 	Error                  string
 	PromotionID            int64
+	// ExecutionModeRequested is empty when the caller chose no mode.
+	ExecutionModeRequested ExecutionMode
+	ExecutionMode          ExecutionMode
 	ExecutiveRootTaskID    int64
 	IdempotencyKey         string
 	TrustedRootCausation   string
@@ -172,6 +179,10 @@ func OwnerPromotionErrorClass(err error) string {
 		return "invalid_execution_budget"
 	case errors.Is(err, ErrExecutionRequirementsUnavailable):
 		return "execution_requirements_unavailable"
+	case errors.Is(err, ErrExecutionModeConflict):
+		return "execution_mode_conflict"
+	case errors.Is(err, ErrExecutionModeNotAuthorized):
+		return "unauthorized"
 	case errors.Is(err, tasks.ErrIdempotencyConflict):
 		return "idempotency_conflict"
 	case errors.Is(err, ErrInvalidInput):
@@ -182,8 +193,27 @@ func OwnerPromotionErrorClass(err error) string {
 }
 
 // Promote promotes the given approval as the canonical owner.
-func (p *OwnerPromoter) Promote(ctx context.Context, approvalID int64) (result OwnerPromotionResult, err error) {
+//
+// No execution mode is chosen: a new promotion runs analysis_only and an existing
+// one is reported as it is.
+func (p *OwnerPromoter) Promote(ctx context.Context, approvalID int64) (OwnerPromotionResult, error) {
+	return p.promote(ctx, approvalID, "", false)
+}
+
+// PromoteWithMode is Promote with an explicit execution mode chosen by the owner.
+// It is the only entry point that can request governed_implementation, and the
+// mode reaches PromotionService only as a grant this promoter issues after it has
+// resolved the canonical owner and verified the promotion capability. An approval
+// that was already promoted under a different mode is refused, never re-promoted.
+func (p *OwnerPromoter) PromoteWithMode(ctx context.Context, approvalID int64, mode ExecutionMode) (OwnerPromotionResult, error) {
+	return p.promote(ctx, approvalID, mode, true)
+}
+
+func (p *OwnerPromoter) promote(ctx context.Context, approvalID int64, requested ExecutionMode, modeChosen bool) (result OwnerPromotionResult, err error) {
 	audit := OwnerPromotionAudit{ApprovalID: approvalID}
+	if modeChosen {
+		audit.ExecutionModeRequested = requested.Normalized()
+	}
 	defer func() {
 		if err != nil {
 			audit.Outcome, audit.ErrorClass, audit.Error = "failed", OwnerPromotionErrorClass(err), err.Error()
@@ -231,26 +261,37 @@ func (p *OwnerPromoter) Promote(ctx context.Context, approvalID int64) (result O
 	// found by the other; the tool-call id names this path's origin. There is no
 	// conversation turn behind this action, so none is claimed.
 	promotionKey := fmt.Sprintf("campaign-promotion:%s:%d", p.organizationID, approval.ID)
-	promoted, err := p.promotions.PromoteToExecutive(ctx, PromoteToExecutiveParams{
+	promoteParams := PromoteToExecutiveParams{
 		OrganizationID:         p.organizationID,
 		OrganizationRevisionID: owner.OrganizationRevisionID,
 		OwnerApprovalID:        approval.ID,
 		PromotedByRoleID:       owner.RoleID,
 		ToolCallID:             fmt.Sprintf("owner-cli:campaign-promote:%d", approval.ID),
 		IdempotencyKey:         promotionKey,
-	})
+	}
+	var promoted PromotionResult
+	if modeChosen {
+		grant, grantErr := grantExecutionMode(requested, approval.ID, owner.RoleID)
+		if grantErr != nil {
+			return OwnerPromotionResult{}, grantErr
+		}
+		promoted, err = p.promotions.PromoteToExecutiveWithGrant(ctx, promoteParams, grant)
+	} else {
+		promoted, err = p.promotions.PromoteToExecutive(ctx, promoteParams)
+	}
 	if err != nil {
 		return OwnerPromotionResult{}, err
 	}
 	result = OwnerPromotionResult{
 		ApprovalID: approval.ID, ActorRoleID: owner.RoleID, ActorAuthorityClass: owner.AuthorityClass,
 		OrganizationRevisionID: owner.OrganizationRevisionID,
-		PromotionID:            promoted.Promotion.ID, ExecutiveRootTaskID: promoted.ExecutiveRootTaskID,
+		PromotionID:            promoted.Promotion.ID, ExecutionMode: promoted.Promotion.ExecutionMode.Normalized(),
+		ExecutiveRootTaskID:           promoted.ExecutiveRootTaskID,
 		ExecutiveCorrelationID:        promoted.ExecutiveCorrelationID,
 		ExecutiveSubmitIdempotencyKey: promoted.Promotion.ExecutiveSubmitIdempotencyKey,
 		TrustedRootCausation:          audit.TrustedRootCausation, PromotionIdempotencyKey: promotionKey, Reused: promoted.Reused,
 	}
-	audit.PromotionID, audit.ExecutiveRootTaskID = result.PromotionID, result.ExecutiveRootTaskID
+	audit.PromotionID, audit.ExecutiveRootTaskID, audit.ExecutionMode = result.PromotionID, result.ExecutiveRootTaskID, result.ExecutionMode
 	audit.IdempotencyKey, audit.PromotionIdempotency = result.ExecutiveSubmitIdempotencyKey, promotionKey
 	return result, nil
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/Mireuz13/explorarte-organization/internal/campaign"
+	"github.com/Mireuz13/explorarte-organization/internal/executive"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -56,6 +57,7 @@ INSERT INTO campaign_promotions (
     financial_review_id,
     financial_review_canonical_hash,
     execution_budget,
+    execution_mode,
     executive_root_task_id,
     executive_correlation_id,
     executive_submit_idempotency_key,
@@ -67,7 +69,7 @@ INSERT INTO campaign_promotions (
     tool_call_id,
     idempotency_key,
     canonical_hash
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
 RETURNING
     id,
     organization_id,
@@ -78,6 +80,7 @@ RETURNING
     financial_review_id,
     financial_review_canonical_hash,
     execution_budget,
+    execution_mode,
     executive_root_task_id,
     executive_correlation_id,
     executive_submit_idempotency_key,
@@ -116,6 +119,7 @@ RETURNING
 		cmd.FinancialReviewID,
 		cmd.FinancialReviewCanonicalHash,
 		budgetJSON,
+		string(cmd.ExecutionMode.Normalized()),
 		cmd.ExecutiveRootTaskID,
 		cmd.ExecutiveCorrelationID,
 		cmd.ExecutiveSubmitIdempotencyKey,
@@ -163,6 +167,7 @@ SELECT
     financial_review_id,
     financial_review_canonical_hash,
     execution_budget,
+    execution_mode,
     executive_root_task_id,
     executive_correlation_id,
     executive_submit_idempotency_key,
@@ -202,6 +207,7 @@ SELECT
     financial_review_id,
     financial_review_canonical_hash,
     execution_budget,
+    execution_mode,
     executive_root_task_id,
     executive_correlation_id,
     executive_submit_idempotency_key,
@@ -240,6 +246,7 @@ SELECT
     financial_review_id,
     financial_review_canonical_hash,
     execution_budget,
+    execution_mode,
     executive_root_task_id,
     executive_correlation_id,
     executive_submit_idempotency_key,
@@ -269,6 +276,7 @@ WHERE organization_id = $1 AND idempotency_key = $2;`
 func scanCampaignPromotion(row pgx.Row) (campaign.CampaignPromotion, error) {
 	var p campaign.CampaignPromotion
 	var budgetJSON []byte
+	var mode string
 	var convID, msgID, turnID *int64
 
 	err := row.Scan(
@@ -281,6 +289,7 @@ func scanCampaignPromotion(row pgx.Row) (campaign.CampaignPromotion, error) {
 		&p.FinancialReviewID,
 		&p.FinancialReviewCanonicalHash,
 		&budgetJSON,
+		&mode,
 		&p.ExecutiveRootTaskID,
 		&p.ExecutiveCorrelationID,
 		&p.ExecutiveSubmitIdempotencyKey,
@@ -309,6 +318,7 @@ func scanCampaignPromotion(row pgx.Row) (campaign.CampaignPromotion, error) {
 	if err := json.Unmarshal(budgetJSON, &p.ExecutionBudget); err != nil {
 		return p, fmt.Errorf("unmarshal execution budget: %w", err)
 	}
+	p.ExecutionMode = campaign.ExecutionMode(mode)
 	return p, nil
 }
 
@@ -333,6 +343,9 @@ func validateCreatePromotionCommand(cmd campaign.CreatePromotionCommand) error {
 	}
 	if !hashRegex.MatchString(cmd.FinancialReviewCanonicalHash) {
 		return fmt.Errorf("%w: financial_review_canonical_hash must be a 64-char hex string", campaign.ErrInvalidInput)
+	}
+	if _, err := executive.ExecutionModeRequirements(cmd.ExecutionMode); err != nil {
+		return fmt.Errorf("%w: execution_mode: %v", campaign.ErrInvalidInput, err)
 	}
 	if cmd.ExecutiveRootTaskID <= 0 {
 		return fmt.Errorf("%w: executive_root_task_id must be positive", campaign.ErrInvalidInput)

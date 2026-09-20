@@ -36,7 +36,27 @@ const HostGovernanceDesignCriterion = "Host governance: CEO executive plan is ap
 
 // PromoteToExecutive safely and idempotently transitions an approved campaign tuple
 // (proposal + financial review + owner approval) into exactly one Executive root run.
+//
+// This is the path the CEO tool takes, and it carries no execution mode: every
+// promotion made here runs analysis_only, and an approval already promoted under
+// another mode is returned as it is. Choosing a mode is owner authority and goes
+// through PromoteToExecutiveWithGrant.
 func (s *PromotionService) PromoteToExecutive(ctx context.Context, params PromoteToExecutiveParams) (PromotionResult, error) {
+	return s.promote(ctx, params, ExecutionModeGrant{})
+}
+
+// PromoteToExecutiveWithGrant is PromoteToExecutive with an execution mode the
+// owner promoter chose for this exact approval and actor. A grant issued for any
+// other approval or actor is refused before anything is read or created.
+func (s *PromotionService) PromoteToExecutiveWithGrant(ctx context.Context, params PromoteToExecutiveParams, grant ExecutionModeGrant) (PromotionResult, error) {
+	if !grant.authorizes(params) {
+		return PromotionResult{}, ErrExecutionModeNotAuthorized
+	}
+	return s.promote(ctx, params, grant)
+}
+
+func (s *PromotionService) promote(ctx context.Context, params PromoteToExecutiveParams, grant ExecutionModeGrant) (PromotionResult, error) {
+	mode := grant.Mode()
 	if strings.TrimSpace(params.OrganizationID) == "" {
 		return PromotionResult{}, fmt.Errorf("%w: organization_id is required", ErrInvalidInput)
 	}
@@ -66,6 +86,13 @@ func (s *PromotionService) PromoteToExecutive(ctx context.Context, params Promot
 	// 2. Short-circuit if a promotion already exists for this owner approval.
 	existingByApproval, err := s.Store.GetPromotionByApprovalID(ctx, params.OrganizationID, params.OwnerApprovalID)
 	if err == nil {
+		// The durable promotion is immutable, and so is the mode it ran under.
+		// A caller that chose a mode and asks for a different one is refused;
+		// a caller that chose none (the CEO tool) just reads what exists.
+		if grant.Chosen() && existingByApproval.ExecutionMode.Normalized() != mode {
+			return PromotionResult{}, fmt.Errorf("%w: approval %d was promoted as %q, requested %q",
+				ErrExecutionModeConflict, params.OwnerApprovalID, existingByApproval.ExecutionMode.Normalized(), mode)
+		}
 		return PromotionResult{
 			Promotion:              existingByApproval,
 			ExecutiveRootTaskID:    existingByApproval.ExecutiveRootTaskID,
@@ -233,6 +260,7 @@ func (s *PromotionService) PromoteToExecutive(ctx context.Context, params Promot
 		ActorRoleID:             executive.OwnerRoleID,
 		IdempotencyKey:          submitKey,
 		TrustedRootCausationKey: causationKey,
+		ExecutionMode:           mode,
 		Budget:                  campaignBudget,
 	})
 	if err != nil {
@@ -240,6 +268,10 @@ func (s *PromotionService) PromoteToExecutive(ctx context.Context, params Promot
 	}
 
 	// 8. Seal resulting promotion record and persist.
+	var sealedMode string
+	if mode != ExecutionModeAnalysisOnly {
+		sealedMode = string(mode)
+	}
 	promPayload := PromotionCanonicalPayload{
 		OrganizationID:                params.OrganizationID,
 		OwnerApprovalID:               approval.ID,
@@ -254,6 +286,7 @@ func (s *PromotionService) PromoteToExecutive(ctx context.Context, params Promot
 		ExecutiveSubmitIdempotencyKey: submitKey,
 		Status:                        StatusSubmitted,
 		PromotedByRoleID:              params.PromotedByRoleID,
+		ExecutionMode:                 sealedMode,
 	}
 	promHash, err := ComputePromotionCanonicalHash(promPayload)
 	if err != nil {
@@ -269,6 +302,7 @@ func (s *PromotionService) PromoteToExecutive(ctx context.Context, params Promot
 		FinancialReviewID:             review.ID,
 		FinancialReviewCanonicalHash:  review.CanonicalHash,
 		ExecutionBudget:               approval.ExecutionBudget,
+		ExecutionMode:                 mode,
 		ExecutiveRootTaskID:           run.RootTaskID,
 		ExecutiveCorrelationID:        run.CorrelationID,
 		ExecutiveSubmitIdempotencyKey: submitKey,

@@ -49,7 +49,8 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 	// 77 (add_proposal_revision_lineage) is CEO_CONVERSATIONAL_CAMPAIGN_REVISION_AND_OWNER_APPROVAL_V1 proposal revision lineage.
 	// 78 (create_campaign_owner_approvals) is CEO_CONVERSATIONAL_CAMPAIGN_REVISION_AND_OWNER_APPROVAL_V1 owner approvals.
 	// 79 (create_campaign_promotions) is CEO_CONVERSATIONAL_CAMPAIGN_PROMOTION_TO_EXECUTIVE_V1 campaign promotions.
-	const wantCount = 79
+	// 80 (add_campaign_promotion_execution_mode) is CAMPAIGN_GOVERNED_EXECUTION_MODE_V1's durable provenance of the execution mode.
+	const wantCount = 80
 	if len(loaded) != wantCount {
 		t.Fatalf("migration count=%d want %d", len(loaded), wantCount)
 	}
@@ -143,6 +144,8 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		78: "create_campaign_owner_approvals",
 		// CEO_CONVERSATIONAL_CAMPAIGN_PROMOTION_TO_EXECUTIVE_V1:
 		79: "create_campaign_promotions",
+		// CAMPAIGN_GOVERNED_EXECUTION_MODE_V1:
+		80: "add_campaign_promotion_execution_mode",
 	}
 	byVersion := make(map[int64]string, len(loaded))
 	for _, migration := range loaded {
