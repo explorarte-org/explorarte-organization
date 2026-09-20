@@ -284,6 +284,12 @@ type SubmitRequest struct {
 	// trusted-root causation syntax (^[a-zA-Z0-9]+(?:[._/-][a-zA-Z0-9]+)*$)
 	// before task creation.
 	TrustedRootCausationKey string
+	// ExecutionMode is the host-owned decision to run the governed
+	// implementation path. The zero value is ExecutionModeAnalysisOnly, so a
+	// caller that says nothing gets today's behavior. It is set only by a
+	// caller that already holds owner authority; nothing derived from goal
+	// text, OwnerGoal.Requirements or a model can set it.
+	ExecutionMode ExecutionMode
 	// Budget is what this campaign may spend, stated once at submission and
 	// recorded durably with its root. Leaving it nil means
 	// DefaultCampaignBudget, identically in every process.

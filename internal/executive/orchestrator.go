@@ -257,6 +257,26 @@ func (o *Orchestrator) Submit(ctx context.Context, request SubmitRequest) (Run, 
 	if _, exists := seenReq["executive_closure_verified"]; exists {
 		return Run{}, false, fmt.Errorf("%w: reserved requirement key", ErrInvalidInput)
 	}
+	// The execution mode is the host's decision, and it is the only writer of
+	// the governed requirement keys when it is set. An owner requirement
+	// carrying one of them alongside a mode would be a second source for the
+	// same decision, so it is refused instead of merged.
+	modeRequirements, err := ExecutionModeRequirements(request.ExecutionMode)
+	if err != nil {
+		return Run{}, false, err
+	}
+	if len(modeRequirements) > 0 {
+		modeKeys := executionModeKeys()
+		for key := range seenReq {
+			if _, owned := modeKeys[key]; owned {
+				return Run{}, false, fmt.Errorf("%w: requirement %s is owned by execution mode %s", ErrInvalidInput, key, request.ExecutionMode)
+			}
+		}
+		if len(requirements)+len(modeRequirements) > o.limits.MaxRequirementsPerTask {
+			return Run{}, false, ErrPlanTooLarge
+		}
+		requirements = append(requirements, modeRequirements...)
+	}
 	requirements = append(requirements, RequirementProposal{Key: "executive_closure_verified", Type: "result", Description: "CEO closure is materialized from verified departmental results", Required: true})
 	// Resolved BEFORE the root exists, so a campaign is never created with a
 	// budget the system then fails to record.
