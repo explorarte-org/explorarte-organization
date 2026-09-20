@@ -48,6 +48,33 @@ type Runtime struct {
 	Service      *ceochat.Service
 	Tasks        *tasks.Service
 	ModelRuntime *modelbootstrap.Runtime
+
+	// promotion is the ONE PromotionService instance this runtime holds: the
+	// CEO's campaign.promote_to_executive tool is registered against it and
+	// OwnerPromoter (the deterministic, non-generative owner path) is built on
+	// it. It is nil when no Executive submitter was supplied, in which case
+	// neither path can promote.
+	promotion      *campaign.PromotionService
+	campaignStore  campaign.Store
+	authorizer     campaign.CapabilityAuthorizer
+	registryReader registry.Reader
+	organizationID string
+}
+
+// PromotionService returns the PromotionService shared by the CEO tool and the
+// owner path, or nil when promotion is not configured.
+func (r *Runtime) PromotionService() *campaign.PromotionService { return r.promotion }
+
+// OwnerPromoter builds the deterministic owner promotion adapter over the SAME
+// PromotionService the CEO tool uses. The acting owner is resolved from the
+// canonical registry, not from any caller input. audit is invoked once per
+// promotion attempt.
+func (r *Runtime) OwnerPromoter(audit func(campaign.OwnerPromotionAudit)) (*campaign.OwnerPromoter, error) {
+	if r.promotion == nil {
+		return nil, fmt.Errorf("promotion service is not configured: no Executive submitter was supplied")
+	}
+	return campaign.NewOwnerPromoter(r.organizationID, r.campaignStore, r.promotion,
+		campaign.RegistryOwnerResolver{Registry: r.registryReader}, r.authorizer, audit)
 }
 
 // OpenOption configures optional dependencies for ceochat runtime. This is
@@ -293,11 +320,14 @@ func Open(cfg config.Config, store *platformpostgres.Store, opts ...OpenOption) 
 		ceochat.WithApprovalService(approvalService),
 		ceochat.WithFinanceService(financeService),
 	}
+	var promotionService *campaign.PromotionService
 	if openCfg.submitter != nil {
-		promService := campaign.NewPromotionService(campaignStore, openCfg.submitter, authorizerPolicy, requirementsProvider)
-		campToolOpts = append(campToolOpts, ceochat.WithPromotionService(promService))
+		promotionService = campaign.NewPromotionService(campaignStore, openCfg.submitter, authorizerPolicy, requirementsProvider)
 	} else if openCfg.promotionService != nil {
-		campToolOpts = append(campToolOpts, ceochat.WithPromotionService(openCfg.promotionService))
+		promotionService = openCfg.promotionService
+	}
+	if promotionService != nil {
+		campToolOpts = append(campToolOpts, ceochat.WithPromotionService(promotionService))
 	}
 	if err = ceochat.RegisterCampaignTools(toolRegistry, organizationID, campaignStore, authorizerPolicy, campToolOpts...); err != nil {
 		return nil, fmt.Errorf("register ceochat campaign tools: %w", err)
@@ -327,7 +357,11 @@ func Open(cfg config.Config, store *platformpostgres.Store, opts ...OpenOption) 
 	if err != nil {
 		return nil, fmt.Errorf("open ceochat service: %w", err)
 	}
-	return &Runtime{Service: service, Tasks: taskService, ModelRuntime: modelRuntime}, nil
+	return &Runtime{
+		Service: service, Tasks: taskService, ModelRuntime: modelRuntime,
+		promotion: promotionService, campaignStore: campaignStore, authorizer: authorizerPolicy,
+		registryReader: registryRepository, organizationID: organizationID,
+	}, nil
 }
 
 // runDescriptorLister adapts *executionharnesspostgres.Store.ListRunDescriptors
