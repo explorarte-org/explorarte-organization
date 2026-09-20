@@ -22,13 +22,19 @@ type leaseRecord struct {
 
 func (s *Store) Claim(ctx context.Context, request tasks.ClaimRequest, validate tasks.AssigneeValidator, checkCapacity tasks.CapacityValidator, outboxMaxAttempts int) ([]tasks.ClaimedTask, error) {
 	return withTx(ctx, s.pool, pgx.TxOptions{}, func(tx pgx.Tx) ([]tasks.ClaimedTask, error) {
-		query := `SELECT ` + taskColumns + ` FROM tasks
+		query := `SELECT ` + taskColumns + ` FROM tasks t0
 			WHERE organization_id=$1 AND status='ready' AND attempt_count<max_attempts AND available_at<=clock_timestamp()`
 		args := []any{request.OrganizationID}
 		if request.AssignedRoleID != "" {
 			args = append(args, request.AssignedRoleID)
 			query += fmt.Sprintf(` AND assigned_role_id=$%d`, len(args))
 		}
+		// A task whose ancestor scope is withdrawn is not a candidate at all:
+		// filtering here (not only after selection) keeps such tasks from
+		// occupying the batch and starving work that can run. Nothing about
+		// them is mutated, so they recover the moment the ancestor does.
+		args = append(args, tasks.BlockingAncestorStatuses(), tasks.NonScopingTaskClasses())
+		query += ` AND NOT ` + blockingAncestorPredicate(len(args)-1, len(args))
 		args = append(args, request.BatchSize)
 		query += fmt.Sprintf(` ORDER BY priority DESC,available_at ASC,created_at ASC,id ASC FOR UPDATE SKIP LOCKED LIMIT $%d`, len(args))
 		rows, err := tx.Query(ctx, query, args...)
@@ -52,6 +58,15 @@ func (s *Store) Claim(ctx context.Context, request tasks.ClaimRequest, validate 
 
 		claimed := make([]tasks.ClaimedTask, 0, len(candidates))
 		for _, candidate := range candidates {
+			// Authoritative, atomic re-check: the prefilter above read a
+			// snapshot; this locks the ancestors and decides again, so a block
+			// that committed in between still stops the claim. Skipped, not
+			// failed: the rest of the batch proceeds and the row is untouched.
+			if blocked, err := blockingAncestor(ctx, tx, candidate.Task); err != nil {
+				return nil, err
+			} else if blocked != nil {
+				continue
+			}
 			check, err := validate(ctx, candidate.Task)
 			if err != nil {
 				return nil, err

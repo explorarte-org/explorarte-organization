@@ -37,6 +37,16 @@ WHERE id=$1 AND organization_id=$2 AND status='ready' AND attempt_count<max_atte
 		if err != nil {
 			return tasks.ClaimedTask{}, err
 		}
+		// Before anything else, and before any side effect: a task whose
+		// ancestor scope is blocked, cancelled or dead is not started. The
+		// ancestors are locked FOR SHARE so this is atomic against a
+		// concurrent block of the run. Nothing is written; the error is
+		// returned from inside the transaction, which rolls back a no-op.
+		if blocked, err := blockingAncestor(ctx, tx, task); err != nil {
+			return tasks.ClaimedTask{}, err
+		} else if blocked != nil {
+			return tasks.ClaimedTask{}, *blocked
+		}
 		check, err := validate(ctx, task)
 		if err != nil {
 			return tasks.ClaimedTask{}, err
