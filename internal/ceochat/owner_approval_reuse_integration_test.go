@@ -349,42 +349,30 @@ func TestCreateOwnerApprovalConcurrentSameTupleIsRaceSafe(t *testing.T) {
 	}
 }
 
-// TestApprovalServicePropagatesReusedFlag confirms
-// ApprovalService.ApproveForExecution -- the layer campaign.approve_for_execution's
-// own tool handler actually calls -- propagates the store's now-corrected
-// reused boolean untouched: first conversational approval reused=false,
-// repeat reused=true. Authorizer is nil (ApprovalService only authorizes
-// when one is supplied) since this test is about reuse propagation, not
-// authorization -- REVIEW 8's authorization behavior is covered elsewhere.
-func TestApprovalServicePropagatesReusedFlag(t *testing.T) {
+// TestOwnerApproverPropagatesReusedFlag confirms the owner approval path
+// propagates the store's reused boolean untouched: first approval reused=false,
+// repeat reused=true, one durable row.
+func TestOwnerApproverPropagatesReusedFlag(t *testing.T) {
 	f, rf := newOwnerApprovalReuseFixture(t)
 	defer f.cleanup()
 	ctx := context.Background()
+	approver := realOwnerApprover(t, f.store, permissiveExecutionRequirements(), nil)
 
-	approvalSvc := campaign.NewApprovalService(rf.store, nil, permissiveExecutionRequirements())
-	params := campaign.ApproveParams{
-		OrganizationID: chatTestOrganization, ProposalID: rf.proposalID, FinancialReviewID: rf.reviewID,
-		ApprovedByRoleID: "empresa/human",
-		ConversationID:   rf.conversationID, MessageID: rf.messageID, TurnTaskID: rf.taskID,
-		ToolCallID: "svc-call-1",
-	}
-
-	first, firstReused, err := approvalSvc.ApproveForExecution(ctx, params)
+	first, err := approver.Approve(ctx, rf.proposalID, rf.reviewID)
 	if err != nil {
-		t.Fatalf("first ApproveForExecution: %v", err)
+		t.Fatalf("first Approve: %v", err)
 	}
-	if firstReused {
-		t.Error("first ApproveForExecution reported reused=true, want false")
+	if first.Reused {
+		t.Error("first Approve reported reused=true, want false")
 	}
-
-	second, secondReused, err := approvalSvc.ApproveForExecution(ctx, params)
+	second, err := approver.Approve(ctx, rf.proposalID, rf.reviewID)
 	if err != nil {
-		t.Fatalf("repeat ApproveForExecution: %v", err)
+		t.Fatalf("repeat Approve: %v", err)
 	}
-	if !secondReused {
-		t.Error("repeat ApproveForExecution reported reused=false, want true")
+	if !second.Reused {
+		t.Error("repeat Approve reported reused=false, want true")
 	}
-	if second.ID != first.ID {
-		t.Errorf("repeat approval ID = %d, want %d", second.ID, first.ID)
+	if second.ApprovalID != first.ApprovalID {
+		t.Errorf("repeat approval ID = %d, want %d", second.ApprovalID, first.ApprovalID)
 	}
 }

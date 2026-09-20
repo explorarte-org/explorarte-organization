@@ -687,11 +687,12 @@ func TestCanonicalCampaignPromotionToExecutive(t *testing.T) {
 		t.Fatalf("review 1 and review 2 bound the SAME context snapshot %d -- review 2 must never reuse review 1's context", snapshotID1)
 	}
 
-	//    g) campaign.approve_for_execution -- owner identity comes from the
-	//       trusted turn context (conversation.OwnerRoleID), never from
-	//       tool arguments; there is no argument here that could name a
-	//       different approver.
-	adapter.setNextTool("campaign.approve_for_execution", json.RawMessage(fmt.Sprintf(`{"proposal_id": %d, "financial_review_id": %d}`, reviseProj.ProposalID, rev2.ID)))
+	//    g) The CEO cannot approve: it PREPARES the approval and hands the
+	//       owner the exact command (campaign.prepare_owner_approval writes
+	//       nothing). The approval itself is the owner's act, made by the
+	//       owner approver, which resolves the canonical owner from the
+	//       registry -- no tool argument and no model output names who approves.
+	adapter.setNextTool("campaign.prepare_owner_approval", json.RawMessage(fmt.Sprintf(`{"proposal_id": %d, "financial_review_id": %d}`, reviseProj.ProposalID, rev2.ID)))
 	sendApprove, err := service.Send(ctx, ceochat.SendRequest{
 		ConversationID: conversation.ID, ActorRoleID: "empresa/human",
 		IdempotencyKey: "turn-canon-approve", Content: "Apruebo la ejecución de esta campaña.",
@@ -699,38 +700,41 @@ func TestCanonicalCampaignPromotionToExecutive(t *testing.T) {
 	if err != nil || sendApprove.Outcome != ceochat.RunOutcomeCompleted {
 		diagnoseCanonicalTurn(t, ctx, store, "approve", sendApprove, err)
 	}
-	var apprProj ceochat.OwnerApprovalResultProjection
-	if err := json.Unmarshal(adapter.drainLastResult(t), &apprProj); err != nil {
-		t.Fatalf("unmarshal campaign.approve_for_execution result: %v", err)
+	var prepProj ceochat.PrepareOwnerApprovalProjection
+	if err := json.Unmarshal(adapter.drainLastResult(t), &prepProj); err != nil {
+		t.Fatalf("unmarshal campaign.prepare_owner_approval result: %v", err)
 	}
-	if apprProj.ApprovedByRoleID != "empresa/human" {
-		t.Fatalf("approval approved_by_role_id = %q, want empresa/human (from trusted turn context)", apprProj.ApprovedByRoleID)
+	wantCommand := fmt.Sprintf("orgctl campaign approve --proposal %d --review %d", reviseProj.ProposalID, rev2.ID)
+	if !prepProj.OwnerActionRequired || prepProj.Command != wantCommand {
+		t.Fatalf("prepare projection = %+v, want owner action required with command %q", prepProj, wantCommand)
 	}
-	finalApprovalID := apprProj.ApprovalID
+	var approvalsAfterCEOTurn int
+	if err := store.Pool().QueryRow(ctx, "SELECT count(*) FROM campaign_owner_approvals WHERE organization_id=$1 AND proposal_id=$2", chatTestOrganization, reviseProj.ProposalID).Scan(&approvalsAfterCEOTurn); err != nil {
+		t.Fatalf("count approvals after the CEO turn: %v", err)
+	}
+	if approvalsAfterCEOTurn != 0 {
+		t.Fatalf("the CEO's turn left %d approval(s); the CEO can only prepare one", approvalsAfterCEOTurn)
+	}
+	ownerApprover := realOwnerApprover(t, store, requirementsProvider, nil)
+	approved, err := ownerApprover.Approve(ctx, reviseProj.ProposalID, rev2.ID)
+	if err != nil {
+		t.Fatalf("owner approval: %v", err)
+	}
+	if approved.ActorRoleID != "empresa/human" || approved.Reused {
+		t.Fatalf("owner approval = %+v, want a new approval by the canonical owner empresa/human", approved)
+	}
+	finalApprovalID := approved.ApprovalID
 
-	// 3h. CEO_CONVERSATIONAL_FULL_STACK_PREMERGE_CLOSURE_V1's CANONICAL E2E
-	// REGRESSION: the owner repeats the approval itself ("Apruébala
-	// nuevamente.") in a genuinely new turn -- a new idempotency key, a
-	// new tool_call_id, the exact same proposal/review tuple. This must
-	// converge on the SAME durable approval (BLOCKER 2's fix, exercised
-	// here through the real tool and a real conversational turn, not just
-	// the store directly) with zero duplicate rows and no raw SQL error
-	// surfacing as a turn failure -- and, just as importantly, it must NOT
-	// itself promote anything: re-approving is not an execution intent.
-	adapter.setNextTool("campaign.approve_for_execution", json.RawMessage(fmt.Sprintf(`{"proposal_id": %d, "financial_review_id": %d}`, reviseProj.ProposalID, rev2.ID)))
-	sendReapprove, err := service.Send(ctx, ceochat.SendRequest{
-		ConversationID: conversation.ID, ActorRoleID: "empresa/human",
-		IdempotencyKey: "turn-canon-reapprove", Content: "Apruébala nuevamente.",
-	})
-	if err != nil || sendReapprove.Outcome != ceochat.RunOutcomeCompleted {
-		diagnoseCanonicalTurn(t, ctx, store, "reapprove", sendReapprove, err)
+	// 3h. The owner repeats the approval for the exact same proposal/review
+	// tuple. It converges on the SAME durable approval with zero duplicate
+	// rows -- and re-approving is not an execution intent, so it must NOT
+	// promote anything.
+	reapproved, err := ownerApprover.Approve(ctx, reviseProj.ProposalID, rev2.ID)
+	if err != nil {
+		t.Fatalf("repeated owner approval: %v", err)
 	}
-	var reapprProj ceochat.OwnerApprovalResultProjection
-	if err := json.Unmarshal(adapter.drainLastResult(t), &reapprProj); err != nil {
-		t.Fatalf("unmarshal repeated campaign.approve_for_execution result: %v", err)
-	}
-	if reapprProj.ApprovalID != finalApprovalID {
-		t.Fatalf("repeated approval ID = %d, want %d (same durable approval)", reapprProj.ApprovalID, finalApprovalID)
+	if !reapproved.Reused || reapproved.ApprovalID != finalApprovalID {
+		t.Fatalf("repeated approval = %+v, want the same durable approval %d reused", reapproved, finalApprovalID)
 	}
 	var approvalCountAfterReapprove int
 	if err := store.Pool().QueryRow(ctx, "SELECT count(*) FROM campaign_owner_approvals WHERE organization_id=$1 AND proposal_id=$2", chatTestOrganization, reviseProj.ProposalID).Scan(&approvalCountAfterReapprove); err != nil {

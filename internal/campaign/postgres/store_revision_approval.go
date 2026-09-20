@@ -158,6 +158,16 @@ func (s *Store) CreateOwnerApproval(ctx context.Context, cmd campaign.CreateOwne
 		return campaign.CampaignOwnerApproval{}, false, fmt.Errorf("marshal execution budget: %w", err)
 	}
 
+	// An approval made through the owner path has no conversation behind it: the
+	// columns are nullable, and a zero id would violate their foreign keys, so
+	// absence is stored as NULL rather than as 0.
+	nullableID := func(id int64) *int64 {
+		if id <= 0 {
+			return nil
+		}
+		return &id
+	}
+
 	// ON CONFLICT DO NOTHING (no explicit target) suppresses a violation of
 	// EITHER of this table's two unique constraints -- uq_approval_org_key
 	// (organization_id, idempotency_key), the same turn's own retry, and
@@ -186,7 +196,7 @@ func (s *Store) CreateOwnerApproval(ctx context.Context, cmd campaign.CreateOwne
 		          status, execution_budget, idempotency_key, canonical_hash, created_at
 	`, cmd.OrganizationID, cmd.ProposalID, cmd.ProposalCanonicalHash,
 		cmd.FinancialReviewID, cmd.FinancialReviewCanonicalHash,
-		cmd.ApprovedByRoleID, cmd.ConversationID, cmd.MessageID, cmd.TurnTaskID, cmd.ToolCallID,
+		cmd.ApprovedByRoleID, nullableID(cmd.ConversationID), nullableID(cmd.MessageID), nullableID(cmd.TurnTaskID), cmd.ToolCallID,
 		budgetJSON, cmd.IdempotencyKey, cmd.CanonicalHash,
 	)
 
@@ -273,14 +283,24 @@ func (s *Store) GetOwnerApprovalByProposal(ctx context.Context, organizationID s
 func scanApproval(row pgx.Row) (campaign.CampaignOwnerApproval, error) {
 	var a campaign.CampaignOwnerApproval
 	var budgetJSON []byte
+	var conversationID, messageID, turnTaskID *int64
 	err := row.Scan(
 		&a.ID, &a.OrganizationID, &a.ProposalID, &a.ProposalCanonicalHash,
 		&a.FinancialReviewID, &a.FinancialReviewCanonicalHash,
-		&a.ApprovedByRoleID, &a.ConversationID, &a.MessageID, &a.TurnTaskID, &a.ToolCallID,
+		&a.ApprovedByRoleID, &conversationID, &messageID, &turnTaskID, &a.ToolCallID,
 		&a.Status, &budgetJSON, &a.IdempotencyKey, &a.CanonicalHash, &a.CreatedAt,
 	)
 	if err != nil {
 		return a, err
+	}
+	if conversationID != nil {
+		a.ConversationID = *conversationID
+	}
+	if messageID != nil {
+		a.MessageID = *messageID
+	}
+	if turnTaskID != nil {
+		a.TurnTaskID = *turnTaskID
 	}
 	if err := json.Unmarshal(budgetJSON, &a.ExecutionBudget); err != nil {
 		return a, fmt.Errorf("unmarshal execution budget: %w", err)

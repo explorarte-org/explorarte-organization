@@ -176,3 +176,83 @@ func TestOwnerPromotionModeConflictIsAnInvalidRequestNotAnInternalError(t *testi
 		t.Fatalf("exit = %d, want exitInvalid %d", got, exitInvalid)
 	}
 }
+
+// Approving is the owner's act and the CLI is only an adapter: no flag can name
+// who approves, what it costs or which content is meant.
+func TestCampaignApproveAcceptsNoAuthorityFlags(t *testing.T) {
+	for _, args := range [][]string{
+		{"--proposal", "1", "--review", "2", "--owner", "empresa/human"},
+		{"--proposal", "1", "--review", "2", "--role", "empresa/human"},
+		{"--proposal", "1", "--review", "2", "--actor-role", "empresa/human"},
+		{"--proposal", "1", "--review", "2", "--budget", "9"},
+		{"--proposal", "1", "--review", "2", "--proposal-hash", "aa"},
+		{"--proposal", "1", "--review", "2", "extra-positional"},
+		{"--proposal", "1"},
+		{"--review", "2"},
+		{"--proposal", "0", "--review", "2"},
+		{"--proposal", "1", "--review", "-2"},
+		{},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := runCampaignApprove(args, &stdout, &stderr); code != exitUsage {
+			t.Errorf("runCampaignApprove(%v) = %d, want exitUsage %d (stderr=%q)", args, code, exitUsage, stderr.String())
+		}
+	}
+}
+
+type fakeApprover struct {
+	result campaign.OwnerApprovalResult
+	err    error
+	ids    [][2]int64
+}
+
+func (f *fakeApprover) Approve(_ context.Context, proposalID, reviewID int64) (campaign.OwnerApprovalResult, error) {
+	f.ids = append(f.ids, [2]int64{proposalID, reviewID})
+	return f.result, f.err
+}
+
+func TestExecuteOwnerApprovalReportsWhatWasApprovedAndTheNextStep(t *testing.T) {
+	approver := &fakeApprover{result: campaign.OwnerApprovalResult{ApprovalID: 7, ActorRoleID: "empresa/human", ProposalID: 11, FinancialReviewID: 9,
+		ExecutionBudget: campaign.BudgetRecommendation{MaxUSD: 3.5, MaxTokens: 1000, MaxModelCalls: 5, MaxDepth: 3, MaxSubagents: 5, MaxRetries: 1, MaxWallTimeMS: 60000}}}
+	var stdout, stderr bytes.Buffer
+	if code := executeOwnerApproval(context.Background(), approver, 11, 9, false, &stdout, &stderr); code != exitOK {
+		t.Fatalf("exit %d (%s)", code, stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{"proposal 11 + review 9 approved by empresa/human: approval 7", "orgctl campaign promote --approval 7", "$3.500000"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output %q lacks %q", out, want)
+		}
+	}
+	if len(approver.ids) != 1 || approver.ids[0] != [2]int64{11, 9} {
+		t.Fatalf("approver called with %v", approver.ids)
+	}
+	stdout.Reset()
+	approver.result.Reused = true
+	if code := executeOwnerApproval(context.Background(), approver, 11, 9, true, &stdout, &stderr); code != exitOK || !strings.Contains(stdout.String(), `"reused": true`) {
+		t.Fatalf("json output = %q", stdout.String())
+	}
+}
+
+func TestOwnerApprovalExitCodes(t *testing.T) {
+	for err, want := range map[error]int{
+		campaign.ErrUnauthorized:               exitDenied,
+		campaign.ErrOwnerIdentityUnavailable:   exitDenied,
+		campaign.ErrProposalHashMismatch:       exitInvalid,
+		campaign.ErrStaleApproval:              exitInvalid,
+		campaign.ErrStaleFinancialReview:       exitInvalid,
+		campaign.ErrOwnerApprovalGrantMismatch: exitInvalid,
+		campaign.ErrInfeasibleExecutionBudget:  exitInvalid,
+		campaign.ErrReviewNotRecommended:       exitInvalid,
+		errors.New("boom"):                     exitInternal,
+	} {
+		if got := ownerApprovalExitCode(fmt.Errorf("approve: %w", err)); got != want {
+			t.Errorf("exit(%v) = %d, want %d", err, got, want)
+		}
+	}
+	var stdout, stderr bytes.Buffer
+	if code := executeOwnerApproval(context.Background(), &fakeApprover{err: campaign.ErrStaleApproval}, 1, 2, false, &stdout, &stderr); code != exitInvalid ||
+		!strings.Contains(stderr.String(), "stale") {
+		t.Fatalf("stale approval = %d %q", code, stderr.String())
+	}
+}

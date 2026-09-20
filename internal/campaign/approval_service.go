@@ -55,7 +55,21 @@ type ApproveParams struct {
 // - review.RecommendedBudget != nil
 // - approver has campaign.owner_approval.create capability
 // - approver != finance reviewer (SoD)
-func (s *ApprovalService) ApproveForExecution(ctx context.Context, params ApproveParams) (CampaignOwnerApproval, bool, error) {
+//
+// It requires an OwnerApprovalGrant. Only OwnerApprover can issue one, so this is
+// the single exported way to create a CampaignOwnerApproval and it is an act of
+// owner authority: the CEO's tools hold no grant and cannot mint an approval.
+func (s *ApprovalService) ApproveForExecution(ctx context.Context, params ApproveParams, grant OwnerApprovalGrant) (CampaignOwnerApproval, bool, error) {
+	if !grant.authorizes(params) {
+		return CampaignOwnerApproval{}, false, ErrOwnerApprovalNotAuthorized
+	}
+	return s.approve(ctx, params, &grant)
+}
+
+// approve holds every rule of owner approval. A nil grant skips ONLY the grant
+// checks and is reachable only from tests in this package (export_test.go), so
+// the service's own rules can be exercised without an owner adapter.
+func (s *ApprovalService) approve(ctx context.Context, params ApproveParams, grant *OwnerApprovalGrant) (CampaignOwnerApproval, bool, error) {
 	if strings.TrimSpace(params.OrganizationID) == "" {
 		return CampaignOwnerApproval{}, false, fmt.Errorf("%w: organization_id is required", ErrInvalidInput)
 	}
@@ -105,9 +119,39 @@ func (s *ApprovalService) ApproveForExecution(ctx context.Context, params Approv
 		return CampaignOwnerApproval{}, false, fmt.Errorf("%w: review proposal hash %q != proposal hash %q", ErrProposalHashMismatch, review.ProposalCanonicalHash, proposal.CanonicalHash)
 	}
 
+	// 4.5. The owner approves exactly what the approver showed them: the
+	// identities and canonical hashes read when the grant was issued must be the
+	// ones read now.
+	if grant != nil && !grant.matches(proposal, review) {
+		return CampaignOwnerApproval{}, false, ErrOwnerApprovalGrantMismatch
+	}
+
 	// 5. Verify verdict is recommended.
 	if review.Verdict != VerdictRecommended {
 		return CampaignOwnerApproval{}, false, fmt.Errorf("%w: verdict is %q, only %q is approvable", ErrReviewNotRecommended, review.Verdict, VerdictRecommended)
+	}
+
+	// 5.5. Only the CURRENT proposal revision and the CURRENT review are
+	// approvable. Promotion refuses a superseded revision later; an approval
+	// that could never be promoted is not created.
+	rootID := proposal.ID
+	if proposal.RootProposalID != nil {
+		rootID = *proposal.RootProposalID
+	}
+	latestProposal, err := s.Store.GetLatestRevisionForRoot(ctx, params.OrganizationID, rootID)
+	if err != nil {
+		return CampaignOwnerApproval{}, false, fmt.Errorf("check latest revision: %w", err)
+	}
+	if latestProposal.ID != proposal.ID {
+		return CampaignOwnerApproval{}, false, fmt.Errorf("%w: approved revision is %d, latest is %d",
+			ErrStaleApproval, proposal.RevisionNumber, latestProposal.RevisionNumber)
+	}
+	latestReview, err := s.Store.GetLatestFinancialReviewForProposal(ctx, params.OrganizationID, proposal.ID)
+	if err != nil {
+		return CampaignOwnerApproval{}, false, fmt.Errorf("check latest financial review: %w", err)
+	}
+	if latestReview.ID != review.ID {
+		return CampaignOwnerApproval{}, false, fmt.Errorf("%w: review %d superseded by review %d", ErrStaleFinancialReview, review.ID, latestReview.ID)
 	}
 
 	// 6. Verify budget exists.

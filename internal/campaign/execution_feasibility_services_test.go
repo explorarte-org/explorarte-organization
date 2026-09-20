@@ -250,7 +250,7 @@ func TestApprovalRejectsARecommendedBudgetBelowTheFloor(t *testing.T) {
 	review, _ := seedReviewOnly(t, store, proposal, productionBudget(), "prod")
 	svc.Requirements = fixed(floor())
 
-	_, _, err := svc.ApproveForExecution(context.Background(), approveParams(proposal, review, "call-a"))
+	_, _, err := svc.ApproveUngrantedForTest(context.Background(), approveParams(proposal, review, "call-a"))
 	if !errors.Is(err, campaign.ErrInfeasibleExecutionBudget) {
 		t.Fatalf("approving the production budget must fail with ErrInfeasibleExecutionBudget, got: %v", err)
 	}
@@ -265,7 +265,7 @@ func TestApprovalCreatesTheExactRecommendedBudgetWhenFeasible(t *testing.T) {
 	review, _ := seedReviewOnly(t, store, proposal, budget, "ok")
 	svc.Requirements = fixed(floor())
 
-	approval, _, err := svc.ApproveForExecution(context.Background(), approveParams(proposal, review, "call-b"))
+	approval, _, err := svc.ApproveUngrantedForTest(context.Background(), approveParams(proposal, review, "call-b"))
 	if err != nil {
 		t.Fatalf("a feasible recommended budget must be approvable: %v", err)
 	}
@@ -283,7 +283,7 @@ func TestApprovalRejectsAReviewTheFloorHasOutgrown(t *testing.T) {
 	drifted.MinTokens = 5_000_000
 	svc.Requirements = fixed(drifted)
 
-	_, _, err := svc.ApproveForExecution(context.Background(), approveParams(proposal, review, "call-c"))
+	_, _, err := svc.ApproveUngrantedForTest(context.Background(), approveParams(proposal, review, "call-c"))
 	if !errors.Is(err, campaign.ErrInfeasibleExecutionBudget) {
 		t.Fatalf("want ErrInfeasibleExecutionBudget, got: %v", err)
 	}
@@ -299,7 +299,7 @@ func TestApprovalFailsClosedWithoutAFloor(t *testing.T) {
 		"no provider": nil, "provider errors": errProvider{errors.New("boom")}, "zero requirements": fixed(campaign.ExecutionBudgetRequirements{}),
 	} {
 		svc.Requirements = provider
-		if _, _, err := svc.ApproveForExecution(context.Background(), approveParams(proposal, review, "call-"+name)); !errors.Is(err, campaign.ErrExecutionRequirementsUnavailable) {
+		if _, _, err := svc.ApproveUngrantedForTest(context.Background(), approveParams(proposal, review, "call-"+name)); !errors.Is(err, campaign.ErrExecutionRequirementsUnavailable) {
 			t.Errorf("%s: want ErrExecutionRequirementsUnavailable, got: %v", name, err)
 		}
 	}
