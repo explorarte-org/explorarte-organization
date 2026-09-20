@@ -49,7 +49,18 @@ type ownerApprovalReuseFixture struct {
 
 func newOwnerApprovalReuseFixture(t *testing.T) (*chatFixture, *ownerApprovalReuseFixture) {
 	t.Helper()
-	f := newChatFixture(t)
+	return newOwnerApprovalReuseFixtureOn(t, newChatFixture(t), campaign.BudgetRecommendation{
+		MaxUSD: 1000, MaxTokens: 50000, MaxModelCalls: 20, MaxWallTimeMS: 3600000,
+		MaxDepth: 3, MaxRetries: 2, MaxSubagents: 1,
+	})
+}
+
+// newOwnerApprovalReuseFixtureOn seeds the fixture's proposal and recommended
+// review on an already-open chat fixture, with the given recommended budget --
+// so a test can hold a review (and later an approval) whose budget is whatever
+// it needs to prove, on a runtime it composed itself.
+func newOwnerApprovalReuseFixtureOn(t *testing.T, f *chatFixture, budget campaign.BudgetRecommendation) (*chatFixture, *ownerApprovalReuseFixture) {
+	t.Helper()
 	ctx := context.Background()
 	service := f.withScriptedModel(t, oneShotFinalAnswerModel{})
 
@@ -100,10 +111,6 @@ func newOwnerApprovalReuseFixture(t *testing.T) (*chatFixture, *ownerApprovalReu
 		t.Fatalf("CreateProposal: %v", err)
 	}
 
-	budget := campaign.BudgetRecommendation{
-		MaxUSD: 1000, MaxTokens: 50000, MaxModelCalls: 20, MaxWallTimeMS: 3600000,
-		MaxDepth: 3, MaxRetries: 2, MaxSubagents: 1,
-	}
 	rHash, err := campaign.ComputeReviewCanonicalHash(campaign.ReviewCanonicalPayload{
 		ProposalID: proposal.ID, ProposalCanonicalHash: pHash, ReviewerRoleID: "negocio/administrador_financiero",
 		Verdict: campaign.VerdictRecommended, RecommendedBudget: &budget, Summary: "Sound.",
