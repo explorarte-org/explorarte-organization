@@ -11,6 +11,7 @@ import (
 
 	"github.com/Mireuz13/explorarte-organization/internal/campaign"
 	"github.com/Mireuz13/explorarte-organization/internal/executive"
+	"github.com/Mireuz13/explorarte-organization/internal/modelpricing"
 	"github.com/Mireuz13/explorarte-organization/internal/tasks"
 )
 
@@ -78,8 +79,23 @@ func newPromotionRootFixture(t *testing.T) *promotionRootFixture {
 	}
 	return &promotionRootFixture{
 		chatFixture: f, rf: rf, approval: approval, proposal: proposal, executive: orchestrator,
-		service: campaign.NewPromotionService(rf.store, orchestrator, allowAllAuthorizer{}),
+		// The production constructor, with its execution-requirements
+		// dependency. These tests are about idempotency/causation, not price, so
+		// the floor is a deterministic one the fixture's approved budget clears
+		// EXACTLY (each minimum equals the approved ceiling): feasibility is
+		// genuinely evaluated -- and passes on its boundary -- rather than
+		// bypassed. The feasibility gate itself is exercised below.
+		service: campaign.NewPromotionService(rf.store, orchestrator, allowAllAuthorizer{}, campaign.FixedExecutionRequirements{Requirements: floorEqualTo(rf.budget)}),
 		oldKey:  oldKey, oldCause: "owner:" + oldKey, newCause: "owner:" + newCauseKey,
+	}
+}
+
+// floorEqualTo is the smallest requirements value the given budget satisfies:
+// every minimum equals the corresponding ceiling.
+func floorEqualTo(budget campaign.BudgetRecommendation) campaign.ExecutionBudgetRequirements {
+	return campaign.ExecutionBudgetRequirements{
+		MinUSD: modelpricing.USDFromDollars(budget.MaxUSD), MinTokens: budget.MaxTokens, MinModelCalls: int64(budget.MaxModelCalls),
+		MinWallTimeMS: budget.MaxWallTimeMS, MinDepth: int64(budget.MaxDepth), MinRetries: int64(budget.MaxRetries), MinSubagents: int64(budget.MaxSubagents),
 	}
 }
 
@@ -221,5 +237,66 @@ func TestPromotionSameVersionRetryConvergesOnRealPostgres(t *testing.T) {
 	}
 	if got := p.counts(t); got.roots != 1 || got.promotions != 1 {
 		t.Fatalf("counts after replay = %+v", got)
+	}
+}
+
+// BOTH CONTRACTS AT ONCE, at the real boundary. The execution-budget
+// feasibility gate runs BEFORE Executive.Submit, and the idempotency/causation
+// separation happens AT Executive.Submit; neither replaces the other.
+//
+// With a floor the approved budget no longer clears (routing/pricing/runtime
+// limits moved since approval), PromoteToExecutive must reject with
+// ErrInfeasibleExecutionBudget and must not reach the Task Engine at all: no
+// root is created, no promotion is persisted, and the approved budget is not
+// raised. Lowering the floor back to the budget then launches exactly one root
+// under the historical idempotency key and the separate trusted-root causation.
+func TestPromotionFeasibilityGateRunsBeforeExecutiveSubmitOnRealPostgres(t *testing.T) {
+	p := newPromotionRootFixture(t)
+	defer p.cleanup()
+	ctx := context.Background()
+
+	drifted := floorEqualTo(p.rf.budget)
+	drifted.MinSubagents = int64(p.rf.budget.MaxSubagents) + 4 // the canonical tree now needs more than the owner approved
+	p.service.Requirements = campaign.FixedExecutionRequirements{Requirements: drifted}
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		if _, err := p.promote("infeasible-" + itoa(int64(attempt))); !errors.Is(err, campaign.ErrInfeasibleExecutionBudget) {
+			t.Fatalf("attempt %d: want ErrInfeasibleExecutionBudget, got: %v", attempt, err)
+		}
+		if got := p.counts(t); got != (rootCounts{}) {
+			t.Fatalf("attempt %d: the gate must stop before Executive.Submit (no root, no promotion); counts = %+v", attempt, got)
+		}
+	}
+	var stored campaign.CampaignOwnerApproval
+	stored, err := p.rf.store.GetOwnerApproval(ctx, chatTestOrganization, p.approval.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.ExecutionBudget != p.rf.budget {
+		t.Fatalf("the owner-approved budget changed from %+v to %+v: it must never be silently raised", p.rf.budget, stored.ExecutionBudget)
+	}
+
+	// The same approval under a floor it clears launches exactly one root with
+	// BOTH identities: historical key, separate colon-free causation.
+	p.service.Requirements = campaign.FixedExecutionRequirements{Requirements: floorEqualTo(p.rf.budget)}
+	result, err := p.promote("feasible")
+	if err != nil {
+		t.Fatalf("a feasible approval must launch: %v", err)
+	}
+	var idempotencyKey, causation string
+	if err := p.store.Pool().QueryRow(ctx, `SELECT idempotency_key, causation_id FROM tasks WHERE id=$1`, result.ExecutiveRootTaskID).Scan(&idempotencyKey, &causation); err != nil {
+		t.Fatal(err)
+	}
+	if idempotencyKey != p.oldKey || causation != p.newCause {
+		t.Fatalf("root identities = (%q, %q), want (%q, %q)", idempotencyKey, causation, p.oldKey, p.newCause)
+	}
+	if strings.Contains(strings.TrimPrefix(causation, "owner:"), ":") {
+		t.Fatalf("causation %q must carry no colon after owner:", causation)
+	}
+	if result.Promotion.ExecutiveSubmitIdempotencyKey != p.oldKey {
+		t.Fatalf("CampaignPromotion.ExecutiveSubmitIdempotencyKey = %q, want the historical key %q", result.Promotion.ExecutiveSubmitIdempotencyKey, p.oldKey)
+	}
+	if got := p.counts(t); got.roots != 1 || got.correctedCausation != 1 || got.promotions != 1 {
+		t.Fatalf("counts = %+v, want one corrected root and one promotion", got)
 	}
 }
