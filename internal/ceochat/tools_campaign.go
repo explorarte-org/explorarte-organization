@@ -20,7 +20,6 @@ type CapabilityAuthorizer interface {
 // CampaignToolsConfig holds optional collaborators for campaign tools.
 type CampaignToolsConfig struct {
 	FinanceService   *campaign.FinanceService
-	ApprovalService  *campaign.ApprovalService
 	PromotionService *campaign.PromotionService
 }
 
@@ -31,13 +30,6 @@ type CampaignToolsOption func(*CampaignToolsConfig)
 func WithFinanceService(svc *campaign.FinanceService) CampaignToolsOption {
 	return func(c *CampaignToolsConfig) {
 		c.FinanceService = svc
-	}
-}
-
-// WithApprovalService configures an ApprovalService for campaign owner execution approval tools.
-func WithApprovalService(svc *campaign.ApprovalService) CampaignToolsOption {
-	return func(c *CampaignToolsConfig) {
-		c.ApprovalService = svc
 	}
 }
 
@@ -96,6 +88,36 @@ type ReviseProposalResultProjection struct {
 	Status           string `json:"status"`
 	Title            string `json:"title"`
 	CanonicalHash    string `json:"canonical_hash"`
+}
+
+// PrepareOwnerApprovalProjection is what campaign.prepare_owner_approval returns.
+// It describes an approval the owner can make; it never records one.
+type PrepareOwnerApprovalProjection struct {
+	ProposalID                   int64                         `json:"proposal_id"`
+	ProposalCanonicalHash        string                        `json:"proposal_canonical_hash"`
+	FinancialReviewID            int64                         `json:"financial_review_id"`
+	FinancialReviewCanonicalHash string                        `json:"financial_review_canonical_hash"`
+	RecommendedBudget            campaign.BudgetRecommendation `json:"recommended_budget"`
+	OwnerActionRequired          bool                          `json:"owner_action_required"`
+	Command                      string                        `json:"command"`
+	Note                         string                        `json:"note"`
+}
+
+// decodeStrictArgs reads a tool's arguments strictly: an argument the tool does
+// not declare is refused, not ignored, so an attempt to steer it is visible.
+func decodeStrictArgs[T any](raw json.RawMessage) (T, error) {
+	var args T
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&args); err != nil {
+		var zero T
+		return zero, fmt.Errorf("%w: %v", ErrInvalidInput, err)
+	}
+	if decoder.More() {
+		var zero T
+		return zero, fmt.Errorf("%w: unexpected trailing JSON", ErrInvalidInput)
+	}
+	return args, nil
 }
 
 // OwnerApprovalResultProjection is the bounded projection returned upon owner execution approval.
@@ -178,7 +200,7 @@ type reviseProposalArgs struct {
 	OpenQuestions      []string                       `json:"open_questions"`
 }
 
-type approveForExecutionArgs struct {
+type prepareOwnerApprovalArgs struct {
 	ProposalID        int64 `json:"proposal_id"`
 	FinancialReviewID int64 `json:"financial_review_id"`
 }
@@ -359,11 +381,11 @@ var (
 		"additionalProperties": false
 	}`)
 
-	campaignApproveForExecutionInputSchema = json.RawMessage(`{
+	campaignPrepareOwnerApprovalInputSchema = json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"proposal_id": {"type": "integer", "minimum": 1, "description": "Durable ID of the campaign proposal to approve for execution."},
-			"financial_review_id": {"type": "integer", "minimum": 1, "description": "Durable ID of the recommended financial review."}
+			"proposal_id": {"type": "integer", "minimum": 1, "description": "Durable ID of the campaign proposal the owner would approve."},
+			"financial_review_id": {"type": "integer", "minimum": 1, "description": "Durable ID of the recommended financial review of that proposal."}
 		},
 		"required": ["proposal_id", "financial_review_id"],
 		"additionalProperties": false
@@ -967,14 +989,23 @@ func RegisterCampaignTools(registry *ToolRegistry, organizationID string, store 
 		return fmt.Errorf("register campaign.revise_proposal: %w", err)
 	}
 
-	// 7. campaign.approve_for_execution (MUTATING)
-	approveDesc := ToolDescriptor{
-		ID:           "campaign.approve_for_execution",
-		Version:      "v1",
-		Description:  "Records durable owner execution approval for an exact campaign proposal and recommended financial review tuple. Does NOT execute or call Executive.Submit.",
-		InputSchema:  campaignApproveForExecutionInputSchema,
-		Access:       AccessMutating,
-		Effect:       ToolEffectWrite,
+	// 7. campaign.prepare_owner_approval (READ ONLY)
+	//
+	// The CEO cannot approve a campaign: an owner approval is an act of owner
+	// authority, created only by the owner approver (orgctl campaign approve),
+	// which resolves the canonical owner and binds the exact proposal and review.
+	// This tool lets the CEO get the owner to that point -- it checks that the
+	// pair is one the owner could approve and returns the exact command to run --
+	// and it writes nothing. It is deliberately not called "approve": nothing that
+	// is called approve may merely advise.
+	prepareDesc := ToolDescriptor{
+		ID:      "campaign.prepare_owner_approval",
+		Version: "v1",
+		Description: "Prepares an owner approval WITHOUT creating one. Checks that the proposal and recommended financial review are a pair the owner can approve and returns " +
+			"the exact command the owner must run. You cannot approve a campaign; only the owner can, by running that command.",
+		InputSchema:  campaignPrepareOwnerApprovalInputSchema,
+		Access:       AccessReadOnly,
+		Effect:       ToolEffectRead,
 		RequiredRole: CEORoleID,
 		Limits: ToolLimits{
 			MaxRows:        1,
@@ -984,10 +1015,10 @@ func RegisterCampaignTools(registry *ToolRegistry, organizationID string, store 
 		DataClass: DataClassInternal,
 	}
 
-	approveValidator := func(raw json.RawMessage) error {
-		var args approveForExecutionArgs
-		if err := json.Unmarshal(raw, &args); err != nil {
-			return fmt.Errorf("%w: %v", ErrInvalidInput, err)
+	prepareValidator := func(raw json.RawMessage) error {
+		args, err := decodeStrictArgs[prepareOwnerApprovalArgs](raw)
+		if err != nil {
+			return err
 		}
 		if args.ProposalID <= 0 {
 			return fmt.Errorf("%w: proposal_id must be positive", ErrInvalidInput)
@@ -998,69 +1029,47 @@ func RegisterCampaignTools(registry *ToolRegistry, organizationID string, store 
 		return nil
 	}
 
-	approveHandler := func(ctx context.Context, actorRoleID string, raw json.RawMessage) (json.RawMessage, error) {
+	prepareHandler := func(ctx context.Context, actorRoleID string, raw json.RawMessage) (json.RawMessage, error) {
 		turnCtx, ok := TurnContextFrom(ctx)
-		if !ok {
-			return nil, fmt.Errorf("%w: missing turn context", ErrInvalidInput)
+		orgID := organizationID
+		if ok && turnCtx.OrganizationID != "" {
+			orgID = turnCtx.OrganizationID
 		}
-		toolCallCtx, _ := ToolCallContextFrom(ctx)
-
-		if cfg.ApprovalService == nil {
-			return nil, fmt.Errorf("%w: approval service is not configured", ErrInvalidInput)
-		}
-
-		// Strictly enforce owner authority:
-		// 1. OwnerRoleID must be present and non-empty.
-		// 2. The owner role must possess campaign.owner_approval.create capability.
-		// 3. The conversational model/CEO cannot self-approve.
-		ownerRoleID := turnCtx.OwnerRoleID
-		if strings.TrimSpace(ownerRoleID) == "" {
-			return nil, fmt.Errorf("%w: turn has no verified owner identity", ErrUnauthorizedActor)
-		}
-
-		if authorizer != nil {
-			if err := authorizer.Authorize(ctx, turnCtx.OrganizationID, turnCtx.OrganizationRevisionID, ownerRoleID, campaign.CapabilityOwnerApprovalCreate); err != nil {
-				return nil, fmt.Errorf("%w: owner role %q lacks %s capability: %v", ErrUnauthorizedActor, ownerRoleID, campaign.CapabilityOwnerApprovalCreate, err)
+		if authorizer != nil && ok && turnCtx.ActorRoleID != "" {
+			if err := authorizer.Authorize(ctx, orgID, turnCtx.OrganizationRevisionID, turnCtx.ActorRoleID, campaign.CapabilityFinancialReviewRead); err != nil {
+				return nil, fmt.Errorf("%w: actor %q lacks %s capability: %v", ErrUnauthorizedActor, turnCtx.ActorRoleID, campaign.CapabilityFinancialReviewRead, err)
 			}
 		}
-
-		var args approveForExecutionArgs
-		if err := json.Unmarshal(raw, &args); err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrInvalidInput, err)
-		}
-
-		appr, _, err := cfg.ApprovalService.ApproveForExecution(ctx, campaign.ApproveParams{
-			OrganizationID:    turnCtx.OrganizationID,
-			RevisionID:        turnCtx.OrganizationRevisionID,
-			ProposalID:        args.ProposalID,
-			FinancialReviewID: args.FinancialReviewID,
-			ApprovedByRoleID:  ownerRoleID,
-			ConversationID:    turnCtx.ConversationID,
-			MessageID:         turnCtx.OwnerMessageID,
-			TurnTaskID:        turnCtx.TaskID,
-			ToolCallID:        toolCallCtx.ToolCallID,
-		})
+		args, err := decodeStrictArgs[prepareOwnerApprovalArgs](raw)
 		if err != nil {
 			return nil, err
 		}
-
-		projection := OwnerApprovalResultProjection{
-			ApprovalID:                   appr.ID,
-			ProposalID:                   appr.ProposalID,
-			ProposalCanonicalHash:        appr.ProposalCanonicalHash,
-			FinancialReviewID:            appr.FinancialReviewID,
-			FinancialReviewCanonicalHash: appr.FinancialReviewCanonicalHash,
-			ApprovedByRoleID:             appr.ApprovedByRoleID,
-			Status:                       string(appr.Status),
-			ExecutionBudget:              appr.ExecutionBudget,
-			CanonicalHash:                appr.CanonicalHash,
-			CreatedAt:                    appr.CreatedAt.Format(time.RFC3339),
+		proposal, err := store.GetProposal(ctx, orgID, args.ProposalID)
+		if err != nil {
+			return nil, err
 		}
-		return json.Marshal(projection)
+		review, err := store.GetFinancialReview(ctx, orgID, args.FinancialReviewID)
+		if err != nil {
+			return nil, err
+		}
+		if review.ProposalID != proposal.ID || review.ProposalCanonicalHash != proposal.CanonicalHash {
+			return nil, fmt.Errorf("%w: review %d does not review proposal %d as it stands", campaign.ErrProposalHashMismatch, review.ID, proposal.ID)
+		}
+		if review.Verdict != campaign.VerdictRecommended || review.RecommendedBudget == nil {
+			return nil, fmt.Errorf("%w: verdict is %q; only a recommended review with a budget can be approved", campaign.ErrReviewNotRecommended, review.Verdict)
+		}
+		return json.Marshal(PrepareOwnerApprovalProjection{
+			ProposalID: proposal.ID, ProposalCanonicalHash: proposal.CanonicalHash,
+			FinancialReviewID: review.ID, FinancialReviewCanonicalHash: review.CanonicalHash,
+			RecommendedBudget:   *review.RecommendedBudget,
+			OwnerActionRequired: true,
+			Command:             fmt.Sprintf("orgctl campaign approve --proposal %d --review %d", proposal.ID, review.ID),
+			Note:                "Nothing has been approved. Only the owner can approve, by running the command. The approval is rechecked when it runs (current revision and review, executable and feasible budget).",
+		})
 	}
 
-	if err := registry.Register(approveDesc, approveValidator, approveHandler); err != nil {
-		return fmt.Errorf("register campaign.approve_for_execution: %w", err)
+	if err := registry.Register(prepareDesc, prepareValidator, prepareHandler); err != nil {
+		return fmt.Errorf("register campaign.prepare_owner_approval: %w", err)
 	}
 
 	// 8. campaign.get_owner_approval (READ ONLY)

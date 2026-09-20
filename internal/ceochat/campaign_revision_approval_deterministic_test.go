@@ -13,8 +13,7 @@ import (
 
 func buildRevisionApprovalTestService(chatStore Store, campStore campaign.Store, auth CapabilityAuthorizer, model *scriptedModelExecutor, taskCoord *fakeTaskCoordinator) *Service {
 	reg := NewToolRegistry()
-	approvalSvc := campaign.NewApprovalService(campStore, auth, permissiveExecutionRequirements())
-	_ = RegisterCampaignTools(reg, "org-test", campStore, auth, WithApprovalService(approvalSvc))
+	_ = RegisterCampaignTools(reg, "org-test", campStore, auth)
 
 	historyStore := executionharness.NewMemoryHistoryStore()
 	descStore := executionharness.NewMemoryRunDescriptorStore()
@@ -221,6 +220,7 @@ func TestScriptedScenario3_PrematureApprovalBeforeFinanceReview(t *testing.T) {
 		allowed: map[string]bool{
 			"owner:campaign.owner_approval.create":       true,
 			"empresa/ceo:campaign.owner_approval.create": true,
+			"empresa/ceo:campaign.financial_review.read": true,
 		},
 	}
 	taskCoord := &fakeTaskCoordinator{}
@@ -263,14 +263,14 @@ func TestScriptedScenario3_PrematureApprovalBeforeFinanceReview(t *testing.T) {
 		CanonicalHash:    p2Hash,
 	})
 
-	// User immediately says "Apruébala", model attempts to approve v2 with old review v1
+	// User immediately says "Apruébala", model tries to prepare an approval of v2 with old review v1
 	model := &scriptedModelExecutor{
 		responses: []executionharness.ModelResult{
 			{
 				ToolRequests: []executionharness.ToolRequest{
 					{
 						ToolCallID: "call_appr_scen3",
-						ToolName:   "campaign.approve_for_execution",
+						ToolName:   "campaign.prepare_owner_approval",
 						Arguments: json.RawMessage(fmt.Sprintf(`{
 							"proposal_id": %d,
 							"financial_review_id": %d
@@ -352,7 +352,8 @@ func TestScriptedScenario4_HypotheticalQuestion(t *testing.T) {
 	}
 }
 
-// Scenario 5: Explicit approval -> 1 owner approval, 0 execution calls
+// Scenario 5: the owner asks for approval -> the CEO prepares it (0 approvals);
+// the owner's own act creates exactly 1 approval; 0 execution calls
 func TestScriptedScenario5_ExplicitApproval_ZeroExecution(t *testing.T) {
 	ctx := context.Background()
 	chatStore := newMemoryStore()
@@ -361,6 +362,7 @@ func TestScriptedScenario5_ExplicitApproval_ZeroExecution(t *testing.T) {
 		allowed: map[string]bool{
 			"owner:campaign.owner_approval.create":       true,
 			"empresa/ceo:campaign.owner_approval.create": true,
+			"owner:campaign.financial_review.read":       true,
 		},
 	}
 	taskCoord := &fakeTaskCoordinator{}
@@ -407,7 +409,7 @@ func TestScriptedScenario5_ExplicitApproval_ZeroExecution(t *testing.T) {
 				ToolRequests: []executionharness.ToolRequest{
 					{
 						ToolCallID: "call_appr_scen5",
-						ToolName:   "campaign.approve_for_execution",
+						ToolName:   "campaign.prepare_owner_approval",
 						Arguments: json.RawMessage(fmt.Sprintf(`{
 							"proposal_id": %d,
 							"financial_review_id": %d
@@ -417,7 +419,7 @@ func TestScriptedScenario5_ExplicitApproval_ZeroExecution(t *testing.T) {
 				FinishReason: executionharness.FinishTools,
 			},
 			{
-				FinalOutput:  "He registrado la aprobación de la campaña para ejecución con el presupuesto recomendado. La promoción a Executive es un paso posterior.",
+				FinalOutput:  "La aprobación está lista para que usted la haga: ejecute el comando indicado. La promoción a Executive es un paso posterior.",
 				FinishReason: executionharness.FinishFinal,
 			},
 		},
@@ -436,10 +438,15 @@ func TestScriptedScenario5_ExplicitApproval_ZeroExecution(t *testing.T) {
 		t.Fatalf("Send failed: %v", err)
 	}
 	if res.Outcome != RunOutcomeCompleted {
-		t.Fatalf("expected completed, got %s", res.Outcome)
+		t.Fatalf("expected completed, got %s (%+v)", res.Outcome, res)
 	}
 
-	// 1. Assert exactly 1 approval created
+	// 0. The CEO's turn created NO approval: it can only prepare one.
+	if _, err := campStore.GetOwnerApprovalByProposal(ctx, "org-test", v2.ID); err == nil {
+		t.Fatal("the CEO turn created an owner approval; only the owner can")
+	}
+	// 1. The owner's own act creates exactly 1 approval.
+	approveAsOwner(t, campStore, auth, v2.ID, rev2.ID)
 	appr, err := campStore.GetOwnerApprovalByProposal(ctx, "org-test", v2.ID)
 	if err != nil {
 		t.Fatalf("owner approval not found: %v", err)

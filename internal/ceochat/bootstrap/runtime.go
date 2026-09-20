@@ -54,7 +54,10 @@ type Runtime struct {
 	// OwnerPromoter (the deterministic, non-generative owner path) is built on
 	// it. It is nil when no Executive submitter was supplied, in which case
 	// neither path can promote.
-	promotion      *campaign.PromotionService
+	promotion *campaign.PromotionService
+	// approval is the ApprovalService the owner approver is built on. The CEO's
+	// tools do NOT hold it: an owner approval is created only through OwnerApprover.
+	approval       *campaign.ApprovalService
 	campaignStore  campaign.Store
 	authorizer     campaign.CapabilityAuthorizer
 	registryReader registry.Reader
@@ -74,6 +77,17 @@ func (r *Runtime) OwnerPromoter(audit func(campaign.OwnerPromotionAudit)) (*camp
 		return nil, fmt.Errorf("promotion service is not configured: no Executive submitter was supplied")
 	}
 	return campaign.NewOwnerPromoter(r.organizationID, r.campaignStore, r.promotion,
+		campaign.RegistryOwnerResolver{Registry: r.registryReader}, r.authorizer, audit)
+}
+
+// OwnerApprover builds the deterministic owner approval adapter. The acting owner
+// is resolved from the canonical registry, not from any caller input; the CEO
+// has no path to it. audit is invoked once per approval attempt.
+func (r *Runtime) OwnerApprover(audit func(campaign.OwnerApprovalAudit)) (*campaign.OwnerApprover, error) {
+	if r.approval == nil {
+		return nil, fmt.Errorf("approval service is not configured")
+	}
+	return campaign.NewOwnerApprover(r.organizationID, r.campaignStore, r.approval,
 		campaign.RegistryOwnerResolver{Registry: r.registryReader}, r.authorizer, audit)
 }
 
@@ -317,7 +331,6 @@ func Open(cfg config.Config, store *platformpostgres.Store, opts ...OpenOption) 
 		return nil, fmt.Errorf("create ceochat finance service: %w", err)
 	}
 	campToolOpts := []ceochat.CampaignToolsOption{
-		ceochat.WithApprovalService(approvalService),
 		ceochat.WithFinanceService(financeService),
 	}
 	var promotionService *campaign.PromotionService
@@ -359,7 +372,7 @@ func Open(cfg config.Config, store *platformpostgres.Store, opts ...OpenOption) 
 	}
 	return &Runtime{
 		Service: service, Tasks: taskService, ModelRuntime: modelRuntime,
-		promotion: promotionService, campaignStore: campaignStore, authorizer: authorizerPolicy,
+		promotion: promotionService, approval: approvalService, campaignStore: campaignStore, authorizer: authorizerPolicy,
 		registryReader: registryRepository, organizationID: organizationID,
 	}, nil
 }

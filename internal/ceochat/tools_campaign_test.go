@@ -840,18 +840,18 @@ func TestCampaignReviseProposalAndOwnerApprovalTools(t *testing.T) {
 	store := newFakeCampaignStore()
 	auth := fakeAuthorizer{
 		allowed: map[string]bool{
-			"owner:campaign.proposal.create":           true,
-			"owner:campaign.proposal.read":             true,
-			"owner:campaign.proposal.revise":           true,
-			"owner:campaign.owner_approval.create":     true,
-			"owner:campaign.owner_approval.read":       true,
-			"empresa/ceo:campaign.proposal.revise":     true,
-			"empresa/ceo:campaign.owner_approval.read": true,
+			"owner:campaign.proposal.create":             true,
+			"owner:campaign.proposal.read":               true,
+			"owner:campaign.proposal.revise":             true,
+			"owner:campaign.owner_approval.create":       true,
+			"owner:campaign.owner_approval.read":         true,
+			"empresa/ceo:campaign.proposal.revise":       true,
+			"empresa/ceo:campaign.owner_approval.read":   true,
+			"empresa/ceo:campaign.financial_review.read": true,
 		},
 	}
-	approvalSvc := campaign.NewApprovalService(store, auth, permissiveExecutionRequirements())
 	reg := NewToolRegistry()
-	if err := RegisterCampaignTools(reg, "org-test", store, auth, WithApprovalService(approvalSvc)); err != nil {
+	if err := RegisterCampaignTools(reg, "org-test", store, auth); err != nil {
 		t.Fatalf("RegisterCampaignTools failed: %v", err)
 	}
 	executor := RegistryToolExecutor{Registry: reg}
@@ -945,25 +945,36 @@ func TestCampaignReviseProposalAndOwnerApprovalTools(t *testing.T) {
 		t.Fatalf("record review v2: %v", err)
 	}
 
-	// 4. Approve for execution using campaign.approve_for_execution
-	apprPayload := json.RawMessage(fmt.Sprintf(`{
+	// 4. The CEO can PREPARE an approval, never make one: the tool returns the
+	// exact command for the owner and writes nothing.
+	prepPayload := json.RawMessage(fmt.Sprintf(`{
 		"proposal_id": %d,
 		"financial_review_id": %d
 	}`, revProj.ProposalID, rev2.ID))
-
-	resAppr, err := executor.Execute(turnCtxBg, identity, executionharness.ToolRequest{
-		ToolName:   "campaign.approve_for_execution",
-		ToolCallID: "call_appr_1",
-		Arguments:  apprPayload,
+	resPrep, err := executor.Execute(turnCtxBg, identity, executionharness.ToolRequest{
+		ToolName:   "campaign.prepare_owner_approval",
+		ToolCallID: "call_prep_1",
+		Arguments:  prepPayload,
 	})
 	if err != nil {
-		t.Fatalf("campaign.approve_for_execution failed: %v", err)
+		t.Fatalf("campaign.prepare_owner_approval failed: %v", err)
+	}
+	var prepProj PrepareOwnerApprovalProjection
+	if err := json.Unmarshal(resPrep.Content, &prepProj); err != nil {
+		t.Fatalf("unmarshal prepare result: %v", err)
+	}
+	wantCommand := fmt.Sprintf("orgctl campaign approve --proposal %d --review %d", revProj.ProposalID, rev2.ID)
+	if !prepProj.OwnerActionRequired || prepProj.Command != wantCommand || prepProj.RecommendedBudget.MaxUSD != recBudget.MaxUSD {
+		t.Fatalf("unexpected prepare projection: %+v (want command %q)", prepProj, wantCommand)
+	}
+	if _, err := store.GetOwnerApprovalByProposal(ctx, "org-test", revProj.ProposalID); err == nil {
+		t.Fatal("campaign.prepare_owner_approval created an approval; only the owner can")
 	}
 
-	var apprProj OwnerApprovalResultProjection
-	if err := json.Unmarshal(resAppr.Content, &apprProj); err != nil {
-		t.Fatalf("unmarshal approval result: %v", err)
-	}
+	// The approval itself is the owner's act.
+	result := approveAsOwner(t, store, auth, revProj.ProposalID, rev2.ID)
+	apprProj := OwnerApprovalResultProjection{ApprovalID: result.ApprovalID, ProposalID: result.ProposalID, FinancialReviewID: result.FinancialReviewID,
+		ApprovedByRoleID: result.ActorRoleID, ExecutionBudget: result.ExecutionBudget}
 	if apprProj.ProposalID != revProj.ProposalID || apprProj.FinancialReviewID != rev2.ID {
 		t.Fatalf("unexpected approval projection: %+v", apprProj)
 	}

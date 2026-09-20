@@ -115,6 +115,22 @@ var (
 )
 
 var (
+	// ErrOwnerApprovalNotAuthorized is returned when an owner approval is
+	// attempted without a grant issued by the owner approver for exactly this
+	// proposal, review and owner. An approval is an act of owner authority; no
+	// caller other than OwnerApprover can produce the grant that carries it.
+	ErrOwnerApprovalNotAuthorized = errors.New("owner approval is not authorized for this proposal and review")
+
+	// ErrOwnerApprovalGrantMismatch is returned when the proposal or review the
+	// owner approver read no longer matches what the service reads at approval
+	// time (their canonical hashes or identities differ). The owner never
+	// approves content they were not shown.
+	ErrOwnerApprovalGrantMismatch = errors.New("proposal or financial review changed since the owner approval was requested")
+
+	// ErrStaleFinancialReview is returned when a newer financial review exists
+	// for the proposal: an approval binds the CURRENT review, never a superseded one.
+	ErrStaleFinancialReview = errors.New("stale approval: financial review has been superseded")
+
 	// ErrStaleApproval is returned when attempting to promote an approval for a proposal revision that is no longer the latest.
 	ErrStaleApproval = errors.New("stale approval: proposal has a newer revision")
 

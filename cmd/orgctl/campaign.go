@@ -23,6 +23,8 @@ func runCampaign(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 	switch args[0] {
+	case "approve":
+		return runCampaignApprove(args[1:], stdout, stderr)
 	case "promote":
 		return runCampaignPromote(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
@@ -37,8 +39,9 @@ func runCampaign(args []string, stdout, stderr io.Writer) int {
 
 func printCampaignUsage(out io.Writer) {
 	fmt.Fprintln(out, `usage: orgctl campaign <command> [options]
-commands:
-  promote --approval ID [--execution-mode analysis_only|governed_implementation] [--json]
+commands:`)
+	printCampaignApproveUsage(out)
+	fmt.Fprintln(out, `  promote --approval ID [--execution-mode analysis_only|governed_implementation] [--json]
       Promote an APPROVED campaign as the canonical owner, without a language
       model in the path. The acting owner is resolved from canonical state; there
       is deliberately no --actor-role / --owner-role flag, and no way to name who

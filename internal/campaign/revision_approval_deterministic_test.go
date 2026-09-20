@@ -207,7 +207,7 @@ func TestDeterministicMatrix(t *testing.T) {
 			CanonicalHash:    h2,
 		})
 
-		_, _, err := svc.ApproveForExecution(ctx, campaign.ApproveParams{
+		_, _, err := svc.ApproveUngrantedForTest(ctx, campaign.ApproveParams{
 			OrganizationID:    "org-1",
 			ProposalID:        v2.ID,
 			FinancialReviewID: rev1.ID,
@@ -273,7 +273,7 @@ func TestDeterministicMatrix(t *testing.T) {
 			CanonicalHash:         r2Hash,
 		})
 
-		approval, reused, err := svc.ApproveForExecution(ctx, campaign.ApproveParams{
+		approval, reused, err := svc.ApproveUngrantedForTest(ctx, campaign.ApproveParams{
 			OrganizationID:    "org-1",
 			ProposalID:        v2.ID,
 			FinancialReviewID: rev2.ID,
@@ -306,12 +306,12 @@ func TestDeterministicMatrix(t *testing.T) {
 			TurnTaskID:        20,
 			ToolCallID:        "call-appr-replay",
 		}
-		appr1, reused1, err := svc.ApproveForExecution(ctx, params)
+		appr1, reused1, err := svc.ApproveUngrantedForTest(ctx, params)
 		if err != nil || reused1 {
 			t.Fatalf("initial approval failed: %v, reused=%v", err, reused1)
 		}
 
-		appr2, reused2, err := svc.ApproveForExecution(ctx, params)
+		appr2, reused2, err := svc.ApproveUngrantedForTest(ctx, params)
 		if err != nil {
 			t.Fatalf("replay failed: %v", err)
 		}
@@ -335,7 +335,7 @@ func TestDeterministicMatrix(t *testing.T) {
 			TurnTaskID:        20,
 			ToolCallID:        "call-appr-conflict",
 		}
-		_, _, _ = svc.ApproveForExecution(ctx, params)
+		_, _, _ = svc.ApproveUngrantedForTest(ctx, params)
 
 		// Directly attempt to reuse key with conflict in store
 		_, _, err := store.CreateOwnerApproval(ctx, campaign.CreateOwnerApprovalCommand{
@@ -381,7 +381,7 @@ func TestDeterministicMatrix(t *testing.T) {
 				CanonicalHash:         rHash,
 			})
 
-			_, _, err := svc.ApproveForExecution(ctx, campaign.ApproveParams{
+			_, _, err := svc.ApproveUngrantedForTest(ctx, campaign.ApproveParams{
 				OrganizationID:    "org-1",
 				ProposalID:        p1.ID,
 				FinancialReviewID: rev.ID,
@@ -397,7 +397,7 @@ func TestDeterministicMatrix(t *testing.T) {
 	// M. FINANCE SELF-APPROVAL -> DENY
 	t.Run("M_FinanceSelfApproval", func(t *testing.T) {
 		_, svc, p1, rev1 := setupRevisionApprovalFixture()
-		_, _, err := svc.ApproveForExecution(ctx, campaign.ApproveParams{
+		_, _, err := svc.ApproveUngrantedForTest(ctx, campaign.ApproveParams{
 			OrganizationID:    "org-1",
 			ProposalID:        p1.ID,
 			FinancialReviewID: rev1.ID,
@@ -412,7 +412,7 @@ func TestDeterministicMatrix(t *testing.T) {
 	// N. CEO SELF-APPROVAL WITHOUT OWNER -> DENY
 	t.Run("N_CEOSelfApprovalWithoutOwner", func(t *testing.T) {
 		_, svc, p1, rev1 := setupRevisionApprovalFixture()
-		_, _, err := svc.ApproveForExecution(ctx, campaign.ApproveParams{
+		_, _, err := svc.ApproveUngrantedForTest(ctx, campaign.ApproveParams{
 			OrganizationID:    "org-1",
 			ProposalID:        p1.ID,
 			FinancialReviewID: rev1.ID,
@@ -427,7 +427,7 @@ func TestDeterministicMatrix(t *testing.T) {
 	// O. CROSS-ORG -> DENY
 	t.Run("O_CrossOrgDeny", func(t *testing.T) {
 		_, svc, p1, rev1 := setupRevisionApprovalFixture()
-		_, _, err := svc.ApproveForExecution(ctx, campaign.ApproveParams{
+		_, _, err := svc.ApproveUngrantedForTest(ctx, campaign.ApproveParams{
 			OrganizationID:    "org-other",
 			ProposalID:        p1.ID,
 			FinancialReviewID: rev1.ID,
@@ -442,7 +442,7 @@ func TestDeterministicMatrix(t *testing.T) {
 	// P. BUDGET EXACT PIN: all 7 dimensions match exactly
 	t.Run("P_BudgetExactPin", func(t *testing.T) {
 		_, svc, p1, rev1 := setupRevisionApprovalFixture()
-		appr, _, err := svc.ApproveForExecution(ctx, campaign.ApproveParams{
+		appr, _, err := svc.ApproveUngrantedForTest(ctx, campaign.ApproveParams{
 			OrganizationID:    "org-1",
 			ProposalID:        p1.ID,
 			FinancialReviewID: rev1.ID,
@@ -496,7 +496,7 @@ func TestDeterministicMatrix(t *testing.T) {
 			CanonicalHash: r2Hash,
 		})
 
-		apprV2, _, err := svc.ApproveForExecution(ctx, campaign.ApproveParams{
+		apprV2, _, err := svc.ApproveUngrantedForTest(ctx, campaign.ApproveParams{
 			OrganizationID:    "org-1",
 			ProposalID:        v2.ID,
 			FinancialReviewID: rev2.ID,
@@ -534,7 +534,7 @@ func TestDeterministicMatrix(t *testing.T) {
 	t.Run("R_NoExecutionSideEffects", func(t *testing.T) {
 		// Verify proposal status and approval do not alter execution flags
 		store, svc, p1, rev1 := setupRevisionApprovalFixture()
-		appr, _, err := svc.ApproveForExecution(ctx, campaign.ApproveParams{
+		appr, _, err := svc.ApproveUngrantedForTest(ctx, campaign.ApproveParams{
 			OrganizationID:    "org-1",
 			ProposalID:        p1.ID,
 			FinancialReviewID: rev1.ID,
@@ -590,7 +590,7 @@ func TestApprovalHistoricalDefense_ZeroSubagentsRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, _, err = svc.ApproveForExecution(ctx, campaign.ApproveParams{
+	_, _, err = svc.ApproveUngrantedForTest(ctx, campaign.ApproveParams{
 		OrganizationID:    "org-1",
 		ProposalID:        p1.ID,
 		FinancialReviewID: rev.ID,
