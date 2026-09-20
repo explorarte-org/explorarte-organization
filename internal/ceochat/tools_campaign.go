@@ -1,6 +1,7 @@
 package ceochat
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -185,6 +186,24 @@ type getOwnerApprovalArgs struct {
 
 type promoteToExecutiveArgs struct {
 	OwnerApprovalID int64 `json:"owner_approval_id"`
+}
+
+// decodePromoteToExecutiveArgs reads the promote tool's arguments strictly. The
+// tool takes the approval id and nothing else; an argument the model adds
+// (an execution mode, a requirement, a requirement key) is refused, not
+// ignored, so an attempt to steer how the campaign runs is visible instead of
+// silently dropped.
+func decodePromoteToExecutiveArgs(raw json.RawMessage) (promoteToExecutiveArgs, error) {
+	var args promoteToExecutiveArgs
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&args); err != nil {
+		return promoteToExecutiveArgs{}, fmt.Errorf("%w: %v", ErrInvalidInput, err)
+	}
+	if decoder.More() {
+		return promoteToExecutiveArgs{}, fmt.Errorf("%w: unexpected trailing JSON", ErrInvalidInput)
+	}
+	return args, nil
 }
 
 type getPromotionArgs struct {
@@ -1135,9 +1154,9 @@ func RegisterCampaignTools(registry *ToolRegistry, organizationID string, store 
 	}
 
 	promoteValidator := func(raw json.RawMessage) error {
-		var args promoteToExecutiveArgs
-		if err := json.Unmarshal(raw, &args); err != nil {
-			return fmt.Errorf("%w: %v", ErrInvalidInput, err)
+		args, err := decodePromoteToExecutiveArgs(raw)
+		if err != nil {
+			return err
 		}
 		if args.OwnerApprovalID <= 0 {
 			return fmt.Errorf("%w: owner_approval_id must be positive", ErrInvalidInput)
@@ -1171,9 +1190,9 @@ func RegisterCampaignTools(registry *ToolRegistry, organizationID string, store 
 			}
 		}
 
-		var args promoteToExecutiveArgs
-		if err := json.Unmarshal(raw, &args); err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrInvalidInput, err)
+		args, err := decodePromoteToExecutiveArgs(raw)
+		if err != nil {
+			return nil, err
 		}
 
 		res, err := cfg.PromotionService.PromoteToExecutive(ctx, campaign.PromoteToExecutiveParams{
