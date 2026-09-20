@@ -81,6 +81,14 @@ var (
 	// assumed: without requirements a recommended budget is not approved,
 	// promoted or recorded.
 	ErrExecutionRequirementsUnavailable = errors.New("campaign execution budget requirements unavailable")
+
+	// ErrOwnerIdentityUnavailable is returned when the canonical owner
+	// identity cannot be resolved (zero or several enabled owner roles, a
+	// role that is not the organization's human owner, a retired or disabled
+	// role, or an unreadable registry). Owner authority is derived from
+	// canonical state and is never assumed, so a promotion that cannot resolve
+	// its actor does not run.
+	ErrOwnerIdentityUnavailable = errors.New("canonical owner identity unavailable")
 )
 
 var (
