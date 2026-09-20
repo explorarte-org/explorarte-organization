@@ -45,9 +45,9 @@ type ownerPromotionRig struct {
 	audits    []campaign.OwnerPromotionAudit
 }
 
-func newOwnerPromotionRig(t *testing.T, owner fixedOwner, auth fakeAuthorizer, requirements campaign.ExecutionRequirementsProvider, budget campaign.BudgetRecommendation) *ownerPromotionRig {
+func newOwnerPromotionRig(t *testing.T, owner fixedOwner, auth fakeAuthorizer, requirements campaign.ExecutionRequirementsProvider, budget campaign.BudgetRecommendation, mutateProposal ...func(*campaign.CanonicalPayload)) *ownerPromotionRig {
 	t.Helper()
-	store, submitter, _, proposal, _, _ := setupPromotionFixture(t)
+	store, submitter, _, proposal, _, _ := setupPromotionFixture(t, mutateProposal...)
 	submitter.rootsByKey = make(map[string]fakeRoot)
 	_, approval := seedApproved(t, store, proposal, budget, "owner-cli")
 	rig := &ownerPromotionRig{store: store, submitter: submitter, approval: approval}

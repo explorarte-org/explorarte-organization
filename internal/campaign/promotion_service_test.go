@@ -19,6 +19,10 @@ import (
 type fakeRoot struct {
 	run       executive.Run
 	causation string
+	// mode is the execution mode the root was created under. The real Task
+	// Engine hashes the whole create request, requirements included, so a
+	// second Submit under the same key with another mode is a conflict.
+	mode executive.ExecutionMode
 }
 
 // effectiveCausation is exactly how Executive derives a root's CausationID:
@@ -36,6 +40,8 @@ type fakeSubmitter struct {
 	submitCalls int
 	resumeCalls int
 	lastRequest executive.SubmitRequest
+	// requests records every Submit, in order.
+	requests []executive.SubmitRequest
 	// rootsByKey models the Task Engine's UNIQUE (organization_id,
 	// idempotency_key) plus its request-hash reconciliation: a second Submit
 	// under a key that already exists is REUSED only if it asks for the same
@@ -54,12 +60,13 @@ func (f *fakeSubmitter) Submit(_ context.Context, req executive.SubmitRequest) (
 	defer f.mu.Unlock()
 	f.submitCalls++
 	f.lastRequest = req
+	f.requests = append(f.requests, req)
 	if f.returnErr != nil {
 		return executive.Run{}, false, f.returnErr
 	}
 	if f.rootsByKey != nil {
 		if existing, ok := f.rootsByKey[req.IdempotencyKey]; ok {
-			if existing.causation != effectiveCausation(req) {
+			if existing.causation != effectiveCausation(req) || existing.mode.Normalized() != req.ExecutionMode.Normalized() {
 				return executive.Run{}, false, fmt.Errorf("create executive root: %w", tasks.ErrIdempotencyConflict)
 			}
 			return existing.run, true, nil
@@ -73,7 +80,7 @@ func (f *fakeSubmitter) Submit(_ context.Context, req executive.SubmitRequest) (
 			State:         executive.StateAccepted,
 		}
 		f.nextRootID++
-		f.rootsByKey[req.IdempotencyKey] = fakeRoot{run: run, causation: effectiveCausation(req)}
+		f.rootsByKey[req.IdempotencyKey] = fakeRoot{run: run, causation: effectiveCausation(req), mode: req.ExecutionMode}
 		return run, false, nil
 	}
 	run := f.returnRun
@@ -87,7 +94,7 @@ func (f *fakeSubmitter) Submit(_ context.Context, req executive.SubmitRequest) (
 	return run, f.returnReused, nil
 }
 
-func setupPromotionFixture(t *testing.T) (*memCampaignStore, *fakeSubmitter, *campaign.PromotionService, campaign.CampaignProposal, campaign.CampaignFinancialReview, campaign.CampaignOwnerApproval) {
+func setupPromotionFixture(t *testing.T, mutateProposal ...func(*campaign.CanonicalPayload)) (*memCampaignStore, *fakeSubmitter, *campaign.PromotionService, campaign.CampaignProposal, campaign.CampaignFinancialReview, campaign.CampaignOwnerApproval) {
 	t.Helper()
 	store := newMemCampaignStore()
 	submitter := &fakeSubmitter{}
@@ -111,6 +118,9 @@ func setupPromotionFixture(t *testing.T) (*memCampaignStore, *fakeSubmitter, *ca
 		},
 		Assumptions: []string{"Organic reach remains constant"},
 		Risks:       []string{"Ad blocker rate"},
+	}
+	for _, mutate := range mutateProposal {
+		mutate(&p1Payload)
 	}
 	p1Hash, err := campaign.ComputeCanonicalHash(p1Payload)
 	if err != nil {
