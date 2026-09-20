@@ -124,3 +124,16 @@ func TestAModelCallingTheRetiredApprovalToolCreatesNothing(t *testing.T) {
 		t.Fatalf("approvals = %d", len(store.approvals))
 	}
 }
+
+// The CEO is told the truth about its authority: it cannot approve, it prepares.
+func TestConversationContractTellsTheCEOItCannotApprove(t *testing.T) {
+	prompt := renderConversationContract(nil, Message{Content: "Apruébala."})
+	for _, want := range []string{"You cannot approve a campaign; only the owner can", "campaign.prepare_owner_approval", "Never tell the owner an approval was made"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("the conversation contract lacks %q", want)
+		}
+	}
+	if strings.Contains(prompt, "campaign.approve_for_execution") {
+		t.Fatal("the conversation contract still names the retired approval tool")
+	}
+}
