@@ -1099,7 +1099,12 @@ func TestCanonicalCampaignPromotionToExecutive(t *testing.T) {
 	}
 	t.Logf("PASS: real AuthorizedAttemptProvisioner rejected old colon root causation with: %v", badErr)
 
-	// 15. Version-Transition Crash Test (MANDATORY REGRESSION):
+	// 15. Version-Transition Crash Test, EXECUTIVE-boundary variant. It calls
+	// Executive.Submit directly and accepts either fail-closed reconciliation or
+	// sound adoption. The stricter, Campaign-boundary regression (real
+	// PromotionService, real Task Engine, exact error class, root and promotion
+	// counts across two retries, historical root unchanged) is
+	// TestPromotionCrossVersionRetryFailsClosedOnRealPostgres.
 	// A. Simulate pre-#226 submission identity:
 	//    oldKey = campaign-promotion:<approvalID>:<hash16>
 	// B. Durably create the Executive root under oldKey in PostgreSQL with old colon causation
