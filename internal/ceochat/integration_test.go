@@ -153,6 +153,16 @@ func newChatFixture(t *testing.T) *chatFixture {
 // no options, this is byte-for-byte newChatFixture's own prior behavior.
 func newChatFixtureWithModelRuntimeOptions(t *testing.T, modelRuntimeOpts ...modelbootstrap.Option) *chatFixture {
 	t.Helper()
+	return newChatFixtureWithOpenOptions(t, modelRuntimeOpts, nil)
+}
+
+// newChatFixtureWithOpenOptions is the general form: openOptions, when given,
+// is called with the fixture's store and supplies extra ceochatbootstrap
+// options (e.g. WithExecutiveSubmitter) -- the store must exist first because
+// a real Executive orchestrator is built from it. With both arguments empty it
+// is byte-for-byte newChatFixture.
+func newChatFixtureWithOpenOptions(t *testing.T, modelRuntimeOpts []modelbootstrap.Option, openOptions func(*platformpostgres.Store) []ceochatbootstrap.OpenOption) *chatFixture {
+	t.Helper()
 	databaseURL := os.Getenv("ORG_TEST_DATABASE_URL")
 	if databaseURL == "" {
 		t.Skip("ORG_TEST_DATABASE_URL is required")
@@ -234,6 +244,9 @@ func newChatFixtureWithModelRuntimeOptions(t *testing.T, modelRuntimeOpts ...mod
 	var openOpts []ceochatbootstrap.OpenOption
 	if len(modelRuntimeOpts) > 0 {
 		openOpts = append(openOpts, ceochatbootstrap.WithModelRuntimeOptions(modelRuntimeOpts...))
+	}
+	if openOptions != nil {
+		openOpts = append(openOpts, openOptions(store)...)
 	}
 	runtime, err := ceochatbootstrap.Open(cfg, store, openOpts...)
 	if err != nil {
