@@ -10,87 +10,101 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/campaign"
 )
 
-// TestCampaignPromotionSubmitKey_ExactKey implements Requirement 9:
-// - approval ID = 42
-// - canonical hash = 0123456789abcdef...
-// - expected exactly: campaign-promotion-42-0123456789abcdef
-// - assert no ":"
-// - assert length <= 200
-// - same inputs -> byte-identical key
-// - different approval IDs -> different keys
-// - different hash prefixes -> different keys
+// TestCampaignPromotionSubmitKey_ExactKey tests both:
+// 1. CampaignPromotionSubmitKey (durable submission identity):
+//   - approval ID = 42
+//   - canonical hash = 0123456789abcdef...
+//   - expected exactly: campaign-promotion:42:0123456789abcdef
+//
+// 2. CampaignPromotionTrustedRootCausationKey (trusted-root causation token):
+//   - expected exactly: campaign-promotion-42-0123456789abcdef
+//   - assert no ":"
+//   - assert length <= 200
 func TestCampaignPromotionSubmitKey_ExactKey(t *testing.T) {
 	const (
 		testApprovalID    = int64(42)
 		testCanonicalHash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-		wantKey           = "campaign-promotion-42-0123456789abcdef"
+		wantSubmitKey     = "campaign-promotion:42:0123456789abcdef"
+		wantCausationKey  = "campaign-promotion-42-0123456789abcdef"
 	)
 
-	key, err := campaign.CampaignPromotionSubmitKey(testApprovalID, testCanonicalHash)
+	// Test submission idempotency key:
+	submitKey, err := campaign.CampaignPromotionSubmitKey(testApprovalID, testCanonicalHash)
 	if err != nil {
 		t.Fatalf("CampaignPromotionSubmitKey failed: %v", err)
 	}
-
-	if key != wantKey {
-		t.Fatalf("key = %q, want %q", key, wantKey)
+	if submitKey != wantSubmitKey {
+		t.Fatalf("submitKey = %q, want %q", submitKey, wantSubmitKey)
+	}
+	if len(submitKey) > 200 {
+		t.Fatalf("submitKey length %d exceeds 200 bytes", len(submitKey))
 	}
 
-	if strings.Contains(key, ":") {
-		t.Fatalf("key %q contains forbidden colon", key)
-	}
-
-	if len(key) > 200 {
-		t.Fatalf("key length %d exceeds 200 bytes", len(key))
-	}
-
-	// Determinism: same inputs -> byte-identical key.
-	keyAgain, err := campaign.CampaignPromotionSubmitKey(testApprovalID, testCanonicalHash)
+	// Test trusted-root causation key:
+	causationKey, err := campaign.CampaignPromotionTrustedRootCausationKey(testApprovalID, testCanonicalHash)
 	if err != nil {
-		t.Fatalf("repeat CampaignPromotionSubmitKey failed: %v", err)
+		t.Fatalf("CampaignPromotionTrustedRootCausationKey failed: %v", err)
 	}
-	if key != keyAgain {
-		t.Fatalf("non-deterministic key: %q != %q", key, keyAgain)
+	if causationKey != wantCausationKey {
+		t.Fatalf("causationKey = %q, want %q", causationKey, wantCausationKey)
 	}
-
-	// Different approval IDs -> different keys.
-	keyDiffID, err := campaign.CampaignPromotionSubmitKey(43, testCanonicalHash)
-	if err != nil {
-		t.Fatalf("CampaignPromotionSubmitKey for ID 43 failed: %v", err)
+	if strings.Contains(causationKey, ":") {
+		t.Fatalf("causationKey %q contains forbidden colon", causationKey)
 	}
-	if key == keyDiffID {
-		t.Fatalf("collision across approval IDs: %q == %q", key, keyDiffID)
+	if len(causationKey) > 200 {
+		t.Fatalf("causationKey length %d exceeds 200 bytes", len(causationKey))
 	}
 
-	// Different hash prefixes -> different keys.
-	keyDiffHash, err := campaign.CampaignPromotionSubmitKey(testApprovalID, "fedcba98765432100123456789abcdef0123456789abcdef0123456789abcdef")
-	if err != nil {
-		t.Fatalf("CampaignPromotionSubmitKey for diff hash failed: %v", err)
+	// Determinism:
+	submitKeyAgain, _ := campaign.CampaignPromotionSubmitKey(testApprovalID, testCanonicalHash)
+	if submitKey != submitKeyAgain {
+		t.Fatalf("non-deterministic submitKey: %q != %q", submitKey, submitKeyAgain)
 	}
-	if key == keyDiffHash {
-		t.Fatalf("collision across hash prefixes: %q == %q", key, keyDiffHash)
+	causationKeyAgain, _ := campaign.CampaignPromotionTrustedRootCausationKey(testApprovalID, testCanonicalHash)
+	if causationKey != causationKeyAgain {
+		t.Fatalf("non-deterministic causationKey: %q != %q", causationKey, causationKeyAgain)
+	}
+
+	// Different approval IDs -> different keys:
+	diffIDSubmit, _ := campaign.CampaignPromotionSubmitKey(43, testCanonicalHash)
+	if submitKey == diffIDSubmit {
+		t.Fatalf("collision across approval IDs on submit key: %q == %q", submitKey, diffIDSubmit)
+	}
+	diffIDCausation, _ := campaign.CampaignPromotionTrustedRootCausationKey(43, testCanonicalHash)
+	if causationKey == diffIDCausation {
+		t.Fatalf("collision across approval IDs on causation key: %q == %q", causationKey, diffIDCausation)
+	}
+
+	// Different hash prefixes -> different keys:
+	diffHash := "fedcba98765432100123456789abcdef0123456789abcdef0123456789abcdef"
+	diffHashSubmit, _ := campaign.CampaignPromotionSubmitKey(testApprovalID, diffHash)
+	if submitKey == diffHashSubmit {
+		t.Fatalf("collision across hashes on submit key: %q == %q", submitKey, diffHashSubmit)
+	}
+	diffHashCausation, _ := campaign.CampaignPromotionTrustedRootCausationKey(testApprovalID, diffHash)
+	if causationKey == diffHashCausation {
+		t.Fatalf("collision across hashes on causation key: %q == %q", causationKey, diffHashCausation)
 	}
 
 	// Validation constraints:
 	t.Run("Rejects non-positive approval ID", func(t *testing.T) {
 		for _, invalidID := range []int64{0, -1, -999} {
-			_, err := campaign.CampaignPromotionSubmitKey(invalidID, testCanonicalHash)
-			if err == nil {
-				t.Errorf("expected error for approval ID %d, got nil", invalidID)
+			if _, err := campaign.CampaignPromotionSubmitKey(invalidID, testCanonicalHash); !errors.Is(err, campaign.ErrInvalidInput) {
+				t.Errorf("CampaignPromotionSubmitKey expected ErrInvalidInput for %d, got %v", invalidID, err)
 			}
-			if !errors.Is(err, campaign.ErrInvalidInput) {
-				t.Errorf("error %v does not wrap ErrInvalidInput", err)
+			if _, err := campaign.CampaignPromotionTrustedRootCausationKey(invalidID, testCanonicalHash); !errors.Is(err, campaign.ErrInvalidInput) {
+				t.Errorf("CampaignPromotionTrustedRootCausationKey expected ErrInvalidInput for %d, got %v", invalidID, err)
 			}
 		}
 	})
 
 	t.Run("Rejects insufficient hash material", func(t *testing.T) {
 		for _, shortHash := range []string{"", "0123", "0123456789abcde"} {
-			_, err := campaign.CampaignPromotionSubmitKey(testApprovalID, shortHash)
-			if err == nil {
-				t.Errorf("expected error for hash %q (len %d), got nil", shortHash, len(shortHash))
+			if _, err := campaign.CampaignPromotionSubmitKey(testApprovalID, shortHash); !errors.Is(err, campaign.ErrInvalidInput) {
+				t.Errorf("CampaignPromotionSubmitKey expected ErrInvalidInput for %q, got %v", shortHash, err)
 			}
-			if !errors.Is(err, campaign.ErrInvalidInput) {
-				t.Errorf("error %v does not wrap ErrInvalidInput", err)
+			if _, err := campaign.CampaignPromotionTrustedRootCausationKey(testApprovalID, shortHash); !errors.Is(err, campaign.ErrInvalidInput) {
+				t.Errorf("CampaignPromotionTrustedRootCausationKey expected ErrInvalidInput for %q, got %v", shortHash, err)
 			}
 		}
 	})
@@ -103,25 +117,21 @@ func TestCampaignPromotionSubmitKey_ExactKey(t *testing.T) {
 			" 123456789abcdef0123456789abcdef", // leading space
 			"0123456789_cdef0123456789abcdef",  // underscore
 		} {
-			_, err := campaign.CampaignPromotionSubmitKey(testApprovalID, badHash)
-			if err == nil {
-				t.Errorf("expected error for bad hash %q, got nil", badHash)
+			if _, err := campaign.CampaignPromotionSubmitKey(testApprovalID, badHash); !errors.Is(err, campaign.ErrInvalidInput) {
+				t.Errorf("CampaignPromotionSubmitKey expected ErrInvalidInput for %q, got %v", badHash, err)
 			}
-			if !errors.Is(err, campaign.ErrInvalidInput) {
-				t.Errorf("error %v does not wrap ErrInvalidInput", err)
+			if _, err := campaign.CampaignPromotionTrustedRootCausationKey(testApprovalID, badHash); !errors.Is(err, campaign.ErrInvalidInput) {
+				t.Errorf("CampaignPromotionTrustedRootCausationKey expected ErrInvalidInput for %q, got %v", badHash, err)
 			}
 		}
 	})
 }
 
-// TestPromotionSubmitRequest_CapturesSafeIdempotencyKey implements Requirement 10:
-// Using PromotionService fakeSubmitter:
-// promote a valid executable approval.
-// Capture: executive.SubmitRequest.IdempotencyKey
-// Expected: campaign-promotion-<id>-<hash16>
-// Then assert the resulting Executive owner causation shape:
-// "owner:" + submitKey
-// contains no forbidden ":" after the owner prefix.
+// TestPromotionSubmitRequest_CapturesSafeIdempotencyKey verifies:
+// - SubmitRequest.IdempotencyKey preserves pre-#226 identity: campaign-promotion:<id>:<hash16>
+// - SubmitRequest.TrustedRootCausationKey is separated: campaign-promotion-<id>-<hash16>
+// - Resulting Executive owner causation: "owner:" + TrustedRootCausationKey contains NO colons
+// - CampaignPromotion record seals the durable ExecutiveSubmitIdempotencyKey
 func TestPromotionSubmitRequest_CapturesSafeIdempotencyKey(t *testing.T) {
 	ctx := context.Background()
 	_, submitter, svc, _, _, appr := setupPromotionFixture(t)
@@ -138,15 +148,20 @@ func TestPromotionSubmitRequest_CapturesSafeIdempotencyKey(t *testing.T) {
 		t.Fatalf("PromoteToExecutive: %v", err)
 	}
 
-	wantSubmitKey := fmt.Sprintf("campaign-promotion-%d-%.16s", appr.ID, appr.CanonicalHash)
+	wantSubmitKey := fmt.Sprintf("campaign-promotion:%d:%.16s", appr.ID, appr.CanonicalHash)
 	capturedKey := submitter.lastRequest.IdempotencyKey
-
 	if capturedKey != wantSubmitKey {
 		t.Fatalf("captured submit key = %q, want %q", capturedKey, wantSubmitKey)
 	}
 
-	// Check executive root causation shape: "owner:" + submitKey
-	rootCausation := "owner:" + capturedKey
+	wantCausationKey := fmt.Sprintf("campaign-promotion-%d-%.16s", appr.ID, appr.CanonicalHash)
+	capturedCausationKey := submitter.lastRequest.TrustedRootCausationKey
+	if capturedCausationKey != wantCausationKey {
+		t.Fatalf("captured causation key = %q, want %q", capturedCausationKey, wantCausationKey)
+	}
+
+	// Check executive root causation shape: "owner:" + capturedCausationKey
+	rootCausation := "owner:" + capturedCausationKey
 	if !strings.HasPrefix(rootCausation, "owner:") {
 		t.Fatalf("root causation %q lacks literal owner: prefix", rootCausation)
 	}
@@ -160,7 +175,7 @@ func TestPromotionSubmitRequest_CapturesSafeIdempotencyKey(t *testing.T) {
 		t.Fatalf("root causation length %d exceeds 200", len(rootCausation))
 	}
 
-	// Verify the promotion record sealed the identical submit key.
+	// Verify the promotion record sealed the durable submit key.
 	if res.Promotion.ExecutiveSubmitIdempotencyKey != wantSubmitKey {
 		t.Fatalf("sealed ExecutiveSubmitIdempotencyKey = %q, want %q",
 			res.Promotion.ExecutiveSubmitIdempotencyKey, wantSubmitKey)

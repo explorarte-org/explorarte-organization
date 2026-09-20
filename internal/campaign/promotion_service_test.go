@@ -3,6 +3,7 @@ package campaign_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -10,16 +11,42 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/campaign"
 	"github.com/Mireuz13/explorarte-organization/internal/executive"
 	"github.com/Mireuz13/explorarte-organization/internal/modelpricing"
+	"github.com/Mireuz13/explorarte-organization/internal/tasks"
 )
 
+// fakeRoot is a durable Executive root as the Task Engine holds it: the run it
+// returned and the causation it was created with.
+type fakeRoot struct {
+	run       executive.Run
+	causation string
+}
+
+// effectiveCausation is exactly how Executive derives a root's CausationID:
+// "owner:" + TrustedRootCausationKey when supplied, else "owner:" +
+// IdempotencyKey (the behavior every other Executive caller keeps).
+func effectiveCausation(req executive.SubmitRequest) string {
+	if req.TrustedRootCausationKey != "" {
+		return "owner:" + req.TrustedRootCausationKey
+	}
+	return "owner:" + req.IdempotencyKey
+}
+
 type fakeSubmitter struct {
-	mu           sync.Mutex
-	submitCalls  int
-	resumeCalls  int
-	lastRequest  executive.SubmitRequest
+	mu          sync.Mutex
+	submitCalls int
+	resumeCalls int
+	lastRequest executive.SubmitRequest
+	// rootsByKey models the Task Engine's UNIQUE (organization_id,
+	// idempotency_key) plus its request-hash reconciliation: a second Submit
+	// under a key that already exists is REUSED only if it asks for the same
+	// request. Here that means the same causation; a different one is
+	// tasks.ErrIdempotencyConflict, never a second root and never adoption.
+	// Nil keeps the legacy behavior below (returnRun/returnReused).
+	rootsByKey   map[string]fakeRoot
 	returnRun    executive.Run
 	returnReused bool
 	returnErr    error
+	nextRootID   int64
 }
 
 func (f *fakeSubmitter) Submit(_ context.Context, req executive.SubmitRequest) (executive.Run, bool, error) {
@@ -29,6 +56,25 @@ func (f *fakeSubmitter) Submit(_ context.Context, req executive.SubmitRequest) (
 	f.lastRequest = req
 	if f.returnErr != nil {
 		return executive.Run{}, false, f.returnErr
+	}
+	if f.rootsByKey != nil {
+		if existing, ok := f.rootsByKey[req.IdempotencyKey]; ok {
+			if existing.causation != effectiveCausation(req) {
+				return executive.Run{}, false, fmt.Errorf("create executive root: %w", tasks.ErrIdempotencyConflict)
+			}
+			return existing.run, true, nil
+		}
+		if f.nextRootID == 0 {
+			f.nextRootID = 999
+		}
+		run := executive.Run{
+			RootTaskID:    f.nextRootID,
+			CorrelationID: fmt.Sprintf("executive:corr-%d", f.nextRootID),
+			State:         executive.StateAccepted,
+		}
+		f.nextRootID++
+		f.rootsByKey[req.IdempotencyKey] = fakeRoot{run: run, causation: effectiveCausation(req)}
+		return run, false, nil
 	}
 	run := f.returnRun
 	if run.RootTaskID == 0 {
@@ -327,13 +373,16 @@ func TestPromotionDeterministicMatrix(t *testing.T) {
 
 	t.Run("Case D: Crash after Executive.Submit converges to same root without duplicate budget", func(t *testing.T) {
 		_, submitter, svc, _, _, appr := setupPromotionFixture(t)
+		submitter.rootsByKey = make(map[string]fakeRoot)
 
-		// Simulate submitter already having created the task and returning reused=true on subsequent calls.
-		submitter.returnReused = true
-		submitter.returnRun = executive.Run{
-			RootTaskID:    888,
-			CorrelationID: "executive:reused-root",
-			State:         executive.StateAccepted,
+		// A root this SAME code version durably created before crashing ahead of
+		// CreatePromotion: same idempotency key AND the same trusted-root
+		// causation, so the Task Engine reconciles the retry to it.
+		key := fmt.Sprintf("campaign-promotion:%d:%.16s", appr.ID, appr.CanonicalHash)
+		causation := fmt.Sprintf("owner:campaign-promotion-%d-%.16s", appr.ID, appr.CanonicalHash)
+		submitter.rootsByKey[key] = fakeRoot{
+			run:       executive.Run{RootTaskID: 888, CorrelationID: "executive:reused-root", State: executive.StateAccepted},
+			causation: causation,
 		}
 
 		res, err := svc.PromoteToExecutive(ctx, campaign.PromoteToExecutiveParams{
@@ -353,6 +402,62 @@ func TestPromotionDeterministicMatrix(t *testing.T) {
 		}
 		if !res.Reused {
 			t.Errorf("expected reused=true because Executive returned reused=true")
+		}
+		if len(submitter.rootsByKey) != 1 {
+			t.Errorf("expected exactly 1 root in submitter, got %d", len(submitter.rootsByKey))
+		}
+	})
+
+	// Case D-CrossVersion pins what PromotionService SENDS on a retry, and that
+	// a root created by the previous code version is NOT adopted. It does not
+	// prove production behavior by itself: the fake above only models the Task
+	// Engine's request-hash reconciliation. The real boundary is proven against
+	// PostgreSQL in internal/ceochat (TestPromotionCrossVersionRetryFailsClosedOnRealPostgres).
+	t.Run("Case D-CrossVersion: retry keeps the historical idempotency identity and fails closed on a pre-fix root", func(t *testing.T) {
+		store, submitter, svc, _, _, appr := setupPromotionFixture(t)
+		submitter.rootsByKey = make(map[string]fakeRoot)
+
+		// The root the previous version created: same idempotency key, but the
+		// malformed colon causation "owner:" + the key itself.
+		oldKey := fmt.Sprintf("campaign-promotion:%d:%.16s", appr.ID, appr.CanonicalHash)
+		submitter.rootsByKey[oldKey] = fakeRoot{
+			run:       executive.Run{RootTaskID: 782, CorrelationID: "executive:corr-782", State: executive.StateAccepted},
+			causation: "owner:" + oldKey,
+		}
+
+		// No CampaignPromotion exists (crash after Executive.Submit, before CreatePromotion).
+		params := campaign.PromoteToExecutiveParams{
+			OrganizationID:   "org-1",
+			OwnerApprovalID:  appr.ID,
+			PromotedByRoleID: "empresa/human",
+			ConversationID:   1,
+			ToolCallID:       "call-version-transition",
+			IdempotencyKey:   "prom-version-transition-1",
+		}
+		for attempt := 1; attempt <= 2; attempt++ {
+			_, err := svc.PromoteToExecutive(ctx, params)
+			if !errors.Is(err, tasks.ErrIdempotencyConflict) {
+				t.Fatalf("attempt %d: want tasks.ErrIdempotencyConflict (fail closed, no adoption), got: %v", attempt, err)
+			}
+			if len(submitter.rootsByKey) != 1 {
+				t.Fatalf("attempt %d: EXECUTIVE_ROOT_COUNT = %d, want 1 (never 2)", attempt, len(submitter.rootsByKey))
+			}
+			if len(store.promotions) != 0 {
+				t.Fatalf("attempt %d: CAMPAIGN_PROMOTION_COUNT = %d, want 0", attempt, len(store.promotions))
+			}
+		}
+		if root := submitter.rootsByKey[oldKey]; root.run.RootTaskID != 782 || root.causation != "owner:"+oldKey {
+			t.Fatalf("the historical root was modified: %+v", root)
+		}
+
+		// What was sent: the historical idempotency identity, plus the separate
+		// trusted-root causation.
+		if submitter.lastRequest.IdempotencyKey != oldKey {
+			t.Fatalf("submitter IdempotencyKey = %q, want %q", submitter.lastRequest.IdempotencyKey, oldKey)
+		}
+		wantCausationKey := fmt.Sprintf("campaign-promotion-%d-%.16s", appr.ID, appr.CanonicalHash)
+		if submitter.lastRequest.TrustedRootCausationKey != wantCausationKey {
+			t.Fatalf("submitter TrustedRootCausationKey = %q, want %q", submitter.lastRequest.TrustedRootCausationKey, wantCausationKey)
 		}
 	})
 

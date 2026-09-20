@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -191,14 +192,31 @@ func NewOrchestrator(deps Dependencies, opts ...OrchestratorOption) (*Orchestrat
 	return orchestrator, nil
 }
 
+var trustedRootCausationSuffixPattern = regexp.MustCompile(`^[a-zA-Z0-9]+(?:[._/-][a-zA-Z0-9]+)*$`)
+
+func validTrustedRootCausationSuffix(suffix string) bool {
+	if len(suffix) < 1 || len("owner:"+suffix) > 200 {
+		return false
+	}
+	return trustedRootCausationSuffixPattern.MatchString(suffix)
+}
+
 func (o *Orchestrator) Submit(ctx context.Context, request SubmitRequest) (Run, bool, error) {
 	request.ActorRoleID = strings.TrimSpace(request.ActorRoleID)
 	request.IdempotencyKey = strings.TrimSpace(request.IdempotencyKey)
+	request.TrustedRootCausationKey = strings.TrimSpace(request.TrustedRootCausationKey)
 	if request.ActorRoleID != OwnerRoleID {
 		return Run{}, false, fmt.Errorf("%w: executive submit requires %s", ErrInvalidInput, OwnerRoleID)
 	}
 	if len(request.IdempotencyKey) == 0 || len(request.IdempotencyKey) > 200 {
 		return Run{}, false, fmt.Errorf("%w: idempotency key", ErrInvalidInput)
+	}
+	causationID := "owner:" + request.IdempotencyKey
+	if request.TrustedRootCausationKey != "" {
+		if !validTrustedRootCausationSuffix(request.TrustedRootCausationKey) {
+			return Run{}, false, fmt.Errorf("%w: invalid trusted root causation key", ErrInvalidInput)
+		}
+		causationID = "owner:" + request.TrustedRootCausationKey
 	}
 	if err := validateRequiredString(request.Goal.Goal, o.limits.MaxInstructionsBytes, "goal"); err != nil {
 		return Run{}, false, err
@@ -258,7 +276,7 @@ func (o *Orchestrator) Submit(ctx context.Context, request SubmitRequest) (Run, 
 		Priority:           100,
 		MaxAttempts:        o.maxAttempts(2),
 		CorrelationID:      correlation,
-		CausationID:        "owner:" + request.IdempotencyKey,
+		CausationID:        causationID,
 		Requirements:       requirements,
 	})
 	if err != nil {

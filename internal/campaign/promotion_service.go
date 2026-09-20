@@ -190,10 +190,16 @@ func (s *PromotionService) PromoteToExecutive(ctx context.Context, params Promot
 	// Instructions represent the approved goal and preserve all requirements, assumptions, and risks.
 	instructions := FormatProposalGoal(proposal)
 
-	// Derive deterministic, trusted-root-safe submit key from approval identity.
-	submitKey, err := campaignPromotionSubmitKey(approval.ID, approval.CanonicalHash)
+	// Derive deterministic submit key (idempotency identity) from approval identity.
+	submitKey, err := CampaignPromotionSubmitKey(approval.ID, approval.CanonicalHash)
 	if err != nil {
 		return PromotionResult{}, fmt.Errorf("derive executive submit key: %w", err)
+	}
+
+	// Derive deterministic, trusted-root-safe causation key (provenance identity).
+	causationKey, err := CampaignPromotionTrustedRootCausationKey(approval.ID, approval.CanonicalHash)
+	if err != nil {
+		return PromotionResult{}, fmt.Errorf("derive trusted root causation key: %w", err)
 	}
 
 	// 7. Submit to Executive boundary.
@@ -202,9 +208,10 @@ func (s *PromotionService) PromoteToExecutive(ctx context.Context, params Promot
 			Goal:               instructions,
 			AcceptanceCriteria: criteria,
 		},
-		ActorRoleID:    executive.OwnerRoleID,
-		IdempotencyKey: submitKey,
-		Budget:         campaignBudget,
+		ActorRoleID:             executive.OwnerRoleID,
+		IdempotencyKey:          submitKey,
+		TrustedRootCausationKey: causationKey,
+		Budget:                  campaignBudget,
 	})
 	if err != nil {
 		return PromotionResult{}, fmt.Errorf("executive submit: %w", err)
