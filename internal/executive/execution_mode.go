@@ -65,9 +65,14 @@ func (m ExecutionMode) Governed() bool { return m == ExecutionModeGovernedImplem
 // on the root for a mode. It is the only translation from mode to requirement
 // keys; callers name a mode, never a key, so the keys are not an authority API.
 //
-// The bundle is intentionally the narrowest governed one: it does NOT widen the
-// mission scope (InternalCodeScopeRequirementKey stays absent), so a governed
-// campaign is documentation-scoped unless an owner separately widens it.
+// The bundle includes the internal-code mission scope. Its absence is the
+// documentation-only scope (docs/implementation/), under which a plan that asks to
+// change Go code is rejected at mission derivation -- so a mode called
+// governed_implementation without it could never implement anything. The reach
+// stays bounded: the mission is limited to the paths the implementation plan and
+// the policy derive (and never to the protected governance data), not to all of
+// internal/ and cmd/. A governed pipeline that may only produce documentation
+// would be a different mode, not a missing key.
 func ExecutionModeRequirements(mode ExecutionMode) ([]RequirementProposal, error) {
 	switch mode.Normalized() {
 	case ExecutionModeAnalysisOnly:
@@ -76,6 +81,7 @@ func ExecutionModeRequirements(mode ExecutionMode) ([]RequirementProposal, error
 		return []RequirementProposal{
 			{Key: designfreeze.RequirementKey, Type: "result", Description: "Design frozen by executive adjudication", Required: true},
 			{Key: MissionRequirementKey, Type: "result", Description: "Governed engineering mission provisioned", Required: true},
+			{Key: InternalCodeScopeRequirementKey, Type: "condition", Description: "Owner permits bounded internal code scope for the governed mission", Required: false},
 			{Key: CodeRunnerExecutionEvidenceRequirementKey, Type: "result", Description: "Real code-runner execution evidence with all host gates", Required: true},
 		}, nil
 	default:

@@ -51,7 +51,7 @@ func (o *ownerPromotionFixture) promotionMode(t *testing.T, promotionID int64) (
 var analysisOnlyRootKeys = []string{"executive_closure_verified"}
 
 func governedRootKeys() []string {
-	keys := []string{"executive_closure_verified", executive.MissionRequirementKey, executive.CodeRunnerExecutionEvidenceRequirementKey, "design-freeze"}
+	keys := []string{"executive_closure_verified", executive.MissionRequirementKey, executive.CodeRunnerExecutionEvidenceRequirementKey, "design-freeze", executive.InternalCodeScopeRequirementKey}
 	sort.Strings(keys)
 	return keys
 }

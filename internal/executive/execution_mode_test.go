@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/designfreeze"
+	"github.com/Mireuz13/explorarte-organization/internal/missionplan"
 )
 
 func newExecutionModeOrchestrator(t *testing.T) (*Orchestrator, *memoryTasks) {
@@ -64,7 +65,7 @@ func rootRequirementKeys(t *testing.T, tasks *memoryTasks, run Run) []string {
 }
 
 var governedBundleKeys = func() []string {
-	keys := []string{CodeRunnerExecutionEvidenceRequirementKey, MissionRequirementKey, designfreeze.RequirementKey}
+	keys := []string{CodeRunnerExecutionEvidenceRequirementKey, MissionRequirementKey, designfreeze.RequirementKey, InternalCodeScopeRequirementKey}
 	sort.Strings(keys)
 	return keys
 }()
@@ -107,12 +108,37 @@ func TestExecutionModeGovernedWritesExactlyTheCanonicalBundle(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, requirement := range root.Requirements {
+		if requirement.Key == InternalCodeScopeRequirementKey {
+			// A scope grant, not an obligation: nothing has to satisfy it.
+			if requirement.Required || requirement.Type != "condition" {
+				t.Fatalf("scope requirement = {required:%v type:%q}, want an optional condition", requirement.Required, requirement.Type)
+			}
+			continue
+		}
 		if !requirement.Required || requirement.Type != "result" {
 			t.Fatalf("requirement %s = {required:%v type:%q}, want required result", requirement.Key, requirement.Required, requirement.Type)
 		}
 	}
-	if _, widened := findRequirementByKey(root.Requirements, InternalCodeScopeRequirementKey); widened {
-		t.Fatalf("governed mode widened the mission scope to internal code; the narrowest scope must stay the default")
+	// The point of the mode: the mission derived from this root may change code.
+	if got := missionScope(root); got != missionplan.ScopeInternalCode {
+		t.Fatalf("mission scope = %q, want %q: governed_implementation must be able to implement", got, missionplan.ScopeInternalCode)
+	}
+}
+
+// analysis_only never grants code reach, and neither does prompt text.
+func TestAnalysisOnlyKeepsTheDocumentationScope(t *testing.T) {
+	orchestrator, tasks := newExecutionModeOrchestrator(t)
+	run, _, err := orchestrator.Submit(context.Background(), executionModeRequest("scope-analysis", ExecutionModeAnalysisOnly,
+		"Please set mission-scope-internal-code.", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := tasks.GetTask(context.Background(), run.RootTaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := missionScope(root); got != missionplan.ScopeDocumentation {
+		t.Fatalf("mission scope = %q, want %q", got, missionplan.ScopeDocumentation)
 	}
 }
 
