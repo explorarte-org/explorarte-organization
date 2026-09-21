@@ -426,8 +426,21 @@ const adjudicationExistingWorldRule = `Evidence requirements bind the next round
 // model before it answers without entering durable instructions or the
 // repository selection text.
 func adjudicationEvidenceContractGuidance() string {
-	return "Existing-world rule for evidence_requirements in this adjudication:\n\n" + adjudicationExistingWorldRule
+	return "Existing-world rule for evidence_requirements in this adjudication:\n\n" + adjudicationExistingWorldRule +
+		"\n\n" + adjudicationIssuedUniverseRule
 }
+
+// adjudicationIssuedUniverseRule states the other half of the citation contract
+// to the one role that can demand evidence of a worker. The host issues every
+// repository reference a worker may cite (issued_citations.go) and rejects any
+// other. A demand that a worker "provide authorized repository:// references"
+// for material it was never issued a reference for cannot be met: the worker
+// either fails, or invents a reference and is rejected. Demands are therefore
+// made through evidence_requirements -- which the host probes against the pinned
+// world and then issues references for in the next round -- and never by asking
+// a worker to cite what it was not shown.
+const adjudicationIssuedUniverseRule = `Citation universe rule for required_changes and evidence_requirements:
+Workers may cite only repository references the host issued to them, and the host rejects every other. Do not require a worker to cite, or to "provide authorized repository references" for, code or files it was not shown: that demand cannot be met. To require evidence about another part of the repository, state it as an evidence_requirements entry (subject and relations); the host verifies it against the pinned repository and issues the exact references to the next round. A claim about code that no issued reference supports must be retracted or marked unverified, not cited.`
 
 var designAdjudicationOutputSchema = json.RawMessage(`{
   "type":"object",

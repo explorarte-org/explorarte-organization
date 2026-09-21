@@ -158,13 +158,9 @@ func genuineRepositoryCitations(ctx context.Context, sources SnapshotSourceReade
 	}
 	genuine := map[string][]lineRange{}
 	for _, source := range available {
-		if source.Kind != "repository_evidence" {
-			continue
-		}
-		if source.Version != baseSHA {
-			continue
-		}
-		if !source.Included {
+		// The same predicate the guidance that tells the model what it may
+		// cite uses (issued_citations.go): "issued" has one definition.
+		if !issuedRepositorySource(source, baseSHA) {
 			continue
 		}
 		fileKey, span, ok := parseCitationRange(source.Reference)

@@ -2002,6 +2002,14 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		}
 	}
 
+	// The host tells the model exactly which repository references it issued to
+	// this execution -- the same set VerifyEvidenceProvenance accepts. Without
+	// it a worker sees an excerpt but no handle to cite it by, and composes one
+	// the host then correctly rejects (see issued_citations.go).
+	issuedCitations, issuedErr := issuedRepositoryCitations(ctx, o.snapshotSources, snapshot.ID, repositoryBaseSHA)
+	if issuedErr != nil {
+		return task, issuedErr
+	}
 	command := HarnessRunCommand{
 		RunID:                harnessRunID(o.organizationID, task.ID, lease.AttemptID, purpose),
 		TaskID:               task.ID,
@@ -2012,11 +2020,12 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		Context:              snapshot,
 		Purpose:              purpose,
 		OutputSchema:         schema,
-		ExecutionContract:    executionContractForCodeRunnerConstraint(purpose, root, executionContractForWithSupply(purpose, required, proofs, available)),
-		MaxOutputTokens:      o.limits.MaxOutputTokensFor(purpose),
-		CorrelationID:        root.CorrelationID,
-		CausationID:          attemptCausation(task.ID, lease.AttemptID),
-		Deadline:             o.clock.Now().Add(o.limits.InvocationDeadline),
+		ExecutionContract: executionContractForCodeRunnerConstraint(purpose, root,
+			withIssuedCitations(executionContractForWithSupply(purpose, required, proofs, available), purpose, repositoryBaseSHA, issuedCitations)),
+		MaxOutputTokens: o.limits.MaxOutputTokensFor(purpose),
+		CorrelationID:   root.CorrelationID,
+		CausationID:     attemptCausation(task.ID, lease.AttemptID),
+		Deadline:        o.clock.Now().Add(o.limits.InvocationDeadline),
 	}
 
 	execCtx, keeper := o.startLeaseKeeper(ctx, task.ID, lease, actorID)
