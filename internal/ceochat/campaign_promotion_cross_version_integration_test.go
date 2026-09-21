@@ -112,7 +112,7 @@ func (p *promotionRootFixture) submitRequest(t *testing.T, trustedRootCausationK
 		criteria = append(criteria, executive.AcceptanceCriterion{Text: text, Phase: executive.AcceptanceImplementation})
 	}
 	return executive.SubmitRequest{
-		Goal:                    executive.OwnerGoal{Goal: campaign.FormatProposalGoal(p.proposal), AcceptanceCriteria: criteria},
+		Goal:                    executive.OwnerGoal{Goal: campaign.FormatPromotedGoal(p.proposal, p.approval), AcceptanceCriteria: criteria},
 		ActorRoleID:             executive.OwnerRoleID,
 		IdempotencyKey:          p.oldKey,
 		TrustedRootCausationKey: trustedRootCausationKey,

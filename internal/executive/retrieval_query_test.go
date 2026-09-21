@@ -32,3 +32,62 @@ func TestHostGuidanceDoesNotShapeWhatTheWorkerCanSee(t *testing.T) {
 		}
 	}
 }
+
+// The host's statement of campaign state (approved, by whom) is for the
+// planners. It must not shape what the worker can see: it is stripped from the
+// retrieval query by its exact markers, and only by them.
+func TestHostCampaignStateDoesNotShapeRetrieval(t *testing.T) {
+	statement := WrapHostCampaignState("CAMPAIGN STATE: APPROVED_FOR_EXECUTION\nOwner approval 6 by empresa/human. Do not request approval again.")
+	goal := "Diagnose how MaxDesignRounds is governed."
+	query := withoutHostCampaignState(statement + "\n\n" + goal)
+	if query != goal {
+		t.Fatalf("query = %q, want only the goal", query)
+	}
+	for _, fromTheStatement := range []string{"APPROVED_FOR_EXECUTION", "CAMPAIGN", "approval", "empresa"} {
+		if strings.Contains(query, fromTheStatement) {
+			t.Errorf("%q reaches the selector", fromTheStatement)
+		}
+	}
+	// Free text that merely talks about a draft is the owner's, and stays.
+	owner := "The campaign remains a draft until owner approval; touch MaxDesignRounds."
+	if got := withoutHostCampaignState(owner); got != owner {
+		t.Fatalf("free text was altered: %q", got)
+	}
+	// An unterminated marker removes nothing.
+	open := HostCampaignStateBegin + "\nnever closed\n" + goal
+	if got := withoutHostCampaignState(open); got != strings.TrimSpace(open) {
+		t.Fatalf("an unterminated marker truncated the goal: %q", got)
+	}
+}
+
+// END TO END: a root whose instructions open with the host's campaign state
+// searches the repository for what the goal names, and for nothing the host's
+// statement contains.
+func TestPromotedRootsStateStatementNeverReachesTheRepositoryQuery(t *testing.T) {
+	fixture := newWiringFixture(t, "freeze", fullSupply(), nil)
+	fixture.tasks.mu.Lock()
+	root := fixture.tasks.tasks[fixture.root]
+	root.Instructions = WrapHostCampaignState("Campaign state: APPROVED_FOR_EXECUTION. Owner approval 6 by empresa/human. Do not request approval again.") + "\n\n" + root.Instructions
+	fixture.tasks.tasks[fixture.root] = root
+	fixture.tasks.mu.Unlock()
+
+	if _, err := fixture.driveUntilStopped(t, 24); err != nil {
+		t.Fatalf("drive: %v", err)
+	}
+	command, ok := fixture.commandFor(PurposeDepartmentWorker)
+	if !ok {
+		t.Fatal("no worker ran")
+	}
+	request, recorded := fixture.harness.contexts.requests[command.Context.ID]
+	if !recorded || strings.TrimSpace(request.RepositoryQuery) == "" {
+		t.Fatalf("no repository query was recorded for snapshot %d", command.Context.ID)
+	}
+	for _, fromTheStatement := range []string{"APPROVED_FOR_EXECUTION", "Owner approval", "Do not request approval again"} {
+		if strings.Contains(request.RepositoryQuery, fromTheStatement) {
+			t.Errorf("%q from the host's state statement reached the repository query:\n%s", fromTheStatement, request.RepositoryQuery)
+		}
+	}
+	if !strings.Contains(request.RepositoryQuery, "M2.1") {
+		t.Errorf("the goal itself no longer drives retrieval:\n%s", request.RepositoryQuery)
+	}
+}
