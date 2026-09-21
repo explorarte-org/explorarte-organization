@@ -138,10 +138,15 @@ type Request struct {
 	AcceptanceCriteria []string
 }
 
-// Derived is the pair the mission is created from.
+// Derived is the pair the mission is created from, and the record of how each
+// change's patch was made canonical on the way.
 type Derived struct {
 	Policy engineeringmission.MissionPolicy
 	Plan   coderunner.Plan
+	// Patches has one entry per change, in the order of Request.Changes. The plan's
+	// ApplyPatch operations carry the NORMALIZED patches; the raw ones are the
+	// model's own output, kept by the invocation that produced them.
+	Patches []PatchProvenance
 }
 
 const (
@@ -183,6 +188,7 @@ func Derive(request Request) (Derived, error) {
 	allowed := make([]string, 0, len(request.Changes))
 	operations := make([]coderunner.Operation, 0, len(request.Changes)+5)
 	goFiles := make([]string, 0, len(request.Changes))
+	patches := make([]PatchProvenance, 0, len(request.Changes))
 
 	for i, change := range request.Changes {
 		clean, err := normalizePath(change.Path)
@@ -202,8 +208,20 @@ func Derive(request Request) (Derived, error) {
 			return Derived{}, fmt.Errorf("%w: change[%d] repeats path %q", ErrPlanInvalid, i, clean)
 		}
 		seen[clean] = struct{}{}
+		// The mission carries the CANONICAL patch: the one the host validated (see
+		// NormalizePatch) and the one the code-runner will apply with plain
+		// `git apply`. Deriving it here, in the only place operations are made, is
+		// what keeps "what was checked" and "what is executed" the same bytes.
+		canonical, problem := NormalizePatch(clean, change.Patch)
+		if problem != nil {
+			return Derived{}, fmt.Errorf("%w: change[%d] patch cannot be made canonical: %s", ErrPlanInvalid, i, problem)
+		}
+		if len(canonical.Patch) > maxPatchBytes {
+			return Derived{}, fmt.Errorf("%w: change[%d] patch is oversized once canonical", ErrPlanInvalid, i)
+		}
 		allowed = append(allowed, clean)
-		operations = append(operations, coderunner.Operation{Type: coderunner.ApplyPatch, Patch: change.Patch})
+		patches = append(patches, canonical.Provenance)
+		operations = append(operations, coderunner.Operation{Type: coderunner.ApplyPatch, Patch: canonical.Patch})
 		if strings.HasSuffix(clean, ".go") {
 			goFiles = append(goFiles, clean)
 		}
@@ -249,7 +267,7 @@ func Derive(request Request) (Derived, error) {
 	if _, err = coderunner.ParsePlan(encoded); err != nil {
 		return Derived{}, fmt.Errorf("%w: generated plan rejected by CodeRunner: %v", ErrPlanInvalid, err)
 	}
-	return Derived{Policy: normalized, Plan: plan}, nil
+	return Derived{Policy: normalized, Plan: plan, Patches: patches}, nil
 }
 
 // RequiredGates is the host's fixed gate set. It is a function rather than a

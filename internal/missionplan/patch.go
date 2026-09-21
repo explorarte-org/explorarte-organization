@@ -39,12 +39,17 @@ const (
 )
 
 // hunkHeaderPattern is the whole grammar of a unified-diff hunk header:
-// "@@ -start[,count] +start[,count] @@", optionally followed by a section heading.
-var hunkHeaderPattern = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*)?$`)
+// "@@ -start[,count] +start[,count] @@", optionally followed by a section heading
+// (group 5, with its leading space).
+var hunkHeaderPattern = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@( .*)?$`)
 
 // CheckPatchStructure validates a change's patch from its text alone. It returns
 // nil when the diff is well formed, names exactly the declared path, and every
 // hunk's body matches the counts its header declares.
+//
+// It judges a patch as it is. The host's mechanical canonicalization
+// (NormalizePatch) runs before it, so what is checked here, and then applied, is
+// the canonical form.
 func CheckPatchStructure(change Change) *PatchProblem {
 	declared, err := normalizePath(change.Path)
 	if err != nil {
@@ -62,70 +67,95 @@ func CheckPatchStructure(change Change) *PatchProblem {
 				touched, declared, strings.Join(paths, ", "))}
 		}
 	}
+	// Every line of a unified diff, the last included, ends in a newline. git refuses
+	// a patch whose last line does not ("corrupt patch at line N") without saying why.
+	// Adding the byte is not a mechanical rewrite of a header, so the host does not do
+	// it: the planner is told. Root 1062's first planned patch ended this way.
+	if !strings.HasSuffix(change.Patch, "\n") {
+		return &PatchProblem{Check: CheckUnifiedDiff, Detail: "the patch text must end with a newline: every line of a unified diff, including the last, is newline-terminated"}
+	}
 	return checkHunks(change.Patch)
 }
 
-func checkHunks(patch string) *PatchProblem {
+// patchLines splits a patch into lines, dropping the empty elements the trailing
+// newline(s) leave behind.
+func patchLines(patch string) []string {
 	lines := strings.Split(patch, "\n")
 	for n := len(lines); n > 0 && lines[n-1] == ""; n = len(lines) {
 		lines = lines[:n-1]
 	}
+	return lines
+}
+
+func checkHunks(patch string) *PatchProblem {
+	lines := patchLines(patch)
 	hunks := 0
 	for i := 0; i < len(lines); {
-		line := lines[i]
-		if !strings.HasPrefix(line, "@@") {
+		if !strings.HasPrefix(lines[i], "@@") {
 			i++
 			continue
 		}
-		header := hunkHeaderPattern.FindStringSubmatch(line)
-		if header == nil {
-			return &PatchProblem{Check: CheckHunkHeader, Detail: fmt.Sprintf(
-				"line %d: %q is not a valid hunk header. A header is \"@@ -<start>[,<count>] +<start>[,<count>] @@\" with the real numbers of the source file; placeholder coordinates (for example X) are not coordinates",
-				i+1, truncateForFeedback(line, 80))}
-		}
 		hunks++
-		oldRemaining, newRemaining := hunkCount(header[2]), hunkCount(header[4])
-		start := i + 1
-		i++
-		for (oldRemaining > 0 || newRemaining > 0) && i < len(lines) {
-			body := lines[i]
-			switch {
-			case body == "" || body[0] == ' ':
-				oldRemaining--
-				newRemaining--
-			case body[0] == '-':
-				oldRemaining--
-			case body[0] == '+':
-				newRemaining--
-			case body[0] == '\\':
-				// "\ No newline at end of file" describes the previous line.
-			default:
-				return &PatchProblem{Check: CheckHunkBody, Detail: fmt.Sprintf(
-					"line %d: %q inside the hunk that starts at line %d does not begin with ' ', '+' or '-'", i+1, truncateForFeedback(body, 80), start)}
-			}
-			i++
-			if oldRemaining < 0 || newRemaining < 0 {
-				return &PatchProblem{Check: CheckHunkBody, Detail: fmt.Sprintf(
-					"the hunk that starts at line %d has more lines than its header declares", start)}
-			}
+		next, problem := checkHunk(lines, i)
+		if problem != nil {
+			return problem
 		}
-		if oldRemaining > 0 || newRemaining > 0 {
-			return &PatchProblem{Check: CheckHunkBody, Detail: fmt.Sprintf(
-				"the hunk that starts at line %d declares %s old and %s new lines but its body is %d old and %d new lines short; recount the header from the body",
-				start, header[2]+orOne(header[2]), header[4]+orOne(header[4]), oldRemaining, newRemaining)}
-		}
-		for i < len(lines) && strings.HasPrefix(lines[i], "\\") {
-			i++
-		}
-		if i < len(lines) && !strings.HasPrefix(lines[i], "@@") && (lines[i] == "" || lines[i][0] == ' ' || lines[i][0] == '+' || lines[i][0] == '-') && !strings.HasPrefix(lines[i], "diff ") {
-			return &PatchProblem{Check: CheckHunkBody, Detail: fmt.Sprintf(
-				"line %d follows a complete hunk but is not a hunk header: the hunk that starts at line %d has more lines than its header declares", i+1, start)}
-		}
+		i = next
 	}
 	if hunks == 0 {
 		return &PatchProblem{Check: CheckHunkHeader, Detail: "the patch has no hunk (no \"@@ -a,b +c,d @@\" header)"}
 	}
 	return nil
+}
+
+// checkHunk judges the hunk whose header is lines[i]: the header's grammar and that
+// the body has exactly the lines the header declares. It returns the index of the
+// first line after the hunk.
+func checkHunk(lines []string, i int) (int, *PatchProblem) {
+	header := hunkHeaderPattern.FindStringSubmatch(lines[i])
+	if header == nil {
+		return i, &PatchProblem{Check: CheckHunkHeader, Detail: fmt.Sprintf(
+			"line %d: %q is not a valid hunk header. A header is \"@@ -<start>[,<count>] +<start>[,<count>] @@\" with the real numbers of the source file; placeholder coordinates (for example X) are not coordinates",
+			i+1, truncateForFeedback(lines[i], 80))}
+	}
+	oldRemaining, newRemaining := hunkCount(header[2]), hunkCount(header[4])
+	start := i + 1
+	i++
+	for (oldRemaining > 0 || newRemaining > 0) && i < len(lines) {
+		body := lines[i]
+		switch {
+		case body == "" || body[0] == ' ':
+			oldRemaining--
+			newRemaining--
+		case body[0] == '-':
+			oldRemaining--
+		case body[0] == '+':
+			newRemaining--
+		case body[0] == '\\':
+			// "\ No newline at end of file" describes the previous line.
+		default:
+			return i, &PatchProblem{Check: CheckHunkBody, Detail: fmt.Sprintf(
+				"line %d: %q inside the hunk that starts at line %d does not begin with ' ', '+' or '-'", i+1, truncateForFeedback(body, 80), start)}
+		}
+		i++
+		if oldRemaining < 0 || newRemaining < 0 {
+			return i, &PatchProblem{Check: CheckHunkBody, Detail: fmt.Sprintf(
+				"the hunk that starts at line %d has more lines than its header declares", start)}
+		}
+	}
+	if oldRemaining > 0 || newRemaining > 0 {
+		return i, &PatchProblem{Check: CheckHunkBody, Detail: fmt.Sprintf(
+			"the hunk that starts at line %d declares %s old and %s new lines but its body is %d old and %d new lines short; recount the header from the body",
+			start, header[2]+orOne(header[2]), header[4]+orOne(header[4]), oldRemaining, newRemaining)}
+	}
+	for i < len(lines) && strings.HasPrefix(lines[i], "\\") {
+		i++
+	}
+	if i < len(lines) && !strings.HasPrefix(lines[i], "@@") && (lines[i] == "" || lines[i][0] == ' ' || lines[i][0] == '+' || lines[i][0] == '-') && !strings.HasPrefix(lines[i], "diff ") {
+		return i, &PatchProblem{Check: CheckHunkBody, Detail: fmt.Sprintf(
+			"line %d follows a complete hunk but is not a hunk header: the hunk that starts at line %d has more lines than its header declares", i+1, start)}
+	}
+	return i, nil
 }
 
 // hunkCount reads a header count; an omitted count means one line.
