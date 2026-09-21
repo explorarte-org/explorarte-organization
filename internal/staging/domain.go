@@ -92,6 +92,14 @@ type RepositoryConfig struct {
 	AllowedTargetRefs []string `yaml:"allowed_target_refs" json:"allowed_target_refs"`
 }
 
+// PatchCheck is git's verdict on whether a patch applies to a commit's tree.
+// Applies false with a Detail is a finding about the patch; it is never an error.
+type PatchCheck struct {
+	Applies bool
+	// Detail is git's own diagnostic when the patch does not apply (bounded).
+	Detail string
+}
+
 type RepositoryFile struct {
 	SchemaVersion int                `yaml:"schema_version"`
 	Repositories  []RepositoryConfig `yaml:"repositories"`
