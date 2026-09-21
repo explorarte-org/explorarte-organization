@@ -64,6 +64,10 @@ type Orchestrator struct {
 	repositorySource repositoryevidence.Source
 	repositoryID     string
 	missions         MissionProvisioner
+	// patchWorkbench lets the implementation-plan phase read the frozen tree and
+	// ask git whether a patch applies to it (patch_validation.go). Optional:
+	// without it only the structural patch checks run.
+	patchWorkbench PatchWorkbench
 	// evidenceProofs persists durable proof of already-satisfied evidence
 	// slots (DURABLE-EVIDENCE-PROOF-CONTRACT). Optional: nil degrades to
 	// this system's pre-existing behavior, every round re-probing the full
@@ -2021,7 +2025,8 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		Purpose:              purpose,
 		OutputSchema:         schema,
 		ExecutionContract: executionContractForCodeRunnerConstraint(purpose, root,
-			withIssuedCitations(executionContractForWithSupply(purpose, required, proofs, available), purpose, repositoryBaseSHA, issuedCitations)),
+			withImplementationSource(withIssuedCitations(executionContractForWithSupply(purpose, required, proofs, available), purpose, repositoryBaseSHA, issuedCitations),
+				purpose, o.implementationSourceForPlan(ctx, purpose, root, repositoryBaseSHA, repositoryQuery))),
 		MaxOutputTokens: o.limits.MaxOutputTokensFor(purpose),
 		CorrelationID:   root.CorrelationID,
 		CausationID:     attemptCausation(task.ID, lease.AttemptID),
@@ -3143,4 +3148,23 @@ func (o *Orchestrator) requiredChangesOf(ctx context.Context, all []TaskRecord, 
 		return nil, err
 	}
 	return envelope.RequiredChanges, nil
+}
+
+// implementationSourceForPlan renders the exact source the implementation planner
+// patches against; it is empty for every other purpose.
+func (o *Orchestrator) implementationSourceForPlan(ctx context.Context, purpose ExecutionPurpose, root TaskRecord, baseSHA, query string) string {
+	if purpose != PurposeImplementationPlan {
+		return ""
+	}
+	return o.implementationSourceContract(ctx, root, baseSHA, query)
+}
+
+func withImplementationSource(contract string, purpose ExecutionPurpose, source string) string {
+	if purpose != PurposeImplementationPlan || source == "" {
+		return contract
+	}
+	if contract != "" {
+		contract += "\n\n"
+	}
+	return contract + source
 }

@@ -107,6 +107,13 @@ type missionFixture struct {
 
 func newMissionFixture(t *testing.T, planPath string, widenScope bool) *missionFixture {
 	t.Helper()
+	return newMissionFixtureWith(t, planPath, widenScope, "AUTONOMY-SMOKE-001: record the autonomous cycle evidence.")
+}
+
+// newMissionFixtureWith is newMissionFixture with the owner's goal text and extra
+// orchestrator options (for example a patch workbench).
+func newMissionFixtureWith(t *testing.T, planPath string, widenScope bool, goal string, extra ...OrchestratorOption) *missionFixture {
+	t.Helper()
 	tasksPort := newMemoryTasks()
 	models := newFakeModels()
 	bodies := freezeBodies()
@@ -133,8 +140,8 @@ func newMissionFixture(t *testing.T, planPath string, widenScope bool) *missionF
 		Budget: &countingBudget{}, Completion: &fakeCompletion{verdict: CompletionPass},
 		Decisions: &fakeDecisionRecorder{}, Authorization: allowAuthz{}, Limits: DefaultLimits(),
 		Clock: ClockFunc(func() time.Time { return time.Unix(1000, 0) }),
-	}, WithMissionProvisioning(target, provisioner),
-		WithSnapshotSources(stubSnapshotSources{}))
+	}, append([]OrchestratorOption{WithMissionProvisioning(target, provisioner),
+		WithSnapshotSources(stubSnapshotSources{})}, extra...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +159,7 @@ func newMissionFixture(t *testing.T, planPath string, widenScope bool) *missionF
 	run, _, err := orchestrator.Submit(context.Background(), SubmitRequest{
 		ActorRoleID: OwnerRoleID, IdempotencyKey: "autonomy-smoke-001",
 		Goal: OwnerGoal{
-			Goal:               "AUTONOMY-SMOKE-001: record the autonomous cycle evidence.",
+			Goal:               goal,
 			AcceptanceCriteria: []AcceptanceCriterion{{Text: "Exactly one allowed file changes", Phase: AcceptanceDesign}},
 			Requirements:       requirements,
 		},

@@ -187,10 +187,18 @@ func (o *Orchestrator) driveImplementationMission(ctx context.Context, root Task
 		}
 	}
 	if planTask.Status != "completed" {
+		// A planner whose attempts were spent on patches the host refused is not an
+		// execution failure: nothing reached the code-runner. Say so explicitly, both
+		// on a resume that finds the task already exhausted and right when it is.
+		if run, blocked, blockErr := o.blockOnExhaustedPatchValidation(ctx, root, planTask); blocked {
+			return run, true, blockErr
+		}
 		if _, err = o.driveTypedTask(ctx, root, planTask, ImplementationPlanOutputSchema(), PurposeImplementationPlan, func(result InvocationResult) error {
-			_, parseErr := ParseImplementationPlan(result.JSONOutput, o.limits)
-			return parseErr
+			return o.validateImplementationPlanForMission(ctx, root, planTask, requirement, result)
 		}); err != nil {
+			if run, blocked, blockErr := o.blockOnExhaustedPatchValidation(ctx, root, planTask); blocked {
+				return run, true, blockErr
+			}
 			run, phaseErr := o.handlePhaseError(ctx, root, planTask, err)
 			return run, true, phaseErr
 		}
@@ -306,6 +314,10 @@ func (o *Orchestrator) driveImplementationMission(ctx context.Context, root Task
 			"mission_task_id": mission.TaskID, "base_sha": derived.Policy.BaseSHA,
 			"allowed_paths": derived.Policy.AllowedPaths, "scope": string(missionScope(root)),
 			"implementation_plan_task_id": planTask.ID,
+			// What it cost to think an applicable patch, measured next to what it
+			// will cost to execute one (the mission task's own attempts).
+			"implementation_plan_attempts": planTask.AttemptCount,
+			"patch_validation_failures":    o.patchFailuresOf(ctx, root, planTask),
 		},
 		Satisfies: true,
 	}); err != nil {
@@ -348,4 +360,40 @@ func policyDigest(policy engineeringmission.MissionPolicy) string {
 		return ""
 	}
 	return digest
+}
+
+// blockOnExhaustedPatchValidation blocks the root with the explicit
+// implementation_plan_patch_invalid reason when the implementation planner's
+// attempts are exhausted and at least one was rejected by host patch validation. It
+// reads the durable task and evidence, so it gives the same answer whether it runs
+// right after the last attempt or on a later resume.
+func (o *Orchestrator) blockOnExhaustedPatchValidation(ctx context.Context, root, planTask TaskRecord) (Run, bool, error) {
+	current, err := o.tasks.GetTask(ctx, planTask.ID)
+	// The task engine dead-letters a task whose retryable attempts are exhausted;
+	// a plain "failed" is the same terminal outcome from a non-retryable close.
+	if err != nil || (current.Status != "dead_letter" && current.Status != "failed") {
+		return Run{}, false, nil
+	}
+	detail, err := o.tasks.GetTask(ctx, root.ID)
+	if err != nil {
+		return Run{}, false, nil
+	}
+	rejected := patchValidationFailures(detail.Evidence, planTask.ID)
+	if rejected == 0 {
+		return Run{}, false, nil
+	}
+	run, blockErr := o.blockRoot(ctx, root, ReasonImplementationPlanPatchInvalid, fmt.Sprintf(
+		"the implementation planner produced no applicable patch in %d attempts (%d rejected by host patch validation); no mission was created and the code-runner was never invoked",
+		current.AttemptCount, rejected))
+	return run, true, blockErr
+}
+
+// patchFailuresOf counts the rejected patches recorded for a plan task, reading the
+// root's durable evidence.
+func (o *Orchestrator) patchFailuresOf(ctx context.Context, root, planTask TaskRecord) int {
+	detail, err := o.tasks.GetTask(ctx, root.ID)
+	if err != nil {
+		return 0
+	}
+	return patchValidationFailures(detail.Evidence, planTask.ID)
 }
