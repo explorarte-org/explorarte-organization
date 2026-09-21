@@ -236,8 +236,9 @@ func (s *PromotionService) promote(ctx context.Context, params PromoteToExecutiv
 		})
 	}
 
-	// Instructions represent the approved goal and preserve all requirements, assumptions, and risks.
-	instructions := FormatProposalGoal(proposal)
+	// Instructions represent the approved goal: structured from the durable
+	// proposal and approval, with the host's own statement of campaign state.
+	instructions := FormatPromotedGoal(proposal, approval)
 
 	// Derive deterministic submit key (idempotency identity) from approval identity.
 	submitKey, err := CampaignPromotionSubmitKey(approval.ID, approval.CanonicalHash)
@@ -327,10 +328,30 @@ func (s *PromotionService) promote(ctx context.Context, params PromoteToExecutiv
 	}, nil
 }
 
-// FormatProposalGoal deterministic translation from proposal into instructions.
-// It preserves the approved goal, structured requirements, assumptions, and risks.
-func FormatProposalGoal(p CampaignProposal) string {
+// FormatPromotedGoal builds the goal an approved campaign is submitted to
+// Executive with, from structured durable records.
+//
+// A proposal is drafted BEFORE its approval, and what a model wrote into it
+// (assumptions, risks) may say so -- "the campaign remains a draft until the
+// owner approves". Carried into the goal of a campaign that IS approved, that
+// sentence is read by the planner as an approval still owed, and the root blocks
+// asking the owner for a decision they already made. Nothing here searches for
+// or removes such wording: free text the proposal carries is preserved verbatim,
+// under a heading that says what it is (notes written before approval), and the
+// HOST states, first and from the durable approval, what the campaign's state is.
+//
+// Only fields that instruct work appear as the campaign's goal and requirements;
+// assumptions and risks are context, labelled as such. Open questions belong to
+// the owner's review of the proposal and are not part of an approved campaign.
+func FormatPromotedGoal(p CampaignProposal, approval CampaignOwnerApproval) string {
 	var b strings.Builder
+	b.WriteString(executive.WrapHostCampaignState(fmt.Sprintf(
+		"Campaign state: APPROVED_FOR_EXECUTION.\n"+
+			"Set by the host from durable records, not by any model: owner approval %d, made by %s, covers proposal %d (revision %d) and financial review %d. "+
+			"The required owner approval flow is complete. Do not request, wait for or report a pending approval, and do not treat this campaign as a draft. "+
+			"Any statement below about draft status or approval still pending was written before this approval and is superseded by this state.",
+		approval.ID, approval.ApprovedByRoleID, p.ID, p.RevisionNumber, approval.FinancialReviewID)))
+	b.WriteString("\n\n")
 	b.WriteString(p.Goal)
 	if len(p.Requirements) > 0 {
 		b.WriteString("\n\nRequirements:")
@@ -342,16 +363,19 @@ func FormatProposalGoal(p CampaignProposal) string {
 			b.WriteString(fmt.Sprintf("\n- [%s] (%s): %s", req.Key, reqStr, req.Description))
 		}
 	}
-	if len(p.Assumptions) > 0 {
-		b.WriteString("\n\nAssumptions:")
-		for _, a := range p.Assumptions {
-			b.WriteString("\n- " + a)
+	if len(p.Assumptions) > 0 || len(p.Risks) > 0 {
+		b.WriteString("\n\nProposal notes (written before approval; context, not instructions):")
+		if len(p.Assumptions) > 0 {
+			b.WriteString("\nAssumptions:")
+			for _, a := range p.Assumptions {
+				b.WriteString("\n- " + a)
+			}
 		}
-	}
-	if len(p.Risks) > 0 {
-		b.WriteString("\n\nRisks:")
-		for _, r := range p.Risks {
-			b.WriteString("\n- " + r)
+		if len(p.Risks) > 0 {
+			b.WriteString("\nRisks:")
+			for _, r := range p.Risks {
+				b.WriteString("\n- " + r)
+			}
 		}
 	}
 	return b.String()

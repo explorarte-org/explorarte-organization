@@ -5,6 +5,7 @@ package ceochat_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"sort"
 	"strings"
@@ -185,5 +186,31 @@ func TestRealStackExecutionModeColumnContract(t *testing.T) {
 	}
 	if mode, _ := o.promotionMode(t, result.PromotionID); mode != "analysis_only" {
 		t.Fatalf("mode = %q after rejected updates", mode)
+	}
+}
+
+// The root a promotion creates carries the host's statement of approved state,
+// built from the durable approval, in its durable instructions.
+func TestRealStackPromotedRootCarriesTheHostsApprovedState(t *testing.T) {
+	o := newOwnerPromotionFixture(t, feasibleAboveFloor)
+	defer o.cleanup()
+	ctx := context.Background()
+	result, err := o.promoter(t).Promote(ctx, o.approval.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var instructions string
+	if err := o.store.Pool().QueryRow(ctx, `SELECT instructions FROM tasks WHERE id=$1`, result.ExecutiveRootTaskID).Scan(&instructions); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		executive.HostCampaignStateBegin, "Campaign state: APPROVED_FOR_EXECUTION", fmt.Sprintf("owner approval %d", o.approval.ID), executive.HostCampaignStateEnd,
+	} {
+		if !strings.Contains(instructions, want) {
+			t.Errorf("root instructions lack %q", want)
+		}
+	}
+	if !strings.HasPrefix(instructions, executive.HostCampaignStateBegin) {
+		t.Fatal("the host's statement does not open the goal")
 	}
 }

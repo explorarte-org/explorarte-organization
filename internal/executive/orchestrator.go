@@ -1611,7 +1611,7 @@ func (o *Orchestrator) repositoryGrounding(ctx context.Context, root, task TaskR
 	// egress rule the host itself appends, and they crowded out the symbols
 	// the goal actually named. Telling a worker the rules must not change
 	// what it is allowed to see.
-	return pinned, strings.TrimSpace(root.Instructions + "\n" + withoutHostGuidance(task.Instructions)), nil
+	return pinned, strings.TrimSpace(withoutHostCampaignState(root.Instructions) + "\n" + withoutHostGuidance(task.Instructions)), nil
 }
 
 // withoutHostGuidance strips text the host appended from a worker's
