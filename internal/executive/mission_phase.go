@@ -314,6 +314,11 @@ func (o *Orchestrator) driveImplementationMission(ctx context.Context, root Task
 			"mission_task_id": mission.TaskID, "base_sha": derived.Policy.BaseSHA,
 			"allowed_paths": derived.Policy.AllowedPaths, "scope": string(missionScope(root)),
 			"implementation_plan_task_id": planTask.ID,
+			// The raw patches are the planner's own output, kept by this invocation; the
+			// mission carries the canonical ones. Both are named by digest, with the
+			// hunk-body digest that is equal on both sides.
+			"implementation_plan_invocation_id": planResult.InvocationID,
+			"patch_provenance":                  derived.Patches,
 			// What it cost to think an applicable patch, measured next to what it
 			// will cost to execute one (the mission task's own attempts).
 			"implementation_plan_attempts": planTask.AttemptCount,
