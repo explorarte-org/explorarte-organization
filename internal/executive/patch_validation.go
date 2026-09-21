@@ -32,6 +32,18 @@ import (
 // The validation is host-owned and deterministic: structure and paths from the
 // diff text (missionplan.CheckPatchStructure), then `git apply --check` against an
 // isolated copy of the tree at the design-freeze commit (PatchWorkbench).
+//
+// What is judged is the CANONICAL patch. The mechanics of a diff -- the line counts in
+// a hunk header, the a/ b/ path prefixes -- are not decisions, and a model that
+// produced the right change with the wrong arithmetic (root 1062) is not asked to
+// redo it: missionplan.NormalizePatch fixes exactly those and nothing else, and
+// missionplan.Derive puts the same canonical bytes in the mission. The check below
+// is plain `git apply --check`, so a wrong normalization is still caught by the same
+// verifier the code-runner is.
+//
+//	planner raw patch -> NormalizePatch -> CheckPatchStructure -> git apply --check
+//	                          |                                         |
+//	                     (ambiguous: refuse)               mission carries these bytes
 
 // PatchWorkbench is the host's window onto the FROZEN repository during the
 // implementation-plan phase. The Executive never shells out; this port is what lets
@@ -78,6 +90,10 @@ type PatchValidationError struct {
 	Findings []string
 	// Checks names the rules that failed, for evidence and metrics.
 	Checks []string
+	// Patches records how each judged patch was canonicalized (digests of the raw and
+	// the canonical text and the rewrites applied). It is evidence, not feedback: the
+	// planner is not shown it.
+	Patches []missionplan.PatchProvenance
 }
 
 func (e *PatchValidationError) Error() string {
@@ -110,7 +126,14 @@ func (o *Orchestrator) validateImplementationPlanPatches(ctx context.Context, ba
 			break
 		}
 		label := fmt.Sprintf("change[%d] path=%s", index, change.Path)
-		if problem := missionplan.CheckPatchStructure(missionplan.Change{Path: change.Path, Intent: change.Intent, Patch: change.Patch}); problem != nil {
+		canonical, problem := missionplan.NormalizePatch(change.Path, change.Patch)
+		if problem != nil {
+			failure.Findings = append(failure.Findings, truncate(fmt.Sprintf("%s check=%s: %s", label, problem.Check, problem.Detail), maxPatchFindingBytes))
+			failure.Checks = append(failure.Checks, problem.Check)
+			continue
+		}
+		failure.Patches = append(failure.Patches, canonical.Provenance)
+		if problem = missionplan.CheckPatchStructure(missionplan.Change{Path: change.Path, Intent: change.Intent, Patch: canonical.Patch}); problem != nil {
 			failure.Findings = append(failure.Findings, truncate(fmt.Sprintf("%s check=%s: %s", label, problem.Check, problem.Detail), maxPatchFindingBytes))
 			failure.Checks = append(failure.Checks, problem.Check)
 			continue
@@ -118,12 +141,18 @@ func (o *Orchestrator) validateImplementationPlanPatches(ctx context.Context, ba
 		if o.patchWorkbench == nil {
 			continue
 		}
-		verdict, err := o.patchWorkbench.CheckPatch(ctx, baseSHA, change.Patch)
+		verdict, err := o.patchWorkbench.CheckPatch(ctx, baseSHA, canonical.Patch)
 		if err != nil {
 			return fmt.Errorf("%w: git apply --check could not run against %s: %v", ErrEvidenceSensorUnavailable, baseSHA, err)
 		}
 		if !verdict.Applies {
-			failure.Findings = append(failure.Findings, truncate(fmt.Sprintf("%s check=git_apply_check: %s", label, verdict.Detail), maxPatchFindingBytes))
+			detail := verdict.Detail
+			if rewrites := canonical.Provenance.Normalizations; len(rewrites) > 0 {
+				// git judged the canonical text; the host rewrites headers in place and never adds
+				// or removes a line, so its line numbers are the planner's own.
+				detail += " (checked after the host canonicalized " + strings.Join(rewrites, ", ") + "; line numbers are unchanged)"
+			}
+			failure.Findings = append(failure.Findings, truncate(fmt.Sprintf("%s check=git_apply_check: %s", label, detail), maxPatchFindingBytes))
 			failure.Checks = append(failure.Checks, "git_apply_check")
 		}
 	}
@@ -159,6 +188,7 @@ func (o *Orchestrator) validateImplementationPlanForMission(ctx context.Context,
 			Metadata: map[string]any{
 				"plan_task_id": planTask.ID, "invocation_id": result.InvocationID, "base_sha": baseSHA,
 				"checks": rejected.Checks, "detail": truncate(strings.Join(rejected.Findings, " | "), 500),
+				"patch_provenance": rejected.Patches,
 			},
 			Satisfies: false,
 		})

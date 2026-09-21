@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/Mireuz13/explorarte-organization/internal/coderunner"
+	"github.com/Mireuz13/explorarte-organization/internal/missionplan"
 )
 
 // Production root 1007 (2026-09-21) was the first governed run to pass the design
@@ -436,5 +437,175 @@ func TestTheValidatedPatchIsTheMissionsPatch(t *testing.T) {
 	}
 	if applied != patch || workbench.checks[0] != applied {
 		t.Fatalf("the mission applies %q but %q was checked", applied, workbench.checks)
+	}
+}
+
+// Root 1062 (2026-09-21): the planner wrote the right change with the wrong hunk
+// counts and without the a/ b/ prefixes, three times, and the run blocked. The
+// arithmetic and the prefix convention are the host's to settle, not a reason to ask
+// the model again.
+const (
+	miscountedPatchHunks = "@@ -6,9 +6,9 @@\n \t}{\n \t\t{\"no digits\"},\n+\t\t{\"digits adjacent to letters\"},\n"
+	canonicalPatchHunks  = "@@ -6,2 +6,3 @@\n \t}{\n \t\t{\"no digits\"},\n+\t\t{\"digits adjacent to letters\"},\n"
+)
+
+func unprefixedMiscountedPatch(path string) string {
+	return "--- " + path + "\n+++ " + path + "\n" + miscountedPatchHunks
+}
+
+func canonicalPatch(path string) string {
+	return "--- a/" + path + "\n+++ b/" + path + "\n" + canonicalPatchHunks
+}
+
+func missionEvidenceOf(t *testing.T, fixture *missionFixture) EvidenceRecord {
+	t.Helper()
+	for _, record := range fixture.rootRecord(t).Evidence {
+		if strings.HasPrefix(record.Reference, "engineering-mission://") {
+			return record
+		}
+	}
+	t.Fatal("no engineering-mission evidence was recorded")
+	return EvidenceRecord{}
+}
+
+func TestAMiscountedUnprefixedPatchCreatesTheMissionWithTheCanonicalPatch(t *testing.T) {
+	workbench := &fakeWorkbench{files: map[string]string{identifiersTestPath: identifiersSource}}
+	raw := unprefixedMiscountedPatch(identifiersTestPath)
+	fixture := planFixture(t, planBodyWithPatch(identifiersTestPath, raw), workbench)
+
+	driveThroughRejections(t, fixture)
+
+	if fixture.provisioner.count() != 1 {
+		t.Fatalf("missions provisioned = %d, want 1: the planner's arithmetic must not cost a regeneration", fixture.provisioner.count())
+	}
+	if planTask := planTaskOf(t, fixture); planTask.AttemptCount != 1 || implementationPlanRuns(fixture) != 1 {
+		t.Fatalf("plan attempts = %d, runs = %d; want a single attempt", planTask.AttemptCount, implementationPlanRuns(fixture))
+	}
+	want := canonicalPatch(identifiersTestPath)
+	// git was asked about the canonical text, once, and the mission carries those bytes.
+	if workbench.checkCount() != 1 || workbench.checks[0] != want {
+		t.Fatalf("git was asked about %q, want %q", workbench.checks, want)
+	}
+	command, ok := fixture.provisioner.last()
+	if !ok {
+		t.Fatal("no mission")
+	}
+	parsed, err := coderunner.ParsePlan(command.PlanJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var applied string
+	for _, operation := range parsed.Operations {
+		if operation.Type == coderunner.ApplyPatch {
+			applied = operation.Patch
+		}
+	}
+	if applied != want {
+		t.Fatalf("the mission applies %q, want the validated canonical patch %q", applied, want)
+	}
+
+	// Provenance: both representations are accounted for, and the body digest shows
+	// the host changed only header metadata.
+	evidence := missionEvidenceOf(t, fixture)
+	provenance, _ := evidence.Metadata["patch_provenance"].([]missionplan.PatchProvenance)
+	if len(provenance) != 1 {
+		t.Fatalf("mission evidence = %+v", evidence.Metadata)
+	}
+	got := provenance[0]
+	if got.Path != identifiersTestPath || got.RawSHA256 == got.NormalizedSHA256 || got.BodySHA256 == "" {
+		t.Fatalf("provenance = %+v", got)
+	}
+	if want := []string{missionplan.NormalizationPathPrefix, missionplan.NormalizationHunkRecount}; !equalStrings(got.Normalizations, want) {
+		t.Fatalf("normalizations = %v, want %v", got.Normalizations, want)
+	}
+	if id, _ := evidence.Metadata["implementation_plan_invocation_id"].(int64); id == 0 {
+		t.Fatalf("the raw patch is not traceable to its invocation: %+v", evidence.Metadata)
+	}
+	if got := patchFailuresOnRoot(t, fixture, planTaskOf(t, fixture).ID); got != 0 {
+		t.Fatalf("recorded %d patch validation failures", got)
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// A patch that is already canonical is not rewritten and says so.
+func TestACanonicalPatchCarriesNoNormalizations(t *testing.T) {
+	workbench := &fakeWorkbench{files: map[string]string{identifiersTestPath: identifiersSource}}
+	fixture := planFixture(t, planBodyWithPatch(identifiersTestPath, canonicalPatch(identifiersTestPath)), workbench)
+	driveThroughRejections(t, fixture)
+	provenance, _ := missionEvidenceOf(t, fixture).Metadata["patch_provenance"].([]missionplan.PatchProvenance)
+	if len(provenance) != 1 || len(provenance[0].Normalizations) != 0 || provenance[0].RawSHA256 != provenance[0].NormalizedSHA256 {
+		t.Fatalf("provenance = %+v", provenance)
+	}
+}
+
+// Normalization is not a way through the checks that follow it: what the host cannot
+// canonicalize without choosing between readings goes back to the planner, and git is
+// never asked.
+func TestAnAmbiguousPatchIsRefusedBeforeGit(t *testing.T) {
+	workbench := &fakeWorkbench{files: map[string]string{identifiersTestPath: identifiersSource}}
+	ambiguous := "--- " + identifiersTestPath + "\n+++ " + identifiersTestPath + "\n@@ -6,9 +6,9 @@\n \t}{\n+\t\t{\"x\"},\n\n"
+	fixture := planFixture(t, planBodyWithPatch(identifiersTestPath, ambiguous), workbench)
+
+	run := driveThroughRejections(t, fixture)
+
+	if run.State != StateBlocked || run.ReasonCode != ReasonImplementationPlanPatchInvalid || fixture.provisioner.count() != 0 {
+		t.Fatalf("run = %+v, missions = %d", run, fixture.provisioner.count())
+	}
+	if workbench.checkCount() != 0 {
+		t.Fatalf("git was asked %d time(s) about a patch the host could not canonicalize", workbench.checkCount())
+	}
+	if got := patchFailuresOnRoot(t, fixture, planTaskOf(t, fixture).ID); got != 3 {
+		t.Fatalf("recorded %d failures, want one per attempt", got)
+	}
+}
+
+// The final newline is not header metadata; the planner is told, precisely.
+func TestAPatchWithoutItsFinalNewlineIsRefusedNotCompleted(t *testing.T) {
+	workbench := &fakeWorkbench{}
+	patch := strings.TrimSuffix(unprefixedMiscountedPatch(identifiersTestPath), "\n")
+	orchestrator := &Orchestrator{patchWorkbench: workbench}
+	err := orchestrator.validateImplementationPlanPatches(context.Background(), targetSHA,
+		ImplementationPlan{Changes: []PlannedChange{{Path: identifiersTestPath, Intent: "i", Patch: patch}}})
+	var rejected *PatchValidationError
+	if !errors.As(err, &rejected) || !strings.Contains(err.Error(), "must end with a newline") {
+		t.Fatalf("err = %v", err)
+	}
+	if workbench.checkCount() != 0 {
+		t.Fatal("git was asked about a patch the host does not complete")
+	}
+}
+
+// When git refuses the canonical patch, the planner is told which rewrites the host
+// made (so it does not chase its own header arithmetic) and the failure evidence keeps
+// the provenance.
+func TestARejectionAfterNormalizationSaysWhatTheHostRewrote(t *testing.T) {
+	workbench := &fakeWorkbench{verdict: func(int, string) (PatchCheckResult, error) {
+		return PatchCheckResult{Applies: false, Detail: "error: patch failed: " + identifiersTestPath + ":6"}, nil
+	}}
+	orchestrator := &Orchestrator{patchWorkbench: workbench}
+	err := orchestrator.validateImplementationPlanPatches(context.Background(), targetSHA,
+		ImplementationPlan{Changes: []PlannedChange{{Path: identifiersTestPath, Intent: "i", Patch: unprefixedMiscountedPatch(identifiersTestPath)}}})
+	var rejected *PatchValidationError
+	if !errors.As(err, &rejected) {
+		t.Fatalf("err = %v", err)
+	}
+	for _, want := range []string{"check=git_apply_check", "checked after the host canonicalized path_prefix_canonicalization, hunk_recount", "line numbers are unchanged"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("feedback lacks %q:\n%s", want, err.Error())
+		}
+	}
+	if len(rejected.Patches) != 1 || !equalStrings(rejected.Patches[0].Normalizations, []string{missionplan.NormalizationPathPrefix, missionplan.NormalizationHunkRecount}) {
+		t.Fatalf("provenance = %+v", rejected.Patches)
 	}
 }

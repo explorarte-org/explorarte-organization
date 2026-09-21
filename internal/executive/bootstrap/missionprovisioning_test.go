@@ -13,6 +13,7 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/config"
 	"github.com/Mireuz13/explorarte-organization/internal/engineeringmission"
 	"github.com/Mireuz13/explorarte-organization/internal/executive"
+	"github.com/Mireuz13/explorarte-organization/internal/missionplan"
 	"github.com/Mireuz13/explorarte-organization/internal/staging"
 	"github.com/Mireuz13/explorarte-organization/internal/staging/gitexec"
 	"github.com/Mireuz13/explorarte-organization/internal/tasks"
@@ -359,6 +360,104 @@ func TestPatchWorkbenchJudgesTheFrozenCommitWithRealGit(t *testing.T) {
 	}
 	// The adapter satisfies the Executive's port.
 	var _ executive.PatchWorkbench = workbench
+}
+
+// Root 1062's planner patches, over a real repository and the real production check:
+// plain `git apply --check`, no --recount, no -p0, no tolerance of any kind. The frozen
+// file reproduces the lines around the hunk the planner wrote; what the host adds is
+// only the canonicalization, and git remains the verifier that can still say no.
+func TestCanonicalPatchesPassPlainGitAndGarbageStaysGarbage(t *testing.T) {
+	dir, repository, backend, _, _ := realRepository(t)
+	const path = "internal/identifiers/identifiers_test.go"
+	var content strings.Builder
+	content.WriteString("package identifiers\n\nimport \"testing\"\n\nfunc TestExtractDigitRunsCoreCases(t *testing.T) {\n\tcases := []struct {\n\t\tname string\n\t}{\n")
+	for line := 9; line < 19; line++ {
+		content.WriteString("\t\t{\"case " + string(rune('a'+line-9)) + "\"},\n")
+	}
+	content.WriteString("\t\t{\"leading zeros are preserved literally, not numerically normalized\", \"ticket 007 vs ticket 7\", []string{\"007\", \"7\"}},\n" +
+		"\t\t{\"empty input\", \"\", []string{}},\n\t}\n\tfor _, tc := range cases {\n\t\tt.Run(tc.name, func(t *testing.T) {\n\t\t})\n\t}\n}\n")
+	git(t, dir, "checkout", "--detach", "HEAD")
+	if err := writeFile(dir, path, content.String()); err != nil {
+		t.Fatal(err)
+	}
+	git(t, dir, "add", ".")
+	git(t, dir, "commit", "-m", "identifiers test")
+	frozen := git(t, dir, "rev-parse", "HEAD")
+	workbench := patchWorkbench{git: backend, repository: repository}
+	ctx := context.Background()
+
+	// The two planner patches of root 1062 that reached host validation with a complete
+	// last line (attempts 2 and 3 are identical), exactly as the model wrote them.
+	raw := "--- " + path + "\n+++ " + path + "\n@@ -19,6 +19,7 @@\n" +
+		" \t\t{\"leading zeros are preserved literally, not numerically normalized\", \"ticket 007 vs ticket 7\", []string{\"007\", \"7\"}},\n" +
+		" \t\t{\"empty input\", \"\", []string{}},\n" +
+		"+\t\t{\"digits adjacent to letters\", \"abc123def45\", []string{\"123\", \"45\"}},\n" +
+		" \t}\n \tfor _, tc := range cases {\n"
+
+	verdict := func(patch string) executive.PatchCheckResult {
+		t.Helper()
+		result, err := workbench.CheckPatch(ctx, frozen, patch)
+		if err != nil {
+			t.Fatalf("CheckPatch: %v", err)
+		}
+		return result
+	}
+	canonical := func(patch string) string {
+		t.Helper()
+		normalized, problem := missionplan.NormalizePatch(path, patch)
+		if problem != nil {
+			t.Fatalf("NormalizePatch: %v", problem)
+		}
+		return normalized.Patch
+	}
+
+	// As the model wrote it, the patch does not apply: this is the run's failure.
+	if got := verdict(raw); got.Applies {
+		t.Fatalf("the raw planner patch applied; the fixture no longer reproduces root 1062: %+v", got)
+	}
+	// Made canonical, it passes the production check without any tolerance flag.
+	if got := verdict(canonical(raw)); !got.Applies {
+		t.Fatalf("the canonical patch was refused by plain git: %+v", got)
+	}
+	// Each anomaly alone is also settled, and both are needed: the wrong counts under a
+	// correct prefix, and the wrong prefix under correct counts, still fail as written.
+	prefixedOnly := strings.Replace(strings.Replace(raw, "--- "+path, "--- a/"+path, 1), "+++ "+path, "+++ b/"+path, 1)
+	countedOnly := strings.Replace(raw, "@@ -19,6 +19,7 @@", "@@ -19,4 +19,5 @@", 1)
+	for name, partial := range map[string]string{"prefixes only": prefixedOnly, "counts only": countedOnly} {
+		if verdict(partial).Applies {
+			t.Errorf("%s: git accepted a patch with the other anomaly left in; the verifier is more tolerant than assumed", name)
+		}
+		if got := verdict(canonical(partial)); !got.Applies {
+			t.Errorf("%s: canonical form refused: %+v", name, got)
+		}
+	}
+	// Two hunks, both miscounted, one far below the first.
+	twoHunks := raw + "@@ -24,1 +25,1 @@\n \t\t})\n+\t\t// reviewed\n \t}\n }\n"
+	if got := verdict(canonical(twoHunks)); !got.Applies {
+		t.Errorf("a two-hunk canonical patch was refused: %+v", got)
+	}
+	// A creation and a deletion keep /dev/null and pass.
+	created := "--- /dev/null\n+++ internal/identifiers/new.go\n@@ -0,0 +1,9 @@\n+package identifiers\n+\n"
+	if got, problem := missionplan.NormalizePatch("internal/identifiers/new.go", created); problem != nil || !verdict(got.Patch).Applies {
+		t.Errorf("a canonical creation was refused: %v %+v", problem, got.Patch)
+	}
+
+	// Normalization does not make a wrong patch right: content, place and existence are
+	// still git's to judge, on the untouched body.
+	for name, wrong := range map[string]string{
+		"context that is not in the file":        "--- " + path + "\n+++ " + path + "\n@@ -19,9 +19,9 @@\n \t\t{\"a line that is not there\"},\n+\t\t{\"x\"},\n \tfor _, tc := range cases {\n",
+		"a removed line that does not exist":     "--- " + path + "\n+++ " + path + "\n@@ -19,9 +19,9 @@\n \t\t{\"empty input\", \"\", []string{}},\n-\t\t{\"never existed\"},\n+\t\t{\"x\"},\n \t}\n",
+		"a hunk anchored at the top of the file": strings.Replace(raw, "@@ -19,6 +19,7 @@", "@@ -1,6 +1,7 @@", 1),
+		"a placeholder header":                   strings.Replace(raw, "@@ -19,6 +19,7 @@", "@@ -X,X +X,X @@", 1),
+	} {
+		normalized, problem := missionplan.NormalizePatch(path, wrong)
+		if problem != nil {
+			continue // refused by the host itself: not accepted either
+		}
+		if verdict(normalized.Patch).Applies {
+			t.Errorf("%s: became applicable through normalization:\n%s", name, normalized.Patch)
+		}
+	}
 }
 
 func writeFile(dir, relative, content string) error {
