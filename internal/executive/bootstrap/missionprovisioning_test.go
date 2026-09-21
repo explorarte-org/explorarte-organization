@@ -3,6 +3,7 @@ package bootstrap
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -318,4 +319,52 @@ func TestWiringProducesTheOrchestratorOption(t *testing.T) {
 	if _, err = filepath.Abs(repository.Path); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// The production adapter, over a real repository and the real staging backend: the
+// verdict the Executive receives is git's own on the commit it names, and it is the
+// commit's content -- not the checkout's -- that the planner is shown.
+func TestPatchWorkbenchJudgesTheFrozenCommitWithRealGit(t *testing.T) {
+	dir, repository, backend, _, _ := realRepository(t)
+	const path = "internal/identifiers/table.go"
+	content := "package identifiers\n\nvar table = [][]string{\n\t{\"no digits\", \"no numbers here\"},\n\t{\"empty input\", \"\"},\n}\n"
+	git(t, dir, "checkout", "--detach", "HEAD")
+	if err := writeFile(dir, path, content); err != nil {
+		t.Fatal(err)
+	}
+	git(t, dir, "add", ".")
+	git(t, dir, "commit", "-m", "table")
+	frozen := git(t, dir, "rev-parse", "HEAD")
+	// The checkout moves on after the freeze; the frozen commit does not.
+	if err := writeFile(dir, path, "package identifiers\n"); err != nil {
+		t.Fatal(err)
+	}
+	workbench := patchWorkbench{git: backend, repository: repository}
+	ctx := context.Background()
+
+	shown, err := workbench.ReadFile(ctx, frozen, path, 1<<20)
+	if err != nil || string(shown) != content {
+		t.Fatalf("ReadFile = %q, %v; want the frozen content, not the checkout's", shown, err)
+	}
+	applicable := "diff --git a/" + path + " b/" + path + "\n--- a/" + path + "\n+++ b/" + path + "\n" +
+		"@@ -4,3 +4,4 @@\n \t{\"no digits\", \"no numbers here\"},\n \t{\"empty input\", \"\"},\n+\t{\"digits adjacent to letters\", \"abc123def45\"},\n }\n"
+	if verdict, err := workbench.CheckPatch(ctx, frozen, applicable); err != nil || !verdict.Applies {
+		t.Fatalf("a patch that applies to the frozen commit was refused: %+v, %v", verdict, err)
+	}
+	// Root 1007's patch, as the production adapter reports it to the Executive.
+	placeholder := "diff --git a/" + path + " b/" + path + "\n--- a/" + path + "\n+++ b/" + path + "\n@@ -X,X +X,X @@\n \t{\n+\tname: \"x\",\n \t},\n"
+	verdict, err := workbench.CheckPatch(ctx, frozen, placeholder)
+	if err != nil || verdict.Applies || !strings.Contains(verdict.Detail, "corrupt patch") {
+		t.Fatalf("the placeholder patch = %+v, %v; want git's 'corrupt patch' verdict", verdict, err)
+	}
+	// The adapter satisfies the Executive's port.
+	var _ executive.PatchWorkbench = workbench
+}
+
+func writeFile(dir, relative, content string) error {
+	full := filepath.Join(dir, relative)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(full, []byte(content), 0o644)
 }

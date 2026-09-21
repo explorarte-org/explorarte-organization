@@ -109,6 +109,33 @@ func (p missionProvisioner) ProvisionMission(ctx context.Context, command execut
 	return executive.MissionRecord{TaskID: task.ID}, nil
 }
 
+// PatchGit is the slice of the staging Git backend patch validation needs: two
+// read-only questions about one exact commit, answered without touching any
+// checkout (gitexec.Backend.CheckPatch and ReadFile).
+type PatchGit interface {
+	CheckPatch(ctx context.Context, repository staging.RepositoryConfig, commit, patch string) (staging.PatchCheck, error)
+	ReadFile(ctx context.Context, repository staging.RepositoryConfig, commit, path string, limit int64) ([]byte, error)
+}
+
+// patchWorkbench adapts the staging backend to the Executive's PatchWorkbench port
+// for the one repository missions are provisioned against.
+type patchWorkbench struct {
+	git        PatchGit
+	repository staging.RepositoryConfig
+}
+
+func (w patchWorkbench) CheckPatch(ctx context.Context, baseSHA, patch string) (executive.PatchCheckResult, error) {
+	verdict, err := w.git.CheckPatch(ctx, w.repository, baseSHA, patch)
+	if err != nil {
+		return executive.PatchCheckResult{}, err
+	}
+	return executive.PatchCheckResult{Applies: verdict.Applies, Detail: verdict.Detail}, nil
+}
+
+func (w patchWorkbench) ReadFile(ctx context.Context, baseSHA, path string, limit int64) ([]byte, error) {
+	return w.git.ReadFile(ctx, w.repository, baseSHA, path, limit)
+}
+
 // missionProvisioningOptions returns the orchestrator option when this
 // deployment is configured to provision missions, and none when it is not.
 //
@@ -140,7 +167,13 @@ func missionProvisioningOptions(cfg config.Config, store *platformpostgres.Store
 		missions:       engineeringmission.Service{Tasks: taskService, Promotion: stagingRuntime.Service},
 		organizationID: cfg.Tasks.OrganizationID,
 	}
-	return []executive.OrchestratorOption{executive.WithMissionProvisioning(resolver, provisioner)}, nil
+	// The same repository and the same backend the mission will later run against:
+	// a patch is judged on exactly the tree the CodeRunner will apply it to.
+	workbench := patchWorkbench{git: stagingRuntime.Git, repository: resolver.repository}
+	return []executive.OrchestratorOption{
+		executive.WithMissionProvisioning(resolver, provisioner),
+		executive.WithPatchWorkbench(workbench),
+	}, nil
 }
 
 // newProgramTargetResolver resolves the repository through the catalog and
