@@ -50,7 +50,12 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 	// 78 (create_campaign_owner_approvals) is CEO_CONVERSATIONAL_CAMPAIGN_REVISION_AND_OWNER_APPROVAL_V1 owner approvals.
 	// 79 (create_campaign_promotions) is CEO_CONVERSATIONAL_CAMPAIGN_PROMOTION_TO_EXECUTIVE_V1 campaign promotions.
 	// 80 (add_campaign_promotion_execution_mode) is CAMPAIGN_GOVERNED_EXECUTION_MODE_V1's durable provenance of the execution mode.
-	const wantCount = 80
+	// 81 (permit_normalization_failure_content_attachment) lets FailAfterResponse's own
+	// column (62) actually be written: the 000011 trigger rejected every UPDATE, unconditionally,
+	// so the diagnostic content 62 exists to capture had never once been recorded. Production
+	// root 1147 (2026-09-22) hit exactly this: the transaction rolled back and the invocation
+	// was stuck at response_received forever.
+	const wantCount = 81
 	if len(loaded) != wantCount {
 		t.Fatalf("migration count=%d want %d", len(loaded), wantCount)
 	}
@@ -146,6 +151,7 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		79: "create_campaign_promotions",
 		// CAMPAIGN_GOVERNED_EXECUTION_MODE_V1:
 		80: "add_campaign_promotion_execution_mode",
+		81: "permit_normalization_failure_content_attachment",
 	}
 	byVersion := make(map[int64]string, len(loaded))
 	for _, migration := range loaded {
