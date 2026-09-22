@@ -500,11 +500,21 @@ func TestReviseOpensTheNextRoundAndNeverReopensTheLast(t *testing.T) {
 	}
 }
 
-// What the adjudicator demanded is what the next round is planned against.
-// Planning it from the original goal would produce the same design again and
-// spend the reviewer's budget re-deciding something already decided.
-func TestTheRequiredChangesReachTheNextRound(t *testing.T) {
+// A revise must carry BOTH kinds of context into the next department plan:
+// the adjudicator's new correction and the complete original department
+// request. The production failure this pins had the concrete regression input
+// in round 1, then round 2 saw only generic feedback and could not possibly
+// reproduce the required values.
+func TestTheRequiredChangesAndOriginalRequestReachTheNextRound(t *testing.T) {
 	fixture := newFreezeFixture(t, "revise", true)
+	fixture.harness.bodies[PurposeCEOPlan] = `{"schema_version":"executive-plan/v1","objective":"Implement digit-run extraction",` +
+		`"department_requests":[{"unit_id":"ingenieria_ia","objective":"Implement ExtractDigitRuns","deliverable":"Add the exact test case digits adjacent to letters with input abc123def45 and expected runs 123 and 45.","priority":1,"constraints":["Preserve the concrete input abc123def45 and expected runs 123 and 45 exactly."]}],` +
+		`"global_constraints":[],"success_criteria":["regression covered"],"owner_decisions_required":[]}`
+	// Deliberately generic: this models the real adjudicator feedback that
+	// described the shape of the defect without repeating the missing values.
+	fixture.harness.adjudicationRequiredChanges = []string{
+		"Regression test cases must include concrete inputs, expected outputs, and the behavior under test.",
+	}
 	fixture.drive(t)
 	all, err := fixture.tasks.ListByCorrelation(context.Background(), fixture.rootRecord(t).CorrelationID)
 	if err != nil {
@@ -514,11 +524,64 @@ func TestTheRequiredChangesReachTheNextRound(t *testing.T) {
 	if !ok {
 		t.Fatal("round 2 has no planning task")
 	}
-	if !strings.Contains(plan.Instructions, "Prove the seal protocol under concurrency.") {
-		t.Fatalf("the required change never reached the planner: %q", plan.Instructions)
+	for _, want := range []string{
+		"Regression test cases must include concrete inputs",
+		"DURABLE ORIGINAL DEPARTMENT REQUEST",
+		"abc123def45",
+		"expected runs 123 and 45",
+	} {
+		if !strings.Contains(plan.Instructions, want) {
+			t.Fatalf("round-2 planning context lost %q: %q", want, plan.Instructions)
+		}
 	}
-	if !strings.Contains(plan.Instructions, "REQUIRED CHANGES") {
-		t.Error("the planner must be told these are the required changes, not fresh objectives")
+}
+
+// The baseline is not a one-hop patch. A second revise must receive the same
+// concrete values again; otherwise context would degrade one round later and
+// the bug would merely move from R2 to R3.
+func TestOriginalDepartmentRequestDoesNotDegradeAcrossThreeDesignRounds(t *testing.T) {
+	fixture := newFreezeFixture(t, "revise", true)
+	fixture.orchestrator.limits.MaxDesignRounds = 3
+	fixture.harness.bodies[PurposeCEOPlan] = `{"schema_version":"executive-plan/v1","objective":"Implement digit-run extraction",` +
+		`"department_requests":[{"unit_id":"ingenieria_ia","objective":"Implement ExtractDigitRuns","deliverable":"Add the exact test case digits adjacent to letters with input abc123def45 and expected runs 123 and 45.","priority":1,"constraints":["Preserve the concrete input abc123def45 and expected runs 123 and 45 exactly."]}],` +
+		`"global_constraints":[],"success_criteria":["regression covered"],"owner_decisions_required":[]}`
+	fixture.harness.adjudicationVerdictByRound = map[int]string{1: "revise", 2: "revise", 3: "freeze"}
+	fixture.harness.adjudicationRequiredChangesByRound = map[int][]string{
+		1: {"State concrete regression cases rather than describing their shape."},
+		2: {"Keep the regression contract explicit in the revised design."},
+	}
+	fixture.drive(t)
+
+	all, err := fixture.tasks.ListByCorrelation(context.Background(), fixture.rootRecord(t).CorrelationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, round := range []int{2, 3} {
+		plan, ok := findTaskByKey(all, childKey(fixture.root, "leader-plan:ingenieria_ia:design-round:"+strconv.Itoa(round)))
+		if !ok {
+			t.Fatalf("design round %d has no planning task", round)
+		}
+		for _, want := range []string{"abc123def45", "expected runs 123 and 45"} {
+			if !strings.Contains(plan.Instructions, want) {
+				t.Fatalf("design round %d lost original concrete value %q: %q", round, want, plan.Instructions)
+			}
+		}
+	}
+}
+
+// The original request is authoritative input. If it cannot coexist with the
+// revision feedback inside the configured instruction budget, the host refuses
+// before a model call instead of silently replacing or truncating it.
+func TestDesignRoundPlanningFailsClosedRatherThanTruncatingOriginalRequest(t *testing.T) {
+	_, err := buildDesignRoundPlanInstructions(DepartmentRequest{
+		UnitID:      "ingenieria_ia",
+		Objective:   "Implement ExtractDigitRuns",
+		Deliverable: "Add input abc123def45 with expected runs 123 and 45.",
+		Constraints: []string{"Preserve every concrete regression value."},
+		Priority:    1,
+	}, []RequiredChange{{ID: "RC:1:1", Text: "Make the regression explicit."}}, 64)
+	if !errors.Is(err, ErrPlanTooLarge) {
+		t.Fatalf("small instruction budget error = %v, want %v", err, ErrPlanTooLarge)
 	}
 }
 
