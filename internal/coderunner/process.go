@@ -3,6 +3,7 @@ package coderunner
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -35,9 +36,15 @@ const killGrace = 5 * time.Second
 // process group and waits up to killGrace for it to be reaped before
 // returning ErrIndeterminateExecution. It never returns while the process
 // group might still be running, except in that explicit fail-closed case.
+//
+// The command runs with an EXPLICIT environment (subprocessEnv), never the
+// code-runner process's own os.Environ() passed through: the code-runner holds
+// real operational credentials for its own purposes, and a command this runs on
+// behalf of a mission must not inherit them. See env.go.
 func runSupervised(runCtx context.Context, dir string, stdin string, out *boundedOutput, name string, args ...string) (exitCode int, err error) {
 	c := exec.Command(name, args...)
 	c.Dir = dir
+	c.Env = subprocessEnv(os.Environ())
 	c.Stdout = out
 	c.Stderr = out
 	if stdin != "" {
