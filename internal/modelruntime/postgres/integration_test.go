@@ -905,6 +905,66 @@ func TestModelRuntimeGatewayPostgreSQL17(t *testing.T) {
 		}
 	})
 
+	t.Run("a normalization failure after a successful response still attaches its diagnostic content", func(t *testing.T) {
+		// Migration 000081's own regression test. FailAfterResponse (G3-004) tries to
+		// attach the raw content of a response that transported fine but failed the
+		// HOST's own JSON normalization -- CanonicalizeRawJSON rejects it, never the
+		// adapter. Before 000081 that UPDATE was rejected outright by the
+		// unconditional trigger migration 000011 put on this table: the whole
+		// transaction rolled back, the invocation was left stuck at
+		// response_received forever, and the very content 000062 exists to capture
+		// was never recorded. Production root 1147 (2026-09-22) hit exactly this.
+		created := createModelInvocation(t, ctx, invocations, validInvocationCommand(taskRef, snapshotRef, "ingenieria_ia/code-runner", "normalization-failure-content"))
+		provider := &successfulButUnparseableAdapter{}
+		unparseableDispatch, newErr := modelruntime.NewDispatchService(modelIntegrationOrganization, cfg, fakeCatalog, tasks, contexts, allowEvaluator{matrixHash: fakeCapabilityHash}, egressStore, modelegress.NewEvaluator(), store, principals, assignments, identityService, store, adapter.NewRegistry(provider), modelruntime.ClockFunc(time.Now))
+		if newErr != nil {
+			t.Fatal(newErr)
+		}
+		result, dispatchErr := unparseableDispatch.Dispatch(ctx, created.ID)
+		if !errors.Is(dispatchErr, modelruntime.ErrResponseRejected) {
+			t.Fatalf("dispatchErr = %v, want %v", dispatchErr, modelruntime.ErrResponseRejected)
+		}
+		if provider.calls != 1 {
+			t.Fatalf("adapter called %d time(s), want exactly 1 -- a normalization failure is not a transport failure and must not retry the provider", provider.calls)
+		}
+
+		// The invariant migration 000081 restores: a TERMINAL failed state, not
+		// stuck at response_received forever with its reservation never settled.
+		if result.Invocation.Status != modelruntime.InvocationFailed {
+			t.Fatalf("invocation status = %q, want %q: the invocation must not be left stuck at response_received", result.Invocation.Status, modelruntime.InvocationFailed)
+		}
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_provider_requests WHERE invocation_id=$1`, created.ID, 1)
+		assertModelCount(t, ctx, platform, `SELECT count(*) FROM model_provider_outcomes WHERE invocation_id=$1`, created.ID, 1)
+
+		var rawContent []byte
+		var httpStatus int
+		if err := platform.Pool().QueryRow(ctx, `
+			SELECT normalization_failure_raw_content, http_status
+			FROM model_provider_outcomes WHERE invocation_id=$1`, created.ID).
+			Scan(&rawContent, &httpStatus); err != nil {
+			t.Fatalf("the outcome did not come back: %v", err)
+		}
+		if string(rawContent) != "this is not json" {
+			t.Fatalf("normalization_failure_raw_content = %q, want the raw content the provider sent", rawContent)
+		}
+		if httpStatus != 200 {
+			t.Fatalf("http_status = %d, want 200: the transport succeeded, only normalization failed", httpStatus)
+		}
+
+		// What migration 000081 does NOT permit: a second write to the same field,
+		// a mutation of any other field, or a delete. Immutability holds for
+		// everything it always held for; only the one intended write is new.
+		if _, err := platform.Pool().Exec(ctx, `UPDATE model_provider_outcomes SET normalization_failure_raw_content=$2 WHERE invocation_id=$1`, created.ID, []byte("a second write")); err == nil {
+			t.Fatal("a second write to normalization_failure_raw_content was accepted; it must stay immutable once set")
+		}
+		if _, err := platform.Pool().Exec(ctx, `UPDATE model_provider_outcomes SET http_status=201 WHERE invocation_id=$1`, created.ID); err == nil {
+			t.Fatal("a mutation of an unrelated column was accepted; only normalization_failure_raw_content may ever be set")
+		}
+		if _, err := platform.Pool().Exec(ctx, `DELETE FROM model_provider_outcomes WHERE invocation_id=$1`, created.ID); err == nil {
+			t.Fatal("a delete was accepted; outcomes must stay immutable")
+		}
+	})
+
 	t.Run("authorization deny is durable and never renders or calls adapter", func(t *testing.T) {
 		created := createModelInvocation(t, ctx, invocations, validInvocationCommand(taskRef, snapshotRef, "ingenieria_ia/code-runner", "authorization-deny"))
 		provider := &countingAdapter{}
@@ -1737,6 +1797,34 @@ func (a *classifiedAdapter) Preflight(ctx context.Context, request modelruntime.
 func (a *classifiedAdapter) Dispatch(context.Context, modelruntime.CanonicalRequest) (modelruntime.RawResponse, error) {
 	a.calls++
 	return modelruntime.RawResponse{}, &modelruntime.AdapterError{Phase: a.phase, Outcome: a.outcome, Cause: errors.New("classified provider failure")}
+}
+
+// successfulButUnparseableAdapter simulates a provider that answered --
+// transport fine, HTTP 200, no adapter-level error -- with content that is
+// not valid JSON. It is the one shape classifiedAdapter cannot produce:
+// classifiedAdapter always returns an error (an adapter-level failure); this
+// returns success, so MarkResponseReceived persists a genuine
+// response_received outcome and only the HOST's own downstream
+// normalization (dispatch_service.go's Normalize call) rejects the content.
+// This is the shape migration 000081 exists for.
+type successfulButUnparseableAdapter struct{ calls int }
+
+func (a *successfulButUnparseableAdapter) ProviderID() string { return "test.fake" }
+func (a *successfulButUnparseableAdapter) Descriptor() modelruntime.AdapterDescriptor {
+	return modelruntime.AdapterDescriptor{
+		ProviderID: "test.fake", AdapterID: "unparseable-test", AdapterVersion: 1,
+		Transport: modelruntime.TransportFake, RequestSchemaVersion: "test.fake.request.v1",
+		ResponseSchemaVersion: "test.fake.response.v1",
+		EndpointFingerprint:   modelruntime.SHA256Bytes([]byte("test.fake:endpoint")),
+		CredentialRefHash:     modelruntime.SHA256Bytes([]byte("test.fake:credential")),
+	}
+}
+func (a *successfulButUnparseableAdapter) Preflight(ctx context.Context, request modelruntime.ProviderPreflightRequest) error {
+	return ctx.Err()
+}
+func (a *successfulButUnparseableAdapter) Dispatch(context.Context, modelruntime.CanonicalRequest) (modelruntime.RawResponse, error) {
+	a.calls++
+	return modelruntime.RawResponse{Content: []byte("this is not json"), ProviderRequestID: "unparseable-response"}, nil
 }
 
 func openModelStore(t *testing.T, ctx context.Context) *platformpostgres.Store {
