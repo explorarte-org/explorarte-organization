@@ -3079,14 +3079,20 @@ func boundedClosureSummary(plan ExecutivePlan, all []TaskRecord, rootID int64, m
 // openDesignRoundPlan creates the planning task for a design round that a
 // revise asked for.
 //
-// The leader is given what the adjudicator required, not a fresh copy of the
-// original goal: the round exists because specific changes were demanded, and
-// planning it without them would produce the same design again and spend the
-// reviewer's budget re-deciding something already decided.
+// A successor round needs TWO inputs at the same time:
+//   1. the adjudicator's required changes -- what must be different now; and
+//   2. the original validated DepartmentRequest -- what the department was
+//      asked to deliver in the first place.
 //
-// The previous round is untouched. Its plan, its work, its review and its
-// adjudication keep their keys and their content -- this is a successor, not
-// a revision of what happened.
+// The previous implementation carried only req.Objective into round N+1. That
+// dropped req.Deliverable and req.Constraints, so concrete values present in
+// round 1 could disappear after a revise even though nothing had superseded
+// them. Revision feedback augments the durable request; it never replaces it.
+//
+// The previous round itself remains untouched. Its plan, work, review and
+// adjudication keep their keys and content -- this is a successor, not a
+// mutation of history.
+//
 // departmentRoundClaimRules is the planner-facing statement of checkpoint
 // E3's claim semantics. It is hoisted into one constant because TWO audiences
 // must hear the SAME rule: the plan instructions below, and the provider
@@ -3096,6 +3102,40 @@ func boundedClosureSummary(plan ExecutivePlan, all []TaskRecord, rootID int64, m
 // an impossible contract that incentives exactly the duplicate claim the
 // host then rejects.
 const departmentRoundClaimRules = "CLAIM RULES (checkpoint): revision_ownership binds each id you will redo to exactly ONE of your own proposed tasks. Across ALL departments every id must end up bound exactly once -- the host refuses an id claimed by two departments or left unclaimed by all. Claim what is yours to redo; an id you do not claim belongs to another department. If you claim nothing, propose no tasks at all: your previous deliverable stands and is carried forward unchanged."
+
+func buildDesignRoundPlanInstructions(req DepartmentRequest, roster []RequiredChange, maxBytes int) (string, error) {
+	// Use the same department-facing field names as round 1. This payload is
+	// deliberately encoded as data, not reconstructed from prose, so quoted
+	// examples, identifiers and other concrete values survive byte-for-byte.
+	originalRequest, err := json.Marshal(struct {
+		DepartmentID string   `json:"department_id"`
+		Objective    string   `json:"objective"`
+		Deliverable  string   `json:"deliverable"`
+		Constraints  []string `json:"constraints"`
+		Priority     int      `json:"priority"`
+	}{
+		DepartmentID: req.UnitID,
+		Objective:    req.Objective,
+		Deliverable:  req.Deliverable,
+		Constraints:  append([]string(nil), req.Constraints...),
+		Priority:     req.Priority,
+	})
+	if err != nil {
+		return "", fmt.Errorf("encode original department request: %w", err)
+	}
+
+	instructions := "The previous design was sent back for revision. Claim the work your department will redo and return DepartmentPlan JSON.\n\nREQUIRED CHANGES OF THIS ROUND (host-owned ids):\n" +
+		renderOwnershipRoster(roster) + "\n\n" + departmentRoundClaimRules +
+		"\n\nDURABLE ORIGINAL DEPARTMENT REQUEST (from the validated ExecutivePlan; required changes augment this request and must not erase or generalize its concrete values):\n" +
+		string(originalRequest)
+
+	// Never solve a context-loss bug by truncating the authoritative baseline.
+	// If both the baseline and the revision cannot fit, stop before a model call.
+	if maxBytes <= 0 || len(instructions) > maxBytes {
+		return "", fmt.Errorf("%w: design-round planning context cannot preserve the original department request within the instruction budget", ErrPlanTooLarge)
+	}
+	return instructions, nil
+}
 
 func (o *Orchestrator) openDesignRoundPlan(ctx context.Context, root TaskRecord, all []TaskRecord, req DepartmentRequest, leader RoleRef, round int, roster []RequiredChange) (TaskRecord, error) {
 	if round > o.limits.MaxDesignRounds {
@@ -3108,6 +3148,10 @@ func (o *Orchestrator) openDesignRoundPlan(ctx context.Context, root TaskRecord,
 		// would burn a round and a department plan on no instruction at all.
 		return TaskRecord{}, fmt.Errorf("%w: design round %d has no required changes to plan against", ErrContractRejected, round)
 	}
+	instructions, err := buildDesignRoundPlanInstructions(req, roster, o.limits.MaxInstructionsBytes)
+	if err != nil {
+		return TaskRecord{}, err
+	}
 	task, _, err := o.coordinatedChildren().Materialize(ctx, childRequest{
 		Root: root, Sender: root, Depth: DepthDepartmentPlan,
 		Command: CreateTaskCommand{
@@ -3115,12 +3159,11 @@ func (o *Orchestrator) openDesignRoundPlan(ctx context.Context, root TaskRecord,
 			TaskClass:      TaskClassCoordinationDeptPlan,
 			IdempotencyKey: childKey(root.ID, "leader-plan:"+req.UnitID+designRoundSuffix(round)),
 			Title:          "Department planning: " + req.UnitID + " (design round " + strconv.Itoa(round) + ")",
-			Instructions: "The previous design was sent back for revision. Claim the work your department will redo and return DepartmentPlan JSON.\n\nREQUIRED CHANGES OF THIS ROUND (host-owned ids):\n" +
-				renderOwnershipRoster(roster) + "\n\n" + departmentRoundClaimRules +
-				"\n\nORIGINAL OBJECTIVE:\n" + req.Objective,
+			Instructions:   instructions,
 			AcceptanceCriteria: []string{
 				"Return strict DepartmentPlan JSON",
 				"Every proposed task addresses a required change this plan claims",
+				"Preserve the durable original department request while applying this round's required changes",
 				"Do not restate work the previous round already delivered",
 			},
 			Priority: req.Priority, MaxAttempts: o.maxAttempts(3),
