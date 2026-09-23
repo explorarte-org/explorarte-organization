@@ -87,7 +87,20 @@ func ValidateIndependence(reviewer, adjudicator Participant, authoringUnits []st
 // provider. That is the opposite of filtering a larger structure and trusting
 // the filter to be complete.
 type Bundle struct {
-	OwnerRequirements       []string `json:"owner_requirements"`
+	OwnerRequirements []string `json:"owner_requirements"`
+	// CampaignTarget is the owner's own statement of what the campaign asks to be
+	// designed, as the host holds it (the approved-state block the host writes into a
+	// goal is not part of it). It is what the candidate is judged AGAINST.
+	//
+	// OwnerRequirements alone cannot carry that: they are the design phase's acceptance
+	// criteria, which state properties a design must have ("proposes exactly one new
+	// table case") and not the values the owner named ("digits adjacent to letters",
+	// "abc123def45"). A reviewer that has never seen the values cannot tell a design
+	// that omits them from one that states them, and an adjudicator that has never seen
+	// them invents its own -- root 1203 (2026-09-23), whose adjudicator demanded
+	// "a12b345c12d" of a campaign that had asked for something else. It is a request,
+	// never evidence about the repository.
+	CampaignTarget          string   `json:"campaign_target,omitempty"`
 	CandidateDesign         string   `json:"candidate_design"`
 	ArchitectureConstraints []string `json:"architecture_constraints"`
 	AuthorityConstraints    []string `json:"authority_constraints"`
