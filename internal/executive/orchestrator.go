@@ -2223,7 +2223,12 @@ func executionContractForWithProofs(purpose ExecutionPurpose, required []Evidenc
 		// admissible evidence at all -- see nonRepositoryEvidenceGuidance
 		// for why: R17-v4's task 11992 died at VerifyEvidenceProvenance
 		// having never been told organizational context is not evidence.
-		contract = candidateDeclassificationGuidance() + "\n\n" + workerResultV2StructureGuidance() + "\n\n" + nonRepositoryEvidenceGuidance()
+		//
+		// And the deliverable's own content: the summary is the design the reviewers
+		// read -- see designDeliverableGuidance for why a summary that says a case was
+		// designed, without stating it, cannot be judged. Root 1203's workers did that
+		// twice, with the case spelled out in their own instructions.
+		contract = candidateDeclassificationGuidance() + "\n\n" + workerResultV2StructureGuidance() + "\n\n" + nonRepositoryEvidenceGuidance() + "\n\n" + designDeliverableGuidance()
 	case PurposeDesignAdjudication:
 		// The adjudicator AUTHORS evidence_requirements for the next round,
 		// and the host refuses any proposal the frozen pin cannot supply.

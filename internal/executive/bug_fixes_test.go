@@ -904,9 +904,9 @@ func TestBugA_NoContractForPurposesWithoutTaskClass(t *testing.T) {
 			t.Errorf("executionContractFor(%q) = %q, want empty", purpose, got)
 		}
 	}
-	wantWorkerContract := candidateDeclassificationGuidance() + "\n\n" + workerResultV2StructureGuidance() + "\n\n" + nonRepositoryEvidenceGuidance()
+	wantWorkerContract := candidateDeclassificationGuidance() + "\n\n" + workerResultV2StructureGuidance() + "\n\n" + nonRepositoryEvidenceGuidance() + "\n\n" + designDeliverableGuidance()
 	if got := executionContractFor(PurposeDepartmentWorker, nil); got != wantWorkerContract {
-		t.Errorf("executionContractFor(department-worker) must return exactly candidateDeclassificationGuidance plus workerResultV2StructureGuidance plus nonRepositoryEvidenceGuidance")
+		t.Errorf("executionContractFor(department-worker) must return exactly candidateDeclassificationGuidance plus workerResultV2StructureGuidance plus nonRepositoryEvidenceGuidance plus designDeliverableGuidance")
 	}
 	if got := executionContractFor(PurposeDepartmentPlan, nil); got != taskClassGuidance {
 		t.Errorf("executionContractFor(department-plan) must return taskClassGuidance")

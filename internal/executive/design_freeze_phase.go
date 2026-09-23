@@ -114,7 +114,8 @@ type designUnitRef struct {
 // them was half a change. This is the other half.
 const designAdjudicationPreamble = "Adjudicate the adversarial review of this candidate design and return DesignAdjudication JSON. " +
 	"The design identity is bound by the host and must not be restated; return only the fields the schema declares. " +
-	"Only verdict=freeze settles the design.\n\n"
+	"Only verdict=freeze settles the design. " +
+	"The bundle's campaign_target is what the owner asked for: a required change must ask for what the target specifies, and must not substitute names, values or examples of your own for anything it already states.\n\n"
 
 // DesignBaseSHAReference is where a campaign's pinned commit lives.
 const DesignBaseSHAReference = "design-base-sha://"
@@ -1011,10 +1012,15 @@ func (o *Orchestrator) reviewBundle(ctx context.Context, root TaskRecord, design
 		return nil, fmt.Errorf("%w: root %d has no design-phase acceptance criterion to judge the design against",
 			ErrContractRejected, root.ID)
 	}
+	target, err := campaignTargetFor(root, organizational, o.limits.MaxInstructionsBytes)
+	if err != nil {
+		return nil, err
+	}
 	bundle := designreview.Bundle{
 		OwnerRequirements: designRequirements,
+		CampaignTarget:    target,
 		CandidateDesign:   body,
-		ArchitectureConstraints: []string{
+		ArchitectureConstraints: append(campaignTargetConstraints(target), []string{
 			// The old text claimed the reviewer saw only identities and
 			// digests. It was true, and it made the review impossible:
 			// a reviewer that cannot read the design can only report
@@ -1034,7 +1040,7 @@ func (o *Orchestrator) reviewBundle(ctx context.Context, root TaskRecord, design
 			"Repository references are opaque authorized identifiers, not source bodies. Authorization proves that the designer received the cited range, not that every semantic claim about it is true.",
 			"The host may supply overlapping fixed-width windows containing multiple declarations or both a declaration and a call site. Equal window lengths, overlap or reuse alone do not prove a contradiction or citation defect; identify a concrete contradiction in the supplied candidate instead.",
 			"Do not invent replacement line ranges or demand that a designer cite a range absent from its authorized supply. If a semantic source check needs code you cannot see, record it as an unverified assumption requiring authorized verification, not as a proven source defect or a proven success.",
-		},
+		}...),
 		AuthorityConstraints: []string{
 			"The reviewer publishes findings; it does not approve, adjudicate or freeze.",
 			"Only empresa/ceo may adjudicate, and only verdict=freeze settles the design.",
@@ -1045,6 +1051,49 @@ func (o *Orchestrator) reviewBundle(ctx context.Context, root TaskRecord, design
 		Design:              design,
 	}
 	return bundle.Encode()
+}
+
+// campaignTargetFor is the owner's statement of what the campaign asks for, as it
+// enters a review bundle: the goal the root was submitted with, without the block the
+// host writes into it to say the campaign is approved (that is the host's, and says
+// nothing about what to design).
+//
+// It crosses to a reviewer whose context admits public and sanitized data, so it is
+// held to the rule the candidate itself is held to: a target that reproduces
+// organizational source is refused, not trimmed. An owner's request quoting the code it
+// is about would otherwise be the one door the declassifier does not guard. Refusing is
+// the same fail-closed answer a candidate gets, with the same reason; the credential
+// scan Encode runs covers it like every other field.
+//
+// A target over the byte budget is cut and says so; it is never silently dropped, since
+// the values the reviewer needs are usually at the start.
+func campaignTargetFor(root TaskRecord, organizational []OrganizationalSource, budget int) (string, error) {
+	target := strings.TrimSpace(withoutHostCampaignState(root.Instructions))
+	if target == "" {
+		return "", nil
+	}
+	if budget > 0 && len(target) > budget {
+		target = strings.TrimSpace(target[:budget]) + fmt.Sprintf("\n[campaign target cut at %d bytes]", budget)
+	}
+	if err := DeclassifyCandidate(target, organizational); err != nil {
+		return "", fmt.Errorf("the campaign target cannot go to the reviewer: %w", err)
+	}
+	return target, nil
+}
+
+// campaignTargetConstraints tells the reviewer, and through the same bundle the
+// adjudicator, how to use campaign_target. They are host-owned instructions carried in
+// the bundle like every other constraint; with no target there is nothing to say.
+func campaignTargetConstraints(target string) []string {
+	if target == "" {
+		return nil
+	}
+	return []string{
+		"campaign_target is the owner's own statement of what this campaign asks to be designed. Judge the candidate design against it: every name, input, expected output or criterion the target specifies must appear in the candidate stated as the target states it.",
+		"A candidate that says a case or artifact was designed without stating it has not designed what was asked. Report the omission, and name what the target specifies that the candidate does not state.",
+		"Do not invent names, values or examples of your own for anything the target already specifies. When the candidate omits or contradicts a specified value, the correction you ask for is the target's value, not a substitute.",
+		"campaign_target is a request, not evidence about the repository: it does not ground any claim about existing code, and a candidate claim about code still needs its own authorized repository citation.",
+	}
 }
 
 func joinLines(values []string) string {
