@@ -781,8 +781,50 @@ func (o *Orchestrator) createCEOPlanTask(ctx context.Context, root TaskRecord) (
 	return task, reused, nil
 }
 
+// departmentRequestBrief is the department's bounded request exactly as the CEO
+// plan wrote it: objective, deliverable, priority and -- the part that carries
+// the campaign's literal values -- its constraints.
+//
+// It is ONE renderer on purpose. The first design round handed the planner this
+// whole request, but a later round rebuilt its instructions from req.Objective
+// alone, and the objective is the CEO's paraphrase: the exact test case a
+// campaign named ("digits adjacent to letters", "abc123def45") lives only in the
+// constraints. Root 1159 (2026-09-22) lost it at round 2, so the department was
+// told what SHAPE a deliverable needed ("concrete inputs and expected outputs")
+// and never what those values were; the adjudicator asked for them twice, the
+// budget of rounds ran out, and no further round could have differed. Every
+// stage that plans or proposes work for a department reads the request through
+// here, so a round cannot narrow it again by rendering a subset.
+//
+// A request over the instruction budget used to be replaced whole by a stub that says
+// only "summary exceeded configured byte budget", so the planner of exactly the largest
+// campaigns received none of it. It now keeps what fits and says how many constraints
+// it left out.
+func (o *Orchestrator) departmentRequestBrief(req DepartmentRequest) string {
+	budget := o.limits.MaxInstructionsBytes
+	brief := map[string]any{"department_id": req.UnitID, "objective": req.Objective, "deliverable": req.Deliverable, "constraints": req.Constraints, "priority": req.Priority}
+	if encoded, _ := json.Marshal(brief); len(encoded) <= budget {
+		return string(encoded)
+	}
+	kept := make([]string, 0, len(req.Constraints))
+	omitted := 0
+	for _, constraint := range req.Constraints {
+		brief["constraints"] = append(kept, constraint)
+		brief["constraints_omitted"] = omitted
+		if encoded, _ := json.Marshal(brief); len(encoded) > budget {
+			omitted++
+			continue
+		}
+		kept = append(kept, constraint)
+	}
+	brief["constraints"] = kept
+	brief["constraints_omitted"] = omitted
+	// The objective and deliverable alone may not fit either; only then is a stub all that is left.
+	return boundedJSON(brief, budget)
+}
+
 func (o *Orchestrator) createLeaderPlanTask(ctx context.Context, root TaskRecord, req DepartmentRequest, leader RoleRef) (TaskRecord, bool, error) {
-	instructions := boundedJSON(map[string]any{"department_id": req.UnitID, "objective": req.Objective, "deliverable": req.Deliverable, "constraints": req.Constraints, "priority": req.Priority}, o.limits.MaxInstructionsBytes)
+	instructions := o.departmentRequestBrief(req)
 	task, reused, err := o.coordinatedChildren().Materialize(ctx, childRequest{Root: root, Sender: root, Depth: DepthDepartmentPlan, Command: CreateTaskCommand{
 		RequestedByRoleID: CEORoleID, AssignedRoleID: leader.ID,
 		TaskClass:      TaskClassCoordinationDeptPlan,
@@ -988,7 +1030,7 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 				continue
 			}
 		}
-		if e = o.materializeWorkerTasks(ctx, root, planTask, req.UnitID, deptPlan.Tasks, 0, round); e != nil {
+		if e = o.materializeWorkerTasks(ctx, root, planTask, req.UnitID, o.carryDepartmentConstraints(req, deptPlan.Tasks), 0, round); e != nil {
 			return Run{}, false, e
 		}
 
@@ -1195,7 +1237,7 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 						return Run{}, false, ownErr
 					}
 				}
-				if e = o.materializeWorkerTasks(ctx, root, reviewTask, req.UnitID, review.ProposedFollowupTasks, ordinal, round); e != nil {
+				if e = o.materializeWorkerTasks(ctx, root, reviewTask, req.UnitID, o.carryDepartmentConstraints(req, review.ProposedFollowupTasks), ordinal, round); e != nil {
 					return Run{}, false, e
 				}
 				all, e = o.tasks.ListByCorrelation(ctx, root.CorrelationID)
@@ -1393,7 +1435,10 @@ func (o *Orchestrator) createReviewTask(ctx context.Context, root TaskRecord, re
 	if replan > 0 {
 		suffix += ":replan:" + strconv.Itoa(replan)
 	}
-	instructions := "Review only this bounded durable task/evidence summary and return DepartmentReview JSON: " + summary + "\n\n" + taskClassGuidance
+	instructions := "Review only this bounded durable task/evidence summary and return DepartmentReview JSON: " + summary + "\n\n" + taskClassGuidance +
+		// The reviewer proposes the follow-up tasks of a replan, so it needs what the
+		// planner had: the request's constraints still bind any task it proposes.
+		"\n\nDEPARTMENT REQUEST (its constraints bind every follow-up task you propose; carry their literal values into it):\n" + o.departmentRequestBrief(req)
 	// Checkpoint E: hand the reviewer the OWNERSHIP TABLE -- id, the one
 	// task that owned resolving it, and the demanded text -- so it can
 	// compare deliverables AGAINST EACH OTHER per required change. A roster
@@ -1554,6 +1599,59 @@ func (o *Orchestrator) repositoryGroundedCampaign(root TaskRecord) bool {
 		return false
 	}
 	return o.programTarget != nil
+}
+
+// carriedConstraintsHeader introduces the constraints the HOST attaches to every
+// worker task of a department. They are the department request's own words.
+const carriedConstraintsHeader = "DEPARTMENT CONSTRAINTS (attached by the host from the department's request, not written by the planner; they bind this task):"
+
+// carryDepartmentConstraints attaches the request's constraints to every task the
+// department's planner or reviewer proposed, so the values a campaign names reach
+// the worker whether or not the model that wrote the task copied them.
+//
+// Round 1's planner did copy them into its acceptance criteria; round 2's rewrote
+// its criteria from the adjudicator's complaint about form (root 1159), and a worker
+// cannot state a value nobody gave it. Relying on a model to remember is what failed;
+// the host already holds the words, so it attaches them. Constraints only: the
+// planner's own text is kept as written, after which the block follows. What does not
+// fit the instruction budget is named as omitted, never dropped silently.
+func (o *Orchestrator) carryDepartmentConstraints(req DepartmentRequest, proposals []WorkerTaskProposal) []WorkerTaskProposal {
+	block := constraintsBlock(req.Constraints, o.limits.MaxInstructionsBytes)
+	if block == "" || len(proposals) == 0 {
+		return proposals
+	}
+	carried := make([]WorkerTaskProposal, len(proposals))
+	copy(carried, proposals)
+	for i := range carried {
+		carried[i].Instructions = strings.TrimRight(carried[i].Instructions, " \t\r\n") + "\n\n" + block
+	}
+	return carried
+}
+
+func constraintsBlock(constraints []string, budget int) string {
+	var lines []string
+	used := len(carriedConstraintsHeader)
+	omitted := 0
+	for _, constraint := range constraints {
+		constraint = strings.TrimSpace(constraint)
+		if constraint == "" {
+			continue
+		}
+		line := "- " + constraint
+		if used+1+len(line) > budget {
+			omitted++
+			continue
+		}
+		lines = append(lines, line)
+		used += 1 + len(line)
+	}
+	if len(lines) == 0 && omitted == 0 {
+		return ""
+	}
+	if omitted > 0 {
+		lines = append(lines, fmt.Sprintf("(%d further constraint(s) not shown: over the instruction budget)", omitted))
+	}
+	return carriedConstraintsHeader + "\n" + strings.Join(lines, "\n")
 }
 
 // workerInstructions is the plan's instruction plus whatever the host owes the
@@ -3117,7 +3215,10 @@ func (o *Orchestrator) openDesignRoundPlan(ctx context.Context, root TaskRecord,
 			Title:          "Department planning: " + req.UnitID + " (design round " + strconv.Itoa(round) + ")",
 			Instructions: "The previous design was sent back for revision. Claim the work your department will redo and return DepartmentPlan JSON.\n\nREQUIRED CHANGES OF THIS ROUND (host-owned ids):\n" +
 				renderOwnershipRoster(roster) + "\n\n" + departmentRoundClaimRules +
-				"\n\nORIGINAL OBJECTIVE:\n" + req.Objective,
+				"\n\nORIGINAL REQUEST (the department's full bounded request, unchanged since the first round). " +
+				"Its constraints bind every task you propose now exactly as they bound the first plan: carry the literal values " +
+				"they state into the instructions and acceptance criteria of each task, instead of restating only what the " +
+				"required changes ask for:\n" + o.departmentRequestBrief(req),
 			AcceptanceCriteria: []string{
 				"Return strict DepartmentPlan JSON",
 				"Every proposed task addresses a required change this plan claims",
