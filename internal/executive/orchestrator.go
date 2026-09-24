@@ -2056,6 +2056,9 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 			if parseErr != nil {
 				return parseErr
 			}
+			if err := verifyDesignNamesTheCriteriaIdentifiers(root, task, parsed.Summary); err != nil {
+				return err
+			}
 			if len(required) > 0 {
 				if err := ValidateEvidenceStructure(parsed, required, available); err != nil {
 					return err
