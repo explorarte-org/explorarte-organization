@@ -427,8 +427,24 @@ const adjudicationExistingWorldRule = `Evidence requirements bind the next round
 // repository selection text.
 func adjudicationEvidenceContractGuidance() string {
 	return "Existing-world rule for evidence_requirements in this adjudication:\n\n" + adjudicationExistingWorldRule +
-		"\n\n" + adjudicationIssuedUniverseRule
+		"\n\n" + adjudicationIssuedUniverseRule +
+		"\n\n" + adjudicationSupplyableEvidenceRule
 }
+
+// adjudicationSupplyableEvidenceRule states what the host's evidence corpus can deliver, to
+// the one role that can demand evidence of a worker.
+//
+// The corpus excludes test files by policy (repositoryevidence.EligibleEvidencePath: their
+// commentary is prose a designer echoes, and a candidate that echoed it lost a campaign).
+// Once reviewers hold campaign_target, an adjudicator judging a campaign ABOUT a test file
+// reasonably asks for evidence of the test's symbol -- and the host cannot supply it. Root 1223
+// asked three times, with a rejection that named a capacity ceiling nobody had reached. The
+// facts the owner already stated in the target are established by the target; the rule tells
+// the adjudicator to require them of the design, not to demand a citation to prove them.
+const adjudicationSupplyableEvidenceRule = `Supplyable-evidence rule for evidence_requirements:
+An evidence_requirements entry asks the host to deliver repository evidence to the next round. The host delivers only what its eligible evidence corpus contains, and test files (*_test.go) are outside that corpus by policy: do not demand evidence of a symbol whose definition or use is visible only in a test file.
+Facts the owner already stated in campaign_target -- the name of a test, the values of a case, the file it belongs in -- are established by the target. Require the design to state or respect them in required_changes; do not turn them into an evidence_requirements entry and do not ask for a citation to prove them.
+If the host rejects an evidence_requirements entry as EVIDENCE_UNSUPPLYABLE, do not repeat it unchanged: drop it, or replace it with an eligible code symbol.`
 
 // adjudicationIssuedUniverseRule states the other half of the citation contract
 // to the one role that can demand evidence of a worker. The host issues every

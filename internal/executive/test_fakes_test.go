@@ -453,6 +453,16 @@ func (m *memoryTasks) RecordAttemptFailed(_ context.Context, lease LeaseRecord, 
 	task.ReasonCode = code
 	task.Reason = reason
 	task.ActiveLease = nil
+	// The real store keeps the failure on the attempt itself (task_attempts.result_summary and
+	// failure_code), and the task context the next attempt reads renders attempts[] from there.
+	// Task.Reason does not survive the next claim; the attempt's record does.
+	for i := range task.Attempts {
+		if task.Attempts[i].ID == lease.AttemptID {
+			task.Attempts[i].State = "failed"
+			task.Attempts[i].ResultSummary = reason
+			task.Attempts[i].FailureCode = code
+		}
+	}
 	m.tasks[task.ID] = task
 	return task, nil
 }
