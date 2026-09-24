@@ -218,9 +218,10 @@ func TestRealFinanceHarness_ProviderVisibleInputStatesTheHostFloor(t *testing.T)
 // The derivation itself, against the REAL canonical registry, the REAL routing
 // tables and the REAL rate card (the migration-seeded prices production also
 // uses) -- no injected requirement. Its facts must be the ones production
-// measured: the CEO plan on openai_responses/gpt-5.6-luna, departments on
-// gemini/gemini-3.5-flash-lite, and a floor never below the $0.1602536
-// reservation the first dispatch actually needed.
+// measured: the CEO plan on the model docs/canonical/model-routing.yaml routes
+// executive.ceo to (openai_responses/gpt-6-luna since 2026-09-23, at its own rate card
+// from migration 000082), departments on gemini/gemini-3.5-flash-lite, and a floor never
+// below the $0.1602536 reservation the first dispatch actually needed.
 func TestExecutionRequirementsDeriveFromTheRealCanonicalFacts(t *testing.T) {
 	f := newChatFixture(t)
 	defer f.cleanup()
@@ -242,8 +243,13 @@ func TestExecutionRequirementsDeriveFromTheRealCanonicalFacts(t *testing.T) {
 		byStage[stage.Stage] = stage
 	}
 	ceo := byStage["ceo_plan"]
-	if ceo.ProviderID != "openai_responses" || ceo.ProviderModelID != "gpt-5.6-luna" || ceo.MaxOutputTokens != 128000 {
-		t.Errorf("CEO-plan basis = %+v, want openai_responses/gpt-5.6-luna with Executive's 128000 output ceiling", ceo)
+	if ceo.ProviderID != "openai_responses" || ceo.ProviderModelID != "gpt-6-luna" || ceo.MaxOutputTokens != 128000 {
+		t.Errorf("CEO-plan basis = %+v, want openai_responses/gpt-6-luna with Executive's 128000 output ceiling", ceo)
+	}
+	// The floor's worst stage is a department stage, not the CEO's, so moving the CEO to a cheaper
+	// model must not move the floor: the reservation the CEO needs is well under it.
+	if ceo.ReservationUSD >= got.MinUSD {
+		t.Errorf("the CEO's own reservation %s is not below the derived floor %s: the floor stopped being the worst stage", ceo.ReservationUSD, got.MinUSD)
 	}
 	for _, name := range []string{"department_plan", "department_worker", "department_review"} {
 		if stage := byStage[name]; stage.ProviderID != "gemini" {
