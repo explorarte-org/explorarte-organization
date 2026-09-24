@@ -158,7 +158,7 @@ func TestR15MirrorUnfitSetIsRefusedBeforeRoundTwoExists(t *testing.T) {
 	if task.ReasonCode != "model_result_contract_rejected" {
 		t.Fatalf("adjudication closed as %q; the unfit set must be refused at admission", task.ReasonCode)
 	}
-	for _, want := range []string{"CAPACITY_CONFLICT", "driveDesignFreeze/application"} {
+	for _, want := range []string{"EVIDENCE_UNSUPPLYABLE", "driveDesignFreeze/application"} {
 		if !strings.Contains(task.Reason, want) {
 			t.Fatalf("rejection feedback missing %q, got: %q", want, task.Reason)
 		}
@@ -269,6 +269,11 @@ func Zeta() byte { return 0 }
 		if !strings.Contains(task.Reason, want) {
 			t.Fatalf("rejection missing %q, got: %q", want, task.Reason)
 		}
+	}
+	// Regression C: every slot fits alone, so this is capacity and must not be
+	// mislabelled as a slot the corpus cannot supply.
+	if strings.Contains(task.Reason, "EVIDENCE_UNSUPPLYABLE") {
+		t.Fatalf("a joint capacity shortfall was called unsupplyable: %q", task.Reason)
 	}
 	all, err := fixture.tasks.ListByCorrelation(context.Background(), fixture.rootRecord(t).CorrelationID)
 	if err != nil {

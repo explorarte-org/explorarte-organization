@@ -22,6 +22,19 @@ type CoveragePlan struct {
 	// either the subject is absent from the pin, or admitting the set as a
 	// whole would need more capacity than one snapshot has.
 	Undelivered []EvidenceSlot
+	// Unsupplyable is the part of Undelivered that no arrangement could deliver:
+	// each of these slots was tried ALONE, with the whole budget and nothing else
+	// competing for it, and the pinned world still could not deliver it.
+	//
+	// The two causes need different corrections, so they are told apart by measuring
+	// and never by guessing. A slot in Unsupplyable must be dropped or replaced --
+	// repeating it changes nothing. A slot in Undelivered but not in Unsupplyable
+	// fits on its own and is refused only because the set as a whole does not fit
+	// one snapshot; thinning the demand fixes that. Nothing here says WHY a slot
+	// cannot be supplied (the corpus excludes test files by policy, or the symbol is
+	// absent, or search missed it): Source.Search is discovery and may be
+	// approximate, so it is not evidence for a claim about where a symbol lives.
+	Unsupplyable []EvidenceSlot
 	// Fragments is every excerpt the dry-run actually gathered to deliver
 	// Covered -- the same real, host-read content GatherWithCoverage used to
 	// answer the admission question, not a second, separate read. A caller
@@ -63,7 +76,7 @@ func PlanSlots(ctx context.Context, repositoryID, baseSHA string, source Source,
 		subjects = append(subjects, subject)
 	}
 	if len(subjects) == 0 || len(slots) == 0 {
-		return CoveragePlan{Covered: []EvidenceSlot{}, Undelivered: []EvidenceSlot{}}, nil
+		return CoveragePlan{Covered: []EvidenceSlot{}, Undelivered: []EvidenceSlot{}, Unsupplyable: []EvidenceSlot{}}, nil
 	}
 	explorer, err := NewExplorer(repositoryID, baseSHA, source, limits)
 	if err != nil {
@@ -86,7 +99,7 @@ func PlanSlots(ctx context.Context, repositoryID, baseSHA string, source Source,
 	for _, slot := range uncovered {
 		delete(coveredSet, slot)
 	}
-	plan := CoveragePlan{Covered: []EvidenceSlot{}, Undelivered: []EvidenceSlot{}, Fragments: fragments}
+	plan := CoveragePlan{Covered: []EvidenceSlot{}, Undelivered: []EvidenceSlot{}, Unsupplyable: []EvidenceSlot{}, Fragments: fragments}
 	for _, slot := range slots {
 		if coveredSet[slot] {
 			plan.Covered = append(plan.Covered, slot)
@@ -94,13 +107,49 @@ func PlanSlots(ctx context.Context, repositoryID, baseSHA string, source Source,
 		}
 		plan.Undelivered = append(plan.Undelivered, slot)
 	}
-	sort.Slice(plan.Undelivered, func(first, second int) bool {
-		if plan.Undelivered[first].Subject != plan.Undelivered[second].Subject {
-			return plan.Undelivered[first].Subject < plan.Undelivered[second].Subject
+	bySlot := func(list []EvidenceSlot) {
+		sort.Slice(list, func(first, second int) bool {
+			if list[first].Subject != list[second].Subject {
+				return list[first].Subject < list[second].Subject
+			}
+			return list[first].Relation < list[second].Relation
+		})
+	}
+	bySlot(plan.Undelivered)
+	for _, slot := range plan.Undelivered {
+		alone := len(slots) == 1
+		if !alone {
+			deliverable, aloneErr := deliverableAlone(ctx, repositoryID, baseSHA, source, limits, window, slot)
+			if aloneErr != nil {
+				return CoveragePlan{}, aloneErr
+			}
+			alone = !deliverable
 		}
-		return plan.Undelivered[first].Relation < plan.Undelivered[second].Relation
-	})
+		if alone {
+			plan.Unsupplyable = append(plan.Unsupplyable, slot)
+		}
+	}
+	bySlot(plan.Unsupplyable)
 	return plan, nil
+}
+
+// deliverableAlone answers whether one slot, given the whole budget to itself, can be
+// delivered from the pinned world. It is the same dry-run as PlanSlots over a fresh
+// explorer, so "alone" means exactly what admission would have decided with no other
+// slot competing.
+func deliverableAlone(ctx context.Context, repositoryID, baseSHA string, source Source, limits Limits, window int, slot EvidenceSlot) (bool, error) {
+	subject := strings.TrimSpace(slot.Subject)
+	explorer, err := NewExplorer(repositoryID, baseSHA, source, limits)
+	if err != nil {
+		return false, err
+	}
+	_, uncovered, err := GatherWithCoverage(ctx, explorer, Selection{
+		Terms: []string{subject}, RequiredTerms: []string{subject}, Slots: []EvidenceSlot{slot}, Window: window,
+	})
+	if err != nil {
+		return false, err
+	}
+	return len(uncovered) == 0, nil
 }
 
 // ProbeSubjectSupply answers which of the demanded relations the PINNED world

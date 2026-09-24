@@ -120,7 +120,7 @@ func (o *Orchestrator) probeAdjudicationRequirements(ctx context.Context, root T
 			return planErr
 		}
 		if len(plan.Undelivered) > 0 {
-			return newCapacityConflict(baseSHA, limits, inForce, plan)
+			return newEvidenceConflict(baseSHA, limits, inForce, plan)
 		}
 		return nil
 	}
@@ -132,7 +132,7 @@ func (o *Orchestrator) probeAdjudicationRequirements(ctx context.Context, root T
 		return planErr
 	}
 	if len(currentPlan.Undelivered) > 0 {
-		return newCapacityConflict(baseSHA, limits, inForce, currentPlan)
+		return newEvidenceConflict(baseSHA, limits, inForce, currentPlan)
 	}
 	if failed := o.mintProofsForNewlyCovered(ctx, root.ID, baseSHA, currentPlan); failed > 0 {
 		// The two-checkpoint scheme assumes every inForce slot was minted,
@@ -151,7 +151,7 @@ func (o *Orchestrator) probeAdjudicationRequirements(ctx context.Context, root T
 			return jointErr
 		}
 		if len(jointPlan.Undelivered) > 0 {
-			return newCapacityConflict(baseSHA, limits, inForce, jointPlan)
+			return newEvidenceConflict(baseSHA, limits, inForce, jointPlan)
 		}
 		return nil
 	}
@@ -164,7 +164,7 @@ func (o *Orchestrator) probeAdjudicationRequirements(ctx context.Context, root T
 		return planErr
 	}
 	if len(novelPlan.Undelivered) > 0 {
-		return newCapacityConflict(baseSHA, limits, inForce, novelPlan)
+		return newEvidenceConflict(baseSHA, limits, inForce, novelPlan)
 	}
 	return nil
 }
@@ -263,6 +263,48 @@ type CapacityConflict struct {
 	// never available to this round's own request in the first place.
 	AlreadyInForce []EvidenceSlot
 	Undelivered    []repositoryevidence.EvidenceSlot
+}
+
+// newEvidenceConflict turns an admission plan that left slots undelivered into the
+// rejection the adjudicator's retry will read, choosing the ONE that names the cause it
+// can act on.
+//
+// A slot that cannot be delivered even alone is not a capacity problem: thinning the rest
+// of the demand cannot help it, and calling it CAPACITY_CONFLICT sent root 1223's
+// adjudicator round the same loop three times with a message that named a ceiling nobody
+// had reached (ranges 2/16, bytes 3068/98304). Those are reported first, as
+// EVIDENCE_UNSUPPLYABLE with the correction. Only when every undelivered slot fits on its
+// own is the set genuinely too large, and the CAPACITY_CONFLICT it always was.
+func newEvidenceConflict(baseSHA string, limits repositoryevidence.Limits, inForce []EvidenceRequirement, plan repositoryevidence.CoveragePlan) error {
+	if len(plan.Unsupplyable) > 0 {
+		return fmt.Errorf("%w: %s", ErrContractRejected, EvidenceUnsupplyable{BaseSHA: baseSHA, Slots: plan.Unsupplyable}.String())
+	}
+	return newCapacityConflict(baseSHA, limits, inForce, plan)
+}
+
+// EvidenceUnsupplyable is the rejection for evidence_requirements the eligible
+// repository-evidence corpus cannot deliver at all. It states what was measured -- no
+// eligible excerpt of the pinned repository could be delivered for the slot, even alone,
+// with the full budget -- and the policy that shapes the corpus, and nothing about why THIS
+// symbol is missing: the sensor that answered is discovery, which may be approximate, and
+// cannot prove where a symbol lives.
+type EvidenceUnsupplyable struct {
+	BaseSHA string
+	Slots   []repositoryevidence.EvidenceSlot
+}
+
+func (u EvidenceUnsupplyable) String() string {
+	names := make([]string, 0, len(u.Slots))
+	for _, slot := range u.Slots {
+		names = append(names, slot.Subject+"/"+slot.Relation)
+	}
+	return fmt.Sprintf(
+		"EVIDENCE_UNSUPPLYABLE at pin %s: [%s] cannot be supplied by the eligible repository-evidence corpus: "+
+			"no eligible excerpt of the pinned repository can be delivered for it, even on its own with the full budget. "+
+			"Test files (*_test.go) are excluded from that corpus by policy. "+
+			"Do not repeat this evidence requirement unchanged: use campaign_target for facts the owner stated about a test, "+
+			"or request an eligible code symbol.",
+		u.BaseSHA, strings.Join(names, ", "))
 }
 
 func newCapacityConflict(baseSHA string, limits repositoryevidence.Limits, inForce []EvidenceRequirement, plan repositoryevidence.CoveragePlan) error {

@@ -32,6 +32,11 @@ type scriptedHarness struct {
 	// adjudicator proposes alongside a revise. Empty means the body carries
 	// none, which is what every pre-existing test exercises.
 	adjudicationEvidence string
+	// adjudicationEvidenceAfterRejection, when set, replaces adjudicationEvidence on
+	// every attempt of a task whose durable attempts already carry an
+	// EVIDENCE_UNSUPPLYABLE rejection: the adjudicator that read the feedback and
+	// corrected itself. It reads the durable store, the way the real context does.
+	adjudicationEvidenceAfterRejection string
 	// adjudicationRequiredChanges overrides the revise body's
 	// required_changes when non-empty, so tests can pin how free-form change
 	// prescriptions interact with the evidence-requirements contract.
@@ -117,6 +122,21 @@ func (h *scriptedHarness) Execute(_ context.Context, command HarnessRunCommand) 
 	return HarnessRunOutcome{Status: HarnessRunSucceeded, FinalOutput: body, InvocationID: invocation.ID}, nil
 }
 
+// rejectedAsUnsupplyable reports whether the task's durable record already carries the
+// host's EVIDENCE_UNSUPPLYABLE feedback from an earlier attempt.
+func (h *scriptedHarness) rejectedAsUnsupplyable(taskID int64) bool {
+	task, err := h.tasks.GetTask(context.Background(), taskID)
+	if err != nil {
+		return false
+	}
+	for _, attempt := range task.Attempts {
+		if strings.Contains(attempt.ResultSummary, "EVIDENCE_UNSUPPLYABLE") {
+			return true
+		}
+	}
+	return false
+}
+
 // observeRoundTwo reports whether this command is a round-2 department worker
 // execution, which is exactly the moment an obligation adopted "too late"
 // would still be missing.
@@ -177,8 +197,12 @@ func (h *scriptedHarness) adjudicationBody(taskID int64) string {
 		}
 	}
 	evidence := ""
-	if h.adjudicationEvidence != "" && verdict == "revise" {
-		evidence = `"evidence_requirements":` + h.adjudicationEvidence + `,`
+	demanded := h.adjudicationEvidence
+	if h.adjudicationEvidenceAfterRejection != "" && h.rejectedAsUnsupplyable(taskID) {
+		demanded = h.adjudicationEvidenceAfterRejection
+	}
+	if demanded != "" && verdict == "revise" {
+		evidence = `"evidence_requirements":` + demanded + `,`
 	}
 	return `{"schema_version":"design-adjudication/v1","verdict":"` + verdict + `",` +
 		`"accepted_findings":["AR-001"],"rejected_findings":[],"required_changes":` + required + `,` +
