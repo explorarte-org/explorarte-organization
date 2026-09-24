@@ -55,7 +55,9 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 	// so the diagnostic content 62 exists to capture had never once been recorded. Production
 	// root 1147 (2026-09-22) hit exactly this: the transaction rolled back and the invocation
 	// was stuck at response_received forever.
-	const wantCount = 81
+	// 82 (seed_gemini_3_8_flash_pricing) prices the model department.leader and department.worker now
+	// route to; without a price row the cost gate fails closed and no department call could dispatch.
+	const wantCount = 82
 	if len(loaded) != wantCount {
 		t.Fatalf("migration count=%d want %d", len(loaded), wantCount)
 	}
@@ -152,6 +154,7 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		// CAMPAIGN_GOVERNED_EXECUTION_MODE_V1:
 		80: "add_campaign_promotion_execution_mode",
 		81: "permit_normalization_failure_content_attachment",
+		82: "seed_gemini_3_8_flash_pricing",
 	}
 	byVersion := make(map[int64]string, len(loaded))
 	for _, migration := range loaded {

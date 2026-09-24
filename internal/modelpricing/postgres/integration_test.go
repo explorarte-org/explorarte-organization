@@ -52,6 +52,11 @@ func openPricingStore(t *testing.T, ctx context.Context) *platformpostgres.Store
 	return store
 }
 
+// nanosIs reports whether an optional price is present and equal to want.
+func nanosIs(price *modelpricing.USDNanos, want int64) bool {
+	return price != nil && int64(*price) == want
+}
+
 func TestModelPricingSeedIsRealAndResolvable(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -108,6 +113,53 @@ func TestModelPricingSeedIsRealAndResolvable(t *testing.T) {
 	}
 	if ceoShort.ContextTierName != "default" || ceoShort.InputPriceNanosPerMillion != 200_000_000 {
 		t.Fatalf("openai_responses gpt-5.6-luna short tier=%+v", ceoShort)
+	}
+
+	// department.leader and department.worker now route to gemini/gemini-3.8-flash
+	// (docs/canonical/model-routing.yaml, migration 000082). Google publishes two prices for
+	// it: $0.75 input / $0.075 cached / $3.75 output per 1M tokens through 2026-12-31, and
+	// double from 2027-01-01. Both rows are seeded; Resolve reads the one in force at the
+	// requested time, so a reservation made after the changeover can never use the old rate.
+	// The row in force NOW depends on when this test runs: the promotional row's effective_at is
+	// the migration's NOW(), and the 2027 row takes over at promoEnds. Assert the rate that
+	// belongs to today's date, so the test does not become wrong on January 1st.
+	promoEnds := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	flashNow, err := service.Resolve(ctx, "gemini", "gemini-3.8-flash", 1_000, modelpricing.BillingOnline, now)
+	if err != nil {
+		t.Fatalf("gemini/gemini-3.8-flash must be resolvable: %v", err)
+	}
+	wantInput, wantCached, wantOutput := modelpricing.USDNanos(750_000_000), int64(75_000_000), modelpricing.USDNanos(3_750_000_000)
+	if !now.Before(promoEnds) {
+		wantInput, wantCached, wantOutput = 1_500_000_000, 150_000_000, 7_500_000_000
+	}
+	if flashNow.ContextTierName != "default" || flashNow.InputPriceNanosPerMillion != wantInput ||
+		!nanosIs(flashNow.CachedInputPriceNanosPerMillion, wantCached) || flashNow.CacheWritePriceNanosPerMillion != nil ||
+		flashNow.OutputPriceNanosPerMillion != wantOutput {
+		t.Fatalf("gemini-3.8-flash tier in force at %s = %+v", now.Format(time.RFC3339), flashNow)
+	}
+	// Whatever today is, a reservation priced for February 2027 uses the doubled rate.
+	flashLater, err := service.Resolve(ctx, "gemini", "gemini-3.8-flash", 1_000, modelpricing.BillingOnline, time.Date(2027, 2, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flashLater.InputPriceNanosPerMillion != 1_500_000_000 || !nanosIs(flashLater.CachedInputPriceNanosPerMillion, 150_000_000) ||
+		flashLater.OutputPriceNanosPerMillion != 7_500_000_000 {
+		t.Fatalf("gemini-3.8-flash 2027 tier=%+v", flashLater)
+	}
+	// The last second of the promotional period is still priced at the promotional rate (only
+	// checkable while that period lies ahead of the migration's own effective_at).
+	if eve := promoEnds.Add(-time.Second); now.Before(eve) {
+		flashEve, err := service.Resolve(ctx, "gemini", "gemini-3.8-flash", 1_000, modelpricing.BillingOnline, eve)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if flashEve.InputPriceNanosPerMillion != 750_000_000 || flashEve.OutputPriceNanosPerMillion != 3_750_000_000 {
+			t.Fatalf("gemini-3.8-flash before the changeover=%+v", flashEve)
+		}
+	}
+	// The previous department model keeps its own, unchanged rate card.
+	if still, err := service.Resolve(ctx, "gemini", "gemini-3.5-flash-lite", 1_000, modelpricing.BillingOnline, now); err != nil || still.InputPriceNanosPerMillion != 300_000_000 || still.OutputPriceNanosPerMillion != 2_500_000_000 {
+		t.Fatalf("gemini-3.5-flash-lite's price changed or vanished: %+v %v", still, err)
 	}
 
 	// R30 retired gemini-2.5-flash from model-routing.yaml (research.worker

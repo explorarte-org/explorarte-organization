@@ -471,7 +471,7 @@ func TestSkillForgeProductiveChainProof(t *testing.T) {
 		t.Fatalf("create need: %v", err)
 	}
 
-	// 9. Single real minimal execution (Authoring via Gemini Flash Lite)
+	// 9. Single real minimal execution (Authoring via the department.worker route, gemini-3.8-flash)
 	t.Log("[CHAIN STEP 1/4] Executing single real minimal authoring run via productive harness...")
 	run, err := forgeRuntime.Engine.Run(ctx, orgID, pNeed.ID)
 	if err != nil && !errors.Is(err, skillforge.ErrHumanApprovalNeeded) {
@@ -496,7 +496,7 @@ func TestSkillForgeProductiveChainProof(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query model_invocations: %v", err)
 	}
-	if providerID != "gemini" || modelID != "gemini-3.5-flash-lite" || invStatus != "succeeded" {
+	if providerID != "gemini" || modelID != "gemini-3.8-flash" || invStatus != "succeeded" {
 		t.Fatalf("unexpected model invocation row: provider=%s model=%s status=%s", providerID, modelID, invStatus)
 	}
 	t.Logf("✓ MODEL_INVOCATION_PERSISTENCE PASS (id=%d, provider=%s, model=%s, status=%s)",

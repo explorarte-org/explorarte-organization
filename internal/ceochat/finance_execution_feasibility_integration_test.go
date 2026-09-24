@@ -219,7 +219,7 @@ func TestRealFinanceHarness_ProviderVisibleInputStatesTheHostFloor(t *testing.T)
 // tables and the REAL rate card (the migration-seeded prices production also
 // uses) -- no injected requirement. Its facts must be the ones production
 // measured: the CEO plan on openai_responses/gpt-5.6-luna, departments on
-// gemini/gemini-3.5-flash-lite, and a floor never below the $0.1602536
+// gemini/gemini-3.8-flash, and a floor never below the $0.1602536
 // reservation the first dispatch actually needed.
 func TestExecutionRequirementsDeriveFromTheRealCanonicalFacts(t *testing.T) {
 	f := newChatFixture(t)

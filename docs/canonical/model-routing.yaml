@@ -22,19 +22,21 @@ policies:
     - alibaba_token_plan_via_claude_code/qwen3.6-flash retired by owner
   department.leader:
     provider: gemini
-    model: gemini-3.5-flash-lite
+    model: gemini-3.8-flash
     transport: http_adapter
-    source_of_decision: owner_conversation_r17v8_gemini_worker_migration
+    source_of_decision: owner_conversation_gemini_3_8_flash_department_models
     legacy_conflicts:
+    - gemini/gemini-3.5-flash-lite in prior routing revision (owner moved department.leader and department.worker to gemini-3.8-flash to test it in the next governed smoke; priced by migration 000082)
     - deepseek/deepseek-v4-pro in prior routing revision (retired after repeated HTTP 402 insufficient balance failures blocked autonomy-smoke-017 r17-v6 and r17-v7 department planning)
     - gpt-5.6-luna/openai_compatible in prior routing revision
     - qwen3.8-max in individual leader profiles
   department.worker:
     provider: gemini
-    model: gemini-3.5-flash-lite
+    model: gemini-3.8-flash
     transport: http_adapter
-    source_of_decision: owner_conversation_r17v11_gemini_worker_migration
+    source_of_decision: owner_conversation_gemini_3_8_flash_department_models
     legacy_conflicts:
+    - gemini/gemini-3.5-flash-lite in prior routing revision (owner moved department.leader and department.worker to gemini-3.8-flash to test it in the next governed smoke; priced by migration 000082)
     - deepseek/deepseek-v4-flash in prior routing revision (retired after repeated invalid_request_error failures blocked autonomy-smoke-017 r17-v11 engineering.design; same underlying deepseek account issue that already forced department.leader off deepseek)
     - gemini/gemini-2.5-flash-lite briefly assigned in de59ef2, replaced here -- real Google API returned HTTP 404 model-not-found despite a model_pricing catalog row, never actually a live model; gemini-3.5-flash-lite is already confirmed live via a real successful department.leader call.
   research.adversarial_review:
