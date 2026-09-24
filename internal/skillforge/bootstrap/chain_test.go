@@ -90,7 +90,7 @@ func testRunCmd(t *testing.T, dir, name string, args ...string) {
 
 // TestSkillForgeProductiveChainProof demonstrates the complete productive chain:
 // Skill Forge Engine -> ExecutionHarness -> modelruntimeadapter -> modelruntime.Open ->
-// canonical routing -> real Gemini provider -> model_invocations & wallet cost ->
+// canonical routing -> real DeepSeek provider -> model_invocations & wallet cost ->
 // memoryStore.ProjectHarnessRun -> PostgreSQL connection close/reopen -> durable Episode verification.
 func TestSkillForgeProductiveChainProof(t *testing.T) {
 	databaseURL := os.Getenv("ORG_TEST_DATABASE_URL")
@@ -104,6 +104,16 @@ func TestSkillForgeProductiveChainProof(t *testing.T) {
 	}
 	if _, err := os.Stat(geminiCred); os.IsNotExist(err) {
 		t.Skipf("gemini credential file %s not accessible; skipping live external proof", geminiCred)
+	}
+
+	// department.worker routes to deepseek/deepseek-flash, so the proof needs DeepSeek's credential as
+	// well; Gemini stays for the embedding profile below.
+	deepseekCred := os.Getenv("ORG_MODEL_PROVIDER_DEEPSEEK_CREDENTIAL_FILE")
+	if deepseekCred == "" {
+		deepseekCred = "/etc/explorarte/secrets/deepseek-api-key"
+	}
+	if _, err := os.Stat(deepseekCred); os.IsNotExist(err) {
+		t.Skipf("deepseek credential file %s not accessible; skipping live external proof", deepseekCred)
 	}
 
 	ctx := context.Background()
@@ -122,21 +132,24 @@ func TestSkillForgeProductiveChainProof(t *testing.T) {
 
 	cfg, err := config.LoadFrom(func(key string) (string, bool) {
 		values := map[string]string{
-			"ORG_ENVIRONMENT":                           "test",
-			"ORG_DATABASE_URL":                          databaseURL,
-			"ORG_DATABASE_MAX_CONNS":                    "16",
-			"ORG_DATABASE_MIN_CONNS":                    "0",
-			"ORG_TASKS_ORGANIZATION_ID":                 orgID,
-			"ORG_CANONICAL_DIR":                         canonicalDir,
-			"ORG_MODEL_RUNTIME_ENABLED":                 "true",
-			"ORG_MODEL_EXECUTION_IDENTITY_ENABLED":      "true",
-			"ORG_MODEL_EXECUTION_IDENTITY_KEY_FILE":     identityKeyFile,
-			"ORG_MODEL_PROVIDER_GEMINI_ENABLED":         "true",
-			"ORG_MODEL_PROVIDER_GEMINI_ENDPOINT_URL":    "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-			"ORG_MODEL_PROVIDER_GEMINI_CREDENTIAL_FILE": geminiCred,
-			"ORG_EMBEDDING_ACTIVE_PROFILE":              "gemini_text_embedding_004_768",
-			"ORG_CONTEXT_SOURCE_ROOT":                   "/src",
-			"ORG_MODEL_EXECUTION_PRINCIPAL_KEY":         dispatchPrincipalKey,
+			"ORG_ENVIRONMENT":                             "test",
+			"ORG_DATABASE_URL":                            databaseURL,
+			"ORG_DATABASE_MAX_CONNS":                      "16",
+			"ORG_DATABASE_MIN_CONNS":                      "0",
+			"ORG_TASKS_ORGANIZATION_ID":                   orgID,
+			"ORG_CANONICAL_DIR":                           canonicalDir,
+			"ORG_MODEL_RUNTIME_ENABLED":                   "true",
+			"ORG_MODEL_EXECUTION_IDENTITY_ENABLED":        "true",
+			"ORG_MODEL_EXECUTION_IDENTITY_KEY_FILE":       identityKeyFile,
+			"ORG_MODEL_PROVIDER_DEEPSEEK_ENABLED":         "true",
+			"ORG_MODEL_PROVIDER_DEEPSEEK_ENDPOINT_URL":    "https://api.deepseek.com/chat/completions",
+			"ORG_MODEL_PROVIDER_DEEPSEEK_CREDENTIAL_FILE": deepseekCred,
+			"ORG_MODEL_PROVIDER_GEMINI_ENABLED":           "true",
+			"ORG_MODEL_PROVIDER_GEMINI_ENDPOINT_URL":      "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+			"ORG_MODEL_PROVIDER_GEMINI_CREDENTIAL_FILE":   geminiCred,
+			"ORG_EMBEDDING_ACTIVE_PROFILE":                "gemini_text_embedding_004_768",
+			"ORG_CONTEXT_SOURCE_ROOT":                     "/src",
+			"ORG_MODEL_EXECUTION_PRINCIPAL_KEY":           dispatchPrincipalKey,
 		}
 		v, ok := values[key]
 		return v, ok
@@ -471,7 +484,7 @@ func TestSkillForgeProductiveChainProof(t *testing.T) {
 		t.Fatalf("create need: %v", err)
 	}
 
-	// 9. Single real minimal execution (Authoring via Gemini Flash Lite)
+	// 9. Single real minimal execution (Authoring via the department.worker route, deepseek/deepseek-flash)
 	t.Log("[CHAIN STEP 1/4] Executing single real minimal authoring run via productive harness...")
 	run, err := forgeRuntime.Engine.Run(ctx, orgID, pNeed.ID)
 	if err != nil && !errors.Is(err, skillforge.ErrHumanApprovalNeeded) {
@@ -496,7 +509,7 @@ func TestSkillForgeProductiveChainProof(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query model_invocations: %v", err)
 	}
-	if providerID != "gemini" || modelID != "gemini-3.5-flash-lite" || invStatus != "succeeded" {
+	if providerID != "deepseek" || modelID != "deepseek-flash" || invStatus != "succeeded" {
 		t.Fatalf("unexpected model invocation row: provider=%s model=%s status=%s", providerID, modelID, invStatus)
 	}
 	t.Logf("✓ MODEL_INVOCATION_PERSISTENCE PASS (id=%d, provider=%s, model=%s, status=%s)",

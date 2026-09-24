@@ -46,7 +46,7 @@ func TestSyncFlagsAProviderWithNoWalletRow(t *testing.T) {
 		t.Fatalf("no checker wired: expected nil MissingProviderWallets, got %v", result.MissingProviderWallets)
 	}
 
-	// department.leader routes to gemini (docs/canonical/model-routing.yaml)
+	// department.leader routes to deepseek (docs/canonical/model-routing.yaml)
 	// but this fake checker has never heard of it -- exactly the xai
 	// scenario this finding is named after (a real provider, priced and
 	// routed, with zero provider_wallets rows).
@@ -61,7 +61,7 @@ func TestSyncFlagsAProviderWithNoWalletRow(t *testing.T) {
 	// binds -- so an empty wallet checker flags every one of them, a superset
 	// of this finding's own minimum bar ("bound to at least one enabled
 	// role"), never a subset.
-	wantMissing := map[string]bool{"gemini": true, "xai": true, "deepseek": true, "openai_compatible": true, "openai_responses": true, "cloudflare_workers_ai": true, "mistral": true}
+	wantMissing := map[string]bool{"xai": true, "deepseek": true, "openai_compatible": true, "openai_responses": true, "cloudflare_workers_ai": true, "mistral": true}
 	if len(result.MissingProviderWallets) != len(wantMissing) {
 		t.Fatalf("expected %d missing providers, got %v", len(wantMissing), result.MissingProviderWallets)
 	}
