@@ -52,6 +52,11 @@ func openPricingStore(t *testing.T, ctx context.Context) *platformpostgres.Store
 	return store
 }
 
+// nanosIs reports whether an optional price is present and equal to want.
+func nanosIs(price *modelpricing.USDNanos, want int64) bool {
+	return price != nil && int64(*price) == want
+}
+
 func TestModelPricingSeedIsRealAndResolvable(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -108,6 +113,34 @@ func TestModelPricingSeedIsRealAndResolvable(t *testing.T) {
 	}
 	if ceoShort.ContextTierName != "default" || ceoShort.InputPriceNanosPerMillion != 200_000_000 {
 		t.Fatalf("openai_responses gpt-5.6-luna short tier=%+v", ceoShort)
+	}
+
+	// executive.ceo now routes to openai_responses/gpt-6-luna at reasoning_effort max
+	// (docs/canonical/model-routing.yaml, migration 000082). Its rate card is the
+	// provider's published one: $0.10 / $0.01 cached / $0.125 cache write / $0.50 output
+	// per 1M tokens, and above 272K input tokens 2x input and cache and 1.5x output for
+	// the whole request. A wrong digit here is a wrong reservation on every CEO call.
+	lunaShort, err := service.Resolve(ctx, "openai_responses", "gpt-6-luna", 1_000, modelpricing.BillingOnline, now)
+	if err != nil {
+		t.Fatalf("openai_responses/gpt-6-luna must be resolvable: %v", err)
+	}
+	if lunaShort.ContextTierName != "default" || lunaShort.InputPriceNanosPerMillion != 100_000_000 ||
+		!nanosIs(lunaShort.CachedInputPriceNanosPerMillion, 10_000_000) || !nanosIs(lunaShort.CacheWritePriceNanosPerMillion, 125_000_000) ||
+		lunaShort.OutputPriceNanosPerMillion != 500_000_000 {
+		t.Fatalf("openai_responses gpt-6-luna default tier=%+v", lunaShort)
+	}
+	lunaLong, err := service.Resolve(ctx, "openai_responses", "gpt-6-luna", 300_000, modelpricing.BillingOnline, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lunaLong.ContextTierName != "long_context" || lunaLong.MinInputTokens != 272_000 ||
+		lunaLong.InputPriceNanosPerMillion != 200_000_000 || !nanosIs(lunaLong.CachedInputPriceNanosPerMillion, 20_000_000) ||
+		!nanosIs(lunaLong.CacheWritePriceNanosPerMillion, 250_000_000) || lunaLong.OutputPriceNanosPerMillion != 750_000_000 {
+		t.Fatalf("openai_responses gpt-6-luna long tier=%+v", lunaLong)
+	}
+	// The previous CEO model keeps its own, unchanged rate card: executive.observer still uses it.
+	if still, err := service.Resolve(ctx, "openai_responses", "gpt-5.6-luna", 1_000, modelpricing.BillingOnline, now); err != nil || still.InputPriceNanosPerMillion != 200_000_000 {
+		t.Fatalf("gpt-5.6-luna's price changed or vanished: %+v %v", still, err)
 	}
 
 	// R30 retired gemini-2.5-flash from model-routing.yaml (research.worker

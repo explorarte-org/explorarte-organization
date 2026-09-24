@@ -219,7 +219,7 @@ func DefaultLimits() Limits {
 // applied to every purpose whose legitimate output shape can genuinely
 // need it: PurposeCEOPlan/PurposeCEOClosure/PurposeDesignAdjudication and
 // PurposeAdversarialReview route through canonical policies that set a
-// real reasoning_effort (executive.ceo/executive.observer: xhigh;
+// real reasoning_effort (executive.ceo: max; executive.observer: xhigh;
 // research.adversarial_review: high -- docs/canonical/model-routing.yaml),
 // where hidden reasoning can consume a large share of the budget before
 // any visible text appears (this session's own live adjudicator incident:
