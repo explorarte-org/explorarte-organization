@@ -480,3 +480,77 @@ const departmentConsistencyGuidance = `Consistency rule for this review: if the 
 const departmentReviewDelegationScopeGuidance = `Every proposed_followup_tasks entry must target a role within your own reviewing department. Adversarial review and design-freeze are transitions the host orchestrates automatically once your review completes -- do not request them, or any role outside your department, through proposed_followup_tasks.`
 
 var _ = strconv.Itoa
+
+// ownedRequiredChangesHeader introduces the required changes the HOST attaches to the worker
+// that owns them. Like the department constraints, they are attached by the host, not written
+// by any model: the planner's instructions paraphrase a change, and a paraphrase is where an
+// identifier gets lost. Root 1265's round-2 worker had the name TestExtractDigitRunsCoreCases
+// three times over in its own context and still summarised it as "the test table"; the review
+// then demanded the literal name and the design ran out of rounds. What the host owns exactly
+// is handed over exactly.
+const ownedRequiredChangesHeader = "REQUIRED CHANGES OWNED BY THIS TASK (attached by the host from the adjudication, not written by the planner; you own them):"
+
+const ownedRequiredChangesRule = "The identifiers and literal values in these changes are authoritative. Preserve them exactly, character for character, wherever your deliverable refers to them."
+
+// ownedChangesByClientKey resolves ownership bindings into the required changes each worker
+// owns, in binding order. It is exact and closed: a binding to a change the roster does not
+// hold cannot be resolved, and resolving it to nothing would hand a worker less than it owns
+// without saying so. It returns an error instead, before any model is called.
+func ownedChangesByClientKey(bindings []RevisionOwnership, roster []RequiredChange) (map[string][]RequiredChange, error) {
+	if len(bindings) == 0 {
+		return nil, nil
+	}
+	text := make(map[string]RequiredChange, len(roster))
+	for _, change := range roster {
+		text[change.ID] = change
+	}
+	owned := make(map[string][]RequiredChange, len(bindings))
+	for _, binding := range bindings {
+		change, known := text[binding.RequiredChangeID]
+		if !known {
+			return nil, fmt.Errorf("%w: required change %q is owned by worker %q but is not in the round's roster, so its text cannot be carried",
+				ErrContractRejected, binding.RequiredChangeID, binding.OwnerClientKey)
+		}
+		owned[binding.OwnerClientKey] = append(owned[binding.OwnerClientKey], change)
+	}
+	return owned, nil
+}
+
+// carryOwnedRequiredChanges appends to each worker proposal the exact text of the required
+// changes that worker owns -- and ONLY those: authority stays exclusive, so a worker never
+// receives another worker's change. It fails closed: an owner the proposals do not contain, or
+// a block that does not fit the instruction budget, is an error, never a silent omission.
+func (o *Orchestrator) carryOwnedRequiredChanges(proposals []WorkerTaskProposal, owned map[string][]RequiredChange) ([]WorkerTaskProposal, error) {
+	if len(owned) == 0 {
+		return proposals, nil
+	}
+	known := make(map[string]bool, len(proposals))
+	for _, proposal := range proposals {
+		known[proposal.ClientKey] = true
+	}
+	for key := range owned {
+		if !known[key] {
+			return nil, fmt.Errorf("%w: required changes are owned by worker %q, which the plan does not propose", ErrContractRejected, key)
+		}
+	}
+	carried := make([]WorkerTaskProposal, len(proposals))
+	copy(carried, proposals)
+	for index := range carried {
+		changes := owned[carried[index].ClientKey]
+		if len(changes) == 0 {
+			continue
+		}
+		lines := make([]string, 0, len(changes))
+		for _, change := range changes {
+			lines = append(lines, change.ID+" "+strings.TrimSpace(change.Text))
+		}
+		block := ownedRequiredChangesHeader + "\n" + strings.Join(lines, "\n") + "\n" + ownedRequiredChangesRule
+		base := strings.TrimRight(carried[index].Instructions, " \t\r\n")
+		if len(base)+2+len(block) > o.limits.MaxInstructionsBytes {
+			return nil, fmt.Errorf("%w: the required changes owned by worker %q (%d bytes) do not fit its instruction budget (%d of %d bytes already used); refusing to drop them",
+				ErrContractRejected, carried[index].ClientKey, len(block), len(base), o.limits.MaxInstructionsBytes)
+		}
+		carried[index].Instructions = base + "\n\n" + block
+	}
+	return carried, nil
+}
