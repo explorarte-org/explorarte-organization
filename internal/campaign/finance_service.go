@@ -976,7 +976,7 @@ func (s *FinanceService) runHarnessModel(ctx context.Context, claimed tasks.Clai
 			MaxTurns:           1,
 			MaxToolCalls:       0,
 			ExecutionProfileID: "finance-reviewer-profile",
-			ModelPolicyRef:     "department.worker",
+			ModelPolicyRef:     "finance.reviewer",
 		},
 	}
 

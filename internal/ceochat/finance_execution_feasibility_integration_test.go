@@ -245,10 +245,17 @@ func TestExecutionRequirementsDeriveFromTheRealCanonicalFacts(t *testing.T) {
 	if ceo.ProviderID != "openai_responses" || ceo.ProviderModelID != "gpt-5.6-luna" || ceo.MaxOutputTokens != 128000 {
 		t.Errorf("CEO-plan basis = %+v, want openai_responses/gpt-5.6-luna with Executive's 128000 output ceiling", ceo)
 	}
-	for _, name := range []string{"department_plan", "department_worker", "department_review"} {
+	// The leader stages route through department.leader: deepseek. The worker stage is priced at the
+	// WORST reservation among every eligible worker role's route (see the provider's derivation), and
+	// the eligible workers now span two routes -- the executive departments on deepseek and the
+	// Finance reviewer on its own gemini policy -- so it must be one of those two, never anything else.
+	for _, name := range []string{"department_plan", "department_review"} {
 		if stage := byStage[name]; stage.ProviderID != "deepseek" {
-			t.Errorf("%s basis = %+v, want a deepseek route (department.leader / department.worker)", name, stage)
+			t.Errorf("%s basis = %+v, want the deepseek route of department.leader", name, stage)
 		}
+	}
+	if stage := byStage["department_worker"]; stage.ProviderID != "deepseek" && stage.ProviderID != "gemini" {
+		t.Errorf("department_worker basis = %+v, want a deepseek (department.worker) or gemini (finance.reviewer) route", stage)
 	}
 	if byStage["department_worker"].MaxOutputTokens != 24000 {
 		t.Errorf("worker output ceiling = %d, want the worker-specific 24000", byStage["department_worker"].MaxOutputTokens)

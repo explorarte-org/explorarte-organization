@@ -399,7 +399,7 @@ roles:
   authority_class: specialist
   canonical_leader: false
   legacy_frontmatter_leader: false
-  model_policy: department.worker
+  model_policy: finance.reviewer
   profile_path: negocio/administrador_financiero/PERFIL.md
   department_agent_path: negocio/AGENT.md
   memory_domain: negocio
