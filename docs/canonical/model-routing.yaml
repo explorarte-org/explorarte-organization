@@ -39,6 +39,13 @@ policies:
     - gemini/gemini-3.5-flash-lite in prior routing revision (owner moved department.leader and department.worker to deepseek-flash, DeepSeek-V4.1-Flash, to test it in the next governed smoke; priced by migration 000082)
     - deepseek/deepseek-v4-flash in prior routing revision (retired after repeated invalid_request_error failures blocked autonomy-smoke-017 r17-v11 engineering.design; same underlying deepseek account issue that already forced department.leader off deepseek)
     - gemini/gemini-2.5-flash-lite briefly assigned in de59ef2, replaced here -- real Google API returned HTTP 404 model-not-found despite a model_pricing catalog row, never actually a live model; gemini-3.5-flash-lite is already confirmed live via a real successful department.leader call.
+  finance.reviewer:
+    provider: gemini
+    model: gemini-3.5-flash-lite
+    transport: http_adapter
+    source_of_decision: owner_conversation_finance_reviewer_own_routing_policy
+    legacy_conflicts:
+    - department.worker in prior routing revision (campaign.financial_review runs before a campaign is promoted, outside any executive correlation, so it can never carry the executive scope that deepseek requires; moving department.worker to deepseek-flash in 97d0c48 made every Finance review fail with executive_scope_required, and no campaign proposal could be approved)
   research.adversarial_review:
     provider: xai
     model: grok-4.6
