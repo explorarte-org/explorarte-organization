@@ -219,7 +219,7 @@ func TestRealFinanceHarness_ProviderVisibleInputStatesTheHostFloor(t *testing.T)
 // tables and the REAL rate card (the migration-seeded prices production also
 // uses) -- no injected requirement. Its facts must be the ones production
 // measured: the CEO plan on openai_responses/gpt-5.6-luna, departments on
-// gemini/gemini-3.5-flash-lite, and a floor never below the $0.1602536
+// deepseek/deepseek-flash, and a floor never below the $0.1602536
 // reservation the first dispatch actually needed.
 func TestExecutionRequirementsDeriveFromTheRealCanonicalFacts(t *testing.T) {
 	f := newChatFixture(t)
@@ -246,8 +246,8 @@ func TestExecutionRequirementsDeriveFromTheRealCanonicalFacts(t *testing.T) {
 		t.Errorf("CEO-plan basis = %+v, want openai_responses/gpt-5.6-luna with Executive's 128000 output ceiling", ceo)
 	}
 	for _, name := range []string{"department_plan", "department_worker", "department_review"} {
-		if stage := byStage[name]; stage.ProviderID != "gemini" {
-			t.Errorf("%s basis = %+v, want a gemini route (department.leader / department.worker)", name, stage)
+		if stage := byStage[name]; stage.ProviderID != "deepseek" {
+			t.Errorf("%s basis = %+v, want a deepseek route (department.leader / department.worker)", name, stage)
 		}
 	}
 	if byStage["department_worker"].MaxOutputTokens != 24000 {

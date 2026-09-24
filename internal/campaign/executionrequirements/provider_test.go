@@ -144,7 +144,8 @@ func productionPricing() *memoryPricing {
 		// openai_responses/gpt-5.6-luna, production's CEO route
 		tier("openai_responses", "gpt-5.6-luna", "default", 0, 200_000_000, 1_200_000_000),
 		tier("openai_responses", "gpt-5.6-luna", "long_context", 272_000, 400_000_000, 1_800_000_000),
-		// gemini/gemini-3.5-flash-lite, production's leader and worker route
+		// gemini/gemini-3.5-flash-lite, the leader and worker route this fixture was written against
+		// (production now routes them to deepseek/deepseek-flash; the fixture is self-contained)
 		tier("gemini", "gemini-3.5-flash-lite", "default", 0, 300_000_000, 2_500_000_000),
 		// a pricey route no eligible role reaches
 		tier("xai", "grok-4.6", "default", 0, 2_000_000_000, 6_000_000_000),

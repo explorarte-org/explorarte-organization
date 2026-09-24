@@ -52,6 +52,11 @@ func openPricingStore(t *testing.T, ctx context.Context) *platformpostgres.Store
 	return store
 }
 
+// nanosIs reports whether an optional price is present and equal to want.
+func nanosIs(price *modelpricing.USDNanos, want int64) bool {
+	return price != nil && int64(*price) == want
+}
+
 func TestModelPricingSeedIsRealAndResolvable(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -108,6 +113,32 @@ func TestModelPricingSeedIsRealAndResolvable(t *testing.T) {
 	}
 	if ceoShort.ContextTierName != "default" || ceoShort.InputPriceNanosPerMillion != 200_000_000 {
 		t.Fatalf("openai_responses gpt-5.6-luna short tier=%+v", ceoShort)
+	}
+
+	// department.leader and department.worker now route to deepseek/deepseek-flash
+	// (docs/canonical/model-routing.yaml, migration 000082). DeepSeek publishes an off-peak and a
+	// peak price; the table has no time-of-day dimension, so the PEAK price is stored -- a
+	// reservation can only be larger than the bill, never smaller: $0.30 input / $0.006 cached /
+	// $1.20 output per 1M tokens, one tier, no cache-write price.
+	dsFlash, err := service.Resolve(ctx, "deepseek", "deepseek-flash", 1_000, modelpricing.BillingOnline, now)
+	if err != nil {
+		t.Fatalf("deepseek/deepseek-flash must be resolvable: %v", err)
+	}
+	if dsFlash.ContextTierName != "default" || dsFlash.InputPriceNanosPerMillion != 300_000_000 ||
+		!nanosIs(dsFlash.CachedInputPriceNanosPerMillion, 6_000_000) || dsFlash.CacheWritePriceNanosPerMillion != nil ||
+		dsFlash.OutputPriceNanosPerMillion != 1_200_000_000 {
+		t.Fatalf("deepseek-flash tier=%+v", dsFlash)
+	}
+	// One tier only: a huge prompt resolves to the same row, not to a nonexistent long-context tier.
+	if big, err := service.Resolve(ctx, "deepseek", "deepseek-flash", 900_000, modelpricing.BillingOnline, now); err != nil || big.ContextTierName != "default" {
+		t.Fatalf("deepseek-flash at 900k input tokens: %+v %v", big, err)
+	}
+	// The legacy alias and the previous department model keep their own, unchanged rate cards.
+	if alias, err := service.Resolve(ctx, "deepseek", "deepseek-v4-flash", 1_000, modelpricing.BillingOnline, now); err != nil || alias.InputPriceNanosPerMillion != 140_000_000 || alias.OutputPriceNanosPerMillion != 280_000_000 {
+		t.Fatalf("deepseek-v4-flash's price changed or vanished: %+v %v", alias, err)
+	}
+	if still, err := service.Resolve(ctx, "gemini", "gemini-3.5-flash-lite", 1_000, modelpricing.BillingOnline, now); err != nil || still.InputPriceNanosPerMillion != 300_000_000 || still.OutputPriceNanosPerMillion != 2_500_000_000 {
+		t.Fatalf("gemini-3.5-flash-lite's price changed or vanished: %+v %v", still, err)
 	}
 
 	// R30 retired gemini-2.5-flash from model-routing.yaml (research.worker
