@@ -811,6 +811,17 @@ func designRound(all []TaskRecord, rootID int64) int {
 //
 // Nothing else is read. Not task instructions, not repository files, not
 // whole task contexts -- only the durable results the artifact already names.
+// deliverableBody is the text of a worker's result that goes into the candidate design: its text
+// output, or its JSON output when it has none. One definition, because the attempt-time check
+// (verifyWorkerDoesNotReproduceSource) has to judge exactly the text the assembly will.
+func deliverableBody(result InvocationResult) string {
+	body := strings.TrimSpace(result.TextOutput)
+	if body == "" {
+		body = strings.TrimSpace(string(result.JSONOutput))
+	}
+	return body
+}
+
 func (o *Orchestrator) candidateBody(ctx context.Context, artifact designArtifact) (string, error) {
 	sections := make([]string, 0, len(artifact.Units))
 	for _, unit := range artifact.Units {
@@ -822,10 +833,7 @@ func (o *Orchestrator) candidateBody(ctx context.Context, artifact designArtifac
 			return "", fmt.Errorf("%w: deliverable for %s (task:%d invocation:%d) hashes %s but the artifact records %s",
 				ErrContractRejected, unit.UnitID, unit.TaskID, unit.InvocationID, result.ResponseHash, unit.ResultHash)
 		}
-		body := strings.TrimSpace(result.TextOutput)
-		if body == "" {
-			body = strings.TrimSpace(string(result.JSONOutput))
-		}
+		body := deliverableBody(result)
 		if body == "" {
 			return "", fmt.Errorf("%w: deliverable for %s (task:%d invocation:%d) is empty",
 				ErrContractRejected, unit.UnitID, unit.TaskID, unit.InvocationID)

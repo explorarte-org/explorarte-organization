@@ -2059,6 +2059,9 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 			if err := verifyDesignNamesTheCriteriaIdentifiers(root, task, parsed.Summary); err != nil {
 				return err
 			}
+			if err := o.verifyWorkerDoesNotReproduceSource(ctx, root, snapshot.ID, result); err != nil {
+				return err
+			}
 			if len(required) > 0 {
 				if err := ValidateEvidenceStructure(parsed, required, available); err != nil {
 					return err
