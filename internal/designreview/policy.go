@@ -19,8 +19,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
+	"github.com/Mireuz13/explorarte-organization/internal/contentpolicy"
 	"github.com/Mireuz13/explorarte-organization/internal/designfreeze"
 )
 
@@ -132,14 +134,6 @@ type DeliverableCitations struct {
 	VerifiedRepositoryRefs []string `json:"verified_repository_refs"`
 }
 
-// forbiddenBundleSubstrings is a belt-and-braces check on top of the closed
-// field list. The closed list is the guarantee; this catches a caller that
-// stuffed a secret into a field that is legitimately free text.
-var forbiddenBundleSubstrings = []string{
-	"-----begin", "api_key", "apikey", "bearer ", "authorization:",
-	"password", "secret_key", "private_key", "sk-",
-}
-
 // Encode renders the bundle deterministically and refuses to emit one that
 // carries obvious credential material.
 func (b Bundle) Encode() ([]byte, error) {
@@ -156,21 +150,70 @@ func (b Bundle) Encode() ([]byte, error) {
 	return body, nil
 }
 
-// AssertNoCredentialMaterial is the credential scan Encode has always run,
-// exported so every producer of egress-safe bytes uses the SAME list rather
-// than keeping a second copy that drifts out of step with this one.
+// AssertNoCredentialMaterial is the credential scan Encode runs, exported so every producer of
+// egress-safe bytes uses the SAME detector rather than keeping a second copy that drifts out of
+// step with this one.
 //
-// It is a scan, not a proof. It is the belt on top of a closed field list,
-// never a substitute for one: passing this check does not make arbitrary
-// content egress-safe.
+// That detector is internal/contentpolicy, the repository's single deterministic content-safety
+// engine. This package used to keep its own list of substrings ("sk-", "password", "api_key",
+// "bearer ", ...), and it went wrong exactly the way a substring list does: root 1315
+// (2026-09-25), the first run whose departments ran on DeepSeek, was blocked before its
+// adversarial review because a worker wrote "task-supplied facts" and "ta[sk-]supplied" contains
+// "sk-". Nothing in it was a secret.
+//
+// The engine recognises credential MATERIAL -- an "sk-" followed by twenty token characters, a
+// GitHub or GitLab token, a private-key header, "authorization: bearer <token>", "password=<value>"
+// -- and not the words a design legitimately uses to talk about credentials. So a bundle may now say
+// "rotate the API key" or "the secret_key field is prohibited"; it may not carry one. That is a
+// deliberate relaxation, and it is safe to make here because this scan was never the boundary:
+// the closed field list of Bundle is, and this is the belt on top of it. Passing this check does
+// not make arbitrary content egress-safe.
+//
+// The error names the category and byte offsets of the first finding and NEVER the matched value,
+// so it is safe to log, persist and show.
 func AssertNoCredentialMaterial(label string, body []byte) error {
-	lowered := strings.ToLower(string(body))
-	for _, needle := range forbiddenBundleSubstrings {
-		if strings.Contains(lowered, needle) {
-			return fmt.Errorf("%w: %s contains %q", ErrBundleContaminated, label, needle)
-		}
+	assessment := contentpolicy.Analyze(string(body))
+	if !assessment.HasCredentials() {
+		// A body that is JSON escapes the quotes around a value (password=\"...\"), which can hide an
+		// assignment from patterns written for plain text. Look at the decoded strings too.
+		assessment = contentpolicy.Analyze(decodedJSONStrings(body))
+	}
+	if first, found := assessment.First(); found {
+		return fmt.Errorf("%w: %s contains %s", ErrBundleContaminated, label, first)
 	}
 	return nil
+}
+
+// decodedJSONStrings returns every string value of a JSON document, in a deterministic order,
+// one per line; it returns "" when the body is not JSON.
+func decodedJSONStrings(body []byte) string {
+	var document any
+	if err := json.Unmarshal(body, &document); err != nil {
+		return ""
+	}
+	var lines []string
+	var walk func(value any)
+	walk = func(value any) {
+		switch typed := value.(type) {
+		case string:
+			lines = append(lines, typed)
+		case []any:
+			for _, item := range typed {
+				walk(item)
+			}
+		case map[string]any:
+			keys := make([]string, 0, len(typed))
+			for key := range typed {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				walk(typed[key])
+			}
+		}
+	}
+	walk(document)
+	return strings.Join(lines, "\n")
 }
 
 // DecodeBundle recovers a Bundle from bytes that claim to be one, and is the
