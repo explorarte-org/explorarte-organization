@@ -56,11 +56,15 @@ func TestABundleWithoutATargetIsUnchanged(t *testing.T) {
 }
 
 // The target is free text from the owner, so it is under the same credential scan as every
-// other free-text field: it cannot be the field a secret rides in on.
+// other free-text field: it cannot be the field a secret rides in on. (What counts as one is
+// credential MATERIAL, not the word: see credential_scan_test.go.)
 func TestTheCampaignTargetIsUnderTheCredentialScan(t *testing.T) {
-	_, err := bundleWithTarget("use the api_key from the environment").Encode()
+	_, err := bundleWithTarget("use the key sk-" + strings.Repeat("a1", 12) + " for the call").Encode()
 	if !errors.Is(err, ErrBundleContaminated) {
 		t.Fatalf("a target carrying credential material was encoded: %v", err)
+	}
+	if _, err = bundleWithTarget("use the api_key from the environment").Encode(); err != nil {
+		t.Fatalf("a target that only talks about an api_key was refused: %v", err)
 	}
 }
 
