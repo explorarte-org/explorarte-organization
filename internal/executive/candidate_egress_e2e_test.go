@@ -1,6 +1,7 @@
 package executive
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -29,7 +30,18 @@ func TestSourceCannotLeaveThroughTheCandidateDesign(t *testing.T) {
 	// ...and copies it verbatim into its deliverable.
 	fixture.harness.bodies[PurposeDepartmentWorker] = `{"schema_version":"worker-result/v1","summary":` +
 		mustJSONString(leaked) + `,"evidence_refs":[]}`
-	fixture.drive(t)
+	// The worker's own attempt is where the rule is now enforced first (see worker_declassify.go): it
+	// is refused, retried, refused again, and its task dead-letters. That is a retryable contract
+	// rejection at each attempt, so the driver tolerates it the way a worker loop does.
+	for pass := 0; pass < 40; pass++ {
+		run, err := fixture.orchestrator.Resume(context.Background(), fixture.root)
+		if err != nil && !errors.Is(err, ErrRunBlocked) && !errors.Is(err, ErrModelResultContractRejected) {
+			t.Fatalf("resume %d: %v", pass, err)
+		}
+		if run.State.Terminal() || run.State == StateBlocked {
+			break
+		}
+	}
 
 	// No review task may have been created carrying those bytes.
 	for _, task := range fixture.tasks.tasks {
@@ -44,6 +56,22 @@ func TestSourceCannotLeaveThroughTheCandidateDesign(t *testing.T) {
 	root := fixture.rootRecord(t)
 	if root.Status != "blocked" {
 		t.Fatalf("root=%q: a contaminated candidate must stop the run", root.Status)
+	}
+	// It stopped at the worker's attempt, where the worker could have corrected it -- with the
+	// refusal recorded on the attempts, never carrying the copied text.
+	refused := false
+	for _, task := range fixture.tasks.tasks {
+		for _, attempt := range task.Attempts {
+			if strings.Contains(attempt.ResultSummary, "reproduces") {
+				refused = true
+				if strings.Contains(attempt.ResultSummary, "CurrentRevision") {
+					t.Fatalf("the refusal carries the copied source: %s", attempt.ResultSummary)
+				}
+			}
+		}
+	}
+	if !refused {
+		t.Fatal("no attempt recorded the refusal; the run stopped for some other reason")
 	}
 }
 
