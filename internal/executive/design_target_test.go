@@ -2,6 +2,7 @@ package executive
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -107,8 +108,12 @@ func TestTheTargetConstraintsAreOnlyStatedWhenThereIsATarget(t *testing.T) {
 	if got := campaignTargetConstraints(""); len(got) != 0 {
 		t.Fatalf("no target, yet the reviewer is told how to use one: %v", got)
 	}
-	if got := campaignTargetConstraints("t"); len(got) != 4 {
-		t.Fatalf("got %d constraints, want the four that say how to use a target", len(got))
+	got := campaignTargetConstraints("t")
+	if len(got) != 5 {
+		t.Fatalf("got %d constraints, want the five that say how to use a target", len(got))
+	}
+	if !slices.Contains(got, hostGovernedRequirementsConstraint) {
+		t.Fatal("the reviewer is not told which target requirements the host enforces")
 	}
 }
 
