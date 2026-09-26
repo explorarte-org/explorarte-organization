@@ -936,6 +936,17 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 					if err := validateOwnershipProposal(roundChanges, parsed); err != nil {
 						return err
 					}
+					// The exact text each worker owns will be appended to its instructions. If
+					// the plan leaves no room for it, that is the planner's to fix -- refused
+					// HERE, inside the attempt, as retryable feedback -- not a refusal the host
+					// could only repeat at materialization, with nothing left to correct it.
+					ownedByKey, ownedErr := ownedChangesByClientKey(parsed.RevisionOwnership, roundChanges)
+					if ownedErr != nil {
+						return ownedErr
+					}
+					if _, ownedErr = o.carryOwnedRequiredChanges(o.carryDepartmentConstraints(req, parsed.Tasks), ownedByKey); ownedErr != nil {
+						return ownedErr
+					}
 					// Cross-department exclusivity is checkable as soon as a
 					// sibling sheet is durable; TOTAL coverage only once every
 					// department has planned. Both are refused here, inside
@@ -1030,7 +1041,17 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 				continue
 			}
 		}
-		if e = o.materializeWorkerTasks(ctx, root, planTask, req.UnitID, o.carryDepartmentConstraints(req, deptPlan.Tasks), 0, round); e != nil {
+		// The exact text of the required changes each worker OWNS rides with it: the plan's
+		// ownership sheet names them by id, and the roster is the only place their words live.
+		ownedByKey, ownedErr := ownedChangesByClientKey(deptPlan.RevisionOwnership, roundChanges)
+		if ownedErr != nil {
+			return Run{}, false, ownedErr
+		}
+		workerProposals, ownedErr := o.carryOwnedRequiredChanges(o.carryDepartmentConstraints(req, deptPlan.Tasks), ownedByKey)
+		if ownedErr != nil {
+			return Run{}, false, ownedErr
+		}
+		if e = o.materializeWorkerTasks(ctx, root, planTask, req.UnitID, workerProposals, 0, round); e != nil {
 			return Run{}, false, e
 		}
 
@@ -1188,6 +1209,15 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 							if ownErr := validateFollowupOwnership(outstanding, authority, review); ownErr != nil {
 								return ownErr
 							}
+							// Same rule as the round plan: the redo's inherited text must fit,
+							// and a follow-up that leaves no room is corrected here.
+							followupOwned, ownedErr := ownedChangesByClientKey(review.FollowupOwnership, outstanding)
+							if ownedErr != nil {
+								return ownedErr
+							}
+							if _, ownedErr = o.carryOwnedRequiredChanges(o.carryDepartmentConstraints(req, review.ProposedFollowupTasks), followupOwned); ownedErr != nil {
+								return ownedErr
+							}
 						}
 					}
 					return nil
@@ -1237,7 +1267,17 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 						return Run{}, false, ownErr
 					}
 				}
-				if e = o.materializeWorkerTasks(ctx, root, reviewTask, req.UnitID, o.carryDepartmentConstraints(req, review.ProposedFollowupTasks), ordinal, round); e != nil {
+				// A redo inherits the words of what it redoes, exactly as the round's first workers
+				// do: the follow-up ownership names the changes, the assigned roster holds their text.
+				followupOwned, ownedErr := ownedChangesByClientKey(review.FollowupOwnership, assigned)
+				if ownedErr != nil {
+					return Run{}, false, ownedErr
+				}
+				followupProposals, ownedErr := o.carryOwnedRequiredChanges(o.carryDepartmentConstraints(req, review.ProposedFollowupTasks), followupOwned)
+				if ownedErr != nil {
+					return Run{}, false, ownedErr
+				}
+				if e = o.materializeWorkerTasks(ctx, root, reviewTask, req.UnitID, followupProposals, ordinal, round); e != nil {
 					return Run{}, false, e
 				}
 				all, e = o.tasks.ListByCorrelation(ctx, root.CorrelationID)
