@@ -824,6 +824,7 @@ func deliverableBody(result InvocationResult) string {
 
 func (o *Orchestrator) candidateBody(ctx context.Context, artifact designArtifact) (string, error) {
 	sections := make([]string, 0, len(artifact.Units))
+	share := candidateShare(len(artifact.Units))
 	for _, unit := range artifact.Units {
 		result, err := o.models.GetResult(ctx, unit.InvocationID)
 		if err != nil {
@@ -838,9 +839,8 @@ func (o *Orchestrator) candidateBody(ctx context.Context, artifact designArtifac
 			return "", fmt.Errorf("%w: deliverable for %s (task:%d invocation:%d) is empty",
 				ErrContractRejected, unit.UnitID, unit.TaskID, unit.InvocationID)
 		}
-		if limit := o.limits.MaxStringBytes; limit > 0 && len(body) > limit {
-			body = body[:limit]
-		}
+		// Never cut silently: see design_candidate_budget.go (root 1351).
+		body = boundDeliverable(body, share)
 		carried := ""
 		if unit.CarriedFromRound > 0 {
 			carried = fmt.Sprintf(" [carried forward unchanged from design round %d; this round asked this department for no changes]", unit.CarriedFromRound)
