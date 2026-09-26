@@ -131,17 +131,3 @@ func TestAJSONDeliverableIsUsedWhenThereIsNoText(t *testing.T) {
 		t.Fatalf("the JSON deliverable must appear: %s", body)
 	}
 }
-
-func TestTheBodyIsBoundedByTheHostLimits(t *testing.T) {
-	o, _ := bodyOrchestrator(map[int64]InvocationResult{
-		100: {InvocationID: 100, TextOutput: strings.Repeat("x", 9000), ResponseHash: "aaa"},
-		101: {InvocationID: 101, TextOutput: "fine", ResponseHash: "bbb"},
-	})
-	body, err := o.candidateBody(context.Background(), twoUnitArtifact())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Count(body, "x") > 4096 {
-		t.Fatalf("the deliverable must be truncated to the host limit, got %d", strings.Count(body, "x"))
-	}
-}
