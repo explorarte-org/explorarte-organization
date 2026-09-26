@@ -23,6 +23,7 @@ package financeworker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -76,6 +77,8 @@ type Metrics struct {
 	ExecutionSuccess  int64
 	ExecutionBusy     int64
 	ExecutionErrors   int64
+	// RequestsFailed counts review requests moved to failed because their task ended without a review.
+	RequestsFailed int64
 }
 
 // ResultClassification mirrors internal/executive/driver's own
@@ -95,6 +98,18 @@ const (
 // Option configures optional Worker collaborators.
 type Option func(*Worker)
 
+// RequestReconciler moves out of pending every review request whose task ended without a review.
+// The task is the authority on how its attempt ended; see
+// campaignpostgres.Store.FailReviewRequestsOfTerminalTasks (audit 2026-09-26, finding 6).
+type RequestReconciler interface {
+	FailReviewRequestsOfTerminalTasks(ctx context.Context, organizationID string, limit int) ([]int64, error)
+}
+
+// WithRequestReconciler reconciles review requests at the start of every sweep.
+func WithRequestReconciler(reconciler RequestReconciler) Option {
+	return func(w *Worker) { w.requestReconciler = reconciler }
+}
+
 // WithObserver attaches an outcome observer for monitoring/testing.
 func WithObserver(observe func(taskID int64, classification ResultClassification, err error)) Option {
 	return func(w *Worker) { w.observe = observe }
@@ -111,6 +126,8 @@ type Worker struct {
 	wakeupCh       chan struct{}
 	observe        func(taskID int64, classification ResultClassification, err error)
 
+	requestReconciler RequestReconciler
+
 	mu       sync.Mutex
 	backoffs map[int64]time.Time
 
@@ -119,6 +136,7 @@ type Worker struct {
 	executionSuccess  atomic.Int64
 	executionBusy     atomic.Int64
 	executionErrors   atomic.Int64
+	requestsFailed    atomic.Int64
 }
 
 // NewWorker validates and constructs a finance worker.
@@ -169,6 +187,7 @@ func (w *Worker) SnapshotMetrics() Metrics {
 		ExecutionSuccess:  w.executionSuccess.Load(),
 		ExecutionBusy:     w.executionBusy.Load(),
 		ExecutionErrors:   w.executionErrors.Load(),
+		RequestsFailed:    w.requestsFailed.Load(),
 	}
 }
 
@@ -179,6 +198,16 @@ func (w *Worker) SnapshotMetrics() Metrics {
 // replica scaling already exists as the real lever, exactly like it does
 // for the Executive driver.
 func (w *Worker) RunOnce(ctx context.Context) (Metrics, error) {
+	// Reconciling is its own concern: a failure to reconcile is reported and never stops the
+	// sweep from executing the reviews that are ready.
+	if w.requestReconciler != nil {
+		failed, reconcileErr := w.requestReconciler.FailReviewRequestsOfTerminalTasks(ctx, w.cfg.OrganizationID, w.cfg.BatchSize)
+		w.requestsFailed.Add(int64(len(failed)))
+		if reconcileErr != nil {
+			w.report(0, ResultInfraFailure, fmt.Errorf("reconcile review requests of terminal tasks: %w", reconcileErr))
+		}
+	}
+
 	taskIDs, err := w.tasks.ListReadyFinanceTasks(ctx, w.cfg.BatchSize)
 	if err != nil {
 		return w.SnapshotMetrics(), err

@@ -10,6 +10,8 @@ type Snapshot struct {
 	Activity     []ActivityItem   `json:"activity"`
 	Spend        []SpendItem      `json:"spend"`
 	Capabilities Capabilities     `json:"capabilities"`
+	// Partial names the sections that could not be read; their figures are zero, not estimates.
+	Partial []string `json:"partial,omitempty"`
 }
 
 type OrganizationInfo struct {
@@ -30,9 +32,14 @@ type ObjectivesMetric struct {
 	Total     int64 `json:"total"`
 }
 
+// MissionsMetric counts every owner.goal root by status, independently of how many the list shows.
 type MissionsMetric struct {
 	Active    int64 `json:"active"`
 	Completed int64 `json:"completed"`
+	Blocked   int64 `json:"blocked"`
+	Failed    int64 `json:"failed"`
+	Cancelled int64 `json:"cancelled"`
+	Total     int64 `json:"total"`
 }
 
 type LearningMetric struct {
@@ -45,7 +52,10 @@ type SkillsMetric struct {
 	Learned int64 `json:"learned"`
 }
 
+// MemoriesMetric: organizational_memory_entries records no memory type, so only Total is measured
+// and the breakdown is zero.
 type MemoriesMetric struct {
+	Total      int64 `json:"total"`
 	Episodic   int64 `json:"episodic"`
 	Semantic   int64 `json:"semantic"`
 	Corrective int64 `json:"corrective"`
@@ -75,15 +85,23 @@ type Role struct {
 }
 
 type Mission struct {
-	ID             string  `json:"id"`
-	Title          string  `json:"title"`
-	Status         string  `json:"status"` // "active", "review", "completed"
-	Department     string  `json:"department"`
-	BudgetMicrousd int64   `json:"budgetMicrousd"`
-	SpentMicrousd  int64   `json:"spentMicrousd"`
-	Progress       float64 `json:"progress"`
-	CompletedTasks int64   `json:"completedTasks"`
-	TotalTasks     int64   `json:"totalTasks"`
+	ID         string `json:"id"`
+	RootTaskID int64  `json:"rootTaskId"`
+	Title      string `json:"title"`
+	// Status is "active", "review", "blocked", "failed", "cancelled" or "completed"; TaskStatus is
+	// the root task's own status, and the reason is the one the root records.
+	Status           string  `json:"status"`
+	TaskStatus       string  `json:"taskStatus"`
+	StatusReasonCode string  `json:"statusReasonCode,omitempty"`
+	StatusReason     string  `json:"statusReason,omitempty"`
+	Department       string  `json:"department"`
+	BudgetMicrousd   int64   `json:"budgetMicrousd"`
+	SpentMicrousd    int64   `json:"spentMicrousd"`
+	Progress         float64 `json:"progress"`
+	CompletedTasks   int64   `json:"completedTasks"`
+	BlockedTasks     int64   `json:"blockedTasks"`
+	FailedTasks      int64   `json:"failedTasks"`
+	TotalTasks       int64   `json:"totalTasks"`
 }
 
 type LearningItem struct {
@@ -110,24 +128,6 @@ type SpendItem struct {
 type Capabilities struct {
 	Chat          bool `json:"chat"`
 	CreateMission bool `json:"createMission"`
-}
-
-type CEOMessageRequest struct {
-	Message string `json:"message"`
-}
-
-type CEOMessageResponse struct {
-	Message string `json:"message"`
-}
-
-type CreateMissionRequest struct {
-	Objective      string `json:"objective"`
-	BudgetMicrousd int64  `json:"budgetMicrousd"`
-}
-
-type CreateMissionResponse struct {
-	Mission Mission `json:"mission"`
-	Message string  `json:"message"`
 }
 
 type ErrorResponse struct {

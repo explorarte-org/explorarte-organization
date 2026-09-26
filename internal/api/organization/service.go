@@ -16,6 +16,10 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/tasks"
 )
 
+// The collaborators internal/app wires into NewService. The API no longer uses them -- it acts on
+// nothing, see owner_channel.go -- but internal/app is a protected path
+// (scripts/check-model-runtime-fitness.sh admits only gofmt-only changes there), so the constructor
+// it calls keeps its shape and discards them.
 type TaskCreator interface {
 	CreateTask(ctx context.Context, request tasks.CreateRequest, actorType, actorID string) (tasks.Task, bool, error)
 }
@@ -28,37 +32,21 @@ type BudgetCreator interface {
 	CreateRootBudget(ctx context.Context, organizationID string, rootTaskID int64, roleID string, limits agentbudget.Limits, now time.Time) (agentbudget.Budget, error)
 }
 
+// Service serves a read-only projection of the organization.
 type Service struct {
-	pool        *pgxpool.Pool
-	taskService TaskCreator
-	acceptance  AcceptanceRecorder
-	budgetStore BudgetCreator
-	cfg         config.Config
-	logger      *slog.Logger
+	pool   *pgxpool.Pool
+	cfg    config.Config
+	logger *slog.Logger
 }
 
-func NewService(
-	pool *pgxpool.Pool,
-	taskService TaskCreator,
-	acceptance AcceptanceRecorder,
-	budgetStore BudgetCreator,
-	cfg config.Config,
-	logger *slog.Logger,
-) (*Service, error) {
+func NewService(pool *pgxpool.Pool, _ TaskCreator, _ AcceptanceRecorder, _ BudgetCreator, cfg config.Config, logger *slog.Logger) (*Service, error) {
 	if pool == nil {
 		return nil, errors.New("organization api service requires a PostgreSQL pool")
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Service{
-		pool:        pool,
-		taskService: taskService,
-		acceptance:  acceptance,
-		budgetStore: budgetStore,
-		cfg:         cfg,
-		logger:      logger,
-	}, nil
+	return &Service{pool: pool, cfg: cfg, logger: logger}, nil
 }
 
 func (s *Service) RegisterRoutes(mux *http.ServeMux) {
