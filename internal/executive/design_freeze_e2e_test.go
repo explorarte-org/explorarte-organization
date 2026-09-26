@@ -41,6 +41,9 @@ type scriptedHarness struct {
 	// required_changes when non-empty, so tests can pin how free-form change
 	// prescriptions interact with the evidence-requirements contract.
 	adjudicationRequiredChanges []string
+	// adjudicationRewrite, when set, rewrites the scripted adjudication body for the task being
+	// driven, so a test can vary it per attempt (an adjudicator that reads the host's feedback).
+	adjudicationRewrite func(task TaskRecord, body string) string
 
 	// Round-aware contract hooks (checkpoint E): when set, they replace the
 	// static body for that purpose, receiving the task being driven -- its
@@ -114,6 +117,11 @@ func (h *scriptedHarness) Execute(_ context.Context, command HarnessRunCommand) 
 	}
 	if command.Purpose == PurposeDesignAdjudication {
 		body = h.adjudicationBody(command.TaskID)
+		if h.adjudicationRewrite != nil {
+			if task, taskErr := h.tasks.GetTask(context.Background(), command.TaskID); taskErr == nil {
+				body = h.adjudicationRewrite(task, body)
+			}
+		}
 	}
 	if body == "" {
 		return HarnessRunOutcome{}, errors.New("no scripted body for purpose " + string(command.Purpose))
