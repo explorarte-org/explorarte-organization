@@ -190,6 +190,12 @@ func (d *CampaignDriver) RunOnce(ctx context.Context) (Metrics, error) {
 	sem := make(chan struct{}, d.cfg.MaxConcurrency)
 	var wg sync.WaitGroup
 
+	// A bare break inside the select below would leave only the select, not the loop: the
+	// goroutine that followed would run without a slot and block forever in its deferred
+	// <-sem, so wg.Wait never returned and a cancelled sweep (shutdown, deploy) hung while
+	// more roots were eligible than slots (audit 2026-09-26, finding 5). Only a goroutine
+	// that acquired a slot may start.
+admission:
 	for _, rootID := range eligible {
 		if ctx.Err() != nil {
 			break
@@ -197,7 +203,7 @@ func (d *CampaignDriver) RunOnce(ctx context.Context) (Metrics, error) {
 
 		select {
 		case <-ctx.Done():
-			break
+			break admission
 		case sem <- struct{}{}:
 		}
 

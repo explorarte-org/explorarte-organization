@@ -2,145 +2,69 @@ package organization
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/Mireuz13/explorarte-organization/internal/agentbudget"
-	"github.com/Mireuz13/explorarte-organization/internal/config"
-	"github.com/Mireuz13/explorarte-organization/internal/executive"
-	"github.com/Mireuz13/explorarte-organization/internal/tasks"
 )
 
-type fakeTaskCreator struct {
-	created []tasks.CreateRequest
-	reused  bool
-	err     error
-}
-
-func (f *fakeTaskCreator) CreateTask(ctx context.Context, req tasks.CreateRequest, actorType, actorID string) (tasks.Task, bool, error) {
-	if f.err != nil {
-		return tasks.Task{}, false, f.err
-	}
-	f.created = append(f.created, req)
-	return tasks.Task{
-		ID:             999,
-		OrganizationID: req.OrganizationID,
-		Title:          req.Title,
-		Status:         "ready",
-	}, f.reused, nil
-}
-
-type fakeAcceptanceRecorder struct {
-	recorded map[int64][]executive.AcceptanceCriterion
-}
-
-func (f *fakeAcceptanceRecorder) RecordAcceptance(ctx context.Context, rootTaskID int64, criteria []executive.AcceptanceCriterion) error {
-	if f.recorded == nil {
-		f.recorded = make(map[int64][]executive.AcceptanceCriterion)
-	}
-	f.recorded[rootTaskID] = criteria
-	return nil
-}
-
-type fakeBudgetCreator struct {
-	created []agentbudget.Budget
-}
-
-func (f *fakeBudgetCreator) CreateRootBudget(ctx context.Context, organizationID string, rootTaskID int64, roleID string, limits agentbudget.Limits, now time.Time) (agentbudget.Budget, error) {
-	b := agentbudget.Budget{
-		ID:             1,
-		OrganizationID: organizationID,
-		RootTaskID:     rootTaskID,
-		TaskID:         rootTaskID,
-		RoleID:         roleID,
-		Limits:         limits,
-	}
-	f.created = append(f.created, b)
-	return b, nil
-}
-
-func TestCEOMessageValidation(t *testing.T) {
-	svc := &Service{}
-
-	tests := []struct {
-		name       string
-		body       string
-		wantStatus int
-	}{
-		{"empty body", "", http.StatusBadRequest},
-		{"empty message", `{"message": ""}`, http.StatusBadRequest},
-		{"whitespace message", `{"message": "   "}`, http.StatusBadRequest},
-		{"invalid json", `{"message": `, http.StatusBadRequest},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, "/api/organization/ceo/messages", strings.NewReader(tt.body))
-			w := httptest.NewRecorder()
-			svc.HandleCEOMessage(w, req)
-			if w.Code != tt.wantStatus {
-				t.Fatalf("expected status %d, got %d", tt.wantStatus, w.Code)
+// See owner_channel.go: the API is read-only, and the two endpoints that used to act as the owner
+// refuse without reading anything (a nil pool would panic if they did).
+func TestTheOwnerEndpointsRefuseAndNameTheOwnerChannel(t *testing.T) {
+	mux := http.NewServeMux()
+	(&Service{}).RegisterRoutes(mux)
+	for _, target := range []struct{ path, body string }{
+		{"/api/organization/missions", `{"objective":"audit","budgetMicrousd":9223372036854775807}`},
+		{"/api/organization/ceo/messages", `{"message":"/mision lanza una campaña"}`},
+	} {
+		req := httptest.NewRequest(http.MethodPost, target.path, strings.NewReader(target.body))
+		req.Header.Set("Idempotency-Key", "audit-local-only")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("%s answered %d, want 403: %s", target.path, w.Code, w.Body.String())
+		}
+		var body ErrorResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{"solo lectura", "orgctl executive chat send", "orgctl campaign approve", "orgctl campaign promote"} {
+			if !strings.Contains(body.Error, want) {
+				t.Errorf("%s refusal lacks %q: %s", target.path, want, body.Error)
 			}
-		})
+		}
 	}
 }
 
-func TestCreateMissionValidation(t *testing.T) {
-	taskFake := &fakeTaskCreator{}
-	accFake := &fakeAcceptanceRecorder{}
-	budgetFake := &fakeBudgetCreator{}
-	svc := &Service{
-		taskService: taskFake,
-		acceptance:  accFake,
-		budgetStore: budgetFake,
-		cfg: config.Config{
-			Tasks: config.TaskConfig{OrganizationID: "explorarte"},
-		},
+func TestAStoppedRootIsNeverShownAsActive(t *testing.T) {
+	for status, want := range map[string]string{
+		"pending": "active", "ready": "active", "leased": "active", "running": "active", "retry_wait": "active",
+		"awaiting_verification": "review", "completed": "completed",
+		"blocked": "blocked", "failed": "failed", "dead_letter": "failed", "rejected": "failed",
+		"cancelled": "cancelled", "no_action": "cancelled",
+	} {
+		if got := missionStatus(status); got != want {
+			t.Errorf("missionStatus(%q) = %q, want %q", status, got, want)
+		}
 	}
+}
 
-	// 1. Missing Idempotency-Key
-	req := httptest.NewRequest(http.MethodPost, "/api/organization/missions", strings.NewReader(`{"objective": "Plan", "budgetMicrousd": 5000000}`))
-	w := httptest.NewRecorder()
-	svc.HandleCreateMission(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for missing idempotency key, got %d", w.Code)
-	}
-
-	// 2. Invalid budget <= 0
-	req = httptest.NewRequest(http.MethodPost, "/api/organization/missions", strings.NewReader(`{"objective": "Plan", "budgetMicrousd": 0}`))
-	req.Header.Set("Idempotency-Key", "test-key-1")
-	w = httptest.NewRecorder()
-	svc.HandleCreateMission(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for zero budget, got %d", w.Code)
-	}
-
-	// 3. Valid creation
-	req = httptest.NewRequest(http.MethodPost, "/api/organization/missions", strings.NewReader(`{"objective": "Auditar arquitectura y memoria", "budgetMicrousd": 5000000}`))
-	req.Header.Set("Idempotency-Key", "test-key-valid")
-	w = httptest.NewRecorder()
-	svc.HandleCreateMission(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 for valid mission, got %d: %s", w.Code, w.Body.String())
-	}
-
-	var res CreateMissionResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-	if res.Mission.ID != "MS-999" {
-		t.Errorf("expected mission ID MS-999, got %s", res.Mission.ID)
-	}
-	if res.Mission.Title != "Auditar arquitectura y memoria" {
-		t.Errorf("expected title to match objective, got %s", res.Mission.Title)
-	}
-	if res.Mission.BudgetMicrousd != 5000000 {
-		t.Errorf("expected budget 5000000, got %d", res.Mission.BudgetMicrousd)
+func TestProgressComesFromTheRootsOwnChildren(t *testing.T) {
+	for _, c := range []struct {
+		status           string
+		completed, total int64
+		want             float64
+	}{
+		{"completed", 0, 0, 100},
+		{"blocked", 0, 0, 0},
+		{"blocked", 2, 3, float64(200) / 3},
+		{"running", 13, 13, 95},
+	} {
+		if got := missionProgress(c.status, c.completed, c.total); got != c.want {
+			t.Errorf("missionProgress(%q, %d, %d) = %v, want %v", c.status, c.completed, c.total, got, c.want)
+		}
 	}
 }
 

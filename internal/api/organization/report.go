@@ -3,11 +3,14 @@ package organization
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 func (s *Service) HandleMissionReport(w http.ResponseWriter, r *http.Request) {
@@ -28,13 +31,28 @@ func (s *Service) HandleMissionReport(w http.ResponseWriter, r *http.Request) {
 	report, err := s.GetMissionReport(r.Context(), idParam)
 	if err != nil {
 		s.logger.Warn("failed to get mission report", "mission_id", idParam, "error", err)
-		writeError(w, http.StatusNotFound, err.Error())
+		status := http.StatusInternalServerError
+		if errors.Is(err, errMissionNotFound) {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, err.Error())
 		return
 	}
 
 	writeJSON(w, http.StatusOK, report)
 }
 
+// errMissionNotFound is a report asked for something that is not a mission root.
+var errMissionNotFound = errors.New("misión no encontrada")
+
+// GetMissionReport reports one owner.goal root and its tasks.
+//
+// Audit 2026-09-26, finding 7: each task was joined with every succeeded invocation, so a task whose
+// provider answered more than once (a rejected attempt followed by an accepted one) was counted once
+// per answer (roots 1223, 1315 and 1333 reported 9/5, 6/5 and 8/6 tasks for 7, 5 and 7 real ones),
+// and its summary could come from the rejected answer. A task is now one row, and its result is the
+// one the executive accepts (completedTaskResult): the single succeeded invocation of its latest
+// finished attempt, and none when there is not exactly one.
 func (s *Service) GetMissionReport(ctx context.Context, missionID string) (MissionReport, error) {
 	cleanID := strings.TrimSpace(missionID)
 	cleanID = strings.TrimPrefix(cleanID, "MS-")
@@ -56,8 +74,8 @@ func (s *Service) GetMissionReport(ctx context.Context, missionID string) (Missi
 	err = s.pool.QueryRow(ctx, `
 		SELECT id, title, coalesce(instructions, ''), status, coalesce(correlation_id, ''), created_at, terminal_at
 		FROM tasks
-		WHERE id = $1
-	`, taskID).Scan(
+		WHERE id = $1 AND organization_id = $2 AND task_class = 'owner.goal'
+	`, taskID, s.cfg.Tasks.OrganizationID).Scan(
 		&rootTask.id,
 		&rootTask.title,
 		&rootTask.instructions,
@@ -66,8 +84,11 @@ func (s *Service) GetMissionReport(ctx context.Context, missionID string) (Missi
 		&rootTask.createdAt,
 		&rootTask.terminalAt,
 	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return MissionReport{}, fmt.Errorf("%w: #%d", errMissionNotFound, taskID)
+	}
 	if err != nil {
-		return MissionReport{}, fmt.Errorf("misión #%d no encontrada: %w", taskID, err)
+		return MissionReport{}, fmt.Errorf("read mission #%d: %w", taskID, err)
 	}
 
 	displayTitle := rootTask.title
@@ -80,16 +101,20 @@ func (s *Service) GetMissionReport(ctx context.Context, missionID string) (Missi
 		}
 	}
 
+	// The budget as recorded; a root without one reports zero, never a default.
 	var bMax, bUsed int64
-	_ = s.pool.QueryRow(ctx, `
-		SELECT coalesce(max_usd_nanos / 1000, 5000000)::bigint, coalesce(used_usd_nanos / 1000, 0)::bigint
+	err = s.pool.QueryRow(ctx, `
+		SELECT max_usd_nanos / 1000, used_usd_nanos / 1000
 		FROM agent_budgets
 		WHERE root_task_id = $1 AND task_id = $1
 	`, taskID).Scan(&bMax, &bUsed)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return MissionReport{}, fmt.Errorf("read budget of mission #%d: %w", taskID, err)
+	}
 
 	var totalTokens, inputTokens, outputTokens int64
 	if rootTask.correlationID != "" {
-		_ = s.pool.QueryRow(ctx, `
+		err = s.pool.QueryRow(ctx, `
 			SELECT 
 				coalesce(sum(miu.total_tokens), 0)::bigint,
 				coalesce(sum(miu.input_tokens), 0)::bigint,
@@ -99,6 +124,9 @@ func (s *Service) GetMissionReport(ctx context.Context, missionID string) (Missi
 			JOIN model_invocation_usage miu ON miu.invocation_id = mi.id
 			WHERE t.correlation_id = $1
 		`, rootTask.correlationID).Scan(&totalTokens, &inputTokens, &outputTokens)
+		if err != nil {
+			return MissionReport{}, fmt.Errorf("read token usage of mission #%d: %w", taskID, err)
+		}
 	}
 
 	completedAtStr := ""
@@ -149,14 +177,22 @@ func (s *Service) GetMissionReport(ctx context.Context, missionID string) (Missi
 			coalesce(mir.json_output::text, ''),
 			coalesce(mir.text_output, '')
 		FROM tasks t
-		LEFT JOIN model_invocations mi ON mi.task_id = t.id AND mi.status = 'succeeded'
-		LEFT JOIN model_invocation_results mir ON mir.invocation_id = mi.id
-		WHERE t.correlation_id = $1
+		LEFT JOIN LATERAL (
+			SELECT a.id FROM task_attempts a
+			WHERE a.task_id = t.id AND a.state = 'finished'
+			ORDER BY a.ordinal DESC LIMIT 1
+		) fa ON true
+		LEFT JOIN LATERAL (
+			SELECT min(mi.id) AS id FROM model_invocations mi
+			WHERE mi.task_id = t.id AND mi.attempt_id = fa.id AND mi.status = 'succeeded'
+			HAVING count(*) = 1
+		) accepted ON true
+		LEFT JOIN model_invocation_results mir ON mir.invocation_id = accepted.id
+		WHERE t.correlation_id = $1 AND t.organization_id = $2
 		ORDER BY t.id ASC
-	`, rootTask.correlationID)
+	`, rootTask.correlationID, s.cfg.Tasks.OrganizationID)
 	if err != nil {
-		s.logger.Warn("failed to query tasks for mission report", "correlation_id", rootTask.correlationID, "error", err)
-		return report, nil
+		return MissionReport{}, fmt.Errorf("list tasks of mission #%d: %w", taskID, err)
 	}
 	defer rows.Close()
 
@@ -164,13 +200,15 @@ func (s *Service) GetMissionReport(ctx context.Context, missionID string) (Missi
 		var tID int64
 		var tTitle, tClass, roleID, tStatus, schemaVer, jsonText, textOut string
 		if err := rows.Scan(&tID, &tTitle, &tClass, &roleID, &tStatus, &schemaVer, &jsonText, &textOut); err != nil {
-			s.logger.Warn("failed to scan task row for mission report", "error", err)
-			continue
+			return MissionReport{}, fmt.Errorf("scan task of mission #%d: %w", taskID, err)
 		}
 
-		report.TotalTasks++
-		if tStatus == "completed" {
-			report.CompletedTasks++
+		// The root is the mission itself; its tasks are counted as the snapshot counts them.
+		if tID != taskID {
+			report.TotalTasks++
+			if tStatus == "completed" {
+				report.CompletedTasks++
+			}
 		}
 
 		dept := "empresa"
@@ -258,6 +296,10 @@ func (s *Service) GetMissionReport(ctx context.Context, missionID string) (Missi
 				Summary:    summary,
 			})
 		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return MissionReport{}, fmt.Errorf("list tasks of mission #%d: %w", taskID, err)
 	}
 
 	if report.CeoClosure != nil && len(report.CeoClosure.CompletedItems) > 0 {

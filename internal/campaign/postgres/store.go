@@ -965,3 +965,50 @@ func validateRecordFinancialReviewCommand(cmd campaign.RecordFinancialReviewComm
 	}
 	return nil
 }
+
+// FailReviewRequestsOfTerminalTasks moves to failed every pending review request whose review task
+// ended without a review (failed, dead_letter, rejected, cancelled or no_action), and returns the ids it moved.
+//
+// Audit 2026-09-26, finding 6: requests 1, 2, 27 and 30 stayed pending for days after their tasks
+// failed. Each failure path records the task's outcome in the Task Engine and nothing updated the
+// request, and a lease that expires into dead_letter runs none of those paths at all. The task is the
+// authority on how the attempt ended, so the request is reconciled from it, idempotently, rather than
+// from each failure path: a completed request is never touched, and a request whose task can still
+// run stays pending.
+func (s *Store) FailReviewRequestsOfTerminalTasks(ctx context.Context, organizationID string, limit int) ([]int64, error) {
+	if limit <= 0 {
+		limit = 64
+	}
+	rows, err := s.pool.Query(ctx, `
+		UPDATE campaign_financial_review_requests r
+		SET status = 'failed', updated_at = NOW()
+		WHERE r.id IN (
+			SELECT r2.id
+			FROM campaign_financial_review_requests r2
+			JOIN tasks t ON t.id = r2.review_task_id AND t.organization_id = r2.organization_id
+			WHERE r2.organization_id = $1
+			  AND r2.status = 'pending'
+			  AND t.status IN ('failed', 'dead_letter', 'rejected', 'cancelled', 'no_action')
+			ORDER BY r2.id
+			LIMIT $2
+			FOR UPDATE OF r2 SKIP LOCKED
+		)
+		AND r.status = 'pending'
+		RETURNING r.id`, organizationID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("fail review requests of terminal tasks: %w", err)
+	}
+	defer rows.Close()
+	ids := make([]int64, 0)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan failed review request id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("fail review requests of terminal tasks: %w", err)
+	}
+	return ids, nil
+}

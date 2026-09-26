@@ -523,6 +523,7 @@ func buildFinanceWorker(ctx context.Context, cfg config.Config, store *platformp
 	workerCfg.HolderPrincipalID = holderPrincipalID
 
 	return financeworker.NewWorker(discovery, campaignStore, financeService, workerCfg,
+		financeworker.WithRequestReconciler(campaignStore),
 		financeworker.WithObserver(func(taskID int64, classification financeworker.ResultClassification, err error) {
 			if err != nil && classification != financeworker.ResultBusy {
 				fmt.Fprintf(stderr, "executive worker: finance task %d [%s]: %v\n", taskID, classification, err)

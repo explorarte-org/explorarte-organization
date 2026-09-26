@@ -88,6 +88,7 @@ executive-smoke-postgres	all,executive	integration	15m	-	compose_run go test -co
 ceochat-postgres	all,ceochat	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/ceochat/...
 agentbudget-postgres	all,agentbudget	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/agentbudget/postgres
 costledger-postgres	all,costledger	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/costledger/postgres
+api-organization-postgres	all	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/api/organization
 evaluation-postgres	all,evaluation	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/evaluation/postgres
 modelpricing-postgres	all,modelpricing	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/modelpricing/postgres
 webevidence-postgres	all,webevidence	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/webevidence/postgres
