@@ -115,7 +115,9 @@ type designUnitRef struct {
 const designAdjudicationPreamble = "Adjudicate the adversarial review of this candidate design and return DesignAdjudication JSON. " +
 	"The design identity is bound by the host and must not be restated; return only the fields the schema declares. " +
 	"Only verdict=freeze settles the design. " +
-	"The bundle's campaign_target is what the owner asked for: a required change must ask for what the target specifies, and must not substitute names, values or examples of your own for anything it already states.\n\n"
+	"The bundle's campaign_target is what the owner asked for: a required change must ask for what the target specifies for the change being designed, and must not substitute names, values or examples of your own for anything it already states. " +
+	"Every required change must answer a finding you accept; if you reject every finding, the design stands: return freeze (or reject), not revise. " +
+	hostGovernedRequirementsConstraint + "\n\n"
 
 // DesignBaseSHAReference is where a campaign's pinned commit lives.
 const DesignBaseSHAReference = "design-base-sha://"
@@ -360,6 +362,9 @@ func (o *Orchestrator) driveDesignFreeze(ctx context.Context, root TaskRecord, a
 				return parseErr
 			}
 			if err := AssertFindingsExist(parsed, reviewIDs); err != nil {
+				return err
+			}
+			if err := AssertReviseRestsOnTheReview(parsed); err != nil {
 				return err
 			}
 			// A revise binds the NEXT round to whatever it demands, so the
@@ -1097,7 +1102,8 @@ func campaignTargetConstraints(target string) []string {
 		return nil
 	}
 	return []string{
-		"campaign_target is the owner's own statement of what this campaign asks to be designed. Judge the candidate design against it: every name, input, expected output or criterion the target specifies must appear in the candidate stated as the target states it.",
+		"campaign_target is the owner's own statement of what this campaign asks to be designed. Judge the candidate design against it: every name, input, expected output or criterion the target specifies for the change being designed must appear in the candidate stated as the target states it.",
+		hostGovernedRequirementsConstraint,
 		"A candidate that says a case or artifact was designed without stating it has not designed what was asked. Report the omission, and name what the target specifies that the candidate does not state.",
 		"Do not invent names, values or examples of your own for anything the target already specifies. When the candidate omits or contradicts a specified value, the correction you ask for is the target's value, not a substitute.",
 		"campaign_target is a request, not evidence about the repository: it does not ground any claim about existing code, and a candidate claim about code still needs its own authorized repository citation.",
