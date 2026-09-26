@@ -987,8 +987,10 @@ func (s *FinanceService) runHarnessModel(ctx context.Context, claimed tasks.Clai
 			return FinanceReviewOutput{}, fmt.Errorf("harness runner: %w", err)
 		}
 	} else if s.cfg.NewModelExecutor != nil {
+		temperature := financeReviewTemperature
 		models, err := s.cfg.NewModelExecutor(modelruntimeadapter.Config{
 			MaxOutputTokens:               4096,
+			Temperature:                   &temperature,
 			ThinkingMode:                  modelruntime.ThinkingDisabled,
 			InvocationTTL:                 2 * time.Minute,
 			OutputMode:                    modelruntime.OutputText,
@@ -1043,6 +1045,19 @@ func (s *FinanceService) runHarnessModel(ctx context.Context, claimed tasks.Clai
 	return output, nil
 }
 
+// financeReviewTemperature is the sampling temperature of every Finance review.
+//
+// Finance reviews were sampled at the provider's default temperature. Proposals 34 and 35
+// (2026-09-26) were the same campaign under two titles: review 30 recommended it with a 300000 ms
+// wall ceiling, review 31 returned changes_requested with 60000 ms and corrections that asked for
+// nothing the proposal did not already state ("align" 30 calls, 20 subagents and depth 5 with the
+// ceilings; "max_subagents (20) exceeds the host floor (5)"). Over the twelve smoke proposals before
+// it, the recommended wall ceiling ranged from 60000 to 3600000 ms and max_usd from 0.5 to 3 for the
+// same request. Only "recommended" can be approved, so a sampled verdict decided whether a campaign
+// could start at all. A review is a judgement the owner acts on, not a creative task: the same
+// proposal under the same floor should get the same answer, so it is sampled greedily.
+const financeReviewTemperature = 0.0
+
 func renderFinanceContractInstructions(requirements ExecutionBudgetRequirements) string {
 	return `You are the canonical Financial Reviewer (negocio/administrador_financiero) of the organization.
 Your responsibility is to perform an objective, conservative financial review of a campaign proposal.
@@ -1054,7 +1069,7 @@ CRITICAL POLICY & CONSTRAINTS:
    - Model execution pricing and estimated inference cost per token/call.
    - Cost ledger historical data.
    - Standard operational resource ceilings.
-4. Unobserved evidence: Company treasury, bank balance, cash reserves, monthly recurring revenue, and external advertising budget are NOT tracked canonically in this system and are unobserved. If a proposal depends on company cash reserves or runway that is unobserved, you must note this in "missing_information" and produce verdict "insufficient_data" or clearly qualify your assessment. DO NOT fabricate bank balances or cash runway.
+4. Unobserved evidence: Company treasury, bank balance, cash reserves, monthly recurring revenue, and external advertising budget are NOT tracked canonically in this system and are unobserved. Always list them in "missing_information". Their absence is a permanent property of this system, not a gap in this proposal: on its own it is never a reason for a verdict other than "recommended". Use "insufficient_data" only when the proposal itself depends on cash, revenue or runway to be viable. DO NOT fabricate bank balances or cash runway.
 5. Your verdict must be exactly one of:
    - "recommended": financially acceptable under the exact recommended ceilings and explicit assumptions.
    - "changes_requested": proposal requires modifications/corrections before it can be recommended.
@@ -1069,6 +1084,11 @@ CRITICAL POLICY & CONSTRAINTS:
    - The budget represents ceilings the execution may not exceed, not a prediction of what it will actually use.
    - A value of zero is NOT a valid way to say "none", "not needed", or "unlimited" for any dimension -- it will be rejected before any approval or launch can happen.
    - If you cannot recommend an executable, strictly-positive budget for every dimension, do NOT use verdict "recommended". Use "changes_requested", "not_recommended", or "insufficient_data" instead, as appropriate.
+7. REQUIRED CORRECTIONS:
+   - "changes_requested" means the PROPOSAL must change before it can be recommended. Every entry of required_corrections must name what in the proposal must change.
+   - Choosing recommended_budget is your job, not a correction. If what remains is only to pick ceilings that meet the host floor, pick them and use "recommended".
+   - A dimension above its host minimum is correct: exceeding the floor is never a defect and never a correction.
+   - When the proposal states an owner budget limit (budget source OWNER_LIMIT), max_usd must not exceed it.
 
 ` + renderExecutionBudgetRequirements(requirements) + `
 
@@ -1078,13 +1098,13 @@ You must respond with ONLY a valid JSON object matching this schema:
   "verdict": "recommended" | "changes_requested" | "not_recommended" | "insufficient_data",
   "summary": "Executive summary of financial evaluation",
   "recommended_budget": {
-    "max_usd": ` + minimumUSDDollars(requirements.MinUSD) + `,
-    "max_tokens": ` + strconv.FormatInt(requirements.MinTokens, 10) + `,
-    "max_model_calls": ` + strconv.FormatInt(requirements.MinModelCalls, 10) + `,
-    "max_wall_time_ms": ` + strconv.FormatInt(requirements.MinWallTimeMS, 10) + `,
-    "max_depth": ` + strconv.FormatInt(requirements.MinDepth, 10) + `,
-    "max_retries": ` + strconv.FormatInt(requirements.MinRetries, 10) + `,
-    "max_subagents": ` + strconv.FormatInt(requirements.MinSubagents, 10) + `
+    "max_usd": <number >= ` + minimumUSDDollars(requirements.MinUSD) + `>,
+    "max_tokens": <integer >= ` + strconv.FormatInt(requirements.MinTokens, 10) + `>,
+    "max_model_calls": <integer >= ` + strconv.FormatInt(requirements.MinModelCalls, 10) + `>,
+    "max_wall_time_ms": <integer >= ` + strconv.FormatInt(requirements.MinWallTimeMS, 10) + `>,
+    "max_depth": <integer >= ` + strconv.FormatInt(requirements.MinDepth, 10) + `>,
+    "max_retries": <integer >= ` + strconv.FormatInt(requirements.MinRetries, 10) + `>,
+    "max_subagents": <integer >= ` + strconv.FormatInt(requirements.MinSubagents, 10) + `>
   },
   "estimated_cost": {
     "amount": 0.0,
@@ -1097,5 +1117,5 @@ You must respond with ONLY a valid JSON object matching this schema:
   "missing_information": ["unobserved information 1", ...]
 }
 
-The numbers shown above for recommended_budget are the host floor, shown only to illustrate the required shape -- not a default or a suggested value. Choose ceilings that actually fit this proposal, keeping every dimension strictly positive and never below its host minimum, per rule 6.`
+Each <...> above is a placeholder for a number you choose, never text to copy: the bound it shows is the host floor, not a default or a suggested value. Choose ceilings that actually fit this proposal, keeping every dimension strictly positive and never below its host minimum, per rule 6.`
 }
