@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/Mireuz13/explorarte-organization/internal/campaign"
@@ -13,11 +14,13 @@ import (
 // floor is the canonical minimum execution's constraints as production
 // measured them (test evidence, not policy): the first CEO-plan dispatch
 // reserved $0.1602536 and needed 33,268 + 128,000 tokens, and the minimal tree
-// is five children at depths 1,2,3,2,1.
+// is five children at depths 1,2,3,2,1. A governed run with three design
+// rounds attaches eleven (executive.GovernedCampaignTopology(3)).
 func floor() campaign.ExecutionBudgetRequirements {
 	return campaign.ExecutionBudgetRequirements{
 		MinUSD: 160_253_600, MinTokens: 161_268, MinModelCalls: 5,
 		MinWallTimeMS: 1, MinDepth: 3, MinRetries: 1, MinSubagents: 5,
+		GovernedMinModelCalls: 11, GovernedMinSubagents: 11,
 	}
 }
 
@@ -32,7 +35,7 @@ func productionBudget() campaign.BudgetRecommendation {
 
 // feasibleBudget clears floor() with room to spare.
 func feasibleBudget() campaign.BudgetRecommendation {
-	return campaign.BudgetRecommendation{MaxUSD: 1.25, MaxTokens: 400000, MaxModelCalls: 20, MaxWallTimeMS: 3600000, MaxDepth: 4, MaxRetries: 2, MaxSubagents: 8}
+	return campaign.BudgetRecommendation{MaxUSD: 1.25, MaxTokens: 400000, MaxModelCalls: 20, MaxWallTimeMS: 3600000, MaxDepth: 4, MaxRetries: 2, MaxSubagents: 12}
 }
 
 // seedApproved records a recommended review and an owner approval for budget,
@@ -486,4 +489,40 @@ func TestFinanceFailsTheAttemptWhenTheFloorCannotBeDerived(t *testing.T) {
 	if len(store.financialReviews) != 0 {
 		t.Fatal("no review may be persisted")
 	}
+}
+
+// Smoke #30 (root 1687, 2026-09-27): a budget at the minimal floor (5 subagents)
+// was launched governed and blocked in its second design round. A governed
+// launch is held to the governed floor before anything is submitted; the same
+// approval still launches as analysis_only, whose tree is the minimal one.
+func TestAGovernedLaunchIsHeldToTheGovernedFloor(t *testing.T) {
+	smoke30 := campaign.BudgetRecommendation{MaxUSD: 10, MaxTokens: 500000, MaxModelCalls: 10, MaxWallTimeMS: 3600000, MaxDepth: 3, MaxRetries: 3, MaxSubagents: 5}
+	rig := ownerRig(t, smoke30)
+	_, err := rig.promoter.PromoteWithMode(context.Background(), rig.approval.ID, campaign.ExecutionModeGovernedImplementation)
+	if !errors.Is(err, campaign.ErrInfeasibleExecutionBudget) {
+		t.Fatalf("governed launch of a minimal-floor budget: err = %v, want ErrInfeasibleExecutionBudget", err)
+	}
+	for _, want := range []string{"max_model_calls 10 < required 11", "max_subagents 5 < required 11"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal %q does not say %q", err, want)
+		}
+	}
+	assertNothingLaunched(t, rig)
+
+	if _, err := rig.promoter.Promote(context.Background(), rig.approval.ID); err != nil {
+		t.Fatalf("the same budget clears the minimal floor for analysis_only: %v", err)
+	}
+}
+
+// A governed launch without a derived governed floor fails closed rather than
+// falling back to the minimal one.
+func TestAGovernedLaunchWithoutAGovernedFloorFailsClosed(t *testing.T) {
+	minimalOnly := floor()
+	minimalOnly.GovernedMinModelCalls, minimalOnly.GovernedMinSubagents = 0, 0
+	rig := newOwnerPromotionRig(t, fixedOwner{identity: canonicalOwner()}, ownerGrants(), fixed(minimalOnly), feasibleBudget())
+	_, err := rig.promoter.PromoteWithMode(context.Background(), rig.approval.ID, campaign.ExecutionModeGovernedImplementation)
+	if !errors.Is(err, campaign.ErrExecutionRequirementsUnavailable) {
+		t.Fatalf("err = %v, want ErrExecutionRequirementsUnavailable", err)
+	}
+	assertNothingLaunched(t, rig)
 }

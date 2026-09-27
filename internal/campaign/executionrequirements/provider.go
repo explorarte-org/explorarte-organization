@@ -102,6 +102,7 @@ func (p *Provider) ExecutionBudgetRequirements(ctx context.Context, organization
 		return campaign.ExecutionBudgetRequirements{}, fmt.Errorf("organization %q has no current revision", organizationID)
 	}
 	topology := executive.MinimalCampaignTopology()
+	governed := executive.GovernedCampaignTopology(p.cfg.Limits.MaxDesignRounds)
 
 	roles := &stageRoles{registry: p.cfg.Registry, organizationID: organizationID}
 	routes := &policyRoutes{store: p.cfg.Routes, organizationID: organizationID, revisionID: revision.ID, byPolicy: map[string][]modelruntime.RoutableModel{}}
@@ -111,6 +112,10 @@ func (p *Provider) ExecutionBudgetRequirements(ctx context.Context, organization
 		MinModelCalls: topology.ModelCalls,
 		MinSubagents:  topology.Subagents,
 		MinDepth:      topology.Depth,
+		// The governed stages run the same purposes on the same roles, so the
+		// per-dispatch USD and token floor below covers them too.
+		GovernedMinModelCalls: governed.ModelCalls,
+		GovernedMinSubagents:  governed.Subagents,
 		// Neither dimension is consumed on the canonical Executive path (only
 		// child allocations spend them and Executive never allocates), so the
 		// floor is the AgentBudget validity minimum of 1 -- not an invented

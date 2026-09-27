@@ -47,6 +47,15 @@ type ExecutionBudgetRequirements struct {
 	MinRetries    int64
 	MinSubagents  int64
 
+	// GovernedMinModelCalls and GovernedMinSubagents are the floor of a
+	// governed_implementation run, whose design may take every round the
+	// orchestrator allows (executive.GovernedCampaignTopology). The execution
+	// mode is chosen only at promotion, so Finance is shown both floors and
+	// promotion holds a governed run to this one (ForMode). Zero means the
+	// provider did not derive it, and a governed promotion then fails closed.
+	GovernedMinModelCalls int64
+	GovernedMinSubagents  int64
+
 	// Basis records how the minimums were derived. It is audit provenance
 	// only: validation never reads it, and it can neither raise nor lower a
 	// minimum.
@@ -107,6 +116,22 @@ func (r ExecutionBudgetRequirements) Validate() error {
 		return fmt.Errorf("%w: every requirement must be strictly positive", ErrExecutionRequirementsUnavailable)
 	}
 	return nil
+}
+
+// ForMode returns the requirements a run in mode must clear: the minimal floor,
+// raised to the governed floor for governed_implementation. A governed floor the
+// provider did not derive leaves a zero minimum, which Validate refuses.
+func (r ExecutionBudgetRequirements) ForMode(mode ExecutionMode) ExecutionBudgetRequirements {
+	if !mode.Governed() {
+		return r
+	}
+	governed := r
+	governed.MinModelCalls = max(r.MinModelCalls, r.GovernedMinModelCalls)
+	governed.MinSubagents = max(r.MinSubagents, r.GovernedMinSubagents)
+	if r.GovernedMinModelCalls <= 0 || r.GovernedMinSubagents <= 0 {
+		governed.MinModelCalls, governed.MinSubagents = 0, 0
+	}
+	return governed
 }
 
 // requireExecutionRequirements resolves and validates the current
@@ -214,5 +239,23 @@ For verdict "recommended", every field of recommended_budget MUST be greater tha
 You MAY recommend more than a minimum; you may NOT recommend less. Each minimum is the smallest CEILING under which the canonical execution can even begin to run -- every model call reserves its worst case before it runs -- it is not a prediction of what the campaign will actually spend, and it is not a target.
 A recommended_budget below any host minimum is rejected before any approval or launch. If, with this floor, you cannot recommend a budget the proposal can justify, do NOT use verdict "recommended".`,
 		minimumUSDDollars(requirements.MinUSD), requirements.MinTokens, requirements.MinModelCalls,
-		requirements.MinWallTimeMS, requirements.MinDepth, requirements.MinRetries, requirements.MinSubagents)
+		requirements.MinWallTimeMS, requirements.MinDepth, requirements.MinRetries, requirements.MinSubagents) +
+		renderGovernedExecutionFloor(requirements)
+}
+
+// renderGovernedExecutionFloor states the governed floor. Smoke #30 (root 1687,
+// 2026-09-27): Finance was shown only the minimal floor, recommended exactly
+// max_subagents 5 for a design-first campaign, and the second design round was
+// refused its department plan. Nothing is rendered when the floor is unknown.
+func renderGovernedExecutionFloor(requirements ExecutionBudgetRequirements) string {
+	if requirements.GovernedMinModelCalls <= 0 || requirements.GovernedMinSubagents <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(`
+GOVERNED IMPLEMENTATION FLOOR (TRUSTED HOST FACTS)
+A campaign whose goal is a governed implementation (a design reviewed and frozen first, then implemented) may have its design sent back for revision; each round plans the department again, runs a worker and reviews it, and each of those takes a model call and a subagent. The owner may launch such a campaign only with a budget that covers every round the host allows:
+  max_model_calls >= %d
+  max_subagents >= %d
+If the proposal describes a governed implementation, recommend at least these values: a lower budget is refused when the owner launches it that way. They are floors, not predictions: a worker retry also takes a model call, so leave room above them.`,
+		requirements.GovernedMinModelCalls, requirements.GovernedMinSubagents)
 }

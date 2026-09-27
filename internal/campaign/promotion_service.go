@@ -218,7 +218,10 @@ func (s *PromotionService) promote(ctx context.Context, params PromoteToExecutiv
 	if err != nil {
 		return PromotionResult{}, err
 	}
-	if err := ValidateExecutionLimitsFeasibility(limits, requirements); err != nil {
+	// A governed run is held to the governed floor: its design loop needs more
+	// children than the minimal tree, and a budget that cannot fund it would
+	// launch and then stop mid-design (smoke #30, root 1687).
+	if err := ValidateExecutionLimitsFeasibility(limits, requirements.ForMode(mode)); err != nil {
 		return PromotionResult{}, err
 	}
 	campaignBudget := &limits

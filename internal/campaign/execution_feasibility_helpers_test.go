@@ -7,5 +7,6 @@ import "github.com/Mireuz13/explorarte-organization/internal/campaign"
 func permissiveRequirements() campaign.ExecutionRequirementsProvider {
 	return campaign.FixedExecutionRequirements{Requirements: campaign.ExecutionBudgetRequirements{
 		MinUSD: 1, MinTokens: 1, MinModelCalls: 1, MinWallTimeMS: 1, MinDepth: 1, MinRetries: 1, MinSubagents: 1,
+		GovernedMinModelCalls: 1, GovernedMinSubagents: 1,
 	}}
 }

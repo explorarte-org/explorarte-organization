@@ -160,3 +160,23 @@ func TestLeaderEligibilityMatchesTheValidator(t *testing.T) {
 		}
 	}
 }
+
+// Smoke #30 (root 1687): the second design round's department plan was refused
+// a subagent. The governed floor attaches the CEO plan, a department plan, a
+// worker and a review for every round driveDesignFreeze allows, and the closure.
+func TestGovernedCampaignTopologyCoversEveryDesignRound(t *testing.T) {
+	floor := GovernedCampaignTopology(DefaultLimits().MaxDesignRounds)
+	if DefaultLimits().MaxDesignRounds != 3 || floor.Subagents != 11 || floor.ModelCalls != 11 || floor.Depth != DepthWorker {
+		t.Fatalf("governed floor = calls %d, subagents %d, depth %d (rounds %d); want 11, 11, 3 for 3 rounds",
+			floor.ModelCalls, floor.Subagents, floor.Depth, DefaultLimits().MaxDesignRounds)
+	}
+	if first, last := floor.Stages[0], floor.Stages[len(floor.Stages)-1]; first.Name != "ceo_plan" || last.Name != "ceo_closure" {
+		t.Fatalf("governed tree must open with the CEO plan and end with the closure: %+v", floor.Stages)
+	}
+	if floor.Stages[4].Name != "department_plan_round_2" || floor.Stages[4].Depth != DepthDepartmentPlan {
+		t.Fatalf("stage 4 = %+v, want round 2's department plan", floor.Stages[4])
+	}
+	if one := GovernedCampaignTopology(1); one.Subagents != MinimalCampaignTopology().Subagents {
+		t.Fatalf("one design round attaches %d children, want the minimal %d", one.Subagents, MinimalCampaignTopology().Subagents)
+	}
+}

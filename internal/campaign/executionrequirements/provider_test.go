@@ -235,6 +235,12 @@ func TestTopologyFloorComesFromExecutive(t *testing.T) {
 	if got.MinModelCalls != 5 || got.MinSubagents != 5 || got.MinDepth != 3 {
 		t.Fatalf("today's minimal campaign is 5 calls, 5 subagents, depth 3; got %d/%d/%d", got.MinModelCalls, got.MinSubagents, got.MinDepth)
 	}
+	// The governed floor is Executive's too, for the design rounds the limits allow (smoke #30).
+	governed := executive.GovernedCampaignTopology(executive.DefaultLimits().MaxDesignRounds)
+	if got.GovernedMinModelCalls != governed.ModelCalls || got.GovernedMinSubagents != governed.Subagents || governed.Subagents != 11 {
+		t.Fatalf("governed floor calls/subagents = %d/%d, Executive declares %d/%d (want 11)",
+			got.GovernedMinModelCalls, got.GovernedMinSubagents, governed.ModelCalls, governed.Subagents)
+	}
 	// Wall time and retries are not consumed on this path: no invented floor.
 	if got.MinWallTimeMS != 1 || got.MinRetries != 1 || got.Basis.WallTimeConsumed || got.Basis.RetriesConsumed {
 		t.Fatalf("wall/retries floor must be the validity minimum of 1 and marked unconsumed: %+v", got)

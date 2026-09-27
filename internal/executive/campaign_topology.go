@@ -1,5 +1,7 @@
 package executive
 
+import "fmt"
+
 // The minimal canonical campaign is the shortest execution tree Orchestrator
 // can drive to a completed root WITHOUT any optional phase: no design freeze
 // (only a root carrying the design-freeze requirement runs one), no
@@ -111,4 +113,39 @@ func CampaignWorkerEligible(role RoleRef) bool {
 // sizes a call's input must include it.
 func ExecutionContractBytes(purpose ExecutionPurpose) int {
 	return len(executionContractFor(purpose, nil))
+}
+
+// GovernedCampaignTopology is the structural floor of a governed_implementation
+// campaign. Its design may be sent back for revision, and every round plans the
+// department again, runs a worker and reviews it; each of those children takes a
+// subagent and a model call from the root budget, like the CEO plan and the
+// closure. The adversarial review, the adjudication, the implementation plan and
+// the engineering mission are not attached to the root budget, so they add
+// nothing here.
+//
+// Smoke #30 (root 1687, 2026-09-27) was approved with max_subagents 5, the
+// minimal floor, and blocked when the second design round asked for its
+// department plan: "subagent count would exceed max 5". The floor covers every
+// round the orchestrator allows (driveDesignFreeze blocks past maxDesignRounds),
+// so a governed budget that clears it is not stopped by its own design loop.
+func GovernedCampaignTopology(maxDesignRounds int) CampaignTopologyFloor {
+	if maxDesignRounds < 1 {
+		maxDesignRounds = 1
+	}
+	minimal := MinimalCampaignStages()
+	stages := []CampaignStage{minimal[0]}
+	for round := 1; round <= maxDesignRounds; round++ {
+		for _, stage := range minimal[1:4] {
+			stage.Name = fmt.Sprintf("%s_round_%d", stage.Name, round)
+			stages = append(stages, stage)
+		}
+	}
+	stages = append(stages, minimal[4])
+	floor := CampaignTopologyFloor{Stages: stages, ModelCalls: int64(len(stages)), Subagents: int64(len(stages))}
+	for _, stage := range stages {
+		if stage.Depth > floor.Depth {
+			floor.Depth = stage.Depth
+		}
+	}
+	return floor
 }

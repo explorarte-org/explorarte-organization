@@ -295,3 +295,30 @@ func TestFinanceContractStatesTheHostFloor(t *testing.T) {
 		t.Error("the schema example still shows the old below-floor sample values")
 	}
 }
+
+// Finance is shown the governed floor next to the minimal one, so a design-first
+// proposal is not recommended at the minimal floor (smoke #30, root 1687).
+func TestFinanceContractStatesTheGovernedFloor(t *testing.T) {
+	req := canonicalFloorFixture()
+	if strings.Contains(renderFinanceContractInstructions(req), "GOVERNED IMPLEMENTATION FLOOR") {
+		t.Fatal("an underived governed floor must not be rendered")
+	}
+	req.GovernedMinModelCalls, req.GovernedMinSubagents = 11, 11
+	text := renderFinanceContractInstructions(req)
+	for _, want := range []string{"GOVERNED IMPLEMENTATION FLOOR (TRUSTED HOST FACTS)", "max_model_calls >= 11", "max_subagents >= 11", "a worker retry also takes a model call"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("contract instructions are missing %q", want)
+		}
+	}
+}
+
+func TestForModeRaisesOnlyAGovernedRun(t *testing.T) {
+	req := canonicalFloorFixture()
+	req.GovernedMinModelCalls, req.GovernedMinSubagents = 11, 11
+	if got := req.ForMode(ExecutionModeAnalysisOnly); got.MinSubagents != 5 || got.MinModelCalls != 5 {
+		t.Fatalf("analysis_only floor = %+v, want the minimal one", got)
+	}
+	if got := req.ForMode(ExecutionModeGovernedImplementation); got.MinSubagents != 11 || got.MinModelCalls != 11 || got.MinDepth != 3 || got.MinUSD != req.MinUSD {
+		t.Fatalf("governed floor = %+v, want calls/subagents 11 and the rest unchanged", got)
+	}
+}
