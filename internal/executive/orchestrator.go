@@ -2662,6 +2662,12 @@ func (o *Orchestrator) handleHarnessFailure(ctx context.Context, root, task Task
 				retryable = value
 			}
 		}
+		if !retryable && outcome.InvocationID > 0 {
+			if invocation, readErr := o.models.GetInvocation(ctx, outcome.InvocationID); readErr == nil && modelOutputDefect(invocation.ErrorCode, outcome.TerminationReason) {
+				return o.failAttempt(ctx, task, lease, actorID, "model_output_malformed",
+					outcome.TerminationReason+"; "+malformedOutputCorrection, ErrCompletionFailed, true)
+			}
+		}
 		return o.failAttempt(ctx, task, lease, actorID, "model_invocation_failed", outcome.TerminationReason, ErrCompletionFailed, retryable)
 	default:
 		return task, fmt.Errorf("%w: unknown harness failure %q", ErrContractRejected, outcome.Failure)
