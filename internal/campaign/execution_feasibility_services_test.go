@@ -15,12 +15,13 @@ import (
 // measured them (test evidence, not policy): the first CEO-plan dispatch
 // reserved $0.1602536 and needed 33,268 + 128,000 tokens, and the minimal tree
 // is five children at depths 1,2,3,2,1. A governed run with three design
-// rounds attaches eleven (executive.GovernedCampaignTopology(3)).
+// rounds and one replan each attaches seventeen, three attempts each
+// (executive.GovernedCampaignTopology(3, 1)).
 func floor() campaign.ExecutionBudgetRequirements {
 	return campaign.ExecutionBudgetRequirements{
 		MinUSD: 160_253_600, MinTokens: 161_268, MinModelCalls: 5,
 		MinWallTimeMS: 1, MinDepth: 3, MinRetries: 1, MinSubagents: 5,
-		GovernedMinModelCalls: 11, GovernedMinSubagents: 11,
+		GovernedMinModelCalls: 51, GovernedMinSubagents: 17, GovernedMinTokens: 51 * 161_268,
 	}
 }
 
@@ -33,9 +34,14 @@ func productionBudget() campaign.BudgetRecommendation {
 	return campaign.BudgetRecommendation{MaxUSD: 0.05, MaxTokens: 10000, MaxModelCalls: 5, MaxWallTimeMS: 300000, MaxDepth: 2, MaxRetries: 1, MaxSubagents: 1}
 }
 
-// feasibleBudget clears floor() with room to spare.
+// feasibleBudget clears floor(), governed floor included, with room to spare.
 func feasibleBudget() campaign.BudgetRecommendation {
-	return campaign.BudgetRecommendation{MaxUSD: 1.25, MaxTokens: 400000, MaxModelCalls: 20, MaxWallTimeMS: 3600000, MaxDepth: 4, MaxRetries: 2, MaxSubagents: 12}
+	return campaign.BudgetRecommendation{MaxUSD: 1.25, MaxTokens: 9_000_000, MaxModelCalls: 60, MaxWallTimeMS: 3600000, MaxDepth: 4, MaxRetries: 2, MaxSubagents: 20}
+}
+
+// governedBudget clears floor()'s governed floor.
+func governedBudget() campaign.BudgetRecommendation {
+	return campaign.BudgetRecommendation{MaxUSD: 5, MaxTokens: 51 * 161_268, MaxModelCalls: 51, MaxWallTimeMS: 3600000, MaxDepth: 3, MaxRetries: 2, MaxSubagents: 17}
 }
 
 // seedApproved records a recommended review and an owner approval for budget,
@@ -283,7 +289,7 @@ func TestApprovalRejectsAReviewTheFloorHasOutgrown(t *testing.T) {
 	store, svc, proposal, _ := setupRevisionApprovalFixture()
 	review, _ := seedReviewOnly(t, store, proposal, feasibleBudget(), "drift")
 	drifted := floor()
-	drifted.MinTokens = 5_000_000
+	drifted.MinTokens = 50_000_000
 	svc.Requirements = fixed(drifted)
 
 	_, _, err := svc.ApproveUngrantedForTest(context.Background(), approveParams(proposal, review, "call-c"))
@@ -502,7 +508,7 @@ func TestAGovernedLaunchIsHeldToTheGovernedFloor(t *testing.T) {
 	if !errors.Is(err, campaign.ErrInfeasibleExecutionBudget) {
 		t.Fatalf("governed launch of a minimal-floor budget: err = %v, want ErrInfeasibleExecutionBudget", err)
 	}
-	for _, want := range []string{"max_model_calls 10 < required 11", "max_subagents 5 < required 11"} {
+	for _, want := range []string{"max_model_calls 10 < required 51", "max_subagents 5 < required 17", "max_tokens 500000 < required 8224668"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal %q does not say %q", err, want)
 		}
@@ -512,13 +518,17 @@ func TestAGovernedLaunchIsHeldToTheGovernedFloor(t *testing.T) {
 	if _, err := rig.promoter.Promote(context.Background(), rig.approval.ID); err != nil {
 		t.Fatalf("the same budget clears the minimal floor for analysis_only: %v", err)
 	}
+	governed := ownerRig(t, governedBudget())
+	if _, err := governed.promoter.PromoteWithMode(context.Background(), governed.approval.ID, campaign.ExecutionModeGovernedImplementation); err != nil {
+		t.Fatalf("a budget at the governed floor must launch governed: %v", err)
+	}
 }
 
 // A governed launch without a derived governed floor fails closed rather than
 // falling back to the minimal one.
 func TestAGovernedLaunchWithoutAGovernedFloorFailsClosed(t *testing.T) {
 	minimalOnly := floor()
-	minimalOnly.GovernedMinModelCalls, minimalOnly.GovernedMinSubagents = 0, 0
+	minimalOnly.GovernedMinTokens = 0
 	rig := newOwnerPromotionRig(t, fixedOwner{identity: canonicalOwner()}, ownerGrants(), fixed(minimalOnly), feasibleBudget())
 	_, err := rig.promoter.PromoteWithMode(context.Background(), rig.approval.ID, campaign.ExecutionModeGovernedImplementation)
 	if !errors.Is(err, campaign.ErrExecutionRequirementsUnavailable) {

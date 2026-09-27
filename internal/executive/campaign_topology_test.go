@@ -161,22 +161,25 @@ func TestLeaderEligibilityMatchesTheValidator(t *testing.T) {
 	}
 }
 
-// Smoke #30 (root 1687): the second design round's department plan was refused
-// a subagent. The governed floor attaches the CEO plan, a department plan, a
-// worker and a review for every round driveDesignFreeze allows, and the closure.
-func TestGovernedCampaignTopologyCoversEveryDesignRound(t *testing.T) {
-	floor := GovernedCampaignTopology(DefaultLimits().MaxDesignRounds)
-	if DefaultLimits().MaxDesignRounds != 3 || floor.Subagents != 11 || floor.ModelCalls != 11 || floor.Depth != DepthWorker {
-		t.Fatalf("governed floor = calls %d, subagents %d, depth %d (rounds %d); want 11, 11, 3 for 3 rounds",
-			floor.ModelCalls, floor.Subagents, floor.Depth, DefaultLimits().MaxDesignRounds)
+// Smoke #30 (root 1687) and smoke #33 (root 1742): the governed floor covers every
+// design round, every replan a round's review may ask for, and every attempt of each.
+func TestGovernedCampaignTopologyCoversEveryRoundReplanAndAttempt(t *testing.T) {
+	limits := DefaultLimits()
+	if limits.MaxDesignRounds != 3 || limits.MaxDepartmentReplans != 1 {
+		t.Fatalf("test premise: rounds %d replans %d, want 3 and 1", limits.MaxDesignRounds, limits.MaxDepartmentReplans)
+	}
+	floor := GovernedCampaignTopology(limits.MaxDesignRounds, limits.MaxDepartmentReplans)
+	// CEO plan + 3 x (plan, worker, review, replan worker, replan review) + closure.
+	if floor.Subagents != 17 || floor.ModelCalls != 17*governedTaskAttempts || floor.Depth != DepthWorker {
+		t.Fatalf("governed floor = calls %d, subagents %d, depth %d; want 51, 17, 3", floor.ModelCalls, floor.Subagents, floor.Depth)
 	}
 	if first, last := floor.Stages[0], floor.Stages[len(floor.Stages)-1]; first.Name != "ceo_plan" || last.Name != "ceo_closure" {
 		t.Fatalf("governed tree must open with the CEO plan and end with the closure: %+v", floor.Stages)
 	}
-	if floor.Stages[4].Name != "department_plan_round_2" || floor.Stages[4].Depth != DepthDepartmentPlan {
-		t.Fatalf("stage 4 = %+v, want round 2's department plan", floor.Stages[4])
+	if floor.Stages[4].Name != "department_worker_round_1_replan_1" || floor.Stages[6].Name != "department_plan_round_2" {
+		t.Fatalf("stages 4 and 6 = %q, %q; want round 1's replan worker and round 2's plan", floor.Stages[4].Name, floor.Stages[6].Name)
 	}
-	if one := GovernedCampaignTopology(1); one.Subagents != MinimalCampaignTopology().Subagents {
-		t.Fatalf("one design round attaches %d children, want the minimal %d", one.Subagents, MinimalCampaignTopology().Subagents)
+	if one := GovernedCampaignTopology(1, 0); one.Subagents != MinimalCampaignTopology().Subagents {
+		t.Fatalf("one design round without replans attaches %d children, want the minimal %d", one.Subagents, MinimalCampaignTopology().Subagents)
 	}
 }

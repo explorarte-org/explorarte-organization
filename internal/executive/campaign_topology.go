@@ -116,32 +116,50 @@ func ExecutionContractBytes(purpose ExecutionPurpose) int {
 }
 
 // GovernedCampaignTopology is the structural floor of a governed_implementation
-// campaign. Its design may be sent back for revision, and every round plans the
-// department again, runs a worker and reviews it; each of those children takes a
-// subagent and a model call from the root budget, like the CEO plan and the
-// closure. The adversarial review, the adjudication, the implementation plan and
-// the engineering mission are not attached to the root budget, so they add
-// nothing here.
+// campaign: its WORST admissible tree, since a budget below it can stop a run the
+// orchestrator would otherwise drive on.
 //
-// Smoke #30 (root 1687, 2026-09-27) was approved with max_subagents 5, the
-// minimal floor, and blocked when the second design round asked for its
-// department plan: "subagent count would exceed max 5". The floor covers every
-// round the orchestrator allows (driveDesignFreeze blocks past maxDesignRounds),
-// so a governed budget that clears it is not stopped by its own design loop.
-func GovernedCampaignTopology(maxDesignRounds int) CampaignTopologyFloor {
+// Every design round plans the department again, runs a worker and reviews it,
+// and each review may ask for maxDepartmentReplans replans of a worker and a
+// review (replans are counted per round: the review key carries the round).
+// Each of those children takes a subagent from the root budget, like the CEO
+// plan and the closure, and every attempt of one takes a model call. The
+// adversarial review, the adjudication, the implementation plan and the
+// engineering mission are not charged to the root budget, so they add nothing.
+//
+// Smoke #30 (root 1687, 2026-09-27) was approved with the minimal 5 subagents
+// and blocked in its second design round. Smoke #33 (root 1742) cleared a floor
+// that counted one attempt and no replan, spent three worker retries and a
+// round-2 replan, and blocked with 11 of 12 model calls used when the next
+// review could not reserve its tokens.
+func GovernedCampaignTopology(maxDesignRounds, maxDepartmentReplans int) CampaignTopologyFloor {
 	if maxDesignRounds < 1 {
 		maxDesignRounds = 1
 	}
+	if maxDepartmentReplans < 0 {
+		maxDepartmentReplans = 0
+	}
 	minimal := MinimalCampaignStages()
+	plan, worker, review := minimal[1], minimal[2], minimal[3]
+	named := func(stage CampaignStage, suffix string) CampaignStage {
+		stage.Name += suffix
+		return stage
+	}
 	stages := []CampaignStage{minimal[0]}
 	for round := 1; round <= maxDesignRounds; round++ {
-		for _, stage := range minimal[1:4] {
-			stage.Name = fmt.Sprintf("%s_round_%d", stage.Name, round)
-			stages = append(stages, stage)
+		suffix := fmt.Sprintf("_round_%d", round)
+		stages = append(stages, named(plan, suffix), named(worker, suffix), named(review, suffix))
+		for replan := 1; replan <= maxDepartmentReplans; replan++ {
+			replanSuffix := fmt.Sprintf("%s_replan_%d", suffix, replan)
+			stages = append(stages, named(worker, replanSuffix), named(review, replanSuffix))
 		}
 	}
 	stages = append(stages, minimal[4])
-	floor := CampaignTopologyFloor{Stages: stages, ModelCalls: int64(len(stages)), Subagents: int64(len(stages))}
+	floor := CampaignTopologyFloor{
+		Stages:     stages,
+		ModelCalls: int64(len(stages) * governedTaskAttempts),
+		Subagents:  int64(len(stages)),
+	}
 	for _, stage := range stages {
 		if stage.Depth > floor.Depth {
 			floor.Depth = stage.Depth

@@ -303,9 +303,9 @@ func TestFinanceContractStatesTheGovernedFloor(t *testing.T) {
 	if strings.Contains(renderFinanceContractInstructions(req), "GOVERNED IMPLEMENTATION FLOOR") {
 		t.Fatal("an underived governed floor must not be rendered")
 	}
-	req.GovernedMinModelCalls, req.GovernedMinSubagents = 11, 11
+	req.GovernedMinModelCalls, req.GovernedMinSubagents, req.GovernedMinTokens = 51, 17, 9_000_000
 	text := renderFinanceContractInstructions(req)
-	for _, want := range []string{"GOVERNED IMPLEMENTATION FLOOR (TRUSTED HOST FACTS)", "max_model_calls >= 11", "max_subagents >= 11", "a worker retry also takes a model call"} {
+	for _, want := range []string{"GOVERNED IMPLEMENTATION FLOOR (TRUSTED HOST FACTS)", "max_model_calls >= 51", "max_subagents >= 17", "max_tokens >= 9000000", "that is yours to predict"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("contract instructions are missing %q", want)
 		}
@@ -314,11 +314,11 @@ func TestFinanceContractStatesTheGovernedFloor(t *testing.T) {
 
 func TestForModeRaisesOnlyAGovernedRun(t *testing.T) {
 	req := canonicalFloorFixture()
-	req.GovernedMinModelCalls, req.GovernedMinSubagents = 11, 11
-	if got := req.ForMode(ExecutionModeAnalysisOnly); got.MinSubagents != 5 || got.MinModelCalls != 5 {
+	req.GovernedMinModelCalls, req.GovernedMinSubagents, req.GovernedMinTokens = 51, 17, 9_000_000
+	if got := req.ForMode(ExecutionModeAnalysisOnly); got.MinSubagents != 5 || got.MinModelCalls != 5 || got.MinTokens != req.MinTokens {
 		t.Fatalf("analysis_only floor = %+v, want the minimal one", got)
 	}
-	if got := req.ForMode(ExecutionModeGovernedImplementation); got.MinSubagents != 11 || got.MinModelCalls != 11 || got.MinDepth != 3 || got.MinUSD != req.MinUSD {
-		t.Fatalf("governed floor = %+v, want calls/subagents 11 and the rest unchanged", got)
+	if got := req.ForMode(ExecutionModeGovernedImplementation); got.MinSubagents != 17 || got.MinModelCalls != 51 || got.MinTokens != 9_000_000 || got.MinDepth != 3 || got.MinUSD != req.MinUSD {
+		t.Fatalf("governed floor = %+v, want calls 51, subagents 17, tokens 9M and the rest unchanged", got)
 	}
 }

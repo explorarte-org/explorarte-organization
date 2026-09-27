@@ -102,7 +102,7 @@ func (p *Provider) ExecutionBudgetRequirements(ctx context.Context, organization
 		return campaign.ExecutionBudgetRequirements{}, fmt.Errorf("organization %q has no current revision", organizationID)
 	}
 	topology := executive.MinimalCampaignTopology()
-	governed := executive.GovernedCampaignTopology(p.cfg.Limits.MaxDesignRounds)
+	governed := executive.GovernedCampaignTopology(p.cfg.Limits.MaxDesignRounds, p.cfg.Limits.MaxDepartmentReplans)
 
 	roles := &stageRoles{registry: p.cfg.Registry, organizationID: organizationID}
 	routes := &policyRoutes{store: p.cfg.Routes, organizationID: organizationID, revisionID: revision.ID, byPolicy: map[string][]modelruntime.RoutableModel{}}
@@ -179,6 +179,10 @@ func (p *Provider) ExecutionBudgetRequirements(ctx context.Context, organization
 	if requirements.MinUSD <= 0 {
 		requirements.MinUSD = 1
 	}
+	// Every governed call may reserve up to the worst stage's tokens before it
+	// runs, and the root budget holds each reservation on top of what the run has
+	// already used, so the governed token floor is one worst reservation per call.
+	requirements.GovernedMinTokens = governed.ModelCalls * requirements.MinTokens
 	if err := requirements.Validate(); err != nil {
 		return campaign.ExecutionBudgetRequirements{}, err
 	}
