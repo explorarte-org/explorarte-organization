@@ -108,6 +108,26 @@ type CreateTaskCommand struct {
 	// nothing else: a caller free to omit it would be a caller free to
 	// recreate the race it closes.
 	HoldForCoordination bool
+	// ReviewScope is set on a department review and on nothing else: it names
+	// what the review judges, so the evidence bundle recorded with it holds the
+	// same deliverables the review's summary lists. See DepartmentReviewScope.
+	ReviewScope *DepartmentReviewScope
+}
+
+// DepartmentReviewScope is what one department review judges: the plan of its
+// design round and that round's workers that still hold authority.
+//
+// Local smoke #33 (root 1742, 2026-09-27): the review after a round-2 replan was
+// handed every worker of the department in every round -- the round-1 design
+// (1745), the round-2 design (1755) the previous review had wholly handed to a
+// redo, and the redo (1761) -- told to compare them against each other, and the
+// round-1 plan's review criteria. It found the redo "incompatible" with the
+// deliverables it replaced and asked for a second replan, which the round did
+// not have. The adversarial candidate already excludes superseded workers
+// (unitRoundFrontier); the review is now scoped by the same replay.
+type DepartmentReviewScope struct {
+	PlanTaskID    int64
+	WorkerTaskIDs []int64
 }
 
 type EvidenceCommand struct {

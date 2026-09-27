@@ -34,7 +34,7 @@ func (e EvidenceTasks) CreateTask(ctx context.Context, command executive.CreateT
 		return task, reused, nil
 	}
 	if strings.HasPrefix(command.Title, "Department review: ") {
-		if err = e.attachDepartmentBundle(ctx, task, command.CorrelationID, strings.TrimPrefix(command.Title, "Department review: ")); err != nil {
+		if err = e.attachDepartmentBundle(ctx, task, command.CorrelationID, strings.TrimPrefix(command.Title, "Department review: "), command.ReviewScope); err != nil {
 			return executive.TaskRecord{}, false, err
 		}
 		refreshed, getErr := e.Tasks.GetTask(ctx, task.ID)
@@ -88,23 +88,24 @@ type closureEvidenceBundle struct {
 	BlockedTasks  []int64           `json:"blocked_tasks,omitempty"`
 }
 
-func (e EvidenceTasks) attachDepartmentBundle(ctx context.Context, target executive.TaskRecord, correlation, department string) error {
+// A scoped review (executive.DepartmentReviewScope) is shown its round's plan
+// and exactly the workers the orchestrator says it judges; without a scope the
+// bundle keeps its historical shape: the first plan and every worker.
+func (e EvidenceTasks) attachDepartmentBundle(ctx context.Context, target executive.TaskRecord, correlation, department string, scope *executive.DepartmentReviewScope) error {
 	all, err := e.Tasks.ListByCorrelation(ctx, correlation)
 	if err != nil {
 		return err
 	}
-	criteria, planHash, err := e.projectDepartmentPlan(ctx, all, department)
+	var planTaskID int64
+	if scope != nil {
+		planTaskID = scope.PlanTaskID
+	}
+	criteria, planHash, err := e.projectDepartmentPlan(ctx, all, department, planTaskID)
 	if err != nil {
 		return err
 	}
 	workers := make([]projectedWorker, 0)
-	for _, task := range all {
-		if task.AssignedUnitID != department || !strings.Contains(task.IdempotencyKey, ":worker:"+department+":") {
-			continue
-		}
-		if task.Status != "completed" && task.Status != "no_action" {
-			continue
-		}
+	for _, task := range bundledWorkers(all, department, scope) {
 		item, projectErr := e.projectWorker(ctx, task)
 		if projectErr != nil {
 			return projectErr
@@ -119,15 +120,49 @@ func (e EvidenceTasks) attachDepartmentBundle(ctx context.Context, target execut
 	return e.recordBundle(ctx, target.ID, "department:"+department, bundle)
 }
 
-func (e EvidenceTasks) projectDepartmentPlan(ctx context.Context, all []executive.TaskRecord, department string) ([]string, string, error) {
-	var planTask *executive.TaskRecord
-	marker := ":leader-plan:" + department
-	for i := range all {
-		if strings.Contains(all[i].IdempotencyKey, marker) && all[i].Status == "completed" {
-			planTask = &all[i]
-			break
+// bundledWorkers returns the completed workers of department a review's bundle
+// projects: those scope names, or, unscoped, every worker of the department.
+func bundledWorkers(all []executive.TaskRecord, department string, scope *executive.DepartmentReviewScope) []executive.TaskRecord {
+	var inScope map[int64]bool
+	if scope != nil {
+		inScope = make(map[int64]bool, len(scope.WorkerTaskIDs))
+		for _, id := range scope.WorkerTaskIDs {
+			inScope[id] = true
 		}
 	}
+	out := []executive.TaskRecord{}
+	for _, task := range all {
+		if task.AssignedUnitID != department || !strings.Contains(task.IdempotencyKey, ":worker:"+department+":") {
+			continue
+		}
+		if inScope != nil && !inScope[task.ID] {
+			continue
+		}
+		if task.Status != "completed" && task.Status != "no_action" {
+			continue
+		}
+		out = append(out, task)
+	}
+	return out
+}
+
+// bundledPlan returns the completed department plan a review's bundle reads its
+// criteria from: the one planTaskID names, or, when it is zero, the first.
+func bundledPlan(all []executive.TaskRecord, department string, planTaskID int64) *executive.TaskRecord {
+	marker := ":leader-plan:" + department
+	for i := range all {
+		if planTaskID != 0 && all[i].ID != planTaskID {
+			continue
+		}
+		if strings.Contains(all[i].IdempotencyKey, marker) && all[i].Status == "completed" {
+			return &all[i]
+		}
+	}
+	return nil
+}
+
+func (e EvidenceTasks) projectDepartmentPlan(ctx context.Context, all []executive.TaskRecord, department string, planTaskID int64) ([]string, string, error) {
+	planTask := bundledPlan(all, department, planTaskID)
 	if planTask == nil {
 		return nil, "", fmt.Errorf("completed department plan for %s is missing", department)
 	}

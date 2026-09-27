@@ -1431,7 +1431,11 @@ func appendResultRequirement(in []RequirementProposal) []RequirementProposal {
 }
 
 func (o *Orchestrator) createReviewTask(ctx context.Context, root TaskRecord, req DepartmentRequest, leader RoleRef, all []TaskRecord, replan, round int, assigned []RequiredChange) (TaskRecord, bool, error) {
-	summary := boundedDepartmentSummary(all, root.ID, req.UnitID+designRoundSuffix(round), o.limits.MaxInstructionsBytes)
+	scope, reviewed, err := o.departmentReviewScope(ctx, all, root.ID, req.UnitID, round)
+	if err != nil {
+		return TaskRecord{}, false, err
+	}
+	summary := boundedDepartmentSummary(reviewed, root.ID, req.UnitID+designRoundSuffix(round), o.limits.MaxInstructionsBytes)
 	suffix := "leader-review:" + req.UnitID + designRoundSuffix(round)
 	if replan > 0 {
 		suffix += ":replan:" + strconv.Itoa(replan)
@@ -1491,11 +1495,36 @@ func (o *Orchestrator) createReviewTask(ctx context.Context, root TaskRecord, re
 		instructions += "\n\nREVISION OWNERSHIP TABLE (state one revision_outcomes entry per id, comparing the deliverables against each other):\n" +
 			renderOwnershipTable(outstanding, owners)
 	}
-	task, reused, err := o.coordinatedChildren().Materialize(ctx, childRequest{Root: root, Sender: root, Depth: DepthDepartmentReview, Command: CreateTaskCommand{RequestedByRoleID: CEORoleID, AssignedRoleID: leader.ID, TaskClass: TaskClassCoordinationDeptReview, IdempotencyKey: childKey(root.ID, suffix), Title: "Department review: " + req.UnitID, Instructions: instructions, AcceptanceCriteria: []string{"Use only durable task states and evidence refs", "Return strict DepartmentReview JSON", "Do not execute tool intents"}, Priority: req.Priority, MaxAttempts: o.maxAttempts(3), CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID), Requirements: []RequirementProposal{{Key: "typed_review", Type: "result", Description: "Validated DepartmentReview invocation result", Required: true}}}})
+	task, reused, err := o.coordinatedChildren().Materialize(ctx, childRequest{Root: root, Sender: root, Depth: DepthDepartmentReview, Command: CreateTaskCommand{RequestedByRoleID: CEORoleID, AssignedRoleID: leader.ID, TaskClass: TaskClassCoordinationDeptReview, IdempotencyKey: childKey(root.ID, suffix), Title: "Department review: " + req.UnitID, Instructions: instructions, AcceptanceCriteria: []string{"Use only durable task states and evidence refs", "Return strict DepartmentReview JSON", "Do not execute tool intents"}, Priority: req.Priority, MaxAttempts: o.maxAttempts(3), CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID), Requirements: []RequirementProposal{{Key: "typed_review", Type: "result", Description: "Validated DepartmentReview invocation result", Required: true}}, ReviewScope: &scope}})
 	if err != nil {
 		return TaskRecord{}, false, err
 	}
 	return task, reused, nil
+}
+
+// departmentReviewScope returns what a department review of round judges: the
+// round's plan, and the round's workers minus those a follow-up took authority
+// from (roundOwnershipReplay, the replay unitRoundFrontier reads). Unlike the
+// frontier it keeps workers that did not complete: a failure is evidence the
+// review weighs. Workers of other rounds are never in it.
+func (o *Orchestrator) departmentReviewScope(ctx context.Context, all []TaskRecord, rootID int64, unit string, round int) (DepartmentReviewScope, []TaskRecord, error) {
+	_, superseded, err := o.roundOwnershipReplay(ctx, all, rootID, unit, round)
+	if err != nil {
+		return DepartmentReviewScope{}, nil, err
+	}
+	scope := DepartmentReviewScope{WorkerTaskIDs: []int64{}}
+	if plan, found := findTaskByKey(all, childKey(rootID, "leader-plan:"+unit+designRoundSuffix(round))); found {
+		scope.PlanTaskID = plan.ID
+	}
+	reviewed := []TaskRecord{}
+	for _, worker := range departmentWorkerTasks(all, rootID, unit) {
+		if designRoundOf(worker.IdempotencyKey) != round || superseded[workerBaseClientKey(worker.IdempotencyKey, rootID, unit, round)] {
+			continue
+		}
+		reviewed = append(reviewed, worker)
+		scope.WorkerTaskIDs = append(scope.WorkerTaskIDs, worker.ID)
+	}
+	return scope, reviewed, nil
 }
 
 // ceoClosureInstructionPrefix carries decisionApplicabilityPolicy into the

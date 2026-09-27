@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -1154,4 +1155,77 @@ func TestEAcceptGateAndNeedsReplanRouting(t *testing.T) {
 			t.Fatal("needs_replan did not open the department replan iteration")
 		}
 	})
+}
+
+// Local smoke #33 (root 1742): the department review after a round-2 replan was
+// shown the round-1 design, the round-2 design the replan had handed to a redo,
+// and the redo, and asked for a second replan because they disagreed. It judges
+// the same post-replan frontier the adversarial candidate is built from: the
+// redo and the kept worker of its own round, and nothing else.
+func TestEDepartmentReviewAfterReplanJudgesOnlyThePostReplanFrontier(t *testing.T) {
+	fixture := eFixture(t)
+	fixture.eOwnership = ownerEntry("RC:1:1", eOwnerKey) + "," + ownerEntry("RC:1:2", eOwnerKey)
+	fixture.eReviewVerdict = "needs_replan"
+	fixture.eOutcomes = `[` +
+		`{"required_change_id":"RC:1:1","status":"conflicted","canonical_resolution":"","conflicting_task_refs":["task:a","task:b"]},` +
+		`{"required_change_id":"RC:1:2","status":"resolved","canonical_resolution":"cited","conflicting_task_refs":[]}]`
+	fixture.eFollowups = `[{"client_key":"reconcile_mdr","assigned_role_id":"ingenieria_ia/qa","task_class":"engineering.review",` +
+		`"title":"Reconcile MDR granularity","instructions":"One falsifiable claim.","acceptance_criteria":["Cite"],"dependencies":[]}]`
+	fixture.eFollowupOwnership =
+		"[" + ownerEntry("RC:1:1", "reconcile_mdr") + "," + ownerEntry("RC:1:2", "reconcile_mdr") + "]"
+	base := fixture.harness.departmentReviewBody
+	fixture.harness.departmentReviewBody = func(task TaskRecord) string {
+		if strings.Contains(task.IdempotencyKey, ":replan:") {
+			return eReplanReviewBody([]string{"RC:1:1", "RC:1:2"})
+		}
+		return base(task)
+	}
+
+	driveCapability(t, fixture, 40)
+
+	root := fixture.rootRecord(t)
+	allTasks, err := fixture.tasks.ListByCorrelation(context.Background(), root.CorrelationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	review, ok := findTaskByKey(allTasks, childKey(root.ID, "leader-review:ingenieria_ia:design-round:2:replan:1"))
+	if !ok {
+		t.Fatal("the round-2 replan review was never created")
+	}
+	listed := func(task TaskRecord) bool {
+		return strings.Contains(review.Instructions, fmt.Sprintf(`"task_id":%d,`, task.ID))
+	}
+	var superseded, kept, redo, roundOne []TaskRecord
+	for _, worker := range departmentWorkerTasks(allTasks, root.ID, "ingenieria_ia") {
+		switch {
+		case designRoundOf(worker.IdempotencyKey) == 1:
+			roundOne = append(roundOne, worker)
+		case strings.Contains(worker.IdempotencyKey, ":"+eOwnerKey):
+			superseded = append(superseded, worker)
+		case strings.Contains(worker.IdempotencyKey, ":"+eSupportKey):
+			kept = append(kept, worker)
+		case strings.Contains(worker.IdempotencyKey, ":reconcile_mdr"):
+			redo = append(redo, worker)
+		}
+	}
+	if len(roundOne) == 0 || len(superseded) != 1 || len(kept) != 1 || len(redo) != 1 {
+		t.Fatalf("scenario: round-1 %d, superseded %d, kept %d, redo %d workers", len(roundOne), len(superseded), len(kept), len(redo))
+	}
+	if !listed(redo[0]) || !listed(kept[0]) {
+		t.Fatalf("the review does not list the redo and the kept worker:\n%.600s", review.Instructions)
+	}
+	for _, stale := range append(roundOne, superseded[0]) {
+		if listed(stale) {
+			t.Fatalf("the review lists task %d (%s), which it no longer judges:\n%.600s", stale.ID, stale.IdempotencyKey, review.Instructions)
+		}
+	}
+
+	scope, _, err := fixture.orchestrator.departmentReviewScope(context.Background(), allTasks, root.ID, "ingenieria_ia", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, _ := findTaskByKey(allTasks, childKey(root.ID, "leader-plan:ingenieria_ia:design-round:2"))
+	if scope.PlanTaskID != plan.ID || plan.ID == 0 || !slices.Equal(scope.WorkerTaskIDs, []int64{kept[0].ID, redo[0].ID}) && !slices.Equal(scope.WorkerTaskIDs, []int64{redo[0].ID, kept[0].ID}) {
+		t.Fatalf("scope = %+v, want the round-2 plan %d and workers %d and %d", scope, plan.ID, kept[0].ID, redo[0].ID)
+	}
 }
