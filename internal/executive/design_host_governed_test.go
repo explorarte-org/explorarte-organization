@@ -20,7 +20,7 @@ func TestAReviseMustRestOnTheReview(t *testing.T) {
 	if !errors.Is(err, ErrContractRejected) {
 		t.Fatalf("a revise that answers no finding was accepted: %v", err)
 	}
-	for _, want := range []string{"rejects every finding", "return verdict freeze (or reject)", "budget and Finance guidance", "never required changes"} {
+	for _, want := range []string{"rejects every finding", "return verdict freeze.", "budget and Finance guidance", "never required changes"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal lacks %q: %s", want, err)
 		}
@@ -60,7 +60,7 @@ func TestReviewerAndAdjudicatorAreToldWhatTheHostEnforces(t *testing.T) {
 	if !strings.Contains(designAdjudicationPreamble, hostGovernedRequirementsConstraint) {
 		t.Error("the adjudicator is not told which requirements the host enforces")
 	}
-	if !strings.Contains(designAdjudicationPreamble, "if you reject every finding, the design stands: return freeze (or reject), not revise") {
+	if !strings.Contains(designAdjudicationPreamble, "a reject must rest on a finding you accept; if you reject every finding, the design stands: return freeze") {
 		t.Error("the adjudicator is not told that a revise must answer an accepted finding")
 	}
 	constraints := strings.Join(campaignTargetConstraints("add one case"), "\n")
@@ -113,7 +113,7 @@ func TestAnAdjudicatorThatRejectsEveryFindingFreezesInsteadOfRevising(t *testing
 	if len(adjudication.Attempts) != 2 || adjudication.Status != "completed" {
 		t.Fatalf("adjudication attempts=%d status=%s, want the refused revise and the freeze", len(adjudication.Attempts), adjudication.Status)
 	}
-	if first := adjudication.Attempts[0]; first.State != "failed" || !strings.Contains(first.ResultSummary, "return verdict freeze (or reject)") {
+	if first := adjudication.Attempts[0]; first.State != "failed" || !strings.Contains(first.ResultSummary, "return verdict freeze") {
 		t.Fatalf("the own-agenda revise closed as %q with %q", first.State, first.ResultSummary)
 	}
 	if _, ok := findTaskByKey(all, childKey(fixture.root, "design-review:round:2")); ok {
@@ -121,5 +121,52 @@ func TestAnAdjudicatorThatRejectsEveryFindingFreezesInsteadOfRevising(t *testing
 	}
 	if designFreezePending(fixture.rootRecord(t)) {
 		t.Fatal("the design that survived its review did not freeze")
+	}
+}
+
+// Local smoke #27 (root 1617): round-2 adversarial review accepted with no findings; the adjudicator
+// rejected with no accepted finding, no required change and no owner decision.
+func TestARejectMustRestOnTheReview(t *testing.T) {
+	root1617 := DesignAdjudication{Verdict: AdjudicationReject}
+	err := AssertRejectRestsOnTheReview(root1617)
+	if !errors.Is(err, ErrContractRejected) || !strings.Contains(err.Error(), "return verdict freeze") {
+		t.Fatalf("a reject with no reason was accepted: %v", err)
+	}
+	withFinding := DesignAdjudication{Verdict: AdjudicationReject, AcceptedFindings: []string{"AR-001"}}
+	if err := AssertRejectRestsOnTheReview(withFinding); err != nil {
+		t.Fatalf("a reject resting on an accepted finding was refused: %v", err)
+	}
+	for _, verdict := range []AdjudicationVerdict{AdjudicationFreeze, AdjudicationRevise} {
+		if err := AssertRejectRestsOnTheReview(DesignAdjudication{Verdict: verdict}); err != nil {
+			t.Errorf("the reject rule refused verdict %s: %v", verdict, err)
+		}
+	}
+}
+
+func TestAnAdjudicatorThatRejectsWithoutAFindingFreezesInstead(t *testing.T) {
+	fixture := newFreezeFixture(t, "freeze", true)
+	fixture.harness.adjudicationRewrite = func(task TaskRecord, body string) string {
+		for _, attempt := range task.Attempts {
+			if strings.Contains(attempt.ResultSummary, "this reject accepts no finding") {
+				return body // the scripted freeze
+			}
+		}
+		return strings.NewReplacer(
+			`"verdict":"freeze"`, `"verdict":"reject"`,
+			`"accepted_findings":["AR-001"],"rejected_findings":[]`, `"accepted_findings":[],"rejected_findings":["AR-001"]`,
+		).Replace(body)
+	}
+	for i := 0; i < 24; i++ {
+		run, err := fixture.orchestrator.Resume(context.Background(), fixture.root)
+		if err != nil && !errors.Is(err, ErrRunBlocked) && !errors.Is(err, ErrModelResultContractRejected) {
+			t.Fatalf("resume %d: %v", i, err)
+		}
+		if run.State.Terminal() || run.State == StateBlocked || !designFreezePending(fixture.rootRecord(t)) {
+			break
+		}
+	}
+	root := fixture.rootRecord(t)
+	if root.ReasonCode == ReasonDesignRejected || designFreezePending(root) {
+		t.Fatalf("root ended %s/%s: a reject with no finding was not corrected into a freeze", root.Status, root.ReasonCode)
 	}
 }

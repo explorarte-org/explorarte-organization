@@ -116,7 +116,7 @@ const designAdjudicationPreamble = "Adjudicate the adversarial review of this ca
 	"The design identity is bound by the host and must not be restated; return only the fields the schema declares. " +
 	"Only verdict=freeze settles the design. " +
 	"The bundle's campaign_target is what the owner asked for: a required change must ask for what the target specifies for the change being designed, and must not substitute names, values or examples of your own for anything it already states. " +
-	"Every required change must answer a finding you accept; if you reject every finding, the design stands: return freeze (or reject), not revise. " +
+	"Every required change must answer a finding you accept, and a reject must rest on a finding you accept; if you reject every finding, the design stands: return freeze. " +
 	hostGovernedRequirementsConstraint + "\n\n"
 
 // DesignBaseSHAReference is where a campaign's pinned commit lives.
@@ -365,6 +365,9 @@ func (o *Orchestrator) driveDesignFreeze(ctx context.Context, root TaskRecord, a
 				return err
 			}
 			if err := AssertReviseRestsOnTheReview(parsed); err != nil {
+				return err
+			}
+			if err := AssertRejectRestsOnTheReview(parsed); err != nil {
 				return err
 			}
 			// A revise binds the NEXT round to whatever it demands, so the
