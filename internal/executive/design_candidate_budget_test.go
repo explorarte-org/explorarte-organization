@@ -3,6 +3,7 @@ package executive
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -52,7 +53,7 @@ func TestRoot1351TheReviewerIsShownTheWholeDeliverable(t *testing.T) {
 }
 
 func TestEachDeliverableGetsAShareThatIsNeverLessThanBefore(t *testing.T) {
-	for deliverables, want := range map[int]int{0: 12000, 1: 12000, 2: 12000, 3: 9333, 4: 7000, 7: 4000, 8: 4000, 24: 4000} {
+	for deliverables, want := range map[int]int{0: 16000, 1: 16000, 2: 14000, 3: 9333, 4: 7000, 7: 4000, 8: 4000, 24: 4000} {
 		if got := candidateShare(deliverables); got != want {
 			t.Errorf("candidateShare(%d) = %d, want %d", deliverables, got, want)
 		}
@@ -90,10 +91,11 @@ func TestADeliverableThatDoesNotFitIsCutVisiblyOnACharacterBoundary(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(assembled, "x") != candidateDeliverableBytes {
-		t.Fatalf("the reviewers were shown %d bytes of the deliverable, want %d", strings.Count(assembled, "x"), candidateDeliverableBytes)
+	share := candidateShare(2)
+	if strings.Count(assembled, "x") != share {
+		t.Fatalf("the reviewers were shown %d bytes of the deliverable, want %d", strings.Count(assembled, "x"), share)
 	}
-	if !strings.Contains(assembled, "deliverable cut by the host: the reviewers are shown its first 12000 of 12500 bytes") {
+	if !strings.Contains(assembled, fmt.Sprintf("deliverable cut by the host: the reviewers are shown its first %d of %d bytes", share, candidateDeliverableBytes+500)) {
 		t.Fatalf("the cut is silent: %s", assembled[len(assembled)-300:])
 	}
 	if !strings.HasSuffix(assembled, "\nfine") {
@@ -111,7 +113,7 @@ func TestTheSizeCheckIsScopedToAPendingFreeze(t *testing.T) {
 	if !errors.Is(err, ErrContractRejected) {
 		t.Fatalf("an oversized design deliverable was not refused as a contract rejection: %v", err)
 	}
-	for _, want := range []string{"12001 bytes", "at most 12000 bytes", "fewer words"} {
+	for _, want := range []string{fmt.Sprintf("%d bytes", candidateDeliverableBytes+1), fmt.Sprintf("at most %d bytes", candidateDeliverableBytes), "fewer words"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal lacks %q: %s", want, err)
 		}
@@ -154,7 +156,7 @@ func TestAnOversizedDesignDeliverableIsCorrectedInsideTheRound(t *testing.T) {
 	if len(worker.Attempts) != 2 {
 		t.Fatalf("worker attempts=%d, want the refused one and the corrected one", len(worker.Attempts))
 	}
-	if first := worker.Attempts[0]; first.State != "failed" || !strings.Contains(first.ResultSummary, "at most 12000 bytes") {
+	if first := worker.Attempts[0]; first.State != "failed" || !strings.Contains(first.ResultSummary, fmt.Sprintf("at most %d bytes", candidateDeliverableBytes)) {
 		t.Fatalf("the oversized attempt closed as %q with %q", first.State, first.ResultSummary)
 	}
 	if worker.Status != "completed" {

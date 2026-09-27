@@ -62,7 +62,7 @@ func ParseWorkerResult(body []byte, limits Limits) (WorkerResult, error) {
 	if out.SchemaVersion != WorkerResultSchemaVersion && out.SchemaVersion != WorkerResultSchemaVersionV2 {
 		return WorkerResult{}, fmt.Errorf("%w: schema_version", ErrContractRejected)
 	}
-	if err := validateRequiredString(out.Summary, limits.MaxStringBytes, "summary"); err != nil {
+	if err := validateRequiredString(out.Summary, limits.WorkerSummaryBytes(), "summary"); err != nil {
 		return WorkerResult{}, err
 	}
 	if err := validateStrings(out.EvidenceRefs, limits, "evidence_refs"); err != nil {

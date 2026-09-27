@@ -17,8 +17,10 @@ import "fmt"
 // deploy path from a design). A design that omits them omits nothing; one that contradicts them is
 // still wrong, and that stays a finding.
 const hostGovernedRequirementsConstraint = "Some requirements in campaign_target are enforced by the host, not by the design: the budget and any guidance addressed to Finance, " +
-	"how many departments take part, which actor implements the change and when (the engineering mission, after design freeze), and deployment or production access. " +
+	"how many departments take part, which actor implements the change and when (the engineering mission, after design freeze), deployment or production access, " +
+	"and the campaign's approval and execution state. " +
 	"The candidate need not restate them: their absence is never a finding and never a required change, and no design statement can change them. " +
+	"A candidate that mentions one of them (for example, that the campaign is approved for execution) makes no design claim: it is neither a finding nor evidence. " +
 	"A candidate that contradicts one (it plans to deploy, to touch production, or to have department workers edit files) is still a finding."
 
 // AssertReviseRestsOnTheReview refuses a revise that answers nothing in the adversarial review.

@@ -498,6 +498,8 @@ func TestExecutiveRunReachesDesignFreezeThroughTheRealOrchestrator(t *testing.T)
 // its verdict exactly as they were judged.
 func TestReviseOpensTheNextRoundAndNeverReopensTheLast(t *testing.T) {
 	fixture := newFreezeFixture(t, "revise", true)
+	// One revise, then a freeze: exactly one successor round, whatever the bound allows.
+	fixture.harness.adjudicationVerdictByRound = map[int]string{2: "freeze"}
 	fixture.drive(t)
 	all, err := fixture.tasks.ListByCorrelation(context.Background(), fixture.rootRecord(t).CorrelationID)
 	if err != nil {

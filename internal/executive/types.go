@@ -183,12 +183,17 @@ const (
 )
 
 type Limits struct {
-	MaxInputBytes          int
-	MaxDepartments         int
-	MaxWorkerTasksPerPlan  int
-	MaxFollowupTasks       int
-	MaxArrayItems          int
-	MaxStringBytes         int
+	MaxInputBytes         int
+	MaxDepartments        int
+	MaxWorkerTasksPerPlan int
+	MaxFollowupTasks      int
+	MaxArrayItems         int
+	MaxStringBytes        int
+	// MaxWorkerSummaryBytes bounds a department worker's summary, which in a design phase IS the
+	// design. Every other string keeps MaxStringBytes. Between 2026-09-25 and 2026-09-27 five design
+	// worker summaries were refused at 4000 bytes (4102 to 5013, median 4333), one attempt each; the
+	// longest summary a design worker produced in that window was 5013 bytes.
+	MaxWorkerSummaryBytes  int
 	MaxInstructionsBytes   int
 	MaxAcceptanceCriteria  int
 	MaxRequirementsPerTask int
@@ -204,12 +209,21 @@ type Limits struct {
 	InvocationDeadline time.Duration
 }
 
+// WorkerSummaryBytes is the limit a worker summary is held to: MaxWorkerSummaryBytes, or
+// MaxStringBytes for Limits that do not set it.
+func (l Limits) WorkerSummaryBytes() int {
+	if l.MaxWorkerSummaryBytes > 0 {
+		return l.MaxWorkerSummaryBytes
+	}
+	return l.MaxStringBytes
+}
+
 func DefaultLimits() Limits {
 	return Limits{
 		MaxInputBytes: 256 << 10, MaxDepartments: 7, MaxWorkerTasksPerPlan: 24,
-		MaxFollowupTasks: 12, MaxArrayItems: 64, MaxStringBytes: 4000,
+		MaxFollowupTasks: 12, MaxArrayItems: 64, MaxStringBytes: 4000, MaxWorkerSummaryBytes: 8000,
 		MaxInstructionsBytes: 16000, MaxAcceptanceCriteria: 32, MaxRequirementsPerTask: 32,
-		MaxDepartmentReplans: 1, MaxDesignRounds: 2, MaxModelCalls: 128, MaxOutputTokens: 128000,
+		MaxDepartmentReplans: 1, MaxDesignRounds: 3, MaxModelCalls: 128, MaxOutputTokens: 128000,
 		InvocationDeadline: 10 * time.Minute,
 	}
 }

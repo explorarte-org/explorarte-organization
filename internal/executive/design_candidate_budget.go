@@ -23,8 +23,9 @@ import (
 // a character boundary and says so: the reviewer then knows what it did not see.
 const (
 	// candidateDeliverableBytes is the most of one design deliverable the reviewers are shown. The
-	// worker-result summary alone may take MaxStringBytes (4000); this leaves room for its evidence.
-	candidateDeliverableBytes = 12000
+	// worker-result summary alone may take MaxWorkerSummaryBytes (8000); this leaves room for its
+	// evidence. The envelope below is unchanged, so no review grows past what it already allowed.
+	candidateDeliverableBytes = 16000
 	// candidateDesignBytes is the envelope the whole candidate is sized against. It is what the old
 	// fixed cut already allowed at seven deliverables (7 x 4000), so review and adjudication
 	// instructions stay within sizes the task engine has already accepted.
