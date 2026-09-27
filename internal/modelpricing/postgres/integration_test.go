@@ -115,6 +115,29 @@ func TestModelPricingSeedIsRealAndResolvable(t *testing.T) {
 		t.Fatalf("openai_responses gpt-5.6-luna short tier=%+v", ceoShort)
 	}
 
+	// executive.ceo now routes to openai_responses/gpt-6-sol at reasoning_effort high
+	// (docs/canonical/model-routing.yaml, migration 000083). Its rate card is the provider's
+	// published one: $2.00 / $0.20 cached / $2.50 cache write / $10.00 output per 1M tokens, and
+	// above 272K input tokens 2x input and cache and 1.5x output for the whole request.
+	solShort, err := service.Resolve(ctx, "openai_responses", "gpt-6-sol", 1_000, modelpricing.BillingOnline, now)
+	if err != nil {
+		t.Fatalf("openai_responses/gpt-6-sol must be resolvable: %v", err)
+	}
+	if solShort.ContextTierName != "default" || solShort.InputPriceNanosPerMillion != 2_000_000_000 ||
+		!nanosIs(solShort.CachedInputPriceNanosPerMillion, 200_000_000) || !nanosIs(solShort.CacheWritePriceNanosPerMillion, 2_500_000_000) ||
+		solShort.OutputPriceNanosPerMillion != 10_000_000_000 {
+		t.Fatalf("openai_responses gpt-6-sol default tier=%+v", solShort)
+	}
+	solLong, err := service.Resolve(ctx, "openai_responses", "gpt-6-sol", 300_000, modelpricing.BillingOnline, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if solLong.ContextTierName != "long_context" || solLong.MinInputTokens != 272_000 ||
+		solLong.InputPriceNanosPerMillion != 4_000_000_000 || !nanosIs(solLong.CachedInputPriceNanosPerMillion, 400_000_000) ||
+		!nanosIs(solLong.CacheWritePriceNanosPerMillion, 5_000_000_000) || solLong.OutputPriceNanosPerMillion != 15_000_000_000 {
+		t.Fatalf("openai_responses gpt-6-sol long tier=%+v", solLong)
+	}
+
 	// department.leader and department.worker now route to deepseek/deepseek-flash
 	// (docs/canonical/model-routing.yaml, migration 000082). DeepSeek publishes an off-peak and a
 	// peak price; the table has no time-of-day dimension, so the PEAK price is stored -- a

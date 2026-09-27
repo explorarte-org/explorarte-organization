@@ -57,7 +57,9 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 	// was stuck at response_received forever.
 	// 82 (seed_deepseek_flash_pricing) prices the model department.leader and department.worker now
 	// route to; without a price row the cost gate fails closed and no department call could dispatch.
-	const wantCount = 82
+	// 83 (seed_openai_responses_gpt_6_sol_pricing) prices the model executive.ceo now routes to; without a
+	// price row the cost gate fails closed and the CEO could never dispatch.
+	const wantCount = 83
 	if len(loaded) != wantCount {
 		t.Fatalf("migration count=%d want %d", len(loaded), wantCount)
 	}
@@ -155,6 +157,7 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		80: "add_campaign_promotion_execution_mode",
 		81: "permit_normalization_failure_content_attachment",
 		82: "seed_deepseek_flash_pricing",
+		83: "seed_openai_responses_gpt_6_sol_pricing",
 	}
 	byVersion := make(map[int64]string, len(loaded))
 	for _, migration := range loaded {
