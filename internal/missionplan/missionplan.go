@@ -236,10 +236,11 @@ func Derive(request Request) (Derived, error) {
 	}
 	// The gates are appended by the host, in this order, always. They are not
 	// derived from anything the model said and cannot be reduced by it.
+	testPackages := goTestPackages(goFiles)
 	operations = append(operations,
 		coderunner.Operation{Type: coderunner.GoBuild},
 		coderunner.Operation{Type: coderunner.GoVet},
-		coderunner.Operation{Type: coderunner.GoTest},
+		coderunner.Operation{Type: coderunner.GoTest, Packages: testPackages},
 		coderunner.Operation{Type: coderunner.Fitness},
 	)
 
@@ -249,7 +250,7 @@ func Derive(request Request) (Derived, error) {
 		Objective:          request.Objective,
 		AllowedPaths:       allowed,
 		AcceptanceCriteria: append([]string(nil), request.AcceptanceCriteria...),
-		RequiredGates:      RequiredGates(),
+		RequiredGates:      requiredGatesTesting(testPackages),
 	}
 	normalized, err := policy.Normalize()
 	if err != nil {
@@ -281,6 +282,49 @@ func RequiredGates() []engineeringmission.RequiredGate {
 		{Type: engineeringmission.GateTest},
 		{Type: engineeringmission.GateFitness},
 	}
+}
+
+// goTestPackages is what GO_TEST runs for a mission that changed goFiles: the package of every changed
+// Go file, by name, and then the whole module. Smokes #20 to #22 (2026-09-27) passed `go test ./...`
+// and the CEO closure still refused them: the goal named `go test ./internal/identifiers/...` and the
+// record did not. Naming the changed packages first makes the command say what the goal asks, and
+// keeping ./... means no test the mission ran before is skipped (Go runs each package once). A
+// mission that changed no Go file keeps the code-runner's default, the whole module.
+func goTestPackages(goFiles []string) []string {
+	if len(goFiles) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	packages := []string{}
+	for _, file := range goFiles {
+		dir := path.Dir(file)
+		pkg := "./..."
+		if dir != "." {
+			pkg = "./" + dir + "/..."
+		}
+		if !seen[pkg] {
+			seen[pkg] = true
+			packages = append(packages, pkg)
+		}
+	}
+	sort.Strings(packages)
+	if !seen["./..."] {
+		packages = append(packages, "./...")
+	}
+	return packages
+}
+
+// requiredGatesTesting is RequiredGates with the GO_TEST gate bound to the packages the mission's
+// GO_TEST operation runs, so the promotion's gate verification (which compares package sets) checks
+// the operation that actually ran.
+func requiredGatesTesting(packages []string) []engineeringmission.RequiredGate {
+	gates := RequiredGates()
+	for i := range gates {
+		if gates[i].Type == engineeringmission.GateTest {
+			gates[i].Packages = append([]string(nil), packages...)
+		}
+	}
+	return gates
 }
 
 // EncodePlan renders the CodeRunner plan exactly as it will be persisted.

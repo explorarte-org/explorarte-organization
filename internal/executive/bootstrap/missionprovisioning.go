@@ -163,8 +163,9 @@ func missionProvisioningOptions(cfg config.Config, store *platformpostgres.Store
 	if err != nil {
 		return nil, err
 	}
+	missions := engineeringmission.Service{Tasks: taskService, Promotion: stagingRuntime.Service}
 	provisioner := missionProvisioner{
-		missions:       engineeringmission.Service{Tasks: taskService, Promotion: stagingRuntime.Service},
+		missions:       missions,
 		organizationID: cfg.Tasks.OrganizationID,
 	}
 	// The same repository and the same backend the mission will later run against:
@@ -173,7 +174,28 @@ func missionProvisioningOptions(cfg config.Config, store *platformpostgres.Store
 	return []executive.OrchestratorOption{
 		executive.WithMissionProvisioning(resolver, provisioner),
 		executive.WithPatchWorkbench(workbench),
+		executive.WithMissionReviewRequester(missionReviewRequester{missions: missions}),
 	}, nil
+}
+
+// missionPromotionRequester is the one engineering-mission operation a verified mission's review
+// request needs.
+type missionPromotionRequester interface {
+	RequestPromotion(ctx context.Context, taskID, workspaceID int64, actorRole string) (staging.Promotion, error)
+}
+
+// missionReviewRequester opens a verified mission's promotion for review, as the code-runner role
+// that produced the candidate (the actor the owner's review must differ from). It cannot review,
+// approve or apply: those remain orgctl code-runner mission review and orgctl staging promotion apply.
+type missionReviewRequester struct {
+	missions missionPromotionRequester
+}
+
+const missionReviewRequesterRole = "ingenieria_ia/code-runner"
+
+func (r missionReviewRequester) RequestMissionReview(ctx context.Context, missionTaskID, workspaceID int64) error {
+	_, err := r.missions.RequestPromotion(ctx, missionTaskID, workspaceID, missionReviewRequesterRole)
+	return err
 }
 
 // newProgramTargetResolver resolves the repository through the catalog and
