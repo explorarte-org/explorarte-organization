@@ -140,3 +140,26 @@ func evidenceOf(payloads ...string) []OrganizationalSource {
 	}
 	return sources
 }
+
+// Local smoke #32 (root 1717): refusals named the file and line range but not the passage, and the
+// worker spent three attempts guessing. The refusal now names the line the reproduced run begins on,
+// and still carries no source text.
+func TestARefusalNamesTheLineTheReproducedPassageBeginsOn(t *testing.T) {
+	source := "package campaign\n\n// ForMode returns the requirements a run in mode must clear:\n// the minimal floor, raised to the governed floor for a governed run.\nfunc ForMode() {}\n"
+	candidate := "The design notes that ForMode returns the requirements a run in mode must clear: the minimal floor, and so on."
+	err := DeclassifyCandidate(candidate, []OrganizationalSource{{Reference: "repository://x@abc/internal/campaign/execution_feasibility.go#L40-L44", Content: source}})
+	if !errors.Is(err, ErrCandidateContaminated) {
+		t.Fatalf("err = %v, want a contamination refusal", err)
+	}
+	if !strings.HasSuffix(err.Error(), "execution_feasibility.go#L40-L44, from line 42") {
+		t.Fatalf("refusal does not name the line the passage begins on (42): %v", err)
+	}
+	if err := DeclassifyCandidate(err.Error(), []OrganizationalSource{{Content: source}}); err != nil {
+		t.Fatalf("the refusal itself reproduces the source: %v", err)
+	}
+	// Without a #L range the line is counted within the excerpt.
+	err = DeclassifyCandidate(candidate, []OrganizationalSource{{Content: source}})
+	if !strings.HasSuffix(err.Error(), "characters of source, from line 3") {
+		t.Fatalf("refusal = %v, want line 3 of the excerpt", err)
+	}
+}
