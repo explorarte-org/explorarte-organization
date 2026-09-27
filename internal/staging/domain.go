@@ -133,14 +133,18 @@ type Workspace struct {
 	ManifestDigest         *string         `json:"manifest_digest,omitempty"`
 	PatchDigest            *string         `json:"patch_digest,omitempty"`
 	ChangedFileCount       *int            `json:"changed_file_count,omitempty"`
-	Version                int64           `json:"version"`
-	StatusReasonCode       *string         `json:"status_reason_code,omitempty"`
-	StatusReason           *string         `json:"status_reason,omitempty"`
-	CreatedAt              time.Time       `json:"created_at"`
-	UpdatedAt              time.Time       `json:"updated_at"`
-	SealedAt               *time.Time      `json:"sealed_at,omitempty"`
-	AbandonedAt            *time.Time      `json:"abandoned_at,omitempty"`
-	CleanedAt              *time.Time      `json:"cleaned_at,omitempty"`
+	// ChangedPaths are the sorted repository-relative paths of the revision SealWorkspace just
+	// sealed. They are handed to the caller of that seal and never persisted: the manifest artifact is
+	// the durable record, and a workspace read back later (or a repeated seal of a sealed one) has none.
+	ChangedPaths     []string   `json:"-"`
+	Version          int64      `json:"version"`
+	StatusReasonCode *string    `json:"status_reason_code,omitempty"`
+	StatusReason     *string    `json:"status_reason,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
+	SealedAt         *time.Time `json:"sealed_at,omitempty"`
+	AbandonedAt      *time.Time `json:"abandoned_at,omitempty"`
+	CleanedAt        *time.Time `json:"cleaned_at,omitempty"`
 }
 
 type Artifact struct {

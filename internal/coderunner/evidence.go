@@ -29,6 +29,7 @@ type operationEvidence struct {
 type checkEvidence struct {
 	Ordinal      int      `json:"ordinal"`
 	Type         string   `json:"type"`
+	Command      []string `json:"command,omitempty"`
 	Packages     []string `json:"packages,omitempty"`
 	Race         bool     `json:"race,omitempty"`
 	Integration  bool     `json:"integration,omitempty"`
@@ -44,8 +45,12 @@ type candidateRevision struct {
 }
 
 type changedFilesRef struct {
-	Count          int    `json:"count"`
-	ManifestDigest string `json:"manifest_digest,omitempty"`
+	Count int `json:"count"`
+	// Paths are the repository-relative paths the sealed candidate changed, recorded only when they
+	// are exactly the sealed revision's (see staging.Workspace.ChangedPaths): a goal that says which
+	// file may change is checked against the file that did.
+	Paths          []string `json:"paths,omitempty"`
+	ManifestDigest string   `json:"manifest_digest,omitempty"`
 }
 
 type executionEnvironment struct {
@@ -98,6 +103,7 @@ func buildAttemptEvidence(taskID, attemptID int64, ops []Operation, results []Re
 			ev.ChecksRun = append(ev.ChecksRun, checkEvidence{
 				Ordinal:      i + 1,
 				Type:         string(r.Type),
+				Command:      r.Command,
 				Packages:     op.Packages,
 				Race:         op.Race,
 				Integration:  op.Integration,
@@ -115,6 +121,9 @@ func buildAttemptEvidence(taskID, attemptID int64, ops []Operation, results []Re
 	}
 	if sealed.ChangedFileCount != nil {
 		ev.ChangedFiles.Count = *sealed.ChangedFileCount
+		if len(sealed.ChangedPaths) == *sealed.ChangedFileCount {
+			ev.ChangedFiles.Paths = sealed.ChangedPaths
+		}
 	}
 	digests := map[string]string{}
 	if sealed.ManifestDigest != nil {

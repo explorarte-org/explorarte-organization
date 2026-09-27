@@ -126,6 +126,13 @@ func TestStagingPromotionPostgreSQL17AndRealGit(t *testing.T) {
 	if workspace.Status != staging.WorkspaceSealed || workspace.CandidateCommit == nil || workspace.ManifestDigest == nil || workspace.PatchDigest == nil {
 		t.Fatalf("unexpected sealed workspace: %+v", workspace)
 	}
+	// The seal hands back the paths it sealed, and only the seal: they are not persisted.
+	if len(workspace.ChangedPaths) != 1 || workspace.ChangedPaths[0] != "change.txt" {
+		t.Fatalf("sealed changed paths=%v, want [change.txt]", workspace.ChangedPaths)
+	}
+	if readBack, readErr := runtime.Service.GetWorkspace(ctx, workspace.ID); readErr != nil || readBack.ChangedPaths != nil {
+		t.Fatalf("a workspace read back carries changed paths %v (err=%v); only the seal hands them over", readBack.ChangedPaths, readErr)
+	}
 	if got := gitOutput(t, repositoryRoot, "rev-parse", "refs/heads/main"); got != baseCommit {
 		t.Fatalf("target moved during sealing: got=%s want=%s", got, baseCommit)
 	}

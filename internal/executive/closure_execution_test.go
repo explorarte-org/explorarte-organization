@@ -127,3 +127,91 @@ func TestAClosureIsNeverCreatedWithoutTheExecutionItDependsOn(t *testing.T) {
 		}
 	}
 }
+
+// root1428Mission is root 1406's record as the code-runner now writes it: every gate with the command
+// it ran, and the sealed paths.
+func root1428Mission(paths []any) TaskRecord {
+	mission := root1406Mission()
+	for i, evidence := range mission.Evidence {
+		if !strings.HasPrefix(evidence.Reference, codeRunnerEvidenceReferencePrefix) {
+			continue
+		}
+		commands := map[string][]any{
+			"GO_BUILD": {"go", "build", "./..."}, "GO_VET": {"go", "vet", "./..."}, "GO_TEST": {"go", "test", "./..."},
+			"FITNESS": {"make", "test-kernel-governance-fitness", "test-executive-fitness"},
+		}
+		for _, raw := range evidence.Metadata["checks_run"].([]any) {
+			check := raw.(map[string]any)
+			check["command"] = commands[check["type"].(string)]
+		}
+		evidence.Metadata["changed_files"] = map[string]any{"count": float64(1), "paths": paths}
+		mission.Evidence[i] = evidence
+	}
+	return mission
+}
+
+func TestRoot1428TheClosureIsShownWhatRanAndWhichFileChanged(t *testing.T) {
+	o, root := closureExecutionFixture(t, root1428Mission([]any{"internal/identifiers/identifiers_test.go"}))
+	execution, err := o.closureEngineeringExecution(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(execution.ChangedPaths) != 1 || execution.ChangedPaths[0] != "internal/identifiers/identifiers_test.go" {
+		t.Fatalf("the closure is not told which file changed: %v", execution.ChangedPaths)
+	}
+	commands := map[string]string{}
+	for _, check := range execution.Checks {
+		commands[check.Type] = check.Command
+	}
+	if commands["GO_TEST"] != "go test ./..." {
+		t.Fatalf("the closure is not told what GO_TEST ran: %q", commands["GO_TEST"])
+	}
+	for _, want := range []string{"finished and the host verified it", "only thing pending is the independent engineering review", "separate owner decision"} {
+		if !strings.Contains(execution.MissionState, want) {
+			t.Errorf("the mission state lacks %q: %s", want, execution.MissionState)
+		}
+	}
+	closure, _, err := o.createClosureTask(context.Background(), root, ExecutivePlan{Objective: "x"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"changed_paths":["internal/identifiers/identifiers_test.go"]`, `"command":"go test ./..."`, `"mission_state":"the code-runner execution finished`} {
+		if !strings.Contains(closure.Instructions, want) {
+			t.Errorf("the closure instructions lack %s", want)
+		}
+	}
+}
+
+func TestPathsThatDoNotAccountForEveryChangeAreNotShown(t *testing.T) {
+	mission := root1428Mission([]any{"internal/identifiers/identifiers_test.go"})
+	for i, evidence := range mission.Evidence {
+		if strings.HasPrefix(evidence.Reference, codeRunnerEvidenceReferencePrefix) {
+			evidence.Metadata["changed_files"].(map[string]any)["count"] = float64(2)
+			mission.Evidence[i] = evidence
+		}
+	}
+	o, root := closureExecutionFixture(t, mission)
+	execution, err := o.closureEngineeringExecution(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if execution.ChangedPaths != nil || execution.ChangedFiles != 2 {
+		t.Fatalf("a partial path list was shown as the changed files: %v of %d", execution.ChangedPaths, execution.ChangedFiles)
+	}
+}
+
+func TestTheMissionStateSaysWhatIsLeft(t *testing.T) {
+	for _, c := range []struct {
+		status  string
+		pending []string
+		want    string
+	}{
+		{"awaiting_verification", nil, "nothing is pending on the mission"},
+		{"awaiting_verification", []string{"review", "engineering-required-gates"}, "still pending on the mission: review, engineering-required-gates"},
+		{"completed", nil, "mission status completed"},
+	} {
+		if got := missionStateForClosure(c.status, c.pending); !strings.Contains(got, c.want) {
+			t.Errorf("missionStateForClosure(%q, %v) = %q, want it to say %q", c.status, c.pending, got, c.want)
+		}
+	}
+}

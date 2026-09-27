@@ -20,6 +20,10 @@ type Result struct {
 	BytesProduced int64
 	OutputDigest  string
 	Truncated     bool
+	// Command is the argv the operation executed (program first), for the operations that run a
+	// process through run(). It is recorded so the evidence states what ran, not only its result:
+	// GO_TEST with no packages runs `go test ./...`, and nothing downstream could say so before.
+	Command []string
 }
 
 type Executor struct {
@@ -113,7 +117,12 @@ func (e *Executor) run(ctx context.Context, typ OperationType, name string, args
 	defer cancel()
 	capture := e.capture(cancel)
 	code, runErr := runSupervised(runCtx, e.Workspace, "", capture, name, args...)
-	return toResult(typ, code, runErr, capture, nil)
+	result, err := toResult(typ, code, runErr, capture, nil)
+	if err != nil {
+		return result, err
+	}
+	result.Command = append([]string{name}, args...)
+	return result, nil
 }
 
 // successOverride lets a caller redefine what counts as "success" for exit
