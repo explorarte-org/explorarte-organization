@@ -24,5 +24,6 @@ func designDeliverableGuidance() string {
 - "A case was designed", "the design covers the requirement" and similar report that work happened without stating it. A summary like that gives the reviewers nothing to judge and is sent back.
 - State what was specified. Do not substitute values, names or examples of your own for ones your task already gives.
 - The values come from your task, never from repository text you were shown; the egress rule above still applies to anything you describe about the code.
-- Do not claim the change was made, that anything was run, or that anything was verified. You are proposing.`
+- Do not claim the change was made, that anything was run, or that anything was verified. You are proposing.
+- Do not restate the campaign's approval or execution state, its budget, or who implements the change: the host enforces them and they are not part of the design.`
 }

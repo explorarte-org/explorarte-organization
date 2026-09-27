@@ -216,11 +216,17 @@ var (
 // comes from the same Limits the validator reads, never from a second
 // literal.
 func byteLimitedStringSchema(limits Limits) string {
+	return byteLimitedStringSchemaOf(limits.MaxStringBytes)
+}
+
+// byteLimitedStringSchemaOf is byteLimitedStringSchema for a limit other than MaxStringBytes (the
+// worker summary's).
+func byteLimitedStringSchemaOf(limit int) string {
 	return fmt.Sprintf(`{
 	          "type":"string",
 	          "maxLength":%d,
 	          "description":"Must be non-empty and its UTF-8 encoded representation must not exceed %d bytes."
-	        }`, limits.MaxStringBytes, limits.MaxStringBytes)
+	        }`, limit, limit)
 }
 
 // WorkerResultOutputSchemaFor builds the provider-facing contract for
@@ -279,7 +285,7 @@ func workerResultOutputSchemaFor(limits Limits, subjects, refs []string) json.Ra
 	      "type":"string",
 	      "enum":["worker-result/v1","worker-result/v2"]
 	    },
-	    "summary":` + byteLimitedStringSchema(limits) + `,
+	    "summary":` + byteLimitedStringSchemaOf(limits.WorkerSummaryBytes()) + `,
 	    "evidence_refs":{
 	      "type":"array",
 	      "items":` + byteLimitedStringSchema(limits) + `

@@ -3,6 +3,7 @@ package executive
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -72,13 +73,18 @@ func TestWorkerResultSchemaCommunicatesTheHostByteLimit(t *testing.T) {
 		if err := json.Unmarshal(property, &declared); err != nil {
 			t.Fatalf("%s: malformed property schema: %v", field, err)
 		}
-		if declared.MaxLength != limits.MaxStringBytes {
-			t.Fatalf("%s: maxLength=%d, want %d derived from Limits.MaxStringBytes", field, declared.MaxLength, limits.MaxStringBytes)
+		// The summary has its own limit (MaxWorkerSummaryBytes); every other field shares MaxStringBytes.
+		limit := limits.MaxStringBytes
+		if field == "summary" {
+			limit = limits.WorkerSummaryBytes()
+		}
+		if declared.MaxLength != limit {
+			t.Fatalf("%s: maxLength=%d, want %d derived from Limits", field, declared.MaxLength, limit)
 		}
 		if !strings.Contains(declared.Description, "UTF-8") {
 			t.Fatalf("%s: description must name UTF-8 explicitly, got %q", field, declared.Description)
 		}
-		want := "must not exceed 4000 bytes"
+		want := fmt.Sprintf("must not exceed %d bytes", limit)
 		if !strings.Contains(declared.Description, want) {
 			t.Fatalf("%s: description must state the byte limit (%q), got %q", field, want, declared.Description)
 		}
@@ -94,10 +100,15 @@ func TestWorkerResultSchemaCommunicatesTheHostByteLimit(t *testing.T) {
 func TestWorkerResultSchemaLimitIsDerivedFromLimitsNotALiteral(t *testing.T) {
 	limits := DefaultLimits()
 	limits.MaxStringBytes = 777
+	limits.MaxWorkerSummaryBytes = 555
 	for field, property := range byteLimitedProperties(t, WorkerResultOutputSchemaFor(limits)) {
 		body := string(property)
-		if !strings.Contains(body, `"maxLength":777`) || strings.Contains(body, `"maxLength":4000`) {
-			t.Fatalf("%s: schema did not follow Limits.MaxStringBytes=777: %s", field, body)
+		want := `"maxLength":777`
+		if field == "summary" {
+			want = `"maxLength":555`
+		}
+		if !strings.Contains(body, want) || strings.Contains(body, `"maxLength":4000`) || strings.Contains(body, `"maxLength":8000`) {
+			t.Fatalf("%s: schema did not follow Limits (%s): %s", field, want, body)
 		}
 	}
 }
@@ -215,27 +226,27 @@ func TestWorkerResultSlotsSchemaEnumeratesOnlyAvailableRefs(t *testing.T) {
 // limit, and the host must keep rejecting it.
 func TestMultibyteSummaryUnderCharacterLimitButOverByteLimitIsRejected(t *testing.T) {
 	limits := DefaultLimits()
-	// 2500 characters ('é' is 2 bytes in UTF-8) = 2500 chars <= 4000 chars,
-	// but 5000 bytes > 4000 bytes. The exact trap maxLength-only validation
-	// would wave through.
-	multibyte := strings.Repeat("é", limits.MaxStringBytes/2+500)
+	limit := limits.WorkerSummaryBytes()
+	// 'é' is 2 bytes in UTF-8: limit/2+500 characters stay under the limit in characters but exceed it
+	// in bytes. The exact trap maxLength-only validation would wave through.
+	multibyte := strings.Repeat("é", limit/2+500)
 	runes := len([]rune(multibyte))
 	bytesLen := len(multibyte)
-	if runes > limits.MaxStringBytes || bytesLen <= limits.MaxStringBytes {
-		t.Fatalf("fixture lost its point: chars=%d bytes=%d limit=%d", runes, bytesLen, limits.MaxStringBytes)
+	if runes > limit || bytesLen <= limit {
+		t.Fatalf("fixture lost its point: chars=%d bytes=%d limit=%d", runes, bytesLen, limit)
 	}
 	artifact := []byte(`{"schema_version":"worker-result/v2","summary":"` + multibyte + `","evidence_refs":[],"evidence":[]}`)
 	_, err := ParseWorkerResult(artifact, limits)
 	if !errors.Is(err, ErrContractRejected) {
 		t.Fatalf("a %d-byte summary (%d characters) must stay a contract rejection: %v", bytesLen, runes, err)
 	}
-	if !strings.Contains(err.Error(), "5000") || !strings.Contains(err.Error(), "4000") {
+	if !strings.Contains(err.Error(), fmt.Sprint(bytesLen)) || !strings.Contains(err.Error(), fmt.Sprint(limit)) {
 		t.Fatalf("rejection must measure the violation in bytes, got: %v", err)
 	}
 
 	// The same artifact one byte under the limit is accepted: the boundary
 	// being tested is bytes, not shape.
-	fits := strings.Repeat("é", (limits.MaxStringBytes-1)/2)
+	fits := strings.Repeat("é", (limit-1)/2)
 	artifact = []byte(`{"schema_version":"worker-result/v2","summary":"` + fits + `","evidence_refs":[],"evidence":[]}`)
 	if _, err := ParseWorkerResult(artifact, limits); err != nil {
 		t.Fatalf("a summary within the byte limit was refused: %v", err)
@@ -250,13 +261,13 @@ func TestMultibyteSummaryUnderCharacterLimitButOverByteLimitIsRejected(t *testin
 // never the offending content itself.
 func TestLengthRejectionFeedbackCarriesFieldCauseAndMeasure(t *testing.T) {
 	limits := DefaultLimits()
-	long := strings.Repeat("a", 4200)
+	long := strings.Repeat("a", limits.WorkerSummaryBytes()+200)
 	artifact := []byte(`{"schema_version":"worker-result/v2","summary":"` + long + `","evidence_refs":[],"evidence":[]}`)
 	_, err := ParseWorkerResult(artifact, limits)
 	if !errors.Is(err, ErrContractRejected) {
 		t.Fatalf("an over-long summary is a contract rejection, not anything else: %v", err)
 	}
-	for _, want := range []string{"summary", "4200", "4000", "bytes"} {
+	for _, want := range []string{"summary", fmt.Sprint(limits.WorkerSummaryBytes() + 200), fmt.Sprint(limits.WorkerSummaryBytes()), "bytes"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("rejection feedback must contain %q for the retry to act on, got: %v", want, err)
 		}
