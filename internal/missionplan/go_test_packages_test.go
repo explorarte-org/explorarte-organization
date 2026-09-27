@@ -12,46 +12,97 @@ import (
 	"github.com/Mireuz13/explorarte-organization/internal/engineeringmission"
 )
 
-// Smokes #20 to #22 (2026-09-27): the closure refused `go test ./...` because the goal named
-// `go test ./internal/identifiers/...`. GO_TEST now names the changed packages and keeps the module.
+// Smokes #20 to #23 (2026-09-27): the closure refused `go test ./...`, then refused
+// `go test ./internal/identifiers/... ./...`, because the goal named exactly
+// `go test ./internal/identifiers/...`. The changed packages now get a GO_TEST of their own, and the
+// whole module keeps its own.
 
-func TestGoTestNamesTheChangedPackagesAndKeepsTheModule(t *testing.T) {
+func TestTheChangedPackagesAreNamedAsAGoalWouldNameThem(t *testing.T) {
 	for _, c := range []struct {
 		files []string
 		want  []string
 	}{
-		{[]string{"internal/identifiers/identifiers_test.go"}, []string{"./internal/identifiers/...", "./..."}},
-		{[]string{"internal/b/x.go", "internal/a/y_test.go", "internal/a/z.go"}, []string{"./internal/a/...", "./internal/b/...", "./..."}},
-		{[]string{"main.go"}, []string{"./..."}},
+		{[]string{"internal/identifiers/identifiers_test.go"}, []string{"./internal/identifiers/..."}},
+		{[]string{"internal/b/x.go", "internal/a/y_test.go", "internal/a/z.go"}, []string{"./internal/a/...", "./internal/b/..."}},
+		{[]string{"main.go"}, nil},
 		{nil, nil},
 	} {
-		if got := goTestPackages(c.files); !slices.Equal(got, c.want) {
-			t.Errorf("goTestPackages(%v) = %v, want %v", c.files, got, c.want)
+		if got := changedTestPackages(c.files); !slices.Equal(got, c.want) {
+			t.Errorf("changedTestPackages(%v) = %v, want %v", c.files, got, c.want)
 		}
 	}
 }
 
-func TestTheTestGateDeclaresWhatTheTestOperationRuns(t *testing.T) {
-	packages := []string{"./internal/identifiers/...", "./..."}
-	var gate engineeringmission.RequiredGate
-	for _, g := range requiredGatesTesting(packages) {
-		if g.Type == engineeringmission.GateTest {
-			gate = g
+func goTestOperations(plan coderunner.Plan) [][]string {
+	var runs [][]string
+	for _, operation := range plan.Operations {
+		if operation.Type == coderunner.GoTest {
+			runs = append(runs, operation.Packages)
 		}
 	}
-	if !slices.Equal(gate.Packages, packages) {
-		t.Fatalf("GO_TEST gate packages=%v, want %v", gate.Packages, packages)
+	return runs
+}
+
+func goTestGates(policy engineeringmission.MissionPolicy) [][]string {
+	var gates [][]string
+	for _, gate := range policy.RequiredGates {
+		if gate.Type == engineeringmission.GateTest {
+			gates = append(gates, gate.Packages)
+		}
+	}
+	return gates
+}
+
+// Through Derive, the only place operations are made: the literal run first, then the module, and a
+// gate for each, so the promotion's gate check requires both.
+func TestDeriveRunsTheLiteralPackagesAndThenTheModule(t *testing.T) {
+	request := docsRequest()
+	request.Scope = ScopeInternalCode
+	request.Changes = []Change{{Path: "internal/identifiers/identifiers_test.go", Intent: "one case", Patch: unifiedDiff("internal/identifiers/identifiers_test.go")}}
+	derived, err := Derive(request)
+	if err != nil {
+		t.Fatalf("derive: %v", err)
+	}
+	runs := goTestOperations(derived.Plan)
+	if len(runs) != 2 || !slices.Equal(runs[0], []string{"./internal/identifiers/..."}) || runs[1] != nil {
+		t.Fatalf("GO_TEST runs=%v, want [./internal/identifiers/...] then the module default", runs)
+	}
+	gates := goTestGates(derived.Policy)
+	if len(gates) != 2 || !slices.Equal(gates[0], []string{"./internal/identifiers/..."}) || gates[1] != nil {
+		t.Fatalf("GO_TEST gates=%v, want one per run", gates)
 	}
 	// The shared fixed gate set is not mutated.
-	for _, g := range RequiredGates() {
-		if len(g.Packages) != 0 {
-			t.Fatalf("RequiredGates() was mutated: %+v", g)
+	for _, gate := range RequiredGates() {
+		if len(gate.Packages) != 0 {
+			t.Fatalf("RequiredGates() was mutated: %+v", gate)
 		}
 	}
 }
 
-// The command the code-runner builds from those packages is valid Go and runs.
-func TestTheCodeRunnerRunsTheNamedPackagesAndTheModule(t *testing.T) {
+func TestAMissionWithoutGoPackagesRunsTheModuleOnce(t *testing.T) {
+	for _, request := range []Request{docsRequest(), func() Request {
+		r := docsRequest()
+		r.Scope = ScopeInternalCode
+		r.Changes = []Change{{Path: "main.go", Intent: "x", Patch: unifiedDiff("main.go")}}
+		return r
+	}()} {
+		derived, err := Derive(request)
+		if err != nil {
+			// A root-level Go file may be out of the request's scope; only in-scope requests matter here.
+			continue
+		}
+		if runs := goTestOperations(derived.Plan); len(runs) != 1 || runs[0] != nil {
+			t.Fatalf("GO_TEST runs=%v, want only the module default", runs)
+		}
+		if gates := goTestGates(derived.Policy); len(gates) != 1 || gates[0] != nil {
+			t.Fatalf("GO_TEST gates=%v, want only the module gate", gates)
+		}
+	}
+}
+
+// Both commands are valid Go and run through the code-runner's executor, and the first is literally
+// what a goal names.
+func TestTheCodeRunnerRunsTheLiteralCommandAndTheModule(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go required")
 	}
@@ -69,56 +120,18 @@ func TestTheCodeRunnerRunsTheNamedPackagesAndTheModule(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	packages := goTestPackages([]string{"internal/identifiers/id_test.go"})
-	result, err := (&coderunner.Executor{Workspace: dir}).ExecuteOperation(context.Background(), coderunner.Operation{Type: coderunner.GoTest, Packages: packages})
-	if err != nil || !result.Success {
-		t.Fatalf("go test %v: success=%v err=%v", packages, result.Success, err)
-	}
-	if !slices.Equal(result.Command, []string{"go", "test", "./internal/identifiers/...", "./..."}) {
-		t.Fatalf("command=%v", result.Command)
-	}
-}
-
-// Through Derive, the only place operations are made: the GO_TEST operation and the mission's GO_TEST
-// gate carry the same packages, and a documentation-only mission keeps the module default.
-func TestDeriveBindsTheTestOperationAndItsGate(t *testing.T) {
-	request := docsRequest()
-	request.Scope = ScopeInternalCode
-	request.Changes = []Change{{Path: "internal/identifiers/identifiers_test.go", Intent: "one case", Patch: unifiedDiff("internal/identifiers/identifiers_test.go")}}
-	derived, err := Derive(request)
-	if err != nil {
-		t.Fatalf("derive: %v", err)
-	}
-	want := []string{"./internal/identifiers/...", "./..."}
-	var ran []string
-	for _, operation := range derived.Plan.Operations {
-		if operation.Type == coderunner.GoTest {
-			ran = operation.Packages
+	executor := &coderunner.Executor{Workspace: dir}
+	for packages, want := range map[string][]string{
+		"literal": {"go", "test", "./internal/identifiers/..."},
+		"module":  {"go", "test", "./..."},
+	} {
+		op := coderunner.Operation{Type: coderunner.GoTest}
+		if packages == "literal" {
+			op.Packages = changedTestPackages([]string{"internal/identifiers/id_test.go"})
+		}
+		result, err := executor.ExecuteOperation(context.Background(), op)
+		if err != nil || !result.Success || !slices.Equal(result.Command, want) {
+			t.Fatalf("%s: command=%v success=%v err=%v, want %v", packages, result.Command, result.Success, err, want)
 		}
 	}
-	if !slices.Equal(ran, want) {
-		t.Fatalf("GO_TEST operation packages=%v, want %v", ran, want)
-	}
-	for _, gate := range derived.Policy.RequiredGates {
-		if gate.Type == engineeringmission.GateTest && !sameSet(gate.Packages, want) {
-			t.Fatalf("GO_TEST gate packages=%v, want %v", gate.Packages, want)
-		}
-	}
-
-	docs, err := Derive(docsRequest())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, operation := range docs.Plan.Operations {
-		if operation.Type == coderunner.GoTest && operation.Packages != nil {
-			t.Fatalf("a documentation-only mission names test packages: %v", operation.Packages)
-		}
-	}
-}
-
-func sameSet(a, b []string) bool {
-	x, y := slices.Clone(a), slices.Clone(b)
-	slices.Sort(x)
-	slices.Sort(y)
-	return slices.Equal(x, y)
 }

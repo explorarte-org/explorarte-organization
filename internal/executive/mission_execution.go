@@ -280,7 +280,9 @@ func validateAttemptEvidenceMetadata(metadata map[string]any, taskID, attemptID 
 		if _, known := expected[name]; !known {
 			continue
 		}
-		if expected[name] {
+		// GO_TEST may run more than once: the changed packages by name, then the whole module
+		// (missionplan.Derive). Every run must succeed. Any other gate appears exactly once.
+		if expected[name] && name != "GO_TEST" {
 			return fmt.Errorf("duplicate %s check evidence", name)
 		}
 		success, ok := check["success"].(bool)

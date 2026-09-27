@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // The CEO closure is shown the code-runner execution the host verified.
@@ -22,17 +23,21 @@ import (
 // states what ran and what it returned, the candidate it produced, and which of the mission's own
 // requirements are still open, so a pending engineering review is reported as what it is.
 type closureExecution struct {
-	MissionTaskID              int64              `json:"mission_task_id"`
-	MissionStatus              string             `json:"mission_status"`
-	MissionState               string             `json:"mission_state"`
-	EvidenceRef                string             `json:"evidence_ref"`
-	EvidenceDigest             string             `json:"evidence_digest"`
-	Operations                 []closureOperation `json:"operations"`
-	Checks                     []closureCheck     `json:"checks"`
-	ChangedFiles               int64              `json:"changed_files"`
-	ChangedPaths               []string           `json:"changed_paths,omitempty"`
-	CandidateCommit            string             `json:"candidate_commit,omitempty"`
-	PendingMissionRequirements []string           `json:"pending_mission_requirements,omitempty"`
+	MissionTaskID  int64              `json:"mission_task_id"`
+	MissionStatus  string             `json:"mission_status"`
+	MissionState   string             `json:"mission_state"`
+	EvidenceRef    string             `json:"evidence_ref"`
+	EvidenceDigest string             `json:"evidence_digest"`
+	Operations     []closureOperation `json:"operations"`
+	Checks         []closureCheck     `json:"checks"`
+	ChangedFiles   int64              `json:"changed_files"`
+	ChangedPaths   []string           `json:"changed_paths,omitempty"`
+	// AppliedPatch is the unified diff the mission applied with git apply (its APPLY_PATCH
+	// operations, from the mission's own plan), so a criterion about exactly which lines change
+	// can be judged against the change itself. See closureAppliedPatch.
+	AppliedPatch               string   `json:"applied_patch,omitempty"`
+	CandidateCommit            string   `json:"candidate_commit,omitempty"`
+	PendingMissionRequirements []string `json:"pending_mission_requirements,omitempty"`
 }
 
 type closureOperation struct {
@@ -116,6 +121,7 @@ func (o *Orchestrator) closureEngineeringExecution(ctx context.Context, root Tas
 		}
 	}
 	execution.MissionState = missionStateForClosure(mission.Status, execution.PendingMissionRequirements)
+	execution.AppliedPatch = closureAppliedPatch(mission.Instructions)
 	return execution, nil
 }
 
@@ -135,4 +141,42 @@ func missionStateForClosure(status string, pending []string) string {
 		return "the code-runner execution finished and the host verified it; the only thing pending is the independent engineering review that precedes any promotion of the candidate, a separate owner decision"
 	}
 	return "the code-runner execution finished and the host verified it; still pending on the mission: " + strings.Join(pending, ", ")
+}
+
+// closureAppliedPatchBytes bounds the diff shown to the closure; a longer one is cut and says so.
+const closureAppliedPatchBytes = 6000
+
+// closureAppliedPatch returns the patches a mission's plan applied, in order, as the closure is shown
+// them. Smoke #23 (root 1554, 2026-09-27) was refused because the record said one file changed without
+// showing the change, and the goal said exactly one case was added and no other line changed.
+//
+// The mission task's instructions ARE the code-runner plan (missionplan.Derive encodes it and the
+// code-runner parses the same bytes), so the diff shown is the one git apply ran, not a model's
+// account of it. gofmt runs after it; changed_paths still bounds which files the sealed candidate
+// touched. A plan that cannot be read shows no diff rather than a guessed one.
+func closureAppliedPatch(planJSON string) string {
+	var plan struct {
+		Operations []struct {
+			Type  string `json:"type"`
+			Patch string `json:"patch"`
+		} `json:"operations"`
+	}
+	if err := json.Unmarshal([]byte(planJSON), &plan); err != nil {
+		return ""
+	}
+	patches := []string{}
+	for _, operation := range plan.Operations {
+		if operation.Type == "APPLY_PATCH" && strings.TrimSpace(operation.Patch) != "" {
+			patches = append(patches, operation.Patch)
+		}
+	}
+	joined := strings.Join(patches, "\n")
+	if len(joined) <= closureAppliedPatchBytes {
+		return joined
+	}
+	cut := closureAppliedPatchBytes
+	for cut > 0 && !utf8.RuneStart(joined[cut]) {
+		cut--
+	}
+	return joined[:cut] + fmt.Sprintf("\n[diff cut by the host: first %d of %d bytes shown]", cut, len(joined))
 }

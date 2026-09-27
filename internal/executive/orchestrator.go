@@ -1504,7 +1504,7 @@ func (o *Orchestrator) createReviewTask(ctx context.Context, root TaskRecord, re
 // decisionApplicabilityPolicy's doc comment for why this exists.
 const ceoClosureInstructionPrefix = `Synthesize only from this bounded durable summary and return ExecutiveClosure JSON. A completed claim cannot override backend verification.
 
-When the summary carries engineering_execution, it is the host-verified record of this root's code-runner run: judge every criterion about the implementation, its tests and the files it changed against it, and cite its evidence_ref. A requirement in pending_mission_requirements (such as the independent engineering review that precedes any promotion of the candidate) is a blocker only when this root's own goal asks for it.
+When the summary carries engineering_execution, it is the host-verified record of this root's code-runner run: judge every criterion about the implementation, its tests, the files it changed and the lines it changed (applied_patch) against it, and cite its evidence_ref. A requirement in pending_mission_requirements (such as the independent engineering review that precedes any promotion of the candidate) is a blocker only when this root's own goal asks for it.
 
 CLOSURE_DECISION_POLICY (applies to blocked_items and unresolved_decisions):
 ` + decisionApplicabilityPolicy + `
