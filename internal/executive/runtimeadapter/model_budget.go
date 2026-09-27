@@ -68,6 +68,9 @@ func (b ModelCallBudget) validateCorrelationBudget(ctx context.Context, request 
 			if dept != "" {
 				departments[dept] = struct{}{}
 			}
+			if round := executive.DesignRoundOf(task.IdempotencyKey); round > budget.DesignRounds {
+				budget.DesignRounds = round
+			}
 		}
 		if strings.Contains(task.IdempotencyKey, ":leader-review:") && strings.Contains(task.IdempotencyKey, ":replan:") {
 			budget.Replans++

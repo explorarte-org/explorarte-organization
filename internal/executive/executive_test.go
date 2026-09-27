@@ -178,3 +178,24 @@ func TestProjectRunRestartProjection(t *testing.T) {
 		t.Fatalf("run=%+v", got)
 	}
 }
+
+// Smoke #34 (root 1773): the shape bounds scale with the design rounds planned.
+func TestInvocationShapeBoundsScaleWithDesignRounds(t *testing.T) {
+	l := DefaultLimits()
+	if err := (InvocationBudget{Replans: 2, DesignRounds: 2}).Validate(l, 1); err != nil {
+		t.Fatalf("one replan in each of two rounds must fit: %v", err)
+	}
+	if err := (InvocationBudget{Replans: 2}).Validate(l, 1); !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("two replans in one round: err = %v, want ErrBudgetExceeded", err)
+	}
+	// The CEO adjudicates once more per extra round.
+	if err := (InvocationBudget{CEOCalls: (ceoPhases + 2) * governedTaskAttempts, DesignRounds: 3}).Validate(l, 1); err != nil {
+		t.Fatalf("every CEO phase of three rounds, retried, must fit: %v", err)
+	}
+	if err := (InvocationBudget{CEOCalls: (ceoPhases+2)*governedTaskAttempts + 1, DesignRounds: 3}).Validate(l, 1); !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("err = %v, want ErrBudgetExceeded past the three-round CEO shape", err)
+	}
+	if err := (InvocationBudget{LeaderCalls: 4 * 3 * governedTaskAttempts, DesignRounds: 3}).Validate(l, 1); err != nil {
+		t.Fatalf("every leader call of three rounds, retried, must fit: %v", err)
+	}
+}
