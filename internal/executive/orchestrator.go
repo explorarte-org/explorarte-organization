@@ -1503,13 +1503,19 @@ func (o *Orchestrator) createReviewTask(ctx context.Context, root TaskRecord, re
 // decisionApplicabilityPolicy's doc comment for why this exists.
 const ceoClosureInstructionPrefix = `Synthesize only from this bounded durable summary and return ExecutiveClosure JSON. A completed claim cannot override backend verification.
 
+When the summary carries engineering_execution, it is the host-verified record of this root's code-runner run: judge every criterion about the implementation, its tests and the files it changed against it, and cite its evidence_ref. A requirement in pending_mission_requirements (such as the independent engineering review that precedes any promotion of the candidate) is a blocker only when this root's own goal asks for it.
+
 CLOSURE_DECISION_POLICY (applies to blocked_items and unresolved_decisions):
 ` + decisionApplicabilityPolicy + `
 
 BOUNDED_DURABLE_SUMMARY=`
 
 func (o *Orchestrator) createClosureTask(ctx context.Context, root TaskRecord, plan ExecutivePlan, all []TaskRecord) (TaskRecord, bool, error) {
-	summary := boundedClosureSummary(plan, all, root.ID, o.limits.MaxInstructionsBytes)
+	execution, err := o.closureEngineeringExecution(ctx, root)
+	if err != nil {
+		return TaskRecord{}, false, err
+	}
+	summary := boundedClosureSummary(plan, all, root.ID, execution, o.limits.MaxInstructionsBytes)
 	task, reused, err := o.coordinatedChildren().Materialize(ctx, childRequest{Root: root, Sender: root, Depth: DepthCEOClosure, Command: CreateTaskCommand{RequestedByRoleID: OwnerRoleID, AssignedRoleID: CEORoleID, TaskClass: TaskClassCoordinationCEOClosure, IdempotencyKey: childKey(root.ID, "ceo-closure"), Title: "CEO executive closure", Instructions: ceoClosureInstructionPrefix + summary, AcceptanceCriteria: []string{"Return strict ExecutiveClosure JSON", "Cite only supplied evidence refs", "Report only blockers and unresolved decisions strictly grounded in this root's own goal, per CLOSURE_DECISION_POLICY"}, Priority: 100, MaxAttempts: o.maxAttempts(3), CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID), Requirements: []RequirementProposal{{Key: "typed_closure", Type: "result", Description: "Validated ExecutiveClosure invocation result", Required: true}}}})
 	if err != nil {
 		return TaskRecord{}, false, err
@@ -3170,7 +3176,7 @@ func boundedDepartmentSummary(all []TaskRecord, rootID int64, dept string, max i
 	}
 	return boundedJSON(map[string]any{"department_id": dept, "tasks": items}, max)
 }
-func boundedClosureSummary(plan ExecutivePlan, all []TaskRecord, rootID int64, max int) string {
+func boundedClosureSummary(plan ExecutivePlan, all []TaskRecord, rootID int64, execution *closureExecution, max int) string {
 	type item struct {
 		Department string `json:"department"`
 		Status     string `json:"review_status"`
@@ -3185,7 +3191,11 @@ func boundedClosureSummary(plan ExecutivePlan, all []TaskRecord, rootID int64, m
 			items = append(items, item{Department: d.UnitID, Status: "missing"})
 		}
 	}
-	return boundedJSON(map[string]any{"objective": plan.Objective, "success_criteria": plan.SuccessCriteria, "departments": items, "owner_decisions_required": plan.OwnerDecisionsRequired}, max)
+	summary := map[string]any{"objective": plan.Objective, "success_criteria": plan.SuccessCriteria, "departments": items, "owner_decisions_required": plan.OwnerDecisionsRequired}
+	if execution != nil {
+		summary["engineering_execution"] = execution
+	}
+	return boundedJSON(summary, max)
 }
 
 // openDesignRoundPlan creates the planning task for a design round that a
