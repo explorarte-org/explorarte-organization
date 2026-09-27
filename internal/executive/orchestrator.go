@@ -2663,9 +2663,11 @@ func (o *Orchestrator) handleHarnessFailure(ctx context.Context, root, task Task
 			}
 		}
 		if !retryable && outcome.InvocationID > 0 {
-			if invocation, readErr := o.models.GetInvocation(ctx, outcome.InvocationID); readErr == nil && modelOutputDefect(invocation.ErrorCode, outcome.TerminationReason) {
-				return o.failAttempt(ctx, task, lease, actorID, "model_output_malformed",
-					outcome.TerminationReason+"; "+malformedOutputCorrection, ErrCompletionFailed, true)
+			if invocation, readErr := o.models.GetInvocation(ctx, outcome.InvocationID); readErr == nil {
+				if correction, ok := modelOutputCorrection(invocation.ErrorCode, outcome.TerminationReason); ok {
+					return o.failAttempt(ctx, task, lease, actorID, "model_output_malformed",
+						outcome.TerminationReason+"; "+correction, ErrCompletionFailed, true)
+				}
 			}
 		}
 		return o.failAttempt(ctx, task, lease, actorID, "model_invocation_failed", outcome.TerminationReason, ErrCompletionFailed, retryable)

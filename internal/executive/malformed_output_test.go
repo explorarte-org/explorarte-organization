@@ -74,3 +74,38 @@ func TestOnlyTheModelsOwnOutputDefectsAreRetried(t *testing.T) {
 		t.Error("a failure that is not a normalization refusal was classified as a model output defect")
 	}
 }
+
+// Local smoke #31 (root 1701): a design worker reasoned through its whole output budget and wrote
+// nothing; the attempt was failed as not retryable with two attempts left.
+const root1701Reason = "model execution failed: model provider adapter error: response_received: response: response_truncated_empty"
+
+func TestAResponseTruncatedBeforeAnyAnswerIsRetriedWithACorrection(t *testing.T) {
+	fixture := newHarnessFixture(t)
+	fixture.harness.failure = HarnessFailureModelError
+	fixture.harness.invocationStatus = "failed"
+	fixture.harness.invocationErrorCode = truncatedEmptyErrorCode
+	fixture.harness.terminationReason = root1701Reason
+
+	_, err := fixture.drive(t)
+	if !errors.Is(err, ErrTaskRetryScheduled) || !isNonBlockingPhaseError(err) {
+		t.Fatalf("a truncated empty response = %v, want a retry that does not block the root", err)
+	}
+	task, _ := fixture.tasks.GetTask(context.Background(), fixture.task.ID)
+	if task.Status != "retry_wait" {
+		t.Fatalf("task status=%s, want retry_wait", task.Status)
+	}
+	summary := task.Attempts[len(task.Attempts)-1].ResultSummary
+	for _, want := range []string{"response_truncated_empty", "reason briefly, then write the JSON answer"} {
+		if !strings.Contains(summary, want) {
+			t.Errorf("the next attempt is not told %q: %s", want, summary)
+		}
+	}
+}
+
+func TestOtherProviderFailuresGetNoOutputCorrection(t *testing.T) {
+	for _, code := range []string{"response_content_filtered", "provider_http_error", "response_json_invalid", ""} {
+		if _, ok := modelOutputCorrection(code, root1701Reason); ok {
+			t.Errorf("%q was treated as the model's own output defect", code)
+		}
+	}
+}

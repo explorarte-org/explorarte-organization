@@ -33,6 +33,28 @@ const malformedOutputCorrection = "your previous response was refused before any
 	"contract; return exactly one JSON object that parses and matches the output schema, with every string " +
 	"escaped and every brace and bracket closed once"
 
+// truncatedEmptyErrorCode is a response that ended at the output ceiling before any answer was
+// written: finish_reason=length with no content. Local smoke #31 (root 1701, 2026-09-27): a design
+// worker spent its whole output budget reasoning, the attempt was failed as not retryable with two of
+// its three attempts unused, and its department was left without a design. The response arrived in
+// full, so nothing about repeating it is ambiguous; it is the model's output, retried with a correction.
+const truncatedEmptyErrorCode = "response_truncated_empty"
+
+const truncatedEmptyCorrection = "your previous response reached its output limit while reasoning and wrote no answer; " +
+	"reason briefly, then write the JSON answer: a shorter complete answer is accepted, an unfinished one is not"
+
+// modelOutputCorrection returns the correction for an invocation that failed because of the model's
+// own output, and false for any other failure.
+func modelOutputCorrection(errorCode, reason string) (string, bool) {
+	if errorCode == truncatedEmptyErrorCode {
+		return truncatedEmptyCorrection, true
+	}
+	if modelOutputDefect(errorCode, reason) {
+		return malformedOutputCorrection, true
+	}
+	return "", false
+}
+
 // modelOutputDefect reports whether an invocation failed normalization because of the model's own
 // output, as opposed to the host's configuration.
 func modelOutputDefect(errorCode, reason string) bool {

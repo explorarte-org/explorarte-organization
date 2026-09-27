@@ -286,9 +286,14 @@ func TestDynamicFloorIsTheWorstCanonicalStageNotJustTheFirst(t *testing.T) {
 		planIn, planUSD = reviewIn, usd(reviewIn, 128_000, 300_000_000, 2_500_000_000)
 	}
 	workerIn := tokens(executive.PurposeDepartmentWorker)
-	workerUSD := usd(workerIn, 24_000, 300_000_000, 2_500_000_000)
+	workerUSD := usd(workerIn, 128_000, 300_000_000, 2_500_000_000)
 	if planUSD <= ceoUSD {
 		t.Fatalf("test premise: a leader stage (%s) should out-price the CEO plan (%s)", planUSD, ceoUSD)
+	}
+	// Since the worker ceiling is 128,000 too, the stage with the longest input among the
+	// flash-lite stages is the worst.
+	if workerUSD > planUSD {
+		planIn, planUSD = workerIn, workerUSD
 	}
 	if got.MinUSD != planUSD {
 		t.Fatalf("MinUSD = %s, want the worst stage's worst-case reservation %s (ceo %s, worker %s)", got.MinUSD, planUSD, ceoUSD, workerUSD)

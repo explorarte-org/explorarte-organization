@@ -70,8 +70,8 @@ func TestPurposeOutputCeilingsComeFromExecutiveLimits(t *testing.T) {
 	if got, want := limits.MaxOutputTokensFor(PurposeCEOPlan), limits.MaxOutputTokens; got != want {
 		t.Fatalf("CEO-plan output ceiling = %d, want Limits.MaxOutputTokens %d", got, want)
 	}
-	if limits.MaxOutputTokensFor(PurposeDepartmentWorker) >= limits.MaxOutputTokensFor(PurposeDepartmentPlan) {
-		t.Fatal("a department worker's ceiling is deliberately below a plan's")
+	if limits.MaxOutputTokensFor(PurposeDepartmentWorker) != WorkerMaxOutputTokens {
+		t.Fatal("a department worker's ceiling is WorkerMaxOutputTokens")
 	}
 	lowered := limits
 	lowered.MaxOutputTokens = 9000

@@ -22,8 +22,8 @@ func TestDefaultLimitsGiveStructuredExecutivePlansOutputHeadroom(t *testing.T) {
 func TestMaxOutputTokensForPurposeReducesOnlyDepartmentWorker(t *testing.T) {
 	limits := DefaultLimits()
 
-	if got := limits.MaxOutputTokensFor(PurposeDepartmentWorker); got != 24000 {
-		t.Fatalf("PurposeDepartmentWorker=%d, want 24000", got)
+	if got := limits.MaxOutputTokensFor(PurposeDepartmentWorker); got != 128000 {
+		t.Fatalf("PurposeDepartmentWorker=%d, want 128000", got)
 	}
 
 	unchanged := []ExecutionPurpose{

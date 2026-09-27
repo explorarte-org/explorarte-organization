@@ -258,9 +258,19 @@ func DefaultLimits() Limits {
 // needs, while turning a repetition-loop/open-ended-answer runaway into a
 // truncation that dead-letters at 24K tokens of real spend instead of
 // 65K+.
+//
+// The worker ceiling is now the shared 128K, by the owner's decision
+// (2026-09-27). Workers route to a model whose reasoning is opaque and counted
+// as output, and a self-audit worker needs room to think: local smoke #31
+// (root 1701) had one worker finish legitimately at 20,263 of 24,000 tokens and
+// the next spend all 24,000 reasoning, return no answer
+// (response_truncated_empty) and cost its department its replan. A runaway is
+// still bounded by this ceiling and by the task's attempts.
+const WorkerMaxOutputTokens = 128000
+
 func (l Limits) MaxOutputTokensFor(purpose ExecutionPurpose) int {
-	if purpose == PurposeDepartmentWorker && l.MaxOutputTokens > 24000 {
-		return 24000
+	if purpose == PurposeDepartmentWorker && l.MaxOutputTokens > WorkerMaxOutputTokens {
+		return WorkerMaxOutputTokens
 	}
 	return l.MaxOutputTokens
 }

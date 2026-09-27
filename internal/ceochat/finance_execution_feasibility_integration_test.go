@@ -265,8 +265,8 @@ func TestExecutionRequirementsDeriveFromTheRealCanonicalFacts(t *testing.T) {
 	if stage := byStage["department_worker"]; stage.ProviderID != "deepseek" && stage.ProviderID != "gemini" {
 		t.Errorf("department_worker basis = %+v, want a deepseek (department.worker) or gemini (finance.reviewer) route", stage)
 	}
-	if byStage["department_worker"].MaxOutputTokens != 24000 {
-		t.Errorf("worker output ceiling = %d, want the worker-specific 24000", byStage["department_worker"].MaxOutputTokens)
+	if byStage["department_worker"].MaxOutputTokens != 128000 {
+		t.Errorf("worker output ceiling = %d, want the worker ceiling of 128000", byStage["department_worker"].MaxOutputTokens)
 	}
 	t.Logf("REAL canonical floor: usd=%s tokens=%d (worst stage basis: %+v)", got.MinUSD, got.MinTokens, got.Basis.Stages)
 }
