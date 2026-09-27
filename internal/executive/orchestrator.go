@@ -64,6 +64,7 @@ type Orchestrator struct {
 	repositorySource repositoryevidence.Source
 	repositoryID     string
 	missions         MissionProvisioner
+	missionReviews   MissionReviewRequester
 	// patchWorkbench lets the implementation-plan phase read the frozen tree and
 	// ask git whether a patch applies to it (patch_validation.go). Optional:
 	// without it only the structural patch checks run.

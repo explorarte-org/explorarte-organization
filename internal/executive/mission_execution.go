@@ -74,6 +74,10 @@ func (o *Orchestrator) ensureRequiredCodeRunnerExecution(ctx context.Context, su
 		}
 		return fmt.Errorf("%w: mission task %d: %v", ErrCodeRunnerExecutionInvalid, mission.ID, err)
 	}
+	// Verified: the mission asks for its review now, before anything reads its requirements.
+	if err := o.requestMissionReview(ctx, mission, attemptEvidence); err != nil {
+		return err
+	}
 
 	if requirement.Type != "result" && requirement.Type != "artifact" {
 		return fmt.Errorf("%w: root requirement %q has unsupported type %q", ErrCodeRunnerExecutionInvalid, requirement.Key, requirement.Type)
