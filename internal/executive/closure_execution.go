@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // The CEO closure is shown the code-runner execution the host verified.
@@ -23,11 +24,13 @@ import (
 type closureExecution struct {
 	MissionTaskID              int64              `json:"mission_task_id"`
 	MissionStatus              string             `json:"mission_status"`
+	MissionState               string             `json:"mission_state"`
 	EvidenceRef                string             `json:"evidence_ref"`
 	EvidenceDigest             string             `json:"evidence_digest"`
 	Operations                 []closureOperation `json:"operations"`
 	Checks                     []closureCheck     `json:"checks"`
 	ChangedFiles               int64              `json:"changed_files"`
+	ChangedPaths               []string           `json:"changed_paths,omitempty"`
 	CandidateCommit            string             `json:"candidate_commit,omitempty"`
 	PendingMissionRequirements []string           `json:"pending_mission_requirements,omitempty"`
 }
@@ -40,6 +43,7 @@ type closureOperation struct {
 
 type closureCheck struct {
 	Type    string `json:"type"`
+	Command string `json:"command,omitempty"`
 	Success bool   `json:"success"`
 }
 
@@ -70,11 +74,13 @@ func (o *Orchestrator) closureEngineeringExecution(ctx context.Context, root Tas
 			Success  bool   `json:"success"`
 		} `json:"operations_executed"`
 		Checks []struct {
-			Type    string `json:"type"`
-			Success bool   `json:"success"`
+			Type    string   `json:"type"`
+			Command []string `json:"command"`
+			Success bool     `json:"success"`
 		} `json:"checks_run"`
 		ChangedFiles struct {
-			Count int64 `json:"count"`
+			Count int64    `json:"count"`
+			Paths []string `json:"paths"`
 		} `json:"changed_files"`
 		Candidate struct {
 			Commit string `json:"candidate_commit"`
@@ -93,16 +99,40 @@ func (o *Orchestrator) closureEngineeringExecution(ctx context.Context, root Tas
 		Operations: make([]closureOperation, 0, len(record.Operations)), Checks: make([]closureCheck, 0, len(record.Checks)),
 		ChangedFiles: record.ChangedFiles.Count, CandidateCommit: record.Candidate.Commit,
 	}
+	// Paths are shown only when they account for every changed file: a partial list would read as
+	// "only these changed".
+	if int64(len(record.ChangedFiles.Paths)) == record.ChangedFiles.Count {
+		execution.ChangedPaths = record.ChangedFiles.Paths
+	}
 	for _, operation := range record.Operations {
 		execution.Operations = append(execution.Operations, closureOperation{Type: operation.Type, ExitCode: operation.ExitCode, Success: operation.Success})
 	}
 	for _, check := range record.Checks {
-		execution.Checks = append(execution.Checks, closureCheck{Type: check.Type, Success: check.Success})
+		execution.Checks = append(execution.Checks, closureCheck{Type: check.Type, Command: strings.Join(check.Command, " "), Success: check.Success})
 	}
 	for _, missionRequirement := range mission.Requirements {
 		if missionRequirement.Required && missionRequirement.Status != "satisfied" {
 			execution.PendingMissionRequirements = append(execution.PendingMissionRequirements, missionRequirement.Key)
 		}
 	}
+	execution.MissionState = missionStateForClosure(mission.Status, execution.PendingMissionRequirements)
 	return execution, nil
+}
+
+// missionStateForClosure says in words what the mission's status means for this root. Root 1428 (smoke
+// #17) was shown the raw "awaiting_verification" and read it as "terminal completion is not
+// established": a mission whose code-runner run finished and verified waits only for what its pending
+// requirements name, and a pending engineering review is the gate before any promotion, which is a
+// separate owner decision.
+func missionStateForClosure(status string, pending []string) string {
+	if status != "awaiting_verification" {
+		return "mission status " + status
+	}
+	if len(pending) == 0 {
+		return "the code-runner execution finished and the host verified it; nothing is pending on the mission"
+	}
+	if len(pending) == 1 && pending[0] == "review" {
+		return "the code-runner execution finished and the host verified it; the only thing pending is the independent engineering review that precedes any promotion of the candidate, a separate owner decision"
+	}
+	return "the code-runner execution finished and the host verified it; still pending on the mission: " + strings.Join(pending, ", ")
 }

@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -202,7 +203,16 @@ func (s *Service) SealWorkspace(ctx context.Context, command SealWorkspaceComman
 	if err != nil {
 		return Workspace{}, err
 	}
-	return s.persistence.SealWorkspace(ctx, SealPersistenceCommand{WorkspaceID: workspace.ID, ExpectedVersion: workspace.Version, CandidateCommit: sealed.CandidateCommit, CandidateTree: sealed.CandidateTree, Manifest: manifest, Patch: patch, ChangedFileCount: len(sealed.ChangedFiles), ActorRoleID: command.ActorRoleID})
+	result, err := s.persistence.SealWorkspace(ctx, SealPersistenceCommand{WorkspaceID: workspace.ID, ExpectedVersion: workspace.Version, CandidateCommit: sealed.CandidateCommit, CandidateTree: sealed.CandidateTree, Manifest: manifest, Patch: patch, ChangedFileCount: len(sealed.ChangedFiles), ActorRoleID: command.ActorRoleID})
+	if err != nil {
+		return Workspace{}, err
+	}
+	result.ChangedPaths = make([]string, 0, len(sealed.ChangedFiles))
+	for _, changed := range sealed.ChangedFiles {
+		result.ChangedPaths = append(result.ChangedPaths, changed.Path)
+	}
+	sort.Strings(result.ChangedPaths)
+	return result, nil
 }
 
 func (s *Service) AbandonWorkspace(ctx context.Context, command AbandonWorkspaceCommand) (Workspace, error) {
