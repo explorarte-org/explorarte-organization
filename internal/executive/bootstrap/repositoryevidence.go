@@ -49,7 +49,7 @@ func repositoryEvidenceOption(cfg config.Config, store *platformpostgres.Store) 
 	if err != nil {
 		return nil, nil, "", err
 	}
-	provider, err := repositoryevidence.NewProvider(repositoryID, source, repositoryevidence.DefaultLimits(), 24)
+	provider, err := repositoryevidence.NewProvider(repositoryID, source, repositoryevidence.DefaultLimits(), repositoryevidence.DefaultWindow)
 	if err != nil {
 		return nil, nil, "", err
 	}

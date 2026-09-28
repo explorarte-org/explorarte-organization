@@ -182,7 +182,7 @@ func (o *Orchestrator) planUnprovenSlots(ctx context.Context, baseSHA string, li
 		return repositoryevidence.CoveragePlan{}, nil
 	}
 	plan, err := repositoryevidence.PlanSlots(ctx, o.repositoryID, baseSHA,
-		o.repositorySource, limits, 24, probeSlots)
+		o.repositorySource, limits, repositoryevidence.DefaultWindow, probeSlots)
 	if err != nil {
 		return repositoryevidence.CoveragePlan{}, fmt.Errorf("%w: joint evidence admission at %s: %v", ErrEvidenceSensorUnavailable, baseSHA, err)
 	}

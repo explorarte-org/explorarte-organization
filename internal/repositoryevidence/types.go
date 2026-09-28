@@ -198,10 +198,25 @@ type Limits struct {
 	MaxLines    int
 }
 
-// DefaultLimits is deliberately small.
+// DefaultLimits is deliberately small -- but not so small that a design cannot see
+// the function it reasons about.
+//
+// It was 8 files, 16 ranges, 96KiB and 12 searches, read in windows of 24 lines
+// each side of a match. Local smoke #35 (root 1848, 2026-09-28) asked a design
+// worker to audit the executive's own orchestration: two workers in a row
+// declined to name any defect because "the decisive declaration was never
+// shown" -- the body of a function past its first statement, the caller that
+// supplies its arguments, the driver's accounting -- and the department review
+// agreed. A self-audit follows a call across files; a 48-line window of each
+// sees the signature and not the decision. The judges share the same diet.
 func DefaultLimits() Limits {
-	return Limits{MaxFiles: 8, MaxRanges: 16, MaxBytes: 96 * 1024, MaxSearches: 12, MaxLines: 400}
+	return Limits{MaxFiles: 12, MaxRanges: 24, MaxBytes: 192 * 1024, MaxSearches: 16, MaxLines: 400}
 }
+
+// DefaultWindow is how many lines each side of a match an excerpt reads. Delivery
+// and joint admission must use the same value: admission is a dry-run of delivery,
+// and a promise priced at one window and delivered at another is not a promise.
+const DefaultWindow = 40
 
 func (l Limits) Validate() error {
 	if l.MaxFiles < 1 || l.MaxRanges < 1 || l.MaxBytes < 1 || l.MaxSearches < 1 || l.MaxLines < 1 {
