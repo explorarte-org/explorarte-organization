@@ -242,9 +242,9 @@ func TestExecutionRequirementsDeriveFromTheRealCanonicalFacts(t *testing.T) {
 		byStage[stage.Stage] = stage
 	}
 	ceo := byStage["ceo_plan"]
-	// executive.ceo routes to openai_responses/gpt-6-sol since 2026-09-27 (migration 000083 prices it).
-	if ceo.ProviderID != "openai_responses" || ceo.ProviderModelID != "gpt-6-sol" || ceo.MaxOutputTokens != 128000 {
-		t.Errorf("CEO-plan basis = %+v, want openai_responses/gpt-6-sol with Executive's 128000 output ceiling", ceo)
+	// executive.ceo routes to openai_responses/gpt-6-luna since 2026-09-28 (migration 000085 prices it).
+	if ceo.ProviderID != "openai_responses" || ceo.ProviderModelID != "gpt-6-luna" || ceo.MaxOutputTokens != 128000 {
+		t.Errorf("CEO-plan basis = %+v, want openai_responses/gpt-6-luna with Executive's 128000 output ceiling", ceo)
 	}
 	// The floor is never below any single stage's reservation, the CEO's included: at 0 per 1M
 	// output tokens the CEO's worst case (128,000 output tokens alone is $1.28) may well be the
@@ -252,7 +252,7 @@ func TestExecutionRequirementsDeriveFromTheRealCanonicalFacts(t *testing.T) {
 	if got.MinUSD < ceo.ReservationUSD {
 		t.Errorf("derived floor %s is below the CEO's own reservation %s", got.MinUSD, ceo.ReservationUSD)
 	}
-	t.Logf("floor with the CEO on gpt-6-sol: MinUSD=%s; CEO-plan reservation=%s", got.MinUSD, ceo.ReservationUSD)
+	t.Logf("floor with the CEO on gpt-6-luna: MinUSD=%s; CEO-plan reservation=%s", got.MinUSD, ceo.ReservationUSD)
 	// The leader stages route through department.leader: deepseek. The worker stage is priced at the
 	// WORST reservation among every eligible worker role's route (see the provider's derivation), and
 	// the eligible workers now span two routes -- the executive departments on deepseek and the
