@@ -52,13 +52,44 @@ func (o *Orchestrator) requestedEvidenceFor(ctx context.Context, root, task Task
 				continue
 			}
 			seen[request] = true
-			switch {
-			case requestedRangePattern.MatchString(request):
-				citations = append(citations, "repository://"+o.repositoryID+"@"+baseSHA+"/"+strings.TrimPrefix(request, "/"))
-			case requestedIdentifierPattern.MatchString(request):
-				subjects = append(subjects, request)
+			ranges, identifiers := parseEvidenceRequest(request)
+			for _, rangeRef := range ranges {
+				citations = append(citations, "repository://"+o.repositoryID+"@"+baseSHA+"/"+rangeRef)
 			}
+			subjects = append(subjects, identifiers...)
 		}
 	}
 	return citations, subjects, nil
+}
+
+var requestedRangeInProse = regexp.MustCompile(`\b([A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*\.go)#L(\d+)-L(\d+)\b`)
+
+// compoundIdentifier is a Go identifier with an interior capital -- governedTaskAttempts,
+// InvalidateProofs, DesignAdjudication.Verdict -- which prose around it does not produce.
+var compoundIdentifier = regexp.MustCompile(`\b[A-Za-z_][A-Za-z0-9_]*[a-z0-9][A-Z][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?\b`)
+
+// parseEvidenceRequest reads one evidence request: a bare path#Lstart-Lend or Go identifier, or prose
+// that names them. Local smoke #38 (root 1916, 2026-09-28): the worker wrote its requests as sentences
+// ("Go identifier: governedTaskAttempts -- its declaration, to confirm ..."), none matched the bare
+// forms, and the adjudication then asked the next round to settle exactly those from "the requested
+// evidence". Paths with a range and compound identifiers are taken from the prose.
+func parseEvidenceRequest(request string) (ranges, identifiers []string) {
+	request = strings.TrimSpace(request)
+	if requestedRangePattern.MatchString(request) {
+		return []string{strings.TrimPrefix(request, "/")}, nil
+	}
+	if requestedIdentifierPattern.MatchString(request) {
+		return nil, []string{request}
+	}
+	for _, match := range requestedRangeInProse.FindAllString(request, -1) {
+		ranges = append(ranges, strings.TrimPrefix(match, "/"))
+	}
+	seen := map[string]bool{}
+	for _, match := range compoundIdentifier.FindAllString(request, -1) {
+		if !seen[match] && !strings.Contains(match, "/") {
+			seen[match] = true
+			identifiers = append(identifiers, match)
+		}
+	}
+	return ranges, identifiers
 }

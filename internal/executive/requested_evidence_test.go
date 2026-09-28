@@ -87,3 +87,21 @@ func TestEvidenceRequestsAreBounded(t *testing.T) {
 		t.Fatalf("%d evidence requests were accepted, at most %d", len(requests), MaxEvidenceRequests)
 	}
 }
+
+// Local smoke #38 (root 1916): requests written as sentences still yield what they name.
+func TestEvidenceRequestsInProseYieldTheirIdentifiersAndRanges(t *testing.T) {
+	for request, want := range map[string][2][]string{
+		"Go identifier: governedTaskAttempts — its declaration, to confirm the attempt bound.":    {nil, {"governedTaskAttempts"}},
+		"Go identifier: InvalidateProofs — its declared signature, to settle the SHA argument.":   {nil, {"InvalidateProofs"}},
+		"The site that creates department worker tasks (Go identifier: MaxAttempts), to confirm.": {nil, {"MaxAttempts"}},
+		"See internal/executive/driver/driver.go#L160-L240 for ListExecutableRoots":               {{"internal/executive/driver/driver.go#L160-L240"}, {"ListExecutableRoots"}},
+		"ListExecutableRoots":                            {nil, {"ListExecutableRoots"}},
+		"internal/executive/types.go#L10-L20":            {{"internal/executive/types.go#L10-L20"}, nil},
+		"The declaration that decides it was not shown.": {nil, nil},
+	} {
+		ranges, identifiers := parseEvidenceRequest(request)
+		if !slices.Equal(ranges, want[0]) || !slices.Equal(identifiers, want[1]) {
+			t.Errorf("%q: ranges %v identifiers %v, want %v %v", request, ranges, identifiers, want[0], want[1])
+		}
+	}
+}
