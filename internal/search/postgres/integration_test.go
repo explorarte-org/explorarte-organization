@@ -282,3 +282,34 @@ func TestPostgres_RestartSurvival(t *testing.T) {
 		t.Fatalf("orphan must be explicitly failed with completion time, got %+v", cycles[0])
 	}
 }
+
+// The daily budget is charged per request of every cycle started in the day, open or closed.
+func TestPostgres_QueriesAttemptedSinceChargesEveryCycleOfTheDay(t *testing.T) {
+	pool := requireTestDatabase(t)
+	store, err := New(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	for _, topic := range search.InvestigacionSeedTopics(now) {
+		if err := store.SaveTopic(ctx, topic); err != nil {
+			t.Fatalf("seed topic %s: %v", topic.ID, err)
+		}
+	}
+	topic := search.InvestigacionSeedTopics(now)[0].ID
+	cycles := []search.ResearchCycle{
+		{ID: "budget-yesterday", TopicID: topic, DepartmentID: "servicios", Trigger: search.TriggerScheduler, StartedAt: now.Add(-30 * time.Hour), QueriesAttempted: 7},
+		{ID: "budget-closed", TopicID: topic, DepartmentID: "servicios", Trigger: search.TriggerScheduler, StartedAt: now.Add(-time.Hour), CompletedAt: ptrTime(now), QueriesAttempted: 3},
+		{ID: "budget-open", TopicID: topic, DepartmentID: "servicios", Trigger: search.TriggerScheduler, StartedAt: now.Add(-time.Minute), QueriesAttempted: 2},
+	}
+	for _, cycle := range cycles {
+		if err := store.SaveCycle(ctx, cycle); err != nil {
+			t.Fatal(err)
+		}
+	}
+	used, err := store.QueriesAttemptedSince(ctx, now.Add(-2*time.Hour))
+	if err != nil || used != 5 {
+		t.Fatalf("used = %d, %v; want 5 (yesterday's 7 not charged)", used, err)
+	}
+}

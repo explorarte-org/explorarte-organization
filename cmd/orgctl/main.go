@@ -142,6 +142,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runMemoryOS(args[1:], stdout, stderr)
 	case "campaign":
 		return runCampaign(args[1:], stdout, stderr)
+	case "research":
+		return runResearch(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		printUsage(stdout)
 		return exitOK
@@ -598,6 +600,7 @@ commands:
   authorization <evaluate|request|get|list|decide|consume|cancel|expire>
   context <validate-source|build|get|list|render|validate|invalidate>
   campaign promote --approval ID [--json]
+  research <seed|tick|worker run|status>
   memory <propose|review|deprecate|archive|get|list>
   skill <propose|approve|qualify|activate|suspend|retire|assign|revoke|get-version|list-versions|get-assignment|list-assignments>
   rag <propose|review|get|list|reindex|query>
