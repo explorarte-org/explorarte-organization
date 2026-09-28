@@ -164,7 +164,8 @@ func TestScriptedScenario2_ExplicitRevision(t *testing.T) {
 							"proposal_id": %d,
 							"title": "Camp v2",
 							"goal": "Initial with reduced CPA",
-							"acceptance_criteria": ["CPA < $10"]
+							"acceptance_criteria": ["CPA < $10"],
+		"acceptance_criterion_phases": ["implementation"]
 						}`, p1.ID)),
 					},
 				},

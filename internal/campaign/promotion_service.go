@@ -130,14 +130,15 @@ func (s *PromotionService) promote(ctx context.Context, params PromoteToExecutiv
 		return PromotionResult{}, fmt.Errorf("load proposal: %w", err)
 	}
 	expectedProposalHash, err := ComputeCanonicalHash(CanonicalPayload{
-		Title:              proposal.Title,
-		Goal:               proposal.Goal,
-		AcceptanceCriteria: proposal.AcceptanceCriteria,
-		Requirements:       proposal.Requirements,
-		Budget:             proposal.Budget,
-		Assumptions:        proposal.Assumptions,
-		Risks:              proposal.Risks,
-		OpenQuestions:      proposal.OpenQuestions,
+		Title:                     proposal.Title,
+		Goal:                      proposal.Goal,
+		AcceptanceCriteria:        proposal.AcceptanceCriteria,
+		AcceptanceCriterionPhases: proposal.AcceptanceCriterionPhases,
+		Requirements:              proposal.Requirements,
+		Budget:                    proposal.Budget,
+		Assumptions:               proposal.Assumptions,
+		Risks:                     proposal.Risks,
+		OpenQuestions:             proposal.OpenQuestions,
 	})
 	if err != nil || expectedProposalHash != proposal.CanonicalHash || proposal.CanonicalHash != approval.ProposalCanonicalHash {
 		return PromotionResult{}, fmt.Errorf("%w: proposal hash mismatch", ErrProposalHashMismatch)
@@ -226,16 +227,16 @@ func (s *PromotionService) promote(ctx context.Context, params PromoteToExecutiv
 	}
 	campaignBudget := &limits
 
-	// Acceptance criteria: owner criteria mapped to AcceptanceImplementation + 1 host governance AcceptanceDesign.
+	// Acceptance criteria: 1 host governance AcceptanceDesign + the owner criteria at the phases the proposal declared (criterionPhase).
 	criteria := make([]executive.AcceptanceCriterion, 0, len(proposal.AcceptanceCriteria)+1)
 	criteria = append(criteria, executive.AcceptanceCriterion{
 		Text:  HostGovernanceDesignCriterion,
 		Phase: executive.AcceptanceDesign,
 	})
-	for _, text := range proposal.AcceptanceCriteria {
+	for i, text := range proposal.AcceptanceCriteria {
 		criteria = append(criteria, executive.AcceptanceCriterion{
 			Text:  text,
-			Phase: executive.AcceptanceImplementation,
+			Phase: criterionPhase(proposal, i),
 		})
 	}
 

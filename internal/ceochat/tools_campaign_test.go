@@ -60,31 +60,32 @@ func (s *fakeCampaignStore) CreateProposal(ctx context.Context, cmd campaign.Cre
 
 	rootID := s.nextID
 	p := campaign.CampaignProposal{
-		RevisionNumber:          1,
-		RootProposalID:          &rootID,
-		ID:                      s.nextID,
-		OrganizationID:          cmd.OrganizationID,
-		ConversationID:          cmd.ConversationID,
-		CreatedByRoleID:         cmd.CreatedByRoleID,
-		CreatedFromMessageID:    cmd.CreatedFromMessageID,
-		TaskID:                  cmd.TaskID,
-		AttemptID:               cmd.AttemptID,
-		ToolCallID:              cmd.ToolCallID,
-		Status:                  campaign.StatusDraft,
-		Title:                   cmd.Title,
-		Goal:                    cmd.Goal,
-		AcceptanceCriteria:      cmd.AcceptanceCriteria,
-		Requirements:            cmd.Requirements,
-		Budget:                  cmd.Budget,
-		Assumptions:             cmd.Assumptions,
-		Risks:                   cmd.Risks,
-		OpenQuestions:           cmd.OpenQuestions,
-		FinancialReviewRequired: true,
-		ExecutionStarted:        false,
-		IdempotencyKey:          cmd.IdempotencyKey,
-		CanonicalHash:           cmd.CanonicalHash,
-		CreatedAt:               time.Now(),
-		UpdatedAt:               time.Now(),
+		RevisionNumber:            1,
+		RootProposalID:            &rootID,
+		ID:                        s.nextID,
+		OrganizationID:            cmd.OrganizationID,
+		ConversationID:            cmd.ConversationID,
+		CreatedByRoleID:           cmd.CreatedByRoleID,
+		CreatedFromMessageID:      cmd.CreatedFromMessageID,
+		TaskID:                    cmd.TaskID,
+		AttemptID:                 cmd.AttemptID,
+		ToolCallID:                cmd.ToolCallID,
+		Status:                    campaign.StatusDraft,
+		Title:                     cmd.Title,
+		Goal:                      cmd.Goal,
+		AcceptanceCriteria:        cmd.AcceptanceCriteria,
+		AcceptanceCriterionPhases: cmd.AcceptanceCriterionPhases,
+		Requirements:              cmd.Requirements,
+		Budget:                    cmd.Budget,
+		Assumptions:               cmd.Assumptions,
+		Risks:                     cmd.Risks,
+		OpenQuestions:             cmd.OpenQuestions,
+		FinancialReviewRequired:   true,
+		ExecutionStarted:          false,
+		IdempotencyKey:            cmd.IdempotencyKey,
+		CanonicalHash:             cmd.CanonicalHash,
+		CreatedAt:                 time.Now(),
+		UpdatedAt:                 time.Now(),
 	}
 	s.nextID++
 	s.proposals[lookupKey] = p
@@ -308,32 +309,33 @@ func (s *fakeCampaignStore) CreateRevision(ctx context.Context, cmd campaign.Cre
 
 	parentID := cmd.ParentProposalID
 	rev := campaign.CampaignProposal{
-		ID:                      s.nextID,
-		OrganizationID:          cmd.OrganizationID,
-		ConversationID:          cmd.ConversationID,
-		CreatedByRoleID:         cmd.CreatedByRoleID,
-		CreatedFromMessageID:    cmd.CreatedFromMessageID,
-		TaskID:                  cmd.TaskID,
-		AttemptID:               cmd.AttemptID,
-		ToolCallID:              cmd.ToolCallID,
-		Status:                  campaign.StatusDraft,
-		Title:                   cmd.Title,
-		Goal:                    cmd.Goal,
-		AcceptanceCriteria:      cmd.AcceptanceCriteria,
-		Requirements:            cmd.Requirements,
-		Budget:                  cmd.Budget,
-		Assumptions:             cmd.Assumptions,
-		Risks:                   cmd.Risks,
-		OpenQuestions:           cmd.OpenQuestions,
-		FinancialReviewRequired: true,
-		ExecutionStarted:        false,
-		ParentProposalID:        &parentID,
-		RevisionNumber:          parent.RevisionNumber + 1,
-		RootProposalID:          &rootID,
-		IdempotencyKey:          cmd.IdempotencyKey,
-		CanonicalHash:           cmd.CanonicalHash,
-		CreatedAt:               time.Now(),
-		UpdatedAt:               time.Now(),
+		ID:                        s.nextID,
+		OrganizationID:            cmd.OrganizationID,
+		ConversationID:            cmd.ConversationID,
+		CreatedByRoleID:           cmd.CreatedByRoleID,
+		CreatedFromMessageID:      cmd.CreatedFromMessageID,
+		TaskID:                    cmd.TaskID,
+		AttemptID:                 cmd.AttemptID,
+		ToolCallID:                cmd.ToolCallID,
+		Status:                    campaign.StatusDraft,
+		Title:                     cmd.Title,
+		Goal:                      cmd.Goal,
+		AcceptanceCriteria:        cmd.AcceptanceCriteria,
+		AcceptanceCriterionPhases: cmd.AcceptanceCriterionPhases,
+		Requirements:              cmd.Requirements,
+		Budget:                    cmd.Budget,
+		Assumptions:               cmd.Assumptions,
+		Risks:                     cmd.Risks,
+		OpenQuestions:             cmd.OpenQuestions,
+		FinancialReviewRequired:   true,
+		ExecutionStarted:          false,
+		ParentProposalID:          &parentID,
+		RevisionNumber:            parent.RevisionNumber + 1,
+		RootProposalID:            &rootID,
+		IdempotencyKey:            cmd.IdempotencyKey,
+		CanonicalHash:             cmd.CanonicalHash,
+		CreatedAt:                 time.Now(),
+		UpdatedAt:                 time.Now(),
 	}
 	s.nextID++
 	s.proposals[lookupKey] = rev
@@ -541,6 +543,7 @@ func TestCampaignProposeValidationAndCreation(t *testing.T) {
 		"title": "Summer Growth Campaign",
 		"goal": "Acquire 500 verified creators",
 		"acceptance_criteria": ["CPA < $15", "Active rate > 10%"],
+		"acceptance_criterion_phases": ["implementation", "implementation"],
 		"budget": {"currency": "USD", "max_amount": 2500.0, "source": "OWNER_LIMIT"},
 		"assumptions": ["Creator portal is stable"]
 	}`)
@@ -610,7 +613,8 @@ func TestCampaignProposeValidationAndCreation(t *testing.T) {
 	differentPayload := json.RawMessage(`{
 		"title": "Summer Growth Campaign - Revised Different",
 		"goal": "Acquire 1000 verified creators",
-		"acceptance_criteria": ["CPA < $10"]
+		"acceptance_criteria": ["CPA < $10"],
+		"acceptance_criterion_phases": ["implementation"]
 	}`)
 	reqDifferent := req
 	reqDifferent.Arguments = differentPayload
@@ -895,7 +899,8 @@ func TestCampaignReviseProposalAndOwnerApprovalTools(t *testing.T) {
 		"proposal_id": %d,
 		"title": "Revised Title",
 		"goal": "Revised Goal",
-		"acceptance_criteria": ["Criteria 1", "Criteria 2"]
+		"acceptance_criteria": ["Criteria 1", "Criteria 2"],
+		"acceptance_criterion_phases": ["implementation", "implementation"]
 	}`, p1.ID))
 
 	resRev, err := executor.Execute(turnCtxBg, identity, executionharness.ToolRequest{
