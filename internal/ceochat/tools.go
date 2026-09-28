@@ -41,25 +41,28 @@ const (
 	maxTopicsLimit       = 50
 )
 
-var listFindingsSchema = json.RawMessage(`{
+// The bounds are in the schemas because the model cannot keep a limit it is not shown: local smoke
+// #51 asked research.list_findings for 50 rows against an unstated maximum of 20, and the turn ended
+// on invalid tool arguments.
+var listFindingsSchema = json.RawMessage(fmt.Sprintf(`{
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "department_id": {"type": "string", "maxLength": 240},
-    "topic_id": {"type": "string", "maxLength": 240},
-    "important_only": {"type": "boolean"},
-    "limit": {"type": "integer"}
+    "department_id": {"type": "string", "maxLength": 240, "description": "Only findings for this department. Omit for all departments."},
+    "topic_id": {"type": "string", "maxLength": 240, "description": "Only findings of this research topic. Omit for all topics."},
+    "important_only": {"type": "boolean", "description": "Only findings classified important or critical."},
+    "limit": {"type": "integer", "minimum": 1, "maximum": %d, "description": "Maximum findings to return, between 1 and %d. Omit for the default (%d)."}
   }
-}`)
+}`, maxFindingsLimit, maxFindingsLimit, defaultFindingsLimit))
 
-var listTopicsSchema = json.RawMessage(`{
+var listTopicsSchema = json.RawMessage(fmt.Sprintf(`{
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "department_id": {"type": "string", "maxLength": 240},
-    "limit": {"type": "integer"}
+    "department_id": {"type": "string", "maxLength": 240, "description": "Only topics for this department. Omit for all departments."},
+    "limit": {"type": "integer", "minimum": 1, "maximum": %d, "description": "Maximum topics to return, between 1 and %d. Omit for the default (%d)."}
   }
-}`)
+}`, maxTopicsLimit, maxTopicsLimit, defaultTopicsLimit))
 
 // ToolCatalog is the CEO chat's own, deliberately small tool catalog. It is
 // NOT a second tool framework: Lookup/ValidateArguments satisfy

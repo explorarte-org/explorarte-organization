@@ -277,3 +277,27 @@ func TestResearchToolsRequireTheReadCapability(t *testing.T) {
 		}
 	}
 }
+
+// Local smoke #51: the CEO asked for 50 findings against an unstated maximum. The schemas state
+// every bound the host enforces.
+func TestResearchToolSchemasStateTheirLimits(t *testing.T) {
+	for name, raw := range map[string]json.RawMessage{ToolListFindings: listFindingsSchema, ToolListTopics: listTopicsSchema} {
+		var schema struct {
+			Properties map[string]struct {
+				Maximum *int `json:"maximum"`
+				Minimum *int `json:"minimum"`
+			} `json:"properties"`
+		}
+		if err := json.Unmarshal(raw, &schema); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		limit := schema.Properties["limit"]
+		want := maxFindingsLimit
+		if name == ToolListTopics {
+			want = maxTopicsLimit
+		}
+		if limit.Maximum == nil || *limit.Maximum != want || limit.Minimum == nil || *limit.Minimum != 1 {
+			t.Errorf("%s limit bounds %+v, want 1..%d", name, limit, want)
+		}
+	}
+}
