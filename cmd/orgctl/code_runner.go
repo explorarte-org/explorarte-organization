@@ -90,6 +90,12 @@ func runCodeRunner(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "usage: orgctl code-runner worker run | mission <request-review|review>")
 		return exitUsage
 	}
+	// Before anything is run on a mission's behalf: the commands this worker starts share its uid, and
+	// must not read its environment (audit A1). Refusing to start is safer than running exposed.
+	if err := coderunner.MakeProcessNonDumpable(); err != nil {
+		fmt.Fprintf(stderr, "code-runner: make the worker process non-dumpable: %v\n", err)
+		return exitInternal
+	}
 	cfg, stagingRuntime, stagingCleanup, code := openStagingRuntime(stderr)
 	if code != exitOK {
 		return code

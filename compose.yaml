@@ -518,9 +518,12 @@ services:
       GOCACHE: /tmp/go-cache
       GOMODCACHE: /tmp/go-mod
       GOFLAGS: -mod=mod
+    # No secret is mounted here (audit A1, 2026-09-27): the code-runner-identity.pem this service
+    # mounted from its first commit was read by no code -- the runner's identity is the database
+    # principal ORG_CODE_RUNNER_PRINCIPAL_ID -- and a Go test a mission proposes, running with the
+    # runner's uid, could read it.
     volumes:
       - /etc/explorarte/repositories.yaml:/etc/explorarte/repositories.yaml:ro
-      - /etc/explorarte/secrets/code-runner-identity.pem:/run/secrets/code-runner-identity.pem:ro
       - /var/lib/explorarte/staging/repo/explorarte-organization:/var/lib/explorarte/staging/repo/explorarte-organization
       - /var/lib/explorarte/staging/workspaces:/var/lib/explorarte/staging/workspaces
       - /var/lib/explorarte/staging/artifacts:/var/lib/explorarte/staging/artifacts
