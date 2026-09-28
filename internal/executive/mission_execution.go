@@ -130,25 +130,52 @@ func requiredRootRequirement(root TaskRecord, key string) (RequirementRecord, bo
 }
 
 func missionTaskID(root TaskRecord) (int64, error) {
-	var found int64
+	references := missionReferences(root)
+	if len(references) == 0 {
+		return 0, errors.New("implementation-mission has no durable engineering mission reference")
+	}
+	// One mission, or a chain of retries each superseding the one before (implementation_retry.go).
+	// Any other shape is two missions claiming the same root.
+	var latest int64
+	for id := range references {
+		if id <= 0 {
+			return 0, fmt.Errorf("invalid engineering mission reference %d", id)
+		}
+		if id > latest {
+			latest = id
+		}
+	}
+	superseded := map[int64]bool{}
+	for _, supersedes := range references {
+		if supersedes > 0 {
+			superseded[supersedes] = true
+		}
+	}
+	for id := range references {
+		if id != latest && !superseded[id] {
+			return 0, fmt.Errorf("conflicting engineering mission references %d and %d", id, latest)
+		}
+	}
+	return latest, nil
+}
+
+// missionReferences maps each engineering mission referenced by the root to the mission it supersedes
+// (0 for none). An unparseable reference maps from -1.
+func missionReferences(root TaskRecord) map[int64]int64 {
+	references := map[int64]int64{}
 	for _, evidence := range root.Evidence {
 		if !strings.HasPrefix(evidence.Reference, engineeringMissionReferencePrefix) {
 			continue
 		}
-		value := strings.TrimPrefix(evidence.Reference, engineeringMissionReferencePrefix)
-		id, err := strconv.ParseInt(value, 10, 64)
+		id, err := strconv.ParseInt(strings.TrimPrefix(evidence.Reference, engineeringMissionReferencePrefix), 10, 64)
 		if err != nil || id <= 0 {
-			return 0, fmt.Errorf("invalid engineering mission reference %q", evidence.Reference)
+			references[-1] = 0
+			continue
 		}
-		if found != 0 && found != id {
-			return 0, fmt.Errorf("conflicting engineering mission references %d and %d", found, id)
-		}
-		found = id
+		supersedes, _ := metadataInt64(evidence.Metadata[SupersedesMissionKey])
+		references[id] = supersedes
 	}
-	if found == 0 {
-		return 0, errors.New("implementation-mission has no durable engineering mission reference")
-	}
-	return found, nil
+	return references
 }
 
 func missionPending(status string) bool {
