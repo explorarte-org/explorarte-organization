@@ -8,11 +8,18 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/Mireuz13/explorarte-organization/internal/executive"
 )
 
 const executiveEvidenceSchema = "executive-evidence.v1"
+
+// executiveEvidenceBundleBytes bounds one recorded bundle. It was 14KiB while a worker summary was
+// cut to 1200 bytes; a review now sees each summary whole (up to MaxWorkerSummaryBytes, 8000), so a
+// round with its worker, a redo and a support task needs room for several. 64KiB is still a small
+// share of the context a review is assembled into.
+const executiveEvidenceBundleBytes = 64 << 10
 
 // EvidenceTasks decorates the existing task port. Review and closure tasks get
 // a bounded, deterministic evidence bundle recorded before CreateTask returns,
@@ -217,7 +224,7 @@ func (e EvidenceTasks) projectWorker(ctx context.Context, task executive.TaskRec
 	}
 	return projectedWorker{
 		TaskID: task.ID, RoleID: task.AssignedRoleID, Status: task.Status,
-		Completion: completion.Verdict, Summary: truncateBundleString(parsed.Summary, 1200),
+		Completion: completion.Verdict, Summary: boundedWorkerSummary(parsed.Summary, e.effectiveLimits().WorkerSummaryBytes()),
 		EvidenceRefs: boundedRefs(parsed.EvidenceRefs, 16), TaskEvidence: taskEvidenceRefs(task, 16),
 		ResponseHash: result.ResponseHash,
 	}, nil
@@ -299,8 +306,8 @@ func (e EvidenceTasks) recordBundle(ctx context.Context, taskID int64, scope str
 	if err != nil {
 		return err
 	}
-	if len(body) > 14<<10 {
-		return fmt.Errorf("executive evidence bundle exceeds 14KiB bound")
+	if len(body) > executiveEvidenceBundleBytes {
+		return fmt.Errorf("executive evidence bundle exceeds %d-byte bound", executiveEvidenceBundleBytes)
 	}
 	sum := sha256.Sum256(body)
 	digest := hex.EncodeToString(sum[:])
@@ -356,6 +363,26 @@ func truncateBundleString(value string, max int) string {
 		return value
 	}
 	return value[:max]
+}
+
+// boundedWorkerSummary is the worker summary a review is shown: whole up to the limit the worker
+// was held to, so a validated summary always arrives whole.
+//
+// It was cut at 1200 bytes, written when a summary was a line; the worker limit is 8000, and in a
+// design phase the summary IS the deliverable. Local smoke #34 (root 1773, 2026-09-27): the
+// round-3 department review said the summary it held was "truncated mid-sentence exactly where the
+// design starts to describe" the change, could not see the file list or the regression test, and
+// asked for the replan that exhausted the round. A longer value (none validates) is cut on a rune
+// boundary and says so.
+func boundedWorkerSummary(summary string, max int) string {
+	if len(summary) <= max {
+		return summary
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(summary[cut]) {
+		cut--
+	}
+	return summary[:cut] + fmt.Sprintf(" [cut by the host: first %d of %d bytes shown]", cut, len(summary))
 }
 
 func hasExecutiveBundle(task executive.TaskRecord) bool {

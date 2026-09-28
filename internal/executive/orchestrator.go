@@ -1206,6 +1206,18 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 			if e != nil {
 				return Run{}, false, e
 			}
+			// The owner accepted this department round after the host declined
+			// its replan (AcceptDepartmentByOwner): the review keeps its recorded
+			// verdict, and the run goes on as after an accept.
+			if review.Verdict == ReviewNeedsReplan && !replanCapacityRemains(reviewTask.IdempotencyKey, o.limits.MaxDepartmentReplans) {
+				accepted, acceptErr := o.ownerAcceptedDepartmentReview(ctx, root.ID, req.UnitID, reviewTask.ID)
+				if acceptErr != nil {
+					return Run{}, false, acceptErr
+				}
+				if accepted {
+					review.Verdict = ReviewAccept
+				}
+			}
 			if review.Verdict == ReviewNeedsReplan {
 				ordinal := reviewReplanOrdinal(reviewTask.IdempotencyKey) + 1
 				if !replanCapacityRemains(reviewTask.IdempotencyKey, o.limits.MaxDepartmentReplans) {
@@ -2846,7 +2858,15 @@ func (o *Orchestrator) validateRunCompletionEvidence(ctx context.Context, root T
 			return e
 		}
 		if parsed.Verdict != ReviewAccept {
-			return fmt.Errorf("department %s verdict is %s", req.UnitID, parsed.Verdict)
+			// The owner may have accepted this very review's round after the host
+			// declined its replan (AcceptDepartmentByOwner).
+			accepted, acceptErr := o.ownerAcceptedDepartmentReview(ctx, root.ID, req.UnitID, review.ID)
+			if acceptErr != nil {
+				return acceptErr
+			}
+			if !accepted || parsed.Verdict != ReviewNeedsReplan {
+				return fmt.Errorf("department %s verdict is %s", req.UnitID, parsed.Verdict)
+			}
 		}
 	}
 	return nil

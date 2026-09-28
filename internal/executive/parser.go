@@ -330,7 +330,19 @@ func validateRequiredString(v string, max int, name string) error {
 		return fmt.Errorf("%w: invalid %s: contains NUL byte", ErrContractRejected, name)
 	}
 	if len(v) > max {
-		return fmt.Errorf("%w: invalid %s: %d UTF-8 bytes exceeds maximum %d", ErrContractRejected, name, len(v), max)
+		return fmt.Errorf("%w: invalid %s: %d UTF-8 bytes exceeds maximum %d; %s", ErrContractRejected, name, len(v), max, overLengthCorrection(len(v), max))
 	}
 	return nil
+}
+
+// overLengthCorrection tells the next attempt how much to cut and what is counted.
+//
+// Local smokes #32 to #34 (2026-09-27): design workers' summaries were refused nine times for
+// exceeding 8000 bytes, and a retry told only "9022 UTF-8 bytes exceeds maximum 8000" came back at
+// 10486. The limit is in bytes, which a model counting characters misjudges (an accented letter is
+// two), so the correction names the cut and a target with room below the limit.
+func overLengthCorrection(have, max int) string {
+	target := max * 85 / 100
+	return fmt.Sprintf("rewrite it shorter: cut at least %d bytes and aim for about %d; the limit counts UTF-8 bytes, not characters, "+
+		"and an accented letter takes two; keep what the result must state and drop restatement", have-target, target)
 }

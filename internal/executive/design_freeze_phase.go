@@ -635,6 +635,13 @@ func (o *Orchestrator) roundOwnershipReplay(ctx context.Context, all []TaskRecor
 		if review.Verdict != ReviewNeedsReplan {
 			continue
 		}
+		// A replan the host declined materializes no follow-up, so its bindings
+		// move no authority: the deliverable they name as replaced was never
+		// replaced. Only an owner acceptance lets such a round go on, and it
+		// must go on with the work that exists (root 1773).
+		if !replanCapacityRemains(r.task.IdempotencyKey, o.limits.MaxDepartmentReplans) {
+			continue
+		}
 		for _, binding := range review.FollowupOwnership {
 			if previous, taken := authority[binding.RequiredChangeID]; taken && previous != "" {
 				superseded[previous] = true
