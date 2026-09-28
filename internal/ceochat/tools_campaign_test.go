@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -532,8 +533,9 @@ func TestCampaignProposeValidationAndCreation(t *testing.T) {
 	store := newFakeCampaignStore()
 	auth := fakeAuthorizer{
 		allowed: map[string]bool{
-			"owner:campaign.proposal.create": true,
-			"owner:campaign.proposal.read":   true,
+			"owner:campaign.proposal.create":       true,
+			"empresa/ceo:campaign.proposal.create": true,
+			"owner:campaign.proposal.read":         true,
 		},
 	}
 	reg := setupCampaignTestRegistry(t, store, auth)
@@ -1297,5 +1299,27 @@ func TestCampaignPromoteToExecutiveTools(t *testing.T) {
 	}
 	if getPromoApprProj.PromotionID != promoProj.PromotionID {
 		t.Errorf("get promotion by appr ID = %d, want %d", getPromoApprProj.PromotionID, promoProj.PromotionID)
+	}
+}
+
+// Local smoke #44: the host checked only the owner the turn acts for, who holds everything, so a
+// capability the canonical matrix withheld from the CEO was never enforced for it. The executing
+// CEO role must hold it too.
+func TestTheCEOMustHoldTheCapabilityItProposesWith(t *testing.T) {
+	store := newFakeCampaignStore()
+	auth := fakeAuthorizer{allowed: map[string]bool{"owner:campaign.proposal.create": true}}
+	executor := RegistryToolExecutor{Registry: setupCampaignTestRegistry(t, store, auth)}
+	ctx := WithTurnContext(context.Background(), TurnContext{
+		OrganizationID: "org-test", OrganizationRevisionID: 1, ConversationID: 100, OwnerRoleID: "owner",
+		OwnerMessageID: 200, TaskID: 300, AttemptID: 1, ActorRoleID: "owner",
+	})
+	_, err := executor.Execute(ctx, executionharness.RunIdentity{OrganizationID: "org-test", RoleID: CEORoleID, TaskID: 300, AttemptID: 1},
+		executionharness.ToolRequest{ToolName: "campaign.propose", ToolCallID: "call_ceo_without_grant", Arguments: json.RawMessage(`{
+			"title": "T", "goal": "G", "acceptance_criteria": ["c"], "acceptance_criterion_phases": ["implementation"]}`)})
+	if err == nil || !strings.Contains(err.Error(), `"empresa/ceo" lacks campaign.proposal.create`) {
+		t.Fatalf("err = %v, want the CEO refused for lacking campaign.proposal.create", err)
+	}
+	if proposals, _ := store.ListProposals(context.Background(), "org-test", 10, 0); len(proposals) != 0 {
+		t.Fatalf("a refused proposal was stored: %+v", proposals)
 	}
 }

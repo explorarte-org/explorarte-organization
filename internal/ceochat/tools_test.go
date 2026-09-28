@@ -256,3 +256,24 @@ func TestListFindingsCarriesBoundedEvidence(t *testing.T) {
 		t.Fatalf("evidence %+v", evidence)
 	}
 }
+
+// The research tools require research.findings.read of the executing role.
+func TestResearchToolsRequireTheReadCapability(t *testing.T) {
+	findings := &fakeFindingLister{findings: []search.ResearchFinding{{ID: "f1"}}}
+	ctx := WithTurnContext(context.Background(), TurnContext{OrganizationID: "org-test", OrganizationRevisionID: 1, ActorRoleID: "owner"})
+	identity := executionharness.RunIdentity{OrganizationID: "org-test", RoleID: CEORoleID}
+	request := executionharness.ToolRequest{ToolName: ToolListFindings, ToolCallID: "call_1", Arguments: json.RawMessage(`{}`)}
+	for name, allowed := range map[string]map[string]bool{
+		"granted": {"empresa/ceo:research.findings.read": true},
+		"denied":  {"owner:research.findings.read": true},
+	} {
+		registry := NewToolRegistry()
+		if err := RegisterResearchTools(registry, nil, findings, fakeAuthorizer{allowed: allowed}); err != nil {
+			t.Fatal(err)
+		}
+		_, err := RegistryToolExecutor{Registry: registry}.Execute(ctx, identity, request)
+		if (name == "granted") != (err == nil) {
+			t.Errorf("%s: err = %v", name, err)
+		}
+	}
+}

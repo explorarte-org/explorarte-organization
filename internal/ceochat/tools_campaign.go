@@ -17,6 +17,26 @@ type CapabilityAuthorizer interface {
 	Authorize(ctx context.Context, organizationID string, revisionID int64, roleID, capability string) error
 }
 
+// authorizeOwnerAndExecutor requires capability of both roles behind a mutating tool call: the owner
+// the turn acts for, and the role that executes the tool (the CEO). Only the owner was checked, and
+// the owner holds everything, so a capability the canonical matrix withheld from the CEO was never
+// enforced for it (local smoke #44: the CEO read the matrix, found campaign.proposal.create missing
+// from its grants and refused, while the host would have let it propose).
+func authorizeOwnerAndExecutor(ctx context.Context, authorizer CapabilityAuthorizer, turnCtx TurnContext, executorRoleID, capability string) error {
+	if authorizer == nil {
+		return nil
+	}
+	for _, roleID := range []string{turnCtx.ActorRoleID, executorRoleID} {
+		if strings.TrimSpace(roleID) == "" {
+			return fmt.Errorf("%w: no role to authorize for %s", ErrUnauthorizedActor, capability)
+		}
+		if err := authorizer.Authorize(ctx, turnCtx.OrganizationID, turnCtx.OrganizationRevisionID, roleID, capability); err != nil {
+			return fmt.Errorf("%w: actor %q lacks %s capability: %v", ErrUnauthorizedActor, roleID, capability, err)
+		}
+	}
+	return nil
+}
+
 // CampaignToolsConfig holds optional collaborators for campaign tools.
 type CampaignToolsConfig struct {
 	FinanceService   *campaign.FinanceService
@@ -520,10 +540,8 @@ func RegisterCampaignTools(registry *ToolRegistry, organizationID string, store 
 			return nil, fmt.Errorf("%w: missing tool call context", ErrUnauthorizedActor)
 		}
 
-		if authorizer != nil {
-			if err := authorizer.Authorize(ctx, turnCtx.OrganizationID, turnCtx.OrganizationRevisionID, turnCtx.ActorRoleID, "campaign.proposal.create"); err != nil {
-				return nil, fmt.Errorf("%w: actor %q lacks campaign.proposal.create capability: %v", ErrUnauthorizedActor, turnCtx.ActorRoleID, err)
-			}
+		if err := authorizeOwnerAndExecutor(ctx, authorizer, turnCtx, actorRoleID, "campaign.proposal.create"); err != nil {
+			return nil, err
 		}
 
 		var args proposeArgs
@@ -925,10 +943,8 @@ func RegisterCampaignTools(registry *ToolRegistry, organizationID string, store 
 		}
 		toolCallCtx, _ := ToolCallContextFrom(ctx)
 
-		if authorizer != nil {
-			if err := authorizer.Authorize(ctx, turnCtx.OrganizationID, turnCtx.OrganizationRevisionID, turnCtx.ActorRoleID, campaign.CapabilityProposalRevise); err != nil {
-				return nil, fmt.Errorf("%w: actor %q lacks %s capability: %v", ErrUnauthorizedActor, turnCtx.ActorRoleID, campaign.CapabilityProposalRevise, err)
-			}
+		if err := authorizeOwnerAndExecutor(ctx, authorizer, turnCtx, actorRoleID, campaign.CapabilityProposalRevise); err != nil {
+			return nil, err
 		}
 
 		var args reviseProposalArgs

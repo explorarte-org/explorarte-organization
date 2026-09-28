@@ -271,9 +271,6 @@ func Open(cfg config.Config, store *platformpostgres.Store, opts ...OpenOption) 
 	// This is what RunSpec.Tools and the Harness's ToolCatalog/ToolExecutor
 	// both end up backed by: one registry, never a second tool framework.
 	toolRegistry := ceochat.NewToolRegistry()
-	if err = ceochat.RegisterResearchTools(toolRegistry, searchStore, searchStore); err != nil {
-		return nil, fmt.Errorf("register ceochat research tools: %w", err)
-	}
 	if err = ceochat.RegisterTaskTools(toolRegistry, taskService); err != nil {
 		return nil, fmt.Errorf("register ceochat task tools: %w", err)
 	}
@@ -298,6 +295,9 @@ func Open(cfg config.Config, store *platformpostgres.Store, opts ...OpenOption) 
 	authorizerPolicy, err := authorization.NewWithPolicyReader(authorizationStore, organizationID, cfg.Registry.CanonicalDir)
 	if err != nil {
 		return nil, fmt.Errorf("create ceochat capability authorizer: %w", err)
+	}
+	if err = ceochat.RegisterResearchTools(toolRegistry, searchStore, searchStore, authorizerPolicy); err != nil {
+		return nil, fmt.Errorf("register ceochat research tools: %w", err)
 	}
 	// Approval and Promotion re-check the owner-facing budget against the
 	// CURRENT host execution budget floor (CAMPAIGN_EXECUTION_BUDGET_

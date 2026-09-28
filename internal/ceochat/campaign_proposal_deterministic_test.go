@@ -158,7 +158,7 @@ func buildTestService(store Store, campaignStore campaign.Store, authorizer Capa
 func TestScenario1_HypotheticalQueryCausesZeroProposals(t *testing.T) {
 	chatStore := newMemoryStore()
 	campStore := newFakeCampaignStore()
-	auth := fakeAuthorizer{allowed: map[string]bool{"owner:campaign.proposal.create": true}}
+	auth := fakeAuthorizer{allowed: map[string]bool{"owner:campaign.proposal.create": true, "empresa/ceo:campaign.proposal.create": true}}
 	taskCoord := &fakeTaskCoordinator{}
 
 	model := &scriptedModelExecutor{
@@ -209,7 +209,7 @@ func TestScenario1_HypotheticalQueryCausesZeroProposals(t *testing.T) {
 func TestScenario2_ExplicitDraftIntentCreatesOneDraft(t *testing.T) {
 	chatStore := newMemoryStore()
 	campStore := newFakeCampaignStore()
-	auth := fakeAuthorizer{allowed: map[string]bool{"owner:campaign.proposal.create": true}}
+	auth := fakeAuthorizer{allowed: map[string]bool{"owner:campaign.proposal.create": true, "empresa/ceo:campaign.proposal.create": true}}
 	taskCoord := &fakeTaskCoordinator{}
 
 	validProposalArgs, _ := json.Marshal(map[string]any{
@@ -284,7 +284,7 @@ func TestScenario2_ExplicitDraftIntentCreatesOneDraft(t *testing.T) {
 func TestScenario3_ExactRetryProducesSameProposalTotal(t *testing.T) {
 	chatStore := newMemoryStore()
 	campStore := newFakeCampaignStore()
-	auth := fakeAuthorizer{allowed: map[string]bool{"owner:campaign.proposal.create": true}}
+	auth := fakeAuthorizer{allowed: map[string]bool{"owner:campaign.proposal.create": true, "empresa/ceo:campaign.proposal.create": true}}
 	taskCoord := &fakeTaskCoordinator{}
 
 	proposalArgs, _ := json.Marshal(map[string]any{
@@ -341,7 +341,7 @@ func TestScenario3_ExactRetryProducesSameProposalTotal(t *testing.T) {
 // Scenario 4: Same mutation identity, different payload -> CONFLICT.
 func TestScenario4_SameIdentityDifferentPayloadConflicts(t *testing.T) {
 	campStore := newFakeCampaignStore()
-	auth := fakeAuthorizer{allowed: map[string]bool{"owner:campaign.proposal.create": true}}
+	auth := fakeAuthorizer{allowed: map[string]bool{"owner:campaign.proposal.create": true, "empresa/ceo:campaign.proposal.create": true}}
 	reg := setupCampaignTestRegistry(t, campStore, auth)
 	executor := RegistryToolExecutor{Registry: reg}
 
@@ -376,7 +376,7 @@ func TestScenario4_SameIdentityDifferentPayloadConflicts(t *testing.T) {
 func TestScenario5_UnauthorizedActorDenied(t *testing.T) {
 	campStore := newFakeCampaignStore()
 	// auth does NOT allow guest to create proposals
-	auth := fakeAuthorizer{allowed: map[string]bool{"owner:campaign.proposal.create": true}}
+	auth := fakeAuthorizer{allowed: map[string]bool{"owner:campaign.proposal.create": true, "empresa/ceo:campaign.proposal.create": true}}
 	reg := setupCampaignTestRegistry(t, campStore, auth)
 	executor := RegistryToolExecutor{Registry: reg}
 
@@ -405,7 +405,7 @@ func TestScenario5_UnauthorizedActorDenied(t *testing.T) {
 // Scenario 6: Crash after persistence -> retry returns same proposal.
 func TestScenario6_CrashAfterPersistenceRetryReusesProposal(t *testing.T) {
 	campStore := newFakeCampaignStore()
-	auth := fakeAuthorizer{allowed: map[string]bool{"owner:campaign.proposal.create": true}}
+	auth := fakeAuthorizer{allowed: map[string]bool{"owner:campaign.proposal.create": true, "empresa/ceo:campaign.proposal.create": true}}
 	reg := setupCampaignTestRegistry(t, campStore, auth)
 	executor := RegistryToolExecutor{Registry: reg}
 
@@ -450,7 +450,7 @@ func TestScenario6_CrashAfterPersistenceRetryReusesProposal(t *testing.T) {
 func TestScenario7_AttemptedInventedToolFailsClosed(t *testing.T) {
 	chatStore := newMemoryStore()
 	campStore := newFakeCampaignStore()
-	auth := fakeAuthorizer{allowed: map[string]bool{"owner:campaign.proposal.create": true}}
+	auth := fakeAuthorizer{allowed: map[string]bool{"owner:campaign.proposal.create": true, "empresa/ceo:campaign.proposal.create": true}}
 	taskCoord := &fakeTaskCoordinator{}
 
 	model := &scriptedModelExecutor{
@@ -497,7 +497,7 @@ func TestScenario7_AttemptedInventedToolFailsClosed(t *testing.T) {
 func TestCanonicalExecutiveNonEffectProof(t *testing.T) {
 	chatStore := newMemoryStore()
 	campStore := newFakeCampaignStore()
-	auth := fakeAuthorizer{allowed: map[string]bool{"owner:campaign.proposal.create": true}}
+	auth := fakeAuthorizer{allowed: map[string]bool{"owner:campaign.proposal.create": true, "empresa/ceo:campaign.proposal.create": true}}
 	taskCoord := &fakeTaskCoordinator{}
 
 	proposalArgs, _ := json.Marshal(map[string]any{

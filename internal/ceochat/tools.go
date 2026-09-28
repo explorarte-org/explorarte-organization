@@ -336,7 +336,27 @@ var _ executionharness.ToolExecutor = ToolExecutor{}
 // requirement. It is what production bootstrap wires; ToolCatalog/
 // ToolExecutor remain in this file only for their own isolated unit tests
 // and for a caller that wants a narrower, registry-free composition.
-func RegisterResearchTools(registry *ToolRegistry, topics TopicLister, findings FindingLister) error {
+// CapabilityResearchFindingsRead is the canonical capability the research tools require of the
+// executing role.
+const CapabilityResearchFindingsRead = "research.findings.read"
+
+// authorizeResearchRead requires research.findings.read of the role executing a research tool. A
+// nil authorizer (tests without policy) checks nothing, as the campaign tools do.
+func authorizeResearchRead(ctx context.Context, authorizer CapabilityAuthorizer, executorRoleID string) error {
+	if authorizer == nil {
+		return nil
+	}
+	turnCtx, ok := TurnContextFrom(ctx)
+	if !ok {
+		return fmt.Errorf("%w: missing turn context", ErrUnauthorizedActor)
+	}
+	if err := authorizer.Authorize(ctx, turnCtx.OrganizationID, turnCtx.OrganizationRevisionID, executorRoleID, CapabilityResearchFindingsRead); err != nil {
+		return fmt.Errorf("%w: actor %q lacks %s capability: %v", ErrUnauthorizedActor, executorRoleID, CapabilityResearchFindingsRead, err)
+	}
+	return nil
+}
+
+func RegisterResearchTools(registry *ToolRegistry, topics TopicLister, findings FindingLister, authorizer CapabilityAuthorizer) error {
 	executor := ToolExecutor{Topics: topics, Findings: findings}
 	if err := registry.Register(ToolDescriptor{
 		ID: ToolListTopics, Version: "v1",
@@ -345,7 +365,10 @@ func RegisterResearchTools(registry *ToolRegistry, topics TopicLister, findings 
 		Limits:    ToolLimits{MaxRows: maxTopicsLimit, MaxResultBytes: 32 << 10, Timeout: defaultToolTimeout},
 		DataClass: DataClassInternal,
 	}, func(args json.RawMessage) error { _, err := decodeListTopicsArgs(args); return err },
-		func(ctx context.Context, _ string, args json.RawMessage) (json.RawMessage, error) {
+		func(ctx context.Context, actorRoleID string, args json.RawMessage) (json.RawMessage, error) {
+			if err := authorizeResearchRead(ctx, authorizer, actorRoleID); err != nil {
+				return nil, err
+			}
 			result, err := executor.executeListTopics(ctx, args)
 			if err != nil {
 				return nil, err
@@ -361,7 +384,10 @@ func RegisterResearchTools(registry *ToolRegistry, topics TopicLister, findings 
 		Limits:    ToolLimits{MaxRows: maxFindingsLimit, MaxResultBytes: findingsResultBytes, Timeout: defaultToolTimeout},
 		DataClass: DataClassInternal,
 	}, func(args json.RawMessage) error { _, err := decodeListFindingsArgs(args); return err },
-		func(ctx context.Context, _ string, args json.RawMessage) (json.RawMessage, error) {
+		func(ctx context.Context, actorRoleID string, args json.RawMessage) (json.RawMessage, error) {
+			if err := authorizeResearchRead(ctx, authorizer, actorRoleID); err != nil {
+				return nil, err
+			}
 			result, err := executor.executeListFindings(ctx, args)
 			if err != nil {
 				return nil, err
