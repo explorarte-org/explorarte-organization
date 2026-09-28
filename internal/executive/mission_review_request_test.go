@@ -10,12 +10,14 @@ import (
 // pending, because nothing in the governed path asked for the mission's review.
 
 type recordingReviewRequester struct {
-	calls [][2]int64
-	err   error
+	calls         [][2]int64
+	gatesRecorded []bool
+	err           error
 }
 
-func (r *recordingReviewRequester) RequestMissionReview(_ context.Context, missionTaskID, workspaceID int64) error {
+func (r *recordingReviewRequester) RequestMissionReview(_ context.Context, missionTaskID, workspaceID int64, gatesRecorded bool) error {
 	r.calls = append(r.calls, [2]int64{missionTaskID, workspaceID})
+	r.gatesRecorded = append(r.gatesRecorded, gatesRecorded)
 	return r.err
 }
 
@@ -52,14 +54,55 @@ func TestAVerifiedMissionAsksForItsReviewOnce(t *testing.T) {
 	}
 }
 
-func TestAMissionWhoseGatesAreRecordedIsNotAskedAgain(t *testing.T) {
+// A mission whose gates are recorded is still asked, telling the requester the check is durable, so a
+// promotion lost between the two writes is opened on the next pass (external audit A2). The requester
+// opens nothing when the promotion exists.
+func TestAMissionWhoseGatesAreRecordedIsAskedWithoutRecordingThemAgain(t *testing.T) {
 	requester := &recordingReviewRequester{}
 	o, root := reviewFixture(codeRunnerTaskForTest(), requester) // gates satisfied in the fixture
 	if err := o.ensureRequiredCodeRunnerExecution(context.Background(), root); err != nil {
 		t.Fatal(err)
 	}
-	if len(requester.calls) != 0 {
-		t.Fatalf("asked again for a mission whose gates are recorded: %v", requester.calls)
+	if len(requester.calls) != 1 || !requester.gatesRecorded[0] {
+		t.Fatalf("calls=%v gatesRecorded=%v, want one request that says the gates are recorded", requester.calls, requester.gatesRecorded)
+	}
+}
+
+// External audit A2 (2026-09-27), reproduced by fault injection: the gate check commits, the promotion
+// request fails. The next pass must ask again -- for the promotion only -- instead of accepting the
+// execution with nothing to review.
+type partialCommitRequester struct {
+	tasks         *memoryTasks
+	gatesRecorded []bool
+}
+
+func (r *partialCommitRequester) RequestMissionReview(_ context.Context, taskID, _ int64, gatesRecorded bool) error {
+	r.gatesRecorded = append(r.gatesRecorded, gatesRecorded)
+	if len(r.gatesRecorded) > 1 {
+		return nil
+	}
+	mission := r.tasks.tasks[taskID]
+	for i := range mission.Requirements {
+		if mission.Requirements[i].Key == missionGatesRequirementKey {
+			mission.Requirements[i].Status = "satisfied"
+		}
+	}
+	r.tasks.tasks[taskID] = mission
+	return errors.New("injected failure after the gate check, before the promotion exists")
+}
+
+func TestAPromotionLostAfterTheGateCheckIsRequestedOnTheNextPass(t *testing.T) {
+	o, root := reviewFixture(missionWithGatesPending(), nil)
+	requester := &partialCommitRequester{tasks: o.tasks.(*memoryTasks)}
+	o.missionReviews = requester
+	if err := o.ensureRequiredCodeRunnerExecution(context.Background(), root); !errors.Is(err, ErrCodeRunnerExecutionPending) {
+		t.Fatalf("first pass: %v, want pending", err)
+	}
+	if err := o.ensureRequiredCodeRunnerExecution(context.Background(), root); err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+	if len(requester.gatesRecorded) != 2 || requester.gatesRecorded[0] || !requester.gatesRecorded[1] {
+		t.Fatalf("requests gatesRecorded=%v, want [false true]: the second pass asks for the promotion only", requester.gatesRecorded)
 	}
 }
 
