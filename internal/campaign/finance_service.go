@@ -193,7 +193,7 @@ func NewFinanceService(cfg FinanceServiceConfig) (*FinanceService, error) {
 		cfg.WorkerID = "finance-review-worker"
 	}
 	if cfg.LeaseDuration <= 0 {
-		cfg.LeaseDuration = 2 * time.Minute
+		cfg.LeaseDuration = FinanceLeaseDuration
 	}
 	if cfg.RoleResolver == nil {
 		cfg.RoleResolver = DefaultReviewerRoleResolver{
@@ -988,18 +988,31 @@ func (s *FinanceService) runHarnessModel(ctx context.Context, claimed tasks.Clai
 		}
 	} else if s.cfg.NewModelExecutor != nil {
 		temperature := financeReviewTemperature
-		models, err := s.cfg.NewModelExecutor(modelruntimeadapter.Config{
-			MaxOutputTokens:               4096,
-			Temperature:                   &temperature,
-			ThinkingMode:                  modelruntime.ThinkingDisabled,
-			InvocationTTL:                 2 * time.Minute,
-			OutputMode:                    modelruntime.OutputText,
-			ExecutionContractInstructions: contractInstructions,
-			Purpose:                       "campaign.financial_review",
-		})
+		buildModels := func(ordinal int) (executionharness.ModelExecutor, error) {
+			return s.cfg.NewModelExecutor(modelruntimeadapter.Config{
+				MaxOutputTokens:               4096,
+				Temperature:                   &temperature,
+				ThinkingMode:                  modelruntime.ThinkingDisabled,
+				InvocationTTL:                 2 * time.Minute,
+				OutputMode:                    modelruntime.OutputText,
+				ExecutionContractInstructions: contractInstructions,
+				Purpose:                       "campaign.financial_review",
+				RetryOrdinal:                  ordinal,
+			})
+		}
+		first, err := buildModels(0)
 		if err != nil {
 			return FinanceReviewOutput{}, fmt.Errorf("build finance model executor: %w", err)
 		}
+		// Local smoke #48: the finance model answered HTTP 503 once and the review, a one-attempt
+		// task, failed. A transient refusal is retried, bounded; the dispatch assignment allows
+		// FinanceMaxInvocations and the lease covers the pauses.
+		models := modelruntimeadapter.TransientRetryExecutor{Build: func(ordinal int) (executionharness.ModelExecutor, error) {
+			if ordinal == 0 {
+				return first, nil
+			}
+			return buildModels(ordinal)
+		}, Waits: modelruntimeadapter.DefaultTransientRetryWaits}
 		runtime, err := executionharness.NewWithDescriptorStore(s.cfg.Authority, models, financeToolCatalog{}, financeToolExecutor{}, s.cfg.HarnessHistory, s.cfg.DescriptorStore)
 		if err != nil {
 			return FinanceReviewOutput{}, fmt.Errorf("build harness runtime: %w", err)
@@ -1057,6 +1070,14 @@ func (s *FinanceService) runHarnessModel(ctx context.Context, claimed tasks.Clai
 // could start at all. A review is a judgement the owner acts on, not a creative task: the same
 // proposal under the same floor should get the same answer, so it is sampled greedily.
 const financeReviewTemperature = 0.0
+
+// FinanceMaxInvocations is the finance review's model call plus its bounded transient retries: the
+// dispatch assignment a review's attempt is given must allow this many.
+var FinanceMaxInvocations = 1 + len(modelruntimeadapter.DefaultTransientRetryWaits)
+
+// FinanceLeaseDuration covers one review with both retry pauses (90s) and three calls of up to the
+// two-minute invocation TTL's typical ~30s; the lease is not heartbeated during the run.
+const FinanceLeaseDuration = 5 * time.Minute
 
 func renderFinanceContractInstructions(requirements ExecutionBudgetRequirements) string {
 	return `You are the canonical Financial Reviewer (negocio/administrador_financiero) of the organization.

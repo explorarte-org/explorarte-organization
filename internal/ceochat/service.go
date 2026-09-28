@@ -425,10 +425,18 @@ func (s *Service) driveTurn(ctx context.Context, conversation Conversation, task
 		})
 	}
 	// Built once up front so a misconfiguration fails the turn before it starts.
-	if _, err = buildModels(0); err != nil {
+	first, err := buildModels(0)
+	if err != nil {
 		return SendResult{}, fmt.Errorf("build ceochat model executor: %w", err)
 	}
-	models := rateLimitRetryExecutor{build: buildModels, waits: rateLimitRetryWaits, sleep: sleepContext}
+	// A rate-limited or unavailable provider answer is retried, bounded; the dispatch assignment's
+	// MaxTurns invocations cover the retries.
+	models := modelruntimeadapter.TransientRetryExecutor{Build: func(ordinal int) (executionharness.ModelExecutor, error) {
+		if ordinal == 0 {
+			return first, nil
+		}
+		return buildModels(ordinal)
+	}, Waits: modelruntimeadapter.DefaultTransientRetryWaits}
 	runtime, err := executionharness.NewWithDescriptorStore(s.Authority, models, s.Catalog, s.ToolExecutor, s.HarnessHistory, s.DescriptorStore)
 	if err != nil {
 		return SendResult{}, fmt.Errorf("build ceochat harness runtime: %w", err)

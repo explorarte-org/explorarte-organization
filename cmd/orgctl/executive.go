@@ -495,11 +495,11 @@ func buildFinanceWorker(ctx context.Context, cfg config.Config, store *platformp
 		return nil, fmt.Errorf("create harness history store: %w", err)
 	}
 	// Finance performs exactly one bounded model review per task (the
-	// Harness spec itself pins MaxTurns=1) -- the provisioner's own
-	// default MaxInvocations=1 is left untouched, never overridden the
-	// way ceochat overrides it to 8 for its own multi-turn conversation
-	// shape.
-	financeAssignments, err := runtime.Models.Dispatcher.NewAuthorizedAttemptProvisioner(runtime.Models.Config.ExecutionPrincipalKey)
+	// Harness spec itself pins MaxTurns=1). Its assignment allows that call
+	// plus the bounded retries of a transient provider refusal
+	// (campaign.FinanceMaxInvocations); local smoke #48 lost a review to one
+	// HTTP 503.
+	financeAssignments, err := runtime.Models.Dispatcher.NewAuthorizedAttemptProvisioner(runtime.Models.Config.ExecutionPrincipalKey, modeldispatch.WithMaxInvocations(campaign.FinanceMaxInvocations))
 	if err != nil {
 		return nil, fmt.Errorf("create finance dispatch provisioner: %w", err)
 	}
