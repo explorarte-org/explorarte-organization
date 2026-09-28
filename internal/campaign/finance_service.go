@@ -994,7 +994,8 @@ func (s *FinanceService) runHarnessModel(ctx context.Context, claimed tasks.Clai
 				Temperature:                   &temperature,
 				ThinkingMode:                  modelruntime.ThinkingDisabled,
 				InvocationTTL:                 2 * time.Minute,
-				OutputMode:                    modelruntime.OutputText,
+				OutputMode:                    modelruntime.OutputJSON,
+				OutputSchema:                  financeReviewOutputSchema,
 				ExecutionContractInstructions: contractInstructions,
 				Purpose:                       "campaign.financial_review",
 				RetryOrdinal:                  ordinal,
@@ -1054,6 +1055,13 @@ func (s *FinanceService) runHarnessModel(ctx context.Context, claimed tasks.Clai
 	if err := json.Unmarshal([]byte(rawOutput), &output); err != nil {
 		return FinanceReviewOutput{}, fmt.Errorf("parse finance review output JSON: %w (raw: %s)", err, rawOutput)
 	}
+	// The schema makes recommended_budget present on every verdict. On a verdict that launches
+	// nothing, a budget that is not executable is dropped rather than failing the review over a
+	// field it was never asked to fill; a recommended verdict's budget is still validated whole.
+	if FinancialReviewVerdict(output.Verdict) != VerdictRecommended && output.RecommendedBudget != nil &&
+		ValidateExecutableBudget(*output.RecommendedBudget) != nil {
+		output.RecommendedBudget = nil
+	}
 
 	return output, nil
 }
@@ -1070,6 +1078,48 @@ func (s *FinanceService) runHarnessModel(ctx context.Context, claimed tasks.Clai
 // could start at all. A review is a judgement the owner acts on, not a creative task: the same
 // proposal under the same floor should get the same answer, so it is sampled greedily.
 const financeReviewTemperature = 0.0
+
+// financeReviewOutputSchema is FinanceReviewOutput as a provider-enforced JSON schema. The review
+// asked for text and parsed it, and a model wrote "-assumptions:" for a key (local smoke #49);
+// structured output makes a well-formed object the provider's job. The host's own validation
+// (validateFinanceReviewOutput) still decides what the object may say.
+var financeReviewOutputSchema = json.RawMessage(`{
+  "type":"object",
+  "additionalProperties":false,
+  "required":["verdict","summary","recommended_budget","estimated_cost","assumptions","risks","required_corrections","missing_information"],
+  "properties":{
+    "verdict":{"type":"string","enum":["recommended","changes_requested","not_recommended","insufficient_data"]},
+    "summary":{"type":"string"},
+    "recommended_budget":{
+      "type":"object",
+      "additionalProperties":false,
+      "required":["max_usd","max_tokens","max_model_calls","max_wall_time_ms","max_depth","max_retries","max_subagents"],
+      "properties":{
+        "max_usd":{"type":"number"},
+        "max_tokens":{"type":"integer"},
+        "max_model_calls":{"type":"integer"},
+        "max_wall_time_ms":{"type":"integer"},
+        "max_depth":{"type":"integer"},
+        "max_retries":{"type":"integer"},
+        "max_subagents":{"type":"integer"}
+      }
+    },
+    "estimated_cost":{
+      "type":"object",
+      "additionalProperties":false,
+      "required":["amount","currency","confidence"],
+      "properties":{
+        "amount":{"type":"number"},
+        "currency":{"type":"string"},
+        "confidence":{"type":"string","enum":["low","medium","high"]}
+      }
+    },
+    "assumptions":{"type":"array","items":{"type":"string"}},
+    "risks":{"type":"array","items":{"type":"string"}},
+    "required_corrections":{"type":"array","items":{"type":"string"}},
+    "missing_information":{"type":"array","items":{"type":"string"}}
+  }
+}`)
 
 // FinanceMaxInvocations is the finance review's model call plus its bounded transient retries: the
 // dispatch assignment a review's attempt is given must allow this many.

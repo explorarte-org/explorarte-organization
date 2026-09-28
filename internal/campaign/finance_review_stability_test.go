@@ -2,13 +2,16 @@ package campaign_test
 
 import (
 	"context"
+	"encoding/json"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/Mireuz13/explorarte-organization/internal/campaign"
 	"github.com/Mireuz13/explorarte-organization/internal/executionharness"
 	"github.com/Mireuz13/explorarte-organization/internal/executionharness/modelruntimeadapter"
+	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
 )
 
 // Proposals 34 and 35 (2026-09-26) were the same campaign under two titles: one review recommended it,
@@ -99,5 +102,20 @@ func TestTheFinanceContractDoesNotTurnWhatIsNeverObservedOrChosenIntoAVerdict(t 
 	}
 	if strings.Contains(text, "produce verdict \"insufficient_data\" or clearly qualify") {
 		t.Error("the contract still tells Finance to refuse on unobserved treasury")
+	}
+}
+
+// Local smoke #49: asked for text, the finance model wrote "-assumptions:" for a key. The review
+// asks the provider for an object that meets its schema.
+func TestTheFinanceReviewAsksForSchemaEnforcedJSON(t *testing.T) {
+	config := runFinanceReviewCapturingConfig(t)
+	if config.OutputMode != modelruntime.OutputJSON || len(config.OutputSchema) == 0 {
+		t.Fatalf("output mode %q with %d schema bytes, want JSON with a schema", config.OutputMode, len(config.OutputSchema))
+	}
+	var schema struct {
+		Required []string `json:"required"`
+	}
+	if err := json.Unmarshal(config.OutputSchema, &schema); err != nil || !slices.Contains(schema.Required, "verdict") {
+		t.Fatalf("schema %s: %v", config.OutputSchema, err)
 	}
 }
