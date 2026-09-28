@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -80,6 +81,69 @@ func (o *Orchestrator) frozenDesignManifest(ctx context.Context, rootID int64) (
 		return manifest, true, nil
 	}
 	return nil, false, nil
+}
+
+// frozenDesignImplementationContract projects the immutable design decision into the
+// implementation planner. It reconstructs the body from the frozen round's durable deliverables
+// and verifies the artifact digest before exposing it, so an unbound metadata copy can never
+// substitute different work after adjudication.
+func (o *Orchestrator) frozenDesignImplementationContract(ctx context.Context, root TaskRecord, all []TaskRecord) (string, error) {
+	detail, err := o.tasks.GetTask(ctx, root.ID)
+	if err != nil {
+		return "", err
+	}
+	var freeze EvidenceRecord
+	for _, evidence := range detail.Evidence {
+		if _, present := evidence.Metadata[DesignFileManifestKey]; present {
+			freeze = evidence
+			break
+		}
+	}
+	if freeze.Reference == "" {
+		return "", fmt.Errorf("%w: the frozen design evidence is missing", ErrContractRejected)
+	}
+	manifest, recorded, err := o.frozenDesignManifest(ctx, root.ID)
+	if err != nil {
+		return "", err
+	}
+	if !recorded {
+		return "", fmt.Errorf("%w: the frozen design manifest is missing", ErrContractRejected)
+	}
+	version, _ := freeze.Metadata["design_version"].(string)
+	round, parseErr := strconv.Atoi(strings.TrimPrefix(version, "v"))
+	if parseErr != nil || round < 1 {
+		return "", fmt.Errorf("%w: frozen design version %q cannot identify its round", ErrContractRejected, version)
+	}
+	artifact, _, ok, artifactErr := o.candidateDesign(ctx, root, all, round)
+	if artifactErr != nil {
+		return "", artifactErr
+	}
+	if !ok {
+		return "", fmt.Errorf("%w: frozen design %s has no durable candidate", ErrContractRejected, version)
+	}
+	digest, _ := freeze.Metadata["design_digest"].(string)
+	if digest == "" || artifactDigest(artifact) != digest {
+		return "", fmt.Errorf("%w: reconstructed candidate does not match frozen design digest", ErrContractRejected)
+	}
+	candidate, err := o.candidateBody(ctx, artifact)
+	if err != nil {
+		return "", err
+	}
+	identity := map[string]any{
+		"reference":           freeze.Reference,
+		"design_id":           freeze.Metadata["design_id"],
+		"design_version":      freeze.Metadata["design_version"],
+		"design_digest":       freeze.Metadata["design_digest"],
+		"design_base_sha":     freeze.Metadata["design_base_sha"],
+		DesignFileManifestKey: manifest,
+	}
+	encoded, err := json.Marshal(identity)
+	if err != nil {
+		return "", err
+	}
+	return "FROZEN DESIGN (host-owned; implement exactly this decision, never substitute another defect):\n" +
+		string(encoded) + "\n\nFROZEN CANDIDATE:\n" + candidate + "\n\n" +
+		"Every changed file must appear in design_file_manifest. Produce patches only for this candidate and these files.", nil
 }
 
 // outsideManifest returns the paths that the manifest does not list.

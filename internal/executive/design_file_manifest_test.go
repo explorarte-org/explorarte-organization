@@ -19,6 +19,61 @@ func TestTheFreezeRecordsTheDesignsFiles(t *testing.T) {
 	}
 }
 
+// Local smoke #38 (root 1916): review and adjudication correctly froze a design for
+// campaign_topology.go, but the implementation planner was shown only the broad owner goal. It
+// rediscovered an unrelated carryDepartmentConstraints defect and the manifest gate correctly
+// refused it. The planner must see the frozen decision before it writes a patch.
+func TestImplementationPlannerReceivesTheFrozenCandidateAndManifest(t *testing.T) {
+	const marker = "SMOKE_38_FROZEN_CANDIDATE"
+	const distraction = "DISTRACTING_OWNER_GOAL internal/executive/orchestrator.go carryDepartmentConstraints"
+	fixture := newMissionFixtureWith(t, smokePath, false, distraction)
+	fixture.harness.bodies[PurposeDepartmentWorker] = `{"schema_version":"worker-result/v1",` +
+		`"summary":"` + marker + `: change only the frozen smoke file.",` +
+		`"evidence_refs":[],"proposed_files":["` + smokePath + `"]}`
+	fixture.drive(t)
+
+	planTask := planTaskOf(t, fixture)
+	for _, want := range []string{"FROZEN DESIGN", marker, smokePath, DesignFileManifestKey} {
+		if !strings.Contains(planTask.Instructions, want) {
+			t.Fatalf("implementation planner instructions do not contain %q:\n%s", want, planTask.Instructions)
+		}
+	}
+	if strings.Contains(planTask.Instructions, distraction) || strings.Contains(planTask.Instructions, "OWNER GOAL") {
+		t.Fatalf("the broad owner goal still competes with the frozen decision:\n%s", planTask.Instructions)
+	}
+	if len(planTask.Instructions) > DefaultLimits().MaxInstructionsBytes {
+		t.Fatalf("implementation planner instructions are %d bytes, over limit %d", len(planTask.Instructions), DefaultLimits().MaxInstructionsBytes)
+	}
+}
+
+func TestImplementationPlannerReadsSourceFromTheFrozenManifestBeforeQueryDistractions(t *testing.T) {
+	const distractingPath = "docs/implementation/other.md"
+	const distraction = "Inspect " + distractingPath + " instead"
+	workbench := &fakeWorkbench{files: map[string]string{
+		smokePath:       "frozen source\n",
+		distractingPath: "distracting source\n",
+	}}
+	fixture := newMissionFixtureWith(t, smokePath, false, distraction, WithPatchWorkbench(workbench))
+	fixture.drive(t)
+
+	workbench.mu.Lock()
+	reads := append([]string(nil), workbench.reads...)
+	workbench.mu.Unlock()
+	want := targetSHA + ":" + smokePath
+	if !slices.Contains(reads, want) {
+		t.Fatalf("source reads %v do not contain frozen manifest file %q", reads, want)
+	}
+	if slices.Contains(reads, targetSHA+":"+distractingPath) {
+		t.Fatalf("source reads %v include query distraction outside the frozen manifest", reads)
+	}
+}
+
+func TestImplementationPlanInstructionsFailClosedInsteadOfTruncatingTheFrozenDesign(t *testing.T) {
+	if _, err := implementationPlanInstructions("policy", strings.Repeat("f", 100), 40); err == nil {
+		t.Fatal("oversized frozen design instructions were silently accepted")
+	}
+}
+
 func TestAPlanNamingAFileTheDesignDoesNotIsRefusedBeforeAnyMission(t *testing.T) {
 	fixture := newMissionFixture(t, smokePath, false)
 	fixture.harness.bodies[PurposeDepartmentWorker] = `{"schema_version":"worker-result/v1","summary":"The design changes one other file.",` +

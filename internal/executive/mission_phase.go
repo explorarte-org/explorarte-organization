@@ -165,15 +165,22 @@ func (o *Orchestrator) driveImplementationMission(ctx context.Context, root Task
 		if guidanceErr != nil {
 			return Run{}, true, guidanceErr
 		}
+		frozen, frozenErr := o.frozenDesignImplementationContract(ctx, root, all)
+		if frozenErr != nil {
+			run, blockErr := o.blockRoot(ctx, root, ReasonImplementationPlanUnavailable, frozenErr.Error())
+			return run, true, blockErr
+		}
+		instructions, instructionsErr := implementationPlanInstructions(guidance, frozen, o.limits.MaxInstructionsBytes)
+		if instructionsErr != nil {
+			run, blockErr := o.blockRoot(ctx, root, ReasonImplementationPlanUnavailable, instructionsErr.Error())
+			return run, true, blockErr
+		}
 		planTask, _, err = o.tasks.CreateTask(ctx, CreateTaskCommand{
 			RequestedByRoleID: CEORoleID, AssignedRoleID: leader.ID,
 			TaskClass:      TaskClassCoordinationImplementationPlan,
 			IdempotencyKey: childKey(root.ID, "implementation-plan"),
 			Title:          "Implementation plan for frozen design",
-			Instructions: "The design is frozen. Produce ImplementationPlan JSON: the objective, the exact " +
-				"repository-relative files to change, a unified diff for each, and what verification is expected. " +
-				"Naming a path is a request, not a grant -- the host decides which paths are permitted, which gates " +
-				"must pass, and which commit the work is based on.\n\n" + guidance + "\n\nOWNER GOAL:\n" + root.Instructions,
+			Instructions:   instructions,
 			AcceptanceCriteria: []string{
 				"Return strict ImplementationPlan JSON",
 				"Every change carries a real unified diff",
@@ -347,6 +354,18 @@ func (o *Orchestrator) driveImplementationMission(ctx context.Context, root Task
 		return o.driveInProgress(ctx, root)
 	}
 	return Run{}, false, nil
+}
+
+func implementationPlanInstructions(guidance, frozen string, maxBytes int) (string, error) {
+	const preamble = "Produce ImplementationPlan JSON for the frozen design below: the objective, the exact " +
+		"repository-relative files to change, a unified diff for each, and what verification is expected. " +
+		"Naming a path is a request, not a grant -- the host decides which paths are permitted, which gates " +
+		"must pass, and which commit the work is based on. Do not choose a different defect or change set."
+	instructions := preamble + "\n\n" + guidance + "\n\n" + frozen
+	if maxBytes <= 0 || len(instructions) > maxBytes {
+		return "", fmt.Errorf("%w: frozen implementation-plan instructions are %d bytes, limit %d", ErrPlanTooLarge, len(instructions), maxBytes)
+	}
+	return instructions, nil
 }
 
 // missionScope is assigned by the host from a durable owner requirement, never
