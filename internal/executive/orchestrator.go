@@ -1978,6 +1978,11 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 	if citationErr != nil {
 		return task, citationErr
 	}
+	requestedCitations, requestedSubjects, requestedErr := o.requestedEvidenceFor(ctx, root, task, purpose, repositoryBaseSHA)
+	if requestedErr != nil {
+		return task, requestedErr
+	}
+	citations = append(citations, requestedCitations...)
 	proofs := map[EvidenceSlot]EvidenceProof{}
 	transportRequired := required
 	if purpose == PurposeDepartmentWorker {
@@ -1999,7 +2004,7 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		// model/instruction text.
 		TaskClass: task.TaskClass, ExecutionPurpose: string(purpose), ActorUnitID: task.AssignedUnitID,
 		RepositoryBaseSHA: repositoryBaseSHA, RepositoryQuery: repositoryQuery,
-		RepositorySubjects:  evidenceSubjects(transportRequired),
+		RepositorySubjects:  append(evidenceSubjects(transportRequired), requestedSubjects...),
 		RepositorySlots:     evidenceSlots(transportRequired),
 		RepositoryCitations: citations,
 		IdempotencyKey:      childKey(root.ID, fmt.Sprintf("context:%d:%d", task.ID, lease.AttemptID)),

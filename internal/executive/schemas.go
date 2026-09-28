@@ -290,6 +290,11 @@ func workerResultOutputSchemaFor(limits Limits, subjects, refs []string) json.Ra
 	      "type":"array",
 	      "items":` + byteLimitedStringSchema(limits) + `
 	    },
+	    "evidence_requests":{
+	      "type":"array",
+	      "items":{"type":"string","maxLength":300},
+	      "description":"At most 8 items. What you needed and were not shown: a repository path with a line range (internal/executive/driver/driver.go#L160-L240) or a Go identifier (ListExecutableRoots). The host retrieves them for whoever redoes this work. Leave it out when nothing was missing."
+	    },
 	    "evidence":{
 	      "type":"array",
 	      "items":{
