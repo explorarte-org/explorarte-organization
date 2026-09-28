@@ -748,15 +748,37 @@ func buildCEOPlanInstructions(root TaskRecord, maxBytes int) (string, error) {
 		return "", fmt.Errorf("encode authoritative owner goal: %w", err)
 	}
 
+	prefix := ceoPlanInstructionPrefix
+	if !rootHasRequirement(root, designfreeze.RequirementKey) {
+		prefix = analysisModeCEONote + prefix
+	}
 	if maxBytes <= 0 ||
-		len(ceoPlanInstructionPrefix)+len(payload) > maxBytes {
+		len(prefix)+len(payload) > maxBytes {
 		return "", fmt.Errorf(
 			"%w: authoritative owner goal cannot fit CEO planning instructions without truncation",
 			ErrPlanTooLarge,
 		)
 	}
 
-	return ceoPlanInstructionPrefix + string(payload), nil
+	return prefix + string(payload), nil
+}
+
+// analysisModeCEONote tells the CEO what an analysis_only campaign is. Its plan named a criterion
+// no stage of that mode evaluates -- "the host design reviewer approves this executive plan" --
+// and the closure, unable to verify it, reported the root partial (local smoke #55, root 2225).
+const analysisModeCEONote = `EXECUTION_MODE: analysis_only. This campaign has no design review, design freeze, adjudication, implementation plan, engineering mission or code runner. Do not propose any acceptance criterion, department request or owner decision that depends on one of them: the host evaluates only each department's answer, its department review and your closure. Ask each department for exactly one consolidated written answer.
+
+`
+
+// rootHasRequirement reports whether the root carries the requirement key; the governed mode is
+// written on the root as its requirement bundle (ExecutionModeRequirements).
+func rootHasRequirement(root TaskRecord, key string) bool {
+	for _, requirement := range root.Requirements {
+		if requirement.Key == key {
+			return true
+		}
+	}
+	return false
 }
 
 func (o *Orchestrator) createCEOPlanTask(ctx context.Context, root TaskRecord) (TaskRecord, bool, error) {
