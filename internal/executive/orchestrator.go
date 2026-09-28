@@ -1529,8 +1529,8 @@ func (o *Orchestrator) departmentReviewScope(ctx context.Context, all []TaskReco
 		scope.PlanTaskID = plan.ID
 	}
 	reviewed := []TaskRecord{}
-	for _, worker := range departmentWorkerTasks(all, rootID, unit) {
-		if designRoundOf(worker.IdempotencyKey) != round || superseded[workerBaseClientKey(worker.IdempotencyKey, rootID, unit, round)] {
+	for _, worker := range latestMaterializations(roundWorkers(all, rootID, unit, round), rootID, unit, round) {
+		if superseded[workerBaseClientKey(worker.IdempotencyKey, rootID, unit, round)] {
 			continue
 		}
 		reviewed = append(reviewed, worker)

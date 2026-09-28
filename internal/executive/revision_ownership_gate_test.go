@@ -1229,3 +1229,64 @@ func TestEDepartmentReviewAfterReplanJudgesOnlyThePostReplanFrontier(t *testing.
 		t.Fatalf("scope = %+v, want the round-2 plan %d and workers %d and %d", scope, plan.ID, kept[0].ID, redo[0].ID)
 	}
 }
+
+// Local smoke #37 (root 1872): the round's review proposed the redo under the SAME client key as the
+// work it redid. The replay marked that key superseded and the review after the replan was handed
+// no deliverable ("workers: []"). The redo governs through its newer materialization; the original
+// does not; both the review and the adversarial candidate see the redo.
+func TestARedoUnderItsOriginalsKeyReplacesItAndIsJudged(t *testing.T) {
+	fixture := eFixture(t)
+	fixture.eOwnership = ownerEntry("RC:1:1", eOwnerKey) + "," + ownerEntry("RC:1:2", eOwnerKey)
+	fixture.eReviewVerdict = "needs_replan"
+	fixture.eOutcomes = `[` +
+		`{"required_change_id":"RC:1:1","status":"conflicted","canonical_resolution":"","conflicting_task_refs":["task:a","task:b"]},` +
+		`{"required_change_id":"RC:1:2","status":"resolved","canonical_resolution":"cited","conflicting_task_refs":[]}]`
+	fixture.eFollowups = `[{"client_key":"` + eOwnerKey + `","assigned_role_id":"ingenieria_ia/qa","task_class":"engineering.review",` +
+		`"title":"Redo the design","instructions":"One falsifiable claim.","acceptance_criteria":["Cite"],"dependencies":[]}]`
+	fixture.eFollowupOwnership = "[" + ownerEntry("RC:1:1", eOwnerKey) + "," + ownerEntry("RC:1:2", eOwnerKey) + "]"
+	base := fixture.harness.departmentReviewBody
+	fixture.harness.departmentReviewBody = func(task TaskRecord) string {
+		if strings.Contains(task.IdempotencyKey, ":replan:") {
+			return eReplanReviewBody([]string{"RC:1:1", "RC:1:2"})
+		}
+		return base(task)
+	}
+
+	driveCapability(t, fixture, 40)
+
+	root := fixture.rootRecord(t)
+	allTasks, err := fixture.tasks.ListByCorrelation(context.Background(), root.CorrelationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var original, redo TaskRecord
+	for _, worker := range roundWorkers(allTasks, root.ID, "ingenieria_ia", 2) {
+		switch {
+		case strings.HasSuffix(worker.IdempotencyKey, ":"+eOwnerKey):
+			original = worker
+		case strings.HasSuffix(worker.IdempotencyKey, ":"+eOwnerKey+"-replan:1"):
+			redo = worker
+		}
+	}
+	if original.ID == 0 || redo.ID == 0 {
+		t.Fatalf("scenario: original %d, redo %d", original.ID, redo.ID)
+	}
+	scope, _, err := fixture.orchestrator.departmentReviewScope(context.Background(), allTasks, root.ID, "ingenieria_ia", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(scope.WorkerTaskIDs, redo.ID) || slices.Contains(scope.WorkerTaskIDs, original.ID) {
+		t.Fatalf("review scope %v: want the redo %d and not the original %d", scope.WorkerTaskIDs, redo.ID, original.ID)
+	}
+	frontier, err := fixture.orchestrator.unitRoundFrontier(context.Background(), allTasks, root.ID, "ingenieria_ia", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := []int64{}
+	for _, ref := range frontier {
+		ids = append(ids, ref.TaskID)
+	}
+	if !slices.Contains(ids, redo.ID) || slices.Contains(ids, original.ID) {
+		t.Fatalf("adversarial candidate frontier %v: want the redo %d and not the original %d", ids, redo.ID, original.ID)
+	}
+}

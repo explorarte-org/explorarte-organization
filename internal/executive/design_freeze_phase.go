@@ -555,10 +555,7 @@ func (o *Orchestrator) unitRoundFrontier(ctx context.Context, all []TaskRecord, 
 		return nil, err
 	}
 	refs := make([]designUnitRef, 0)
-	for _, worker := range departmentWorkerTasks(all, rootID, unit) {
-		if designRoundOf(worker.IdempotencyKey) != round {
-			continue
-		}
+	for _, worker := range latestMaterializations(roundWorkers(all, rootID, unit, round), rootID, unit, round) {
 		// Only completed workers. A failed one produced no
 		// deliverable, and the leader review already weighed its
 		// failure; presenting nothing as part of the design would
@@ -643,13 +640,65 @@ func (o *Orchestrator) roundOwnershipReplay(ctx context.Context, all []TaskRecor
 			continue
 		}
 		for _, binding := range review.FollowupOwnership {
-			if previous, taken := authority[binding.RequiredChangeID]; taken && previous != "" {
+			// A redo may reuse the client key of the work it redoes; the key
+			// then still governs, through its newer materialization
+			// (latestMaterializations). Marking it superseded would drop the
+			// redo together with what it redid (root 1872).
+			if previous, taken := authority[binding.RequiredChangeID]; taken && previous != "" && previous != binding.OwnerClientKey {
 				superseded[previous] = true
 			}
 			authority[binding.RequiredChangeID] = binding.OwnerClientKey
 		}
 	}
 	return authority, superseded, nil
+}
+
+// roundWorkers is the department's worker tasks of one design round.
+func roundWorkers(all []TaskRecord, rootID int64, unit string, round int) []TaskRecord {
+	out := []TaskRecord{}
+	for _, worker := range departmentWorkerTasks(all, rootID, unit) {
+		if designRoundOf(worker.IdempotencyKey) == round {
+			out = append(out, worker)
+		}
+	}
+	return out
+}
+
+// latestMaterializations keeps, among a round's workers that share a client key, only the latest
+// materialization (the highest -replan:N; the original has none). A redo that reuses its original's
+// client key replaces it, the way a redo under a new key does through the ownership replay.
+//
+// Local smoke #37 (root 1872, 2026-09-28): the round-2 redo was proposed under its original's key;
+// the replay marked that key superseded and the review after the replan was handed no deliverable at
+// all ("workers: []"), refused the round and exhausted its replans.
+func latestMaterializations(workers []TaskRecord, rootID int64, unit string, round int) []TaskRecord {
+	latest := map[string]int{}
+	for _, worker := range workers {
+		base := workerBaseClientKey(worker.IdempotencyKey, rootID, unit, round)
+		if ordinal := workerReplanOrdinal(worker.IdempotencyKey); ordinal > latest[base] {
+			latest[base] = ordinal
+		}
+	}
+	out := make([]TaskRecord, 0, len(workers))
+	for _, worker := range workers {
+		if workerReplanOrdinal(worker.IdempotencyKey) == latest[workerBaseClientKey(worker.IdempotencyKey, rootID, unit, round)] {
+			out = append(out, worker)
+		}
+	}
+	return out
+}
+
+// workerReplanOrdinal is the N of a worker key's -replan:N suffix, 0 when it has none.
+func workerReplanOrdinal(key string) int {
+	index := strings.LastIndex(key, "-replan:")
+	if index < 0 {
+		return 0
+	}
+	n, err := strconv.Atoi(key[index+len("-replan:"):])
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // workerBaseClientKey recovers the proposing client_key from a worker task's
