@@ -94,7 +94,30 @@ type closureEvidenceBundle struct {
 	SchemaVersion string            `json:"schema_version"`
 	Reviews       []projectedReview `json:"reviews"`
 	BlockedTasks  []int64           `json:"blocked_tasks,omitempty"`
+	// Departments is what each department was asked and what its workers delivered. The closure
+	// saw only the reviews' verdicts and findings, so it could not check its own criteria against
+	// the answers (local smoke #47, root 2066: every review accepted, and the closure reported
+	// partial because the answers, their word counts and the requests were not in its bundle).
+	Departments []closureDepartment `json:"departments,omitempty"`
 }
+
+type closureDepartment struct {
+	DepartmentID string               `json:"department_id"`
+	Request      string               `json:"request"`
+	Deliverables []closureDeliverable `json:"deliverables"`
+}
+
+type closureDeliverable struct {
+	TaskID  int64  `json:"task_id"`
+	RoleID  string `json:"role_id"`
+	Summary string `json:"summary"`
+}
+
+// closureSummaryCaps are the per-deliverable summary bounds tried in turn until the closure bundle
+// fits executiveEvidenceBundleBytes; the last, zero, drops deliverable text and keeps the rest.
+var closureSummaryCaps = []int{4000, 2000, 1000, 400, 0}
+
+const closureRequestBytes = 2000
 
 // A scoped review (executive.DepartmentReviewScope) is shown its round's plan
 // and exactly the workers the orchestrator says it judges; without a scope the
@@ -264,7 +287,101 @@ func (e EvidenceTasks) attachClosureBundle(ctx context.Context, target executive
 		reviews = append(reviews, item)
 	}
 	sort.Slice(blocked, func(i, j int) bool { return blocked[i] < blocked[j] })
-	return e.recordBundle(ctx, target.ID, "closure", closureEvidenceBundle{SchemaVersion: executiveEvidenceSchema, Reviews: reviews, BlockedTasks: blocked})
+
+	byID := make(map[int64]executive.TaskRecord, len(all))
+	for _, task := range all {
+		byID[task.ID] = task
+	}
+	full := make([]fullDepartment, 0, len(departments))
+	for _, department := range departments {
+		item := fullDepartment{id: department}
+		if plan := bundledPlan(all, department, 0); plan != nil {
+			item.request = truncateBundleString(plan.Instructions, closureRequestBytes)
+		}
+		for _, workerID := range reviewedWorkerIDs(latest[department]) {
+			worker, ok := byID[workerID]
+			if !ok || worker.Status != "completed" {
+				continue
+			}
+			projected, projectErr := e.projectWorker(ctx, worker)
+			if projectErr != nil {
+				return projectErr
+			}
+			item.deliverables = append(item.deliverables, fullDeliverable{
+				closureDeliverable: closureDeliverable{TaskID: worker.ID, RoleID: worker.AssignedRoleID},
+				full:               projected.Summary,
+			})
+		}
+		full = append(full, item)
+	}
+	bundle := fitClosureBundle(reviews, blocked, full)
+	return e.recordBundle(ctx, target.ID, "closure", bundle)
+}
+
+type fullDeliverable struct {
+	closureDeliverable
+	full string
+}
+
+type fullDepartment struct {
+	id, request  string
+	deliverables []fullDeliverable
+}
+
+// fitClosureBundle builds the closure bundle with the largest deliverable summaries that keep it
+// inside executiveEvidenceBundleBytes.
+func fitClosureBundle(reviews []projectedReview, blocked []int64, departments []fullDepartment) closureEvidenceBundle {
+	var bundle closureEvidenceBundle
+	for _, limit := range closureSummaryCaps {
+		bundle = closureEvidenceBundle{SchemaVersion: executiveEvidenceSchema, Reviews: reviews, BlockedTasks: blocked}
+		for _, department := range departments {
+			item := closureDepartment{DepartmentID: department.id, Request: department.request, Deliverables: []closureDeliverable{}}
+			for _, deliverable := range department.deliverables {
+				cut := deliverable.closureDeliverable
+				if limit > 0 {
+					cut.Summary = boundedWorkerSummary(deliverable.full, limit)
+				}
+				item.Deliverables = append(item.Deliverables, cut)
+			}
+			bundle.Departments = append(bundle.Departments, item)
+		}
+		if body, err := json.Marshal(bundle); err == nil && len(body) <= executiveEvidenceBundleBytes {
+			break
+		}
+	}
+	return bundle
+}
+
+// reviewedWorkerIDs reads, from the department bundle the host attached to a review, the workers
+// that review judged.
+func reviewedWorkerIDs(review executive.TaskRecord) []int64 {
+	var ids []int64
+	for _, evidence := range review.Evidence {
+		if !strings.HasPrefix(evidence.Reference, "executive-evidence:department:") {
+			continue
+		}
+		bundle, ok := evidence.Metadata["bundle"].(map[string]any)
+		if !ok {
+			continue
+		}
+		workers, _ := bundle["workers"].([]any)
+		for _, worker := range workers {
+			object, ok := worker.(map[string]any)
+			if !ok {
+				continue
+			}
+			switch id := object["task_id"].(type) {
+			case float64:
+				ids = append(ids, int64(id))
+			case json.Number:
+				if value, err := id.Int64(); err == nil {
+					ids = append(ids, value)
+				}
+			}
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
 }
 
 func (e EvidenceTasks) projectReview(ctx context.Context, task executive.TaskRecord) (projectedReview, error) {
