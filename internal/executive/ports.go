@@ -224,9 +224,12 @@ type ContextRequest struct {
 	RepositorySlots []EvidenceSlot
 	// RepositoryQuery is what the selection reads to decide where to look.
 	RepositoryQuery string
-	IdempotencyKey  string
-	CorrelationID   string
-	CausationID     string
+	// RepositoryCitations are the repository:// ranges the deliverable under
+	// judgement cites, read for the judge verbatim (judgedDesignCitations).
+	RepositoryCitations []string
+	IdempotencyKey      string
+	CorrelationID       string
+	CausationID         string
 }
 
 type DispatchProvisioner interface {

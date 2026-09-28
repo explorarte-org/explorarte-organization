@@ -41,9 +41,28 @@ type Selection struct {
 	// demanded its application, and the preflight killed the worker before a
 	// model call.
 	Slots []EvidenceSlot
+	// Cited are exact ranges another execution already cited, read verbatim
+	// after PASS 0 and before any search (PASS C). See CitedRange.
+	Cited []CitedRange
 	// Window is how many lines around a match make it understandable.
 	Window int
 }
+
+// CitedRange is a line range of one file that a deliverable under judgement
+// cites. A reviewer shown the same file through its own searches saw other
+// windows of it: local smoke #34 (root 1773, 2026-09-27) had the designer read
+// mission_phase.go lines 131-179 and 325-373 while the adjudicator was issued
+// only lines 1-48, and the design was sent back for claims about "unseen
+// ranges" until the rounds ran out. The ranges a design stands on are read for
+// whoever judges it, so both look at the same lines.
+type CitedRange struct {
+	Path       string
+	Start, End int
+}
+
+// maxCitedShare bounds how much of the range budget cited ranges may take, so
+// a design citing everything cannot starve the judge's own exploration.
+const maxCitedShare = 2
 
 // pathPattern recognises a repository path inside prose: two or more segments
 // of lowercase words joined by slashes, optionally ending in a file.
@@ -361,6 +380,27 @@ func gather(ctx context.Context, explorer *Explorer, selection Selection, strict
 				uncovered = append(uncovered, slot)
 			}
 		}
+	}
+
+	// PASS C -- CITED RANGES. After the round's obligations and before any
+	// search: the exact lines the deliverable under judgement stands on, up to
+	// a share of the range budget. A range that cannot be read (outside the
+	// eligible corpus, past the end of the file, over budget) is skipped: a
+	// citation is a request to see, not an obligation the judge fails without.
+	citedBudget := explorer.Limits.MaxRanges / maxCitedShare
+	for _, cited := range selection.Cited {
+		if citedBudget <= 0 {
+			break
+		}
+		fragment, err := explorer.Read(ctx, cited.Path, cited.Start, cited.End)
+		if err != nil {
+			if strict && !errors.Is(err, ErrBudgetExhausted) && !errors.Is(err, ErrInvalidFragment) {
+				return nil, nil, err
+			}
+			continue
+		}
+		add(fragment)
+		citedBudget--
 	}
 
 	// PASS 1 -- required coverage, ROUND-ROBIN: A's first candidates, then

@@ -45,6 +45,7 @@ func (a Context) Build(ctx context.Context, request executive.ContextRequest) (e
 		RepositoryQuery:        request.RepositoryQuery,
 		RepositorySubjects:     request.RepositorySubjects,
 		RepositorySlots:        mapSlots(request.RepositorySlots),
+		RepositoryCitations:    request.RepositoryCitations,
 		IdempotencyKey:         request.IdempotencyKey,
 		CorrelationID:          request.CorrelationID,
 		CausationID:            request.CausationID,

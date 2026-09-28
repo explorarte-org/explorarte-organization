@@ -1962,6 +1962,10 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 	if requiredErr != nil {
 		return task, requiredErr
 	}
+	citations, citationErr := o.judgedDesignCitations(ctx, root, task, purpose)
+	if citationErr != nil {
+		return task, citationErr
+	}
 	proofs := map[EvidenceSlot]EvidenceProof{}
 	transportRequired := required
 	if purpose == PurposeDepartmentWorker {
@@ -1983,10 +1987,11 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		// model/instruction text.
 		TaskClass: task.TaskClass, ExecutionPurpose: string(purpose), ActorUnitID: task.AssignedUnitID,
 		RepositoryBaseSHA: repositoryBaseSHA, RepositoryQuery: repositoryQuery,
-		RepositorySubjects: evidenceSubjects(transportRequired),
-		RepositorySlots:    evidenceSlots(transportRequired),
-		IdempotencyKey:     childKey(root.ID, fmt.Sprintf("context:%d:%d", task.ID, lease.AttemptID)),
-		CorrelationID:      root.CorrelationID, CausationID: attemptCausation(task.ID, lease.AttemptID),
+		RepositorySubjects:  evidenceSubjects(transportRequired),
+		RepositorySlots:     evidenceSlots(transportRequired),
+		RepositoryCitations: citations,
+		IdempotencyKey:      childKey(root.ID, fmt.Sprintf("context:%d:%d", task.ID, lease.AttemptID)),
+		CorrelationID:       root.CorrelationID, CausationID: attemptCausation(task.ID, lease.AttemptID),
 	})
 	if err != nil {
 		// G1-005: a role can be present and executable in organization_roles
