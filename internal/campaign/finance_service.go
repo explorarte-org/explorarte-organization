@@ -1055,9 +1055,9 @@ func (s *FinanceService) runHarnessModel(ctx context.Context, claimed tasks.Clai
 	if err := json.Unmarshal([]byte(rawOutput), &output); err != nil {
 		return FinanceReviewOutput{}, fmt.Errorf("parse finance review output JSON: %w (raw: %s)", err, rawOutput)
 	}
-	// The schema makes recommended_budget present on every verdict. On a verdict that launches
-	// nothing, a budget that is not executable is dropped rather than failing the review over a
-	// field it was never asked to fill; a recommended verdict's budget is still validated whole.
+	// A model may fill recommended_budget on a verdict that launches nothing. A budget that is not
+	// executable is dropped there rather than failing the review over a field that verdict does not
+	// need; a recommended verdict's budget is still validated whole.
 	if FinancialReviewVerdict(output.Verdict) != VerdictRecommended && output.RecommendedBudget != nil &&
 		ValidateExecutableBudget(*output.RecommendedBudget) != nil {
 		output.RecommendedBudget = nil
@@ -1086,7 +1086,7 @@ const financeReviewTemperature = 0.0
 var financeReviewOutputSchema = json.RawMessage(`{
   "type":"object",
   "additionalProperties":false,
-  "required":["verdict","summary","recommended_budget","estimated_cost","assumptions","risks","required_corrections","missing_information"],
+  "required":["verdict","summary","assumptions","risks","required_corrections","missing_information"],
   "properties":{
     "verdict":{"type":"string","enum":["recommended","changes_requested","not_recommended","insufficient_data"]},
     "summary":{"type":"string"},

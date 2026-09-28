@@ -231,8 +231,9 @@ func TestExecutionRequirementsDeriveFromTheRealCanonicalFacts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("derive the floor from the real canonical facts: %v", err)
 	}
-	if got.MinModelCalls != 5 || got.MinSubagents != 5 || got.MinDepth != 3 || got.MinRetries != 1 || got.MinWallTimeMS != 1 {
-		t.Fatalf("topology floor = calls %d, subagents %d, depth %d, retries %d, wall %d; want 5, 5, 3, 1, 1", got.MinModelCalls, got.MinSubagents, got.MinDepth, got.MinRetries, got.MinWallTimeMS)
+	// The analysis floor covers the four canonical operational departments (local smoke #54).
+	if got.MinModelCalls != 78 || got.MinSubagents != 26 || got.MinDepth != 3 || got.MinRetries != 1 || got.MinWallTimeMS != 1 || got.Basis.AnalysisDepartments != 4 {
+		t.Fatalf("topology floor = calls %d, subagents %d, depth %d, retries %d, wall %d over %d departments; want 78, 26, 3, 1, 1 over 4", got.MinModelCalls, got.MinSubagents, got.MinDepth, got.MinRetries, got.MinWallTimeMS, got.Basis.AnalysisDepartments)
 	}
 	if got.MinUSD < 160_253_600 || got.MinTokens < 33_268+128_000 {
 		t.Fatalf("derived floor %s / %d tokens is below production's observed first reservation ($0.1602536 / 161,268 tokens)", got.MinUSD, got.MinTokens)

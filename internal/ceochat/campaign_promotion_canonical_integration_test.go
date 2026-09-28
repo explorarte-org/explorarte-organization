@@ -200,7 +200,7 @@ func (a *ceochatPromotionE2EAdapter) dispatchFinance(req modelruntime.CanonicalR
 	if !ok {
 		return modelruntime.RawResponse{}, fmt.Errorf("ceochatPromotionE2EAdapter: no scripted finance output for task %d (call setNextFinanceOutput before ticking the finance worker)", req.TaskID)
 	}
-	body, err := json.Marshal(output)
+	body, err := json.Marshal(schemaShapedFinanceOutput(output))
 	if err != nil {
 		return modelruntime.RawResponse{}, fmt.Errorf("marshal scripted finance output: %w", err)
 	}

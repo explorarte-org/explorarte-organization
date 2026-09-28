@@ -65,6 +65,8 @@ type ExecutionBudgetRequirements struct {
 
 // ExecutionBudgetRequirementsBasis is the provenance of a requirements value.
 type ExecutionBudgetRequirementsBasis struct {
+	// AnalysisDepartments is how many campaign-eligible departments the analysis floor covers.
+	AnalysisDepartments    int `json:"analysis_departments,omitempty"`
 	OrganizationRevisionID int64
 	// Stages lists the worst-case dispatch of each unconditional stage of the
 	// minimal campaign; MinUSD and MinTokens are the maxima across them.

@@ -173,6 +173,16 @@ func (p *Provider) ExecutionBudgetRequirements(ctx context.Context, organization
 			requirements.MinTokens = worst.ReservationTokens
 		}
 	}
+	// The analysis floor covers every department a campaign may delegate to: the campaign-eligible
+	// operational departments the stage loop above has just loaded (local smoke #54).
+	if err := roles.load(ctx); err != nil {
+		return campaign.ExecutionBudgetRequirements{}, err
+	}
+	analysis := executive.AnalysisCampaignTopology(len(roles.units), p.cfg.Limits.MaxDepartmentReplans)
+	requirements.MinModelCalls = max(requirements.MinModelCalls, analysis.ModelCalls)
+	requirements.MinSubagents = max(requirements.MinSubagents, analysis.Subagents)
+	requirements.Basis.AnalysisDepartments = len(roles.units)
+
 	// A subscription-only route reserves $0; the AgentBudget still requires
 	// a strictly positive ceiling, so the floor is one nano-dollar rather
 	// than zero.

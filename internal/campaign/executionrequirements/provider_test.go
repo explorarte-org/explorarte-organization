@@ -227,13 +227,20 @@ func TestTopologyFloorComesFromExecutive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	topology := executive.MinimalCampaignTopology()
-	if got.MinModelCalls != topology.ModelCalls || got.MinSubagents != topology.Subagents || got.MinDepth != topology.Depth {
+	// The analysis floor covers every campaign-eligible department (this world has two), not the
+	// minimal one-department tree: local smoke #54 was approved at 12 subagents and blocked at its
+	// thirteenth child with four departments to answer.
+	topology := executive.AnalysisCampaignTopology(2, executive.DefaultLimits().MaxDepartmentReplans)
+	if got.MinModelCalls != topology.ModelCalls || got.MinSubagents != topology.Subagents || got.MinDepth != executive.MinimalCampaignTopology().Depth {
 		t.Fatalf("floor calls/subagents/depth = %d/%d/%d, Executive declares %d/%d/%d",
 			got.MinModelCalls, got.MinSubagents, got.MinDepth, topology.ModelCalls, topology.Subagents, topology.Depth)
 	}
-	if got.MinModelCalls != 5 || got.MinSubagents != 5 || got.MinDepth != 3 {
-		t.Fatalf("today's minimal campaign is 5 calls, 5 subagents, depth 3; got %d/%d/%d", got.MinModelCalls, got.MinSubagents, got.MinDepth)
+	if got.MinSubagents != 14 || got.MinModelCalls != 42 || got.MinDepth != 3 || got.Basis.AnalysisDepartments != 2 {
+		t.Fatalf("two departments of plan, two workers, review and a replan: want 14 subagents, 42 calls, depth 3; got %d/%d/%d (%d departments)",
+			got.MinSubagents, got.MinModelCalls, got.MinDepth, got.Basis.AnalysisDepartments)
+	}
+	if four := executive.AnalysisCampaignTopology(4, 1); four.Subagents != 26 || four.ModelCalls != 78 {
+		t.Fatalf("four departments: %d subagents, %d calls; want 26 and 78", four.Subagents, four.ModelCalls)
 	}
 	// The governed floor is Executive's too, for the design rounds the limits allow (smoke #30).
 	governed := executive.GovernedCampaignTopology(executive.DefaultLimits().MaxDesignRounds, executive.DefaultLimits().MaxDepartmentReplans)

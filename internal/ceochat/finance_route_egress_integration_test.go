@@ -42,14 +42,16 @@ WHERE b.organization_id=$1 AND b.organization_revision_id=$2 AND b.role_id=$3 AN
 		return
 	}
 
-	// Finance: its own policy, on gemini, and the scope gate lets it through with no scope.
+	// Finance: its own policy, on DeepSeek Flash since Gemini was retired (2026-09-28), and in the
+	// flow it really runs in -- a task correlated to the CEO chat turn that asked for it -- the
+	// finance review scope lets it through the gate.
 	policy, provider, model, transport := binding(financeRouteRoleID)
-	if policy != "finance.reviewer" || provider != "gemini" || model != "gemini-3.5-flash-lite" || transport != "http_adapter" {
+	if policy != "finance.reviewer" || provider != "deepseek" || model != "deepseek-flash" || transport != "http_adapter" {
 		t.Fatalf("%s resolves to policy=%s %s/%s over %s", financeRouteRoleID, policy, provider, model, transport)
 	}
-	scope := modelegress.ExecutiveScopeMarker(financeRouteRoleID, "department_worker", "campaign:proposal:30", "task:1310")
-	if scope != "" {
-		t.Fatalf("a campaign Finance review derived executive scope %q", scope)
+	scope := modelegress.ExecutiveScopeMarker(financeRouteRoleID, "department_worker", "ceochat:6", "task:1310")
+	if scope != modelegress.ScopeFinanceReview {
+		t.Fatalf("a campaign Finance review derived scope %q, want %q", scope, modelegress.ScopeFinanceReview)
 	}
 	if reason, allowed := modelegress.ValidateExecutiveScope(provider, transport, []string{"organizational"}, scope, false); !allowed {
 		t.Fatalf("the Finance review is denied at the scope gate: %s", reason)
@@ -72,8 +74,8 @@ WHERE b.organization_id=$1 AND b.organization_revision_id=$2 AND b.role_id=$3 AN
 	if err != nil {
 		t.Fatal(err)
 	}
-	if canonicalPolicy.PolicyVersion != 13 {
-		t.Fatalf("docs/canonical/model-egress-policy.yaml policy_version=%d, want 13", canonicalPolicy.PolicyVersion)
+	if canonicalPolicy.PolicyVersion != 14 {
+		t.Fatalf("docs/canonical/model-egress-policy.yaml policy_version=%d, want 14", canonicalPolicy.PolicyVersion)
 	}
 	hash := strings.Repeat("a", 64)
 	resolved := modelegress.ResolvedPolicy{
