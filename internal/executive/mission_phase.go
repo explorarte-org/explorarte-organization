@@ -314,9 +314,17 @@ func (o *Orchestrator) driveMissionFromPlan(ctx context.Context, root TaskRecord
 	for _, change := range plan.Changes {
 		changes = append(changes, missionplan.Change{Path: change.Path, Intent: change.Intent, Patch: change.Patch})
 	}
+	// A retry's mission must be a new mission: engineering missions are created idempotently by
+	// their policy's digest, and a retry's policy is otherwise identical to the failed one's (same
+	// files, base and gates), so it would resolve to the failed mission again (root 1990). The host
+	// names the retry in the objective, which the policy carries.
+	objective := plan.Objective
+	if attempt.Ordinal > 0 {
+		objective = fmt.Sprintf("%s (implementation retry %d of mission %d)", plan.Objective, attempt.Ordinal, attempt.SupersedesMission)
+	}
 	derived, err := missionplan.Derive(missionplan.Request{
 		TaskID: 0, BaseSHA: baseSHA, Scope: missionScope(root),
-		Objective:          plan.Objective,
+		Objective:          objective,
 		Changes:            changes,
 		AcceptanceCriteria: root.AcceptanceCriteria,
 	})

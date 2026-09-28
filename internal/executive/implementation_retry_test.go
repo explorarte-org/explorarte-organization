@@ -103,6 +103,30 @@ func TestARetryPlansAgainFromTheFrozenDesign(t *testing.T) {
 	if got := countDesignTasks(all); got != designTasksBefore {
 		t.Fatalf("the retry touched the design loop: %d design tasks, was %d", got, designTasksBefore)
 	}
+
+	// Driven to provisioning, the retry makes a NEW mission (root 1990: missions are created
+	// idempotently by policy digest, and an identical policy resolved to the failed mission), and
+	// its evidence names the mission it supersedes.
+	before := fixture.provisioner.count()
+	for i := 0; i < 6 && fixture.provisioner.count() == before; i++ {
+		all, _ = fixture.tasks.ListByCorrelation(context.Background(), root.CorrelationID)
+		root = fixture.rootRecord(t)
+		if _, _, err := fixture.orchestrator.driveMissionFromPlan(context.Background(), root, all, requirement, attempt); err != nil {
+			t.Fatalf("retry pass %d: %v", i, err)
+		}
+	}
+	if fixture.provisioner.count() != before+1 {
+		t.Fatalf("missions %d, want a new one beside the first %d", fixture.provisioner.count(), before)
+	}
+	superseding := false
+	for _, evidence := range fixture.rootRecord(t).Evidence {
+		if strings.HasPrefix(evidence.Reference, "engineering-mission://") && evidence.Metadata[SupersedesMissionKey] != nil {
+			superseding = true
+		}
+	}
+	if !superseding {
+		t.Fatal("the retry's mission evidence does not name the mission it supersedes")
+	}
 }
 
 func countDesignTasks(all []TaskRecord) int {
