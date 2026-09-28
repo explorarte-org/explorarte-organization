@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // =============================================================================
@@ -558,6 +559,7 @@ func evidenceRefs(results []SearchResult) []EvidenceRef {
 			ArxivID:  r.ArxivID,
 			ISBN:     r.ISBN,
 			Title:    r.Title,
+			Snippet:  evidenceSnippet(r),
 			FoundAt:  time.Now().UTC(),
 		}
 		if ref.URL == "" {
@@ -566,6 +568,26 @@ func evidenceRefs(results []SearchResult) []EvidenceRef {
 		refs = append(refs, ref)
 	}
 	return refs
+}
+
+// maxEvidenceSnippetBytes bounds the extract a finding keeps per source.
+const maxEvidenceSnippetBytes = 600
+
+// evidenceSnippet is the abstract when there is one, else the provider's snippet, cut on a rune
+// boundary.
+func evidenceSnippet(r SearchResult) string {
+	text := strings.Join(strings.Fields(r.Abstract), " ")
+	if text == "" {
+		text = strings.Join(strings.Fields(r.Snippet), " ")
+	}
+	if len(text) <= maxEvidenceSnippetBytes {
+		return text
+	}
+	cut := maxEvidenceSnippetBytes
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return text[:cut] + "…"
 }
 
 // canonicalURLOf prefers the canonical URL when present.

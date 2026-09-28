@@ -229,7 +229,7 @@ func TestListFindingsCarriesBoundedEvidence(t *testing.T) {
 	long := strings.Repeat("título ", 60)
 	refs := make([]search.EvidenceRef, 6)
 	for i := range refs {
-		refs[i] = search.EvidenceRef{Title: long, URL: "https://doi.org/10.1/" + strings.Repeat("x", 80), DOI: "10.1/x", ArxivID: "2609.01234v1"}
+		refs[i] = search.EvidenceRef{Title: long, URL: "https://doi.org/10.1/" + strings.Repeat("x", 80), DOI: "10.1/x", ArxivID: "2609.01234v1", Snippet: strings.Repeat("resumen ", 80)}
 	}
 	page := make([]search.ResearchFinding, maxFindingsLimit)
 	for i := range page {
@@ -240,8 +240,8 @@ func TestListFindingsCarriesBoundedEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Content) > 32<<10 {
-		t.Fatalf("a full page is %d bytes, over the 32 KiB tool bound", len(result.Content))
+	if len(result.Content) > findingsResultBytes {
+		t.Fatalf("a full page is %d bytes, over the %d-byte tool bound", len(result.Content), findingsResultBytes)
 	}
 	var decoded struct {
 		Findings []findingView `json:"findings"`
@@ -251,7 +251,8 @@ func TestListFindingsCarriesBoundedEvidence(t *testing.T) {
 	}
 	evidence := decoded.Findings[0].Evidence
 	if len(evidence) != maxEvidencePerFinding || evidence[0].URL != refs[0].URL || evidence[0].DOI != "10.1/x" ||
-		!utf8.ValidString(evidence[0].Title) || len(evidence[0].Title) > maxEvidenceTitleBytes+len("…") {
+		!utf8.ValidString(evidence[0].Title) || len(evidence[0].Title) > maxEvidenceTitleBytes+len("…") ||
+		!strings.HasPrefix(evidence[0].Snippet, "resumen") || len(evidence[0].Snippet) > maxEvidenceSnippetBytes+len("…") {
 		t.Fatalf("evidence %+v", evidence)
 	}
 }

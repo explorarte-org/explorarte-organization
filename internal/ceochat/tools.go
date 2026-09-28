@@ -254,12 +254,26 @@ type evidenceView struct {
 	URL     string `json:"url"`
 	DOI     string `json:"doi,omitempty"`
 	ArxivID string `json:"arxiv_id,omitempty"`
+	// Snippet is the start of the source's abstract, so the CEO can hand a department what the
+	// paper says and not only its title.
+	Snippet string `json:"snippet,omitempty"`
 }
 
 const (
-	maxEvidencePerFinding = 3
-	maxEvidenceTitleBytes = 160
+	maxEvidencePerFinding   = 3
+	maxEvidenceTitleBytes   = 160
+	maxEvidenceSnippetBytes = 280
+	// findingsResultBytes bounds one research.list_findings result: a full page of 20 findings with
+	// three sources each, abstracts included, fits.
+	findingsResultBytes = 64 << 10
 )
+
+func cutText(text string, max int) string {
+	if len(text) <= max {
+		return text
+	}
+	return strings.ToValidUTF8(text[:max], "") + "…"
+}
 
 func findingEvidence(refs []search.EvidenceRef) []evidenceView {
 	views := make([]evidenceView, 0, min(len(refs), maxEvidencePerFinding))
@@ -267,11 +281,8 @@ func findingEvidence(refs []search.EvidenceRef) []evidenceView {
 		if len(views) == maxEvidencePerFinding {
 			break
 		}
-		title := ref.Title
-		if len(title) > maxEvidenceTitleBytes {
-			title = strings.ToValidUTF8(title[:maxEvidenceTitleBytes], "") + "…"
-		}
-		views = append(views, evidenceView{Title: title, URL: ref.URL, DOI: ref.DOI, ArxivID: ref.ArxivID})
+		views = append(views, evidenceView{Title: cutText(ref.Title, maxEvidenceTitleBytes), URL: ref.URL, DOI: ref.DOI, ArxivID: ref.ArxivID,
+			Snippet: cutText(ref.Snippet, maxEvidenceSnippetBytes)})
 	}
 	return views
 }
@@ -347,7 +358,7 @@ func RegisterResearchTools(registry *ToolRegistry, topics TopicLister, findings 
 		ID: ToolListFindings, Version: "v1",
 		Description: "List recent research findings, optionally scoped to a department or topic.",
 		InputSchema: listFindingsSchema, Access: AccessReadOnly, Effect: ToolEffectRead, RequiredRole: CEORoleID,
-		Limits:    ToolLimits{MaxRows: maxFindingsLimit, MaxResultBytes: 32 << 10, Timeout: defaultToolTimeout},
+		Limits:    ToolLimits{MaxRows: maxFindingsLimit, MaxResultBytes: findingsResultBytes, Timeout: defaultToolTimeout},
 		DataClass: DataClassInternal,
 	}, func(args json.RawMessage) error { _, err := decodeListFindingsArgs(args); return err },
 		func(ctx context.Context, _ string, args json.RawMessage) (json.RawMessage, error) {
