@@ -35,7 +35,9 @@ func TestMigrations_UpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, m := range down {
+	// Newest first: a later migration's objects depend on earlier ones.
+	for i := len(down) - 1; i >= 0; i-- {
+		m := down[i]
 		if m.DownSQL == "" {
 			t.Fatalf("migration %06d missing down", m.Version)
 		}
@@ -57,7 +59,7 @@ func TestMigrations_UpDownUp(t *testing.T) {
 	}
 
 	// Checksum drift detection: a tampered ledger row must fail loudly.
-	if _, err := pool.Exec(ctx, `UPDATE schema_migrations SET checksum = 'deadbeef'`); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE schema_migrations SET checksum = repeat('0', 64)`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := runner.Up(ctx); err == nil {
