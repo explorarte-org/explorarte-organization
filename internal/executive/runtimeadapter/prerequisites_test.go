@@ -34,9 +34,10 @@ func (p *prerequisiteTasks) RecordEvidence(_ context.Context, command executive.
 func TestADependentWorkerIsShownItsPrerequisitesResults(t *testing.T) {
 	body := []byte(`{"schema_version":"worker-result/v1","summary":"the designer's answer, 233 words","evidence_refs":["artifact:abc"]}`)
 	tasks := &prerequisiteTasks{tasks: map[int64]executive.TaskRecord{
-		2024: {ID: 2024, AssignedRoleID: "servicios/service_designer", Status: "completed",
+		2020: {ID: 2020, IdempotencyKey: "executive:2018:leader-plan:servicios", Status: "completed"},
+		2024: {ID: 2024, IdempotencyKey: "executive:2018:worker:servicios:answer", AssignedRoleID: "servicios/service_designer", Status: "completed",
 			Attempts: []executive.AttemptRecord{{ID: 5, Ordinal: 1, State: "finished"}}},
-		2025: {ID: 2025, AssignedRoleID: "servicios/analista_calidad", Status: "running", DependsOn: []int64{2024}},
+		2025: {ID: 2025, AssignedRoleID: "servicios/analista_calidad", Status: "running", DependsOn: []int64{2020, 2024}},
 	}}
 	adapter := EvidenceTasks{
 		Models: evidenceModels{
@@ -66,11 +67,24 @@ func TestADependentWorkerIsShownItsPrerequisitesResults(t *testing.T) {
 
 func TestAWorkerIsNeverShownAnUnfinishedPrerequisite(t *testing.T) {
 	tasks := &prerequisiteTasks{tasks: map[int64]executive.TaskRecord{
-		1: {ID: 1, Status: "running"},
+		1: {ID: 1, IdempotencyKey: "executive:9:worker:d:a", Status: "running"},
 		2: {ID: 2, Status: "running", DependsOn: []int64{1}},
 	}}
 	adapter := EvidenceTasks{Models: evidenceModels{}, Completion: passCompletion{}}
 	if _, err := adapter.attachPrerequisites(context.Background(), tasks, tasks.tasks[2]); err == nil || len(tasks.recorded) != 0 {
 		t.Fatalf("err %v recorded %d: an unfinished prerequisite must fail, not attach an empty bundle", err, len(tasks.recorded))
+	}
+}
+
+// Local smoke #46 (root 2057): every worker also depends on its department plan, which is not a
+// worker result. A worker whose only prerequisite is its plan gets no bundle and no error.
+func TestAWorkersDepartmentPlanIsNotProjectedAsAResult(t *testing.T) {
+	tasks := &prerequisiteTasks{tasks: map[int64]executive.TaskRecord{
+		2059: {ID: 2059, IdempotencyKey: "executive:2057:leader-plan:servicios", Status: "completed"},
+		2063: {ID: 2063, Status: "running", DependsOn: []int64{2059}},
+	}}
+	adapter := EvidenceTasks{Models: evidenceModels{}, Completion: passCompletion{}}
+	if _, err := adapter.attachPrerequisites(context.Background(), tasks, tasks.tasks[2063]); err != nil || len(tasks.recorded) != 0 {
+		t.Fatalf("err %v, recorded %d: the plan must be skipped", err, len(tasks.recorded))
 	}
 }

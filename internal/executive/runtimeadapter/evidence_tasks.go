@@ -434,6 +434,13 @@ func (e EvidenceTasks) attachPrerequisites(ctx context.Context, store prerequisi
 		if err != nil {
 			return task, err
 		}
+		// Every worker also depends on its department plan task (DAGTasks adds that edge); the plan
+		// is what the worker's own instructions came from, not a worker result. Only sibling workers
+		// are projected. Local smoke #46 (root 2057): projecting the plan as a worker result failed
+		// the strict worker-result decoder and blocked the root.
+		if !strings.Contains(prerequisite.IdempotencyKey, ":worker:") {
+			continue
+		}
 		if prerequisite.Status != "completed" {
 			return task, fmt.Errorf("executive worker %d runs before its prerequisite %d completed (%s)", task.ID, id, prerequisite.Status)
 		}
@@ -442,6 +449,9 @@ func (e EvidenceTasks) attachPrerequisites(ctx context.Context, store prerequisi
 			return task, err
 		}
 		bundle.Prerequisites = append(bundle.Prerequisites, item)
+	}
+	if len(bundle.Prerequisites) == 0 {
+		return task, nil
 	}
 	sort.Slice(bundle.Prerequisites, func(i, j int) bool { return bundle.Prerequisites[i].TaskID < bundle.Prerequisites[j].TaskID })
 	if err := recordBundleWith(ctx, store, task.ID, "prerequisites:"+strconv.FormatInt(task.ID, 10), bundle); err != nil {
