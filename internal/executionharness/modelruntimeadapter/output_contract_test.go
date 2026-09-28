@@ -330,3 +330,21 @@ func TestCapabilityCanonicalizationSurvivesDurableReuse(t *testing.T) {
 		t.Fatal("a different capability set derived the same contract")
 	}
 }
+
+// A retry of a rate-limited call is a new invocation: its key differs from the call's and from other
+// retries', stays within bounds, and the call's own key (ordinal 0) keeps its historical shape.
+func TestRetryOrdinalMakesANewInvocationKey(t *testing.T) {
+	base := &Adapter{outputContract: digest([]byte("output")), executionContractKey: digest([]byte("c"))}
+	call := base.idempotencyKey("p")
+	first := (&Adapter{outputContract: base.outputContract, executionContractKey: base.executionContractKey, config: Config{RetryOrdinal: 1}}).idempotencyKey("p")
+	second := (&Adapter{outputContract: base.outputContract, executionContractKey: base.executionContractKey, config: Config{RetryOrdinal: 2}}).idempotencyKey("p")
+	if call == first || first == second || call == second {
+		t.Fatalf("keys collide: %q %q %q", call, first, second)
+	}
+	if len(first) != len("execution-harness:")+64 {
+		t.Fatalf("retry key %q is not the folded 82-byte form", first)
+	}
+	if again := (&Adapter{outputContract: base.outputContract, executionContractKey: base.executionContractKey, config: Config{RetryOrdinal: 0}}).idempotencyKey("p"); again != call {
+		t.Fatal("ordinal 0 changed the call's own key")
+	}
+}

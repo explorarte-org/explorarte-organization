@@ -413,17 +413,22 @@ func (s *Service) driveTurn(ctx context.Context, conversation Conversation, task
 		return SendResult{}, fmt.Errorf("build ceochat context snapshot: %w", err)
 	}
 
-	models, err := s.NewModelExecutor(modelruntimeadapter.Config{
-		MaxOutputTokens:               s.MaxOutputTokens,
-		ThinkingMode:                  modelruntime.ThinkingOpaque,
-		InvocationTTL:                 s.InvocationTTL,
-		OutputMode:                    modelruntime.OutputText,
-		ExecutionContractInstructions: contract,
-		Purpose:                       "executive.ceo_chat",
-	})
-	if err != nil {
+	buildModels := func(ordinal int) (executionharness.ModelExecutor, error) {
+		return s.NewModelExecutor(modelruntimeadapter.Config{
+			MaxOutputTokens:               s.MaxOutputTokens,
+			ThinkingMode:                  modelruntime.ThinkingOpaque,
+			InvocationTTL:                 s.InvocationTTL,
+			OutputMode:                    modelruntime.OutputText,
+			ExecutionContractInstructions: contract,
+			Purpose:                       "executive.ceo_chat",
+			RetryOrdinal:                  ordinal,
+		})
+	}
+	// Built once up front so a misconfiguration fails the turn before it starts.
+	if _, err = buildModels(0); err != nil {
 		return SendResult{}, fmt.Errorf("build ceochat model executor: %w", err)
 	}
+	models := rateLimitRetryExecutor{build: buildModels, waits: rateLimitRetryWaits, sleep: sleepContext}
 	runtime, err := executionharness.NewWithDescriptorStore(s.Authority, models, s.Catalog, s.ToolExecutor, s.HarnessHistory, s.DescriptorStore)
 	if err != nil {
 		return SendResult{}, fmt.Errorf("build ceochat harness runtime: %w", err)
