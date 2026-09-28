@@ -90,3 +90,33 @@ func TestCitedRangesTakeAtMostHalfTheRangeBudget(t *testing.T) {
 		t.Fatalf("%d cited ranges were read, want %d (half of %d)", read, limits.MaxRanges/maxCitedShare, limits.MaxRanges)
 	}
 }
+
+// Local smoke #39 (root 1965): the call sites a worker asked for lived outside the package the goal
+// names, and the prefix rule dropped them. A requested identifier is searched in the whole repository.
+func TestARequestedIdentifierIsFoundOutsideTheGoalsPaths(t *testing.T) {
+	source := newSource()
+	source.lines["internal/campaign/provider.go"] = 3
+	source.content["internal/campaign/provider.go"] = "package campaign\n\nvar floor = executive.MinimalCampaignTopology()\n"
+	source.found = []Match{{Path: "internal/executive/orchestrator.go", Line: 3}, {Path: "internal/campaign/provider.go", Line: 3}}
+	provider, err := NewProvider("explorarte-organization", source, DefaultLimits(), 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, err := provider.ListRepositoryEvidence(context.Background(), contextengine.BuildRequest{
+		RepositoryBaseSHA:   shaA,
+		RepositoryQuery:     "audit internal/executive/orchestrator.go and its driveDepartments handling",
+		RepositoryRequested: []string{"MinimalCampaignTopology"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, record := range records {
+		if strings.Contains(record.Reference, "internal/campaign/provider.go") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the requested identifier's use outside the goal's paths was not read: %d records", len(records))
+	}
+}

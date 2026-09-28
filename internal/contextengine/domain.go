@@ -160,6 +160,9 @@ type BuildRequest struct {
 	// exact ranges at this commit after the slots and before any search, so a
 	// judge sees the lines the author saw.
 	RepositoryCitations []string `json:"repository_citations,omitempty"`
+	// RepositoryRequested are identifiers an earlier execution said it needed and was not shown;
+	// the provider searches them in the whole repository.
+	RepositoryRequested []string `json:"repository_requested,omitempty"`
 	ActorUnitID         string   `json:"actor_unit_id,omitempty"`
 	RequestedSkillIDs   []string `json:"requested_skill_ids,omitempty"`
 	IdempotencyKey      string   `json:"idempotency_key"`

@@ -227,6 +227,9 @@ type ContextRequest struct {
 	// RepositoryCitations are the repository:// ranges the deliverable under
 	// judgement cites, read for the judge verbatim (judgedDesignCitations).
 	RepositoryCitations []string
+	// RepositoryRequested are identifiers an earlier worker asked for (requestedEvidenceFor), searched
+	// in the whole repository rather than only under the goal's paths.
+	RepositoryRequested []string
 	IdempotencyKey      string
 	CorrelationID       string
 	CausationID         string

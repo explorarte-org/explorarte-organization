@@ -44,6 +44,10 @@ type Selection struct {
 	// Cited are exact ranges another execution already cited, read verbatim
 	// after PASS 0 and before any search (PASS C). See CitedRange.
 	Cited []CitedRange
+	// Requested are identifiers an earlier execution said it needed and was
+	// not shown. They are searched in the whole repository, not only under the
+	// paths the goal names (PASS R).
+	Requested []string
 	// Window is how many lines around a match make it understandable.
 	Window int
 }
@@ -403,6 +407,37 @@ func gather(ctx context.Context, explorer *Explorer, selection Selection, strict
 		citedBudget--
 	}
 
+	// PASS R -- REQUESTED IDENTIFIERS. Local smoke #39 (root 1965): a worker
+	// asked for the call sites of MinimalCampaignTopology; they live in
+	// internal/campaign, the goal named internal/executive, and the prefix
+	// rule of PASS 1 dropped every one of them, so the redo could not close
+	// its file list. A requested identifier is searched in the whole
+	// repository, preferring files the context does not already hold (the
+	// declaration is usually there; the use is what was missing), within a
+	// quarter of the range budget.
+	requestedBudget := explorer.Limits.MaxRanges / 4
+	for _, term := range selection.Requested {
+		if requestedBudget <= 0 {
+			break
+		}
+		perTerm := 0
+		for _, match := range searchTolerant(term) {
+			if perTerm >= 2 || requestedBudget <= 0 {
+				break
+			}
+			if fragmentHoldsFile(fragments, match.Path) {
+				continue
+			}
+			fragment, readErr := explorer.ReadAround(ctx, match, window)
+			if readErr != nil {
+				continue
+			}
+			add(fragment)
+			perTerm++
+			requestedBudget--
+		}
+	}
+
 	// PASS 1 -- required coverage, ROUND-ROBIN: A's first candidates, then
 	// B's first, then C's first; only then A's second, B's second... Under a
 	// starving budget every obligation keeps its BEST candidate rather than
@@ -511,6 +546,15 @@ func underAnyPrefix(path string, prefixes []string) bool {
 	}
 	for _, prefix := range prefixes {
 		if path == prefix || strings.HasPrefix(path, strings.TrimSuffix(prefix, "/")+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func fragmentHoldsFile(fragments []Fragment, path string) bool {
+	for _, fragment := range fragments {
+		if fragment.Path == path {
 			return true
 		}
 	}

@@ -2004,7 +2004,8 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		// model/instruction text.
 		TaskClass: task.TaskClass, ExecutionPurpose: string(purpose), ActorUnitID: task.AssignedUnitID,
 		RepositoryBaseSHA: repositoryBaseSHA, RepositoryQuery: repositoryQuery,
-		RepositorySubjects:  append(evidenceSubjects(transportRequired), requestedSubjects...),
+		RepositorySubjects:  evidenceSubjects(transportRequired),
+		RepositoryRequested: requestedSubjects,
 		RepositorySlots:     evidenceSlots(transportRequired),
 		RepositoryCitations: citations,
 		IdempotencyKey:      childKey(root.ID, fmt.Sprintf("context:%d:%d", task.ID, lease.AttemptID)),

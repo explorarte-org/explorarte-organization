@@ -70,6 +70,7 @@ func (p *Provider) ListRepositoryEvidence(ctx context.Context, request contexten
 		selection.Slots = append(selection.Slots, EvidenceSlot{Subject: slot.Subject, Relation: slot.Relation})
 	}
 	selection.Cited = citedRanges(request.RepositoryCitations, p.Repository, request.RepositoryBaseSHA)
+	selection.Requested = request.RepositoryRequested
 	fragments, err := Gather(ctx, explorer, selection)
 	if err != nil {
 		return nil, err

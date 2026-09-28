@@ -69,8 +69,11 @@ func TestARedoIsShownWhatThePreviousWorkerSaidItNeeded(t *testing.T) {
 		if !slices.Contains(request.RepositoryCitations, wantRange) {
 			t.Fatalf("the redo was not shown the requested range %s: %v", wantRange, request.RepositoryCitations)
 		}
-		if !slices.Contains(request.RepositorySubjects, "ListExecutableRoots") || slices.Contains(request.RepositorySubjects, "not a request") {
-			t.Fatalf("the redo's subjects %v: want ListExecutableRoots and nothing unrecognisable", request.RepositorySubjects)
+		if !slices.Contains(request.RepositoryRequested, "ListExecutableRoots") || slices.Contains(request.RepositoryRequested, "not a request") {
+			t.Fatalf("the redo's requested identifiers %v: want ListExecutableRoots and nothing unrecognisable", request.RepositoryRequested)
+		}
+		if slices.Contains(request.RepositorySubjects, "ListExecutableRoots") {
+			t.Fatalf("a requested identifier became a round obligation: %v", request.RepositorySubjects)
 		}
 		return
 	}
