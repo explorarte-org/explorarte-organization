@@ -617,7 +617,8 @@ func (o *Orchestrator) roundOwnershipReplay(ctx context.Context, all []TaskRecor
 		if task.TaskClass != TaskClassCoordinationDeptReview || task.Status != "completed" {
 			continue
 		}
-		if !strings.HasPrefix(task.IdempotencyKey, reviewPrefix) {
+		// The round-1 prefix is also a prefix of every later round's review keys.
+		if !strings.HasPrefix(task.IdempotencyKey, reviewPrefix) || designRoundOf(task.IdempotencyKey) != round {
 			continue
 		}
 		reviews = append(reviews, replayedReview{ordinal: reviewReplanOrdinal(task.IdempotencyKey), task: task})
@@ -654,6 +655,28 @@ func (o *Orchestrator) roundOwnershipReplay(ctx context.Context, all []TaskRecor
 				superseded[previous] = true
 			}
 			authority[binding.RequiredChangeID] = binding.OwnerClientKey
+		}
+		// A replan with no required changes to bind -- a round the adjudicator
+		// asked nothing specific of, typically round 1 -- still redoes the
+		// department's work: its verdict says the reviewed deliverables did not
+		// suffice, and its follow-ups are the answer. Without bindings nothing
+		// recorded that, and the next review was handed the original beside its
+		// redo (local smoke #39, root 1965: tasks 1968 and 1979). Workers of
+		// the round created before this review are superseded, except a key a
+		// follow-up reuses, which governs through its newer materialization.
+		if len(review.FollowupOwnership) == 0 && len(review.ProposedFollowupTasks) > 0 {
+			reused := map[string]bool{}
+			for _, followup := range review.ProposedFollowupTasks {
+				reused[followup.ClientKey] = true
+			}
+			for _, worker := range roundWorkers(all, rootID, unit, round) {
+				if worker.ID > r.task.ID {
+					continue
+				}
+				if base := workerBaseClientKey(worker.IdempotencyKey, rootID, unit, round); !reused[base] {
+					superseded[base] = true
+				}
+			}
 		}
 	}
 	return authority, superseded, nil

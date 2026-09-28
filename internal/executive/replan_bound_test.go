@@ -404,3 +404,33 @@ func TestAnExhaustedBoundOutranksAnInvalidFollowup(t *testing.T) {
 		t.Fatalf("a second pass bought %d more reviews", after-before)
 	}
 }
+
+// Local smoke #39 (root 1965): a round with no required changes replanned, and the next review was
+// handed the original deliverable beside its redo. A replan without bindings still redoes the
+// department's work: the review after it judges the redo, not the work it replaced.
+func TestAReplanWithoutRequiredChangesReplacesTheWorkItRedoes(t *testing.T) {
+	fixture := newReplanFixture(t, 1, replanReviewNeedsReplan)
+	fixture.drive(t)
+	all, err := fixture.tasks.ListByCorrelation(context.Background(), fixture.rootRecord(t).CorrelationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var original, redo TaskRecord
+	for _, worker := range departmentWorkerTasks(all, fixture.root, "ingenieria_ia") {
+		if strings.Contains(worker.IdempotencyKey, "followup-1") {
+			redo = worker
+		} else {
+			original = worker
+		}
+	}
+	if original.ID == 0 || redo.ID == 0 {
+		t.Fatalf("scenario: original %d redo %d", original.ID, redo.ID)
+	}
+	scope, _, err := fixture.orchestrator.departmentReviewScope(context.Background(), all, fixture.root, "ingenieria_ia", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scope.WorkerTaskIDs) != 1 || scope.WorkerTaskIDs[0] != redo.ID {
+		t.Fatalf("review scope %v, want only the redo %d (original %d)", scope.WorkerTaskIDs, redo.ID, original.ID)
+	}
+}
