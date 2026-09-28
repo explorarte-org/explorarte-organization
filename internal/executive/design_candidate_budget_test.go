@@ -53,7 +53,7 @@ func TestRoot1351TheReviewerIsShownTheWholeDeliverable(t *testing.T) {
 }
 
 func TestEachDeliverableGetsAShareThatIsNeverLessThanBefore(t *testing.T) {
-	for deliverables, want := range map[int]int{0: 16000, 1: 16000, 2: 14000, 3: 9333, 4: 7000, 7: 4000, 8: 4000, 24: 4000} {
+	for deliverables, want := range map[int]int{0: 24000, 1: 24000, 2: 14000, 3: 9333, 4: 7000, 7: 4000, 8: 4000, 24: 4000} {
 		if got := candidateShare(deliverables); got != want {
 			t.Errorf("candidateShare(%d) = %d, want %d", deliverables, got, want)
 		}

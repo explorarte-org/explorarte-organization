@@ -13,10 +13,11 @@ import (
 
 func TestTheLongestObservedWorkerSummaryIsAccepted(t *testing.T) {
 	limits := DefaultLimits()
-	if limits.WorkerSummaryBytes() != 8000 || limits.MaxStringBytes != 4000 {
-		t.Fatalf("summary limit %d / string limit %d, want 8000 / 4000", limits.WorkerSummaryBytes(), limits.MaxStringBytes)
+	if limits.WorkerSummaryBytes() != 12000 || limits.MaxStringBytes != 4000 {
+		t.Fatalf("summary limit %d / string limit %d, want 12000 / 4000", limits.WorkerSummaryBytes(), limits.MaxStringBytes)
 	}
-	for size, accepted := range map[int]bool{5013: true, 8000: true, 8001: false} {
+	// 10486 is the longest design summary refused at the former 8000 limit (smokes #32 to #39).
+	for size, accepted := range map[int]bool{5013: true, 10486: true, 12000: true, 12001: false} {
 		body := []byte(`{"schema_version":"worker-result/v1","summary":"` + strings.Repeat("a", size) + `","evidence_refs":[]}`)
 		_, err := ParseWorkerResult(body, limits)
 		if accepted && err != nil {

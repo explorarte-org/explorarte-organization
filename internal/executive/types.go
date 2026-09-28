@@ -193,6 +193,11 @@ type Limits struct {
 	// design. Every other string keeps MaxStringBytes. Between 2026-09-25 and 2026-09-27 five design
 	// worker summaries were refused at 4000 bytes (4102 to 5013, median 4333), one attempt each; the
 	// longest summary a design worker produced in that window was 5013 bytes.
+	//
+	// It was then 8000. Local smokes #32 to #39 (2026-09-27/28) refused fifteen design summaries at
+	// 8000 -- 8223 to 10486 bytes -- each costing an attempt, and it was the most frequent refusal of
+	// all; a retry told how much to cut still came back over it more than once. 12000 holds every one
+	// of them and stays under what the candidate shows reviewers of one deliverable (16000).
 	MaxWorkerSummaryBytes  int
 	MaxInstructionsBytes   int
 	MaxAcceptanceCriteria  int
@@ -221,7 +226,7 @@ func (l Limits) WorkerSummaryBytes() int {
 func DefaultLimits() Limits {
 	return Limits{
 		MaxInputBytes: 256 << 10, MaxDepartments: 7, MaxWorkerTasksPerPlan: 24,
-		MaxFollowupTasks: 12, MaxArrayItems: 64, MaxStringBytes: 4000, MaxWorkerSummaryBytes: 8000,
+		MaxFollowupTasks: 12, MaxArrayItems: 64, MaxStringBytes: 4000, MaxWorkerSummaryBytes: 12000,
 		MaxInstructionsBytes: 16000, MaxAcceptanceCriteria: 32, MaxRequirementsPerTask: 32,
 		MaxDepartmentReplans: 1, MaxDesignRounds: 3, MaxModelCalls: 128, MaxOutputTokens: 128000,
 		InvocationDeadline: 10 * time.Minute,
