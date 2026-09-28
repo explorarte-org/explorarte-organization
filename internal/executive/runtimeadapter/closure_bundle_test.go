@@ -62,3 +62,16 @@ func TestReviewedWorkerIDsComeFromTheReviewsOwnBundle(t *testing.T) {
 		t.Fatalf("ids %v", got)
 	}
 }
+
+// Local smoke #58 (root 2305): the closure task, created held for coordination, listed itself as
+// a blocked task and reported its own root blocked.
+func TestTheClosureDoesNotListItselfAsBlocked(t *testing.T) {
+	all := []executive.TaskRecord{
+		{ID: 2389, Status: "completed"},
+		{ID: 2390, Status: "blocked"},
+		{ID: 2397, Status: "blocked"},
+	}
+	if got := closureBlockedTasks(all, 2397); !slices.Equal(got, []int64{2390}) {
+		t.Fatalf("blocked %v, want only the other blocked task", got)
+	}
+}

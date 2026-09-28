@@ -260,11 +260,7 @@ func (e EvidenceTasks) attachClosureBundle(ctx context.Context, target executive
 		return err
 	}
 	latest := map[string]executive.TaskRecord{}
-	blocked := make([]int64, 0)
 	for _, task := range all {
-		if task.Status == "blocked" {
-			blocked = append(blocked, task.ID)
-		}
 		if !strings.Contains(task.IdempotencyKey, ":leader-review:") || task.Status != "completed" {
 			continue
 		}
@@ -286,7 +282,7 @@ func (e EvidenceTasks) attachClosureBundle(ctx context.Context, target executive
 		}
 		reviews = append(reviews, item)
 	}
-	sort.Slice(blocked, func(i, j int) bool { return blocked[i] < blocked[j] })
+	blocked := closureBlockedTasks(all, target.ID)
 
 	byID := make(map[int64]executive.TaskRecord, len(all))
 	for _, task := range all {
@@ -350,6 +346,21 @@ func fitClosureBundle(reviews []projectedReview, blocked []int64, departments []
 		}
 	}
 	return bundle
+}
+
+// closureBlockedTasks lists the correlation's blocked tasks for the closure bundle, in order. The
+// closure task itself is created held for coordination, which reads as blocked, and its bundle is
+// recorded before its release: listing it made the closure report its own root blocked (local
+// smoke #58, root 2305, closure task 2397).
+func closureBlockedTasks(all []executive.TaskRecord, closureTaskID int64) []int64 {
+	blocked := make([]int64, 0)
+	for _, task := range all {
+		if task.Status == "blocked" && task.ID != closureTaskID {
+			blocked = append(blocked, task.ID)
+		}
+	}
+	sort.Slice(blocked, func(i, j int) bool { return blocked[i] < blocked[j] })
+	return blocked
 }
 
 // reviewedWorkerIDs reads, from the department bundle the host attached to a review, the workers
