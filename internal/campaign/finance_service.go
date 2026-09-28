@@ -990,7 +990,7 @@ func (s *FinanceService) runHarnessModel(ctx context.Context, claimed tasks.Clai
 		temperature := financeReviewTemperature
 		buildModels := func(ordinal int) (executionharness.ModelExecutor, error) {
 			return s.cfg.NewModelExecutor(modelruntimeadapter.Config{
-				MaxOutputTokens:               4096,
+				MaxOutputTokens:               FinanceMaxOutputTokens,
 				Temperature:                   &temperature,
 				ThinkingMode:                  modelruntime.ThinkingDisabled,
 				InvocationTTL:                 2 * time.Minute,
@@ -1120,6 +1120,11 @@ var financeReviewOutputSchema = json.RawMessage(`{
     "missing_information":{"type":"array","items":{"type":"string"}}
   }
 }`)
+
+// FinanceMaxOutputTokens bounds one finance review's answer. It was 4096: DeepSeek Flash, routed
+// the review on 2026-09-28, wrote 3449 and 3662 tokens in its first two reviews and hit the cap on
+// the third, leaving truncated JSON the runtime rejected (local smoke #56, invocation 1056).
+const FinanceMaxOutputTokens = 16384
 
 // FinanceMaxInvocations is the finance review's model call plus its bounded transient retries: the
 // dispatch assignment a review's attempt is given must allow this many.
