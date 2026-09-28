@@ -46,9 +46,14 @@ const killGrace = 5 * time.Second
 // real operational credentials for its own purposes, and a command this runs on
 // behalf of a mission must not inherit them. See env.go.
 func runSupervised(runCtx context.Context, dir string, stdin string, out *boundedOutput, name string, args ...string) (exitCode int, err error) {
+	return runSupervisedEnv(runCtx, dir, stdin, out, subprocessEnv(os.Environ()), name, args...)
+}
+
+// runSupervisedEnv is runSupervised with the subprocess environment given explicitly.
+func runSupervisedEnv(runCtx context.Context, dir string, stdin string, out *boundedOutput, env []string, name string, args ...string) (exitCode int, err error) {
 	c := exec.Command(name, args...)
 	c.Dir = dir
-	c.Env = subprocessEnv(os.Environ())
+	c.Env = env
 	c.Stdout = out
 	c.Stderr = out
 	if stdin != "" {

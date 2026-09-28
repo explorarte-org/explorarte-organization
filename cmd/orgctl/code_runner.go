@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"github.com/Mireuz13/explorarte-organization/internal/coderunner"
 	costledgerpostgres "github.com/Mireuz13/explorarte-organization/internal/costledger/postgres"
@@ -86,8 +87,11 @@ func runCodeRunner(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "mission" {
 		return runCodeRunnerMission(args[1:], stdout, stderr)
 	}
+	if len(args) > 1 && args[0] == "executor" && args[1] == "run" {
+		return runCodeRunnerExecutor(args[2:], stderr)
+	}
 	if len(args) != 2 || args[0] != "worker" || args[1] != "run" {
-		fmt.Fprintln(stderr, "usage: orgctl code-runner worker run | mission <request-review|review>")
+		fmt.Fprintln(stderr, "usage: orgctl code-runner worker run | executor run --exchange DIR | mission <request-review|review>")
 		return exitUsage
 	}
 	// Before anything is run on a mission's behalf: the commands this worker starts share its uid, and
@@ -140,6 +144,9 @@ func runCodeRunner(args []string, stdout, stderr io.Writer) int {
 		return exitDenied
 	}
 	executor := &coderunner.Executor{Workspace: "", MaxOutput: 1 << 20, OperationTimeout: codeRunnerOperationTimeout(), PlanOutputBudget: codeRunnerPlanOutputBudget()}
+	if exchange := strings.TrimSpace(os.Getenv(codeRunnerTestExchangeEnv)); exchange != "" {
+		executor.IsolatedTests = &coderunner.IsolatedTests{Root: exchange}
+	}
 	runtimeVersion := os.Getenv("ORG_CODE_RUNNER_RUNTIME_VERSION")
 	mission := engineeringmission.Service{Tasks: taskService, Promotion: stagingRuntime.Service}
 	workspace := coderunner.StagingAdapter{Service: stagingRuntime.Service, Tasks: taskService, WorkspaceRoot: cfg.Staging.WorkspaceRoot, RepositoryID: repo, BaseCommit: base, TargetRef: target, IntentResolver: engineeringmission.WorkspaceResolver{Tasks: taskService, Mission: mission, RepositoryID: repo, TargetRef: target}}
@@ -242,4 +249,35 @@ func runCodeRunner(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 	}
+}
+
+// codeRunnerTestExchangeEnv names the exchange directory shared with the isolated test executor. When
+// set, the worker runs GO_TEST there instead of as its own subprocess (audit A1, step B).
+const codeRunnerTestExchangeEnv = "ORG_CODE_RUNNER_TEST_EXCHANGE"
+
+// runCodeRunnerExecutor runs ONE isolated GO_TEST job and returns: the executor's container restarts
+// after it, which ends every process the test left behind. It reads no configuration and opens no
+// database connection; its container has neither.
+func runCodeRunnerExecutor(args []string, stderr io.Writer) int {
+	flags := flag.NewFlagSet("code-runner executor run", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	exchange := flags.String("exchange", "", "exchange directory shared with the code-runner worker")
+	if err := flags.Parse(args); err != nil || strings.TrimSpace(*exchange) == "" || flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: orgctl code-runner executor run --exchange DIR")
+		return exitUsage
+	}
+	if err := coderunner.MakeProcessNonDumpable(); err != nil {
+		fmt.Fprintf(stderr, "code-runner executor: make the process non-dumpable: %v\n", err)
+		return exitInternal
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := (coderunner.IsolatedTestExecutor{Root: *exchange}).RunOne(ctx); err != nil {
+		if ctx.Err() != nil {
+			return exitOK
+		}
+		fmt.Fprintf(stderr, "code-runner executor: %v\n", err)
+		return exitInternal
+	}
+	return exitOK
 }
