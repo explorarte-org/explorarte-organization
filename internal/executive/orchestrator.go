@@ -722,6 +722,8 @@ const decisionApplicabilityPolicy = `- Only a decision that is strictly required
 
 const ceoPlanInstructionPrefix = `Produce only the ExecutivePlan JSON contract for the authoritative owner goal below. Propose operational departments; do not select providers, models, capabilities, tools, authority, credentials, or egress.
 
+DEPARTMENT_REQUEST_POLICY: each department sees only the request you write for it, never the owner goal below. Copy into its objective, deliverable or constraints, verbatim, every source, quotation, extract, identifier and figure from the goal that its answer depends on; a reference to material the department cannot see ("the cited paper", "the supplied extract") leaves it nothing to work from.
+
 OWNER_DECISION_POLICY (applies to owner_decisions_required):
 ` + decisionApplicabilityPolicy + `
 - Optional unavailable integrations that the current owner goal explicitly declares non-blocking must NOT become owner decisions.
@@ -763,6 +765,11 @@ func buildCEOPlanInstructions(root TaskRecord, maxBytes int) (string, error) {
 	return prefix + string(payload), nil
 }
 
+// DEPARTMENT_REQUEST_POLICY exists because a department plan is given only its request: in local
+// smoke #57 (root 2293) the CEO asked servicios to use "the title, DOI URL and truncated extract
+// supplied" without copying them, and the department, which never saw the owner goal, blocked its
+// own review for want of them.
+//
 // analysisModeCEONote tells the CEO what an analysis_only campaign is. Its plan named a criterion
 // no stage of that mode evaluates -- "the host design reviewer approves this executive plan" --
 // and the closure, unable to verify it, reported the root partial (local smoke #55, root 2225).

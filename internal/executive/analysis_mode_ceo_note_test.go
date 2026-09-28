@@ -28,3 +28,15 @@ func TestTheAnalysisCEOPlanIsToldItsModeHasNoDesignStages(t *testing.T) {
 		t.Fatal("the governed CEO plan instructions changed")
 	}
 }
+
+// Local smoke #57: the CEO referred servicios to a paper extract without copying it, and the
+// department, which sees only its request, had nothing to work from.
+func TestTheCEOIsToldDepartmentsSeeOnlyTheirRequest(t *testing.T) {
+	got, err := buildCEOPlanInstructions(TaskRecord{ID: 1, Instructions: "goal"}, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "each department sees only the request you write for it") || !strings.Contains(got, "verbatim") {
+		t.Fatal("the CEO plan instructions do not say what a department can see")
+	}
+}
