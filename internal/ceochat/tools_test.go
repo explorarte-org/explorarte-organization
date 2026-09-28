@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/Mireuz13/explorarte-organization/internal/executionharness"
 	"github.com/Mireuz13/explorarte-organization/internal/search"
@@ -218,5 +220,38 @@ func TestHostValidationEnforcesFinanceAndMemoryBounds(t *testing.T) {
 		if _, err := decodeMemorySearchArgs(body); err == nil {
 			t.Errorf("memory.search must reject limit=%d, got nil", invalidLimit)
 		}
+	}
+}
+
+// A finding reaches the CEO with what it found, bounded: a full page of findings with long titles
+// stays inside the tool's result limit.
+func TestListFindingsCarriesBoundedEvidence(t *testing.T) {
+	long := strings.Repeat("título ", 60)
+	refs := make([]search.EvidenceRef, 6)
+	for i := range refs {
+		refs[i] = search.EvidenceRef{Title: long, URL: "https://doi.org/10.1/" + strings.Repeat("x", 80), DOI: "10.1/x", ArxivID: "2609.01234v1"}
+	}
+	page := make([]search.ResearchFinding, maxFindingsLimit)
+	for i := range page {
+		page[i] = search.ResearchFinding{ID: "finding-cycle-investigacion-topic-" + strings.Repeat("9", 40), TopicID: "t", DepartmentID: "investigacion", Summary: strings.Repeat("s", 120), EvidenceRefs: refs}
+	}
+	executor := ToolExecutor{Findings: &fakeFindingLister{findings: page}}
+	result, err := executor.executeListFindings(context.Background(), []byte(`{"limit":20}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Content) > 32<<10 {
+		t.Fatalf("a full page is %d bytes, over the 32 KiB tool bound", len(result.Content))
+	}
+	var decoded struct {
+		Findings []findingView `json:"findings"`
+	}
+	if err := json.Unmarshal(result.Content, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	evidence := decoded.Findings[0].Evidence
+	if len(evidence) != maxEvidencePerFinding || evidence[0].URL != refs[0].URL || evidence[0].DOI != "10.1/x" ||
+		!utf8.ValidString(evidence[0].Title) || len(evidence[0].Title) > maxEvidenceTitleBytes+len("…") {
+		t.Fatalf("evidence %+v", evidence)
 	}
 }

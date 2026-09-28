@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/executionharness"
@@ -243,6 +244,36 @@ type findingView struct {
 	Classification string `json:"classification"`
 	Summary        string `json:"summary"`
 	CreatedAt      string `json:"created_at"`
+	// Evidence is what the finding found (papers, pages): without it the summary is only a count.
+	// It is capped per finding so a full page of findings stays inside the tool's result bound.
+	Evidence []evidenceView `json:"evidence,omitempty"`
+}
+
+type evidenceView struct {
+	Title   string `json:"title"`
+	URL     string `json:"url"`
+	DOI     string `json:"doi,omitempty"`
+	ArxivID string `json:"arxiv_id,omitempty"`
+}
+
+const (
+	maxEvidencePerFinding = 3
+	maxEvidenceTitleBytes = 160
+)
+
+func findingEvidence(refs []search.EvidenceRef) []evidenceView {
+	views := make([]evidenceView, 0, min(len(refs), maxEvidencePerFinding))
+	for _, ref := range refs {
+		if len(views) == maxEvidencePerFinding {
+			break
+		}
+		title := ref.Title
+		if len(title) > maxEvidenceTitleBytes {
+			title = strings.ToValidUTF8(title[:maxEvidenceTitleBytes], "") + "…"
+		}
+		views = append(views, evidenceView{Title: title, URL: ref.URL, DOI: ref.DOI, ArxivID: ref.ArxivID})
+	}
+	return views
 }
 
 func (e ToolExecutor) executeListFindings(ctx context.Context, rawArgs []byte) (executionharness.ToolExecutionResult, error) {
@@ -273,6 +304,7 @@ func (e ToolExecutor) executeListFindings(ctx context.Context, rawArgs []byte) (
 			ID: finding.ID, TopicID: finding.TopicID, DepartmentID: finding.DepartmentID,
 			Classification: string(finding.Classification), Summary: finding.Summary,
 			CreatedAt: finding.CreatedAt.UTC().Format(time.RFC3339),
+			Evidence:  findingEvidence(finding.EvidenceRefs),
 		})
 	}
 	content, err := json.Marshal(struct {
