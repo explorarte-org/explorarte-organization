@@ -65,6 +65,7 @@ type Orchestrator struct {
 	repositoryID     string
 	missions         MissionProvisioner
 	missionReviews   MissionReviewRequester
+	incorporation    MissionIncorporationReader
 	// patchWorkbench lets the implementation-plan phase read the frozen tree and
 	// ask git whether a patch applies to it (patch_validation.go). Optional:
 	// without it only the structural patch checks run.
@@ -333,7 +334,18 @@ func (o *Orchestrator) Submit(ctx context.Context, request SubmitRequest) (Run, 
 }
 
 func (o *Orchestrator) Status(ctx context.Context, rootTaskID int64) (Run, error) {
-	return ReadStatus(ctx, o.tasks, o.models, rootTaskID, o.limits)
+	run, err := ReadStatus(ctx, o.tasks, o.models, rootTaskID, o.limits)
+	if err != nil || o.incorporation == nil {
+		return run, err
+	}
+	root, rootErr := o.tasks.GetTask(ctx, rootTaskID)
+	if rootErr != nil {
+		return run, nil
+	}
+	if state, stateErr := o.runIncorporation(ctx, root); stateErr == nil {
+		run.Incorporation = state
+	}
+	return run, nil
 }
 
 func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error) {
@@ -1545,7 +1557,7 @@ func (o *Orchestrator) departmentReviewScope(ctx context.Context, all []TaskReco
 // decisionApplicabilityPolicy's doc comment for why this exists.
 const ceoClosureInstructionPrefix = `Synthesize only from this bounded durable summary and return ExecutiveClosure JSON. A completed claim cannot override backend verification.
 
-When the summary carries engineering_execution, it is the host-verified record of this root's code-runner run: judge every criterion about the implementation, its tests, the files it changed and the lines it changed (applied_patch) against it, and cite its evidence_ref. A requirement in pending_mission_requirements (such as the independent engineering review that precedes any promotion of the candidate) is a blocker only when this root's own goal asks for it.
+When the summary carries engineering_execution, it is the host-verified record of this root's code-runner run: judge every criterion about the implementation, its tests, the files it changed and the lines it changed (applied_patch) against it, and cite its evidence_ref. A requirement in pending_mission_requirements (such as the independent engineering review that precedes any promotion of the candidate) is a blocker only when this root's own goal asks for it. Its incorporation says how far the change has come into the program -- candidate_verified or pending_owner_review (verified, not yet reviewed), accepted (approved, not applied), applied, rejected or conflicted -- and your answer to the owner must state it as such: a verified candidate pending incorporation is never reported as a change made to the program.
 
 CLOSURE_DECISION_POLICY (applies to blocked_items and unresolved_decisions):
 ` + decisionApplicabilityPolicy + `

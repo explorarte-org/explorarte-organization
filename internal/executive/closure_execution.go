@@ -38,6 +38,9 @@ type closureExecution struct {
 	AppliedPatch               string   `json:"applied_patch,omitempty"`
 	CandidateCommit            string   `json:"candidate_commit,omitempty"`
 	PendingMissionRequirements []string `json:"pending_mission_requirements,omitempty"`
+	// Incorporation is how far the candidate has come into the program: a candidate verified and
+	// pending the owner's review is not an applied change, and the closure must not report it as one.
+	Incorporation IncorporationState `json:"incorporation,omitempty"`
 }
 
 type closureOperation struct {
@@ -121,6 +124,9 @@ func (o *Orchestrator) closureEngineeringExecution(ctx context.Context, root Tas
 		}
 	}
 	execution.MissionState = missionStateForClosure(mission.Status, execution.PendingMissionRequirements)
+	if state, stateErr := o.runIncorporation(ctx, root); stateErr == nil {
+		execution.Incorporation = state
+	}
 	execution.AppliedPatch = closureAppliedPatch(mission.Instructions)
 	return execution, nil
 }

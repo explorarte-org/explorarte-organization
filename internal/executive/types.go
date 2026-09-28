@@ -325,13 +325,16 @@ type SubmitRequest struct {
 }
 
 type Run struct {
-	RootTaskID    int64     `json:"root_task_id"`
-	CorrelationID string    `json:"correlation_id"`
-	State         RunState  `json:"state"`
-	ReasonCode    string    `json:"reason_code,omitempty"`
-	Reason        string    `json:"reason,omitempty"`
-	AnswerToOwner string    `json:"answer_to_owner,omitempty"`
-	UpdatedAt     time.Time `json:"updated_at,omitempty"`
+	RootTaskID    int64    `json:"root_task_id"`
+	CorrelationID string   `json:"correlation_id"`
+	State         RunState `json:"state"`
+	ReasonCode    string   `json:"reason_code,omitempty"`
+	Reason        string   `json:"reason,omitempty"`
+	AnswerToOwner string   `json:"answer_to_owner,omitempty"`
+	// Incorporation is how far a governed run's change has come into the program (see
+	// IncorporationState); empty for runs without a code-runner mission.
+	Incorporation IncorporationState `json:"incorporation,omitempty"`
+	UpdatedAt     time.Time          `json:"updated_at,omitempty"`
 }
 
 type TaskRecord struct {

@@ -176,6 +176,7 @@ func missionProvisioningOptions(cfg config.Config, store *platformpostgres.Store
 		executive.WithMissionProvisioning(resolver, provisioner),
 		executive.WithPatchWorkbench(workbench),
 		executive.WithMissionReviewRequester(missionReviewRequester{missions: missions, promotions: stagingRuntime.Service, lookup: poolPromotionLookup{pool: store.Pool()}}),
+		executive.WithMissionIncorporationReader(poolPromotionLookup{pool: store.Pool()}),
 	}, nil
 }
 
@@ -199,6 +200,13 @@ type workspacePromotionLookup interface {
 // poolPromotionLookup answers from staging_promotions directly: the staging service lists promotions
 // by status only, and a bounded list is no proof that one does not exist.
 type poolPromotionLookup struct{ pool *pgxpool.Pool }
+
+// MissionPromotionStatus is the status of the mission's latest promotion, "" when it has none.
+func (l poolPromotionLookup) MissionPromotionStatus(ctx context.Context, missionTaskID int64) (string, error) {
+	var status string
+	err := l.pool.QueryRow(ctx, `SELECT COALESCE((SELECT status FROM staging_promotions WHERE task_id=$1 AND status NOT IN ('cancelled','failed') ORDER BY id DESC LIMIT 1),'')`, missionTaskID).Scan(&status)
+	return status, err
+}
 
 func (l poolPromotionLookup) WorkspaceHasPromotion(ctx context.Context, workspaceID int64) (bool, error) {
 	var exists bool
