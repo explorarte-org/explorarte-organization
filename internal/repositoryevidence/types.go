@@ -218,6 +218,23 @@ func DefaultLimits() Limits {
 // and a promise priced at one window and delivered at another is not a promise.
 const DefaultWindow = 40
 
+// WorkerWindow and WorkerLimits are the diet of the executions that WRITE: a design worker, and
+// the implementation plan that writes the patch the code runner applies. By the owner's decision
+// (2026-09-28) their window is twice DefaultWindow -- about 160 lines per excerpt -- so a writer
+// reads a whole function and its neighbours. Their byte budget grows with it; a measured worker
+// context was about 100KB before any repository evidence, so 320KB of evidence stays inside the
+// context engine's 512KB bound. Judges (department review, adjudication) keep DefaultWindow.
+const WorkerWindow = 2 * DefaultWindow
+
+func WorkerLimits() Limits {
+	limits := DefaultLimits()
+	limits.MaxBytes = 320 * 1024
+	return limits
+}
+
+// WorkerPurposes are the execution purposes that read with WorkerWindow and WorkerLimits.
+var WorkerPurposes = map[string]bool{"department-worker": true, "implementation-plan": true}
+
 func (l Limits) Validate() error {
 	if l.MaxFiles < 1 || l.MaxRanges < 1 || l.MaxBytes < 1 || l.MaxSearches < 1 || l.MaxLines < 1 {
 		return fmt.Errorf("%w: every exploration limit must be positive", ErrInvalidFragment)

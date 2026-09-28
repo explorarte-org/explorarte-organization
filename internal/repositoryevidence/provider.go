@@ -55,11 +55,15 @@ func (p *Provider) ListRepositoryEvidence(ctx context.Context, request contexten
 		return nil, nil
 	}
 	p.BaseSHA = request.RepositoryBaseSHA
-	explorer, err := NewExplorer(p.Repository, request.RepositoryBaseSHA, p.Source, p.Limits)
+	limits, window := p.Limits, p.Window
+	if WorkerPurposes[request.ExecutionPurpose] {
+		limits, window = WorkerLimits(), WorkerWindow
+	}
+	explorer, err := NewExplorer(p.Repository, request.RepositoryBaseSHA, p.Source, limits)
 	if err != nil {
 		return nil, err
 	}
-	selection := SelectionForRequirements(request.RepositoryQuery, request.RepositorySubjects, p.Window)
+	selection := SelectionForRequirements(request.RepositoryQuery, request.RepositorySubjects, window)
 	// The normative slots ride into selection: PASS 0 satisfies each
 	// (subject, relation) before any incidental exploration spends budget.
 	for _, slot := range request.RepositorySlots {

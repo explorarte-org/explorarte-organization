@@ -21,7 +21,10 @@ var ErrEvidenceSensorUnavailable = errors.New("repository sensor could not answe
 // against: the same DefaultLimits the real context build will run with. A
 // variable only so tests can shrink the world's budget and watch the union
 // fail without building a repository big enough to starve the defaults.
-var jointAdmissionLimits = repositoryevidence.DefaultLimits
+//
+// Admission promises what a WORKER will be delivered, so it prices the
+// worker's diet: repositoryevidence.WorkerLimits at WorkerWindow.
+var jointAdmissionLimits = repositoryevidence.WorkerLimits
 
 // probeAdjudicationRequirements verifies the NEXT ROUND'S FULL CONTRACT
 // against the PINNED tree before any of it becomes durable.
@@ -182,7 +185,7 @@ func (o *Orchestrator) planUnprovenSlots(ctx context.Context, baseSHA string, li
 		return repositoryevidence.CoveragePlan{}, nil
 	}
 	plan, err := repositoryevidence.PlanSlots(ctx, o.repositoryID, baseSHA,
-		o.repositorySource, limits, repositoryevidence.DefaultWindow, probeSlots)
+		o.repositorySource, limits, repositoryevidence.WorkerWindow, probeSlots)
 	if err != nil {
 		return repositoryevidence.CoveragePlan{}, fmt.Errorf("%w: joint evidence admission at %s: %v", ErrEvidenceSensorUnavailable, baseSHA, err)
 	}
