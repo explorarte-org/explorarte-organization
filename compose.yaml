@@ -420,6 +420,53 @@ services:
     networks:
       - org-internal
 
+  # investigacion/research_worker_hourly: one research tick at the top of every America/Santiago
+  # hour (organization.yaml hourly_schedule), inside a daily spend cap. Findings go to
+  # research_findings for the CEO (research.list_findings); it publishes no knowledge, invokes no
+  # model and holds no model secret -- only the search provider keys it may use.
+  research-worker:
+    image: explorarte-organization:${ORG_VERSION:-dev}
+    entrypoint: ["/usr/local/bin/orgctl", "research", "worker", "run"]
+    environment:
+      ORG_APP_NAME: ${ORG_APP_NAME:-explorarte-organization}
+      ORG_ENVIRONMENT: ${ORG_ENVIRONMENT:-development}
+      ORG_LOG_LEVEL: ${ORG_LOG_LEVEL:-info}
+      ORG_LOG_FORMAT: ${ORG_LOG_FORMAT:-json}
+      ORG_DATABASE_HOST: postgres
+      ORG_DATABASE_PORT: 5432
+      ORG_DATABASE_NAME: ${ORG_POSTGRES_DATABASE:-explorarte_org}
+      ORG_DATABASE_USER: ${ORG_POSTGRES_USER:-explorarte_app}
+      ORG_DATABASE_PASSWORD: ${ORG_POSTGRES_PASSWORD:?set ORG_POSTGRES_PASSWORD in .env}
+      ORG_DATABASE_SSLMODE: disable
+      ORG_DATABASE_MAX_CONNS: 2
+      ORG_DATABASE_MIN_CONNS: 1
+      ORG_CANONICAL_DIR: /opt/explorarte/docs/canonical
+      ORG_TASK_ORGANIZATION_ID: ${ORG_TASK_ORGANIZATION_ID:-explorarte}
+      AUTONOMOUS_RESEARCH_ENABLED: ${AUTONOMOUS_RESEARCH_ENABLED:-true}
+      AUTONOMOUS_RESEARCH_DAILY_BUDGET_USD: ${AUTONOMOUS_RESEARCH_DAILY_BUDGET_USD:-2}
+      AUTONOMOUS_RESEARCH_TIMEZONE: America/Santiago
+      ORG_SEARCH_PROVIDER_OPENALEX_ENABLED: "true"
+      ORG_SEARCH_PROVIDER_ARXIV_ENABLED: "true"
+      ORG_SEARCH_PROVIDER_BRAVE_ENABLED: ${ORG_SEARCH_PROVIDER_BRAVE_ENABLED:-true}
+      ORG_SEARCH_PROVIDER_TAVILY_ENABLED: ${ORG_SEARCH_PROVIDER_TAVILY_ENABLED:-true}
+    volumes:
+      - /etc/explorarte/secrets/brave-api-key:/run/secrets/brave-api-key:ro
+      - /etc/explorarte/secrets/tavily-api-key:/run/secrets/tavily-api-key:ro
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    stop_grace_period: 20s
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - org-internal
+
   code-runner:
     # orgctl code-runner worker run: the CodeRunner worker loop
     # (internal/coderunner.Worker), the actual code-writing stage this
