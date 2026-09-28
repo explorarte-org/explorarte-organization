@@ -187,10 +187,10 @@ func (e *Executor) Execute(ctx context.Context, plan Plan) ([]Result, error) {
 
 func (e *Executor) ExecuteOperation(ctx context.Context, op Operation) (Result, error) {
 	if err := opValidate(op); err != nil {
-		return Result{}, err
+		return Result{}, fmt.Errorf("%w: %v", ErrInvalidOperation, err)
 	}
 	if op.Path != "" && structurallyDenied(op.Path, op.Type.Mutates()) {
-		return Result{}, fmt.Errorf("path %q is structurally denied", op.Path)
+		return Result{}, fmt.Errorf("%w: path %q is structurally denied", ErrInvalidOperation, op.Path)
 	}
 	switch op.Type {
 	case ReadFile:

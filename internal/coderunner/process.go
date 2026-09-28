@@ -18,6 +18,10 @@ import (
 // must never be sealed as a candidate.
 var ErrIndeterminateExecution = errors.New("indeterminate_code_execution")
 
+// ErrInvalidOperation is an operation the executor refuses to run as given: a malformed operation or a
+// structurally denied path. Retrying the same plan cannot change it.
+var ErrInvalidOperation = errors.New("invalid operation")
+
 // killGrace bounds how long runSupervised waits for a killed process group
 // to be reaped before giving up and reporting ErrIndeterminateExecution. It
 // is deliberately small and fixed: a process that ignores SIGKILL for this
