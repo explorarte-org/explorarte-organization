@@ -367,6 +367,8 @@ type TaskRecord struct {
 	Evidence               []EvidenceRecord
 	Attempts               []AttemptRecord
 	ActiveLease            *LeaseRecord
+	// DependsOn is the tasks this one waits for (the plan's worker dependencies).
+	DependsOn []int64
 }
 
 type RequirementRecord struct {

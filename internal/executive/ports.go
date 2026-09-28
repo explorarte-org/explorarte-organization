@@ -316,3 +316,13 @@ type Clock interface{ Now() time.Time }
 type ClockFunc func() time.Time
 
 func (f ClockFunc) Now() time.Time { return f() }
+
+// PrerequisiteAttacher records, on a worker about to run, the results of the workers it depends on.
+// A plan's dependencies ordered execution but carried nothing: every worker task is created when the
+// plan is, before its prerequisites have results, so a reviewer worker ran without the answer it was
+// asked to check (local smoke #42, root 2018: the servicios quality review reported every criterion
+// undecidable twice and the department's replans ran out). It is optional; a coordinator without it
+// leaves workers as they were.
+type PrerequisiteAttacher interface {
+	AttachPrerequisiteResults(ctx context.Context, task TaskRecord) (TaskRecord, error)
+}

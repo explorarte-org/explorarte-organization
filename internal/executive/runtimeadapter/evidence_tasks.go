@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -302,6 +303,12 @@ func (e EvidenceTasks) projectReview(ctx context.Context, task executive.TaskRec
 }
 
 func (e EvidenceTasks) recordBundle(ctx context.Context, taskID int64, scope string, bundle any) error {
+	return recordBundleWith(ctx, e.Tasks, taskID, scope, bundle)
+}
+
+func recordBundleWith(ctx context.Context, store interface {
+	RecordEvidence(context.Context, executive.EvidenceCommand) error
+}, taskID int64, scope string, bundle any) error {
 	body, err := json.Marshal(bundle)
 	if err != nil {
 		return err
@@ -315,7 +322,7 @@ func (e EvidenceTasks) recordBundle(ctx context.Context, taskID int64, scope str
 	if err = json.Unmarshal(body, &decoded); err != nil {
 		return err
 	}
-	return e.Tasks.RecordEvidence(ctx, executive.EvidenceCommand{
+	return store.RecordEvidence(ctx, executive.EvidenceCommand{
 		TaskID: taskID, Type: "result", Reference: "executive-evidence:" + scope + ":" + digest[:16],
 		Digest: digest, RecordedBy: serviceActor, Metadata: map[string]any{"bundle": decoded}, Satisfies: false,
 	})
@@ -394,4 +401,54 @@ func hasExecutiveBundle(task executive.TaskRecord) bool {
 	return false
 }
 
+type prerequisiteEvidenceBundle struct {
+	SchemaVersion string            `json:"schema_version"`
+	Note          string            `json:"note"`
+	Prerequisites []projectedWorker `json:"prerequisites"`
+}
+
+// prerequisiteStore is what attaching prerequisite results needs from the task port.
+type prerequisiteStore interface {
+	GetTask(context.Context, int64) (executive.TaskRecord, error)
+	RecordEvidence(context.Context, executive.EvidenceCommand) error
+}
+
+// AttachPrerequisiteResults records on task the verified results of the tasks it depends on, once:
+// the bundle is shown to the worker the way a department review is shown its workers. A
+// prerequisite that is not completed and verified is an error, never an empty bundle: the task
+// engine runs a dependent only after its prerequisites complete.
+func (e EvidenceTasks) AttachPrerequisiteResults(ctx context.Context, task executive.TaskRecord) (executive.TaskRecord, error) {
+	return e.attachPrerequisites(ctx, e.Tasks, task)
+}
+
+func (e EvidenceTasks) attachPrerequisites(ctx context.Context, store prerequisiteStore, task executive.TaskRecord) (executive.TaskRecord, error) {
+	if len(task.DependsOn) == 0 || e.Models == nil || e.Completion == nil || hasExecutiveBundle(task) {
+		return task, nil
+	}
+	bundle := prerequisiteEvidenceBundle{
+		SchemaVersion: executiveEvidenceSchema,
+		Note:          "Results of the tasks this task depends on, verified by the host. Work from them; do not redo them.",
+	}
+	for _, id := range task.DependsOn {
+		prerequisite, err := store.GetTask(ctx, id)
+		if err != nil {
+			return task, err
+		}
+		if prerequisite.Status != "completed" {
+			return task, fmt.Errorf("executive worker %d runs before its prerequisite %d completed (%s)", task.ID, id, prerequisite.Status)
+		}
+		item, err := e.projectWorker(ctx, prerequisite)
+		if err != nil {
+			return task, err
+		}
+		bundle.Prerequisites = append(bundle.Prerequisites, item)
+	}
+	sort.Slice(bundle.Prerequisites, func(i, j int) bool { return bundle.Prerequisites[i].TaskID < bundle.Prerequisites[j].TaskID })
+	if err := recordBundleWith(ctx, store, task.ID, "prerequisites:"+strconv.FormatInt(task.ID, 10), bundle); err != nil {
+		return task, err
+	}
+	return store.GetTask(ctx, task.ID)
+}
+
 var _ executive.TaskCoordinator = EvidenceTasks{}
+var _ executive.PrerequisiteAttacher = EvidenceTasks{}

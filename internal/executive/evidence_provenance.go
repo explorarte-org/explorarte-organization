@@ -437,7 +437,7 @@ func embeddedExecutiveEvidenceRefs(evidence []EvidenceRecord) map[string]struct{
 		if version, ok := bundle["schema_version"].(string); !ok || version != executiveEvidenceSchemaVersion {
 			continue
 		}
-		for _, arrayKey := range [...]string{"workers", "reviews"} {
+		for _, arrayKey := range [...]string{"workers", "reviews", "prerequisites"} {
 			entries, ok := bundle[arrayKey].([]any)
 			if !ok {
 				continue

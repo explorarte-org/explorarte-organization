@@ -1992,6 +1992,13 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		}
 		transportRequired = requirementsWithoutProofs(required, proofs)
 	}
+	if purpose == PurposeDepartmentWorker && len(task.DependsOn) > 0 {
+		if attacher, ok := o.tasks.(PrerequisiteAttacher); ok {
+			if task, err = attacher.AttachPrerequisiteResults(ctx, task); err != nil {
+				return task, err
+			}
+		}
+	}
 	snapshot, err := o.contexts.Build(ctx, ContextRequest{
 		OrganizationRevisionID: task.OrganizationRevisionID, ActorRoleID: task.AssignedRoleID,
 		Purpose: purpose.LegacyPurpose(), TaskRef: "task:" + strconv.FormatInt(task.ID, 10),
