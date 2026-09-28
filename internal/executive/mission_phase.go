@@ -261,6 +261,21 @@ func (o *Orchestrator) driveImplementationMission(ctx context.Context, root Task
 		return run, true, blockErr
 	}
 
+	// The plan may name only files the frozen design listed (audit A3). A freeze recorded before
+	// manifests existed carries none and is not re-judged.
+	if manifest, recorded, manifestErr := o.frozenDesignManifest(ctx, root.ID); manifestErr != nil {
+		return Run{}, true, manifestErr
+	} else if recorded {
+		planPaths := make([]string, 0, len(plan.Changes))
+		for _, change := range plan.Changes {
+			planPaths = append(planPaths, change.Path)
+		}
+		if err := checkPlanAgainstManifest(planPaths, manifest); err != nil {
+			run, blockErr := o.blockRoot(ctx, root, ReasonMissionPolicyRejected, err.Error())
+			return run, true, blockErr
+		}
+	}
+
 	changes := make([]missionplan.Change, 0, len(plan.Changes))
 	for _, change := range plan.Changes {
 		changes = append(changes, missionplan.Change{Path: change.Path, Intent: change.Intent, Patch: change.Patch})

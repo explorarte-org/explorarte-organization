@@ -290,6 +290,11 @@ func workerResultOutputSchemaFor(limits Limits, subjects, refs []string) json.Ra
 	      "type":"array",
 	      "items":` + byteLimitedStringSchema(limits) + `
 	    },
+	    "proposed_files":{
+	      "type":"array",
+	      "items":{"type":"string","maxLength":300},
+	      "description":"At most 16 items. The repository files this design proposes to change, as clean repository-relative paths (internal/executive/driver/driver.go), the regression test file included. The implementation may change only these files."
+	    },
 	    "evidence_requests":{
 	      "type":"array",
 	      "items":{"type":"string","maxLength":300},

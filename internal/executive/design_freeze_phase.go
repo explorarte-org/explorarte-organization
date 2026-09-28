@@ -430,6 +430,10 @@ func (o *Orchestrator) driveDesignFreeze(ctx context.Context, root TaskRecord, a
 	if err != nil {
 		return Run{}, true, err
 	}
+	manifest, err := o.designFileManifest(ctx, artifact)
+	if err != nil {
+		return Run{}, true, err
+	}
 	if err = o.tasks.RecordEvidence(ctx, EvidenceCommand{
 		TaskID: root.ID, RequirementID: requirement.ID, Type: "result",
 		Reference:  fmt.Sprintf("task:%d:model-invocation:%d", adjudicationTask.ID, adjudicationResult.InvocationID),
@@ -442,6 +446,8 @@ func (o *Orchestrator) driveDesignFreeze(ctx context.Context, root TaskRecord, a
 			// The commit the whole decision was made about. Empty only for
 			// a deployment with no promotion target at all.
 			"design_base_sha": pinnedBaseSHA,
+			// The files the frozen design may change; the mission is bound to them (audit A3).
+			DesignFileManifestKey: manifest,
 		},
 		Satisfies: true,
 	}); err != nil {

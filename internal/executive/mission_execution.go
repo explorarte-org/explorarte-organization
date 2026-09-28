@@ -74,6 +74,19 @@ func (o *Orchestrator) ensureRequiredCodeRunnerExecution(ctx context.Context, su
 		}
 		return fmt.Errorf("%w: mission task %d: %v", ErrCodeRunnerExecutionInvalid, mission.ID, err)
 	}
+	// The sealed candidate is compared to the frozen design's files again (audit A3): the plan was
+	// checked before provisioning, and this is the change that was actually made.
+	if manifest, recorded, manifestErr := o.frozenDesignManifest(ctx, root.ID); manifestErr != nil {
+		return manifestErr
+	} else if recorded {
+		changed, complete := sealedChangedPaths(attemptEvidence)
+		if !complete {
+			return fmt.Errorf("%w: mission task %d evidence does not list every changed path, so it cannot be compared to the frozen design", ErrCodeRunnerExecutionInvalid, mission.ID)
+		}
+		if outside := outsideManifest(changed, manifest); len(outside) > 0 {
+			return fmt.Errorf("%w: mission task %d changed %s, which the frozen design does not name", ErrCodeRunnerExecutionInvalid, mission.ID, strings.Join(outside, ", "))
+		}
+	}
 	// Verified: the mission asks for its review now, before anything reads its requirements.
 	if err := o.requestMissionReview(ctx, mission, attemptEvidence); err != nil {
 		return err
@@ -398,4 +411,19 @@ func codeRunnerExecutionConstraintGuidance(root TaskRecord, purpose ExecutionPur
 	default:
 		return ""
 	}
+}
+
+// sealedChangedPaths are the paths the sealed candidate changed, and whether the evidence lists them all.
+func sealedChangedPaths(attemptEvidence EvidenceRecord) ([]string, bool) {
+	var record struct {
+		ChangedFiles struct {
+			Count int64    `json:"count"`
+			Paths []string `json:"paths"`
+		} `json:"changed_files"`
+	}
+	encoded, err := json.Marshal(attemptEvidence.Metadata)
+	if err != nil || json.Unmarshal(encoded, &record) != nil {
+		return nil, false
+	}
+	return record.ChangedFiles.Paths, int64(len(record.ChangedFiles.Paths)) == record.ChangedFiles.Count
 }
