@@ -29,7 +29,10 @@ const (
 
 	defaultLeaseDuration   = 10 * time.Minute
 	defaultInvocationTTL   = 12 * time.Minute
-	defaultMaxOutputTokens = 2000
+	// Reasoning tokens count against this ceiling on the Responses API: at reasoning_effort max
+	// the CEO model spent all of 2000 reasoning and returned an incomplete turn (smoke #41,
+	// response_incomplete_max_output_tokens). The executive's own ceiling for the same model is 128000.
+	defaultMaxOutputTokens = 64000
 
 	ceoChatWorkerID = "ceochat"
 	ceoChatActorID  = "ceochat"
