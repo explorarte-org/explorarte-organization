@@ -334,18 +334,28 @@ func (f *integrationFixture) createDescriptor(t *testing.T, runID string, taskID
 
 func (f *integrationFixture) createHarnessEvents(t *testing.T, runID string, taskID, attemptID int64, termStatus string) {
 	t.Helper()
+	f.createHarnessEventsFor(t, runID, taskID, attemptID, termStatus, "inv-1")
+}
+
+// createHarnessEventsFor records a run whose model calls reference invocationRefs, one request and
+// one response each. The projector counts only the invocations a run's own events reference, so a
+// test about a run's invocations must reference the ones it created.
+func (f *integrationFixture) createHarnessEventsFor(t *testing.T, runID string, taskID, attemptID int64, termStatus string, invocationRefs ...string) {
+	t.Helper()
 	now := time.Now().UTC()
-	events := []struct {
+	type event struct {
 		seq        int
 		evType     string
 		termStatus string
 		payload    string
-	}{
-		{1, "run_started", "", `{"run_id":"` + runID + `"}`},
-		{2, "model_request_prepared", "", `{"invocation_ref":"inv-1"}`},
-		{3, "model_response_received", "", `{"invocation_ref":"inv-1"}`},
-		{4, "run_completed", termStatus, `{"terminal_status":"` + termStatus + `"}`},
 	}
+	events := []event{{1, "run_started", "", `{"run_id":"` + runID + `"}`}}
+	for _, ref := range invocationRefs {
+		events = append(events,
+			event{len(events) + 1, "model_request_prepared", "", `{"invocation_ref":"` + ref + `"}`},
+			event{len(events) + 2, "model_response_received", "", `{"invocation_ref":"` + ref + `"}`})
+	}
+	events = append(events, event{len(events) + 1, "run_completed", termStatus, `{"terminal_status":"` + termStatus + `"}`})
 
 	for _, ev := range events {
 		_, err := f.platformStore.Pool().Exec(f.ctx, `
@@ -590,10 +600,9 @@ func TestMixedModelBindingFailsClosedForAttribution(t *testing.T) {
 	runID := "harness-run-mixed-1"
 
 	f.createDescriptor(t, runID, taskID, attemptID, snapshotID, contextContent, "profile/standard")
-	f.createHarnessEvents(t, runID, taskID, attemptID, "completed")
 
 	// Two invocations: first with default binding
-	f.createModelInvocation(t, taskID, attemptID, snapshotID, f.binding)
+	firstInvocation := f.createModelInvocation(t, taskID, attemptID, snapshotID, f.binding)
 
 	// Create a second distinct provider and profile version for mixed binding
 	var binding2 modelBinding
@@ -635,7 +644,11 @@ func TestMixedModelBindingFailsClosedForAttribution(t *testing.T) {
 		t.Fatalf("insert second profile version: %v", err)
 	}
 
-	f.createModelInvocation(t, taskID, attemptID, snapshotID, binding2)
+	secondInvocation := f.createModelInvocation(t, taskID, attemptID, snapshotID, binding2)
+	// The run's events reference both invocations: the projector counts only what the run's own
+	// events reference, never every invocation of the task.
+	f.createHarnessEventsFor(t, runID, taskID, attemptID, "completed",
+		fmt.Sprintf("inv-%d", firstInvocation), fmt.Sprintf("inv-%d", secondInvocation))
 
 	ep, err := f.memoryStore.ProjectHarnessRun(f.ctx, runID)
 	if err != nil {

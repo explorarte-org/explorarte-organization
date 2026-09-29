@@ -83,8 +83,8 @@ func feasibleAboveFloor(floor campaign.ExecutionBudgetRequirements) campaign.Bud
 	return budgetAboveFloor(floor)
 }
 
-func infeasibleProductionBudget(campaign.ExecutionBudgetRequirements) campaign.BudgetRecommendation {
-	return *productionInfeasibleBudget()
+func infeasibleProductionBudget(floor campaign.ExecutionBudgetRequirements) campaign.BudgetRecommendation {
+	return budgetBelowFloor(floor)
 }
 
 // The canonical owner comes from the registry, not from a flag.

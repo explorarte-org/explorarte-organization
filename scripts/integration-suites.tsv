@@ -56,6 +56,13 @@
 # "go test -tags=integration ./cmd/orgctl". Exactly the D-HARNESS-AUTODISCOVERY
 # scenario predicted: a sixth package went unaccounted before anyone
 # remembered to add a line for it.
+
+# D-HARNESS-AUTODISCOVERY, the omission it predicted, again (2026-09-28): ten packages with
+# ORG_TEST_DATABASE_URL-gated or //go:build integration tests were never listed. Two had rotted
+# unobserved: the migration rehearsals (r74-r79 rolled a migration back on the shared database at
+# the compiled tip, which later migrations depend on; r77-r79 had lost their SQL placeholders) and
+# a memoryos fixture that predated the projector's own-run invocation scope. They now run, each
+# destructive one on a database of its own (testdbguard.FreshDatabase).
 id	modes	kind	timeout	depends_on	command
 platform-postgres	all	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/platform/postgres
 organization-registry	all	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/organization/registry
@@ -94,3 +101,13 @@ modelpricing-postgres	all,modelpricing	integration	15m	-	compose_run go test -co
 webevidence-postgres	all,webevidence	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/webevidence/postgres
 orgctl-integration	all,orgctl	integration	15m	-	compose_run go test -count=1 -tags=integration ./cmd/orgctl
 cli-smoke	all	smoke	15m	-	run_cli_smoke
+migrations	all,migrations	integration	15m	-	compose_run go test -count=1 -tags=integration ./migrations
+search-postgres	all,search-postgres	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/search/postgres
+memoryos-postgres	all,memoryos-postgres	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/memoryos/postgres
+contextcompiler-postgres	all,contextcompiler-postgres	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/contextcompiler/postgres
+executionharness-postgres	all,executionharness-postgres	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/executionharness/postgres
+canonicalsync	all,canonicalsync	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/organization/canonicalsync
+repositoryevidence	all,repositoryevidence	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/repositoryevidence
+repositoryevidence-gitsource	all,repositoryevidence-gitsource	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/repositoryevidence/gitsource
+skillforge-bootstrap	all,skillforge-bootstrap	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/skillforge/bootstrap
+skillregistry-contextprovider	all,skillregistry-contextprovider	integration	15m	-	compose_run go test -count=1 -tags=integration ./internal/skillregistry/contextprovider

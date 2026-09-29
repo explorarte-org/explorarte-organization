@@ -9,11 +9,14 @@ import (
 	"testing"
 
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
+	"github.com/Mireuz13/explorarte-organization/internal/testdbguard"
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 )
 
 func TestMigrations_UpDownUp(t *testing.T) {
-	pool := requireTestDatabase(t)
+	// Every migration is rolled back and re-applied: on a database of its own, so no other
+	// package's schema is taken down with it.
+	pool := migratedTestDatabase(t, testdbguard.FreshDatabase(t))
 	ctx := context.Background()
 
 	runner, err := platformmigrations.New(pool, rootmigrations.Files)

@@ -2,7 +2,6 @@ package migrations_test
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -15,7 +14,7 @@ import (
 // TestMigration76CampaignFinancialReviewsForwardBackForward is the up/down/up
 // rehearsal for migration 000076 (campaign financial reviews persistence).
 func TestMigration76CampaignFinancialReviewsForwardBackForward(t *testing.T) {
-	dsn := os.Getenv("ORG_TEST_DATABASE_URL")
+	dsn := testdbguard.FreshDatabase(t)
 	if dsn == "" {
 		t.Skip("ORG_TEST_DATABASE_URL is required")
 	}
@@ -47,7 +46,7 @@ func TestMigration76CampaignFinancialReviewsForwardBackForward(t *testing.T) {
 		t.Fatal("migration 000076 is not present in the compiled set")
 	}
 
-	runner, err := platformmigrations.New(pool, rootmigrations.Files)
+	runner, err := platformmigrations.New(pool, migrationsThrough(t, 76))
 	if err != nil {
 		t.Fatal(err)
 	}

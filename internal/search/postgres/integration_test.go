@@ -8,7 +8,6 @@ package postgres
 import (
 	"context"
 	"os"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -17,32 +16,19 @@ import (
 
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
 	search "github.com/Mireuz13/explorarte-organization/internal/search"
+	"github.com/Mireuz13/explorarte-organization/internal/testdbguard"
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 )
 
-// requireTestDatabase returns a pool or skips the test.
+// requireTestDatabase returns a pool on the shared disposable database, migrated and with the
+// research tables empty, or skips the test.
 func requireTestDatabase(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("ORG_TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("ORG_TEST_DATABASE_URL not set; skipping Postgres integration test")
 	}
-	if !strings.HasSuffix(strings.TrimRight(dsn, "/"), "explorarte_test") &&
-		!strings.Contains(dsn, "explorarte_test") {
-		t.Skipf("refusing non-disposable database %q; only explorarte_test is permitted", dsn)
-	}
-	pool, err := pgxpool.New(context.Background(), dsn)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	runner, err := platformmigrations.New(pool, rootmigrations.Files)
-	if err != nil {
-		t.Fatalf("create migration runner: %v", err)
-	}
-	if _, err := runner.Up(context.Background()); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	pool := migratedTestDatabase(t, dsn)
 	truncate := func() {
 		_, _ = pool.Exec(context.Background(),
 			`TRUNCATE research_query_records, research_topic_proposals,
@@ -51,6 +37,28 @@ func requireTestDatabase(t *testing.T) *pgxpool.Pool {
 	}
 	truncate() // clean slate at test start: no residue from prior runs
 	t.Cleanup(truncate)
+	return pool
+}
+
+// migratedTestDatabase connects to dsn, verified by the kernel's testdbguard (the name and the
+// live current_database(), not a substring of the URL), and migrates it to the compiled tip.
+func migratedTestDatabase(t *testing.T, dsn string) *pgxpool.Pool {
+	t.Helper()
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	if err := testdbguard.RequireTestDatabase(context.Background(), dsn, pool); err != nil {
+		t.Fatal(err)
+	}
+	runner, err := platformmigrations.New(pool, rootmigrations.Files)
+	if err != nil {
+		t.Fatalf("create migration runner: %v", err)
+	}
+	if _, err := runner.Up(context.Background()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
 	return pool
 }
 

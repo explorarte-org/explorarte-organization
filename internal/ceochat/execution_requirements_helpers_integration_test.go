@@ -90,3 +90,18 @@ func budgetAboveFloor(floor campaign.ExecutionBudgetRequirements) campaign.Budge
 		MaxSubagents:  int(max(floor.MinSubagents, floor.GovernedMinSubagents)) + 3,
 	}
 }
+
+// budgetBelowFloor is a representable budget (every dimension positive) that the derived floor
+// refuses: half its USD and token minimums, and one model call and one subagent short. Derived, so
+// it stays below the floor whichever way routing, pricing or topology move it; a fixed "small"
+// budget is infeasible only while the floor happens to sit above it.
+func budgetBelowFloor(floor campaign.ExecutionBudgetRequirements) campaign.BudgetRecommendation {
+	budget := budgetAboveFloor(floor)
+	// Whole micro-dollars below half the floor, never zero.
+	micros := max(int64(floor.MinUSD)/2/1000, 1)
+	budget.MaxUSD = float64(micros) / 1_000_000
+	budget.MaxTokens = max(floor.MinTokens/2, 1)
+	budget.MaxModelCalls = int(max(floor.MinModelCalls-1, 1))
+	budget.MaxSubagents = int(max(floor.MinSubagents-1, 1))
+	return budget
+}

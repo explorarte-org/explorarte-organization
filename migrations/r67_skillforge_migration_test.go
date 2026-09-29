@@ -3,7 +3,6 @@ package migrations_test
 import (
 	"context"
 	"io/fs"
-	"os"
 	"strconv"
 	"testing"
 	"testing/fstest"
@@ -16,7 +15,7 @@ import (
 )
 
 func TestMigration67ForwardBackForward(t *testing.T) {
-	dsn := os.Getenv("ORG_TEST_DATABASE_URL")
+	dsn := testdbguard.FreshDatabase(t)
 	if dsn == "" {
 		t.Skip("ORG_TEST_DATABASE_URL is required")
 	}
