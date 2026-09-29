@@ -3,11 +3,12 @@ document_status: api_only_candidate
 policies:
   executive.ceo:
     provider: openai_responses
-    model: gpt-6-sol
-    reasoning_effort: high
+    model: gpt-6-luna
+    reasoning_effort: max
     transport: http_adapter
     source_of_decision: owner_conversation
     legacy_conflicts:
+    - gpt-6-sol with reasoning_effort high in the previous routing revision (moved by the owner to gpt-6-luna at reasoning_effort max, 2026-09-28; priced by migration 000085 from the rate card the owner supplied)
     - gpt-5.6-luna with reasoning_effort xhigh in the previous routing revision (moved by the owner to gpt-6-sol at reasoning_effort high, 2026-09-27; the provider's model page lists none, low, medium, high, xhigh and max for reasoning.effort)
     - qwen3.8-max in current AGENT/PERFIL documents
     - alibaba_token_plan_via_claude_code/qwen3.6-flash in prior routing revision
@@ -41,11 +42,12 @@ policies:
     - deepseek/deepseek-v4-flash in prior routing revision (retired after repeated invalid_request_error failures blocked autonomy-smoke-017 r17-v11 engineering.design; same underlying deepseek account issue that already forced department.leader off deepseek)
     - gemini/gemini-2.5-flash-lite briefly assigned in de59ef2, replaced here -- real Google API returned HTTP 404 model-not-found despite a model_pricing catalog row, never actually a live model; gemini-3.5-flash-lite is already confirmed live via a real successful department.leader call.
   finance.reviewer:
-    provider: gemini
-    model: gemini-3.5-flash-lite
+    provider: deepseek
+    model: deepseek-flash
     transport: http_adapter
-    source_of_decision: owner_conversation_finance_reviewer_own_routing_policy
+    source_of_decision: owner_conversation_gemini_retired_deepseek_everywhere_2026-09-28
     legacy_conflicts:
+    - gemini/gemini-3.5-flash-lite in prior routing revision (owner retired Gemini from routing on 2026-09-28 after repeated HTTP 503 "high demand" answers failed every attempt of local finance reviews in smokes #50 and #53; DeepSeek reaches the review through the narrow scope.campaign.finance_review egress scope)
     - department.worker in prior routing revision (campaign.financial_review runs before a campaign is promoted, outside any executive correlation, so it can never carry the executive scope that deepseek requires; moving department.worker to deepseek-flash in 97d0c48 made every Finance review fail with executive_scope_required, and no campaign proposal could be approved)
   research.adversarial_review:
     provider: xai

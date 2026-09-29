@@ -18,6 +18,7 @@ func (s *Store) CreateRevision(ctx context.Context, cmd campaign.CreateRevisionC
 	}
 
 	criteriaJSON, _ := json.Marshal(cmd.AcceptanceCriteria)
+	phasesJSON := criterionPhasesJSON(cmd.AcceptanceCriterionPhases)
 	reqsJSON, _ := json.Marshal(cmd.Requirements)
 	budgetJSON, _ := json.Marshal(cmd.Budget)
 	assumptionsJSON, _ := json.Marshal(cmd.Assumptions)
@@ -98,12 +99,12 @@ func (s *Store) CreateRevision(ctx context.Context, cmd campaign.CreateRevisionC
 		INSERT INTO campaign_proposals (
 			organization_id, conversation_id, created_by_role_id, created_from_message_id,
 			task_id, attempt_id, tool_call_id, status, title, goal,
-			acceptance_criteria, requirements, budget, assumptions, risks, open_questions,
+			acceptance_criteria, acceptance_criterion_phases, requirements, budget, assumptions, risks, open_questions,
 			financial_review_required, execution_started, idempotency_key, canonical_hash,
 			parent_proposal_id, revision_number, root_proposal_id
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, 'draft', $8, $9,
-			$10, $11, $12, $13, $14, $15,
+			$10, $21, $11, $12, $13, $14, $15,
 			TRUE, FALSE, $16, $17,
 			$18, $19, $20
 		) RETURNING id
@@ -112,7 +113,7 @@ func (s *Store) CreateRevision(ctx context.Context, cmd campaign.CreateRevisionC
 		cmd.TaskID, cmd.AttemptID, cmd.ToolCallID, cmd.Title, cmd.Goal,
 		criteriaJSON, reqsJSON, budgetJSON, assumptionsJSON, risksJSON, questionsJSON,
 		cmd.IdempotencyKey, cmd.CanonicalHash,
-		cmd.ParentProposalID, newRevisionNumber, rootID,
+		cmd.ParentProposalID, newRevisionNumber, rootID, phasesJSON,
 	).Scan(&newID)
 	if err != nil {
 		return campaign.CampaignProposal{}, false, fmt.Errorf("insert revision: %w", err)
@@ -134,7 +135,7 @@ func (s *Store) GetLatestRevisionForRoot(ctx context.Context, organizationID str
 	row := s.pool.QueryRow(ctx, `
 		SELECT id, organization_id, conversation_id, created_by_role_id, created_from_message_id,
 		       task_id, attempt_id, tool_call_id, status, title, goal,
-		       acceptance_criteria, requirements, budget, assumptions, risks, open_questions,
+		       acceptance_criteria, acceptance_criterion_phases, requirements, budget, assumptions, risks, open_questions,
 		       financial_review_required, execution_started,
 		       parent_proposal_id, revision_number, root_proposal_id,
 		       idempotency_key, canonical_hash, created_at, updated_at
@@ -310,12 +311,12 @@ func scanApproval(row pgx.Row) (campaign.CampaignOwnerApproval, error) {
 
 func scanProposalWithRevision(row pgx.Row) (campaign.CampaignProposal, error) {
 	var p campaign.CampaignProposal
-	var criteriaJSON, reqsJSON, budgetJSON, assumptionsJSON, risksJSON, questionsJSON []byte
+	var criteriaJSON, phasesJSON, reqsJSON, budgetJSON, assumptionsJSON, risksJSON, questionsJSON []byte
 
 	err := row.Scan(
 		&p.ID, &p.OrganizationID, &p.ConversationID, &p.CreatedByRoleID, &p.CreatedFromMessageID,
 		&p.TaskID, &p.AttemptID, &p.ToolCallID, &p.Status, &p.Title, &p.Goal,
-		&criteriaJSON, &reqsJSON, &budgetJSON, &assumptionsJSON, &risksJSON, &questionsJSON,
+		&criteriaJSON, &phasesJSON, &reqsJSON, &budgetJSON, &assumptionsJSON, &risksJSON, &questionsJSON,
 		&p.FinancialReviewRequired, &p.ExecutionStarted,
 		&p.ParentProposalID, &p.RevisionNumber, &p.RootProposalID,
 		&p.IdempotencyKey, &p.CanonicalHash, &p.CreatedAt, &p.UpdatedAt,
@@ -324,6 +325,9 @@ func scanProposalWithRevision(row pgx.Row) (campaign.CampaignProposal, error) {
 		return p, err
 	}
 	_ = json.Unmarshal(criteriaJSON, &p.AcceptanceCriteria)
+	if len(phasesJSON) > 0 && string(phasesJSON) != "null" {
+		_ = json.Unmarshal(phasesJSON, &p.AcceptanceCriterionPhases)
+	}
 	_ = json.Unmarshal(reqsJSON, &p.Requirements)
 	_ = json.Unmarshal(budgetJSON, &p.Budget)
 	_ = json.Unmarshal(assumptionsJSON, &p.Assumptions)

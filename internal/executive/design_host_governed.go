@@ -28,13 +28,29 @@ const hostGovernedRequirementsConstraint = "Some requirements in campaign_target
 // The adjudicator rules on the review. A revise that rejects every finding and asks for no evidence
 // has decided the review raised nothing that stands, and then sends the design back anyway, for
 // demands of its own that no reviewer raised and no finding records (root 1382, round 1). The design
-// that survived its review settles: the adjudicator freezes it, or rejects it outright.
+// that survived its review settles: the adjudicator freezes it.
 func AssertReviseRestsOnTheReview(adjudication DesignAdjudication) error {
 	if adjudication.Verdict != AdjudicationRevise || len(adjudication.AcceptedFindings) > 0 || len(adjudication.EvidenceRequirements) > 0 {
 		return nil
 	}
 	return fmt.Errorf("%w: this revise rejects every finding of the adversarial review and asks for no evidence, so none of its required changes "+
-		"answers the review; accept the finding each required change answers, or, if no finding stands, return verdict freeze (or reject). "+
+		"answers the review; accept the finding each required change answers, or, if no finding stands, return verdict freeze. "+
 		"Requirements the host enforces (budget and Finance guidance, how many departments take part, who implements the change and when, "+
 		"deployment) are never required changes", ErrContractRejected)
+}
+
+// AssertRejectRestsOnTheReview refuses a reject that accepts no finding of the adversarial review.
+//
+// A reject ends the campaign's design for good and is reported to the owner as the reason the work
+// stopped. Local smoke #27 (root 1617, 2026-09-27) ended that way with nothing behind it: the round-2
+// adversarial review accepted the design with no findings at all, and the adjudicator returned reject
+// with no accepted finding, no required change and no owner decision -- a verdict that names no reason
+// and contradicts the only review in front of it. The adjudicator rules on the review, so a reject must
+// rest on at least one finding it accepts; a design no finding stands against is frozen.
+func AssertRejectRestsOnTheReview(adjudication DesignAdjudication) error {
+	if adjudication.Verdict != AdjudicationReject || len(adjudication.AcceptedFindings) > 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: this reject accepts no finding of the adversarial review, so it gives no reason the design fails; "+
+		"accept the finding the rejection rests on, or, if no finding stands against the design, return verdict freeze", ErrContractRejected)
 }

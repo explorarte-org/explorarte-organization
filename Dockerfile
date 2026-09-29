@@ -81,6 +81,9 @@ COPY --from=build /out/orgctl /usr/local/bin/orgctl
 COPY --from=build /src/docs/canonical /opt/explorarte/docs/canonical
 ENV ORG_CANONICAL_DIR=/opt/explorarte/docs/canonical
 RUN mkdir -p /var/lib/explorarte/staging/workspaces && chown coderunner:coderunner /var/lib/explorarte/staging/workspaces
+# The isolated test exchange and the shared module cache (audit A1, step B): named volumes take their
+# initial owner from these image directories.
+RUN mkdir -p /var/lib/explorarte/code-exec/jobs /var/cache/go-mod && chown -R coderunner:coderunner /var/lib/explorarte/code-exec /var/cache/go-mod
 ENV ORG_STAGING_WORKSPACE_ROOT=/var/lib/explorarte/staging/workspaces
 USER coderunner
 ENTRYPOINT ["/usr/local/bin/orgctl"]

@@ -91,6 +91,8 @@ capabilities:
   risk: low
 - id: campaign.proposal.create
   risk: medium
+- id: research.findings.read
+  risk: low
 - id: campaign.proposal.revise
   risk: medium
 - id: campaign.proposal.read
@@ -114,7 +116,10 @@ grants:
   - '*'
   executive:
   - organization.read_registry
+  - campaign.proposal.create
+  - campaign.proposal.revise
   - campaign.proposal.read
+  - research.findings.read
   - campaign.financial_review.request
   - campaign.financial_review.read
   - campaign.owner_approval.read

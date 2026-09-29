@@ -418,8 +418,8 @@ func TestMaxOutputTokensThreadsPerPurposeIntoTheHarnessCommand(t *testing.T) {
 	if worker.harness.callCount() == 0 {
 		t.Fatal("expected the harness to be called at least once")
 	}
-	if got := worker.harness.commands[len(worker.harness.commands)-1].MaxOutputTokens; got != 24000 {
-		t.Fatalf("department-worker MaxOutputTokens=%d, want 24000", got)
+	if got := worker.harness.commands[len(worker.harness.commands)-1].MaxOutputTokens; got != 128000 {
+		t.Fatalf("department-worker MaxOutputTokens=%d, want 128000", got)
 	}
 
 	plan := newHarnessFixture(t)

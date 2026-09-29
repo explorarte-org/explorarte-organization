@@ -74,6 +74,19 @@ func (o *Orchestrator) ensureRequiredCodeRunnerExecution(ctx context.Context, su
 		}
 		return fmt.Errorf("%w: mission task %d: %v", ErrCodeRunnerExecutionInvalid, mission.ID, err)
 	}
+	// The sealed candidate is compared to the frozen design's files again (audit A3): the plan was
+	// checked before provisioning, and this is the change that was actually made.
+	if manifest, recorded, manifestErr := o.frozenDesignManifest(ctx, root.ID); manifestErr != nil {
+		return manifestErr
+	} else if recorded {
+		changed, complete := sealedChangedPaths(attemptEvidence)
+		if !complete {
+			return fmt.Errorf("%w: mission task %d evidence does not list every changed path, so it cannot be compared to the frozen design", ErrCodeRunnerExecutionInvalid, mission.ID)
+		}
+		if outside := outsideManifest(changed, manifest); len(outside) > 0 {
+			return fmt.Errorf("%w: mission task %d changed %s, which the frozen design does not name", ErrCodeRunnerExecutionInvalid, mission.ID, strings.Join(outside, ", "))
+		}
+	}
 	// Verified: the mission asks for its review now, before anything reads its requirements.
 	if err := o.requestMissionReview(ctx, mission, attemptEvidence); err != nil {
 		return err
@@ -117,25 +130,52 @@ func requiredRootRequirement(root TaskRecord, key string) (RequirementRecord, bo
 }
 
 func missionTaskID(root TaskRecord) (int64, error) {
-	var found int64
+	references := missionReferences(root)
+	if len(references) == 0 {
+		return 0, errors.New("implementation-mission has no durable engineering mission reference")
+	}
+	// One mission, or a chain of retries each superseding the one before (implementation_retry.go).
+	// Any other shape is two missions claiming the same root.
+	var latest int64
+	for id := range references {
+		if id <= 0 {
+			return 0, fmt.Errorf("invalid engineering mission reference %d", id)
+		}
+		if id > latest {
+			latest = id
+		}
+	}
+	superseded := map[int64]bool{}
+	for _, supersedes := range references {
+		if supersedes > 0 {
+			superseded[supersedes] = true
+		}
+	}
+	for id := range references {
+		if id != latest && !superseded[id] {
+			return 0, fmt.Errorf("conflicting engineering mission references %d and %d", id, latest)
+		}
+	}
+	return latest, nil
+}
+
+// missionReferences maps each engineering mission referenced by the root to the mission it supersedes
+// (0 for none). An unparseable reference maps from -1.
+func missionReferences(root TaskRecord) map[int64]int64 {
+	references := map[int64]int64{}
 	for _, evidence := range root.Evidence {
 		if !strings.HasPrefix(evidence.Reference, engineeringMissionReferencePrefix) {
 			continue
 		}
-		value := strings.TrimPrefix(evidence.Reference, engineeringMissionReferencePrefix)
-		id, err := strconv.ParseInt(value, 10, 64)
+		id, err := strconv.ParseInt(strings.TrimPrefix(evidence.Reference, engineeringMissionReferencePrefix), 10, 64)
 		if err != nil || id <= 0 {
-			return 0, fmt.Errorf("invalid engineering mission reference %q", evidence.Reference)
+			references[-1] = 0
+			continue
 		}
-		if found != 0 && found != id {
-			return 0, fmt.Errorf("conflicting engineering mission references %d and %d", found, id)
-		}
-		found = id
+		supersedes, _ := metadataInt64(evidence.Metadata[SupersedesMissionKey])
+		references[id] = supersedes
 	}
-	if found == 0 {
-		return 0, errors.New("implementation-mission has no durable engineering mission reference")
-	}
-	return found, nil
+	return references
 }
 
 func missionPending(status string) bool {
@@ -280,7 +320,9 @@ func validateAttemptEvidenceMetadata(metadata map[string]any, taskID, attemptID 
 		if _, known := expected[name]; !known {
 			continue
 		}
-		if expected[name] {
+		// GO_TEST may run more than once: the changed packages by name, then the whole module
+		// (missionplan.Derive). Every run must succeed. Any other gate appears exactly once.
+		if expected[name] && name != "GO_TEST" {
 			return fmt.Errorf("duplicate %s check evidence", name)
 		}
 		success, ok := check["success"].(bool)
@@ -396,4 +438,19 @@ func codeRunnerExecutionConstraintGuidance(root TaskRecord, purpose ExecutionPur
 	default:
 		return ""
 	}
+}
+
+// sealedChangedPaths are the paths the sealed candidate changed, and whether the evidence lists them all.
+func sealedChangedPaths(attemptEvidence EvidenceRecord) ([]string, bool) {
+	var record struct {
+		ChangedFiles struct {
+			Count int64    `json:"count"`
+			Paths []string `json:"paths"`
+		} `json:"changed_files"`
+	}
+	encoded, err := json.Marshal(attemptEvidence.Metadata)
+	if err != nil || json.Unmarshal(encoded, &record) != nil {
+		return nil, false
+	}
+	return record.ChangedFiles.Paths, int64(len(record.ChangedFiles.Paths)) == record.ChangedFiles.Count
 }

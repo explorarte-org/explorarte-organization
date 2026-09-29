@@ -5,8 +5,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 MODE="${1:-all}"
 case "$MODE" in
-  all|tasks|staging|authorization|context|memory|skillregistry|rag|model|egress|dispatch|identity|worker|decision|trace|improvement|completion|composition|mission|shadow|messaging|executive|ceochat|orgctl) ;;
-  *) echo "usage: $0 [all|tasks|staging|authorization|context|memory|skillregistry|rag|model|egress|dispatch|identity|worker|decision|trace|improvement|completion|composition|mission|shadow|messaging|executive|ceochat|orgctl]" >&2; exit 2 ;;
+  all|tasks|staging|authorization|context|memory|skillregistry|rag|model|egress|dispatch|identity|worker|decision|trace|improvement|completion|composition|mission|shadow|messaging|executive|ceochat|orgctl|migrations|search-postgres|memoryos-postgres|contextcompiler-postgres|executionharness-postgres|canonicalsync|repositoryevidence|repositoryevidence-gitsource|skillforge-bootstrap|skillregistry-contextprovider) ;;
+  *) echo "usage: $0 [all|tasks|staging|authorization|context|memory|skillregistry|rag|model|egress|dispatch|identity|worker|decision|trace|improvement|completion|composition|mission|shadow|messaging|executive|ceochat|orgctl|migrations|search-postgres|memoryos-postgres|contextcompiler-postgres|executionharness-postgres|canonicalsync|repositoryevidence|repositoryevidence-gitsource|skillforge-bootstrap|skillregistry-contextprovider]" >&2; exit 2 ;;
 esac
 
 # R31 audit fix (parallel worker isolation): a hardcoded project name meant

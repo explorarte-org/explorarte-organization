@@ -335,6 +335,9 @@ func mapTaskDetail(detail tasks.TaskDetail) executive.TaskRecord {
 		ReasonCode:             reasonCode,
 		Reason:                 reason,
 	}
+	for _, dependency := range detail.Dependencies {
+		out.DependsOn = append(out.DependsOn, dependency.ID)
+	}
 	for _, requirement := range detail.Requirements {
 		out.Requirements = append(out.Requirements, executive.RequirementRecord{
 			ID:       requirement.ID,

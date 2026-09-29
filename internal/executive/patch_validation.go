@@ -230,13 +230,29 @@ func (o *Orchestrator) implementationSourceContract(ctx context.Context, root Ta
 	scope := missionScope(root)
 	var files []string
 	seen := map[string]struct{}{}
-	for _, candidate := range repositoryevidence.SelectionFromText(query, 24).Paths {
-		clean := path.Clean(candidate)
-		if _, dup := seen[clean]; dup || !strings.Contains(path.Base(clean), ".") || !missionplan.PathPermitted(scope, clean) {
-			continue
+	// The frozen manifest is the authoritative patch surface. Put it first so a broad owner goal
+	// cannot steer source selection toward a different, merely interesting defect (smoke #38,
+	// root 1916). Query-derived paths remain a compatibility supplement for older freezes.
+	manifest, recorded, manifestErr := o.frozenDesignManifest(ctx, root.ID)
+	if manifestErr == nil && recorded {
+		for _, file := range manifest {
+			clean := path.Clean(file)
+			if !strings.Contains(path.Base(clean), ".") || !missionplan.PathPermitted(scope, clean) {
+				continue
+			}
+			seen[clean] = struct{}{}
+			files = append(files, clean)
 		}
-		seen[clean] = struct{}{}
-		files = append(files, clean)
+	} else {
+		// Compatibility for freezes recorded before manifests existed.
+		for _, candidate := range repositoryevidence.SelectionFromText(query, 24).Paths {
+			clean := path.Clean(candidate)
+			if _, dup := seen[clean]; dup || !strings.Contains(path.Base(clean), ".") || !missionplan.PathPermitted(scope, clean) {
+				continue
+			}
+			seen[clean] = struct{}{}
+			files = append(files, clean)
+		}
 	}
 	var b strings.Builder
 	shown := 0

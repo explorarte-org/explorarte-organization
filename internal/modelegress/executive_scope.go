@@ -7,7 +7,18 @@ const (
 	ScopeDepartmentLeader  = "scope.executive.department_leader"
 	ScopeDepartmentWorker  = "scope.executive.department_worker"
 	ScopeAdversarialReview = "scope.executive.adversarial_review"
+	ScopeFinanceReview     = "scope.campaign.finance_review"
 )
+
+// FinanceReviewerRoleID is the only role whose durable context may derive ScopeFinanceReview.
+//
+// The campaign finance review runs before a campaign is promoted, outside any executive
+// correlation: its task is correlated to the CEO chat turn that asked for it ("ceochat:<id>"). It
+// could therefore never earn a scope, and when the owner routed it to DeepSeek (2026-09-28, Gemini
+// retired from routing after repeated HTTP 503s) every review would have been refused egress. The
+// scope is as narrow as the flow: this one role, running its worker purpose, on a task correlated
+// to a CEO chat turn.
+const FinanceReviewerRoleID = "negocio/administrador_financiero"
 
 // AdversarialReviewerRoleID is the only role whose durable context may derive
 // ScopeAdversarialReview. Naming the role here mirrors how ScopeExecutiveCEO
@@ -23,7 +34,16 @@ func ExecutiveScopeMarker(actorRoleID, purpose, correlationID, taskRef string) s
 	purpose = strings.TrimSpace(purpose)
 	correlationID = strings.TrimSpace(correlationID)
 	taskRef = strings.TrimSpace(taskRef)
-	if !strings.HasPrefix(correlationID, "executive:") || !strings.HasPrefix(taskRef, "task:") {
+	if !strings.HasPrefix(taskRef, "task:") {
+		return ""
+	}
+	if strings.HasPrefix(correlationID, "ceochat:") {
+		if purpose == "department_worker" && actorRoleID == FinanceReviewerRoleID {
+			return ScopeFinanceReview
+		}
+		return ""
+	}
+	if !strings.HasPrefix(correlationID, "executive:") {
 		return ""
 	}
 	switch purpose {
@@ -102,7 +122,7 @@ func scopeAllows(provider, transport, scope string, singleProviderTest bool) boo
 		// durable executive department scope; CEO scope is deliberately not
 		// accepted here.
 		return transport == "http_adapter" &&
-			(scope == ScopeDepartmentLeader || scope == ScopeDepartmentWorker)
+			(scope == ScopeDepartmentLeader || scope == ScopeDepartmentWorker || scope == ScopeFinanceReview)
 	case "xai":
 		// The adversarial reviewer's scope and nothing else. Executive and
 		// department scopes are refused here, and singleProviderTest does not
@@ -125,6 +145,8 @@ func scopeVerifiedReason(scope string) string {
 		return "executive_scope_verified_department_worker"
 	case ScopeAdversarialReview:
 		return "executive_scope_verified_adversarial_review"
+	case ScopeFinanceReview:
+		return "executive_scope_verified_finance_review"
 	default:
 		return ""
 	}

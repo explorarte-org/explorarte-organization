@@ -31,6 +31,10 @@ type fakeHarness struct {
 	invocationStatus string
 	failure          HarnessRunFailure
 	execErr          error
+	// terminationReason and invocationErrorCode, when set, are what the failed run reports and
+	// what Model Runtime recorded on the invocation (e.g. a normalization refusal).
+	terminationReason   string
+	invocationErrorCode string
 	// duringRun runs while the "provider call" is in flight, which is where a
 	// lease can be lost underneath a run that is about to succeed.
 	duringRun func(command HarnessRunCommand)
@@ -48,6 +52,7 @@ func (h *fakeHarness) Execute(_ context.Context, command HarnessRunCommand) (Har
 	h.commands = append(h.commands, command)
 	models, body, status, toolIntents := h.models, h.body, h.invocationStatus, h.toolIntents
 	failure, execErr, during := h.failure, h.execErr, h.duringRun
+	reason, errorCode := h.terminationReason, h.invocationErrorCode
 	h.mu.Unlock()
 
 	var invocation InvocationRecord
@@ -57,6 +62,9 @@ func (h *fakeHarness) Execute(_ context.Context, command HarnessRunCommand) (Har
 			recordedBody = nil
 		}
 		invocation = models.recordDurableInvocation(command, status, recordedBody, toolIntents)
+		if errorCode != "" {
+			models.setErrorCode(invocation.ID, errorCode)
+		}
 	}
 	if during != nil {
 		during(command)
@@ -67,8 +75,13 @@ func (h *fakeHarness) Execute(_ context.Context, command HarnessRunCommand) (Har
 	if failure != HarnessFailureNone {
 		return HarnessRunOutcome{
 			Status: HarnessRunFailed, Failure: failure, InvocationID: invocation.ID,
-			Retryable:         failure == HarnessFailureAuthorityUnavailable,
-			TerminationReason: string(failure),
+			Retryable: failure == HarnessFailureAuthorityUnavailable,
+			TerminationReason: func() string {
+				if reason != "" {
+					return reason
+				}
+				return string(failure)
+			}(),
 		}, nil
 	}
 	return HarnessRunOutcome{
@@ -688,6 +701,19 @@ func (f *fakeModels) recordDurableInvocation(command HarnessRunCommand, status s
 		}
 	}
 	return invocation
+}
+
+func (f *fakeModels) setErrorCode(id int64, code string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for key, values := range f.invocations {
+		for i := range values {
+			if values[i].ID == id {
+				values[i].ErrorCode = code
+			}
+		}
+		f.invocations[key] = values
+	}
 }
 
 func (f *fakeModels) setInvocations(taskID, attemptID int64, values ...InvocationRecord) {

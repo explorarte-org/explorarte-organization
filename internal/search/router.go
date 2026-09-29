@@ -120,6 +120,9 @@ type Router struct {
 }
 
 type RouterConfig struct {
+	// Registry holds the providers the router may call; nil starts empty. Outside this package it
+	// is the only way to give a router providers.
+	Registry      *Registry
 	Table         RoutingTable
 	Policies      map[RoleID]RolePolicy
 	Cache         Cache
@@ -146,8 +149,11 @@ func NewRouter(cfg RouterConfig) (*Router, error) {
 	if cfg.Table.WebGeneral == nil {
 		cfg.Table = DefaultRoutingTable()
 	}
+	if cfg.Registry == nil {
+		cfg.Registry = NewRegistry()
+	}
 	return &Router{
-		registry:      NewRegistry(),
+		registry:      cfg.Registry,
 		routingTable:  cfg.Table,
 		policies:      cfg.Policies,
 		cache:         cfg.Cache,

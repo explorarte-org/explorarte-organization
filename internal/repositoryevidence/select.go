@@ -41,9 +41,32 @@ type Selection struct {
 	// demanded its application, and the preflight killed the worker before a
 	// model call.
 	Slots []EvidenceSlot
+	// Cited are exact ranges another execution already cited, read verbatim
+	// after PASS 0 and before any search (PASS C). See CitedRange.
+	Cited []CitedRange
+	// Requested are identifiers an earlier execution said it needed and was
+	// not shown. They are searched in the whole repository, not only under the
+	// paths the goal names (PASS R).
+	Requested []string
 	// Window is how many lines around a match make it understandable.
 	Window int
 }
+
+// CitedRange is a line range of one file that a deliverable under judgement
+// cites. A reviewer shown the same file through its own searches saw other
+// windows of it: local smoke #34 (root 1773, 2026-09-27) had the designer read
+// mission_phase.go lines 131-179 and 325-373 while the adjudicator was issued
+// only lines 1-48, and the design was sent back for claims about "unseen
+// ranges" until the rounds ran out. The ranges a design stands on are read for
+// whoever judges it, so both look at the same lines.
+type CitedRange struct {
+	Path       string
+	Start, End int
+}
+
+// maxCitedShare bounds how much of the range budget cited ranges may take, so
+// a design citing everything cannot starve the judge's own exploration.
+const maxCitedShare = 2
 
 // pathPattern recognises a repository path inside prose: two or more segments
 // of lowercase words joined by slashes, optionally ending in a file.
@@ -363,6 +386,58 @@ func gather(ctx context.Context, explorer *Explorer, selection Selection, strict
 		}
 	}
 
+	// PASS C -- CITED RANGES. After the round's obligations and before any
+	// search: the exact lines the deliverable under judgement stands on, up to
+	// a share of the range budget. A range that cannot be read (outside the
+	// eligible corpus, past the end of the file, over budget) is skipped: a
+	// citation is a request to see, not an obligation the judge fails without.
+	citedBudget := explorer.Limits.MaxRanges / maxCitedShare
+	for _, cited := range selection.Cited {
+		if citedBudget <= 0 {
+			break
+		}
+		fragment, err := explorer.Read(ctx, cited.Path, cited.Start, cited.End)
+		if err != nil {
+			if strict && !errors.Is(err, ErrBudgetExhausted) && !errors.Is(err, ErrInvalidFragment) {
+				return nil, nil, err
+			}
+			continue
+		}
+		add(fragment)
+		citedBudget--
+	}
+
+	// PASS R -- REQUESTED IDENTIFIERS. Local smoke #39 (root 1965): a worker
+	// asked for the call sites of MinimalCampaignTopology; they live in
+	// internal/campaign, the goal named internal/executive, and the prefix
+	// rule of PASS 1 dropped every one of them, so the redo could not close
+	// its file list. A requested identifier is searched in the whole
+	// repository, preferring files the context does not already hold (the
+	// declaration is usually there; the use is what was missing), within a
+	// quarter of the range budget.
+	requestedBudget := explorer.Limits.MaxRanges / 4
+	for _, term := range selection.Requested {
+		if requestedBudget <= 0 {
+			break
+		}
+		perTerm := 0
+		for _, match := range searchTolerant(term) {
+			if perTerm >= 2 || requestedBudget <= 0 {
+				break
+			}
+			if fragmentHoldsFile(fragments, match.Path) {
+				continue
+			}
+			fragment, readErr := explorer.ReadAround(ctx, match, window)
+			if readErr != nil {
+				continue
+			}
+			add(fragment)
+			perTerm++
+			requestedBudget--
+		}
+	}
+
 	// PASS 1 -- required coverage, ROUND-ROBIN: A's first candidates, then
 	// B's first, then C's first; only then A's second, B's second... Under a
 	// starving budget every obligation keeps its BEST candidate rather than
@@ -471,6 +546,15 @@ func underAnyPrefix(path string, prefixes []string) bool {
 	}
 	for _, prefix := range prefixes {
 		if path == prefix || strings.HasPrefix(path, strings.TrimSuffix(prefix, "/")+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func fragmentHoldsFile(fragments []Fragment, path string) bool {
+	for _, fragment := range fragments {
+		if fragment.Path == path {
 			return true
 		}
 	}

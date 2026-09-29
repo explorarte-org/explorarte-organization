@@ -158,7 +158,7 @@ func buildTestService(store Store, campaignStore campaign.Store, authorizer Capa
 func TestScenario1_HypotheticalQueryCausesZeroProposals(t *testing.T) {
 	chatStore := newMemoryStore()
 	campStore := newFakeCampaignStore()
-	auth := fakeAuthorizer{allowed: map[string]bool{"owner:campaign.proposal.create": true}}
+	auth := fakeAuthorizer{allowed: map[string]bool{"owner:campaign.proposal.create": true, "empresa/ceo:campaign.proposal.create": true}}
 	taskCoord := &fakeTaskCoordinator{}
 
 	model := &scriptedModelExecutor{
@@ -209,14 +209,15 @@ func TestScenario1_HypotheticalQueryCausesZeroProposals(t *testing.T) {
 func TestScenario2_ExplicitDraftIntentCreatesOneDraft(t *testing.T) {
 	chatStore := newMemoryStore()
 	campStore := newFakeCampaignStore()
-	auth := fakeAuthorizer{allowed: map[string]bool{"owner:campaign.proposal.create": true}}
+	auth := fakeAuthorizer{allowed: map[string]bool{"owner:campaign.proposal.create": true, "empresa/ceo:campaign.proposal.create": true}}
 	taskCoord := &fakeTaskCoordinator{}
 
 	validProposalArgs, _ := json.Marshal(map[string]any{
-		"title":               "Campaña de Creadores Q4",
-		"goal":                "Adquirir 500 nuevos creadores activos",
-		"acceptance_criteria": []string{"CPA < $15", "Tasa de retención > 20%"},
-		"budget":              map[string]any{"currency": "USD", "max_amount": 3000.0, "source": "OWNER_LIMIT"},
+		"title":                       "Campaña de Creadores Q4",
+		"goal":                        "Adquirir 500 nuevos creadores activos",
+		"acceptance_criteria":         []string{"CPA < $15", "Tasa de retención > 20%"},
+		"acceptance_criterion_phases": []string{"implementation", "implementation"},
+		"budget":                      map[string]any{"currency": "USD", "max_amount": 3000.0, "source": "OWNER_LIMIT"},
 	})
 
 	model := &scriptedModelExecutor{
@@ -283,13 +284,14 @@ func TestScenario2_ExplicitDraftIntentCreatesOneDraft(t *testing.T) {
 func TestScenario3_ExactRetryProducesSameProposalTotal(t *testing.T) {
 	chatStore := newMemoryStore()
 	campStore := newFakeCampaignStore()
-	auth := fakeAuthorizer{allowed: map[string]bool{"owner:campaign.proposal.create": true}}
+	auth := fakeAuthorizer{allowed: map[string]bool{"owner:campaign.proposal.create": true, "empresa/ceo:campaign.proposal.create": true}}
 	taskCoord := &fakeTaskCoordinator{}
 
 	proposalArgs, _ := json.Marshal(map[string]any{
-		"title":               "Campaña Retención",
-		"goal":                "Fidelizar 100 usuarios",
-		"acceptance_criteria": []string{"NPS > 50"},
+		"title":                       "Campaña Retención",
+		"goal":                        "Fidelizar 100 usuarios",
+		"acceptance_criteria":         []string{"NPS > 50"},
+		"acceptance_criterion_phases": []string{"implementation"},
 	})
 
 	model := &scriptedModelExecutor{
@@ -339,7 +341,7 @@ func TestScenario3_ExactRetryProducesSameProposalTotal(t *testing.T) {
 // Scenario 4: Same mutation identity, different payload -> CONFLICT.
 func TestScenario4_SameIdentityDifferentPayloadConflicts(t *testing.T) {
 	campStore := newFakeCampaignStore()
-	auth := fakeAuthorizer{allowed: map[string]bool{"owner:campaign.proposal.create": true}}
+	auth := fakeAuthorizer{allowed: map[string]bool{"owner:campaign.proposal.create": true, "empresa/ceo:campaign.proposal.create": true}}
 	reg := setupCampaignTestRegistry(t, campStore, auth)
 	executor := RegistryToolExecutor{Registry: reg}
 
@@ -352,7 +354,7 @@ func TestScenario4_SameIdentityDifferentPayloadConflicts(t *testing.T) {
 	// First call
 	req1 := executionharness.ToolRequest{
 		ToolName: "campaign.propose", ToolCallID: "call_conflict_1",
-		Arguments: json.RawMessage(`{"title":"Original","goal":"Goal 1","acceptance_criteria":["A"]}`),
+		Arguments: json.RawMessage(`{"title":"Original","goal":"Goal 1","acceptance_criteria":["A"],"acceptance_criterion_phases":["implementation"]}`),
 	}
 	_, err := executor.Execute(ctx, identity, req1)
 	if err != nil {
@@ -362,7 +364,7 @@ func TestScenario4_SameIdentityDifferentPayloadConflicts(t *testing.T) {
 	// Second call with same tool call ID but altered goal
 	req2 := executionharness.ToolRequest{
 		ToolName: "campaign.propose", ToolCallID: "call_conflict_1",
-		Arguments: json.RawMessage(`{"title":"Original","goal":"Altered Goal 2","acceptance_criteria":["A"]}`),
+		Arguments: json.RawMessage(`{"title":"Original","goal":"Altered Goal 2","acceptance_criteria":["A"],"acceptance_criterion_phases":["implementation"]}`),
 	}
 	_, err = executor.Execute(ctx, identity, req2)
 	if !errors.Is(err, campaign.ErrIdempotencyConflict) {
@@ -374,7 +376,7 @@ func TestScenario4_SameIdentityDifferentPayloadConflicts(t *testing.T) {
 func TestScenario5_UnauthorizedActorDenied(t *testing.T) {
 	campStore := newFakeCampaignStore()
 	// auth does NOT allow guest to create proposals
-	auth := fakeAuthorizer{allowed: map[string]bool{"owner:campaign.proposal.create": true}}
+	auth := fakeAuthorizer{allowed: map[string]bool{"owner:campaign.proposal.create": true, "empresa/ceo:campaign.proposal.create": true}}
 	reg := setupCampaignTestRegistry(t, campStore, auth)
 	executor := RegistryToolExecutor{Registry: reg}
 
@@ -387,7 +389,7 @@ func TestScenario5_UnauthorizedActorDenied(t *testing.T) {
 
 	req := executionharness.ToolRequest{
 		ToolName: "campaign.propose", ToolCallID: "call_unauth",
-		Arguments: json.RawMessage(`{"title":"Hack","goal":"Hack","acceptance_criteria":["Hack"]}`),
+		Arguments: json.RawMessage(`{"title":"Hack","goal":"Hack","acceptance_criteria":["Hack"],"acceptance_criterion_phases":["implementation"]}`),
 	}
 	_, err := executor.Execute(ctx, identity, req)
 	if !errors.Is(err, ErrUnauthorizedActor) {
@@ -403,7 +405,7 @@ func TestScenario5_UnauthorizedActorDenied(t *testing.T) {
 // Scenario 6: Crash after persistence -> retry returns same proposal.
 func TestScenario6_CrashAfterPersistenceRetryReusesProposal(t *testing.T) {
 	campStore := newFakeCampaignStore()
-	auth := fakeAuthorizer{allowed: map[string]bool{"owner:campaign.proposal.create": true}}
+	auth := fakeAuthorizer{allowed: map[string]bool{"owner:campaign.proposal.create": true, "empresa/ceo:campaign.proposal.create": true}}
 	reg := setupCampaignTestRegistry(t, campStore, auth)
 	executor := RegistryToolExecutor{Registry: reg}
 
@@ -413,7 +415,7 @@ func TestScenario6_CrashAfterPersistenceRetryReusesProposal(t *testing.T) {
 	ctx := WithTurnContext(context.Background(), turnCtx)
 	identity := executionharness.RunIdentity{OrganizationID: "org-test", RoleID: CEORoleID}
 
-	payload := json.RawMessage(`{"title":"Crash Test","goal":"Recover seamlessly","acceptance_criteria":["Passes"]}`)
+	payload := json.RawMessage(`{"title":"Crash Test","goal":"Recover seamlessly","acceptance_criteria":["Passes"],"acceptance_criterion_phases":["implementation"]}`)
 	req := executionharness.ToolRequest{
 		ToolName: "campaign.propose", ToolCallID: "call_crash_1", Arguments: payload,
 	}
@@ -448,7 +450,7 @@ func TestScenario6_CrashAfterPersistenceRetryReusesProposal(t *testing.T) {
 func TestScenario7_AttemptedInventedToolFailsClosed(t *testing.T) {
 	chatStore := newMemoryStore()
 	campStore := newFakeCampaignStore()
-	auth := fakeAuthorizer{allowed: map[string]bool{"owner:campaign.proposal.create": true}}
+	auth := fakeAuthorizer{allowed: map[string]bool{"owner:campaign.proposal.create": true, "empresa/ceo:campaign.proposal.create": true}}
 	taskCoord := &fakeTaskCoordinator{}
 
 	model := &scriptedModelExecutor{
@@ -495,14 +497,15 @@ func TestScenario7_AttemptedInventedToolFailsClosed(t *testing.T) {
 func TestCanonicalExecutiveNonEffectProof(t *testing.T) {
 	chatStore := newMemoryStore()
 	campStore := newFakeCampaignStore()
-	auth := fakeAuthorizer{allowed: map[string]bool{"owner:campaign.proposal.create": true}}
+	auth := fakeAuthorizer{allowed: map[string]bool{"owner:campaign.proposal.create": true, "empresa/ceo:campaign.proposal.create": true}}
 	taskCoord := &fakeTaskCoordinator{}
 
 	proposalArgs, _ := json.Marshal(map[string]any{
-		"title":               "Non-Execution Proof Campaign",
-		"goal":                "Verify absolute isolation from Executive.Submit",
-		"acceptance_criteria": []string{"Executive roots = 0"},
-		"budget":              map[string]any{"currency": "USD", "max_amount": 5000.0, "source": "CEO_ESTIMATE"},
+		"title":                       "Non-Execution Proof Campaign",
+		"goal":                        "Verify absolute isolation from Executive.Submit",
+		"acceptance_criteria":         []string{"Executive roots = 0"},
+		"acceptance_criterion_phases": []string{"implementation"},
+		"budget":                      map[string]any{"currency": "USD", "max_amount": 5000.0, "source": "CEO_ESTIMATE"},
 	})
 
 	model := &scriptedModelExecutor{

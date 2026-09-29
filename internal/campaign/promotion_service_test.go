@@ -128,16 +128,17 @@ func setupPromotionFixture(t *testing.T, mutateProposal ...func(*campaign.Canoni
 	}
 
 	p1, _, err := store.CreateProposal(context.Background(), campaign.CreateProposalCommand{
-		OrganizationID:     "org-1",
-		CreatedByRoleID:    "empresa/ceo",
-		Title:              p1Payload.Title,
-		Goal:               p1Payload.Goal,
-		AcceptanceCriteria: p1Payload.AcceptanceCriteria,
-		Requirements:       p1Payload.Requirements,
-		Assumptions:        p1Payload.Assumptions,
-		Risks:              p1Payload.Risks,
-		IdempotencyKey:     "prop-q4",
-		CanonicalHash:      p1Hash,
+		OrganizationID:            "org-1",
+		CreatedByRoleID:           "empresa/ceo",
+		Title:                     p1Payload.Title,
+		Goal:                      p1Payload.Goal,
+		AcceptanceCriteria:        p1Payload.AcceptanceCriteria,
+		AcceptanceCriterionPhases: p1Payload.AcceptanceCriterionPhases,
+		Requirements:              p1Payload.Requirements,
+		Assumptions:               p1Payload.Assumptions,
+		Risks:                     p1Payload.Risks,
+		IdempotencyKey:            "prop-q4",
+		CanonicalHash:             p1Hash,
 	})
 	if err != nil {
 		t.Fatalf("CreateProposal: %v", err)

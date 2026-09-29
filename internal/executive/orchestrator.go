@@ -65,6 +65,7 @@ type Orchestrator struct {
 	repositoryID     string
 	missions         MissionProvisioner
 	missionReviews   MissionReviewRequester
+	incorporation    MissionIncorporationReader
 	// patchWorkbench lets the implementation-plan phase read the frozen tree and
 	// ask git whether a patch applies to it (patch_validation.go). Optional:
 	// without it only the structural patch checks run.
@@ -333,7 +334,18 @@ func (o *Orchestrator) Submit(ctx context.Context, request SubmitRequest) (Run, 
 }
 
 func (o *Orchestrator) Status(ctx context.Context, rootTaskID int64) (Run, error) {
-	return ReadStatus(ctx, o.tasks, o.models, rootTaskID, o.limits)
+	run, err := ReadStatus(ctx, o.tasks, o.models, rootTaskID, o.limits)
+	if err != nil || o.incorporation == nil {
+		return run, err
+	}
+	root, rootErr := o.tasks.GetTask(ctx, rootTaskID)
+	if rootErr != nil {
+		return run, nil
+	}
+	if state, stateErr := o.runIncorporation(ctx, root); stateErr == nil {
+		run.Incorporation = state
+	}
+	return run, nil
 }
 
 func (o *Orchestrator) Resume(ctx context.Context, rootTaskID int64) (Run, error) {
@@ -710,6 +722,8 @@ const decisionApplicabilityPolicy = `- Only a decision that is strictly required
 
 const ceoPlanInstructionPrefix = `Produce only the ExecutivePlan JSON contract for the authoritative owner goal below. Propose operational departments; do not select providers, models, capabilities, tools, authority, credentials, or egress.
 
+DEPARTMENT_REQUEST_POLICY: each department sees only the request you write for it, never the owner goal below. Copy into its objective, deliverable or constraints, verbatim, every source, quotation, extract, identifier and figure from the goal that its answer depends on; a reference to material the department cannot see ("the cited paper", "the supplied extract") leaves it nothing to work from.
+
 OWNER_DECISION_POLICY (applies to owner_decisions_required):
 ` + decisionApplicabilityPolicy + `
 - Optional unavailable integrations that the current owner goal explicitly declares non-blocking must NOT become owner decisions.
@@ -736,15 +750,42 @@ func buildCEOPlanInstructions(root TaskRecord, maxBytes int) (string, error) {
 		return "", fmt.Errorf("encode authoritative owner goal: %w", err)
 	}
 
+	prefix := ceoPlanInstructionPrefix
+	if !rootHasRequirement(root, designfreeze.RequirementKey) {
+		prefix = analysisModeCEONote + prefix
+	}
 	if maxBytes <= 0 ||
-		len(ceoPlanInstructionPrefix)+len(payload) > maxBytes {
+		len(prefix)+len(payload) > maxBytes {
 		return "", fmt.Errorf(
 			"%w: authoritative owner goal cannot fit CEO planning instructions without truncation",
 			ErrPlanTooLarge,
 		)
 	}
 
-	return ceoPlanInstructionPrefix + string(payload), nil
+	return prefix + string(payload), nil
+}
+
+// DEPARTMENT_REQUEST_POLICY exists because a department plan is given only its request: in local
+// smoke #57 (root 2293) the CEO asked servicios to use "the title, DOI URL and truncated extract
+// supplied" without copying them, and the department, which never saw the owner goal, blocked its
+// own review for want of them.
+//
+// analysisModeCEONote tells the CEO what an analysis_only campaign is. Its plan named a criterion
+// no stage of that mode evaluates -- "the host design reviewer approves this executive plan" --
+// and the closure, unable to verify it, reported the root partial (local smoke #55, root 2225).
+const analysisModeCEONote = `EXECUTION_MODE: analysis_only. This campaign has no design review, design freeze, adjudication, implementation plan, engineering mission or code runner. Do not propose any acceptance criterion, department request or owner decision that depends on one of them: the host evaluates only each department's answer, its department review and your closure. Ask each department for exactly one consolidated written answer.
+
+`
+
+// rootHasRequirement reports whether the root carries the requirement key; the governed mode is
+// written on the root as its requirement bundle (ExecutionModeRequirements).
+func rootHasRequirement(root TaskRecord, key string) bool {
+	for _, requirement := range root.Requirements {
+		if requirement.Key == key {
+			return true
+		}
+	}
+	return false
 }
 
 func (o *Orchestrator) createCEOPlanTask(ctx context.Context, root TaskRecord) (TaskRecord, bool, error) {
@@ -1206,6 +1247,18 @@ func (o *Orchestrator) driveDepartments(ctx context.Context, root TaskRecord, re
 			if e != nil {
 				return Run{}, false, e
 			}
+			// The owner accepted this department round after the host declined
+			// its replan (AcceptDepartmentByOwner): the review keeps its recorded
+			// verdict, and the run goes on as after an accept.
+			if review.Verdict == ReviewNeedsReplan && !replanCapacityRemains(reviewTask.IdempotencyKey, o.limits.MaxDepartmentReplans) {
+				accepted, acceptErr := o.ownerAcceptedDepartmentReview(ctx, root.ID, req.UnitID, reviewTask.ID)
+				if acceptErr != nil {
+					return Run{}, false, acceptErr
+				}
+				if accepted {
+					review.Verdict = ReviewAccept
+				}
+			}
 			if review.Verdict == ReviewNeedsReplan {
 				ordinal := reviewReplanOrdinal(reviewTask.IdempotencyKey) + 1
 				if !replanCapacityRemains(reviewTask.IdempotencyKey, o.limits.MaxDepartmentReplans) {
@@ -1431,7 +1484,11 @@ func appendResultRequirement(in []RequirementProposal) []RequirementProposal {
 }
 
 func (o *Orchestrator) createReviewTask(ctx context.Context, root TaskRecord, req DepartmentRequest, leader RoleRef, all []TaskRecord, replan, round int, assigned []RequiredChange) (TaskRecord, bool, error) {
-	summary := boundedDepartmentSummary(all, root.ID, req.UnitID+designRoundSuffix(round), o.limits.MaxInstructionsBytes)
+	scope, reviewed, err := o.departmentReviewScope(ctx, all, root.ID, req.UnitID, round)
+	if err != nil {
+		return TaskRecord{}, false, err
+	}
+	summary := boundedDepartmentSummary(reviewed, root.ID, req.UnitID+designRoundSuffix(round), o.limits.MaxInstructionsBytes)
 	suffix := "leader-review:" + req.UnitID + designRoundSuffix(round)
 	if replan > 0 {
 		suffix += ":replan:" + strconv.Itoa(replan)
@@ -1491,11 +1548,36 @@ func (o *Orchestrator) createReviewTask(ctx context.Context, root TaskRecord, re
 		instructions += "\n\nREVISION OWNERSHIP TABLE (state one revision_outcomes entry per id, comparing the deliverables against each other):\n" +
 			renderOwnershipTable(outstanding, owners)
 	}
-	task, reused, err := o.coordinatedChildren().Materialize(ctx, childRequest{Root: root, Sender: root, Depth: DepthDepartmentReview, Command: CreateTaskCommand{RequestedByRoleID: CEORoleID, AssignedRoleID: leader.ID, TaskClass: TaskClassCoordinationDeptReview, IdempotencyKey: childKey(root.ID, suffix), Title: "Department review: " + req.UnitID, Instructions: instructions, AcceptanceCriteria: []string{"Use only durable task states and evidence refs", "Return strict DepartmentReview JSON", "Do not execute tool intents"}, Priority: req.Priority, MaxAttempts: o.maxAttempts(3), CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID), Requirements: []RequirementProposal{{Key: "typed_review", Type: "result", Description: "Validated DepartmentReview invocation result", Required: true}}}})
+	task, reused, err := o.coordinatedChildren().Materialize(ctx, childRequest{Root: root, Sender: root, Depth: DepthDepartmentReview, Command: CreateTaskCommand{RequestedByRoleID: CEORoleID, AssignedRoleID: leader.ID, TaskClass: TaskClassCoordinationDeptReview, IdempotencyKey: childKey(root.ID, suffix), Title: "Department review: " + req.UnitID, Instructions: instructions, AcceptanceCriteria: []string{"Use only durable task states and evidence refs", "Return strict DepartmentReview JSON", "Do not execute tool intents"}, Priority: req.Priority, MaxAttempts: o.maxAttempts(3), CorrelationID: root.CorrelationID, CausationID: taskCausation(root.ID), Requirements: []RequirementProposal{{Key: "typed_review", Type: "result", Description: "Validated DepartmentReview invocation result", Required: true}}, ReviewScope: &scope}})
 	if err != nil {
 		return TaskRecord{}, false, err
 	}
 	return task, reused, nil
+}
+
+// departmentReviewScope returns what a department review of round judges: the
+// round's plan, and the round's workers minus those a follow-up took authority
+// from (roundOwnershipReplay, the replay unitRoundFrontier reads). Unlike the
+// frontier it keeps workers that did not complete: a failure is evidence the
+// review weighs. Workers of other rounds are never in it.
+func (o *Orchestrator) departmentReviewScope(ctx context.Context, all []TaskRecord, rootID int64, unit string, round int) (DepartmentReviewScope, []TaskRecord, error) {
+	_, superseded, err := o.roundOwnershipReplay(ctx, all, rootID, unit, round)
+	if err != nil {
+		return DepartmentReviewScope{}, nil, err
+	}
+	scope := DepartmentReviewScope{WorkerTaskIDs: []int64{}}
+	if plan, found := findTaskByKey(all, childKey(rootID, "leader-plan:"+unit+designRoundSuffix(round))); found {
+		scope.PlanTaskID = plan.ID
+	}
+	reviewed := []TaskRecord{}
+	for _, worker := range latestMaterializations(roundWorkers(all, rootID, unit, round), rootID, unit, round) {
+		if superseded[workerBaseClientKey(worker.IdempotencyKey, rootID, unit, round)] {
+			continue
+		}
+		reviewed = append(reviewed, worker)
+		scope.WorkerTaskIDs = append(scope.WorkerTaskIDs, worker.ID)
+	}
+	return scope, reviewed, nil
 }
 
 // ceoClosureInstructionPrefix carries decisionApplicabilityPolicy into the
@@ -1504,7 +1586,7 @@ func (o *Orchestrator) createReviewTask(ctx context.Context, root TaskRecord, re
 // decisionApplicabilityPolicy's doc comment for why this exists.
 const ceoClosureInstructionPrefix = `Synthesize only from this bounded durable summary and return ExecutiveClosure JSON. A completed claim cannot override backend verification.
 
-When the summary carries engineering_execution, it is the host-verified record of this root's code-runner run: judge every criterion about the implementation, its tests and the files it changed against it, and cite its evidence_ref. A requirement in pending_mission_requirements (such as the independent engineering review that precedes any promotion of the candidate) is a blocker only when this root's own goal asks for it.
+When the summary carries engineering_execution, it is the host-verified record of this root's code-runner run: judge every criterion about the implementation, its tests, the files it changed and the lines it changed (applied_patch) against it, and cite its evidence_ref. A requirement in pending_mission_requirements (such as the independent engineering review that precedes any promotion of the candidate) is a blocker only when this root's own goal asks for it. Its incorporation says how far the change has come into the program -- candidate_verified or pending_owner_review (verified, not yet reviewed), accepted (approved, not applied), applied, rejected or conflicted -- and your answer to the owner must state it as such: a verified candidate pending incorporation is never reported as a change made to the program.
 
 CLOSURE_DECISION_POLICY (applies to blocked_items and unresolved_decisions):
 ` + decisionApplicabilityPolicy + `
@@ -1921,6 +2003,15 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 	if requiredErr != nil {
 		return task, requiredErr
 	}
+	citations, citationErr := o.judgedDesignCitations(ctx, root, task, purpose)
+	if citationErr != nil {
+		return task, citationErr
+	}
+	requestedCitations, requestedSubjects, requestedErr := o.requestedEvidenceFor(ctx, root, task, purpose, repositoryBaseSHA)
+	if requestedErr != nil {
+		return task, requestedErr
+	}
+	citations = append(citations, requestedCitations...)
 	proofs := map[EvidenceSlot]EvidenceProof{}
 	transportRequired := required
 	if purpose == PurposeDepartmentWorker {
@@ -1929,6 +2020,13 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 			return task, requiredErr
 		}
 		transportRequired = requirementsWithoutProofs(required, proofs)
+	}
+	if purpose == PurposeDepartmentWorker && len(task.DependsOn) > 0 {
+		if attacher, ok := o.tasks.(PrerequisiteAttacher); ok {
+			if task, err = attacher.AttachPrerequisiteResults(ctx, task); err != nil {
+				return task, err
+			}
+		}
 	}
 	snapshot, err := o.contexts.Build(ctx, ContextRequest{
 		OrganizationRevisionID: task.OrganizationRevisionID, ActorRoleID: task.AssignedRoleID,
@@ -1942,10 +2040,12 @@ func (o *Orchestrator) driveTypedTask(ctx context.Context, root TaskRecord, task
 		// model/instruction text.
 		TaskClass: task.TaskClass, ExecutionPurpose: string(purpose), ActorUnitID: task.AssignedUnitID,
 		RepositoryBaseSHA: repositoryBaseSHA, RepositoryQuery: repositoryQuery,
-		RepositorySubjects: evidenceSubjects(transportRequired),
-		RepositorySlots:    evidenceSlots(transportRequired),
-		IdempotencyKey:     childKey(root.ID, fmt.Sprintf("context:%d:%d", task.ID, lease.AttemptID)),
-		CorrelationID:      root.CorrelationID, CausationID: attemptCausation(task.ID, lease.AttemptID),
+		RepositorySubjects:  evidenceSubjects(transportRequired),
+		RepositoryRequested: requestedSubjects,
+		RepositorySlots:     evidenceSlots(transportRequired),
+		RepositoryCitations: citations,
+		IdempotencyKey:      childKey(root.ID, fmt.Sprintf("context:%d:%d", task.ID, lease.AttemptID)),
+		CorrelationID:       root.CorrelationID, CausationID: attemptCausation(task.ID, lease.AttemptID),
 	})
 	if err != nil {
 		// G1-005: a role can be present and executable in organization_roles
@@ -2662,6 +2762,14 @@ func (o *Orchestrator) handleHarnessFailure(ctx context.Context, root, task Task
 				retryable = value
 			}
 		}
+		if !retryable && outcome.InvocationID > 0 {
+			if invocation, readErr := o.models.GetInvocation(ctx, outcome.InvocationID); readErr == nil {
+				if correction, ok := modelOutputCorrection(invocation.ErrorCode, outcome.TerminationReason); ok {
+					return o.failAttempt(ctx, task, lease, actorID, "model_output_malformed",
+						outcome.TerminationReason+"; "+correction, ErrCompletionFailed, true)
+				}
+			}
+		}
 		return o.failAttempt(ctx, task, lease, actorID, "model_invocation_failed", outcome.TerminationReason, ErrCompletionFailed, retryable)
 	default:
 		return task, fmt.Errorf("%w: unknown harness failure %q", ErrContractRejected, outcome.Failure)
@@ -2809,7 +2917,15 @@ func (o *Orchestrator) validateRunCompletionEvidence(ctx context.Context, root T
 			return e
 		}
 		if parsed.Verdict != ReviewAccept {
-			return fmt.Errorf("department %s verdict is %s", req.UnitID, parsed.Verdict)
+			// The owner may have accepted this very review's round after the host
+			// declined its replan (AcceptDepartmentByOwner).
+			accepted, acceptErr := o.ownerAcceptedDepartmentReview(ctx, root.ID, req.UnitID, review.ID)
+			if acceptErr != nil {
+				return acceptErr
+			}
+			if !accepted || parsed.Verdict != ReviewNeedsReplan {
+				return fmt.Errorf("department %s verdict is %s", req.UnitID, parsed.Verdict)
+			}
 		}
 	}
 	return nil

@@ -1,5 +1,7 @@
 package executive
 
+import "fmt"
+
 // The minimal canonical campaign is the shortest execution tree Orchestrator
 // can drive to a completed root WITHOUT any optional phase: no design freeze
 // (only a root carrying the design-freeze requirement runs one), no
@@ -111,4 +113,111 @@ func CampaignWorkerEligible(role RoleRef) bool {
 // sizes a call's input must include it.
 func ExecutionContractBytes(purpose ExecutionPurpose) int {
 	return len(executionContractFor(purpose, nil))
+}
+
+// GovernedCampaignTopology is the structural floor of a governed_implementation
+// campaign: its WORST admissible tree, since a budget below it can stop a run the
+// orchestrator would otherwise drive on.
+//
+// Every design round plans the department again, runs a worker and reviews it,
+// and each review may ask for maxDepartmentReplans replans of a worker and a
+// review (replans are counted per round: the review key carries the round).
+// Each of those children takes a subagent from the root budget, like the CEO
+// plan and the closure, and every attempt of one takes a model call. The
+// adversarial review, the adjudication, the implementation plan and the
+// engineering mission are not charged to the root budget, so they add nothing.
+//
+// Smoke #30 (root 1687, 2026-09-27) was approved with the minimal 5 subagents
+// and blocked in its second design round. Smoke #33 (root 1742) cleared a floor
+// that counted one attempt and no replan, spent three worker retries and a
+// round-2 replan, and blocked with 11 of 12 model calls used when the next
+// review could not reserve its tokens.
+func GovernedCampaignTopology(maxDesignRounds, maxDepartmentReplans int) CampaignTopologyFloor {
+	if maxDesignRounds < 1 {
+		maxDesignRounds = 1
+	}
+	if maxDepartmentReplans < 0 {
+		maxDepartmentReplans = 0
+	}
+	minimal := MinimalCampaignStages()
+	plan, worker, review := minimal[1], minimal[2], minimal[3]
+	named := func(stage CampaignStage, suffix string) CampaignStage {
+		stage.Name += suffix
+		return stage
+	}
+	stages := []CampaignStage{minimal[0]}
+	for round := 1; round <= maxDesignRounds; round++ {
+		suffix := fmt.Sprintf("_round_%d", round)
+		stages = append(stages, named(plan, suffix), named(worker, suffix), named(review, suffix))
+		for replan := 1; replan <= maxDepartmentReplans; replan++ {
+			replanSuffix := fmt.Sprintf("%s_replan_%d", suffix, replan)
+			stages = append(stages, named(worker, replanSuffix), named(review, replanSuffix))
+		}
+	}
+	stages = append(stages, minimal[4])
+	floor := CampaignTopologyFloor{
+		Stages:     stages,
+		ModelCalls: int64(len(stages) * governedTaskAttempts),
+		Subagents:  int64(len(stages)),
+	}
+	for _, stage := range stages {
+		if stage.Depth > floor.Depth {
+			floor.Depth = stage.Depth
+		}
+	}
+	return floor
+}
+
+// AnalysisWorkersPerDepartment is the workers the analysis floor sizes each department for. Local
+// smoke #47 (root 2066) ran four departments with seven workers, one department with three.
+const AnalysisWorkersPerDepartment = 2
+
+// AnalysisCampaignTopology is the structural floor of an analysis_only campaign across
+// `departments` departments: the CEO plan, then for each department its plan,
+// AnalysisWorkersPerDepartment workers and its review, plus maxDepartmentReplans replans of a
+// worker and a review, then the closure. Every child takes a subagent from the root budget and
+// every attempt of one takes a model call.
+//
+// The minimal topology sizes one department with one worker. Local smoke #54 (root 2186) was
+// approved with 12 subagents, above that floor of 5, and blocked at its thirteenth child with
+// four departments to answer: the floor let Finance recommend a budget the campaign could not
+// finish.
+func AnalysisCampaignTopology(departments, maxDepartmentReplans int) CampaignTopologyFloor {
+	if departments < 1 {
+		departments = 1
+	}
+	if maxDepartmentReplans < 0 {
+		maxDepartmentReplans = 0
+	}
+	minimal := MinimalCampaignStages()
+	plan, worker, review := minimal[1], minimal[2], minimal[3]
+	named := func(stage CampaignStage, suffix string) CampaignStage {
+		stage.Name += suffix
+		return stage
+	}
+	stages := []CampaignStage{minimal[0]}
+	for department := 1; department <= departments; department++ {
+		suffix := fmt.Sprintf("_department_%d", department)
+		stages = append(stages, named(plan, suffix))
+		for w := 1; w <= AnalysisWorkersPerDepartment; w++ {
+			stages = append(stages, named(worker, fmt.Sprintf("%s_worker_%d", suffix, w)))
+		}
+		stages = append(stages, named(review, suffix))
+		for replan := 1; replan <= maxDepartmentReplans; replan++ {
+			replanSuffix := fmt.Sprintf("%s_replan_%d", suffix, replan)
+			stages = append(stages, named(worker, replanSuffix), named(review, replanSuffix))
+		}
+	}
+	stages = append(stages, minimal[4])
+	floor := CampaignTopologyFloor{
+		Stages:     stages,
+		ModelCalls: int64(len(stages) * governedTaskAttempts),
+		Subagents:  int64(len(stages)),
+	}
+	for _, stage := range stages {
+		if stage.Depth > floor.Depth {
+			floor.Depth = stage.Depth
+		}
+	}
+	return floor
 }

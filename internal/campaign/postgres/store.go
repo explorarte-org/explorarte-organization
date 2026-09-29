@@ -37,6 +37,7 @@ func (s *Store) CreateProposal(ctx context.Context, cmd campaign.CreateProposalC
 		return campaign.CampaignProposal{}, false, err
 	}
 
+	phasesJSON := criterionPhasesJSON(cmd.AcceptanceCriterionPhases)
 	criteriaJSON, err := json.Marshal(cmd.AcceptanceCriteria)
 	if err != nil {
 		return campaign.CampaignProposal{}, false, fmt.Errorf("marshal acceptance criteria: %w", err)
@@ -71,19 +72,19 @@ func (s *Store) CreateProposal(ctx context.Context, cmd campaign.CreateProposalC
 		INSERT INTO campaign_proposals (
 			organization_id, conversation_id, created_by_role_id, created_from_message_id,
 			task_id, attempt_id, tool_call_id, status, title, goal,
-			acceptance_criteria, requirements, budget, assumptions, risks, open_questions,
+			acceptance_criteria, acceptance_criterion_phases, requirements, budget, assumptions, risks, open_questions,
 			financial_review_required, execution_started, idempotency_key, canonical_hash,
 			parent_proposal_id, revision_number, root_proposal_id
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, 'draft', $8, $9,
-			$10, $11, $12, $13, $14, $15,
+			$10, $18, $11, $12, $13, $14, $15,
 			TRUE, FALSE, $16, $17,
 			NULL, 1, NULL
 		)
 		ON CONFLICT (organization_id, idempotency_key) DO NOTHING
 		RETURNING id, organization_id, conversation_id, created_by_role_id, created_from_message_id,
 		          task_id, attempt_id, tool_call_id, status, title, goal,
-		          acceptance_criteria, requirements, budget, assumptions, risks, open_questions,
+		          acceptance_criteria, acceptance_criterion_phases, requirements, budget, assumptions, risks, open_questions,
 		          financial_review_required, execution_started,
 		       parent_proposal_id, revision_number, root_proposal_id,
 		       idempotency_key, canonical_hash,
@@ -91,7 +92,7 @@ func (s *Store) CreateProposal(ctx context.Context, cmd campaign.CreateProposalC
 		cmd.OrganizationID, cmd.ConversationID, cmd.CreatedByRoleID, cmd.CreatedFromMessageID,
 		cmd.TaskID, cmd.AttemptID, cmd.ToolCallID, cmd.Title, cmd.Goal,
 		criteriaJSON, reqsJSON, budgetJSON, assumptionsJSON, risksJSON, questionsJSON,
-		cmd.IdempotencyKey, cmd.CanonicalHash,
+		cmd.IdempotencyKey, cmd.CanonicalHash, phasesJSON,
 	)
 
 	proposal, err := scanProposal(row)
@@ -119,7 +120,7 @@ func (s *Store) getProposalByIdempotencyKey(ctx context.Context, organizationID,
 	row := s.pool.QueryRow(ctx, `
 		SELECT id, organization_id, conversation_id, created_by_role_id, created_from_message_id,
 		       task_id, attempt_id, tool_call_id, status, title, goal,
-		       acceptance_criteria, requirements, budget, assumptions, risks, open_questions,
+		       acceptance_criteria, acceptance_criterion_phases, requirements, budget, assumptions, risks, open_questions,
 		       financial_review_required, execution_started,
 		       parent_proposal_id, revision_number, root_proposal_id,
 		       idempotency_key, canonical_hash,
@@ -146,7 +147,7 @@ func (s *Store) GetProposal(ctx context.Context, organizationID string, id int64
 	row := s.pool.QueryRow(ctx, `
 		SELECT id, organization_id, conversation_id, created_by_role_id, created_from_message_id,
 		       task_id, attempt_id, tool_call_id, status, title, goal,
-		       acceptance_criteria, requirements, budget, assumptions, risks, open_questions,
+		       acceptance_criteria, acceptance_criterion_phases, requirements, budget, assumptions, risks, open_questions,
 		       financial_review_required, execution_started,
 		       parent_proposal_id, revision_number, root_proposal_id,
 		       idempotency_key, canonical_hash,
@@ -175,7 +176,7 @@ func (s *Store) ListProposals(ctx context.Context, organizationID string, limit,
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, organization_id, conversation_id, created_by_role_id, created_from_message_id,
 		       task_id, attempt_id, tool_call_id, status, title, goal,
-		       acceptance_criteria, requirements, budget, assumptions, risks, open_questions,
+		       acceptance_criteria, acceptance_criterion_phases, requirements, budget, assumptions, risks, open_questions,
 		       financial_review_required, execution_started,
 		       parent_proposal_id, revision_number, root_proposal_id,
 		       idempotency_key, canonical_hash,
@@ -558,6 +559,7 @@ func scanProposal(scanner rowScanner) (campaign.CampaignProposal, error) {
 		p                campaign.CampaignProposal
 		statusStr        string
 		criteriaBytes    []byte
+		phasesBytes      []byte
 		reqsBytes        []byte
 		budgetBytes      []byte
 		assumptionsBytes []byte
@@ -578,6 +580,7 @@ func scanProposal(scanner rowScanner) (campaign.CampaignProposal, error) {
 		&p.Title,
 		&p.Goal,
 		&criteriaBytes,
+		&phasesBytes,
 		&reqsBytes,
 		&budgetBytes,
 		&assumptionsBytes,
@@ -605,6 +608,12 @@ func scanProposal(scanner rowScanner) (campaign.CampaignProposal, error) {
 		}
 	} else {
 		p.AcceptanceCriteria = []string{}
+	}
+
+	if len(phasesBytes) > 0 && string(phasesBytes) != "null" {
+		if err := json.Unmarshal(phasesBytes, &p.AcceptanceCriterionPhases); err != nil {
+			return campaign.CampaignProposal{}, fmt.Errorf("unmarshal criterion phases: %w", err)
+		}
 	}
 
 	if len(reqsBytes) > 0 {
@@ -1011,4 +1020,17 @@ func (s *Store) FailReviewRequestsOfTerminalTasks(ctx context.Context, organizat
 		return nil, fmt.Errorf("fail review requests of terminal tasks: %w", err)
 	}
 	return ids, nil
+}
+
+// criterionPhasesJSON stores a proposal's criterion phases, or SQL NULL for a proposal that declares
+// none (one made before phases existed), so its stored shape stays what it was approved under.
+func criterionPhasesJSON(phases []string) any {
+	if len(phases) == 0 {
+		return nil
+	}
+	raw, err := json.Marshal(phases)
+	if err != nil {
+		return nil
+	}
+	return raw
 }

@@ -116,7 +116,7 @@ const designAdjudicationPreamble = "Adjudicate the adversarial review of this ca
 	"The design identity is bound by the host and must not be restated; return only the fields the schema declares. " +
 	"Only verdict=freeze settles the design. " +
 	"The bundle's campaign_target is what the owner asked for: a required change must ask for what the target specifies for the change being designed, and must not substitute names, values or examples of your own for anything it already states. " +
-	"Every required change must answer a finding you accept; if you reject every finding, the design stands: return freeze (or reject), not revise. " +
+	"Every required change must answer a finding you accept, and a reject must rest on a finding you accept; if you reject every finding, the design stands: return freeze. " +
 	hostGovernedRequirementsConstraint + "\n\n"
 
 // DesignBaseSHAReference is where a campaign's pinned commit lives.
@@ -367,6 +367,9 @@ func (o *Orchestrator) driveDesignFreeze(ctx context.Context, root TaskRecord, a
 			if err := AssertReviseRestsOnTheReview(parsed); err != nil {
 				return err
 			}
+			if err := AssertRejectRestsOnTheReview(parsed); err != nil {
+				return err
+			}
 			// A revise binds the NEXT round to whatever it demands, so the
 			// demand is probed against the pinned world while there is still
 			// an attempt to correct: an unsupplyable slot is a contract
@@ -427,6 +430,10 @@ func (o *Orchestrator) driveDesignFreeze(ctx context.Context, root TaskRecord, a
 	if err != nil {
 		return Run{}, true, err
 	}
+	manifest, err := o.designFileManifest(ctx, artifact)
+	if err != nil {
+		return Run{}, true, err
+	}
 	if err = o.tasks.RecordEvidence(ctx, EvidenceCommand{
 		TaskID: root.ID, RequirementID: requirement.ID, Type: "result",
 		Reference:  fmt.Sprintf("task:%d:model-invocation:%d", adjudicationTask.ID, adjudicationResult.InvocationID),
@@ -439,6 +446,8 @@ func (o *Orchestrator) driveDesignFreeze(ctx context.Context, root TaskRecord, a
 			// The commit the whole decision was made about. Empty only for
 			// a deployment with no promotion target at all.
 			"design_base_sha": pinnedBaseSHA,
+			// The files the frozen design may change; the mission is bound to them (audit A3).
+			DesignFileManifestKey: manifest,
 		},
 		Satisfies: true,
 	}); err != nil {
@@ -552,10 +561,7 @@ func (o *Orchestrator) unitRoundFrontier(ctx context.Context, all []TaskRecord, 
 		return nil, err
 	}
 	refs := make([]designUnitRef, 0)
-	for _, worker := range departmentWorkerTasks(all, rootID, unit) {
-		if designRoundOf(worker.IdempotencyKey) != round {
-			continue
-		}
+	for _, worker := range latestMaterializations(roundWorkers(all, rootID, unit, round), rootID, unit, round) {
 		// Only completed workers. A failed one produced no
 		// deliverable, and the leader review already weighed its
 		// failure; presenting nothing as part of the design would
@@ -611,7 +617,8 @@ func (o *Orchestrator) roundOwnershipReplay(ctx context.Context, all []TaskRecor
 		if task.TaskClass != TaskClassCoordinationDeptReview || task.Status != "completed" {
 			continue
 		}
-		if !strings.HasPrefix(task.IdempotencyKey, reviewPrefix) {
+		// The round-1 prefix is also a prefix of every later round's review keys.
+		if !strings.HasPrefix(task.IdempotencyKey, reviewPrefix) || designRoundOf(task.IdempotencyKey) != round {
 			continue
 		}
 		reviews = append(reviews, replayedReview{ordinal: reviewReplanOrdinal(task.IdempotencyKey), task: task})
@@ -632,14 +639,95 @@ func (o *Orchestrator) roundOwnershipReplay(ctx context.Context, all []TaskRecor
 		if review.Verdict != ReviewNeedsReplan {
 			continue
 		}
+		// A replan the host declined materializes no follow-up, so its bindings
+		// move no authority: the deliverable they name as replaced was never
+		// replaced. Only an owner acceptance lets such a round go on, and it
+		// must go on with the work that exists (root 1773).
+		if !replanCapacityRemains(r.task.IdempotencyKey, o.limits.MaxDepartmentReplans) {
+			continue
+		}
 		for _, binding := range review.FollowupOwnership {
-			if previous, taken := authority[binding.RequiredChangeID]; taken && previous != "" {
+			// A redo may reuse the client key of the work it redoes; the key
+			// then still governs, through its newer materialization
+			// (latestMaterializations). Marking it superseded would drop the
+			// redo together with what it redid (root 1872).
+			if previous, taken := authority[binding.RequiredChangeID]; taken && previous != "" && previous != binding.OwnerClientKey {
 				superseded[previous] = true
 			}
 			authority[binding.RequiredChangeID] = binding.OwnerClientKey
 		}
+		// A replan with no required changes to bind -- a round the adjudicator
+		// asked nothing specific of, typically round 1 -- still redoes the
+		// department's work: its verdict says the reviewed deliverables did not
+		// suffice, and its follow-ups are the answer. Without bindings nothing
+		// recorded that, and the next review was handed the original beside its
+		// redo (local smoke #39, root 1965: tasks 1968 and 1979). Workers of
+		// the round created before this review are superseded, except a key a
+		// follow-up reuses, which governs through its newer materialization.
+		if len(review.FollowupOwnership) == 0 && len(review.ProposedFollowupTasks) > 0 {
+			reused := map[string]bool{}
+			for _, followup := range review.ProposedFollowupTasks {
+				reused[followup.ClientKey] = true
+			}
+			for _, worker := range roundWorkers(all, rootID, unit, round) {
+				if worker.ID > r.task.ID {
+					continue
+				}
+				if base := workerBaseClientKey(worker.IdempotencyKey, rootID, unit, round); !reused[base] {
+					superseded[base] = true
+				}
+			}
+		}
 	}
 	return authority, superseded, nil
+}
+
+// roundWorkers is the department's worker tasks of one design round.
+func roundWorkers(all []TaskRecord, rootID int64, unit string, round int) []TaskRecord {
+	out := []TaskRecord{}
+	for _, worker := range departmentWorkerTasks(all, rootID, unit) {
+		if designRoundOf(worker.IdempotencyKey) == round {
+			out = append(out, worker)
+		}
+	}
+	return out
+}
+
+// latestMaterializations keeps, among a round's workers that share a client key, only the latest
+// materialization (the highest -replan:N; the original has none). A redo that reuses its original's
+// client key replaces it, the way a redo under a new key does through the ownership replay.
+//
+// Local smoke #37 (root 1872, 2026-09-28): the round-2 redo was proposed under its original's key;
+// the replay marked that key superseded and the review after the replan was handed no deliverable at
+// all ("workers: []"), refused the round and exhausted its replans.
+func latestMaterializations(workers []TaskRecord, rootID int64, unit string, round int) []TaskRecord {
+	latest := map[string]int{}
+	for _, worker := range workers {
+		base := workerBaseClientKey(worker.IdempotencyKey, rootID, unit, round)
+		if ordinal := workerReplanOrdinal(worker.IdempotencyKey); ordinal > latest[base] {
+			latest[base] = ordinal
+		}
+	}
+	out := make([]TaskRecord, 0, len(workers))
+	for _, worker := range workers {
+		if workerReplanOrdinal(worker.IdempotencyKey) == latest[workerBaseClientKey(worker.IdempotencyKey, rootID, unit, round)] {
+			out = append(out, worker)
+		}
+	}
+	return out
+}
+
+// workerReplanOrdinal is the N of a worker key's -replan:N suffix, 0 when it has none.
+func workerReplanOrdinal(key string) int {
+	index := strings.LastIndex(key, "-replan:")
+	if index < 0 {
+		return 0
+	}
+	n, err := strconv.Atoi(key[index+len("-replan:"):])
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // workerBaseClientKey recovers the proposing client_key from a worker task's

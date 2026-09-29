@@ -193,6 +193,11 @@ type Limits struct {
 	// design. Every other string keeps MaxStringBytes. Between 2026-09-25 and 2026-09-27 five design
 	// worker summaries were refused at 4000 bytes (4102 to 5013, median 4333), one attempt each; the
 	// longest summary a design worker produced in that window was 5013 bytes.
+	//
+	// It was then 8000. Local smokes #32 to #39 (2026-09-27/28) refused fifteen design summaries at
+	// 8000 -- 8223 to 10486 bytes -- each costing an attempt, and it was the most frequent refusal of
+	// all; a retry told how much to cut still came back over it more than once. 12000 holds every one
+	// of them and stays under what the candidate shows reviewers of one deliverable (16000).
 	MaxWorkerSummaryBytes  int
 	MaxInstructionsBytes   int
 	MaxAcceptanceCriteria  int
@@ -221,7 +226,7 @@ func (l Limits) WorkerSummaryBytes() int {
 func DefaultLimits() Limits {
 	return Limits{
 		MaxInputBytes: 256 << 10, MaxDepartments: 7, MaxWorkerTasksPerPlan: 24,
-		MaxFollowupTasks: 12, MaxArrayItems: 64, MaxStringBytes: 4000, MaxWorkerSummaryBytes: 8000,
+		MaxFollowupTasks: 12, MaxArrayItems: 64, MaxStringBytes: 4000, MaxWorkerSummaryBytes: 12000,
 		MaxInstructionsBytes: 16000, MaxAcceptanceCriteria: 32, MaxRequirementsPerTask: 32,
 		MaxDepartmentReplans: 1, MaxDesignRounds: 3, MaxModelCalls: 128, MaxOutputTokens: 128000,
 		InvocationDeadline: 10 * time.Minute,
@@ -258,9 +263,19 @@ func DefaultLimits() Limits {
 // needs, while turning a repetition-loop/open-ended-answer runaway into a
 // truncation that dead-letters at 24K tokens of real spend instead of
 // 65K+.
+//
+// The worker ceiling is now the shared 128K, by the owner's decision
+// (2026-09-27). Workers route to a model whose reasoning is opaque and counted
+// as output, and a self-audit worker needs room to think: local smoke #31
+// (root 1701) had one worker finish legitimately at 20,263 of 24,000 tokens and
+// the next spend all 24,000 reasoning, return no answer
+// (response_truncated_empty) and cost its department its replan. A runaway is
+// still bounded by this ceiling and by the task's attempts.
+const WorkerMaxOutputTokens = 128000
+
 func (l Limits) MaxOutputTokensFor(purpose ExecutionPurpose) int {
-	if purpose == PurposeDepartmentWorker && l.MaxOutputTokens > 24000 {
-		return 24000
+	if purpose == PurposeDepartmentWorker && l.MaxOutputTokens > WorkerMaxOutputTokens {
+		return WorkerMaxOutputTokens
 	}
 	return l.MaxOutputTokens
 }
@@ -315,13 +330,16 @@ type SubmitRequest struct {
 }
 
 type Run struct {
-	RootTaskID    int64     `json:"root_task_id"`
-	CorrelationID string    `json:"correlation_id"`
-	State         RunState  `json:"state"`
-	ReasonCode    string    `json:"reason_code,omitempty"`
-	Reason        string    `json:"reason,omitempty"`
-	AnswerToOwner string    `json:"answer_to_owner,omitempty"`
-	UpdatedAt     time.Time `json:"updated_at,omitempty"`
+	RootTaskID    int64    `json:"root_task_id"`
+	CorrelationID string   `json:"correlation_id"`
+	State         RunState `json:"state"`
+	ReasonCode    string   `json:"reason_code,omitempty"`
+	Reason        string   `json:"reason,omitempty"`
+	AnswerToOwner string   `json:"answer_to_owner,omitempty"`
+	// Incorporation is how far a governed run's change has come into the program (see
+	// IncorporationState); empty for runs without a code-runner mission.
+	Incorporation IncorporationState `json:"incorporation,omitempty"`
+	UpdatedAt     time.Time          `json:"updated_at,omitempty"`
 }
 
 type TaskRecord struct {
@@ -349,6 +367,8 @@ type TaskRecord struct {
 	Evidence               []EvidenceRecord
 	Attempts               []AttemptRecord
 	ActiveLease            *LeaseRecord
+	// DependsOn is the tasks this one waits for (the plan's worker dependencies).
+	DependsOn []int64
 }
 
 type RequirementRecord struct {

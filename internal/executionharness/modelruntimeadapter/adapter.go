@@ -77,6 +77,11 @@ type Config struct {
 	// plays no part in identity VALIDATION (validateCreatedInvocation never
 	// compares it), so pre-existing rows and new rows coexist safely.
 	Purpose string
+	// RetryOrdinal distinguishes a deliberate retry of a model call whose provider refused it
+	// transiently (rate limited) from the call itself: the request is identical, so without it the
+	// idempotency key would resume the failed invocation instead of making a new one. Zero is the
+	// call itself and keeps the key's historical shape.
+	RetryOrdinal int
 }
 
 // Adapter deliberately enters Model Runtime through its two application
@@ -113,7 +118,7 @@ func New(invocations InvocationCreator, dispatch InvocationDispatcher, clock Clo
 	if clock == nil {
 		clock = ClockFunc(time.Now)
 	}
-	if config.MaxOutputTokens < 1 || config.InvocationTTL <= 0 || config.InvocationTTL > 24*time.Hour {
+	if config.MaxOutputTokens < 1 || config.InvocationTTL <= 0 || config.InvocationTTL > 24*time.Hour || config.RetryOrdinal < 0 {
 		return nil, errors.New("harness model runtime adapter configuration is invalid")
 	}
 	switch config.ThinkingMode {
@@ -515,6 +520,14 @@ func equalMessages(left, right []executionharness.Message) bool {
 // the restart-duplication failure this system already closed once, and a
 // cosmetic change to a key that was never too long is not worth reopening it.
 func (a *Adapter) idempotencyKey(canonicalDigest string) string {
+	key := a.baseIdempotencyKey(canonicalDigest)
+	if a.config.RetryOrdinal > 0 {
+		return "execution-harness:" + digest([]byte(key+"\x00retry:"+strconv.Itoa(a.config.RetryOrdinal)))
+	}
+	return key
+}
+
+func (a *Adapter) baseIdempotencyKey(canonicalDigest string) string {
 	if a.executionContractKey == "" {
 		// Byte-for-byte the historical shape, so every invocation created by
 		// an earlier runtime is still adoptable by this one.

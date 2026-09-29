@@ -127,6 +127,13 @@ func (o *Orchestrator) driveImplementationMission(ctx context.Context, root Task
 				if errors.Is(err, ErrCodeRunnerExecutionPending) {
 					return o.driveInProgress(ctx, root)
 				}
+				if errors.Is(err, ErrCodeRunnerExecutionFailed) {
+					if retry, due, retryErr := o.implementationRetryDue(ctx, root); retryErr != nil {
+						return Run{}, true, retryErr
+					} else if due {
+						return o.driveMissionFromPlan(ctx, root, all, requirement, retry)
+					}
+				}
 				reason := "code_runner_execution_invalid"
 				if errors.Is(err, ErrCodeRunnerExecutionFailed) {
 					reason = "code_runner_execution_failed"
@@ -150,6 +157,26 @@ func (o *Orchestrator) driveImplementationMission(ctx context.Context, root Task
 		return run, true, blockErr
 	}
 
+	return o.driveMissionFromPlan(ctx, root, all, requirement, implementationAttempt{})
+}
+
+// implementationAttempt names one implementation plan of a root: the first (zero value), or a retry
+// after a mission failed deterministically (implementation_retry.go).
+type implementationAttempt struct {
+	Ordinal           int
+	RetryContext      string
+	SupersedesMission int64
+}
+
+func (a implementationAttempt) planKey() string {
+	if a.Ordinal == 0 {
+		return "implementation-plan"
+	}
+	return fmt.Sprintf("implementation-plan:retry:%d", a.Ordinal)
+}
+
+// driveMissionFromPlan drives one implementation plan of the frozen design to a provisioned mission.
+func (o *Orchestrator) driveMissionFromPlan(ctx context.Context, root TaskRecord, all []TaskRecord, requirement RequirementRecord, attempt implementationAttempt) (Run, bool, error) {
 	leader, err := o.registry.GetLeader(ctx, root.AssignedUnitID)
 	if err != nil || !leader.Enabled || !leader.Executable {
 		leader, err = o.implementationLeader(ctx, all)
@@ -159,21 +186,28 @@ func (o *Orchestrator) driveImplementationMission(ctx context.Context, root Task
 		}
 	}
 
-	planTask, ok := findTaskByKey(all, childKey(root.ID, "implementation-plan"))
+	planTask, ok := findTaskByKey(all, childKey(root.ID, attempt.planKey()))
 	if !ok {
 		guidance, guidanceErr := missionplan.ExecutionGuidance(missionScope(root))
 		if guidanceErr != nil {
 			return Run{}, true, guidanceErr
 		}
+		frozen, frozenErr := o.frozenDesignImplementationContract(ctx, root, all)
+		if frozenErr != nil {
+			run, blockErr := o.blockRoot(ctx, root, ReasonImplementationPlanUnavailable, frozenErr.Error())
+			return run, true, blockErr
+		}
+		instructions, instructionsErr := implementationPlanInstructions(guidance, frozen+attempt.RetryContext, o.limits.MaxInstructionsBytes)
+		if instructionsErr != nil {
+			run, blockErr := o.blockRoot(ctx, root, ReasonImplementationPlanUnavailable, instructionsErr.Error())
+			return run, true, blockErr
+		}
 		planTask, _, err = o.tasks.CreateTask(ctx, CreateTaskCommand{
 			RequestedByRoleID: CEORoleID, AssignedRoleID: leader.ID,
 			TaskClass:      TaskClassCoordinationImplementationPlan,
-			IdempotencyKey: childKey(root.ID, "implementation-plan"),
-			Title:          "Implementation plan for frozen design",
-			Instructions: "The design is frozen. Produce ImplementationPlan JSON: the objective, the exact " +
-				"repository-relative files to change, a unified diff for each, and what verification is expected. " +
-				"Naming a path is a request, not a grant -- the host decides which paths are permitted, which gates " +
-				"must pass, and which commit the work is based on.\n\n" + guidance + "\n\nOWNER GOAL:\n" + root.Instructions,
+			IdempotencyKey: childKey(root.ID, attempt.planKey()),
+			Title:          implementationPlanTitle(attempt),
+			Instructions:   instructions,
 			AcceptanceCriteria: []string{
 				"Return strict ImplementationPlan JSON",
 				"Every change carries a real unified diff",
@@ -261,13 +295,36 @@ func (o *Orchestrator) driveImplementationMission(ctx context.Context, root Task
 		return run, true, blockErr
 	}
 
+	// The plan may name only files the frozen design listed (audit A3). A freeze recorded before
+	// manifests existed carries none and is not re-judged.
+	if manifest, recorded, manifestErr := o.frozenDesignManifest(ctx, root.ID); manifestErr != nil {
+		return Run{}, true, manifestErr
+	} else if recorded {
+		planPaths := make([]string, 0, len(plan.Changes))
+		for _, change := range plan.Changes {
+			planPaths = append(planPaths, change.Path)
+		}
+		if err := checkPlanAgainstManifest(planPaths, manifest); err != nil {
+			run, blockErr := o.blockRoot(ctx, root, ReasonMissionPolicyRejected, err.Error())
+			return run, true, blockErr
+		}
+	}
+
 	changes := make([]missionplan.Change, 0, len(plan.Changes))
 	for _, change := range plan.Changes {
 		changes = append(changes, missionplan.Change{Path: change.Path, Intent: change.Intent, Patch: change.Patch})
 	}
+	// A retry's mission must be a new mission: engineering missions are created idempotently by
+	// their policy's digest, and a retry's policy is otherwise identical to the failed one's (same
+	// files, base and gates), so it would resolve to the failed mission again (root 1990). The host
+	// names the retry in the objective, which the policy carries.
+	objective := plan.Objective
+	if attempt.Ordinal > 0 {
+		objective = fmt.Sprintf("%s (implementation retry %d of mission %d)", plan.Objective, attempt.Ordinal, attempt.SupersedesMission)
+	}
 	derived, err := missionplan.Derive(missionplan.Request{
 		TaskID: 0, BaseSHA: baseSHA, Scope: missionScope(root),
-		Objective:          plan.Objective,
+		Objective:          objective,
 		Changes:            changes,
 		AcceptanceCriteria: root.AcceptanceCriteria,
 	})
@@ -305,12 +362,18 @@ func (o *Orchestrator) driveImplementationMission(ctx context.Context, root Task
 		return Run{}, true, err
 	}
 
+	missionMetadata := map[string]any{}
+	if attempt.SupersedesMission > 0 {
+		// A retry's mission replaces the failed one; missionTaskID follows the chain.
+		missionMetadata[SupersedesMissionKey] = attempt.SupersedesMission
+		missionMetadata["implementation_retry"] = attempt.Ordinal
+	}
 	if err = o.tasks.RecordEvidence(ctx, EvidenceCommand{
 		TaskID: root.ID, RequirementID: requirement.ID, Type: "result",
 		Reference:  fmt.Sprintf("engineering-mission://%d", mission.TaskID),
 		Digest:     policyDigest(derived.Policy),
 		RecordedBy: orchestratorWorkerID,
-		Metadata: map[string]any{
+		Metadata: mergeMetadata(missionMetadata, map[string]any{
 			"mission_task_id": mission.TaskID, "base_sha": derived.Policy.BaseSHA,
 			"allowed_paths": derived.Policy.AllowedPaths, "scope": string(missionScope(root)),
 			"implementation_plan_task_id": planTask.ID,
@@ -323,8 +386,9 @@ func (o *Orchestrator) driveImplementationMission(ctx context.Context, root Task
 			// will cost to execute one (the mission task's own attempts).
 			"implementation_plan_attempts": planTask.AttemptCount,
 			"patch_validation_failures":    o.patchFailuresOf(ctx, root, planTask),
-		},
-		Satisfies: true,
+		}),
+		// The first mission satisfies the requirement; a retry's is recorded beside it.
+		Satisfies: attempt.Ordinal == 0,
 	}); err != nil {
 		return Run{}, true, err
 	}
@@ -332,6 +396,18 @@ func (o *Orchestrator) driveImplementationMission(ctx context.Context, root Task
 		return o.driveInProgress(ctx, root)
 	}
 	return Run{}, false, nil
+}
+
+func implementationPlanInstructions(guidance, frozen string, maxBytes int) (string, error) {
+	const preamble = "Produce ImplementationPlan JSON for the frozen design below: the objective, the exact " +
+		"repository-relative files to change, a unified diff for each, and what verification is expected. " +
+		"Naming a path is a request, not a grant -- the host decides which paths are permitted, which gates " +
+		"must pass, and which commit the work is based on. Do not choose a different defect or change set."
+	instructions := preamble + "\n\n" + guidance + "\n\n" + frozen
+	if maxBytes <= 0 || len(instructions) > maxBytes {
+		return "", fmt.Errorf("%w: frozen implementation-plan instructions are %d bytes, limit %d", ErrPlanTooLarge, len(instructions), maxBytes)
+	}
+	return instructions, nil
 }
 
 // missionScope is assigned by the host from a durable owner requirement, never

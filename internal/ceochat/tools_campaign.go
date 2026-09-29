@@ -17,6 +17,26 @@ type CapabilityAuthorizer interface {
 	Authorize(ctx context.Context, organizationID string, revisionID int64, roleID, capability string) error
 }
 
+// authorizeOwnerAndExecutor requires capability of both roles behind a mutating tool call: the owner
+// the turn acts for, and the role that executes the tool (the CEO). Only the owner was checked, and
+// the owner holds everything, so a capability the canonical matrix withheld from the CEO was never
+// enforced for it (local smoke #44: the CEO read the matrix, found campaign.proposal.create missing
+// from its grants and refused, while the host would have let it propose).
+func authorizeOwnerAndExecutor(ctx context.Context, authorizer CapabilityAuthorizer, turnCtx TurnContext, executorRoleID, capability string) error {
+	if authorizer == nil {
+		return nil
+	}
+	for _, roleID := range []string{turnCtx.ActorRoleID, executorRoleID} {
+		if strings.TrimSpace(roleID) == "" {
+			return fmt.Errorf("%w: no role to authorize for %s", ErrUnauthorizedActor, capability)
+		}
+		if err := authorizer.Authorize(ctx, turnCtx.OrganizationID, turnCtx.OrganizationRevisionID, roleID, capability); err != nil {
+			return fmt.Errorf("%w: actor %q lacks %s capability: %v", ErrUnauthorizedActor, roleID, capability, err)
+		}
+	}
+	return nil
+}
+
 // CampaignToolsConfig holds optional collaborators for campaign tools.
 type CampaignToolsConfig struct {
 	FinanceService   *campaign.FinanceService
@@ -160,14 +180,15 @@ type PromotionResultProjection struct {
 }
 
 type proposeArgs struct {
-	Title              string                         `json:"title"`
-	Goal               string                         `json:"goal"`
-	AcceptanceCriteria []string                       `json:"acceptance_criteria"`
-	Requirements       []campaign.ProposalRequirement `json:"requirements"`
-	Budget             *campaign.ProposalBudget       `json:"budget"`
-	Assumptions        []string                       `json:"assumptions"`
-	Risks              []string                       `json:"risks"`
-	OpenQuestions      []string                       `json:"open_questions"`
+	Title                     string                         `json:"title"`
+	Goal                      string                         `json:"goal"`
+	AcceptanceCriteria        []string                       `json:"acceptance_criteria"`
+	AcceptanceCriterionPhases []string                       `json:"acceptance_criterion_phases"`
+	Requirements              []campaign.ProposalRequirement `json:"requirements"`
+	Budget                    *campaign.ProposalBudget       `json:"budget"`
+	Assumptions               []string                       `json:"assumptions"`
+	Risks                     []string                       `json:"risks"`
+	OpenQuestions             []string                       `json:"open_questions"`
 }
 
 type getProposalArgs struct {
@@ -189,15 +210,16 @@ type getFinancialReviewArgs struct {
 }
 
 type reviseProposalArgs struct {
-	ProposalID         int64                          `json:"proposal_id"`
-	Title              string                         `json:"title"`
-	Goal               string                         `json:"goal"`
-	AcceptanceCriteria []string                       `json:"acceptance_criteria"`
-	Requirements       []campaign.ProposalRequirement `json:"requirements"`
-	Budget             *campaign.ProposalBudget       `json:"budget"`
-	Assumptions        []string                       `json:"assumptions"`
-	Risks              []string                       `json:"risks"`
-	OpenQuestions      []string                       `json:"open_questions"`
+	ProposalID                int64                          `json:"proposal_id"`
+	Title                     string                         `json:"title"`
+	Goal                      string                         `json:"goal"`
+	AcceptanceCriteria        []string                       `json:"acceptance_criteria"`
+	AcceptanceCriterionPhases []string                       `json:"acceptance_criterion_phases"`
+	Requirements              []campaign.ProposalRequirement `json:"requirements"`
+	Budget                    *campaign.ProposalBudget       `json:"budget"`
+	Assumptions               []string                       `json:"assumptions"`
+	Risks                     []string                       `json:"risks"`
+	OpenQuestions             []string                       `json:"open_questions"`
 }
 
 type prepareOwnerApprovalArgs struct {
@@ -243,6 +265,11 @@ var (
 		"properties": {
 			"title": {"type": "string", "maxLength": 4000, "description": "Short, clear title of the campaign proposal."},
 			"goal": {"type": "string", "maxLength": 16000, "description": "High-level goal and objective of the campaign."},
+			"acceptance_criterion_phases": {
+				"type": "array",
+				"items": {"type": "string", "enum": ["design", "implementation", "promotion"]},
+				"description": "The phase of each acceptance criterion, in the same order and with the same count: design = judged from the design alone, before anything is built; implementation = what the built change must demonstrate; promotion = what must hold once the change has landed."
+			},
 			"acceptance_criteria": {
 				"type": "array",
 				"items": {"type": "string", "maxLength": 2000},
@@ -287,7 +314,7 @@ var (
 				"description": "Open questions requiring owner or team clarification (up to 20 items)."
 			}
 		},
-		"required": ["title", "goal", "acceptance_criteria"],
+		"required": ["title", "goal", "acceptance_criteria", "acceptance_criterion_phases"],
 		"additionalProperties": false
 	}`)
 
@@ -333,6 +360,11 @@ var (
 			"proposal_id": {"type": "integer", "minimum": 1, "description": "Durable ID of the campaign proposal to revise."},
 			"title": {"type": "string", "maxLength": 4000, "description": "Short, clear title of the revised campaign proposal."},
 			"goal": {"type": "string", "maxLength": 16000, "description": "High-level goal and objective of the revised campaign."},
+			"acceptance_criterion_phases": {
+				"type": "array",
+				"items": {"type": "string", "enum": ["design", "implementation", "promotion"]},
+				"description": "The phase of each acceptance criterion, in the same order and with the same count: design = judged from the design alone, before anything is built; implementation = what the built change must demonstrate; promotion = what must hold once the change has landed."
+			},
 			"acceptance_criteria": {
 				"type": "array",
 				"items": {"type": "string", "maxLength": 2000},
@@ -377,7 +409,7 @@ var (
 				"description": "Open questions requiring owner or team clarification (up to 20 items)."
 			}
 		},
-		"required": ["proposal_id", "title", "goal", "acceptance_criteria"],
+		"required": ["proposal_id", "title", "goal", "acceptance_criteria", "acceptance_criterion_phases"],
 		"additionalProperties": false
 	}`)
 
@@ -464,6 +496,9 @@ func RegisterCampaignTools(registry *ToolRegistry, organizationID string, store 
 				return fmt.Errorf("%w: acceptance_criteria[%d] must be non-empty and <= %d bytes", ErrInvalidInput, i, campaign.MaxAcceptanceCriteriaItemBytes)
 			}
 		}
+		if err := campaign.ValidateCriterionPhases(args.AcceptanceCriteria, args.AcceptanceCriterionPhases); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidInput, err)
+		}
 		if len(args.Requirements) > campaign.MaxRequirementsCount {
 			return fmt.Errorf("%w: requirements count exceeds %d", ErrInvalidInput, campaign.MaxRequirementsCount)
 		}
@@ -505,10 +540,8 @@ func RegisterCampaignTools(registry *ToolRegistry, organizationID string, store 
 			return nil, fmt.Errorf("%w: missing tool call context", ErrUnauthorizedActor)
 		}
 
-		if authorizer != nil {
-			if err := authorizer.Authorize(ctx, turnCtx.OrganizationID, turnCtx.OrganizationRevisionID, turnCtx.ActorRoleID, "campaign.proposal.create"); err != nil {
-				return nil, fmt.Errorf("%w: actor %q lacks campaign.proposal.create capability: %v", ErrUnauthorizedActor, turnCtx.ActorRoleID, err)
-			}
+		if err := authorizeOwnerAndExecutor(ctx, authorizer, turnCtx, actorRoleID, "campaign.proposal.create"); err != nil {
+			return nil, err
 		}
 
 		var args proposeArgs
@@ -521,14 +554,15 @@ func RegisterCampaignTools(registry *ToolRegistry, organizationID string, store 
 		}
 
 		canonicalHash, err := campaign.ComputeCanonicalHash(campaign.CanonicalPayload{
-			Title:              args.Title,
-			Goal:               args.Goal,
-			AcceptanceCriteria: args.AcceptanceCriteria,
-			Requirements:       args.Requirements,
-			Budget:             args.Budget,
-			Assumptions:        args.Assumptions,
-			Risks:              args.Risks,
-			OpenQuestions:      args.OpenQuestions,
+			Title:                     args.Title,
+			Goal:                      args.Goal,
+			AcceptanceCriteria:        args.AcceptanceCriteria,
+			AcceptanceCriterionPhases: args.AcceptanceCriterionPhases,
+			Requirements:              args.Requirements,
+			Budget:                    args.Budget,
+			Assumptions:               args.Assumptions,
+			Risks:                     args.Risks,
+			OpenQuestions:             args.OpenQuestions,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("%w: compute canonical hash: %v", ErrInvalidInput, err)
@@ -541,23 +575,24 @@ func RegisterCampaignTools(registry *ToolRegistry, organizationID string, store 
 		}
 
 		proposal, _, err := store.CreateProposal(ctx, campaign.CreateProposalCommand{
-			OrganizationID:       turnCtx.OrganizationID,
-			ConversationID:       turnCtx.ConversationID,
-			CreatedByRoleID:      turnCtx.ActorRoleID,
-			CreatedFromMessageID: turnCtx.OwnerMessageID,
-			TaskID:               turnCtx.TaskID,
-			AttemptID:            turnCtx.AttemptID,
-			ToolCallID:           toolCallCtx.ToolCallID,
-			IdempotencyKey:       idempotencyKey,
-			CanonicalHash:        canonicalHash,
-			Title:                args.Title,
-			Goal:                 args.Goal,
-			AcceptanceCriteria:   args.AcceptanceCriteria,
-			Requirements:         args.Requirements,
-			Budget:               args.Budget,
-			Assumptions:          args.Assumptions,
-			Risks:                args.Risks,
-			OpenQuestions:        args.OpenQuestions,
+			OrganizationID:            turnCtx.OrganizationID,
+			ConversationID:            turnCtx.ConversationID,
+			CreatedByRoleID:           turnCtx.ActorRoleID,
+			CreatedFromMessageID:      turnCtx.OwnerMessageID,
+			TaskID:                    turnCtx.TaskID,
+			AttemptID:                 turnCtx.AttemptID,
+			ToolCallID:                toolCallCtx.ToolCallID,
+			IdempotencyKey:            idempotencyKey,
+			CanonicalHash:             canonicalHash,
+			Title:                     args.Title,
+			Goal:                      args.Goal,
+			AcceptanceCriteria:        args.AcceptanceCriteria,
+			AcceptanceCriterionPhases: args.AcceptanceCriterionPhases,
+			Requirements:              args.Requirements,
+			Budget:                    args.Budget,
+			Assumptions:               args.Assumptions,
+			Risks:                     args.Risks,
+			OpenQuestions:             args.OpenQuestions,
 		})
 		if err != nil {
 			return nil, err
@@ -895,6 +930,9 @@ func RegisterCampaignTools(registry *ToolRegistry, organizationID string, store 
 		if len(args.AcceptanceCriteria) == 0 {
 			return fmt.Errorf("%w: at least one acceptance criterion is required", ErrInvalidInput)
 		}
+		if err := campaign.ValidateCriterionPhases(args.AcceptanceCriteria, args.AcceptanceCriterionPhases); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidInput, err)
+		}
 		return nil
 	}
 
@@ -905,10 +943,8 @@ func RegisterCampaignTools(registry *ToolRegistry, organizationID string, store 
 		}
 		toolCallCtx, _ := ToolCallContextFrom(ctx)
 
-		if authorizer != nil {
-			if err := authorizer.Authorize(ctx, turnCtx.OrganizationID, turnCtx.OrganizationRevisionID, turnCtx.ActorRoleID, campaign.CapabilityProposalRevise); err != nil {
-				return nil, fmt.Errorf("%w: actor %q lacks %s capability: %v", ErrUnauthorizedActor, turnCtx.ActorRoleID, campaign.CapabilityProposalRevise, err)
-			}
+		if err := authorizeOwnerAndExecutor(ctx, authorizer, turnCtx, actorRoleID, campaign.CapabilityProposalRevise); err != nil {
+			return nil, err
 		}
 
 		var args reviseProposalArgs
@@ -921,14 +957,15 @@ func RegisterCampaignTools(registry *ToolRegistry, organizationID string, store 
 		}
 
 		canonicalHash, err := campaign.ComputeCanonicalHash(campaign.CanonicalPayload{
-			Title:              args.Title,
-			Goal:               args.Goal,
-			AcceptanceCriteria: args.AcceptanceCriteria,
-			Requirements:       args.Requirements,
-			Budget:             args.Budget,
-			Assumptions:        args.Assumptions,
-			Risks:              args.Risks,
-			OpenQuestions:      args.OpenQuestions,
+			Title:                     args.Title,
+			Goal:                      args.Goal,
+			AcceptanceCriteria:        args.AcceptanceCriteria,
+			AcceptanceCriterionPhases: args.AcceptanceCriterionPhases,
+			Requirements:              args.Requirements,
+			Budget:                    args.Budget,
+			Assumptions:               args.Assumptions,
+			Risks:                     args.Risks,
+			OpenQuestions:             args.OpenQuestions,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("%w: compute canonical hash: %v", ErrInvalidInput, err)
@@ -941,24 +978,25 @@ func RegisterCampaignTools(registry *ToolRegistry, organizationID string, store 
 		}
 
 		rev, _, err := store.CreateRevision(ctx, campaign.CreateRevisionCommand{
-			OrganizationID:       turnCtx.OrganizationID,
-			ParentProposalID:     args.ProposalID,
-			ConversationID:       turnCtx.ConversationID,
-			CreatedByRoleID:      turnCtx.ActorRoleID,
-			CreatedFromMessageID: turnCtx.OwnerMessageID,
-			TaskID:               turnCtx.TaskID,
-			AttemptID:            turnCtx.AttemptID,
-			ToolCallID:           toolCallCtx.ToolCallID,
-			IdempotencyKey:       idempotencyKey,
-			CanonicalHash:        canonicalHash,
-			Title:                args.Title,
-			Goal:                 args.Goal,
-			AcceptanceCriteria:   args.AcceptanceCriteria,
-			Requirements:         args.Requirements,
-			Budget:               args.Budget,
-			Assumptions:          args.Assumptions,
-			Risks:                args.Risks,
-			OpenQuestions:        args.OpenQuestions,
+			OrganizationID:            turnCtx.OrganizationID,
+			ParentProposalID:          args.ProposalID,
+			ConversationID:            turnCtx.ConversationID,
+			CreatedByRoleID:           turnCtx.ActorRoleID,
+			CreatedFromMessageID:      turnCtx.OwnerMessageID,
+			TaskID:                    turnCtx.TaskID,
+			AttemptID:                 turnCtx.AttemptID,
+			ToolCallID:                toolCallCtx.ToolCallID,
+			IdempotencyKey:            idempotencyKey,
+			CanonicalHash:             canonicalHash,
+			Title:                     args.Title,
+			Goal:                      args.Goal,
+			AcceptanceCriteria:        args.AcceptanceCriteria,
+			AcceptanceCriterionPhases: args.AcceptanceCriterionPhases,
+			Requirements:              args.Requirements,
+			Budget:                    args.Budget,
+			Assumptions:               args.Assumptions,
+			Risks:                     args.Risks,
+			OpenQuestions:             args.OpenQuestions,
 		})
 		if err != nil {
 			return nil, err

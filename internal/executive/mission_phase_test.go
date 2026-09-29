@@ -118,6 +118,10 @@ func newMissionFixtureWith(t *testing.T, planPath string, widenScope bool, goal 
 	models := newFakeModels()
 	bodies := freezeBodies()
 	bodies[PurposeImplementationPlan] = implementationPlanBody(planPath)
+	// The design lists the file its implementation changes (audit A3: the mission is bound to it).
+	bodies[PurposeDepartmentWorker] = `{"schema_version":"worker-result/v1",` +
+		`"summary":"M2.1 seals the design before implementation and names every file it will touch.",` +
+		`"evidence_refs":[],"proposed_files":["` + planPath + `"]}`
 	harness := &scriptedHarness{models: models, tasks: tasksPort, bodies: bodies, adjudicationVerdict: "freeze"}
 
 	leader := RoleRef{ID: "ingenieria_ia/orquestador", UnitID: "ingenieria_ia", Enabled: true, Executable: true, CanonicalLeader: true}

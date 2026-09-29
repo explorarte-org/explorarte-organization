@@ -345,7 +345,10 @@ type EvidenceRef struct {
 	ArxivID  string
 	ISBN     string
 	Title    string
-	FoundAt  time.Time
+	// Snippet is a bounded extract of the source (a paper's abstract): the title alone gives a
+	// reader nothing to reason from.
+	Snippet string
+	FoundAt time.Time
 }
 
 // ResearchFinding is NEW knowledge detected in a cycle, with provenance.

@@ -756,3 +756,12 @@ var (
 	_ search.TopicClaimManager = (*Store)(nil)
 	_ search.EvidenceIndex     = (*Store)(nil)
 )
+
+// QueriesAttemptedSince counts the search requests every research cycle started since `since` made,
+// finished or not: the research worker's daily budget is charged per request.
+func (s *Store) QueriesAttemptedSince(ctx context.Context, since time.Time) (int, error) {
+	var used int
+	err := s.pool.QueryRow(ctx, `
+		SELECT COALESCE(SUM(queries_attempted), 0)::int FROM research_cycles WHERE started_at >= $1`, since).Scan(&used)
+	return used, err
+}

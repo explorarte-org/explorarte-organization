@@ -59,7 +59,11 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 	// route to; without a price row the cost gate fails closed and no department call could dispatch.
 	// 83 (seed_openai_responses_gpt_6_sol_pricing) prices the model executive.ceo now routes to; without a
 	// price row the cost gate fails closed and the CEO could never dispatch.
-	const wantCount = 83
+	// 84 (add_campaign_proposal_criterion_phases) stores the phase of each proposal acceptance
+	// criterion, so promotion no longer classifies every one as implementation (audit A4).
+	// 85 (seed_openai_responses_gpt_6_luna_pricing) prices the model executive.ceo now routes to.
+	// 86 (create_research_agenda) creates the schema the research store was written against.
+	const wantCount = 86
 	if len(loaded) != wantCount {
 		t.Fatalf("migration count=%d want %d", len(loaded), wantCount)
 	}
@@ -158,6 +162,9 @@ func TestMigrationTipAndContiguity(t *testing.T) {
 		81: "permit_normalization_failure_content_attachment",
 		82: "seed_deepseek_flash_pricing",
 		83: "seed_openai_responses_gpt_6_sol_pricing",
+		84: "add_campaign_proposal_criterion_phases",
+		85: "seed_openai_responses_gpt_6_luna_pricing",
+		86: "create_research_agenda",
 	}
 	byVersion := make(map[int64]string, len(loaded))
 	for _, migration := range loaded {

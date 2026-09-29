@@ -70,8 +70,8 @@ func TestPurposeOutputCeilingsComeFromExecutiveLimits(t *testing.T) {
 	if got, want := limits.MaxOutputTokensFor(PurposeCEOPlan), limits.MaxOutputTokens; got != want {
 		t.Fatalf("CEO-plan output ceiling = %d, want Limits.MaxOutputTokens %d", got, want)
 	}
-	if limits.MaxOutputTokensFor(PurposeDepartmentWorker) >= limits.MaxOutputTokensFor(PurposeDepartmentPlan) {
-		t.Fatal("a department worker's ceiling is deliberately below a plan's")
+	if limits.MaxOutputTokensFor(PurposeDepartmentWorker) != WorkerMaxOutputTokens {
+		t.Fatal("a department worker's ceiling is WorkerMaxOutputTokens")
 	}
 	lowered := limits
 	lowered.MaxOutputTokens = 9000
@@ -158,5 +158,28 @@ func TestLeaderEligibilityMatchesTheValidator(t *testing.T) {
 		if got := CampaignLeaderEligible(tc.unit, tc.leader); got != (verr == nil) {
 			t.Errorf("%s: CampaignLeaderEligible=%v but the validator accepts=%v (err=%v)", tc.name, got, verr == nil, verr)
 		}
+	}
+}
+
+// Smoke #30 (root 1687) and smoke #33 (root 1742): the governed floor covers every
+// design round, every replan a round's review may ask for, and every attempt of each.
+func TestGovernedCampaignTopologyCoversEveryRoundReplanAndAttempt(t *testing.T) {
+	limits := DefaultLimits()
+	if limits.MaxDesignRounds != 3 || limits.MaxDepartmentReplans != 1 {
+		t.Fatalf("test premise: rounds %d replans %d, want 3 and 1", limits.MaxDesignRounds, limits.MaxDepartmentReplans)
+	}
+	floor := GovernedCampaignTopology(limits.MaxDesignRounds, limits.MaxDepartmentReplans)
+	// CEO plan + 3 x (plan, worker, review, replan worker, replan review) + closure.
+	if floor.Subagents != 17 || floor.ModelCalls != 17*governedTaskAttempts || floor.Depth != DepthWorker {
+		t.Fatalf("governed floor = calls %d, subagents %d, depth %d; want 51, 17, 3", floor.ModelCalls, floor.Subagents, floor.Depth)
+	}
+	if first, last := floor.Stages[0], floor.Stages[len(floor.Stages)-1]; first.Name != "ceo_plan" || last.Name != "ceo_closure" {
+		t.Fatalf("governed tree must open with the CEO plan and end with the closure: %+v", floor.Stages)
+	}
+	if floor.Stages[4].Name != "department_worker_round_1_replan_1" || floor.Stages[6].Name != "department_plan_round_2" {
+		t.Fatalf("stages 4 and 6 = %q, %q; want round 1's replan worker and round 2's plan", floor.Stages[4].Name, floor.Stages[6].Name)
+	}
+	if one := GovernedCampaignTopology(1, 0); one.Subagents != MinimalCampaignTopology().Subagents {
+		t.Fatalf("one design round without replans attaches %d children, want the minimal %d", one.Subagents, MinimalCampaignTopology().Subagents)
 	}
 }

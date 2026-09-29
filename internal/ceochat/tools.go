@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/Mireuz13/explorarte-organization/internal/executionharness"
@@ -40,25 +41,28 @@ const (
 	maxTopicsLimit       = 50
 )
 
-var listFindingsSchema = json.RawMessage(`{
+// The bounds are in the schemas because the model cannot keep a limit it is not shown: local smoke
+// #51 asked research.list_findings for 50 rows against an unstated maximum of 20, and the turn ended
+// on invalid tool arguments.
+var listFindingsSchema = json.RawMessage(fmt.Sprintf(`{
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "department_id": {"type": "string", "maxLength": 240},
-    "topic_id": {"type": "string", "maxLength": 240},
-    "important_only": {"type": "boolean"},
-    "limit": {"type": "integer"}
+    "department_id": {"type": "string", "maxLength": 240, "description": "Only findings for this department. Omit for all departments."},
+    "topic_id": {"type": "string", "maxLength": 240, "description": "Only findings of this research topic. Omit for all topics."},
+    "important_only": {"type": "boolean", "description": "Only findings classified important or critical."},
+    "limit": {"type": "integer", "minimum": 1, "maximum": %d, "description": "Maximum findings to return, between 1 and %d. Omit for the default (%d)."}
   }
-}`)
+}`, maxFindingsLimit, maxFindingsLimit, defaultFindingsLimit))
 
-var listTopicsSchema = json.RawMessage(`{
+var listTopicsSchema = json.RawMessage(fmt.Sprintf(`{
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "department_id": {"type": "string", "maxLength": 240},
-    "limit": {"type": "integer"}
+    "department_id": {"type": "string", "maxLength": 240, "description": "Only topics for this department. Omit for all departments."},
+    "limit": {"type": "integer", "minimum": 1, "maximum": %d, "description": "Maximum topics to return, between 1 and %d. Omit for the default (%d)."}
   }
-}`)
+}`, maxTopicsLimit, maxTopicsLimit, defaultTopicsLimit))
 
 // ToolCatalog is the CEO chat's own, deliberately small tool catalog. It is
 // NOT a second tool framework: Lookup/ValidateArguments satisfy
@@ -243,6 +247,47 @@ type findingView struct {
 	Classification string `json:"classification"`
 	Summary        string `json:"summary"`
 	CreatedAt      string `json:"created_at"`
+	// Evidence is what the finding found (papers, pages): without it the summary is only a count.
+	// It is capped per finding so a full page of findings stays inside the tool's result bound.
+	Evidence []evidenceView `json:"evidence,omitempty"`
+}
+
+type evidenceView struct {
+	Title   string `json:"title"`
+	URL     string `json:"url"`
+	DOI     string `json:"doi,omitempty"`
+	ArxivID string `json:"arxiv_id,omitempty"`
+	// Snippet is the start of the source's abstract, so the CEO can hand a department what the
+	// paper says and not only its title.
+	Snippet string `json:"snippet,omitempty"`
+}
+
+const (
+	maxEvidencePerFinding   = 3
+	maxEvidenceTitleBytes   = 160
+	maxEvidenceSnippetBytes = 280
+	// findingsResultBytes bounds one research.list_findings result: a full page of 20 findings with
+	// three sources each, abstracts included, fits.
+	findingsResultBytes = 64 << 10
+)
+
+func cutText(text string, max int) string {
+	if len(text) <= max {
+		return text
+	}
+	return strings.ToValidUTF8(text[:max], "") + "…"
+}
+
+func findingEvidence(refs []search.EvidenceRef) []evidenceView {
+	views := make([]evidenceView, 0, min(len(refs), maxEvidencePerFinding))
+	for _, ref := range refs {
+		if len(views) == maxEvidencePerFinding {
+			break
+		}
+		views = append(views, evidenceView{Title: cutText(ref.Title, maxEvidenceTitleBytes), URL: ref.URL, DOI: ref.DOI, ArxivID: ref.ArxivID,
+			Snippet: cutText(ref.Snippet, maxEvidenceSnippetBytes)})
+	}
+	return views
 }
 
 func (e ToolExecutor) executeListFindings(ctx context.Context, rawArgs []byte) (executionharness.ToolExecutionResult, error) {
@@ -273,6 +318,7 @@ func (e ToolExecutor) executeListFindings(ctx context.Context, rawArgs []byte) (
 			ID: finding.ID, TopicID: finding.TopicID, DepartmentID: finding.DepartmentID,
 			Classification: string(finding.Classification), Summary: finding.Summary,
 			CreatedAt: finding.CreatedAt.UTC().Format(time.RFC3339),
+			Evidence:  findingEvidence(finding.EvidenceRefs),
 		})
 	}
 	content, err := json.Marshal(struct {
@@ -293,7 +339,27 @@ var _ executionharness.ToolExecutor = ToolExecutor{}
 // requirement. It is what production bootstrap wires; ToolCatalog/
 // ToolExecutor remain in this file only for their own isolated unit tests
 // and for a caller that wants a narrower, registry-free composition.
-func RegisterResearchTools(registry *ToolRegistry, topics TopicLister, findings FindingLister) error {
+// CapabilityResearchFindingsRead is the canonical capability the research tools require of the
+// executing role.
+const CapabilityResearchFindingsRead = "research.findings.read"
+
+// authorizeResearchRead requires research.findings.read of the role executing a research tool. A
+// nil authorizer (tests without policy) checks nothing, as the campaign tools do.
+func authorizeResearchRead(ctx context.Context, authorizer CapabilityAuthorizer, executorRoleID string) error {
+	if authorizer == nil {
+		return nil
+	}
+	turnCtx, ok := TurnContextFrom(ctx)
+	if !ok {
+		return fmt.Errorf("%w: missing turn context", ErrUnauthorizedActor)
+	}
+	if err := authorizer.Authorize(ctx, turnCtx.OrganizationID, turnCtx.OrganizationRevisionID, executorRoleID, CapabilityResearchFindingsRead); err != nil {
+		return fmt.Errorf("%w: actor %q lacks %s capability: %v", ErrUnauthorizedActor, executorRoleID, CapabilityResearchFindingsRead, err)
+	}
+	return nil
+}
+
+func RegisterResearchTools(registry *ToolRegistry, topics TopicLister, findings FindingLister, authorizer CapabilityAuthorizer) error {
 	executor := ToolExecutor{Topics: topics, Findings: findings}
 	if err := registry.Register(ToolDescriptor{
 		ID: ToolListTopics, Version: "v1",
@@ -302,7 +368,10 @@ func RegisterResearchTools(registry *ToolRegistry, topics TopicLister, findings 
 		Limits:    ToolLimits{MaxRows: maxTopicsLimit, MaxResultBytes: 32 << 10, Timeout: defaultToolTimeout},
 		DataClass: DataClassInternal,
 	}, func(args json.RawMessage) error { _, err := decodeListTopicsArgs(args); return err },
-		func(ctx context.Context, _ string, args json.RawMessage) (json.RawMessage, error) {
+		func(ctx context.Context, actorRoleID string, args json.RawMessage) (json.RawMessage, error) {
+			if err := authorizeResearchRead(ctx, authorizer, actorRoleID); err != nil {
+				return nil, err
+			}
 			result, err := executor.executeListTopics(ctx, args)
 			if err != nil {
 				return nil, err
@@ -315,10 +384,13 @@ func RegisterResearchTools(registry *ToolRegistry, topics TopicLister, findings 
 		ID: ToolListFindings, Version: "v1",
 		Description: "List recent research findings, optionally scoped to a department or topic.",
 		InputSchema: listFindingsSchema, Access: AccessReadOnly, Effect: ToolEffectRead, RequiredRole: CEORoleID,
-		Limits:    ToolLimits{MaxRows: maxFindingsLimit, MaxResultBytes: 32 << 10, Timeout: defaultToolTimeout},
+		Limits:    ToolLimits{MaxRows: maxFindingsLimit, MaxResultBytes: findingsResultBytes, Timeout: defaultToolTimeout},
 		DataClass: DataClassInternal,
 	}, func(args json.RawMessage) error { _, err := decodeListFindingsArgs(args); return err },
-		func(ctx context.Context, _ string, args json.RawMessage) (json.RawMessage, error) {
+		func(ctx context.Context, actorRoleID string, args json.RawMessage) (json.RawMessage, error) {
+			if err := authorizeResearchRead(ctx, authorizer, actorRoleID); err != nil {
+				return nil, err
+			}
 			result, err := executor.executeListFindings(ctx, args)
 			if err != nil {
 				return nil, err

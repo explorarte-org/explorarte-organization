@@ -104,8 +104,9 @@ for raw in text:
         current[key.strip()]=value.strip()
 if current:
     rules.append(current)
-if policy_version != 13:
-    raise SystemExit(f"API-only model egress policy_version must be 13, got {policy_version}")
+# 14: Gemini retired from model routing by the owner (2026-09-28); its three rules were removed.
+if policy_version != 14:
+    raise SystemExit(f"API-only model egress policy_version must be 14, got {policy_version}")
 allows={(r.get("provider_id"), r.get("data_classification")) for r in rules if r.get("effect") == "allow"}
 # The current policy has explicit chat-egress rows for the four supported
 # remote providers. xAI is intentionally limited to non-organizational data;
@@ -116,7 +117,6 @@ expected={
     ("deepseek", "public"), ("deepseek", "sanitized"), ("deepseek", "organizational"),
     ("openai_compatible", "public"), ("openai_compatible", "sanitized"), ("openai_compatible", "organizational"),
     ("openai_responses", "public"), ("openai_responses", "sanitized"), ("openai_responses", "organizational"),
-    ("gemini", "public"), ("gemini", "sanitized"), ("gemini", "organizational"),
     ("cloudflare_workers_ai", "public"), ("cloudflare_workers_ai", "sanitized"), ("mistral", "public"), ("mistral", "sanitized"), ("cloudflare_workers_ai", "organizational"),
     ("xai", "public"), ("xai", "sanitized"),
 }

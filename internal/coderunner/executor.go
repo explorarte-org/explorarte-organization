@@ -45,6 +45,9 @@ type Executor struct {
 	// single Execute call may produce across all its operations, regardless
 	// of how much of that is actually retained. Zero disables the check.
 	PlanOutputBudget int64
+	// IsolatedTests, when set, runs GO_TEST in the separate executor instead of as a subprocess of
+	// this process (isolated_tests.go). Every other operation runs here.
+	IsolatedTests *IsolatedTests
 
 	budget *outputBudget
 }
@@ -187,10 +190,10 @@ func (e *Executor) Execute(ctx context.Context, plan Plan) ([]Result, error) {
 
 func (e *Executor) ExecuteOperation(ctx context.Context, op Operation) (Result, error) {
 	if err := opValidate(op); err != nil {
-		return Result{}, err
+		return Result{}, fmt.Errorf("%w: %v", ErrInvalidOperation, err)
 	}
 	if op.Path != "" && structurallyDenied(op.Path, op.Type.Mutates()) {
-		return Result{}, fmt.Errorf("path %q is structurally denied", op.Path)
+		return Result{}, fmt.Errorf("%w: path %q is structurally denied", ErrInvalidOperation, op.Path)
 	}
 	switch op.Type {
 	case ReadFile:
@@ -232,6 +235,14 @@ func (e *Executor) ExecuteOperation(ctx context.Context, op Operation) (Result, 
 		args := append([]string{"test"}, pkgs...)
 		if op.Race {
 			args = append(args, "-race")
+		}
+		if e.IsolatedTests != nil {
+			h, t := e.headTail()
+			result, err := e.IsolatedTests.RunGoTest(ctx, e.Workspace, args[1:], e.opTimeout(), h, t)
+			if err == nil && e.budget != nil {
+				e.budget.add(result.BytesProduced)
+			}
+			return result, err
 		}
 		return e.run(ctx, op.Type, "go", args...)
 	case Fitness:

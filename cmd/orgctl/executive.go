@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -67,6 +68,8 @@ func runExecutive(args []string, stdout, stderr io.Writer) int {
 		return runExecutiveStatus(args[1:], stdout, stderr)
 	case "resume":
 		return runExecutiveResume(args[1:], stdout, stderr)
+	case "accept-department":
+		return runExecutiveAcceptDepartment(args[1:], stdout, stderr)
 	case "worker":
 		return runExecutiveWorker(args[1:], stdout, stderr)
 	case "reconcile-gating":
@@ -219,6 +222,41 @@ func runExecutiveResume(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "executive resume: %v\n", err)
 		return executiveExitCode(err)
 	}
+	return exitOK
+}
+
+// runExecutiveAcceptDepartment records the owner's acceptance of a department round the host declined
+// to replan, and reopens the run (executive.AcceptDepartmentByOwner).
+func runExecutiveAcceptDepartment(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("executive accept-department", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	unit := flags.String("unit", "", "department whose round is accepted")
+	actorRole := flags.String("actor-role", "", "accepting role; must be the owner")
+	jsonOutput := flags.Bool("json", false, "emit JSON")
+	if err := parseInterspersed(flags, args); err != nil || flags.NArg() != 1 || strings.TrimSpace(*unit) == "" || strings.TrimSpace(*actorRole) == "" {
+		fmt.Fprintln(stderr, "usage: orgctl executive accept-department ROOT_TASK_ID --unit UNIT --actor-role empresa/human [--json]")
+		return exitUsage
+	}
+	rootID, err := strconv.ParseInt(flags.Arg(0), 10, 64)
+	if err != nil || rootID <= 0 {
+		fmt.Fprintln(stderr, "ROOT_TASK_ID must be a positive integer")
+		return exitUsage
+	}
+	_, runtime, store, ctx, cancel, code := openExecutiveRuntime(stderr, "executive-accept-department", executiveModelCallDeadline)
+	if code != exitOK {
+		return code
+	}
+	defer cancel()
+	defer store.Close()
+	run, err := runtime.Orchestrator.AcceptDepartmentByOwner(ctx, rootID, strings.TrimSpace(*unit), strings.TrimSpace(*actorRole))
+	if err != nil {
+		fmt.Fprintf(stderr, "executive accept-department: %v\n", err)
+		if errors.Is(err, executive.ErrOwnerAcceptanceRefused) {
+			return exitInvalid
+		}
+		return executiveExitCode(err)
+	}
+	writeExecutiveValue(stdout, *jsonOutput, run)
 	return exitOK
 }
 
@@ -457,11 +495,11 @@ func buildFinanceWorker(ctx context.Context, cfg config.Config, store *platformp
 		return nil, fmt.Errorf("create harness history store: %w", err)
 	}
 	// Finance performs exactly one bounded model review per task (the
-	// Harness spec itself pins MaxTurns=1) -- the provisioner's own
-	// default MaxInvocations=1 is left untouched, never overridden the
-	// way ceochat overrides it to 8 for its own multi-turn conversation
-	// shape.
-	financeAssignments, err := runtime.Models.Dispatcher.NewAuthorizedAttemptProvisioner(runtime.Models.Config.ExecutionPrincipalKey)
+	// Harness spec itself pins MaxTurns=1). Its assignment allows that call
+	// plus the bounded retries of a transient provider refusal
+	// (campaign.FinanceMaxInvocations); local smoke #48 lost a review to one
+	// HTTP 503.
+	financeAssignments, err := runtime.Models.Dispatcher.NewAuthorizedAttemptProvisioner(runtime.Models.Config.ExecutionPrincipalKey, modeldispatch.WithMaxInvocations(campaign.FinanceMaxInvocations))
 	if err != nil {
 		return nil, fmt.Errorf("create finance dispatch provisioner: %w", err)
 	}
@@ -683,6 +721,7 @@ commands:
   external-smoke-5usd --confirm EXECUTIVE_EXTERNAL_SMOKE_5USD_ONCE --idempotency-key external-smoke-5usd-KEY [--json]
   status ROOT_TASK_ID [--json]
   resume ROOT_TASK_ID [--json]
+  accept-department ROOT_TASK_ID --unit UNIT --actor-role empresa/human [--json]
   worker run [--poll 2s] [--error-backoff 3s] [--batch 16] [--max-concurrency 4]
   reconcile-gating [--limit 100] [--json]
   chat create --actor-role empresa/human [--json]

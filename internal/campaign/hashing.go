@@ -10,14 +10,17 @@ import (
 // CanonicalPayload contains the semantic content of a proposal used to compute
 // its canonical content hash.
 type CanonicalPayload struct {
-	Title              string                `json:"title"`
-	Goal               string                `json:"goal"`
-	AcceptanceCriteria []string              `json:"acceptance_criteria"`
-	Requirements       []ProposalRequirement `json:"requirements"`
-	Budget             *ProposalBudget       `json:"budget,omitempty"`
-	Assumptions        []string              `json:"assumptions"`
-	Risks              []string              `json:"risks"`
-	OpenQuestions      []string              `json:"open_questions"`
+	Title              string   `json:"title"`
+	Goal               string   `json:"goal"`
+	AcceptanceCriteria []string `json:"acceptance_criteria"`
+	// AcceptanceCriterionPhases is hashed only when present, so a proposal made before phases existed
+	// keeps the hash it was approved under.
+	AcceptanceCriterionPhases []string              `json:"acceptance_criterion_phases,omitempty"`
+	Requirements              []ProposalRequirement `json:"requirements"`
+	Budget                    *ProposalBudget       `json:"budget,omitempty"`
+	Assumptions               []string              `json:"assumptions"`
+	Risks                     []string              `json:"risks"`
+	OpenQuestions             []string              `json:"open_questions"`
 }
 
 // ComputeCanonicalHash computes a deterministic SHA-256 hex digest of the canonical proposal payload.

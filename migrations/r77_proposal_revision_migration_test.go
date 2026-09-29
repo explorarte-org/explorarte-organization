@@ -2,7 +2,6 @@ package migrations_test
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -13,7 +12,7 @@ import (
 )
 
 func TestMigration77ProposalRevisionLineageForwardBackForward(t *testing.T) {
-	dsn := os.Getenv("ORG_TEST_DATABASE_URL")
+	dsn := testdbguard.FreshDatabase(t)
 	if dsn == "" {
 		t.Skip("ORG_TEST_DATABASE_URL is required")
 	}
@@ -32,20 +31,17 @@ func TestMigration77ProposalRevisionLineageForwardBackForward(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var migration77, migration78 platformmigrations.Migration
+	var migration77 platformmigrations.Migration
 	for _, migration := range loaded {
 		if migration.Version == 77 {
 			migration77 = migration
-		}
-		if migration.Version == 78 {
-			migration78 = migration
 		}
 	}
 	if migration77.Version != 77 {
 		t.Fatal("migration 000077 is not present in the compiled set")
 	}
 
-	runner, err := platformmigrations.New(pool, rootmigrations.Files)
+	runner, err := platformmigrations.New(pool, migrationsThrough(t, 77))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +59,7 @@ func TestMigration77ProposalRevisionLineageForwardBackForward(t *testing.T) {
 	columnExists := func(table, column string) bool {
 		t.Helper()
 		var exists bool
-		query := "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name =  AND column_name = )"
+		query := "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = $1 AND column_name = $2)"
 		if err := pool.QueryRow(ctx, query, table, column).Scan(&exists); err != nil {
 			t.Fatal(err)
 		}
@@ -85,16 +81,10 @@ func TestMigration77ProposalRevisionLineageForwardBackForward(t *testing.T) {
 		if err = testdbguard.RequireDestructive(ctx, dsn, tx); err != nil {
 			t.Fatal(err)
 		}
-		if migration78.Version == 78 {
-			if _, err = tx.Exec(ctx, migration78.DownSQL); err != nil {
-				t.Fatalf("down78: %v", err)
-			}
-			_, _ = tx.Exec(ctx, "DELETE FROM schema_migrations WHERE version=78")
-		}
 		if _, err = tx.Exec(ctx, migration77.DownSQL); err != nil {
 			t.Fatalf("down77: %v", err)
 		}
-		tag, err := tx.Exec(ctx, "DELETE FROM schema_migrations WHERE version=77 AND name= AND checksum=", migration77.Name, migration77.Checksum)
+		tag, err := tx.Exec(ctx, "DELETE FROM schema_migrations WHERE version=77 AND name=$1 AND checksum=$2", migration77.Name, migration77.Checksum)
 		if err != nil {
 			t.Fatal(err)
 		}

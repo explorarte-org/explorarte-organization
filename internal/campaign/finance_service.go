@@ -193,7 +193,7 @@ func NewFinanceService(cfg FinanceServiceConfig) (*FinanceService, error) {
 		cfg.WorkerID = "finance-review-worker"
 	}
 	if cfg.LeaseDuration <= 0 {
-		cfg.LeaseDuration = 2 * time.Minute
+		cfg.LeaseDuration = FinanceLeaseDuration
 	}
 	if cfg.RoleResolver == nil {
 		cfg.RoleResolver = DefaultReviewerRoleResolver{
@@ -988,18 +988,32 @@ func (s *FinanceService) runHarnessModel(ctx context.Context, claimed tasks.Clai
 		}
 	} else if s.cfg.NewModelExecutor != nil {
 		temperature := financeReviewTemperature
-		models, err := s.cfg.NewModelExecutor(modelruntimeadapter.Config{
-			MaxOutputTokens:               4096,
-			Temperature:                   &temperature,
-			ThinkingMode:                  modelruntime.ThinkingDisabled,
-			InvocationTTL:                 2 * time.Minute,
-			OutputMode:                    modelruntime.OutputText,
-			ExecutionContractInstructions: contractInstructions,
-			Purpose:                       "campaign.financial_review",
-		})
+		buildModels := func(ordinal int) (executionharness.ModelExecutor, error) {
+			return s.cfg.NewModelExecutor(modelruntimeadapter.Config{
+				MaxOutputTokens:               FinanceMaxOutputTokens,
+				Temperature:                   &temperature,
+				ThinkingMode:                  modelruntime.ThinkingDisabled,
+				InvocationTTL:                 2 * time.Minute,
+				OutputMode:                    modelruntime.OutputJSON,
+				OutputSchema:                  financeReviewOutputSchema,
+				ExecutionContractInstructions: contractInstructions,
+				Purpose:                       "campaign.financial_review",
+				RetryOrdinal:                  ordinal,
+			})
+		}
+		first, err := buildModels(0)
 		if err != nil {
 			return FinanceReviewOutput{}, fmt.Errorf("build finance model executor: %w", err)
 		}
+		// Local smoke #48: the finance model answered HTTP 503 once and the review, a one-attempt
+		// task, failed. A transient refusal is retried, bounded; the dispatch assignment allows
+		// FinanceMaxInvocations and the lease covers the pauses.
+		models := modelruntimeadapter.TransientRetryExecutor{Build: func(ordinal int) (executionharness.ModelExecutor, error) {
+			if ordinal == 0 {
+				return first, nil
+			}
+			return buildModels(ordinal)
+		}, Waits: modelruntimeadapter.DefaultTransientRetryWaits}
 		runtime, err := executionharness.NewWithDescriptorStore(s.cfg.Authority, models, financeToolCatalog{}, financeToolExecutor{}, s.cfg.HarnessHistory, s.cfg.DescriptorStore)
 		if err != nil {
 			return FinanceReviewOutput{}, fmt.Errorf("build harness runtime: %w", err)
@@ -1041,6 +1055,13 @@ func (s *FinanceService) runHarnessModel(ctx context.Context, claimed tasks.Clai
 	if err := json.Unmarshal([]byte(rawOutput), &output); err != nil {
 		return FinanceReviewOutput{}, fmt.Errorf("parse finance review output JSON: %w (raw: %s)", err, rawOutput)
 	}
+	// A model may fill recommended_budget on a verdict that launches nothing. A budget that is not
+	// executable is dropped there rather than failing the review over a field that verdict does not
+	// need; a recommended verdict's budget is still validated whole.
+	if FinancialReviewVerdict(output.Verdict) != VerdictRecommended && output.RecommendedBudget != nil &&
+		ValidateExecutableBudget(*output.RecommendedBudget) != nil {
+		output.RecommendedBudget = nil
+	}
 
 	return output, nil
 }
@@ -1057,6 +1078,61 @@ func (s *FinanceService) runHarnessModel(ctx context.Context, claimed tasks.Clai
 // could start at all. A review is a judgement the owner acts on, not a creative task: the same
 // proposal under the same floor should get the same answer, so it is sampled greedily.
 const financeReviewTemperature = 0.0
+
+// financeReviewOutputSchema is FinanceReviewOutput as a provider-enforced JSON schema. The review
+// asked for text and parsed it, and a model wrote "-assumptions:" for a key (local smoke #49);
+// structured output makes a well-formed object the provider's job. The host's own validation
+// (validateFinanceReviewOutput) still decides what the object may say.
+var financeReviewOutputSchema = json.RawMessage(`{
+  "type":"object",
+  "additionalProperties":false,
+  "required":["verdict","summary","assumptions","risks","required_corrections","missing_information"],
+  "properties":{
+    "verdict":{"type":"string","enum":["recommended","changes_requested","not_recommended","insufficient_data"]},
+    "summary":{"type":"string"},
+    "recommended_budget":{
+      "type":"object",
+      "additionalProperties":false,
+      "required":["max_usd","max_tokens","max_model_calls","max_wall_time_ms","max_depth","max_retries","max_subagents"],
+      "properties":{
+        "max_usd":{"type":"number"},
+        "max_tokens":{"type":"integer"},
+        "max_model_calls":{"type":"integer"},
+        "max_wall_time_ms":{"type":"integer"},
+        "max_depth":{"type":"integer"},
+        "max_retries":{"type":"integer"},
+        "max_subagents":{"type":"integer"}
+      }
+    },
+    "estimated_cost":{
+      "type":"object",
+      "additionalProperties":false,
+      "required":["amount","currency","confidence"],
+      "properties":{
+        "amount":{"type":"number"},
+        "currency":{"type":"string"},
+        "confidence":{"type":"string","enum":["low","medium","high"]}
+      }
+    },
+    "assumptions":{"type":"array","items":{"type":"string"}},
+    "risks":{"type":"array","items":{"type":"string"}},
+    "required_corrections":{"type":"array","items":{"type":"string"}},
+    "missing_information":{"type":"array","items":{"type":"string"}}
+  }
+}`)
+
+// FinanceMaxOutputTokens bounds one finance review's answer. It was 4096: DeepSeek Flash, routed
+// the review on 2026-09-28, wrote 3449 and 3662 tokens in its first two reviews and hit the cap on
+// the third, leaving truncated JSON the runtime rejected (local smoke #56, invocation 1056).
+const FinanceMaxOutputTokens = 16384
+
+// FinanceMaxInvocations is the finance review's model call plus its bounded transient retries: the
+// dispatch assignment a review's attempt is given must allow this many.
+var FinanceMaxInvocations = 1 + len(modelruntimeadapter.DefaultTransientRetryWaits)
+
+// FinanceLeaseDuration covers one review with both retry pauses (90s) and three calls of up to the
+// two-minute invocation TTL's typical ~30s; the lease is not heartbeated during the run.
+const FinanceLeaseDuration = 5 * time.Minute
 
 func renderFinanceContractInstructions(requirements ExecutionBudgetRequirements) string {
 	return `You are the canonical Financial Reviewer (negocio/administrador_financiero) of the organization.

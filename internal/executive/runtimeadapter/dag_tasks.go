@@ -51,3 +51,14 @@ func containsTaskID(values []int64, id int64) bool {
 }
 
 var _ executive.TaskCoordinator = DAGTasks{}
+
+// AttachPrerequisiteResults passes through to the wrapped coordinator when it attaches results; an
+// embedded interface does not promote methods outside it.
+func (d DAGTasks) AttachPrerequisiteResults(ctx context.Context, task executive.TaskRecord) (executive.TaskRecord, error) {
+	if attacher, ok := d.TaskCoordinator.(executive.PrerequisiteAttacher); ok {
+		return attacher.AttachPrerequisiteResults(ctx, task)
+	}
+	return task, nil
+}
+
+var _ executive.PrerequisiteAttacher = DAGTasks{}

@@ -3,6 +3,9 @@ package repositoryevidence
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
 
 	"github.com/Mireuz13/explorarte-organization/internal/contextengine"
 )
@@ -52,16 +55,22 @@ func (p *Provider) ListRepositoryEvidence(ctx context.Context, request contexten
 		return nil, nil
 	}
 	p.BaseSHA = request.RepositoryBaseSHA
-	explorer, err := NewExplorer(p.Repository, request.RepositoryBaseSHA, p.Source, p.Limits)
+	limits, window := p.Limits, p.Window
+	if WorkerPurposes[request.ExecutionPurpose] {
+		limits, window = WorkerLimits(), WorkerWindow
+	}
+	explorer, err := NewExplorer(p.Repository, request.RepositoryBaseSHA, p.Source, limits)
 	if err != nil {
 		return nil, err
 	}
-	selection := SelectionForRequirements(request.RepositoryQuery, request.RepositorySubjects, p.Window)
+	selection := SelectionForRequirements(request.RepositoryQuery, request.RepositorySubjects, window)
 	// The normative slots ride into selection: PASS 0 satisfies each
 	// (subject, relation) before any incidental exploration spends budget.
 	for _, slot := range request.RepositorySlots {
 		selection.Slots = append(selection.Slots, EvidenceSlot{Subject: slot.Subject, Relation: slot.Relation})
 	}
+	selection.Cited = citedRanges(request.RepositoryCitations, p.Repository, request.RepositoryBaseSHA)
+	selection.Requested = request.RepositoryRequested
 	fragments, err := Gather(ctx, explorer, selection)
 	if err != nil {
 		return nil, err
@@ -71,6 +80,34 @@ func (p *Provider) ListRepositoryEvidence(ctx context.Context, request contexten
 	}
 	return RenderBundle(fragments, request.RepositoryBaseSHA)
 }
+
+// citedRanges keeps the citations of this repository at this commit, as ranges. A citation of
+// another repository or another commit is dropped: it describes a different world than the one
+// this execution judges.
+func citedRanges(citations []string, repository, baseSHA string) []CitedRange {
+	prefix := "repository://" + repository + "@" + baseSHA + "/"
+	out := make([]CitedRange, 0, len(citations))
+	seen := map[CitedRange]bool{}
+	for _, citation := range citations {
+		match := citedRangePattern.FindStringSubmatch(strings.TrimSpace(citation))
+		if match == nil || !strings.HasPrefix(citation, prefix) {
+			continue
+		}
+		start, errStart := strconv.Atoi(match[2])
+		end, errEnd := strconv.Atoi(match[3])
+		if errStart != nil || errEnd != nil || start < 1 || end < start {
+			continue
+		}
+		cited := CitedRange{Path: strings.TrimPrefix(match[1], prefix), Start: start, End: end}
+		if !seen[cited] {
+			seen[cited] = true
+			out = append(out, cited)
+		}
+	}
+	return out
+}
+
+var citedRangePattern = regexp.MustCompile(`^(repository://[A-Za-z0-9._-]+@[0-9a-f]{40}/[^\s#]+)#L(\d+)-L(\d+)$`)
 
 // ValidateVersion refuses a stored source that no longer describes the commit
 // the execution is about.

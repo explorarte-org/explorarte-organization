@@ -167,6 +167,9 @@ func TestExecutiveAutonomousDesignImplementationReviewCodeRunnerPostgreSQL(t *te
 
 	models := newIntegrationModelRuntime()
 	models.implementationPlanBody = autonomyImplementationPlan(t)
+	// The design names the file the plan changes: since the frozen design file manifest (external
+	// audit A3), a frozen design that names no file binds no implementation.
+	models.workerBody = json.RawMessage(`{"schema_version":"worker-result/v1","summary":"bounded design of one change","evidence_refs":["integration:evidence:1"],"proposed_files":["` + autonomyChangePath + `"]}`)
 	models.designAdjudicationBody = func(taskID int64) json.RawMessage {
 		return autonomyDesignAdjudication(ctx, h, taskID)
 	}

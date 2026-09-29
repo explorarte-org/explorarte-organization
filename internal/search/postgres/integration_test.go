@@ -8,7 +8,6 @@ package postgres
 import (
 	"context"
 	"os"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -17,32 +16,19 @@ import (
 
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
 	search "github.com/Mireuz13/explorarte-organization/internal/search"
+	"github.com/Mireuz13/explorarte-organization/internal/testdbguard"
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 )
 
-// requireTestDatabase returns a pool or skips the test.
+// requireTestDatabase returns a pool on the shared disposable database, migrated and with the
+// research tables empty, or skips the test.
 func requireTestDatabase(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("ORG_TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("ORG_TEST_DATABASE_URL not set; skipping Postgres integration test")
 	}
-	if !strings.HasSuffix(strings.TrimRight(dsn, "/"), "explorarte_test") &&
-		!strings.Contains(dsn, "explorarte_test") {
-		t.Skipf("refusing non-disposable database %q; only explorarte_test is permitted", dsn)
-	}
-	pool, err := pgxpool.New(context.Background(), dsn)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	runner, err := platformmigrations.New(pool, rootmigrations.Files)
-	if err != nil {
-		t.Fatalf("create migration runner: %v", err)
-	}
-	if _, err := runner.Up(context.Background()); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	pool := migratedTestDatabase(t, dsn)
 	truncate := func() {
 		_, _ = pool.Exec(context.Background(),
 			`TRUNCATE research_query_records, research_topic_proposals,
@@ -51,6 +37,28 @@ func requireTestDatabase(t *testing.T) *pgxpool.Pool {
 	}
 	truncate() // clean slate at test start: no residue from prior runs
 	t.Cleanup(truncate)
+	return pool
+}
+
+// migratedTestDatabase connects to dsn, verified by the kernel's testdbguard (the name and the
+// live current_database(), not a substring of the URL), and migrates it to the compiled tip.
+func migratedTestDatabase(t *testing.T, dsn string) *pgxpool.Pool {
+	t.Helper()
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	if err := testdbguard.RequireTestDatabase(context.Background(), dsn, pool); err != nil {
+		t.Fatal(err)
+	}
+	runner, err := platformmigrations.New(pool, rootmigrations.Files)
+	if err != nil {
+		t.Fatalf("create migration runner: %v", err)
+	}
+	if _, err := runner.Up(context.Background()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
 	return pool
 }
 
@@ -280,5 +288,36 @@ func TestPostgres_RestartSurvival(t *testing.T) {
 	cycles, _ := second.ListCycles(ctx, "topic-pg-restart")
 	if cycles[0].Outcome != search.CycleOutcomeFailed || cycles[0].CompletedAt == nil {
 		t.Fatalf("orphan must be explicitly failed with completion time, got %+v", cycles[0])
+	}
+}
+
+// The daily budget is charged per request of every cycle started in the day, open or closed.
+func TestPostgres_QueriesAttemptedSinceChargesEveryCycleOfTheDay(t *testing.T) {
+	pool := requireTestDatabase(t)
+	store, err := New(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	for _, topic := range search.InvestigacionSeedTopics(now) {
+		if err := store.SaveTopic(ctx, topic); err != nil {
+			t.Fatalf("seed topic %s: %v", topic.ID, err)
+		}
+	}
+	topic := search.InvestigacionSeedTopics(now)[0].ID
+	cycles := []search.ResearchCycle{
+		{ID: "budget-yesterday", TopicID: topic, DepartmentID: "servicios", Trigger: search.TriggerScheduler, StartedAt: now.Add(-30 * time.Hour), QueriesAttempted: 7},
+		{ID: "budget-closed", TopicID: topic, DepartmentID: "servicios", Trigger: search.TriggerScheduler, StartedAt: now.Add(-time.Hour), CompletedAt: ptrTime(now), QueriesAttempted: 3},
+		{ID: "budget-open", TopicID: topic, DepartmentID: "servicios", Trigger: search.TriggerScheduler, StartedAt: now.Add(-time.Minute), QueriesAttempted: 2},
+	}
+	for _, cycle := range cycles {
+		if err := store.SaveCycle(ctx, cycle); err != nil {
+			t.Fatal(err)
+		}
+	}
+	used, err := store.QueriesAttemptedSince(ctx, now.Add(-2*time.Hour))
+	if err != nil || used != 5 {
+		t.Fatalf("used = %d, %v; want 5 (yesterday's 7 not charged)", used, err)
 	}
 }

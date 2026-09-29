@@ -198,10 +198,42 @@ type Limits struct {
 	MaxLines    int
 }
 
-// DefaultLimits is deliberately small.
+// DefaultLimits is deliberately small -- but not so small that a design cannot see
+// the function it reasons about.
+//
+// It was 8 files, 16 ranges, 96KiB and 12 searches, read in windows of 24 lines
+// each side of a match. Local smoke #35 (root 1848, 2026-09-28) asked a design
+// worker to audit the executive's own orchestration: two workers in a row
+// declined to name any defect because "the decisive declaration was never
+// shown" -- the body of a function past its first statement, the caller that
+// supplies its arguments, the driver's accounting -- and the department review
+// agreed. A self-audit follows a call across files; a 48-line window of each
+// sees the signature and not the decision. The judges share the same diet.
 func DefaultLimits() Limits {
-	return Limits{MaxFiles: 8, MaxRanges: 16, MaxBytes: 96 * 1024, MaxSearches: 12, MaxLines: 400}
+	return Limits{MaxFiles: 12, MaxRanges: 24, MaxBytes: 192 * 1024, MaxSearches: 16, MaxLines: 400}
 }
+
+// DefaultWindow is how many lines each side of a match an excerpt reads. Delivery
+// and joint admission must use the same value: admission is a dry-run of delivery,
+// and a promise priced at one window and delivered at another is not a promise.
+const DefaultWindow = 40
+
+// WorkerWindow and WorkerLimits are the diet of the executions that WRITE: a design worker, and
+// the implementation plan that writes the patch the code runner applies. By the owner's decision
+// (2026-09-28) their window is twice DefaultWindow -- about 160 lines per excerpt -- so a writer
+// reads a whole function and its neighbours. Their byte budget grows with it; a measured worker
+// context was about 100KB before any repository evidence, so 320KB of evidence stays inside the
+// context engine's 512KB bound. Judges (department review, adjudication) keep DefaultWindow.
+const WorkerWindow = 2 * DefaultWindow
+
+func WorkerLimits() Limits {
+	limits := DefaultLimits()
+	limits.MaxBytes = 320 * 1024
+	return limits
+}
+
+// WorkerPurposes are the execution purposes that read with WorkerWindow and WorkerLimits.
+var WorkerPurposes = map[string]bool{"department-worker": true, "implementation-plan": true}
 
 func (l Limits) Validate() error {
 	if l.MaxFiles < 1 || l.MaxRanges < 1 || l.MaxBytes < 1 || l.MaxSearches < 1 || l.MaxLines < 1 {

@@ -22,7 +22,8 @@ func TestBuildCEOPlanInstructionsCarriesAuthoritativeOwnerGoal(t *testing.T) {
 		t.Fatalf("build CEO plan instructions: %v", err)
 	}
 
-	if !strings.HasPrefix(got, ceoPlanInstructionPrefix) {
+	// An analysis root (no governed requirement bundle) is told its mode first (smoke #55).
+	if !strings.HasPrefix(got, analysisModeCEONote+ceoPlanInstructionPrefix) {
 		t.Fatal("CEO plan instructions lost the planning prefix")
 	}
 
@@ -33,7 +34,7 @@ func TestBuildCEOPlanInstructionsCarriesAuthoritativeOwnerGoal(t *testing.T) {
 	// There is intentionally no instruction suffix. Parsing the ENTIRE
 	// remainder as one JSON value protects that contract: any text appended
 	// after the JSON would make this unmarshal fail.
-	body := strings.TrimPrefix(got, ceoPlanInstructionPrefix)
+	body := strings.TrimPrefix(got, analysisModeCEONote+ceoPlanInstructionPrefix)
 
 	var projected struct {
 		Goal               string   `json:"goal"`

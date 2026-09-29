@@ -252,10 +252,15 @@ func (w Worker) awaitShutdown(resultCh <-chan execOutcome, triggerErr error) err
 // succeeded: Summary alone is not the evidence ledger.
 func (w Worker) finish(ctx context.Context, lease tasks.LeaseCommand, workspaceID int64, item tasks.ClaimedTask, plan Plan, results []Result, execErr error, guard PlanGuard) error {
 	if execErr != nil {
-		if errors.Is(execErr, ErrIndeterminateExecution) {
-			return w.record(ctx, lease, tasks.OutcomeNonRetryableFailure, "indeterminate_code_execution", execErr.Error())
+		// Structured evidence first, then the classified outcome (failure_evidence.go). Failing to
+		// record the evidence never turns the attempt into anything but the failure it was.
+		class, retryable := classifyExecutionFailure(results, execErr)
+		_ = recordFailureEvidence(ctx, w.Queue, w.HolderPrincipalID, buildFailureEvidence(item.Task.ID, item.Attempt.ID, plan.Operations, results, class, retryable, execErr))
+		outcome := tasks.OutcomeNonRetryableFailure
+		if retryable {
+			outcome = tasks.OutcomeRetryableFailure
 		}
-		return w.record(ctx, lease, tasks.OutcomeRetryableFailure, "execution_failed", execErr.Error())
+		return w.record(ctx, lease, outcome, class, execErr.Error())
 	}
 	if err := verifyOrdering(plan, results); err != nil {
 		return w.record(ctx, lease, tasks.OutcomeNonRetryableFailure, "stale_verification", err.Error())

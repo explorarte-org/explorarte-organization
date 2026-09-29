@@ -52,7 +52,17 @@ type WorkerResult struct {
 	Summary       string         `json:"summary"`
 	EvidenceRefs  []string       `json:"evidence_refs"`
 	Evidence      []EvidenceItem `json:"evidence"`
+	// EvidenceRequests names what this worker needed and was not shown: a repository path with an
+	// #Lstart-Lend range, or a Go identifier. The host reads them for whoever redoes this work
+	// (requestedEvidenceFor). External audit A5.
+	EvidenceRequests []string `json:"evidence_requests,omitempty"`
+	// ProposedFiles are the repository files this design proposes to change. The freeze records their
+	// union as the manifest the implementation is bound to (design_file_manifest.go). Audit A3.
+	ProposedFiles []string `json:"proposed_files,omitempty"`
 }
+
+// MaxEvidenceRequests bounds what one worker may ask the host to retrieve for the next attempt.
+const MaxEvidenceRequests = 8
 
 func ParseWorkerResult(body []byte, limits Limits) (WorkerResult, error) {
 	var out WorkerResult
@@ -67,6 +77,22 @@ func ParseWorkerResult(body []byte, limits Limits) (WorkerResult, error) {
 	}
 	if err := validateStrings(out.EvidenceRefs, limits, "evidence_refs"); err != nil {
 		return WorkerResult{}, err
+	}
+	if len(out.EvidenceRequests) > MaxEvidenceRequests {
+		return WorkerResult{}, fmt.Errorf("%w: evidence_requests has %d items, at most %d", ErrContractRejected, len(out.EvidenceRequests), MaxEvidenceRequests)
+	}
+	for index, request := range out.EvidenceRequests {
+		if err := validateRequiredString(request, 300, fmt.Sprintf("evidence_requests[%d]", index)); err != nil {
+			return WorkerResult{}, err
+		}
+	}
+	if len(out.ProposedFiles) > MaxProposedFiles {
+		return WorkerResult{}, fmt.Errorf("%w: proposed_files has %d items, at most %d", ErrContractRejected, len(out.ProposedFiles), MaxProposedFiles)
+	}
+	for index, file := range out.ProposedFiles {
+		if !validProposedFile(file) {
+			return WorkerResult{}, fmt.Errorf("%w: proposed_files[%d] %q is not a clean repository-relative path", ErrContractRejected, index, file)
+		}
 	}
 	if out.SchemaVersion == WorkerResultSchemaVersion && len(out.Evidence) > 0 {
 		return WorkerResult{}, fmt.Errorf("%w: evidence requires %s", ErrContractRejected, WorkerResultSchemaVersionV2)

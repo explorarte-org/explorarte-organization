@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/Mireuz13/explorarte-organization/internal/campaign"
+	"github.com/Mireuz13/explorarte-organization/internal/executive"
 	"github.com/Mireuz13/explorarte-organization/internal/modelruntime"
 )
 
@@ -231,8 +232,13 @@ func TestExecutionRequirementsDeriveFromTheRealCanonicalFacts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("derive the floor from the real canonical facts: %v", err)
 	}
-	if got.MinModelCalls != 5 || got.MinSubagents != 5 || got.MinDepth != 3 || got.MinRetries != 1 || got.MinWallTimeMS != 1 {
-		t.Fatalf("topology floor = calls %d, subagents %d, depth %d, retries %d, wall %d; want 5, 5, 3, 1, 1", got.MinModelCalls, got.MinSubagents, got.MinDepth, got.MinRetries, got.MinWallTimeMS)
+	// The analysis floor is the topology Executive declares for every canonical operational
+	// department (four today; local smoke #54), not a number copied here.
+	topology := executive.AnalysisCampaignTopology(got.Basis.AnalysisDepartments, executive.DefaultLimits().MaxDepartmentReplans)
+	if got.Basis.AnalysisDepartments != 4 || got.MinModelCalls != topology.ModelCalls || got.MinSubagents != topology.Subagents ||
+		got.MinDepth != 3 || got.MinRetries != 1 || got.MinWallTimeMS != 1 {
+		t.Fatalf("topology floor = calls %d, subagents %d, depth %d, retries %d, wall %d over %d departments; want Executive's %d, %d, 3, 1, 1 over 4",
+			got.MinModelCalls, got.MinSubagents, got.MinDepth, got.MinRetries, got.MinWallTimeMS, got.Basis.AnalysisDepartments, topology.ModelCalls, topology.Subagents)
 	}
 	if got.MinUSD < 160_253_600 || got.MinTokens < 33_268+128_000 {
 		t.Fatalf("derived floor %s / %d tokens is below production's observed first reservation ($0.1602536 / 161,268 tokens)", got.MinUSD, got.MinTokens)
@@ -242,9 +248,9 @@ func TestExecutionRequirementsDeriveFromTheRealCanonicalFacts(t *testing.T) {
 		byStage[stage.Stage] = stage
 	}
 	ceo := byStage["ceo_plan"]
-	// executive.ceo routes to openai_responses/gpt-6-sol since 2026-09-27 (migration 000083 prices it).
-	if ceo.ProviderID != "openai_responses" || ceo.ProviderModelID != "gpt-6-sol" || ceo.MaxOutputTokens != 128000 {
-		t.Errorf("CEO-plan basis = %+v, want openai_responses/gpt-6-sol with Executive's 128000 output ceiling", ceo)
+	// executive.ceo routes to openai_responses/gpt-6-luna since 2026-09-28 (migration 000085 prices it).
+	if ceo.ProviderID != "openai_responses" || ceo.ProviderModelID != "gpt-6-luna" || ceo.MaxOutputTokens != 128000 {
+		t.Errorf("CEO-plan basis = %+v, want openai_responses/gpt-6-luna with Executive's 128000 output ceiling", ceo)
 	}
 	// The floor is never below any single stage's reservation, the CEO's included: at 0 per 1M
 	// output tokens the CEO's worst case (128,000 output tokens alone is $1.28) may well be the
@@ -252,7 +258,7 @@ func TestExecutionRequirementsDeriveFromTheRealCanonicalFacts(t *testing.T) {
 	if got.MinUSD < ceo.ReservationUSD {
 		t.Errorf("derived floor %s is below the CEO's own reservation %s", got.MinUSD, ceo.ReservationUSD)
 	}
-	t.Logf("floor with the CEO on gpt-6-sol: MinUSD=%s; CEO-plan reservation=%s", got.MinUSD, ceo.ReservationUSD)
+	t.Logf("floor with the CEO on gpt-6-luna: MinUSD=%s; CEO-plan reservation=%s", got.MinUSD, ceo.ReservationUSD)
 	// The leader stages route through department.leader: deepseek. The worker stage is priced at the
 	// WORST reservation among every eligible worker role's route (see the provider's derivation), and
 	// the eligible workers now span two routes -- the executive departments on deepseek and the
@@ -265,8 +271,8 @@ func TestExecutionRequirementsDeriveFromTheRealCanonicalFacts(t *testing.T) {
 	if stage := byStage["department_worker"]; stage.ProviderID != "deepseek" && stage.ProviderID != "gemini" {
 		t.Errorf("department_worker basis = %+v, want a deepseek (department.worker) or gemini (finance.reviewer) route", stage)
 	}
-	if byStage["department_worker"].MaxOutputTokens != 24000 {
-		t.Errorf("worker output ceiling = %d, want the worker-specific 24000", byStage["department_worker"].MaxOutputTokens)
+	if byStage["department_worker"].MaxOutputTokens != 128000 {
+		t.Errorf("worker output ceiling = %d, want the worker ceiling of 128000", byStage["department_worker"].MaxOutputTokens)
 	}
 	t.Logf("REAL canonical floor: usd=%s tokens=%d (worst stage basis: %+v)", got.MinUSD, got.MinTokens, got.Basis.Stages)
 }

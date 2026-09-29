@@ -67,13 +67,15 @@ func routeOf(t *testing.T, roleID string) (provider, model string, transport Tra
 	return resolved.Provider, resolved.Model, resolved.Transport, policy
 }
 
-// Regression 1: the Finance role resolves to its own policy and to gemini-3.5-flash-lite.
-func TestTheFinanceReviewerHasItsOwnPolicyOnGemini(t *testing.T) {
+// Regression 1: the Finance role resolves to its own policy. Since 2026-09-28 (Gemini retired from
+// routing after repeated HTTP 503s) that policy is DeepSeek Flash, reached through its own narrow
+// egress scope.
+func TestTheFinanceReviewerHasItsOwnPolicyOnDeepseek(t *testing.T) {
 	provider, model, transport, policy := routeOf(t, financeRoleID)
 	if policy != financePolicyID {
 		t.Fatalf("%s is bound to %q, want its own policy %q (it must not ride department.worker)", financeRoleID, policy, financePolicyID)
 	}
-	if provider != "gemini" || model != "gemini-3.5-flash-lite" || transport != TransportHTTP {
+	if provider != "deepseek" || model != "deepseek-flash" || transport != TransportHTTP {
 		t.Fatalf("%s resolves to %s/%s over %s", financeRoleID, provider, model, transport)
 	}
 }
@@ -105,97 +107,75 @@ func TestTheDepartmentPoliciesStayOnDeepseekFlash(t *testing.T) {
 	}
 }
 
-// Regression 4: the campaign Finance review, with the correlation it really has (NOT executive:*),
-// derives no scope, and its route must still be allowed at the scope gate.
-func TestTheFinanceReviewPassesTheScopeGateWithoutAnExecutiveCorrelation(t *testing.T) {
+// Regression 4: the campaign Finance review, in the flow it really runs in -- the context's
+// department_worker purpose, on a task correlated to the CEO chat turn that asked for it -- derives
+// the finance review scope, and its route is allowed at the scope gate with it.
+func TestTheFinanceReviewPassesTheScopeGateInItsRealFlow(t *testing.T) {
 	provider, _, transport, _ := routeOf(t, financeRoleID)
-	for _, purpose := range []string{financePurposeRaw, "department_worker"} {
-		for _, correlation := range []string{"campaign:proposal:30", "chat:6", ""} {
-			scope := modelegress.ExecutiveScopeMarker(financeRoleID, purpose, correlation, "task:1310")
-			if scope != "" {
-				t.Fatalf("a non-executive Finance flow derived scope %q (purpose=%q correlation=%q)", scope, purpose, correlation)
-			}
-			reason, allowed := modelegress.ValidateExecutiveScope(provider, string(transport), []string{"organizational"}, scope, false)
-			if !allowed {
-				t.Fatalf("Finance review on %s denied at the scope gate (%s): purpose=%q correlation=%q", provider, reason, purpose, correlation)
-			}
+	scope := modelegress.ExecutiveScopeMarker(financeRoleID, "department_worker", "ceochat:6", "task:2183")
+	if scope != modelegress.ScopeFinanceReview {
+		t.Fatalf("the Finance review derived scope %q, want %q", scope, modelegress.ScopeFinanceReview)
+	}
+	if reason, allowed := modelegress.ValidateExecutiveScope(provider, string(transport), []string{"organizational"}, scope, false); !allowed {
+		t.Fatalf("Finance review on %s denied at the scope gate: %s", provider, reason)
+	}
+}
+
+// Regression 5: outside that flow the Finance role derives no scope, and DeepSeek refuses it --
+// the exact denial production returned on 2026-09-25.
+func TestAFinanceReviewOutsideItsFlowIsDeniedForWantOfScope(t *testing.T) {
+	for _, flow := range [][2]string{{financePurposeRaw, "campaign:proposal:30"}, {"department_worker", "chat:6"}, {"department_worker", ""}} {
+		scope := modelegress.ExecutiveScopeMarker(financeRoleID, flow[0], flow[1], "task:1310")
+		reason, allowed := modelegress.ValidateExecutiveScope("deepseek", "http_adapter", []string{"organizational"}, scope, false)
+		if allowed || reason != "executive_scope_required" {
+			t.Fatalf("flow %v: allowed=%v reason=%q, want the executive_scope_required denial", flow, allowed, reason)
 		}
 	}
 }
 
-// Regression 5: if Finance ever goes back to a scope-gated provider, this is what breaks -- and
-// it is the exact denial production returned.
-func TestAFinanceReviewOnADeepseekRouteIsDeniedForWantOfScope(t *testing.T) {
-	scope := modelegress.ExecutiveScopeMarker(financeRoleID, financePurposeRaw, "campaign:proposal:30", "task:1310")
-	reason, allowed := modelegress.ValidateExecutiveScope("deepseek", "http_adapter", []string{"organizational"}, scope, false)
-	if allowed || reason != "executive_scope_required" {
-		t.Fatalf("deepseek for a Finance review: allowed=%v reason=%q, want the executive_scope_required denial", allowed, reason)
-	}
-}
-
-// Regression 5b: the same rule as a property of the real catalog -- any role that can derive no
-// executive scope in its own flow must not resolve to a provider that requires one.
-func TestNoScopelessRoleIsBoundToAScopeGatedProvider(t *testing.T) {
-	for _, roleID := range []string{financeRoleID} {
-		provider, _, transport, policy := routeOf(t, roleID)
-		if reason, allowed := modelegress.ValidateExecutiveScope(provider, string(transport), []string{"organizational"}, "", false); !allowed {
-			t.Fatalf("%s (policy %s) resolves to %s, which requires an executive scope its flow cannot derive: %s", roleID, policy, provider, reason)
-		}
-	}
-	// And the executive stages, which DO derive one, are allowed on deepseek with it.
-	for _, tc := range []struct{ role, purpose string }{
-		{"ingenieria_ia/orquestador", "department_plan"},
-		{"ingenieria_ia/orquestador", "department_review"},
-		{"ingenieria_ia/orquestador", "implementation_plan"},
-		{"ingenieria_ia/qa", "department_worker"},
-		{"ingenieria_ia/arquitecto_software", "department_worker"},
+// Regression 5b: every role's route is allowed with the scope its own flow derives: the Finance
+// reviewer in its chat-turn flow, the executive stages inside an executive run.
+func TestEveryRoleIsAllowedWithTheScopeItsFlowDerives(t *testing.T) {
+	for _, tc := range []struct{ role, purpose, correlation string }{
+		{financeRoleID, "department_worker", "ceochat:6"},
+		{"ingenieria_ia/orquestador", "department_plan", "executive:abc"},
+		{"ingenieria_ia/orquestador", "department_review", "executive:abc"},
+		{"ingenieria_ia/orquestador", "implementation_plan", "executive:abc"},
+		{"ingenieria_ia/qa", "department_worker", "executive:abc"},
+		{"ingenieria_ia/arquitecto_software", "department_worker", "executive:abc"},
 	} {
 		provider, _, transport, _ := routeOf(t, tc.role)
-		scope := modelegress.ExecutiveScopeMarker(tc.role, tc.purpose, "executive:abc", "task:12")
+		scope := modelegress.ExecutiveScopeMarker(tc.role, tc.purpose, tc.correlation, "task:12")
 		if reason, allowed := modelegress.ValidateExecutiveScope(provider, string(transport), []string{"organizational"}, scope, false); !allowed {
-			t.Fatalf("%s/%s on %s denied in an executive run: %s", tc.role, tc.purpose, provider, reason)
+			t.Fatalf("%s/%s on %s denied in its own flow: %s", tc.role, tc.purpose, provider, reason)
 		}
 	}
 }
 
-// Regression 6: the egress policy allows gemini for exactly the three classes it did before the
-// department move, and the Finance review's real provider/class is allowed by the evaluator.
-func TestTheGeminiEgressRulesAreRestoredExactly(t *testing.T) {
+// Regression 6: Gemini is out of routing and out of the egress policy (version 14), and the
+// Finance review's real provider/class is allowed by the evaluator.
+func TestGeminiIsRetiredFromRoutingAndEgress(t *testing.T) {
 	routing, err := LoadCanonicalRouting(canonicalDirForFinanceTest())
 	if err != nil {
 		t.Fatal(err)
 	}
 	known := make([]string, 0, len(routing.Policies))
-	for _, policy := range routing.Policies {
+	for id, policy := range routing.Policies {
+		if policy.Provider == "gemini" {
+			t.Fatalf("policy %s still routes to gemini", id)
+		}
 		known = append(known, policy.Provider)
 	}
 	policy, err := modelegress.LoadCanonicalPolicy(canonicalDirForFinanceTest(), modelegress.ProductiveLoadOptions(known))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if policy.PolicyVersion != 13 {
-		t.Fatalf("policy_version=%d, want 13", policy.PolicyVersion)
+	if policy.PolicyVersion != 14 {
+		t.Fatalf("policy_version=%d, want 14", policy.PolicyVersion)
 	}
-	want := map[string]string{
-		"organizational": "executive_scope_gate_required_v4",
-		"public":         "public_egress_approved_for_gemini_v1",
-		"sanitized":      "sanitized_egress_approved_for_gemini_v1",
-	}
-	got := map[string]string{}
 	for _, rule := range policy.Rules {
 		if rule.ProviderID == "gemini" {
-			if rule.Effect != modelegress.EffectAllow {
-				t.Fatalf("gemini rule %+v is not an allow", rule)
-			}
-			got[string(rule.DataClassification)] = rule.ReasonCode
-		}
-	}
-	if len(got) != len(want) {
-		t.Fatalf("gemini rules = %v, want exactly %v", got, want)
-	}
-	for class, reason := range want {
-		if got[class] != reason {
-			t.Fatalf("gemini/%s reason=%q, want %q", class, got[class], reason)
+			t.Fatalf("gemini egress rule %+v survived its retirement", rule)
 		}
 	}
 

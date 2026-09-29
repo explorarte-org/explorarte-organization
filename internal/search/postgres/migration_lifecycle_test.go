@@ -9,11 +9,14 @@ import (
 	"testing"
 
 	platformmigrations "github.com/Mireuz13/explorarte-organization/internal/platform/migrations"
+	"github.com/Mireuz13/explorarte-organization/internal/testdbguard"
 	rootmigrations "github.com/Mireuz13/explorarte-organization/migrations"
 )
 
 func TestMigrations_UpDownUp(t *testing.T) {
-	pool := requireTestDatabase(t)
+	// Every migration is rolled back and re-applied: on a database of its own, so no other
+	// package's schema is taken down with it.
+	pool := migratedTestDatabase(t, testdbguard.FreshDatabase(t))
 	ctx := context.Background()
 
 	runner, err := platformmigrations.New(pool, rootmigrations.Files)
@@ -35,7 +38,9 @@ func TestMigrations_UpDownUp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, m := range down {
+	// Newest first: a later migration's objects depend on earlier ones.
+	for i := len(down) - 1; i >= 0; i-- {
+		m := down[i]
 		if m.DownSQL == "" {
 			t.Fatalf("migration %06d missing down", m.Version)
 		}
@@ -57,7 +62,7 @@ func TestMigrations_UpDownUp(t *testing.T) {
 	}
 
 	// Checksum drift detection: a tampered ledger row must fail loudly.
-	if _, err := pool.Exec(ctx, `UPDATE schema_migrations SET checksum = 'deadbeef'`); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE schema_migrations SET checksum = repeat('0', 64)`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := runner.Up(ctx); err == nil {

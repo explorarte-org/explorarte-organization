@@ -102,6 +102,7 @@ func (p *Provider) ExecutionBudgetRequirements(ctx context.Context, organization
 		return campaign.ExecutionBudgetRequirements{}, fmt.Errorf("organization %q has no current revision", organizationID)
 	}
 	topology := executive.MinimalCampaignTopology()
+	governed := executive.GovernedCampaignTopology(p.cfg.Limits.MaxDesignRounds, p.cfg.Limits.MaxDepartmentReplans)
 
 	roles := &stageRoles{registry: p.cfg.Registry, organizationID: organizationID}
 	routes := &policyRoutes{store: p.cfg.Routes, organizationID: organizationID, revisionID: revision.ID, byPolicy: map[string][]modelruntime.RoutableModel{}}
@@ -111,6 +112,10 @@ func (p *Provider) ExecutionBudgetRequirements(ctx context.Context, organization
 		MinModelCalls: topology.ModelCalls,
 		MinSubagents:  topology.Subagents,
 		MinDepth:      topology.Depth,
+		// The governed stages run the same purposes on the same roles, so the
+		// per-dispatch USD and token floor below covers them too.
+		GovernedMinModelCalls: governed.ModelCalls,
+		GovernedMinSubagents:  governed.Subagents,
 		// Neither dimension is consumed on the canonical Executive path (only
 		// child allocations spend them and Executive never allocates), so the
 		// floor is the AgentBudget validity minimum of 1 -- not an invented
@@ -168,12 +173,26 @@ func (p *Provider) ExecutionBudgetRequirements(ctx context.Context, organization
 			requirements.MinTokens = worst.ReservationTokens
 		}
 	}
+	// The analysis floor covers every department a campaign may delegate to: the campaign-eligible
+	// operational departments the stage loop above has just loaded (local smoke #54).
+	if err := roles.load(ctx); err != nil {
+		return campaign.ExecutionBudgetRequirements{}, err
+	}
+	analysis := executive.AnalysisCampaignTopology(len(roles.units), p.cfg.Limits.MaxDepartmentReplans)
+	requirements.MinModelCalls = max(requirements.MinModelCalls, analysis.ModelCalls)
+	requirements.MinSubagents = max(requirements.MinSubagents, analysis.Subagents)
+	requirements.Basis.AnalysisDepartments = len(roles.units)
+
 	// A subscription-only route reserves $0; the AgentBudget still requires
 	// a strictly positive ceiling, so the floor is one nano-dollar rather
 	// than zero.
 	if requirements.MinUSD <= 0 {
 		requirements.MinUSD = 1
 	}
+	// Every governed call may reserve up to the worst stage's tokens before it
+	// runs, and the root budget holds each reservation on top of what the run has
+	// already used, so the governed token floor is one worst reservation per call.
+	requirements.GovernedMinTokens = governed.ModelCalls * requirements.MinTokens
 	if err := requirements.Validate(); err != nil {
 		return campaign.ExecutionBudgetRequirements{}, err
 	}

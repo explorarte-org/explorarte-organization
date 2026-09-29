@@ -4,7 +4,6 @@ package migrations_test
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -153,12 +152,12 @@ func TestMigration047_OneTierPreexisting_OtherAbsent(t *testing.T) {
 
 // ---- shared test plumbing ----
 
+// openMigrationTestStore opens a database of its own (testdbguard.FreshDatabase): these tests hold
+// the ledger at an old version, which on the shared database both broke the packages that ran
+// next and could not survive migrations newer than 49.
 func openMigrationTestStore(t *testing.T) (*postgres.Store, func()) {
 	t.Helper()
-	databaseURL := os.Getenv("ORG_TEST_DATABASE_URL")
-	if databaseURL == "" {
-		t.Skip("ORG_TEST_DATABASE_URL is required")
-	}
+	databaseURL := testdbguard.FreshDatabase(t)
 	cfg, err := config.LoadFrom(func(key string) (string, bool) {
 		values := map[string]string{"ORG_ENVIRONMENT": "test", "ORG_DATABASE_URL": databaseURL, "ORG_DATABASE_MAX_CONNS": "4", "ORG_DATABASE_MIN_CONNS": "0"}
 		v, ok := values[key]
@@ -177,33 +176,7 @@ func openMigrationTestStore(t *testing.T) (*postgres.Store, func()) {
 		store.Close()
 		t.Fatalf("refusing to run against unverified database: %v", err)
 	}
-	if err := testdbguard.RequireDestructive(ctx, databaseURL, store.Pool()); err != nil {
-		store.Close()
-		t.Fatalf("refusing destructive schema reset: %v", err)
-	}
-	resetSchema(t, context.Background(), store)
-
-	cleanup := func() {
-		// Leave a fully-migrated, pristine schema behind for whichever
-		// integration package shares this database and runs next -- same
-		// discipline as internal/platform/postgres/integration_test.go.
-		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 90*time.Second)
-		defer cancelCleanup()
-		resetSchema(t, cleanupCtx, store)
-		runFullUp(t, cleanupCtx, store)
-		store.Close()
-	}
-	return store, cleanup
-}
-
-func resetSchema(t *testing.T, ctx context.Context, store *postgres.Store) {
-	t.Helper()
-	if _, err := store.Pool().Exec(ctx, `DROP SCHEMA public CASCADE; CREATE SCHEMA public;`); err != nil {
-		t.Fatalf("reset schema: %v", err)
-	}
-	if _, err := store.Pool().Exec(ctx, `CREATE EXTENSION IF NOT EXISTS vector;`); err != nil {
-		t.Fatalf("recreate pgvector extension after schema reset: %v", err)
-	}
+	return store, store.Close
 }
 
 // applyThroughVersion hand-applies migrations 1..maxVersion using the same
@@ -249,9 +222,12 @@ func applyThroughVersion(t *testing.T, ctx context.Context, store *postgres.Stor
 	}
 }
 
+// r47SchemaTip is the compiled tip these tests were written against: "full up" is up to it.
+const r47SchemaTip = 49
+
 func runFullUp(t *testing.T, ctx context.Context, store *postgres.Store) {
 	t.Helper()
-	runner, err := platformmigrations.New(store.Pool(), rootmigrations.Files)
+	runner, err := platformmigrations.New(store.Pool(), migrationsThrough(t, r47SchemaTip))
 	if err != nil {
 		t.Fatal(err)
 	}

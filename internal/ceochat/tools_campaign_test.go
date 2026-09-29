@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -60,31 +61,32 @@ func (s *fakeCampaignStore) CreateProposal(ctx context.Context, cmd campaign.Cre
 
 	rootID := s.nextID
 	p := campaign.CampaignProposal{
-		RevisionNumber:          1,
-		RootProposalID:          &rootID,
-		ID:                      s.nextID,
-		OrganizationID:          cmd.OrganizationID,
-		ConversationID:          cmd.ConversationID,
-		CreatedByRoleID:         cmd.CreatedByRoleID,
-		CreatedFromMessageID:    cmd.CreatedFromMessageID,
-		TaskID:                  cmd.TaskID,
-		AttemptID:               cmd.AttemptID,
-		ToolCallID:              cmd.ToolCallID,
-		Status:                  campaign.StatusDraft,
-		Title:                   cmd.Title,
-		Goal:                    cmd.Goal,
-		AcceptanceCriteria:      cmd.AcceptanceCriteria,
-		Requirements:            cmd.Requirements,
-		Budget:                  cmd.Budget,
-		Assumptions:             cmd.Assumptions,
-		Risks:                   cmd.Risks,
-		OpenQuestions:           cmd.OpenQuestions,
-		FinancialReviewRequired: true,
-		ExecutionStarted:        false,
-		IdempotencyKey:          cmd.IdempotencyKey,
-		CanonicalHash:           cmd.CanonicalHash,
-		CreatedAt:               time.Now(),
-		UpdatedAt:               time.Now(),
+		RevisionNumber:            1,
+		RootProposalID:            &rootID,
+		ID:                        s.nextID,
+		OrganizationID:            cmd.OrganizationID,
+		ConversationID:            cmd.ConversationID,
+		CreatedByRoleID:           cmd.CreatedByRoleID,
+		CreatedFromMessageID:      cmd.CreatedFromMessageID,
+		TaskID:                    cmd.TaskID,
+		AttemptID:                 cmd.AttemptID,
+		ToolCallID:                cmd.ToolCallID,
+		Status:                    campaign.StatusDraft,
+		Title:                     cmd.Title,
+		Goal:                      cmd.Goal,
+		AcceptanceCriteria:        cmd.AcceptanceCriteria,
+		AcceptanceCriterionPhases: cmd.AcceptanceCriterionPhases,
+		Requirements:              cmd.Requirements,
+		Budget:                    cmd.Budget,
+		Assumptions:               cmd.Assumptions,
+		Risks:                     cmd.Risks,
+		OpenQuestions:             cmd.OpenQuestions,
+		FinancialReviewRequired:   true,
+		ExecutionStarted:          false,
+		IdempotencyKey:            cmd.IdempotencyKey,
+		CanonicalHash:             cmd.CanonicalHash,
+		CreatedAt:                 time.Now(),
+		UpdatedAt:                 time.Now(),
 	}
 	s.nextID++
 	s.proposals[lookupKey] = p
@@ -308,32 +310,33 @@ func (s *fakeCampaignStore) CreateRevision(ctx context.Context, cmd campaign.Cre
 
 	parentID := cmd.ParentProposalID
 	rev := campaign.CampaignProposal{
-		ID:                      s.nextID,
-		OrganizationID:          cmd.OrganizationID,
-		ConversationID:          cmd.ConversationID,
-		CreatedByRoleID:         cmd.CreatedByRoleID,
-		CreatedFromMessageID:    cmd.CreatedFromMessageID,
-		TaskID:                  cmd.TaskID,
-		AttemptID:               cmd.AttemptID,
-		ToolCallID:              cmd.ToolCallID,
-		Status:                  campaign.StatusDraft,
-		Title:                   cmd.Title,
-		Goal:                    cmd.Goal,
-		AcceptanceCriteria:      cmd.AcceptanceCriteria,
-		Requirements:            cmd.Requirements,
-		Budget:                  cmd.Budget,
-		Assumptions:             cmd.Assumptions,
-		Risks:                   cmd.Risks,
-		OpenQuestions:           cmd.OpenQuestions,
-		FinancialReviewRequired: true,
-		ExecutionStarted:        false,
-		ParentProposalID:        &parentID,
-		RevisionNumber:          parent.RevisionNumber + 1,
-		RootProposalID:          &rootID,
-		IdempotencyKey:          cmd.IdempotencyKey,
-		CanonicalHash:           cmd.CanonicalHash,
-		CreatedAt:               time.Now(),
-		UpdatedAt:               time.Now(),
+		ID:                        s.nextID,
+		OrganizationID:            cmd.OrganizationID,
+		ConversationID:            cmd.ConversationID,
+		CreatedByRoleID:           cmd.CreatedByRoleID,
+		CreatedFromMessageID:      cmd.CreatedFromMessageID,
+		TaskID:                    cmd.TaskID,
+		AttemptID:                 cmd.AttemptID,
+		ToolCallID:                cmd.ToolCallID,
+		Status:                    campaign.StatusDraft,
+		Title:                     cmd.Title,
+		Goal:                      cmd.Goal,
+		AcceptanceCriteria:        cmd.AcceptanceCriteria,
+		AcceptanceCriterionPhases: cmd.AcceptanceCriterionPhases,
+		Requirements:              cmd.Requirements,
+		Budget:                    cmd.Budget,
+		Assumptions:               cmd.Assumptions,
+		Risks:                     cmd.Risks,
+		OpenQuestions:             cmd.OpenQuestions,
+		FinancialReviewRequired:   true,
+		ExecutionStarted:          false,
+		ParentProposalID:          &parentID,
+		RevisionNumber:            parent.RevisionNumber + 1,
+		RootProposalID:            &rootID,
+		IdempotencyKey:            cmd.IdempotencyKey,
+		CanonicalHash:             cmd.CanonicalHash,
+		CreatedAt:                 time.Now(),
+		UpdatedAt:                 time.Now(),
 	}
 	s.nextID++
 	s.proposals[lookupKey] = rev
@@ -530,8 +533,9 @@ func TestCampaignProposeValidationAndCreation(t *testing.T) {
 	store := newFakeCampaignStore()
 	auth := fakeAuthorizer{
 		allowed: map[string]bool{
-			"owner:campaign.proposal.create": true,
-			"owner:campaign.proposal.read":   true,
+			"owner:campaign.proposal.create":       true,
+			"empresa/ceo:campaign.proposal.create": true,
+			"owner:campaign.proposal.read":         true,
 		},
 	}
 	reg := setupCampaignTestRegistry(t, store, auth)
@@ -541,6 +545,7 @@ func TestCampaignProposeValidationAndCreation(t *testing.T) {
 		"title": "Summer Growth Campaign",
 		"goal": "Acquire 500 verified creators",
 		"acceptance_criteria": ["CPA < $15", "Active rate > 10%"],
+		"acceptance_criterion_phases": ["implementation", "implementation"],
 		"budget": {"currency": "USD", "max_amount": 2500.0, "source": "OWNER_LIMIT"},
 		"assumptions": ["Creator portal is stable"]
 	}`)
@@ -610,7 +615,8 @@ func TestCampaignProposeValidationAndCreation(t *testing.T) {
 	differentPayload := json.RawMessage(`{
 		"title": "Summer Growth Campaign - Revised Different",
 		"goal": "Acquire 1000 verified creators",
-		"acceptance_criteria": ["CPA < $10"]
+		"acceptance_criteria": ["CPA < $10"],
+		"acceptance_criterion_phases": ["implementation"]
 	}`)
 	reqDifferent := req
 	reqDifferent.Arguments = differentPayload
@@ -895,7 +901,8 @@ func TestCampaignReviseProposalAndOwnerApprovalTools(t *testing.T) {
 		"proposal_id": %d,
 		"title": "Revised Title",
 		"goal": "Revised Goal",
-		"acceptance_criteria": ["Criteria 1", "Criteria 2"]
+		"acceptance_criteria": ["Criteria 1", "Criteria 2"],
+		"acceptance_criterion_phases": ["implementation", "implementation"]
 	}`, p1.ID))
 
 	resRev, err := executor.Execute(turnCtxBg, identity, executionharness.ToolRequest{
@@ -1292,5 +1299,27 @@ func TestCampaignPromoteToExecutiveTools(t *testing.T) {
 	}
 	if getPromoApprProj.PromotionID != promoProj.PromotionID {
 		t.Errorf("get promotion by appr ID = %d, want %d", getPromoApprProj.PromotionID, promoProj.PromotionID)
+	}
+}
+
+// Local smoke #44: the host checked only the owner the turn acts for, who holds everything, so a
+// capability the canonical matrix withheld from the CEO was never enforced for it. The executing
+// CEO role must hold it too.
+func TestTheCEOMustHoldTheCapabilityItProposesWith(t *testing.T) {
+	store := newFakeCampaignStore()
+	auth := fakeAuthorizer{allowed: map[string]bool{"owner:campaign.proposal.create": true}}
+	executor := RegistryToolExecutor{Registry: setupCampaignTestRegistry(t, store, auth)}
+	ctx := WithTurnContext(context.Background(), TurnContext{
+		OrganizationID: "org-test", OrganizationRevisionID: 1, ConversationID: 100, OwnerRoleID: "owner",
+		OwnerMessageID: 200, TaskID: 300, AttemptID: 1, ActorRoleID: "owner",
+	})
+	_, err := executor.Execute(ctx, executionharness.RunIdentity{OrganizationID: "org-test", RoleID: CEORoleID, TaskID: 300, AttemptID: 1},
+		executionharness.ToolRequest{ToolName: "campaign.propose", ToolCallID: "call_ceo_without_grant", Arguments: json.RawMessage(`{
+			"title": "T", "goal": "G", "acceptance_criteria": ["c"], "acceptance_criterion_phases": ["implementation"]}`)})
+	if err == nil || !strings.Contains(err.Error(), `"empresa/ceo" lacks campaign.proposal.create`) {
+		t.Fatalf("err = %v, want the CEO refused for lacking campaign.proposal.create", err)
+	}
+	if proposals, _ := store.ListProposals(context.Background(), "org-test", 10, 0); len(proposals) != 0 {
+		t.Fatalf("a refused proposal was stored: %+v", proposals)
 	}
 }

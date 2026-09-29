@@ -38,32 +38,35 @@ type ProposalRequirement struct {
 
 // CampaignProposal is the durable, immutable proposal record.
 type CampaignProposal struct {
-	ID                      int64                 `json:"id"`
-	OrganizationID          string                `json:"organization_id"`
-	ConversationID          int64                 `json:"conversation_id"`
-	CreatedByRoleID         string                `json:"created_by_role_id"`
-	CreatedFromMessageID    int64                 `json:"created_from_message_id"`
-	TaskID                  int64                 `json:"task_id"`
-	AttemptID               int64                 `json:"attempt_id"`
-	ToolCallID              string                `json:"tool_call_id"`
-	Status                  ProposalStatus        `json:"status"`
-	Title                   string                `json:"title"`
-	Goal                    string                `json:"goal"`
-	AcceptanceCriteria      []string              `json:"acceptance_criteria"`
-	Requirements            []ProposalRequirement `json:"requirements"`
-	Budget                  *ProposalBudget       `json:"budget,omitempty"`
-	Assumptions             []string              `json:"assumptions"`
-	Risks                   []string              `json:"risks"`
-	OpenQuestions           []string              `json:"open_questions"`
-	FinancialReviewRequired bool                  `json:"financial_review_required"`
-	ExecutionStarted        bool                  `json:"execution_started"`
-	ParentProposalID        *int64                `json:"parent_proposal_id,omitempty"`
-	RevisionNumber          int                   `json:"revision_number"`
-	RootProposalID          *int64                `json:"root_proposal_id,omitempty"`
-	IdempotencyKey          string                `json:"idempotency_key"`
-	CanonicalHash           string                `json:"canonical_hash"`
-	CreatedAt               time.Time             `json:"created_at"`
-	UpdatedAt               time.Time             `json:"updated_at"`
+	ID                   int64          `json:"id"`
+	OrganizationID       string         `json:"organization_id"`
+	ConversationID       int64          `json:"conversation_id"`
+	CreatedByRoleID      string         `json:"created_by_role_id"`
+	CreatedFromMessageID int64          `json:"created_from_message_id"`
+	TaskID               int64          `json:"task_id"`
+	AttemptID            int64          `json:"attempt_id"`
+	ToolCallID           string         `json:"tool_call_id"`
+	Status               ProposalStatus `json:"status"`
+	Title                string         `json:"title"`
+	Goal                 string         `json:"goal"`
+	AcceptanceCriteria   []string       `json:"acceptance_criteria"`
+	// AcceptanceCriterionPhases is the phase of each criterion, in order (design, implementation or
+	// promotion). Empty for proposals made before phases were declared.
+	AcceptanceCriterionPhases []string              `json:"acceptance_criterion_phases,omitempty"`
+	Requirements              []ProposalRequirement `json:"requirements"`
+	Budget                    *ProposalBudget       `json:"budget,omitempty"`
+	Assumptions               []string              `json:"assumptions"`
+	Risks                     []string              `json:"risks"`
+	OpenQuestions             []string              `json:"open_questions"`
+	FinancialReviewRequired   bool                  `json:"financial_review_required"`
+	ExecutionStarted          bool                  `json:"execution_started"`
+	ParentProposalID          *int64                `json:"parent_proposal_id,omitempty"`
+	RevisionNumber            int                   `json:"revision_number"`
+	RootProposalID            *int64                `json:"root_proposal_id,omitempty"`
+	IdempotencyKey            string                `json:"idempotency_key"`
+	CanonicalHash             string                `json:"canonical_hash"`
+	CreatedAt                 time.Time             `json:"created_at"`
+	UpdatedAt                 time.Time             `json:"updated_at"`
 }
 
 // ReviewRequestStatus represents the status of a financial review request.
@@ -190,14 +193,15 @@ type CreateProposalCommand struct {
 	IdempotencyKey       string
 	CanonicalHash        string
 
-	Title              string
-	Goal               string
-	AcceptanceCriteria []string
-	Requirements       []ProposalRequirement
-	Budget             *ProposalBudget
-	Assumptions        []string
-	Risks              []string
-	OpenQuestions      []string
+	Title                     string
+	Goal                      string
+	AcceptanceCriteria        []string
+	AcceptanceCriterionPhases []string
+	Requirements              []ProposalRequirement
+	Budget                    *ProposalBudget
+	Assumptions               []string
+	Risks                     []string
+	OpenQuestions             []string
 }
 
 // CreateReviewRequestCommand specifies the inputs required to record a review request.
@@ -276,14 +280,15 @@ type CreateRevisionCommand struct {
 	IdempotencyKey       string
 	CanonicalHash        string
 
-	Title              string
-	Goal               string
-	AcceptanceCriteria []string
-	Requirements       []ProposalRequirement
-	Budget             *ProposalBudget
-	Assumptions        []string
-	Risks              []string
-	OpenQuestions      []string
+	Title                     string
+	Goal                      string
+	AcceptanceCriteria        []string
+	AcceptanceCriterionPhases []string
+	Requirements              []ProposalRequirement
+	Budget                    *ProposalBudget
+	Assumptions               []string
+	Risks                     []string
+	OpenQuestions             []string
 }
 
 // CreateOwnerApprovalCommand specifies the inputs required to record an owner execution approval.

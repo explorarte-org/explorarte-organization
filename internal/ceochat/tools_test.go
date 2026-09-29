@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/Mireuz13/explorarte-organization/internal/executionharness"
 	"github.com/Mireuz13/explorarte-organization/internal/search"
@@ -217,6 +219,85 @@ func TestHostValidationEnforcesFinanceAndMemoryBounds(t *testing.T) {
 		body, _ := json.Marshal(map[string]any{"query": "valid", "limit": invalidLimit})
 		if _, err := decodeMemorySearchArgs(body); err == nil {
 			t.Errorf("memory.search must reject limit=%d, got nil", invalidLimit)
+		}
+	}
+}
+
+// A finding reaches the CEO with what it found, bounded: a full page of findings with long titles
+// stays inside the tool's result limit.
+func TestListFindingsCarriesBoundedEvidence(t *testing.T) {
+	long := strings.Repeat("título ", 60)
+	refs := make([]search.EvidenceRef, 6)
+	for i := range refs {
+		refs[i] = search.EvidenceRef{Title: long, URL: "https://doi.org/10.1/" + strings.Repeat("x", 80), DOI: "10.1/x", ArxivID: "2609.01234v1", Snippet: strings.Repeat("resumen ", 80)}
+	}
+	page := make([]search.ResearchFinding, maxFindingsLimit)
+	for i := range page {
+		page[i] = search.ResearchFinding{ID: "finding-cycle-investigacion-topic-" + strings.Repeat("9", 40), TopicID: "t", DepartmentID: "investigacion", Summary: strings.Repeat("s", 120), EvidenceRefs: refs}
+	}
+	executor := ToolExecutor{Findings: &fakeFindingLister{findings: page}}
+	result, err := executor.executeListFindings(context.Background(), []byte(`{"limit":20}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Content) > findingsResultBytes {
+		t.Fatalf("a full page is %d bytes, over the %d-byte tool bound", len(result.Content), findingsResultBytes)
+	}
+	var decoded struct {
+		Findings []findingView `json:"findings"`
+	}
+	if err := json.Unmarshal(result.Content, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	evidence := decoded.Findings[0].Evidence
+	if len(evidence) != maxEvidencePerFinding || evidence[0].URL != refs[0].URL || evidence[0].DOI != "10.1/x" ||
+		!utf8.ValidString(evidence[0].Title) || len(evidence[0].Title) > maxEvidenceTitleBytes+len("…") ||
+		!strings.HasPrefix(evidence[0].Snippet, "resumen") || len(evidence[0].Snippet) > maxEvidenceSnippetBytes+len("…") {
+		t.Fatalf("evidence %+v", evidence)
+	}
+}
+
+// The research tools require research.findings.read of the executing role.
+func TestResearchToolsRequireTheReadCapability(t *testing.T) {
+	findings := &fakeFindingLister{findings: []search.ResearchFinding{{ID: "f1"}}}
+	ctx := WithTurnContext(context.Background(), TurnContext{OrganizationID: "org-test", OrganizationRevisionID: 1, ActorRoleID: "owner"})
+	identity := executionharness.RunIdentity{OrganizationID: "org-test", RoleID: CEORoleID}
+	request := executionharness.ToolRequest{ToolName: ToolListFindings, ToolCallID: "call_1", Arguments: json.RawMessage(`{}`)}
+	for name, allowed := range map[string]map[string]bool{
+		"granted": {"empresa/ceo:research.findings.read": true},
+		"denied":  {"owner:research.findings.read": true},
+	} {
+		registry := NewToolRegistry()
+		if err := RegisterResearchTools(registry, nil, findings, fakeAuthorizer{allowed: allowed}); err != nil {
+			t.Fatal(err)
+		}
+		_, err := RegistryToolExecutor{Registry: registry}.Execute(ctx, identity, request)
+		if (name == "granted") != (err == nil) {
+			t.Errorf("%s: err = %v", name, err)
+		}
+	}
+}
+
+// Local smoke #51: the CEO asked for 50 findings against an unstated maximum. The schemas state
+// every bound the host enforces.
+func TestResearchToolSchemasStateTheirLimits(t *testing.T) {
+	for name, raw := range map[string]json.RawMessage{ToolListFindings: listFindingsSchema, ToolListTopics: listTopicsSchema} {
+		var schema struct {
+			Properties map[string]struct {
+				Maximum *int `json:"maximum"`
+				Minimum *int `json:"minimum"`
+			} `json:"properties"`
+		}
+		if err := json.Unmarshal(raw, &schema); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		limit := schema.Properties["limit"]
+		want := maxFindingsLimit
+		if name == ToolListTopics {
+			want = maxTopicsLimit
+		}
+		if limit.Maximum == nil || *limit.Maximum != want || limit.Minimum == nil || *limit.Minimum != 1 {
+			t.Errorf("%s limit bounds %+v, want 1..%d", name, limit, want)
 		}
 	}
 }

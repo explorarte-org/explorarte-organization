@@ -80,11 +80,23 @@ import (
 // verbatim. Never touches finance_service.go's own rendering.
 func financeFakeJSONGoal(t *testing.T, output campaign.FinanceReviewOutput) string {
 	t.Helper()
-	body, err := json.Marshal(output)
+	body, err := json.Marshal(schemaShapedFinanceOutput(output))
 	if err != nil {
 		t.Fatalf("marshal fake finance output: %v", err)
 	}
 	return "Prove the real Finance Harness round trip. [fake-json-b64:" + base64.StdEncoding.EncodeToString(body) + "]"
+}
+
+// schemaShapedFinanceOutput is output as a model answering under the finance review's JSON schema
+// writes it: its lists are arrays, never null (a nil Go slice marshals to null, which the schema
+// refuses).
+func schemaShapedFinanceOutput(output campaign.FinanceReviewOutput) campaign.FinanceReviewOutput {
+	for _, list := range []*[]string{&output.Assumptions, &output.Risks, &output.RequiredCorrections, &output.MissingInformation} {
+		if *list == nil {
+			*list = []string{}
+		}
+	}
+	return output
 }
 
 // financeTestExecutableBudget returns a fresh, modest, strictly-positive

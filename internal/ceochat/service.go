@@ -27,9 +27,12 @@ const (
 	maxOwnerContentBytes = 32 << 10
 	maxIdempotencyKeyLen = 120
 
-	defaultLeaseDuration   = 10 * time.Minute
-	defaultInvocationTTL   = 12 * time.Minute
-	defaultMaxOutputTokens = 2000
+	defaultLeaseDuration = 10 * time.Minute
+	defaultInvocationTTL = 12 * time.Minute
+	// Reasoning tokens count against this ceiling on the Responses API: at reasoning_effort max
+	// the CEO model spent all of 2000 reasoning and returned an incomplete turn (smoke #41,
+	// response_incomplete_max_output_tokens). The executive's own ceiling for the same model is 128000.
+	defaultMaxOutputTokens = 64000
 
 	ceoChatWorkerID = "ceochat"
 	ceoChatActorID  = "ceochat"
@@ -410,17 +413,30 @@ func (s *Service) driveTurn(ctx context.Context, conversation Conversation, task
 		return SendResult{}, fmt.Errorf("build ceochat context snapshot: %w", err)
 	}
 
-	models, err := s.NewModelExecutor(modelruntimeadapter.Config{
-		MaxOutputTokens:               s.MaxOutputTokens,
-		ThinkingMode:                  modelruntime.ThinkingOpaque,
-		InvocationTTL:                 s.InvocationTTL,
-		OutputMode:                    modelruntime.OutputText,
-		ExecutionContractInstructions: contract,
-		Purpose:                       "executive.ceo_chat",
-	})
+	buildModels := func(ordinal int) (executionharness.ModelExecutor, error) {
+		return s.NewModelExecutor(modelruntimeadapter.Config{
+			MaxOutputTokens:               s.MaxOutputTokens,
+			ThinkingMode:                  modelruntime.ThinkingOpaque,
+			InvocationTTL:                 s.InvocationTTL,
+			OutputMode:                    modelruntime.OutputText,
+			ExecutionContractInstructions: contract,
+			Purpose:                       "executive.ceo_chat",
+			RetryOrdinal:                  ordinal,
+		})
+	}
+	// Built once up front so a misconfiguration fails the turn before it starts.
+	first, err := buildModels(0)
 	if err != nil {
 		return SendResult{}, fmt.Errorf("build ceochat model executor: %w", err)
 	}
+	// A rate-limited or unavailable provider answer is retried, bounded; the dispatch assignment's
+	// MaxTurns invocations cover the retries.
+	models := modelruntimeadapter.TransientRetryExecutor{Build: func(ordinal int) (executionharness.ModelExecutor, error) {
+		if ordinal == 0 {
+			return first, nil
+		}
+		return buildModels(ordinal)
+	}, Waits: modelruntimeadapter.DefaultTransientRetryWaits}
 	runtime, err := executionharness.NewWithDescriptorStore(s.Authority, models, s.Catalog, s.ToolExecutor, s.HarnessHistory, s.DescriptorStore)
 	if err != nil {
 		return SendResult{}, fmt.Errorf("build ceochat harness runtime: %w", err)

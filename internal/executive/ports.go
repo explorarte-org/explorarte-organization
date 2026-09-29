@@ -108,6 +108,26 @@ type CreateTaskCommand struct {
 	// nothing else: a caller free to omit it would be a caller free to
 	// recreate the race it closes.
 	HoldForCoordination bool
+	// ReviewScope is set on a department review and on nothing else: it names
+	// what the review judges, so the evidence bundle recorded with it holds the
+	// same deliverables the review's summary lists. See DepartmentReviewScope.
+	ReviewScope *DepartmentReviewScope
+}
+
+// DepartmentReviewScope is what one department review judges: the plan of its
+// design round and that round's workers that still hold authority.
+//
+// Local smoke #33 (root 1742, 2026-09-27): the review after a round-2 replan was
+// handed every worker of the department in every round -- the round-1 design
+// (1745), the round-2 design (1755) the previous review had wholly handed to a
+// redo, and the redo (1761) -- told to compare them against each other, and the
+// round-1 plan's review criteria. It found the redo "incompatible" with the
+// deliverables it replaced and asked for a second replan, which the round did
+// not have. The adversarial candidate already excludes superseded workers
+// (unitRoundFrontier); the review is now scoped by the same replay.
+type DepartmentReviewScope struct {
+	PlanTaskID    int64
+	WorkerTaskIDs []int64
 }
 
 type EvidenceCommand struct {
@@ -204,9 +224,15 @@ type ContextRequest struct {
 	RepositorySlots []EvidenceSlot
 	// RepositoryQuery is what the selection reads to decide where to look.
 	RepositoryQuery string
-	IdempotencyKey  string
-	CorrelationID   string
-	CausationID     string
+	// RepositoryCitations are the repository:// ranges the deliverable under
+	// judgement cites, read for the judge verbatim (judgedDesignCitations).
+	RepositoryCitations []string
+	// RepositoryRequested are identifiers an earlier worker asked for (requestedEvidenceFor), searched
+	// in the whole repository rather than only under the goal's paths.
+	RepositoryRequested []string
+	IdempotencyKey      string
+	CorrelationID       string
+	CausationID         string
 }
 
 type DispatchProvisioner interface {
@@ -290,3 +316,13 @@ type Clock interface{ Now() time.Time }
 type ClockFunc func() time.Time
 
 func (f ClockFunc) Now() time.Time { return f() }
+
+// PrerequisiteAttacher records, on a worker about to run, the results of the workers it depends on.
+// A plan's dependencies ordered execution but carried nothing: every worker task is created when the
+// plan is, before its prerequisites have results, so a reviewer worker ran without the answer it was
+// asked to check (local smoke #42, root 2018: the servicios quality review reported every criterion
+// undecidable twice and the department's replans ran out). It is optional; a coordinator without it
+// leaves workers as they were.
+type PrerequisiteAttacher interface {
+	AttachPrerequisiteResults(ctx context.Context, task TaskRecord) (TaskRecord, error)
+}

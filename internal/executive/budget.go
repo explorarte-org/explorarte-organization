@@ -7,6 +7,11 @@ type InvocationBudget struct {
 	LeaderCalls    int `json:"leader_calls"`
 	WorkerAttempts int `json:"worker_attempts"`
 	Replans        int `json:"replans"`
+	// DesignRounds is the highest design round the run has planned (1 when it
+	// has none). The CEO adjudicates once per round, and every round's
+	// department plans, reviews and replans afresh, so the shape bounds below
+	// scale with it.
+	DesignRounds int `json:"design_rounds,omitempty"`
 }
 
 func (b InvocationBudget) Total() int { return b.CEOCalls + b.LeaderCalls + b.WorkerAttempts }
@@ -26,6 +31,9 @@ func (b InvocationBudget) Total() int { return b.CEOCalls + b.LeaderCalls + b.Wo
 // exactly what TestExecutivePostgreSQL17EndToEndAndRestart's scenario
 // ("return a one-area plan without external actions", no design freeze)
 // is.
+// DesignRoundOf is the design round a task key belongs to (1 when it names none).
+func DesignRoundOf(key string) int { return designRoundOf(key) }
+
 func NormalExpectedCalls(departments, attempts int, designFreeze bool) int {
 	if departments < 0 || attempts < 0 {
 		return 0
@@ -65,14 +73,21 @@ func (b InvocationBudget) Validate(l Limits, departments int) error {
 	// and the durable agent budget are what actually bound spend. These bound
 	// SHAPE -- a campaign making far more calls of one kind than its phases
 	// can explain is looping, whatever it costs.
-	if maxCEO := ceoPhases * governedTaskAttempts; b.CEOCalls > maxCEO {
+	//
+	// They were sized for one design round. Local smoke #34 (root 1773,
+	// 2026-09-27) replanned once in round 1 and once in round 2 -- each within
+	// the orchestrator's per-round MaxDepartmentReplans, since a review key
+	// carries its round -- and was blocked here with "replans" because the
+	// bound counted both against one.
+	rounds := max(1, b.DesignRounds)
+	if maxCEO := (ceoPhases + rounds - 1) * governedTaskAttempts; b.CEOCalls > maxCEO {
 		return fmt.Errorf("%w: CEO calls %d > %d", ErrBudgetExceeded, b.CEOCalls, maxCEO)
 	}
-	if maxLeader := (2*departments + 2*l.MaxDepartmentReplans) * governedTaskAttempts; b.LeaderCalls > maxLeader {
+	if maxLeader := (2*departments + 2*l.MaxDepartmentReplans) * rounds * governedTaskAttempts; b.LeaderCalls > maxLeader {
 		return fmt.Errorf("%w: leader calls %d > %d", ErrBudgetExceeded, b.LeaderCalls, maxLeader)
 	}
-	if b.Replans > departments*l.MaxDepartmentReplans {
-		return fmt.Errorf("%w: replans", ErrBudgetExceeded)
+	if maxReplans := departments * l.MaxDepartmentReplans * rounds; b.Replans > maxReplans {
+		return fmt.Errorf("%w: replans %d > %d", ErrBudgetExceeded, b.Replans, maxReplans)
 	}
 	if b.Total() > l.MaxModelCalls {
 		return ErrBudgetExceeded

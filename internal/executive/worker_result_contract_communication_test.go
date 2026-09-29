@@ -107,7 +107,7 @@ func TestWorkerResultSchemaLimitIsDerivedFromLimitsNotALiteral(t *testing.T) {
 		if field == "summary" {
 			want = `"maxLength":555`
 		}
-		if !strings.Contains(body, want) || strings.Contains(body, `"maxLength":4000`) || strings.Contains(body, `"maxLength":8000`) {
+		if !strings.Contains(body, want) || strings.Contains(body, `"maxLength":4000`) || strings.Contains(body, `"maxLength":12000`) {
 			t.Fatalf("%s: schema did not follow Limits (%s): %s", field, want, body)
 		}
 	}

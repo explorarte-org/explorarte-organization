@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"os"
 	"strings"
 
@@ -174,7 +175,8 @@ func missionProvisioningOptions(cfg config.Config, store *platformpostgres.Store
 	return []executive.OrchestratorOption{
 		executive.WithMissionProvisioning(resolver, provisioner),
 		executive.WithPatchWorkbench(workbench),
-		executive.WithMissionReviewRequester(missionReviewRequester{missions: missions}),
+		executive.WithMissionReviewRequester(missionReviewRequester{missions: missions, promotions: stagingRuntime.Service, lookup: poolPromotionLookup{pool: store.Pool()}}),
+		executive.WithMissionIncorporationReader(poolPromotionLookup{pool: store.Pool()}),
 	}, nil
 }
 
@@ -184,17 +186,60 @@ type missionPromotionRequester interface {
 	RequestPromotion(ctx context.Context, taskID, workspaceID int64, actorRole string) (staging.Promotion, error)
 }
 
+// stagingPromotionOpener opens a promotion without recording the gate check again: the recovery of a
+// request whose check was recorded and whose promotion was not.
+type stagingPromotionOpener interface {
+	RequestPromotion(ctx context.Context, command staging.RequestPromotionCommand) (staging.Promotion, error)
+}
+
+// workspacePromotionLookup reports whether a workspace already has a promotion.
+type workspacePromotionLookup interface {
+	WorkspaceHasPromotion(ctx context.Context, workspaceID int64) (bool, error)
+}
+
+// poolPromotionLookup answers from staging_promotions directly: the staging service lists promotions
+// by status only, and a bounded list is no proof that one does not exist.
+type poolPromotionLookup struct{ pool *pgxpool.Pool }
+
+// MissionPromotionStatus is the status of the mission's latest promotion, "" when it has none.
+func (l poolPromotionLookup) MissionPromotionStatus(ctx context.Context, missionTaskID int64) (string, error) {
+	var status string
+	err := l.pool.QueryRow(ctx, `SELECT COALESCE((SELECT status FROM staging_promotions WHERE task_id=$1 AND status NOT IN ('cancelled','failed') ORDER BY id DESC LIMIT 1),'')`, missionTaskID).Scan(&status)
+	return status, err
+}
+
+func (l poolPromotionLookup) WorkspaceHasPromotion(ctx context.Context, workspaceID int64) (bool, error) {
+	var exists bool
+	err := l.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM staging_promotions WHERE workspace_id=$1 AND status NOT IN ('cancelled','failed'))`, workspaceID).Scan(&exists)
+	return exists, err
+}
+
 // missionReviewRequester opens a verified mission's promotion for review, as the code-runner role
 // that produced the candidate (the actor the owner's review must differ from). It cannot review,
 // approve or apply: those remain orgctl code-runner mission review and orgctl staging promotion apply.
 type missionReviewRequester struct {
-	missions missionPromotionRequester
+	missions   missionPromotionRequester
+	promotions stagingPromotionOpener
+	lookup     workspacePromotionLookup
 }
 
 const missionReviewRequesterRole = "ingenieria_ia/code-runner"
 
-func (r missionReviewRequester) RequestMissionReview(ctx context.Context, missionTaskID, workspaceID int64) error {
-	_, err := r.missions.RequestPromotion(ctx, missionTaskID, workspaceID, missionReviewRequesterRole)
+// RequestMissionReview is idempotent per workspace: an existing promotion is the answer; recorded gates
+// with no promotion get only the promotion; pending gates get the check and the promotion.
+func (r missionReviewRequester) RequestMissionReview(ctx context.Context, missionTaskID, workspaceID int64, gatesRecorded bool) error {
+	exists, err := r.lookup.WorkspaceHasPromotion(ctx, workspaceID)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	if gatesRecorded {
+		_, err = r.promotions.RequestPromotion(ctx, staging.RequestPromotionCommand{WorkspaceID: workspaceID, ActorRoleID: missionReviewRequesterRole})
+		return err
+	}
+	_, err = r.missions.RequestPromotion(ctx, missionTaskID, workspaceID, missionReviewRequesterRole)
 	return err
 }
 

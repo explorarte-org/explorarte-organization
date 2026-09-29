@@ -227,13 +227,29 @@ func TestTopologyFloorComesFromExecutive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	topology := executive.MinimalCampaignTopology()
-	if got.MinModelCalls != topology.ModelCalls || got.MinSubagents != topology.Subagents || got.MinDepth != topology.Depth {
+	// The analysis floor covers every campaign-eligible department (this world has two), not the
+	// minimal one-department tree: local smoke #54 was approved at 12 subagents and blocked at its
+	// thirteenth child with four departments to answer.
+	topology := executive.AnalysisCampaignTopology(2, executive.DefaultLimits().MaxDepartmentReplans)
+	if got.MinModelCalls != topology.ModelCalls || got.MinSubagents != topology.Subagents || got.MinDepth != executive.MinimalCampaignTopology().Depth {
 		t.Fatalf("floor calls/subagents/depth = %d/%d/%d, Executive declares %d/%d/%d",
 			got.MinModelCalls, got.MinSubagents, got.MinDepth, topology.ModelCalls, topology.Subagents, topology.Depth)
 	}
-	if got.MinModelCalls != 5 || got.MinSubagents != 5 || got.MinDepth != 3 {
-		t.Fatalf("today's minimal campaign is 5 calls, 5 subagents, depth 3; got %d/%d/%d", got.MinModelCalls, got.MinSubagents, got.MinDepth)
+	if got.MinSubagents != 14 || got.MinModelCalls != 42 || got.MinDepth != 3 || got.Basis.AnalysisDepartments != 2 {
+		t.Fatalf("two departments of plan, two workers, review and a replan: want 14 subagents, 42 calls, depth 3; got %d/%d/%d (%d departments)",
+			got.MinSubagents, got.MinModelCalls, got.MinDepth, got.Basis.AnalysisDepartments)
+	}
+	if four := executive.AnalysisCampaignTopology(4, 1); four.Subagents != 26 || four.ModelCalls != 78 {
+		t.Fatalf("four departments: %d subagents, %d calls; want 26 and 78", four.Subagents, four.ModelCalls)
+	}
+	// The governed floor is Executive's too, for the design rounds the limits allow (smoke #30).
+	governed := executive.GovernedCampaignTopology(executive.DefaultLimits().MaxDesignRounds, executive.DefaultLimits().MaxDepartmentReplans)
+	if got.GovernedMinModelCalls != governed.ModelCalls || got.GovernedMinSubagents != governed.Subagents || governed.Subagents != 17 {
+		t.Fatalf("governed floor calls/subagents = %d/%d, Executive declares %d/%d (want 17 subagents)",
+			got.GovernedMinModelCalls, got.GovernedMinSubagents, governed.ModelCalls, governed.Subagents)
+	}
+	if got.GovernedMinTokens != governed.ModelCalls*got.MinTokens {
+		t.Fatalf("governed token floor = %d, want one worst reservation (%d) per governed call (%d)", got.GovernedMinTokens, got.MinTokens, governed.ModelCalls)
 	}
 	// Wall time and retries are not consumed on this path: no invented floor.
 	if got.MinWallTimeMS != 1 || got.MinRetries != 1 || got.Basis.WallTimeConsumed || got.Basis.RetriesConsumed {
@@ -280,9 +296,14 @@ func TestDynamicFloorIsTheWorstCanonicalStageNotJustTheFirst(t *testing.T) {
 		planIn, planUSD = reviewIn, usd(reviewIn, 128_000, 300_000_000, 2_500_000_000)
 	}
 	workerIn := tokens(executive.PurposeDepartmentWorker)
-	workerUSD := usd(workerIn, 24_000, 300_000_000, 2_500_000_000)
+	workerUSD := usd(workerIn, 128_000, 300_000_000, 2_500_000_000)
 	if planUSD <= ceoUSD {
 		t.Fatalf("test premise: a leader stage (%s) should out-price the CEO plan (%s)", planUSD, ceoUSD)
+	}
+	// Since the worker ceiling is 128,000 too, the stage with the longest input among the
+	// flash-lite stages is the worst.
+	if workerUSD > planUSD {
+		planIn, planUSD = workerIn, workerUSD
 	}
 	if got.MinUSD != planUSD {
 		t.Fatalf("MinUSD = %s, want the worst stage's worst-case reservation %s (ceo %s, worker %s)", got.MinUSD, planUSD, ceoUSD, workerUSD)

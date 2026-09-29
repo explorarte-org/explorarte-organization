@@ -154,12 +154,20 @@ type BuildRequest struct {
 	// provider satisfies every slot MANDATORILY before any incidental
 	// exploration spends the budget: an accepted round promise is delivered,
 	// or the whole build says why it could not.
-	RepositorySlots   []RepositorySlot `json:"repository_slots,omitempty"`
-	ActorUnitID       string           `json:"actor_unit_id,omitempty"`
-	RequestedSkillIDs []string         `json:"requested_skill_ids,omitempty"`
-	IdempotencyKey    string           `json:"idempotency_key"`
-	CorrelationID     string           `json:"correlation_id,omitempty"`
-	CausationID       string           `json:"causation_id,omitempty"`
+	RepositorySlots []RepositorySlot `json:"repository_slots,omitempty"`
+	// RepositoryCitations are repository:// references (with #L ranges) that
+	// a deliverable this execution judges stands on. The provider reads those
+	// exact ranges at this commit after the slots and before any search, so a
+	// judge sees the lines the author saw.
+	RepositoryCitations []string `json:"repository_citations,omitempty"`
+	// RepositoryRequested are identifiers an earlier execution said it needed and was not shown;
+	// the provider searches them in the whole repository.
+	RepositoryRequested []string `json:"repository_requested,omitempty"`
+	ActorUnitID         string   `json:"actor_unit_id,omitempty"`
+	RequestedSkillIDs   []string `json:"requested_skill_ids,omitempty"`
+	IdempotencyKey      string   `json:"idempotency_key"`
+	CorrelationID       string   `json:"correlation_id,omitempty"`
+	CausationID         string   `json:"causation_id,omitempty"`
 }
 
 type SourceRecord struct {

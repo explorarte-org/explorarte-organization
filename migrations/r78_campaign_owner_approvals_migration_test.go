@@ -2,7 +2,6 @@ package migrations_test
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -13,7 +12,7 @@ import (
 )
 
 func TestMigration78CampaignOwnerApprovalsForwardBackForward(t *testing.T) {
-	dsn := os.Getenv("ORG_TEST_DATABASE_URL")
+	dsn := testdbguard.FreshDatabase(t)
 	if dsn == "" {
 		t.Skip("ORG_TEST_DATABASE_URL is required")
 	}
@@ -43,7 +42,7 @@ func TestMigration78CampaignOwnerApprovalsForwardBackForward(t *testing.T) {
 		t.Fatal("migration 000078 is not present in the compiled set")
 	}
 
-	runner, err := platformmigrations.New(pool, rootmigrations.Files)
+	runner, err := platformmigrations.New(pool, migrationsThrough(t, 78))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +60,7 @@ func TestMigration78CampaignOwnerApprovalsForwardBackForward(t *testing.T) {
 	tableExists := func(table string) bool {
 		t.Helper()
 		var exists bool
-		if err := pool.QueryRow(ctx, "SELECT to_regclass() IS NOT NULL", "public."+table).Scan(&exists); err != nil {
+		if err := pool.QueryRow(ctx, "SELECT to_regclass($1) IS NOT NULL", "public."+table).Scan(&exists); err != nil {
 			t.Fatal(err)
 		}
 		return exists
@@ -83,7 +82,7 @@ func TestMigration78CampaignOwnerApprovalsForwardBackForward(t *testing.T) {
 		if _, err = tx.Exec(ctx, migration78.DownSQL); err != nil {
 			t.Fatalf("down78: %v", err)
 		}
-		tag, err := tx.Exec(ctx, "DELETE FROM schema_migrations WHERE version=78 AND name= AND checksum=", migration78.Name, migration78.Checksum)
+		tag, err := tx.Exec(ctx, "DELETE FROM schema_migrations WHERE version=78 AND name=$1 AND checksum=$2", migration78.Name, migration78.Checksum)
 		if err != nil {
 			t.Fatal(err)
 		}

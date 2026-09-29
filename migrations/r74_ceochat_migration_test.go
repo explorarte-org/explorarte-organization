@@ -2,7 +2,6 @@ package migrations_test
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -21,7 +20,7 @@ import (
 // transaction guarded by testdbguard.RequireDestructive, and never touches
 // a non-disposable database.
 func TestMigration74CEOChatForwardBackForward(t *testing.T) {
-	dsn := os.Getenv("ORG_TEST_DATABASE_URL")
+	dsn := testdbguard.FreshDatabase(t)
 	if dsn == "" {
 		t.Skip("ORG_TEST_DATABASE_URL is required")
 	}
@@ -53,7 +52,7 @@ func TestMigration74CEOChatForwardBackForward(t *testing.T) {
 		t.Fatal("migration 000074 is not present in the compiled set")
 	}
 
-	runner, err := platformmigrations.New(pool, rootmigrations.Files)
+	runner, err := platformmigrations.New(pool, migrationsThrough(t, 74))
 	if err != nil {
 		t.Fatal(err)
 	}

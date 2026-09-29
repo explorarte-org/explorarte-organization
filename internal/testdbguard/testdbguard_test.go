@@ -126,3 +126,29 @@ func TestRequireDestructive_PassesWhenBothChecksPass(t *testing.T) {
 		t.Fatalf("expected no error, got: %v", err)
 	}
 }
+
+// A database FreshDatabase created is accepted by its exact generated name, and nothing that merely
+// resembles it is.
+func TestRequireTestDatabase_AcceptsOnlyTheExactFreshDatabasePattern(t *testing.T) {
+	const fresh = "explorarte_test_fresh_0123456789ab"
+	if err := RequireTestDatabase(context.Background(), "postgres://u:p@h:5432/"+fresh, fakeQuerier{row: fakeRow{value: fresh}}); err != nil {
+		t.Fatalf("a fresh database was refused: %v", err)
+	}
+	for _, name := range []string{
+		"explorarte_test_fresh_0123456789a",    // one hex digit short
+		"explorarte_test_fresh_0123456789abc",  // one too many
+		"explorarte_test_fresh_0123456789AB",   // uppercase
+		"explorarte_test_fresh_",               // no suffix
+		"explorarte_test_other",                // another suffix
+		"explorarte_org_fresh_0123456789ab",    // another base
+		"explorarte_test_fresh_0123456789ab_x", // trailing text
+	} {
+		if err := RequireTestDatabase(context.Background(), "postgres://u:p@h:5432/"+name, fakeQuerier{row: fakeRow{value: name}}); err == nil {
+			t.Errorf("%q was accepted", name)
+		}
+	}
+	// The live connection must be the very database the DSN names, not merely another permitted one.
+	if err := RequireTestDatabase(context.Background(), "postgres://u:p@h:5432/"+fresh, fakeQuerier{row: fakeRow{value: CanonicalDisposableDatabase}}); err == nil {
+		t.Fatal("a DSN naming a fresh database was accepted while connected to the canonical one")
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -120,11 +121,16 @@ func DeclassifyCandidate(candidate string, organizational []OrganizationalSource
 	for _, source := range organizational {
 		for _, haystack := range haystacks {
 			if run, shared := sharedRun(excerptBody(source.Content), haystack); shared {
-				if reference := strings.TrimSpace(source.Reference); reference != "" {
-					return fmt.Errorf("%w: it reproduces %d characters of %s",
-						ErrCandidateContaminated, len(run), reference)
+				reference := strings.TrimSpace(source.Reference)
+				where := ""
+				if line, found := reproducedSpanLine(reference, excerptBody(source.Content), run); found {
+					where = fmt.Sprintf(", from line %d", line)
 				}
-				return fmt.Errorf("%w: it reproduces %d characters of source", ErrCandidateContaminated, len(run))
+				if reference != "" {
+					return fmt.Errorf("%w: it reproduces %d characters of %s%s",
+						ErrCandidateContaminated, len(run), reference, where)
+				}
+				return fmt.Errorf("%w: it reproduces %d characters of source%s", ErrCandidateContaminated, len(run), where)
 			}
 		}
 	}
@@ -258,6 +264,36 @@ func sharedRun(source, haystack string) (string, bool) {
 	}
 	return "", false
 }
+
+// reproducedSpanLine is how a refusal points at the reproduced passage without carrying it: the
+// line of the cited file on which the matched run begins. A line number is provenance metadata, like
+// the path and range the refusal already names; the refusal is persisted and read back, so it may
+// not carry the source text itself.
+//
+// Local smoke #32 (root 1717, 2026-09-27): three of a design worker's five attempts were refused
+// for reproducing 48 characters of a named file and line range, and the worker could not tell which
+// of the range's lines to rewrite.
+//
+// The run is in normal form, so the line is found by asking from which line on the body still
+// contains it. The line is absolute when the reference carries a #L range, else relative to the
+// excerpt.
+func reproducedSpanLine(reference, body, run string) (int, bool) {
+	lines := strings.Split(body, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.Contains(normalizeForDeclassify(strings.Join(lines[i:], "\n")), run) {
+			first := 1
+			if match := referenceFirstLine.FindStringSubmatch(reference); match != nil {
+				if n, err := strconv.Atoi(match[1]); err == nil && n > 0 {
+					first = n
+				}
+			}
+			return first + i, true
+		}
+	}
+	return 0, false
+}
+
+var referenceFirstLine = regexp.MustCompile(`#L(\d+)`)
 
 func declassifyHash(run string) uint64 {
 	const offset64 = 14695981039346656037
