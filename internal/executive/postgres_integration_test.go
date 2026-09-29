@@ -275,6 +275,9 @@ type integrationModelRuntime struct {
 	stopWithoutVerdict     bool
 	implementationPlanBody json.RawMessage
 	designAdjudicationBody func(int64) json.RawMessage
+	// workerBody replaces the default department worker result: a governed design must name the
+	// files it proposes (proposed_files), or no implementation can be bound to the frozen design.
+	workerBody json.RawMessage
 }
 
 // seedUnresolvedSend plants the state Model Runtime holds while a request may
@@ -377,6 +380,9 @@ func (f *integrationModelRuntime) Execute(_ context.Context, command executive.H
 		body := f.output(purpose)
 		if purpose == "implementation_plan" && len(f.implementationPlanBody) > 0 {
 			body = append(json.RawMessage(nil), f.implementationPlanBody...)
+		}
+		if purpose == "department_worker" && len(f.workerBody) > 0 {
+			body = append(json.RawMessage(nil), f.workerBody...)
 		}
 		if purpose == "design_adjudication" && f.designAdjudicationBody != nil {
 			body = f.designAdjudicationBody(invocation.TaskID)

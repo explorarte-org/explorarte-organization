@@ -77,13 +77,16 @@ func budgetAboveFloor(floor campaign.ExecutionBudgetRequirements) campaign.Budge
 	// Round UP to whole micro-dollars so the doubled figure is never truncated
 	// below twice the floor by float conversion.
 	micros := (2*int64(floor.MinUSD) + 999) / 1000
+	// Above both floors: a budget "above the floor" that a governed promotion then refuses proves
+	// nothing about the mode. The governed token floor (one worst reservation per governed call)
+	// is far above the analysis one.
 	return campaign.BudgetRecommendation{
 		MaxUSD:        float64(micros) / 1_000_000,
-		MaxTokens:     2 * floor.MinTokens,
-		MaxModelCalls: int(2 * floor.MinModelCalls),
+		MaxTokens:     2 * max(floor.MinTokens, floor.GovernedMinTokens),
+		MaxModelCalls: int(2 * max(floor.MinModelCalls, floor.GovernedMinModelCalls)),
 		MaxWallTimeMS: 7_200_000,
 		MaxDepth:      int(floor.MinDepth) + 2,
 		MaxRetries:    int(floor.MinRetries) + 3,
-		MaxSubagents:  int(floor.MinSubagents) + 3,
+		MaxSubagents:  int(max(floor.MinSubagents, floor.GovernedMinSubagents)) + 3,
 	}
 }
